@@ -557,7 +557,11 @@ impl Game<'_> {
     /// set `ticks` when it is yours. Asked for each of the block's states
     /// when a world opens. API 15.
     pub(super) fn native_block_entity_ticks(&self, block: &str, ticks: &mut bool) {
-        let _ = (block, ticks);
+        let _ = (block, &ticks);
+        #[cfg(feature = "java-mods")]
+        if let Some(host) = horizon_java_host::get() {
+            *ticks |= host.request("block_ticks", block.as_bytes()).is_some();
+        }
     }
     /// Block `block`'s block entity has item slots (a `WorldlyContainer`):
     /// set `container` when the block is yours. Asked once for each mod
@@ -583,7 +587,9 @@ impl Game<'_> {
     /// dropped. Clients, the window's own in single player included, don't
     /// get it yet. API 17.
     pub(super) fn native_block_entity_tick(&mut self, pos: [i32; 3], entity: &mut ModBlockEntity) {
-        let _ = (pos, entity);
+        let _ = (pos, &entity);
+        #[cfg(feature = "java-mods")]
+        self.java_block_entity_tick(pos, entity);
     }
     /// A menu opens on this client for block `block`, a mod's: set `screen`
     /// when the block is yours, to lay its screen out (`native_screen_draw`

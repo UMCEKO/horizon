@@ -1,0 +1,61 @@
+net/minecraft/world/level/block/state/StateHolder#getValue	java-body	property lookup in the state's own table; no level or entity
+net/minecraft/world/level/block/state/StateHolder#setValue	java-body	state-table lookup and a new state; no world access
+net/minecraft/world/level/block/state/BlockBehaviour$BlockStateBase#isCollisionShapeFullBlock	java-body	cache or Block shape check on the state with the level as a getter
+net/minecraft/world/level/block/state/BlockBehaviour$BlockStateBase#isFaceSturdy	java-body	support check on the state with the level as BlockGetter
+net/minecraft/world/level/block/state/BlockBehaviour$BlockStateBase#getCollisionShape	java-body	delegates to Block with the state; shapes come from Rust
+net/minecraft/world/level/block/state/BlockBehaviour$BlockStateBase#getShape	java-body	delegates to Block with the state
+net/minecraft/world/level/block/Block#column	java-body	box math only
+net/minecraft/world/level/block/ChestBlock#getConnectedDirection	java-body	reads FACING and TYPE from the state
+net/minecraft/world/level/block/FallingBlock#isFree	java-body	state tests only
+net/minecraft/world/level/block/VegetationBlock#updateShape	java-body	canSurvive reads getBlockState; super is a default
+net/minecraft/world/level/block/AbstractCauldronBlock#useItemOn	needs-entity-view	hands the passed-in player to CauldronInteractions, which calls setItemInHand and awardStat on it
+net/minecraft/world/level/block/BaseFireBlock#getState	java-body	getBlockState and FireBlock placement on the state
+net/minecraft/world/level/block/BaseFireBlock#onPlace	java-body	dimension getter, then PortalShape, which uses getBlockState and setBlock only
+net/minecraft/world/level/block/BaseTorchBlock#updateShape	java-body	canSurvive through canSupportCenter; level reads only
+net/minecraft/world/level/block/Block#canSupportCenter	java-body	isFaceSturdy with the level as LevelReader
+net/minecraft/world/level/block/Block#updateFromNeighbourShapes	java-body	dispatches updateShape per direction; each block is triaged on its own
+net/minecraft/world/level/block/Block#withPropertiesOf	java-body	copies properties between states
+net/minecraft/world/level/block/ButtonBlock#onExplosionHit	needs-server	super drops loot through state.getDrops, which calls level.getServer()
+net/minecraft/world/level/block/ButtonBlock#useWithoutItem	java-body	press uses setBlockAndUpdate, scheduleTick, playSound and gameEvent only
+net/minecraft/world/level/block/CampfireBlock#isLitCampfire	java-body	state tests
+net/minecraft/world/level/block/ChestBlock#candidatePartnerFacing	java-body	getBlockState and state tests
+net/minecraft/world/level/block/ChiseledBookShelfBlock#useItemOn	needs-block-entity	calls level.getBlockEntity(pos) before any work
+net/minecraft/world/level/block/ChiseledBookShelfBlock#useWithoutItem	needs-block-entity	calls level.getBlockEntity(pos) before any work
+net/minecraft/world/level/block/DispenserBlock#getDispenseMethod	java-body	enabledFeatures getter and a static registry
+net/minecraft/world/level/block/DispenserBlock#getDispensePosition	java-body	BlockSource center and state only
+net/minecraft/world/level/block/DoorBlock#getStateForPlacement	java-body	getBlockState, hasNeighborSignal and player direction getters
+net/minecraft/world/level/block/DoorBlock#neighborChanged	java-body	signals, playSound, gameEvent and setBlock
+net/minecraft/world/level/block/DoorBlock#playSound	java-body	playSound only; the source entity is passed on
+net/minecraft/world/level/block/DoorBlock#setOpen	java-body	setBlock, playSound and gameEvent; the source entity is only passed on
+net/minecraft/world/level/block/DoorBlock#useWithoutItem	java-body	setBlock, playSound and gameEvent with the player as source
+net/minecraft/world/level/block/DoubleBlockCombiner#combineWithNeigbour	needs-block-entity	entityType.getBlockEntity for this block and its neighbour
+net/minecraft/world/level/block/DoublePlantBlock#copyWaterloggedFrom	needs-server	level.isWaterAt reads Level.getFluidState, which goes through getChunkAt
+net/minecraft/world/level/block/DoublePlantBlock#placeAt	needs-server	calls copyWaterloggedFrom, which reads the chunk through isWaterAt
+net/minecraft/world/level/block/DoublePlantBlock#preventDropFromBottomPart	java-body	setBlock and levelEvent (bridged; the source entity is skipped)
+net/minecraft/world/level/block/FaceAttachedHorizontalDirectionalBlock#getStateForPlacement	java-body	player look directions and canSurvive
+net/minecraft/world/level/block/FaceAttachedHorizontalDirectionalBlock#updateShape	java-body	canSurvive through level reads
+net/minecraft/world/level/block/FenceGateBlock#getStateForPlacement	java-body	signals and getBlockState
+net/minecraft/world/level/block/LecternBlock#useItemOn	needs-block-entity	tryPlaceBook calls placeBook, which calls level.getBlockEntity
+net/minecraft/world/level/block/LiquidBlock#neighborChanged	needs-server	lava branch of shouldSpreadLiquid calls Level.getFluidState, which reads the chunk
+net/minecraft/world/level/block/LiquidBlock#onPlace	needs-server	same shouldSpreadLiquid path through Level.getFluidState
+net/minecraft/world/level/block/MultifaceBlock#canAttachTo	java-body	getBlockState and block shapes
+net/minecraft/world/level/block/SaplingBlock#advanceTree	needs-server	level.getChunkSource().getGenerator() for the tree grower
+net/minecraft/world/level/block/ScaffoldingBlock#getCollisionShape	java-body	context tests; EntityCollisionContext reads its captured bottom
+net/minecraft/world/level/block/SignBlock#useWithoutItem	needs-block-entity	calls level.getBlockEntity(pos) and reads the sign's editing state
+net/minecraft/world/level/block/SimpleWaterloggedBlock#pickupBlock	java-body	setBlockAndUpdate and destroyBlock only
+net/minecraft/world/level/block/StairBlock#getFluidState	java-body	state and water source
+net/minecraft/world/level/block/StairBlock#updateShape	java-body	scheduleTick and stair shape from getBlockState
+net/minecraft/world/level/block/TrapDoorBlock#playSound	java-body	playSound and gameEvent with the player as source
+net/minecraft/world/level/block/WallTorchBlock#getStateForPlacement	java-body	canSurvive and player look directions
+net/minecraft/world/level/block/WallTorchBlock#updateShape	java-body	canSurvive through level reads
+net/minecraft/world/level/block/piston/PistonMath#getMovementArea	java-body	AABB math
+net/minecraft/world/level/block/state/BlockBehaviour#getDestroyProgress	needs-entity-view	calls player.hasCorrectToolForDrops and player.getDestroySpeed
+net/minecraft/world/level/block/state/BlockBehaviour#isPathfindable	java-body	state shape and fluid tests on an empty BlockGetter
+net/minecraft/world/level/block/state/BlockBehaviour$BlockStateBase#updateIndirectNeighbourShapes	java-body	dispatch; RedstoneWireBlock reads getBlockState and neighbour shapes
+net/minecraft/world/level/block/state/BlockBehaviour$BlockStateBase#updateNeighbourShapes	java-body	neighborShapeChanged per direction, a level neighbour update
+net/minecraft/world/level/block/state/StateHolder#trySetValue	java-body	state-table lookup
+net/minecraft/world/level/material/FlowingFluid#getFlowing	java-body	fluid state setValue
+net/minecraft/world/level/material/FluidState#isSourceOfType	java-body	owner tests
+net/minecraft/world/level/redstone/NeighborUpdater#executeUpdate	java-body	dispatch to the block's neighborChanged; each block is triaged on its own
+net/minecraft/world/ticks/LevelTicks#hasScheduledTick	needs-server	reads the per-chunk tick containers, which scheduled ticks no longer fill
+net/minecraft/world/ticks/LevelTicks#schedule	needs-server	writes the per-chunk tick containers and logs for unloaded chunks

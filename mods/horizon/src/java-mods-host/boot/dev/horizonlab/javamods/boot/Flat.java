@@ -80,6 +80,128 @@ public final class Flat {
         }
     }
 
+    public static byte[] raw(net.minecraft.world.item.ItemStack stack) {
+        return Effects.stack(stack);
+    }
+
+    public static byte[] raw(java.util.function.Supplier<? extends net.minecraft.world.entity.Entity> factory) {
+        return Effects.entity(factory);
+    }
+
+    /** The dimension of a server's level, else empty. */
+    public static String raw(net.minecraft.world.level.Level level) {
+        return Effects.level(level);
+    }
+
+    public static String raw(net.minecraft.world.level.LevelAccessor level) {
+        return Effects.level(level);
+    }
+
+    public static byte[] raw(net.minecraft.core.particles.ParticleOptions options) {
+        return Effects.particle(options);
+    }
+
+    public static byte[] raw(net.minecraft.world.level.storage.loot.LootParams.Builder params) {
+        return Effects.lootParams(params);
+    }
+
+    public static int raw(net.minecraft.world.level.Level.ExplosionInteraction interaction) {
+        return interaction.ordinal();
+    }
+
+    public static int raw(net.minecraft.network.protocol.game.ClientboundLevelParticlesPacket.RandomizationType type) {
+        return type.ordinal();
+    }
+
+    /** The damage type's name, empty for no source. */
+    public static String raw(net.minecraft.world.damagesource.DamageSource source) {
+        return Effects.damageType(source);
+    }
+
+    public static java.util.List<net.minecraft.world.item.ItemStack> toList(byte[] stacks) {
+        return Effects.stacks(stacks);
+    }
+
+    public static int raw(net.minecraft.world.InteractionHand hand) {
+        return hand.ordinal();
+    }
+
+    /** The type's ordinal and the duration in ticks. */
+    public static double[] raw(net.minecraft.world.item.component.SwingAnimation animation) {
+        return new double[] {animation.type().ordinal(), animation.duration(), 0};
+    }
+
+    public static int raw(net.minecraft.world.level.GameType type) {
+        return type.getId();
+    }
+
+    public static String raw(net.minecraft.resources.Identifier id) {
+        return id.toString();
+    }
+
+    /** The effect's id, duration, amplifier, ambient and particles, tab-separated. */
+    public static String raw(net.minecraft.world.effect.MobEffectInstance effect) {
+        return raw(effect.getEffect()) + "\t" + effect.getDuration() + "\t" + effect.getAmplifier() + "\t" + (effect.isAmbient() ? 1 : 0) + "\t" + (effect.isVisible() ? 1 : 0);
+    }
+
+    /** Nutrition and saturation. */
+    public static double[] raw(net.minecraft.world.food.FoodProperties food) {
+        return new double[] {food.nutrition(), food.saturation(), 0};
+    }
+
+    public static int raw(net.minecraft.world.level.LightLayer layer) {
+        return layer.ordinal();
+    }
+
+    /** Min x y z, then max x y z. */
+    public static double[] raw(net.minecraft.world.phys.AABB box) {
+        return new double[] {box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ};
+    }
+
+    public static int raw(net.minecraft.world.ticks.TickPriority priority) {
+        return priority.getValue();
+    }
+
+    public static String raw(net.minecraft.world.level.material.Fluid fluid) {
+        return BuiltInRegistries.FLUID.getKey(fluid).toString();
+    }
+
+    /** The block position of the section's lowest corner. */
+    public static long raw(net.minecraft.core.SectionPos section) {
+        return section.origin().asLong();
+    }
+
+    public static Holder<?> toHolder(String registryTabId) {
+        return LevelApi.holder(registryTabId);
+    }
+
+    public static it.unimi.dsi.fastutil.longs.LongSet toLongSet(long[] values) {
+        return new it.unimi.dsi.fastutil.longs.LongOpenHashSet(values);
+    }
+
+    public static net.minecraft.world.Difficulty toDifficulty(int id) {
+        return net.minecraft.world.Difficulty.byId(id);
+    }
+
+    public static net.minecraft.world.DifficultyInstance toDifficultyInstance(double[] numbers) {
+        return LevelApi.difficultyInstance(numbers);
+    }
+
+    public static net.minecraft.world.level.storage.LevelData.RespawnData toRespawnData(double[] numbers) {
+        return LevelApi.respawnData(numbers);
+    }
+
+    public static long raw(net.minecraft.world.phys.shapes.VoxelShape shape) {
+        return ShapeHandles.of(shape);
+    }
+
+    /** The hit's x y z, its face's ordinal, 1 if inside, then the block's x y z; empty for a miss. */
+    public static net.minecraft.world.phys.BlockHitResult toBlockHitResult(double[] hit) {
+        if (hit == null || hit.length == 0) return null;
+        var pos = new BlockPos((int) hit[5], (int) hit[6], (int) hit[7]);
+        return new net.minecraft.world.phys.BlockHitResult(new Vec3(hit[0], hit[1], hit[2]), Direction.from3DDataValue((int) hit[3]), pos, hit[4] != 0);
+    }
+
     public static BlockState toBlockState(int id) {
         return Block.BLOCK_STATE_REGISTRY.byId(id);
     }

@@ -754,7 +754,7 @@ impl Game<'_> {
             .collect()
     }
     /// The entities of the level in place a selector can find.
-    fn level_candidates(&self) -> Vec<Target> {
+    pub(in crate::game) fn level_candidates(&self) -> Vec<Target> {
         use horizon_client::projectiles::ProjectileKind as K;
         let mut candidates = Vec::new();
         candidates.extend(
@@ -1890,7 +1890,7 @@ impl Game<'_> {
         self.feedback(Text::translate(key, &[]));
         Ok(duration.unwrap_or(-1))
     }
-    fn kill_target(&mut self, t: Target) {
+    pub(in crate::game) fn kill_target(&mut self, t: Target) {
         // An entity in another level is killed in the level that holds it.
         let _ = self.in_target_level(t, |g| g.kill_target_in_level(t));
     }

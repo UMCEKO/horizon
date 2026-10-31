@@ -60,6 +60,47 @@ fn read(
     Some(result)
 }
 
+/// A shape Java keeps a handle to, for methods Rust serves from its own copy; 0 when it can't be built.
+pub extern "system" fn n_shape_handle(
+    mut env: JNIEnv,
+    _class: JClass,
+    x: JDoubleArray,
+    y: JDoubleArray,
+    z: JDoubleArray,
+    occupied: JBooleanArray,
+) -> i64 {
+    let mut build = || -> Option<VoxelShape> {
+        let coords = [
+            doubles(&mut env, &x)?,
+            doubles(&mut env, &y)?,
+            doubles(&mut env, &z)?,
+        ];
+        let mut cells = vec![0u8; env.get_array_length(&occupied).ok()? as usize];
+        env.get_boolean_array_region(&occupied, 0, &mut cells)
+            .ok()?;
+        if cells.is_empty() {
+            return Some(VoxelShape::empty());
+        }
+        let cells: Vec<bool> = cells.into_iter().map(|c| c != 0).collect();
+        VoxelShape::from_grid(coords, &cells).ok()
+    };
+    build().map_or(0, |shape| Box::into_raw(Box::new(shape)) as i64)
+}
+
+pub extern "system" fn n_shape_free(_env: JNIEnv, _class: JClass, handle: i64) {
+    if handle != 0 {
+        // SAFETY: Java frees a handle once, on the thread that made it and after its last call.
+        drop(unsafe { Box::from_raw(handle as *mut VoxelShape) });
+    }
+}
+
+/// The shape behind a handle `n_shape_handle` gave Java.
+pub fn shape_of<'a>(handle: i64) -> &'a VoxelShape {
+    assert!(handle != 0, "a shape Rust could not build");
+    // SAFETY: Java passes a handle it has not freed, on the thread that made it.
+    unsafe { &*(handle as *const VoxelShape) }
+}
+
 pub extern "system" fn n_shape_flags(
     mut env: JNIEnv,
     _class: JClass,

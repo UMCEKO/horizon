@@ -482,6 +482,9 @@ pub trait LevelAccess {
         true
     }
     fn emit(&mut self, _event: LevelEvent) {}
+    /// A due scheduled tick (`random` false) or a random tick's turn at `pos`.
+    #[inline(always)]
+    fn observe_block_tick(&self, _pos: BlockPos, _state: BlockStateId, _random: bool) {}
     /// `LevelChunk.setBlockState` replaced a block that had a block entity by
     /// another block: run `BlockEntity.preRemoveSideEffects` when
     /// `side_effects` (containers spill their contents, a jukebox pops its

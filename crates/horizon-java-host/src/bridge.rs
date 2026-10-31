@@ -68,6 +68,7 @@ pub extern "system" fn n_link(mut env: JNIEnv, _class: JClass, target: JClass) {
         .map(JString::from)
         .map(|n| crate::js(&mut env, &n).replace('.', "/"))
         .unwrap_or_default();
+    crate::values_bench::register(&mut env, &target, &name);
     let methods: Vec<_> = TABLE
         .get()
         .into_iter()
@@ -101,9 +102,17 @@ pub fn enter<G, R: Ret>(
     f: impl FnOnce(&mut JNIEnv, &mut G) -> R,
 ) -> R::Raw {
     let out = catch_unwind(AssertUnwindSafe(|| {
-        let game = ACTIVE.get().cast::<G>();
+        // A table for `()` is pure: it answers on any thread, with no game behind it.
+        let game = if std::mem::size_of::<G>() == 0 {
+            std::ptr::NonNull::<G>::dangling().as_ptr()
+        } else {
+            ACTIVE.get().cast::<G>()
+        };
         // SAFETY: `with_active` holds the only `&mut G` for this call, and no one uses it until the call returns.
-        (!game.is_null()).then(|| f(&mut env, unsafe { &mut *game }).into_raw())
+        (!game.is_null()).then(|| {
+            let out = f(&mut env, unsafe { &mut *game });
+            out.into_raw_in(&mut env)
+        })
     }));
     match out {
         Ok(Some(raw)) => raw,
@@ -132,6 +141,13 @@ pub trait Ret {
     type Raw: Default;
     const RAW: &'static str;
     fn into_raw(self) -> Self::Raw;
+    /// A result that needs the JVM to build it (a string, an array) overrides this.
+    fn into_raw_in(self, _env: &mut JNIEnv) -> Self::Raw
+    where
+        Self: Sized,
+    {
+        self.into_raw()
+    }
 }
 
 macro_rules! same {
@@ -205,6 +221,18 @@ impl Arg for Bytes {
         Bytes(env.convert_byte_array(bytes).unwrap_or_default())
     }
 }
+/// A result a `Flat.to` method decodes, as NBT.
+impl Ret for Bytes {
+    type Raw = jbyteArray;
+    const RAW: &'static str = "[B";
+    fn into_raw(self) -> jbyteArray {
+        std::ptr::null_mut()
+    }
+    fn into_raw_in(self, env: &mut JNIEnv) -> jbyteArray {
+        env.byte_array_from_slice(&self.0)
+            .map_or(std::ptr::null_mut(), JByteArray::into_raw)
+    }
+}
 
 /// `Vec3`, as three doubles.
 pub struct Point(pub [f64; 3]);
@@ -218,6 +246,78 @@ impl Arg for Point {
         let mut point = [0.0; 3];
         let _ = env.get_double_array_region(&values, 0, &mut point);
         Point(point)
+    }
+}
+
+/// `AABB`, as min x y z then max x y z.
+pub struct Bounds(pub [f64; 6]);
+impl Arg for Bounds {
+    type Raw = jdoubleArray;
+    const RAW: &'static str = "[D";
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    fn from_raw(env: &mut JNIEnv, raw: jdoubleArray) -> Bounds {
+        // SAFETY: the JVM passed this reference to the native running now.
+        let values = unsafe { JDoubleArray::from_raw(raw) };
+        let mut bounds = [0.0; 6];
+        let _ = env.get_double_array_region(&values, 0, &mut bounds);
+        Bounds(bounds)
+    }
+}
+
+/// A result of plain numbers a `Flat.to` method builds an object from; empty when there is no answer.
+pub struct Doubles(pub Vec<f64>);
+impl Ret for Doubles {
+    type Raw = jdoubleArray;
+    const RAW: &'static str = "[D";
+    fn into_raw(self) -> jdoubleArray {
+        std::ptr::null_mut()
+    }
+    fn into_raw_in(self, env: &mut JNIEnv) -> jdoubleArray {
+        let Ok(array) = env.new_double_array(self.0.len() as i32) else {
+            return std::ptr::null_mut();
+        };
+        let _ = env.set_double_array_region(&array, 0, &self.0);
+        array.into_raw()
+    }
+}
+
+/// A result of longs, as chunk positions or block positions packed by `asLong`.
+pub struct Longs(pub Vec<i64>);
+impl Ret for Longs {
+    type Raw = jni::sys::jlongArray;
+    const RAW: &'static str = "[J";
+    fn into_raw(self) -> jni::sys::jlongArray {
+        std::ptr::null_mut()
+    }
+    fn into_raw_in(self, env: &mut JNIEnv) -> jni::sys::jlongArray {
+        let Ok(array) = env.new_long_array(self.0.len() as i32) else {
+            return std::ptr::null_mut();
+        };
+        let _ = env.set_long_array_region(&array, 0, &self.0);
+        array.into_raw()
+    }
+}
+
+/// A string result: a registry entry's id, for `Flat.to` to look up.
+impl Ret for Text {
+    type Raw = jstring;
+    const RAW: &'static str = "Ljava/lang/String;";
+    fn into_raw(self) -> jstring {
+        std::ptr::null_mut()
+    }
+    fn into_raw_in(self, env: &mut JNIEnv) -> jstring {
+        env.new_string(self.0)
+            .map_or(std::ptr::null_mut(), JString::into_raw)
+    }
+}
+
+/// `VoxelShape`, by a handle to Rust's copy that `ShapeHandles` keeps for the calling thread.
+pub struct Shape(pub &'static horizon_core::geometry::VoxelShape);
+impl Arg for Shape {
+    type Raw = jlong;
+    const RAW: &'static str = "J";
+    fn from_raw(_: &mut JNIEnv, raw: jlong) -> Shape {
+        Shape(crate::shapes::shape_of(raw))
     }
 }
 
@@ -247,8 +347,18 @@ pub struct StateMap {
     pub to_horizon: Vec<Option<BlockStateId>>,
     pub to_java: Vec<i32>,
     pub java_air: i32,
+    /// By Horizon's id: the block is a mod's, so its behaviour runs in Java.
+    pub owned: Vec<bool>,
 }
 pub static STATES: OnceLock<StateMap> = OnceLock::new();
+
+/// Whether this state's behaviour runs in Java.
+#[inline]
+pub fn java_block(state: BlockStateId) -> bool {
+    STATES
+        .get()
+        .is_some_and(|m| m.owned.get(state.0 as usize).copied().unwrap_or(false))
+}
 
 /// `BlockState`; None for a Java state with no Horizon block, as when a mod's blocks weren't carried over.
 pub struct State(pub Option<BlockStateId>);

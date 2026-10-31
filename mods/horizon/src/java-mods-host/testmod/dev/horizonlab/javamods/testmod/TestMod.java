@@ -22,7 +22,22 @@ public final class TestMod {
 
     public TestMod(IEventBus bus) {
         ITEMS.registerItem("wand", Wand::new);
+        ITEMS.registerItem("probe", Probe::new);
         ITEMS.register(bus);
+        Battery.register(bus, ITEMS);
+    }
+
+    /** The second look, after the world has run: what a machine's ticks did. */
+    public static final class Probe extends Item {
+        public Probe(Properties properties) {
+            super(properties);
+        }
+
+        @Override
+        public InteractionResult useOn(UseOnContext context) {
+            ChecksBlockEntities.later(context);
+            return InteractionResult.SUCCESS;
+        }
     }
 
     /** On a clicked block: builds a column above it whose blocks say what each call answered. */

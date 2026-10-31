@@ -147,6 +147,8 @@ def session(args, drive):
         print(f'{rss_mb(pid)} MB after the commands', flush=True)
     finally:
         subprocess.run([*ctl, 'quit'], env=env, capture_output=True, cwd=scratch)
+        while Path(f'/proc/{pid}').exists():
+            time.sleep(0.1)
     print(f'scratch folder: {scratch}')
 
 
@@ -163,13 +165,17 @@ def bridges(args):
     jars = Path(tempfile.mkdtemp(prefix='horizon-java-test-'))
     (jars / TEST_JAR.name).symlink_to(TEST_JAR)
     args.jars, args.scratch, args.dev_mod = str(jars), args.scratch, [str(SOURCES / 'testmod' / 'content')]
-    wrong = []
+    wrong, positions = [], []
 
     def drive(send):
         x, y, z = json.loads(send('state'))['player']['block_pos']
         base = (x + 3, y, z)
         send(f'command fill {x + 1} {y - 1} {z - 2} {x + 5} {y + 12} {z + 2} air')
         send(f'command setblock {base[0]} {base[1]} {base[2]} minecraft:stone')
+        send(f'command setblock {base[0]} {base[1]} {base[2] + 2} minecraft:stone')
+        machine = base[0] + 32
+        send(f'command fill {machine - 3} {y} {z - 2} {machine + 2} {y + 8} {z + 2} air')
+        send(f'command setblock {machine - 2} {y - 1} {z} minecraft:stone')
         send('give horizon_java_test:wand')
         send('wait 20')
         send('select horizon_java_test:wand')
@@ -188,11 +194,49 @@ def bridges(args):
         if 'wand ok' not in send('messages'):
             print('  no chat line', flush=True)
             wrong.append('chat')
+        # A real click on a mod's block, then the machine after it has run.
+        send(f'command tp @s {machine - 2} {y} {z}')
+        send('wait 40')
+        send(f'look-at-block {machine} {y} {z} west')
+        send('wait 5')
+        if os.environ.get('HORIZON_JAVA_DEBUG'):
+            print('looking', json.loads(send('state'))['looking_at'], send(f'block {machine} {y} {z}')[:120], flush=True)
+            print('chest', send(f'command data get block {machine} {y + 2} {z}')[:300], flush=True)
+            print('battery', send(f'command data get block {machine} {y} {z}')[:300], flush=True)
+        print(send('use-item')[:200], flush=True)
+        send('wait 10')
+        if 'minecraft:gold_block' not in send(f'block {machine} {y + 1} {z}'):
+            print('  the machine did not take the click', flush=True)
+            wrong.append('block_click')
+        send('command setblock ' + f'{machine - 1} {y + 1} {z} minecraft:stone')
+        send(f'command tp @s {x} {y} {z}')
+        send('give horizon_java_test:probe')
+        send('wait 40')
+        send('select horizon_java_test:probe')
+        send(f'look-at-block {base[0]} {base[1]} {base[2] + 2} up')
+        send('wait 5')
+        send('use-item')
+        send('wait 5')
+        positions.append((x, y, z, base))
+
+    def again(send):
+        x, y, z, base = positions[0]
+        send(f'command tp @s {x} {y} {z}')
+        send('wait 20')
+        send('select horizon_java_test:probe')
+        send(f'look-at-block {base[0]} {base[1]} {base[2] + 2} up')
+        send('wait 5')
+        send('use-item')
+        send('wait 5')
 
     if not args.scratch:
         args.scratch = tempfile.mkdtemp(prefix='horizon-java-mods-')
     session(args, drive)
     checks = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
+    shutil.copy(Path(args.scratch) / 'ctl.log', Path(args.scratch) / 'first-session.log')
+    session(args, again)
+    second = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
+    checks += [(name + ' (second session)', result) for name, result in second]
     for name, result in checks:
         if result != 'ok':
             print(f'  {name}: {result}', flush=True)
@@ -270,7 +314,10 @@ def check_bridges(_args=None):
                     if name.endswith('.class'):
                         info = class_methods(z.read(name))
                         classes[info[0]] = info
-    flat = set(class_methods((LOCAL / 'classes' / 'boot' / 'dev/horizonlab/javamods/boot/Flat.class').read_bytes())[2])
+    for path in (LOCAL / 'classes' / 'boot').rglob('*.class'):
+        info = class_methods(path.read_bytes())
+        classes[info[0]] = info
+    flat = set(classes['dev/horizonlab/javamods/boot/Flat'][2])
     raws = {'i32': 'I', 'i64': 'J', 'f32': 'F', 'f64': 'D', 'bool': 'Z', '()': 'V'}
     bridge_rs = (oracle.ROOT / 'crates' / 'horizon-java-host' / 'src' / 'bridge.rs').read_text()
     for kind, ty, raw in re.findall(r'impl (Arg|Ret) for (\w+) \{.*?const RAW: &\'static str = "([^"]+)"', bridge_rs, re.S):
@@ -316,6 +363,8 @@ def check_bridges(_args=None):
                 if raw == '-':
                     continue
                 if java[0] in 'L[':
+                    if java == raw:
+                        continue
                     if java[0] == 'L' and ('raw', f'({java}){raw}') not in flat:
                         errors.append(f'{where}: Flat has no raw({java}) -> {raw}')
                     elif java[0] == '[' and java != raw:

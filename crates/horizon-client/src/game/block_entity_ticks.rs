@@ -21,6 +21,8 @@ impl Game<'_> {
         self.tick_container_reach();
         self.load_entity_types();
         if !self.world.block_entities.has_states() {
+            #[cfg(feature = "java-mods")]
+            self.java_bind_states();
             let states = self.ticking_states();
             self.world.block_entities.set_states(states);
             let containers = self.native_containers();

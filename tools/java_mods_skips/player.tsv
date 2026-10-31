@@ -1,0 +1,35 @@
+net/minecraft/server/level/ServerPlayer#openMenu	no-port	Horizon's menus are Rust types; a Java MenuProvider's menu, containers and block entities have no counterpart, and it ends in connection.send
+net/minecraft/world/entity/player/Inventory#getItem	java-body	the inventory is real Java data, filled for each call and copied back
+net/minecraft/world/entity/player/Inventory#setItem	java-body	the inventory is real Java data, filled for each call and copied back
+net/minecraft/world/entity/player/Inventory#add	java-body	works on the real slots; hasInfiniteMaterials reads the real abilities
+net/minecraft/world/entity/player/Inventory#contains	java-body	reads the real slots
+net/minecraft/world/entity/player/Inventory#getFreeSlot	java-body	reads the real slots
+net/minecraft/world/entity/player/Inventory#findSlotMatchingCraftingIngredient	java-body	reads the real slots
+net/minecraft/world/entity/player/Inventory#placeItemBackInInventory	needs-server	ends in serverPlayer.connection.send; a Rust bridge would edit Horizon's inventory and refilling the view loses the call's earlier Java edits
+net/minecraft/world/entity/player/Player#mayUseItemAt	java-body	abilities.mayBuild is real; the adventure case reads blocks through the bridged getBlockState
+net/minecraft/world/entity/player/Player#playSound	java-body	Level.playSound reaches the mixin that records sounds for the game
+net/minecraft/world/entity/player/Player#getDestroySpeed	java-body	a getter over real attributes; effects and onGround are not in the view yet
+net/minecraft/world/entity/player/Player#getXpNeededForNextLevel	java-body	pure arithmetic on experienceLevel, which is filled
+net/minecraft/world/entity/player/Player#isSwimming	java-body	a getter over the entity flags
+net/minecraft/world/entity/player/Player#giveExperienceLevels	java-body	experience is copied back after the call
+net/minecraft/world/entity/player/Player#giveExperiencePoints	java-body	experience is copied back after the call
+net/minecraft/server/level/ServerPlayer#giveExperienceLevels	java-body	experience is copied back after the call
+net/minecraft/server/level/ServerPlayer#giveExperiencePoints	java-body	experience is copied back after the call
+net/minecraft/server/level/ServerPlayer#onUpdateAbilities	java-body	checks connection for null before sending
+net/minecraft/server/level/ServerPlayer#drop	java-body	swing is bridged and addFreshEntity reaches the spawn mixin, so vanilla's body runs
+net/minecraft/server/level/ServerPlayer#createCommandSourceStack	needs-server	permissions() reads the null server; the stack is only useful to a real Commands
+net/minecraft/server/level/ServerPlayer#isInvulnerableTo	no-port	the check lives inside the damage pipeline (hurt_caused_by); hurtServer is bridged whole and skips it
+net/minecraft/server/level/ServerPlayer#awardRecipes	needs-server	recipeBook is null; Horizon's recipe book is per guest in the hub
+net/minecraft/server/level/ServerPlayer#awardRecipesByKey	needs-server	recipeBook and server are null
+net/minecraft/server/level/ServerPlayer#resetRecipes	needs-server	recipeBook is null
+net/minecraft/server/level/ServerPlayer#resetStat	no-port	stats is null; Horizon's statistics have no reset to a value
+net/minecraft/server/level/ServerPlayer#getTextFilter	java-object	returns the null field and nothing reads it without a server
+net/minecraft/server/level/ServerPlayer#sendMerchantOffers	needs-server	ends in connection.send of a Java MerchantOffers
+net/minecraft/server/level/ServerPlayer#openHorseInventory	needs-entity-view	needs the mount as an entity view, then connection.send
+net/minecraft/server/level/ServerPlayer#closeContainer	needs-server	ends in connection.send; Horizon closes its own menu
+net/minecraft/server/level/ServerPlayer#setCamera	needs-entity-view	needs the other entity as a view, then connection.send
+net/minecraft/server/level/ServerPlayer#startRiding	needs-entity-view	needs the vehicle as an entity view, then connection.send
+net/minecraft/server/level/ServerPlayer#lookAt	needs-server	ends in connection.send
+net/minecraft/server/level/ServerPlayer#completeUsingItem	needs-server	ends in connection.send
+net/minecraft/world/entity/Entity#setPos	needs-entity-view	Entity's constructor calls setPos(0,0,0) on the view, which a bridge would apply to the player
+net/minecraft/world/entity/LivingEntity#setHealth	needs-entity-view	LivingEntity's constructor calls setHealth(max) on the view, which a bridge would apply to the player

@@ -1,0 +1,9 @@
+net/minecraft/world/level/gamerules/GameRules#get	java-object	plain Java data; the world's rules never reach Java, since getGameRules needs the server
+net/minecraft/world/level/gamerules/GameRules#set	java-object	plain Java data; the world's rules never reach Java, since getGameRules needs the server
+net/minecraft/world/level/LevelHeightAccessor#isInsideBuildHeight	java-body	two comparisons on the view's own dimension type, which is real
+net/minecraft/world/level/LevelHeightAccessor#isOutsideBuildHeight	java-body	two comparisons on the view's own dimension type, which is real
+net/minecraft/world/level/border/WorldBorder#isWithinBounds	java-body	reads the border's own bounds, plain data; the world's border needs the server
+net/minecraft/server/level/ServerChunkCache#isPositionTicking	needs-server	the view has no chunk cache (getChunkSource is null), so nothing reaches this
+net/minecraft/server/level/ServerLevel#destroyBlockProgress	false-match	lan_host_crack sends only the host's own crack from its mining state, not another breaker's
+net/minecraft/server/level/ServerLevel#mayInteract	needs-entity-view	the entity argument has no view type, so a player can't be told from other entities
+net/minecraft/world/level/Level#getBlockRandomPos	java-body	four lines of arithmetic on the view's own randValue; tiny, so no port

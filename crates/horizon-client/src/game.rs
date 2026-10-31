@@ -990,8 +990,16 @@ impl GameLevel<'_> {
     }
 }
 impl LevelAccess for GameLevel<'_> {
+    #[cfg(feature = "java-mods")]
+    fn observe_block_tick(&self, pos: BlockPos, state: BlockStateId, random: bool) {
+        if self.native_authoritative {
+            java_mods::note_block_tick(pos, state, random);
+        }
+    }
     fn observe_block_changed(&self, pos: BlockPos, old: BlockStateId, new: BlockStateId) {
         if self.native_authoritative {
+            #[cfg(feature = "java-mods")]
+            java_mods::note_block_changed(pos, old, new);
             self.native_block_changed(self.dimension, pos, old, new);
         }
     }
@@ -1003,6 +1011,8 @@ impl LevelAccess for GameLevel<'_> {
         moved: bool,
     ) {
         if self.native_authoritative {
+            #[cfg(feature = "java-mods")]
+            java_mods::note_neighbor_changed(pos, state, moved);
             self.native_neighbor_changed(self.dimension, pos, state, changed, moved);
         }
     }
@@ -3835,6 +3845,8 @@ impl Game<'_> {
     }
     /// Side effects reported by the behaviour library, in vanilla order.
     fn process_level_events(&mut self) -> Result<()> {
+        #[cfg(feature = "java-mods")]
+        self.java_drain_block_events();
         let events = std::mem::take(&mut self.level_events);
         self.lan_record_events(&events);
         dispense_fixture::record_events(&events);
@@ -4981,6 +4993,11 @@ impl Game<'_> {
             let mut canceled = false;
             self.native_right_click_block(hit.pos, hit.face, &mut canceled);
             if canceled {
+                return Ok(true);
+            }
+            #[cfg(feature = "java-mods")]
+            if self.java_click_block(hit) {
+                self.swing_arm();
                 return Ok(true);
             }
         }
@@ -12867,6 +12884,8 @@ impl Game<'_> {
     }
     /// Save the level in place: its changed chunks, its entities and its raids.
     fn save_level(&mut self, wait: bool) -> Result<()> {
+        #[cfg(feature = "java-mods")]
+        self.java_flush_block_entities();
         self.save.save_forced_chunks(&self.streaming.forced)?;
         self.streaming.save(&mut self.world, wait);
         let keys: Vec<_> = self.world.modified.drain().collect();

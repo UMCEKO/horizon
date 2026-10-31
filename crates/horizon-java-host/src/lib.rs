@@ -2,6 +2,7 @@
 
 pub mod bridge;
 pub mod shapes;
+pub mod values_bench;
 pub mod wire;
 
 pub use jni;
@@ -83,6 +84,16 @@ pub fn register_natives(env: &mut JNIEnv) {
             name: "shapeFlags".into(),
             sig: "([D[D[D[Z)I".into(),
             fn_ptr: shapes::n_shape_flags as *mut c_void,
+        },
+        NativeMethod {
+            name: "shapeHandle".into(),
+            sig: "([D[D[D[Z)J".into(),
+            fn_ptr: shapes::n_shape_handle as *mut c_void,
+        },
+        NativeMethod {
+            name: "shapeFree".into(),
+            sig: "(J)V".into(),
+            fn_ptr: shapes::n_shape_free as *mut c_void,
         },
         NativeMethod {
             name: "link".into(),

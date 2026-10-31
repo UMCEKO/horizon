@@ -294,7 +294,7 @@ pub(super) fn put_saved_entity(
 
 impl GameLevel<'_> {
     /// `Block.popResource(level, pos, stack)` with the broken block's copied components.
-    fn pop_resource(&mut self, pos: [i32; 3], mut stack: ItemStack) {
+    pub(super) fn pop_resource(&mut self, pos: [i32; 3], mut stack: ItemStack) {
         self.pending.attach(pos, &mut stack);
         let at = pop_position(&mut self.world.random, pos);
         self.spill.spawns.push(Spawn {

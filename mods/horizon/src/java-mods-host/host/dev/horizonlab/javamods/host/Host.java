@@ -21,6 +21,8 @@ public final class Host extends Entrypoint {
     // natives are registered by the Rust host on this class
     public static native void onEvent(String what);
     public static native int shapeFlags(double[] x, double[] y, double[] z, boolean[] occupied);
+    public static native long shapeHandle(double[] x, double[] y, double[] z, boolean[] occupied);
+    public static native void shapeFree(long handle);
     public static native void link(Class<?> target);
 
     public static void publish(String[] table) {

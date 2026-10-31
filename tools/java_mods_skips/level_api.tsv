@@ -1,0 +1,153 @@
+net/minecraft/network/syncher/SynchedEntityData#set	needs-entity-view	data of an entity, which Java has no view of yet
+net/minecraft/server/level/ServerChunkCache#getChunk	needs-server	the chunk source is null
+net/minecraft/server/level/ServerChunkCache#getChunkFuture	needs-server	the chunk source is null
+net/minecraft/server/level/ServerChunkCache#getChunkNow	needs-server	the chunk source is null
+net/minecraft/server/level/ServerChunkCache#tick	needs-server	the chunk source is null
+net/minecraft/server/level/ServerEntityGetter#getNearbyEntities	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/server/level/ServerEntityGetter#getNearbyPlayers	needs-entity-view	iterates the level's players, which Java has no view of yet
+net/minecraft/server/level/ServerEntityGetter#getNearestEntity	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/server/level/ServerEntityGetter#getNearestPlayer	needs-entity-view	iterates the level's players, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#addDuringTeleport	needs-entity-view	adds an entity to the level's entity manager
+net/minecraft/server/level/ServerLevel#addLegacyChunkEntities	needs-entity-view	adds an entity to the level's entity manager
+net/minecraft/server/level/ServerLevel#addNewPlayer	needs-entity-view	adds an entity to the level's entity manager
+net/minecraft/server/level/ServerLevel#addRespawnedPlayer	needs-entity-view	adds an entity to the level's entity manager
+net/minecraft/server/level/ServerLevel#addWithUUID	needs-entity-view	adds an entity to the level's entity manager
+net/minecraft/server/level/ServerLevel#addWorldGenChunkEntities	needs-entity-view	adds an entity to the level's entity manager
+net/minecraft/server/level/ServerLevel#anyPlayerCloseEnoughForSpawning	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#areEntitiesActuallyLoadedAndTicking	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#areEntitiesLoaded	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#canSleepThroughNights	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#canSpawnEntitiesInChunk	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#cleanCapabilityListenerReferences	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#clearBlockEvents	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#clockManager	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#close	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#debugSynchronizers	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#dragonParts	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#enabledFeatures	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#environmentAttributes	needs-server	environmentAttributes is null; vanilla builds it from the server clock and the biome registry
+net/minecraft/server/level/ServerLevel#fillReportDetails	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#findClosestBiome3d	needs-server	chunk source services (light engine, saved data, POIs, structures) have no view
+net/minecraft/server/level/ServerLevel#findLightningTargetAround	needs-server	chunk source services (light engine, saved data, POIs, structures) have no view
+net/minecraft/server/level/ServerLevel#findNearestMapStructure	needs-server	chunk source services (light engine, saved data, POIs, structures) have no view
+net/minecraft/server/level/ServerLevel#gatherChunkSourceStats	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#getAllEntities	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#getBlockTicks	needs-server	blockTicks and fluidTicks are null; needs a LevelTickAccess view whose schedule and hasScheduledTick reach Rust
+net/minecraft/server/level/ServerLevel#getChunkSource	needs-server	the chunk source is null and a chunk object has no view
+net/minecraft/server/level/ServerLevel#getDataStorage	needs-server	chunk source services (light engine, saved data, POIs, structures) have no view
+net/minecraft/server/level/ServerLevel#getDragonFight	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#getDragons	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#getEntities	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#getEntity	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#getEntityInAnyDimension	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#getEntityOrPart	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#getFluidTicks	needs-server	blockTicks and fluidTicks are null; needs a LevelTickAccess view whose schedule and hasScheduledTick reach Rust
+net/minecraft/server/level/ServerLevel#getFreeMapId	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#getGameRules	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#getMapData	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#getPathTypeCache	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#getPlayerInAnyDimension	needs-entity-view	iterates the level's players, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#getPlayers	needs-entity-view	iterates the level's players, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#getPoiManager	needs-server	chunk source services (light engine, saved data, POIs, structures) have no view
+net/minecraft/server/level/ServerLevel#getPortalForcer	needs-server	chunk source services (light engine, saved data, POIs, structures) have no view
+net/minecraft/server/level/ServerLevel#getRaidAt	needs-server	chunk source services (light engine, saved data, POIs, structures) have no view
+net/minecraft/server/level/ServerLevel#getRaids	needs-server	chunk source services (light engine, saved data, POIs, structures) have no view
+net/minecraft/server/level/ServerLevel#getRandomPlayer	needs-entity-view	iterates the level's players, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#getScoreboard	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#getSeedOverride	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#getServer	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#getStructureTemplateManager	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#getWatchdogStats	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#getWaypointManager	needs-server	chunk source services (light engine, saved data, POIs, structures) have no view
+net/minecraft/server/level/ServerLevel#getWeatherData	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#getWorldBorder	needs-server	the world border is read from saved data in the chunk source; needs a WorldBorder on the view filled from Rust
+net/minecraft/server/level/ServerLevel#invalidateCapabilities	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#isAllowedToEnterPortal	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#isCommandBlockEnabled	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#isFlat	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#isHandlingTick	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#isPositionEntityTicking	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#isPositionTickingWithEntitiesLoaded	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#isPvpAllowed	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#isSpawnerBlockEnabled	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#isSpawningMonsters	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#noSave	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#onBlockEntityAdded	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#onStructureStartsAvailable	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#players	needs-entity-view	iterates the level's players, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#recipeAccess	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#registerCapabilityListener	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#resetEmptyTime	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#save	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#saveDebugReport	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#setDragonFight	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#setEnvironmentAttributes	needs-server	environmentAttributes is null; vanilla builds it from the server clock and the biome registry
+net/minecraft/server/level/ServerLevel#setMapData	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#setRespawnData	no-port	sets the world spawn; the /setworldspawn command holds that logic inline
+net/minecraft/server/level/ServerLevel#shouldTickBlocksAt	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#structureManager	needs-server	chunk source services (light engine, saved data, POIs, structures) have no view
+net/minecraft/server/level/ServerLevel#tick	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#tickChunk	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#tickCustomSpawners	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#tickNonPassenger	needs-entity-view	iterates the level's players, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#tickPrecipitation	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#tickRateManager	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#tickThunder	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#tickTime	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#toString	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#tryAddFreshEntityWithPassengers	needs-entity-view	adds an entity to the level's entity manager
+net/minecraft/server/level/ServerLevel#uncachedBiomeResolver	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#unload	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/server/level/ServerLevel#updatePOIOnBlockStateChange	needs-server	no server on the view
+net/minecraft/server/level/ServerLevel#updateSleepingPlayerList	needs-entity-view	iterates the level's players, which Java has no view of yet
+net/minecraft/server/level/ServerLevel#waitForEntities	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/util/datafix/fixes/ItemStackComponentizationFix$ItemStackData#setComponent	java-object	a data fixer's plain map
+net/minecraft/world/attribute/EnvironmentAttributeProbe#tick	java-body	reads noise biomes through the served getNoiseBiome
+net/minecraft/world/attribute/EnvironmentAttributeSystem#getValue	needs-server	the system is null on the view and needs the server clock
+net/minecraft/world/entity/player/StackedItemContents#canCraft	java-object	item counting over a recipe, no world
+net/minecraft/world/level/CollisionGetter#clipIncludingBorder	needs-server	the world border is read from saved data in the chunk source; needs a WorldBorder on the view filled from Rust
+net/minecraft/world/level/CollisionGetter#findFreePosition	needs-server	the world border is read from saved data in the chunk source; needs a WorldBorder on the view filled from Rust
+net/minecraft/world/level/CollisionGetter#getCollisions	needs-entity-view	the entity part of the collision test reads the level's entities; noBlockCollision is served
+net/minecraft/world/level/CollisionGetter#getPreMoveCollisions	needs-entity-view	the entity part of the collision test reads the level's entities; noBlockCollision is served
+net/minecraft/world/level/CollisionGetter#isUnobstructed	needs-entity-view	the entity part of the collision test reads the level's entities; noBlockCollision is served
+net/minecraft/world/level/CollisionGetter#noBorderCollision	needs-server	the world border is read from saved data in the chunk source; needs a WorldBorder on the view filled from Rust
+net/minecraft/world/level/CollisionGetter#noCollision	needs-entity-view	the entity part of the collision test reads the level's entities; noBlockCollision is served
+net/minecraft/world/level/CollisionGetter#noEntityCollision	needs-entity-view	the entity part of the collision test reads the level's entities; noBlockCollision is served
+net/minecraft/world/level/EntityGetter#getEntities	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/world/level/EntityGetter#getEntitiesOfClass	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/world/level/EntityGetter#getEntityCollisions	needs-entity-view	the entity part of the collision test reads the level's entities; noBlockCollision is served
+net/minecraft/world/level/EntityGetter#getNearestPlayer	needs-entity-view	iterates the level's players, which Java has no view of yet
+net/minecraft/world/level/EntityGetter#getPlayerByUUID	needs-entity-view	iterates the level's players, which Java has no view of yet
+net/minecraft/world/level/EntityGetter#isUnobstructed	needs-entity-view	the entity part of the collision test reads the level's entities; noBlockCollision is served
+net/minecraft/world/level/Level#getChunk	needs-server	the chunk source is null and a chunk object has no view
+net/minecraft/world/level/Level#getChunkAt	needs-server	the chunk source is null and a chunk object has no view
+net/minecraft/world/level/Level#getEntities	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/world/level/Level#getEntity	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/world/level/Level#getFluidState	java-body	ServerLevelMixin answers from the bridged getBlockState
+net/minecraft/world/level/Level#getLightEngine	needs-server	chunk source services (light engine, saved data, POIs, structures) have no view
+net/minecraft/world/level/Level#getPushableEntities	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/world/level/Level#getWorldBorderAdjustedRespawnData	needs-server	the world border is read from saved data in the chunk source; needs a WorldBorder on the view filled from Rust
+net/minecraft/world/level/Level#hasEntities	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/world/level/Level#loadedAndEntityCanStandOn	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/world/level/Level#loadedAndEntityCanStandOnFace	needs-entity-view	reads the level's entities, which Java has no view of yet
+net/minecraft/world/level/Level#markAndNotifyBlock	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/world/level/Level#playSound	java-body	ServerLevelMixin records playSeededSound for Rust
+net/minecraft/world/level/Level#setSpawnSettings	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/world/level/Level#shouldTickBlocksAt	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/world/level/Level#tickBlockEntities	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/world/level/Level#updateSkyBrightness	no-port	server internals a mod does not call; Horizon runs its own tick, save and close
+net/minecraft/world/level/LevelAccessor#gameEvent	java-body	the overloads reach the bridged ServerLevel.gameEvent
+net/minecraft/world/level/LevelReader#canSeeSkyFromBelowWater	java-body	calls canSeeSky and getSeaLevel, both served
+net/minecraft/world/level/LevelReader#getChunk	needs-server	the chunk source is null and a chunk object has no view
+net/minecraft/world/level/LevelReader#getMaxLocalRawBrightness	java-body	calls the bridged getRawBrightness and getSkyDarken
+net/minecraft/world/level/LevelReader#holderLookup	needs-server	no server on the view
+net/minecraft/world/level/StructureManager#getStructureWithPieceAt	needs-server	structureManager is null, and a StructureStart has no view
+net/minecraft/world/level/biome/Biome#getPrecipitationAt	java-body	a pure function of the registry biome and its temperature noise
+net/minecraft/world/level/chunk/ChunkAccess#getHeight	needs-server	a chunk object; Level.getHeight is served from Rust
+net/minecraft/world/level/chunk/ChunkAccess#getHighestGeneratedStatus	needs-server	a chunk object
+net/minecraft/world/level/chunk/LevelChunk#getBlockState	needs-server	a chunk object; Level.getBlockState is served from Rust
+net/minecraft/world/level/chunk/LevelChunk#removeBlockEntity	needs-block-entity	a chunk's block entity map has no view
+net/minecraft/world/level/chunk/LevelChunkSection#setBlockState	java-object	a section is plain palette data
+net/minecraft/world/level/gameevent/GameEvent$Context#of	java-object	a record of an entity and a state; the real class needs no world
+net/minecraft/world/level/lighting/LevelLightEngine#checkBlock	needs-server	the light engine comes from the null chunk source
+net/neoforged/neoforge/common/extensions/IBlockGetterExtension#getAuxLightManager	needs-server	chunk source services (light engine, saved data, POIs, structures) have no view

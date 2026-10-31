@@ -114,13 +114,13 @@ final class BridgeProcessor implements ClassProcessor {
                 head.add(new InsnNode(Opcodes.ICONST_0));
             } else {
                 head.add(new VarInsnNode(param.getOpcode(Opcodes.ILOAD), local));
-                if (param.getSort() >= Type.ARRAY) flatten(head, param, raw);
+                if (param.getSort() >= Type.ARRAY && !raw.equals(param.getDescriptor())) flatten(head, param, raw);
             }
             local += param.getSize();
         }
         head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, entry.holder(), entry.nativeName, entry.rawDesc(), false));
-        if (result.getSort() >= Type.ARRAY) {
-            String simple = result.getClassName().substring(result.getClassName().lastIndexOf('.') + 1);
+        if (result.getSort() >= Type.ARRAY && !entry.ret.equals(result.getDescriptor())) {
+            String simple = result.getClassName().substring(Math.max(result.getClassName().lastIndexOf('.'), result.getClassName().lastIndexOf('$')) + 1);
             head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, FLAT, "to" + simple, "(" + entry.ret + ")" + result.getDescriptor(), false));
         }
         head.add(new InsnNode(result.getOpcode(Opcodes.IRETURN)));

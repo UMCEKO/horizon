@@ -72,6 +72,7 @@ public final class Boot {
                 case "stats" -> stats();
                 case "shapes" -> ShapeBridge.report();
                 case "nmt" -> nmt();
+                case "values_bench" -> ValuesBench.op(arg);
                 case "use_probe" -> GameBridge.probe(arg, false);
                 case "use_probe_sneaking" -> GameBridge.probe(arg, true);
                 case "exit" -> { System.exit(0); yield ""; }

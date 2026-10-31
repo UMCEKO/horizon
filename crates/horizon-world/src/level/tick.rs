@@ -224,6 +224,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// `BlockState.randomTick` followed by the fluid's random tick.
     pub fn random_tick_at(&mut self, pos: BlockPos) {
         let state = self.state(pos);
+        self.level.observe_block_tick(pos, state, true);
         if self.b.is_randomly_ticking(state) {
             self.random_tick_block(state, pos);
         }
@@ -1619,6 +1620,7 @@ impl Behaviours {
             let mut sim = self.sim(level, ticks);
             let state = sim.state(tick.pos);
             if u32::from(self.block(state).0) == tick.kind.0 {
+                sim.level.observe_block_tick(tick.pos, state, false);
                 sim.tick_block(state, tick.pos);
             }
         }
@@ -1698,6 +1700,7 @@ impl Behaviours {
             let mut sim = self.sim(level, ticks);
             let state = sim.state(tick.pos);
             if u32::from(self.block(state).0) == tick.kind.0 {
+                sim.level.observe_block_tick(tick.pos, state, false);
                 sim.tick_block(state, tick.pos);
             }
         }
