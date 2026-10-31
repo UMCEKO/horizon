@@ -14,6 +14,7 @@ import net.minecraft.server.RegistryLayer;
 import net.minecraft.server.ReloadableServerResources;
 import net.minecraft.server.dedicated.DedicatedPlayerList;
 import net.minecraft.server.dedicated.DedicatedServer;
+import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -22,6 +23,9 @@ import net.minecraft.server.packs.resources.CloseableResourceManager;
 import net.minecraft.server.players.PlayerList;
 import net.minecraft.util.thread.BlockableEventLoop;
 import net.minecraft.util.thread.ReentrantBlockableEventLoop;
+import net.minecraft.world.attribute.EnvironmentAttributeSystem;
+import net.minecraft.world.clock.PackedClockStates;
+import net.minecraft.world.clock.ServerClockManager;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelSettings;
@@ -75,6 +79,11 @@ final class ServerView {
         var settings = new LevelSettings("Horizon", GameType.SURVIVAL, LevelSettings.DifficultySettings.DEFAULT, true, WorldDataConfiguration.DEFAULT);
         var data = new PrimaryLevelData(settings, PrimaryLevelData.SpecialWorldProperty.NONE, Lifecycle.stable());
         set(MinecraftServer.class, server, "worldData", data);
+        var clocks = ServerClockManager.class.getDeclaredConstructor(PackedClockStates.class);
+        clocks.setAccessible(true);
+        var clockManager = clocks.newInstance(PackedClockStates.EMPTY);
+        set(MinecraftServer.class, server, "clockManager", clockManager);
+        clockManager.init(server);
         set(MinecraftServer.class, server, "gameRules", new GameRules(WorldDataConfiguration.DEFAULT.enabledFeatures()));
         PlayerList players = GameBridge.construct(DedicatedPlayerList.class, Object.class.getDeclaredConstructor());
         set(PlayerList.class, players, "server", server);
@@ -90,7 +99,10 @@ final class ServerView {
         set(ServerLevel.class, level, "players", new ArrayList<ServerPlayer>());
         set(ServerLevel.class, level, "dragonParts", new it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<>());
         set(ServerLevel.class, level, "serverLevelData", server.getWorldData().overworldData());
-        set(ServerLevel.class, level, "chunkSource", GameBridge.construct(ServerChunkCache.class, Object.class.getDeclaredConstructor()));
+        var chunks = GameBridge.construct(ServerChunkCache.class, Object.class.getDeclaredConstructor());
+        set(ServerChunkCache.class, chunks, "chunkMap", GameBridge.construct(ChunkMap.class, Object.class.getDeclaredConstructor()));
+        set(ServerLevel.class, level, "chunkSource", chunks);
+        set(ServerLevel.class, level, "environmentAttributes", EnvironmentAttributeSystem.builder().addDefaultLayers(level).build());
         ((Map<ResourceKey<Level>, ServerLevel>) get(MinecraftServer.class, server, "levels")).put(level.dimension(), level);
     }
 

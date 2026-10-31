@@ -44,22 +44,29 @@ refill the view, or Java sees the old value until the next call.
 |---|---|---|
 | FML, mixins, registries, mods' own code | `crates/horizon-java-host/src/lib.rs`, `mods/horizon/src/java-mods-host/` | Real classes, started on a background thread; a title screen doesn't wait, a world does |
 | Data packs: tags, recipes, data maps, dynamic registries | `GameBridge.prepare` | Real `WorldLoader`, mods' packs included |
-| Block support shapes served from Rust | `ShapeBridge`, `shapes.rs` | `-Dhorizon.java.shapes=off\|rust\|shadow`; steps aside for a mixin on the same code |
-| `ServerLevel`, `ServerPlayer` as views | `GameBridge`, `mixin/` | Built without a server; position, rotation, sneaking, game mode, experience and inventory arrive with each call |
-| `Item.use`, `Item.useOn` | `game/java_mods.rs`, beside the native hooks | The real `ServerPlayerGameMode.useItem` and `ItemStack.useOn`, so NeoForge's events fire |
-| World access from Java | `game/java_bridges.rs` | Blocks, signals, scheduled ticks, game events, heightmaps, light, stats, messages |
-| What a call changed | `game/java_mods.rs` | Experience, inventory, sounds, and entities through Horizon's own NBT loader |
-| The item's data in Horizon | [`horizon-port-pack carry`](modpacks.md), `--dev-mod` | By hand for now |
+| `ServerLevel`, `ServerPlayer`, `MinecraftServer` | `GameBridge`, `ServerView`, `mixin/` | Real classes built without a world, filled from Horizon for each call |
+| `Item.use`, `Item.useOn`, clicks on mods' blocks | `game/java_mods.rs`, beside the native hooks | The real `ServerPlayerGameMode` and `ItemStack.useOn`, so NeoForge's events fire |
+| Mods' blocks | `BlockEntities.blockChanged`, `GameBridge.blockEvents` | Real `onPlace`, removal, neighbour changes, scheduled and random ticks |
+| Mods' block entities | `BlockEntities`, `game/java_bridges/block_entities.rs` | Real objects in Java; their saved form lives in Horizon's chunk, and Horizon's list gives them their turn to tick |
+| Vanilla block entities and all entities | `BlockEntities`, `EntityViews` | Real Java objects read from Horizon's saved form for one call, with what it changed written back |
+| Forge Energy and other capabilities | NeoForge's own code | Run as they are on the above |
+| Vanilla methods served from Rust | `game/java_bridges/` | Per family, each with its checks in the test mod |
+| Block support shapes | `ShapeBridge`, `shapes.rs` | `-Dhorizon.java.shapes=off\|rust\|shadow`; steps aside for a mixin on the same code |
+| The mod's data in Horizon | [`horizon-port-pack carry`](modpacks.md), `--dev-mod` | By hand for now |
+
+What isn't bound and why is in `tools/java_mods_skips/`. `java-object` is Java data, `java-body` is vanilla's Java working on bridged calls, `slower` has its timing in the note, and `needs-*` was written before views existed, so those need a second look.
 
 ## Not yet
 
-- Block entities and `getEntities`, blocks' own behaviour, ticking, modded entities, tooltips.
-- `level.getServer()` and `player.connection` are null, so a mod reaching them throws; the use fails, is logged and keeps what it already did to the world.
-- An action bar message arrives as a chat line. `setBlock`'s update limit is ignored, and bridged calls act on the acting player's dimension.
-- Vanilla items don't reach Java, so a mod's `RightClickItem` listener doesn't hear them.
-- The player's name is the host's on a server with several players; health and food don't arrive yet.
-- The dedicated server starts the JVM but doesn't wait for it when a world opens.
-- The game finds NeoForge through dev variables, not a `java-mods` folder.
+- Mods' menus and screens: `openMenu` makes the real Java menu, but no client shows it. Mods' client code doesn't run at all.
+- Mods' own entities tick nowhere; their saved form is kept. Entity views last one call and aren't tracked between calls.
+- A mod's packets are logged and dropped (`ConnectionMixin`). Advancement triggers do nothing for a view (`CriterionMixin`).
+- Mods' item slots don't reach Horizon's hoppers, comparators or `/data` until a save.
+- Worldgen features and ore spawns from mods' Java code. Their data-driven ones come through `carry`.
+- A block whose properties didn't reach Horizon, as without oracle facts, reads as its one state there, so a `facing` set in Java doesn't survive a read. The NeoForge oracle stalled at export on Voluminous Energy, so this needs fixing.
+- Game rules and the world border are vanilla's defaults in Java. Other players have no views, only the acting one. Bridged calls act on the acting player's dimension.
+- A mod's redirect inside a bridged method doesn't run, since the method's Java body doesn't. An action bar message arrives as a chat line. `setBlock`'s update limit is ignored.
+- The dedicated server starts the JVM but doesn't wait for it when a world opens. The game finds NeoForge through dev variables, not a `java-mods` folder.
 
 ## Run it
 

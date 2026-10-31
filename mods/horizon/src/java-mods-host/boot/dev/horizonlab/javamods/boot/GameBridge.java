@@ -387,6 +387,7 @@ public final class GameBridge {
     private static ServerLevel levelOf(DataInputStream in) throws Exception {
         var level = level(text(in));
         ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
+        level.environmentAttributes().invalidateTickCache();
         return level;
     }
 

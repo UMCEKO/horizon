@@ -145,7 +145,9 @@ impl Game<'_> {
                 name,
                 properties: properties.into_iter().collect(),
             };
-            let Ok(id) = registry.resolve(&state) else {
+            let exact = registry.resolve(&state).ok();
+            // A block whose properties didn't reach Horizon: Java's other states read as its one state here.
+            let Some(id) = exact.or_else(|| registry.default_state(&state.name)) else {
                 continue;
             };
             if let Some(cell) = map.to_horizon.get_mut(java as usize) {
@@ -154,10 +156,10 @@ impl Game<'_> {
             let at = id.0 as usize;
             if map.to_java.len() <= at {
                 map.to_java.resize(at + 1, air);
-            }
-            map.to_java[at] = java;
-            if map.owned.len() <= at {
                 map.owned.resize(at + 1, false);
+            }
+            if exact.is_some() || map.to_java[at] == air {
+                map.to_java[at] = java;
             }
             map.owned[at] = owned;
         }

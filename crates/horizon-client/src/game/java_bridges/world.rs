@@ -126,6 +126,12 @@ horizon_java_host::java_bridges! { table for Game<'static> {
         }
     }
 
+    "net/minecraft/world/clock/ServerClockManager$ServerClockInstance".totalTicks
+    "()J" =>
+    fn clock_total_ticks(game) -> i64 {
+        game.world.day_time
+    }
+
     "net/minecraft/server/level/ServerLevel".sendBlockUpdated
     "(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/world/level/block/state/BlockState;I)V" =>
     fn level_send_block_updated(_game, _pos: Skip, _old: Skip, _current: Skip, _flags: Skip) -> () {
