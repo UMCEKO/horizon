@@ -1,33 +1,6 @@
-//! Vanilla methods Java mods reach, served by Horizon's own ports (`docs/java-mods.md`).
+//! The level's blocks, signals and events.
 
 use super::*;
-use horizon_java_host::bridge::{Bytes, Dir, Point, Pos, Skip, State, Text};
-use horizon_world::registry::BlockStateId;
-
-/// A name a port wants for good, kept once per name; game events are a short list.
-fn interned(name: String) -> &'static str {
-    thread_local! {
-        static NAMES: std::cell::RefCell<std::collections::HashSet<&'static str>> = Default::default();
-    }
-    NAMES.with_borrow_mut(|names| match names.get(name.as_str()) {
-        Some(known) => known,
-        None => {
-            let known: &'static str = name.leak();
-            names.insert(known);
-            known
-        }
-    })
-}
-
-impl Game<'_> {
-    /// What a level change from Java leaves for the game to answer: sounds, particles, updates to clients.
-    fn after_java_change<R>(&mut self, out: R) -> R {
-        if let Err(e) = self.process_level_events() {
-            log::warn!("Horizon: level events after a Java mod's change: {e}");
-        }
-        out
-    }
-}
 
 horizon_java_host::java_bridges! { table for Game<'static> {
     "net/minecraft/world/level/Level".getBlockState
@@ -159,5 +132,3 @@ horizon_java_host::java_bridges! { table for Game<'static> {
         // Horizon's block log already tells clients of every change.
     }
 }}
-
-pub(super) use table as bridges;

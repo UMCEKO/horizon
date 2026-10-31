@@ -61,6 +61,7 @@ public final class TestMod {
             level.gameEvent(context.getPlayer(), GameEvent.BLOCK_PLACE, at);
             context.getPlayer().awardStat(Stats.ITEM_USED.get(this));
             context.getPlayer().sendSystemMessage(Component.literal("wand ok"));
+            Checks.runAll(context);
             return InteractionResult.SUCCESS;
         }
     }

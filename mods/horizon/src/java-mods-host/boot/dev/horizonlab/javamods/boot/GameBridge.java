@@ -82,6 +82,7 @@ public final class GameBridge {
                 case "prepare" -> prepare();
                 case "items" -> items();
                 case "states" -> states();
+                case "refresh" -> refresh(input);
                 case "use_item" -> use(input, false);
                 case "use_item_on" -> use(input, true);
                 default -> throw new IllegalArgumentException(op);
@@ -210,7 +211,10 @@ public final class GameBridge {
         return use(input, false);
     }
 
-    private static byte[] use(byte[] input, boolean onBlock) throws Exception {
+    private record Call(DataInputStream in, ServerLevel level, ServerPlayer player, InteractionHand hand, ItemStack[] before) {}
+
+    /** Fills the views from what Horizon holds now. */
+    private static Call fill(byte[] input) throws Exception {
         var in = new DataInputStream(new ByteArrayInputStream(input));
         var id = new UUID(in.readLong(), in.readLong());
         String name = text(in);
@@ -239,6 +243,22 @@ public final class GameBridge {
             before[slot] = stack.copy();
             inventory.setItem(slot, stack);
         }
+        return new Call(in, level, player, hand, before);
+    }
+
+    private static byte[] refresh(byte[] input) throws Exception {
+        fill(input);
+        return new byte[] {1};
+    }
+
+    private static byte[] use(byte[] input, boolean onBlock) throws Exception {
+        var call = fill(input);
+        var in = call.in;
+        var level = call.level;
+        var player = call.player;
+        var hand = call.hand;
+        var before = call.before;
+        var inventory = player.getInventory();
         SOUNDS.clear();
         SPAWNED.clear();
         InteractionResult result;

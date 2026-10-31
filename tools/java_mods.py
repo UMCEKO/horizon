@@ -2,6 +2,7 @@
 """Dev driver for horizon-java-host: real mod jars on real NeoForge classes in a JVM embedded in Rust (needs nix-shell -p jdk25 pkg-config)."""
 import argparse
 import collections
+import fcntl
 import io
 import json
 import os
@@ -38,7 +39,7 @@ def java_home():
     return re.search(r'java\.home = (.+)', settings).group(1).strip()
 
 
-def build():
+def build(java_only=False):
     home = oracle.install()
     LOCAL.mkdir(parents=True, exist_ok=True)
     cp = ':'.join(jar for jar in oracle.classpath(home).split(':') if 'installertools' not in jar)
@@ -57,6 +58,8 @@ def build():
         if (SOURCES / name / 'res').exists():
             jar_args += ['-C', str(SOURCES / name / 'res'), '.']
         subprocess.run(jar_args, check=True)
+    if java_only:
+        return
     env = {**os.environ, 'JAVA_HOME': java_home(), 'CARGO_TARGET_DIR': str(TARGET), 'RUSTC_WRAPPER': ''}
     subprocess.run(['cargo', 'build', '--profile', 'fast', '-q', '-p', 'horizon-java-host'], check=True, env=env, cwd=oracle.ROOT)
 
@@ -186,9 +189,152 @@ def bridges(args):
             print('  no chat line', flush=True)
             wrong.append('chat')
 
+    if not args.scratch:
+        args.scratch = tempfile.mkdtemp(prefix='horizon-java-mods-')
     session(args, drive)
+    checks = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
+    for name, result in checks:
+        if result != 'ok':
+            print(f'  {name}: {result}', flush=True)
+            wrong.append(name)
+    print(f'{len(checks)} checks')
+    if not checks:
+        wrong.append('no checks ran')
     print('RESULT', 'all bridges answered' if not wrong else f'wrong at {wrong}')
     sys.exit(1 if wrong else 0)
+
+
+def class_methods(data):
+    """A class file's name, supers and (name, descriptor) methods."""
+    count = struct.unpack('>H', data[8:10])[0]
+    pool, at, k = [None] * count, 10, 1
+    while k < count:
+        tag = data[at]
+        if tag == 1:
+            size = struct.unpack('>H', data[at + 1:at + 3])[0]
+            pool[k] = data[at + 3:at + 3 + size].decode('utf8', 'replace')
+            at += 3 + size
+        elif tag in (3, 4, 9, 10, 11, 12, 17, 18):
+            at += 5
+        elif tag in (5, 6):
+            at, k = at + 9, k + 1
+        elif tag in (7, 8, 16, 19, 20):
+            pool[k] = struct.unpack('>H', data[at + 1:at + 3])[0]
+            at += 3
+        else:
+            at += 4
+        k += 1
+
+    def u2():
+        nonlocal at
+        at += 2
+        return struct.unpack('>H', data[at - 2:at])[0]
+
+    u2()
+    name = pool[pool[u2()]]
+    supers = [pool[pool[s]] for s in [u2()] if s]
+    supers += [pool[pool[u2()]] for _ in range(u2())]
+    tables = []
+    for _ in range(2):
+        members = []
+        for _ in range(u2()):
+            u2()
+            member = (pool[u2()], pool[u2()])
+            for _ in range(u2()):
+                u2()
+                at += 4 + struct.unpack('>I', data[at:at + 4])[0]
+            members.append(member)
+        tables.append(members)
+    return name, supers, tables[1]
+
+
+def java_args(desc):
+    args, i = [], 1
+    while desc[i] != ')':
+        start = i
+        while desc[i] == '[':
+            i += 1
+        i = desc.index(';', i) + 1 if desc[i] == 'L' else i + 1
+        args.append(desc[start:i])
+    return args, desc[i + 1:]
+
+
+def check_bridges(_args=None):
+    """Every bridge against the real jars, without starting anything: its method exists, its arguments line up, Flat can carry them."""
+    home = oracle.install()
+    classes = {}
+    for jar in sorted((home / 'libraries' / 'net' / 'neoforged').rglob('*.jar')):
+        if 'minecraft-server-patched' in jar.name or 'universal' in jar.name:
+            with zipfile.ZipFile(jar) as z:
+                for name in z.namelist():
+                    if name.endswith('.class'):
+                        info = class_methods(z.read(name))
+                        classes[info[0]] = info
+    flat = set(class_methods((LOCAL / 'classes' / 'boot' / 'dev/horizonlab/javamods/boot/Flat.class').read_bytes())[2])
+    raws = {'i32': 'I', 'i64': 'J', 'f32': 'F', 'f64': 'D', 'bool': 'Z', '()': 'V'}
+    bridge_rs = (oracle.ROOT / 'crates' / 'horizon-java-host' / 'src' / 'bridge.rs').read_text()
+    for kind, ty, raw in re.findall(r'impl (Arg|Ret) for (\w+) \{.*?const RAW: &\'static str = "([^"]+)"', bridge_rs, re.S):
+        raws[ty] = raw
+    entry = re.compile(r'"([\w/$]+)"\.(\S+)\s+"(\([^"]*)"(?:\s+if\s+"([\w/$]+)")?\s*=>\s*fn\s+(\w+)\(\s*\w+\s*((?:,\s*\w+:\s*\w+\s*)*),?\s*\)\s*->\s*([\w()]+)')
+
+    def extends(name, target):
+        seen, queue = set(), [name]
+        while queue:
+            current = queue.pop()
+            if current == target:
+                return True
+            if current in classes and current not in seen:
+                seen.add(current)
+                queue += classes[current][1]
+        return False
+
+    errors, total, natives = [], 0, set()
+    for path in sorted((oracle.ROOT / 'crates' / 'horizon-client' / 'src' / 'game' / 'java_bridges').glob('*.rs')):
+        for owner, method, desc, guard, native, params, result in entry.findall(path.read_text()):
+            total += 1
+            where = f'{path.name}: {native}'
+            if native in natives:
+                errors.append(f'{where}: the name is taken')
+            natives.add(native)
+            if owner not in classes or (method, desc) not in classes[owner][2]:
+                errors.append(f'{where}: no {owner}.{method}{desc}')
+                continue
+            if guard and not extends(guard, owner):
+                errors.append(f'{where}: {guard} is not a {owner}')
+            args, ret = java_args(desc)
+            types = [t.split(':')[1].strip() for t in params.split(',') if t.strip()]
+            mine = [raws.get(t) for t in types]
+            if None in mine:
+                errors.append(f'{where}: no Arg for {types}')
+                continue
+            this = len(mine) == len(args) + 1
+            if len(mine) != len(args) and not this:
+                errors.append(f'{where}: {len(mine)} arguments for {desc}')
+                continue
+            lined = ([f'L{owner};'] if this else []) + args
+            for java, raw in zip(lined, mine):
+                if raw == '-':
+                    continue
+                if java[0] in 'L[':
+                    if java[0] == 'L' and ('raw', f'({java}){raw}') not in flat:
+                        errors.append(f'{where}: Flat has no raw({java}) -> {raw}')
+                    elif java[0] == '[' and java != raw:
+                        errors.append(f'{where}: {java} against {raw}')
+                elif java != raw:
+                    errors.append(f'{where}: Java {java} against {raw}')
+            mine_ret = raws.get(result)
+            if mine_ret is None:
+                errors.append(f'{where}: no Ret for {result}')
+            elif ret[0] == 'L':
+                simple = ret[1:-1].replace('$', '/').split('/')[-1]
+                if (f'to{simple}', f'({mine_ret}){ret}') not in flat:
+                    errors.append(f'{where}: Flat has no to{simple}({mine_ret}) -> {ret}')
+            elif ret != mine_ret:
+                errors.append(f'{where}: returns {ret} against {mine_ret}')
+    for error in errors:
+        print(error)
+    print(f'{total} bridges, {len(errors)} problems')
+    sys.exit(1 if errors else 0)
 
 
 def references(data):
@@ -258,8 +404,14 @@ def surface(args):
                 found.add('game' if '/horizon-client/src/game' in file else 'client' if '/horizon-client' in file else 'library')
         return found
 
-    table = (oracle.ROOT / 'crates' / 'horizon-client' / 'src' / 'game' / 'java_bridges.rs').read_text()
-    bound = {f'{owner}#{name}' for owner, name in re.findall(r'"([\w/$]+)"\.(\w+)\s+"\(', table)}
+    tables = (oracle.ROOT / 'crates' / 'horizon-client' / 'src' / 'game' / 'java_bridges').glob('*.rs')
+    bound = {f'{owner}#{name}' for path in tables for owner, name in re.findall(r'"([\w/$]+)"\.(\w+)\s+"\(', path.read_text())}
+    skipped = {}
+    for path in (oracle.ROOT / 'tools' / 'java_mods_skips').glob('*.tsv'):
+        for line in path.read_text().splitlines():
+            if line.strip():
+                key, reason, *_ = line.split('\t')
+                skipped[key] = reason
     print(f'{len(users)} vanilla methods called by {args.jars}')
     print(collections.Counter(status(k) for k in users).most_common())
     ported = [k for k in users if status(k) in ('ported', 'mapped', 'named', 'structural', 'linked')]
@@ -267,7 +419,9 @@ def surface(args):
     ported = [k for k in ported if not methods[k].get('accessor') and methods[k].get('size', 99) > 4]
     client = [k for k in ported if methods[k].get('client') or methods[k]['class'].startswith(('net/minecraft/client/', 'com/mojang/blaze3d'))]
     print(f'worth serving from Rust: {len(ported)} ({len(client)} client only); bridged: {len(bound)}, of which these jars call {len(bound & users.keys())}')
-    open_ = [k for k in ported if k not in bound]
+    print('decided against, by reason:', collections.Counter(skipped[k] for k in ported if k in skipped and k not in bound).most_common())
+    open_ = [k for k in ported if k not in bound and k not in skipped]
+    print(f'still open: {len(open_)}')
     open_.sort(key=lambda k: (-len(users[k]), -methods[k].get('size', 0)))
     for key in open_[:args.top]:
         print(len(users[key]), methods[key].get('size', 0), key.removeprefix('net/minecraft/'), status(key), sorted(homes(key)))
@@ -306,7 +460,8 @@ def bench(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
-    sub.add_parser('build')
+    sub.add_parser('build').add_argument('--java-only', action='store_true')
+    sub.add_parser('check')
     r = sub.add_parser('run')
     r.add_argument('--jars', required=True)
     r.add_argument('--opts', default='')
@@ -331,8 +486,13 @@ def main():
     c.add_argument('--jars', required=True)
     c.add_argument('--top', type=int, default=40)
     args = parser.parse_args()
+    LOCAL.mkdir(parents=True, exist_ok=True)
+    # Several agents build and check at once, and a build replaces the class folders.
+    lock = (LOCAL / 'build.lock').open('w')
+    if args.command in ('build', 'check'):
+        fcntl.flock(lock, fcntl.LOCK_EX)
     if args.command == 'build':
-        build()
+        build(args.java_only)
     elif args.command == 'run':
         p = host(instance('run', args.jars, True), args.opts, args.ops, args.facts)
         print(p.stdout)
@@ -344,6 +504,8 @@ def main():
         surface(args)
     elif args.command == 'bridges':
         bridges(args)
+    elif args.command == 'check':
+        check_bridges()
     else:
         bench(args)
 

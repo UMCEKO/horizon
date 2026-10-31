@@ -89,6 +89,13 @@ impl Game<'_> {
         }
     }
 
+    /// Fills the acting player's view again, for a bridge that changed something its getters read.
+    pub(super) fn java_refresh_player(&mut self) {
+        if let (Some(host), Some(request)) = (horizon_java_host::get(), self.java_use_request()) {
+            host.request("refresh", &request);
+        }
+    }
+
     /// Java's block state ids against this game's, once.
     pub(super) fn java_bind_states(&mut self) {
         use horizon_java_host::bridge::{STATES, StateMap};

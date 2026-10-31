@@ -1,0 +1,123 @@
+net/minecraft/CrashReport#forThrowable	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/CrashReportCategory#setDetail	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/commands/SharedSuggestionProvider#suggest	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/commands/arguments/GameProfileArgument#parse	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/commands/arguments/blocks/BlockStateParser#parseForBlock	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/commands/arguments/coordinates/BlockPosArgument#getLoadedBlockPos	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/core/component/BlockTransformer#transformBlock	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/core/particles/ItemParticleOption#streamCodec	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/nbt/CompoundTag#getByteOr	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/nbt/CompoundTag#getCompound	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/nbt/CompoundTag#getDoubleOr	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/nbt/CompoundTag#getFloatOr	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/nbt/CompoundTag#getIntOr	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/nbt/CompoundTag#getLongArray	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/nbt/CompoundTag#getLongOr	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/nbt/CompoundTag#getShortOr	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/nbt/CompoundTag#getStringOr	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/nbt/ListTag#getIntOr	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/nbt/NbtIo#writeCompressed	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/nbt/NbtOps#convertTo	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/nbt/NbtUtils#readBlockState	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/FriendlyByteBuf#readByteArray	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/FriendlyByteBuf#readLongArray	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/FriendlyByteBuf#readNbt	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/FriendlyByteBuf#writeByteArray	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/FriendlyByteBuf#writeLongArray	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/FriendlyByteBuf#writeNbt	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/FriendlyByteBuf#writeOptional	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/FriendlyByteBuf#writeUUID	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/chat/Component#getString	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/chat/Component#translatable	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/chat/Component#translatableWithFallback	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/chat/Component#visit	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/chat/FormattedText#getString	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/chat/MutableComponent#append	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/chat/MutableComponent#withColor	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/chat/MutableComponent#withStyle	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/chat/Style#applyFormat	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/chat/Style#withBold	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/chat/Style#withColor	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/chat/Style#withItalic	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/chat/Style#withUnderlined	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/codec/ByteBufCodecs#collection	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/network/protocol/game/ClientboundAddEntityPacket#<init>	java-object	a constructor of a real Java object
+net/minecraft/resources/Identifier#bySeparator	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/resources/Identifier#compareTo	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/resources/Identifier#withPath	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/server/level/ChunkMap#getPlayers	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/server/level/ChunkMap#resendBiomesForChunks	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/server/level/ChunkTrackingView#difference	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/server/level/ChunkTrackingView#isInViewDistance	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/server/level/ServerLevel#<init>	java-object	a constructor of a real Java object
+net/minecraft/server/level/ThreadedLevelLightEngine#lightChunk	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/server/level/WorldGenRegion#getChunk	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/server/level/WorldGenRegion#hasChunk	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/server/network/ServerCommonPacketListenerImpl#send	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/util/ByIdMap#continuous	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/util/GsonHelper#getAsBoolean	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/util/GsonHelper#getAsInt	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/util/GsonHelper#getAsString	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/util/StringUtil#filterText	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/util/Util#findNextInIterable	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/util/Util#makeDescriptionId	java-object	plain Java data; the real class is here and needs no world
+net/minecraft/world/effect/MobEffectInstance#<init>	java-object	a constructor of a real Java object
+net/minecraft/world/entity/Entity#<init>	java-object	a constructor of a real Java object
+net/minecraft/world/entity/ai/attributes/AttributeInstance#removeModifier	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/ai/control/LookControl#setLookAt	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/ai/goal/LookAtPlayerGoal#canContinueToUse	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/ai/goal/target/NearestAttackableTargetGoal#canUse	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/ai/goal/target/TargetGoal#canContinueToUse	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/ai/navigation/PathNavigation#createPath	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/ai/navigation/PathNavigation#moveTo	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/ai/sensing/Sensing#hasLineOfSight	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/ai/targeting/TargetingConditions#test	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/ai/util/DefaultRandomPos#getPosAway	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/ai/util/LandRandomPos#getPos	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/ai/util/LandRandomPos#getPosAway	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/ai/util/LandRandomPos#getPosTowards	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/ai/village/poi/PoiSection#getRecords	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/ai/village/poi/PoiSection#remove	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/monster/Shulker#getProgressDeltaAabb	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/monster/piglin/AbstractPiglin#isConverting	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/monster/piglin/PiglinAi#angerNearbyPiglins	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/monster/zombie/ZombieVillager#setVillagerData	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/npc/villager/AbstractVillager#getOffers	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/projectile/arrow/AbstractArrow#<init>	java-object	a constructor of a real Java object
+net/minecraft/world/entity/vehicle/DismountHelper#findSafeDismountLocation	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/vehicle/VehicleEntity#hurtServer	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/vehicle/boat/AbstractBoat#canAddPassenger	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/vehicle/boat/AbstractBoat#checkInWater	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/vehicle/boat/AbstractBoat#getDismountLocationForPassenger	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/entity/vehicle/boat/AbstractChestBoat#openCustomInventoryScreen	needs-entity-view	mobs and vehicles arrive with entity views
+net/minecraft/world/level/NoiseColumn#getBlock	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/biome/BiomeResolver#getBiomesWithin	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/chunk/ChunkGeneratorStructureState#hasStructureChunkInRange	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/chunk/LevelChunk#<init>	java-object	a constructor of a real Java object
+net/minecraft/world/level/chunk/storage/SectionStorage#getOrLoad	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/chunk/storage/SerializableChunkData#write	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/BitRandomSource#nextInt	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/RandomState#getOrCreateNoise	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/RandomState#getOrCreateRandomFactory	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/WorldgenRandom#setLargeFeatureSeed	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/feature/TreeFeature$Builder#build	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/structure/BoundingBox#encapsulating	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/structure/BoundingBox#encapsulatingBoxes	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/structure/BoundingBox#fromCorners	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/structure/BoundingBox#getCenter	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/structure/BoundingBox#inflatedBy	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/structure/BoundingBox#intersects	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/structure/BoundingBox#isInside	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/structure/BoundingBox#moved	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/structure/Structure$GenerationContext#isValidBiome	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/structure/pools/JigsawPlacement#addPieces	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/structure/pools/StructurePoolElement#legacy	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/structure/templatesystem/StructureTemplate#filterBlocks	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/structure/templatesystem/StructureTemplate#getBoundingBox	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/structure/templatesystem/StructureTemplate#getSize	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/structure/templatesystem/StructureTemplate#load	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/structure/templatesystem/StructureTemplate#placeInWorld	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/structure/templatesystem/StructureTemplate#save	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/structure/templatesystem/StructureTemplateManager#getOrCreate	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/levelgen/synth/SimplexNoise#get	world-internal	Horizon runs this itself; no mod reaches it on a view
+net/minecraft/world/level/pathfinder/Path#getEndNode	needs-entity-view	mobs and vehicles arrive with entity views
