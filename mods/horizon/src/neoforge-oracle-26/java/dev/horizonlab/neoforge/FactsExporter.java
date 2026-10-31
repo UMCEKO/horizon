@@ -78,7 +78,9 @@ public final class FactsExporter {
             new Export(server, namespaces, json).run();
         } catch (Throwable e) {
             e.printStackTrace();
-            System.exit(3);
+            System.err.flush();
+            // Exit's shutdown hooks wait for this server thread, so it would hang here.
+            Runtime.getRuntime().halt(3);
         }
         System.out.println("horizon-oracle: wrote " + out);
         server.halt(false);
@@ -387,7 +389,12 @@ public final class FactsExporter {
                 json.beginObject();
                 json.name("type").value(BuiltInRegistries.RECIPE_TYPE.getKey(recipe.getType()).toString());
                 json.name("serializer").value(BuiltInRegistries.RECIPE_SERIALIZER.getKey(recipe.getSerializer()).toString());
-                raw("json", Recipe.DIRECT_CODEC.encodeStart(server.registryAccess().createSerializationContext(JsonOps.INSTANCE), (Recipe<?>) recipe));
+                try {
+                    raw("json", Recipe.DIRECT_CODEC.encodeStart(server.registryAccess().createSerializationContext(JsonOps.INSTANCE), (Recipe<?>) recipe));
+                } catch (RuntimeException e) {
+                    // A mod's codec that can't encode one of its recipes costs that recipe only.
+                    json.name("unencodable").value(e.toString());
+                }
                 json.endObject();
             }
             json.endObject();

@@ -108,6 +108,12 @@ public final class BlockEntities {
         return saved;
     }
 
+    static void abandonCopies() {
+        CHANGED_COPIES.clear();
+        for (BlockEntity entity : COPIES) held((ServerLevel) entity.getLevel()).remove(entity.getBlockPos().asLong());
+        COPIES.clear();
+    }
+
     static List<CompoundTag> saveAll(ServerLevel level) {
         var saved = new ArrayList<CompoundTag>();
         for (BlockEntity entity : held(level).values()) saved.add(entity.saveWithFullMetadata(level.registryAccess()));

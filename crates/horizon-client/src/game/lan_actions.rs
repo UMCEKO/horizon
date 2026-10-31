@@ -2638,6 +2638,8 @@ impl Game<'_> {
                 self.guest_die(host, gi, conn);
                 continue;
             }
+            #[cfg(feature = "java-mods")]
+            self.as_guest(host, conn, |g| g.java_player_tick());
             let play = host.play.entry(conn).or_default();
             // ServerGamePacketListenerImpl.tick's dropSpamThrottler.
             play.creative_drops = play.creative_drops.saturating_sub(1);

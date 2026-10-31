@@ -7,10 +7,11 @@ pub mod wire;
 
 pub use jni;
 
-use jni::objects::{JByteArray, JClass, JObject, JString, JValue};
+use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JString, JValue};
 use jni::{InitArgsBuilder, JNIEnv, JNIVersion, JavaVM, NativeMethod};
+use std::cell::Cell;
 use std::collections::HashSet;
-use std::ffi::c_void;
+use std::ffi::{CString, c_void};
 use std::sync::{LazyLock, Mutex};
 
 const HOST: &str = "dev/horizonlab/javamods/host/Host";
@@ -154,21 +155,50 @@ pub fn run_fml(env: &mut JNIEnv, prog: &[String]) {
 pub struct Host {
     vm: JavaVM,
     items: HashSet<String>,
+    server_group: Option<GlobalRef>,
+}
+
+/// Detaches a thread that attached itself when it ends, so a closed world's server thread leaves nothing in the JVM.
+struct Attached(*mut jni::sys::JavaVM);
+
+impl Drop for Attached {
+    fn drop(&mut self) {
+        // SAFETY: this runs on the thread that attached, as its thread-locals end.
+        unsafe {
+            if let Some(detach) = (**self.0).DetachCurrentThread {
+                detach(self.0);
+            }
+        }
+    }
 }
 
 static RUNNING: LazyLock<Option<Host>> = LazyLock::new(|| {
+    // A mod that stops FML from starting costs the Java mods, not the game.
+    std::panic::catch_unwind(boot).unwrap_or_else(|_| {
+        eprintln!("Horizon: Java mods failed to start, so this run has none: see the errors above");
+        None
+    })
+});
+
+fn boot() -> Option<Host> {
     let run_dir = std::env::var("HORIZON_JAVA_RUN").ok()?;
     let began = std::time::Instant::now();
     let (vm, prog) = create_vm(&run_dir);
-    {
+    let server_group = {
         let mut env = vm.attach_current_thread_permanently().unwrap();
         register_natives(&mut env);
         run_fml(&mut env, &prog);
-    }
+        let group = env
+            .get_static_field(HOST, "serverGroup", "Ljava/lang/ThreadGroup;")
+            .and_then(|group| group.l())
+            .ok();
+        group.and_then(|group| env.new_global_ref(group).ok())
+    };
     let booted = began.elapsed().as_secs_f64();
     let mut host = Host {
         vm,
         items: HashSet::new(),
+        server_group,
     };
     host.request("prepare", &[]);
     let prepared = began.elapsed().as_secs_f64();
@@ -182,7 +212,7 @@ static RUNNING: LazyLock<Option<Host>> = LazyLock::new(|| {
         host.items.len()
     );
     Some(host)
-});
+}
 
 /// Starts the JVM behind the game's back when this run has Java mods, so a title screen never waits for it.
 pub fn start(bridges: Vec<bridge::Bridge>) {
@@ -208,8 +238,47 @@ impl Host {
         self.items.contains(id)
     }
 
+    /// Attaches this thread as FML's real server group, as `EffectiveSide` asks every thread's group which side it's on.
+    fn attach(&self) {
+        thread_local! {
+            static ATTACHED: Cell<Option<Attached>> = const { Cell::new(None) };
+        }
+        ATTACHED.with(|attached| {
+            let already = attached.take();
+            if already.is_none()
+                && let Some(group) = &self.server_group
+            {
+                let name = std::thread::current()
+                    .name()
+                    .unwrap_or("Server thread")
+                    .to_string();
+                let name = CString::new(name).unwrap_or_default();
+                let mut args = jni::sys::JavaVMAttachArgs {
+                    version: jni::sys::JNI_VERSION_1_8,
+                    name: name.as_ptr().cast_mut(),
+                    group: group.as_raw(),
+                };
+                let vm = self.vm.get_java_vm_pointer();
+                let mut env = std::ptr::null_mut();
+                // SAFETY: the JVM outlives this process's threads, and `args` outlives the call, which copies it.
+                let status = unsafe {
+                    let attach = (**vm)
+                        .AttachCurrentThread
+                        .expect("every JVM has AttachCurrentThread");
+                    attach(vm, &mut env, std::ptr::from_mut(&mut args).cast())
+                };
+                if status == jni::sys::JNI_OK {
+                    attached.set(Some(Attached(vm)));
+                }
+            } else {
+                attached.set(already);
+            }
+        });
+    }
+
     /// One call into `GameBridge`; None when it threw, which its own stack trace explains.
     pub fn request(&self, op: &str, input: &[u8]) -> Option<Vec<u8>> {
+        self.attach();
         let mut env = self.vm.attach_current_thread_permanently().ok()?;
         env.with_local_frame(8, |env| -> jni::errors::Result<_> {
             let name = env.new_string(op)?;

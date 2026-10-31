@@ -51,6 +51,10 @@ impl Game<'_> {
             return;
         };
         if !host.owns_item(&stack.item) {
+            // A vanilla item's use is Horizon's, but mods hear it first and may cancel it.
+            if hit.is_none() {
+                self.java_call_use(&stack.item, "event_use_item", Vec::new(), claimed);
+            }
             return;
         }
         match hit {
@@ -245,7 +249,14 @@ impl Game<'_> {
             self.audio.play(sound, Some(at), volume, pitch);
         }
         for _ in 0..reply.int()? {
-            self.spawn_entity_from_nbt(read_tag(reply.bytes()?)?);
+            let tag = read_tag(reply.bytes()?)?;
+            let kind = tag.get("id").and_then(|id| match id {
+                Tag::String(id) => Some(id.to_string_lossy()),
+                _ => None,
+            });
+            if self.spawn_entity_from_nbt(tag).is_none() {
+                log::warn!("Horizon: no entity from a Java mod's {kind:?}");
+            }
         }
         for _ in 0..reply.int()? {
             let tag = read_tag(reply.bytes()?)?;
@@ -461,15 +472,84 @@ impl Game<'_> {
         held
     }
 
-    /// `ServerPlayerGameMode.useItemOn`, for a click on a mod's block: true when the block took it.
-    pub(super) fn java_click_block(&mut self, hit: &Hit) -> bool {
+    /// `ServerPlayerGameMode.useItemOn` for a mod's block, `RightClickBlock` for a vanilla one: Some(true) when the block took the click, Some(false) when a listener canceled it.
+    pub(super) fn java_click_block(&mut self, hit: &Hit) -> Option<bool> {
+        horizon_java_host::get()?;
         let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
-        if !horizon_java_host::bridge::java_block(state) {
-            return false;
-        }
         let mut claimed = false;
-        self.java_use_on("a block", hit, "click_block", &mut claimed);
-        claimed
+        if horizon_java_host::bridge::java_block(state) {
+            self.java_use_on("a block", hit, "click_block", &mut claimed);
+            return claimed.then_some(true);
+        }
+        self.java_use_on("a block", hit, "event_click_block", &mut claimed);
+        claimed.then_some(false)
+    }
+
+    /// `BreakBlockEvent`, where a player's break starts.
+    pub(super) fn java_break_event(&mut self, pos: [i32; 3], canceled: &mut bool) {
+        if horizon_java_host::get().is_some() {
+            let mut out = Out::default();
+            out.long(BlockPos::new(pos[0], pos[1], pos[2]).pack());
+            self.java_call_use("a break", "event_break", out.0, canceled);
+        }
+    }
+
+    /// `AttackEntityEvent`, where a player's attack starts.
+    pub(super) fn java_attack_event(&mut self, entity: i32, canceled: &mut bool) {
+        if horizon_java_host::get().is_some() {
+            let mut out = Out::default();
+            out.int(entity);
+            self.java_call_use("an attack", "event_attack", out.0, canceled);
+        }
+    }
+
+    /// The server's start and end, with NeoForge's real hooks.
+    pub(super) fn java_world_phase(&mut self, open: bool) {
+        let root = self.save.root.clone();
+        let world = root
+            .ancestors()
+            .find(|dir| dir.join("level.dat").exists())
+            .unwrap_or(&root)
+            .to_string_lossy()
+            .into_owned();
+        self.java_level_call(if open { "server_start" } else { "server_stop" }, |out| {
+            out.text(&world);
+        });
+    }
+
+    /// `ServerTickEvent`, and the server's queue of tasks mods gave it.
+    pub(super) fn java_server_tick(&mut self, post: bool) {
+        self.java_level_call("server_tick", |out| out.bool(post));
+        self.java_drain_block_events();
+    }
+
+    /// `LevelTickEvent`, with this level in place.
+    pub(super) fn java_level_tick(&mut self, post: bool) {
+        self.java_level_call("level_tick", |out| out.bool(post));
+        self.java_drain_block_events();
+    }
+
+    /// `PlayerLoggedOutEvent`, and that player's view gone.
+    pub(super) fn java_player_left(&mut self, uuid: u128) {
+        let Some(host) = horizon_java_host::get() else {
+            return;
+        };
+        let mut out = Out::default();
+        out.long((uuid >> 64) as i64);
+        out.long(uuid as i64);
+        let reply =
+            horizon_java_host::bridge::with_active(self, || host.request("player_left", &out.0));
+        if let Some(reply) = reply {
+            self.java_apply_effects(&mut In(&reply));
+        }
+    }
+
+    /// `PlayerTickEvent` and `Item.inventoryTick` of mods' stacks, for the player in place.
+    pub(super) fn java_player_tick(&mut self) {
+        if horizon_java_host::get().is_some() {
+            let mut claimed = false;
+            self.java_call_use("a player tick", "player_tick", Vec::new(), &mut claimed);
+        }
     }
 
     /// Before a save: what each block entity Java holds would write, into the chunk's own record of it.

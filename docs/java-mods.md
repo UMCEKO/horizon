@@ -50,6 +50,7 @@ refill the view, or Java sees the old value until the next call.
 | Mods' block entities | `BlockEntities`, `game/java_bridges/block_entities.rs` | Real objects in Java; their saved form lives in Horizon's chunk, and Horizon's list gives them their turn to tick |
 | Vanilla block entities and all entities | `BlockEntities`, `EntityViews` | Real Java objects read from Horizon's saved form for one call, with what it changed written back |
 | Forge Energy and other capabilities | NeoForge's own code | Run as they are on the above |
+| Server start and stop, server, level and player ticks, logins, right clicks, breaks, attacks | `GameBridge`, the native hooks | NeoForge's real `ServerLifecycleHooks`, `EventHooks` and `CommonHooks`; `level_tick` with its level in place |
 | Vanilla methods served from Rust | `game/java_bridges/` | Per family, each with its checks in the test mod |
 | Block support shapes | `ShapeBridge`, `shapes.rs` | `-Dhorizon.java.shapes=off\|rust\|shadow`; steps aside for a mixin on the same code |
 | The mod's data in Horizon | [`horizon-port-pack carry`](modpacks.md), `--dev-mod` | By hand for now |
@@ -58,6 +59,9 @@ What isn't bound and why is in `tools/java_mods_skips/`. `java-object` is Java d
 
 ## Not yet
 
+- Mods' mixins into vanilla code Horizon runs in Rust never fire, since that Java never runs: `MinecraftServer`'s loop, `ServerLevel.tick`, entity AI and so on. 60 library mods aim mixins at 306 vanilla classes; nothing yet says how many of those patches matter.
+- The JVM boots the dedicated-server side, so a mod that needs `net.minecraft.client` classes to load fails as it does on a NeoForge server, and stops every Java mod from starting (the game carries on without them). It would load on a NeoForge client.
+- A Horizon block's properties come from a vanilla template of the same class, so `carry` with oracle facts leaves out a machine with `facing` and `lit` on a plain block. Without facts it keeps the block with no properties.
 - Mods' menus and screens: `openMenu` makes the real Java menu, but no client shows it. Mods' client code doesn't run at all.
 - Mods' own entities tick nowhere; their saved form is kept. Entity views last one call and aren't tracked between calls.
 - A mod's packets are logged and dropped (`ConnectionMixin`). Advancement triggers do nothing for a view (`CriterionMixin`).
@@ -77,7 +81,9 @@ python3 tools/java_mods.py build
 cargo build --profile fast -p horizon-client --features java-mods --bin horizon-client --bin horizon-ctl
 python3 tools/java_mods.py run --jars DIR --opts=--enable-native-access=ALL-UNNAMED mods use_probe=NAMESPACE:ITEM
 python3 tools/java_mods.py play --jars DIR --dev-mod CARRY "give NAMESPACE:ITEM" "wait 40" "use-item" state
-python3 tools/java_mods.py bridges               # the test mod's wand on a real click
+python3 tools/java_mods.py bridges               # the test mod's wand on a real click; --extra-jars DIR loads more alongside
+python3 tools/java_mods.py libraries --top 150   # each library mod alone, then all that booted together: real server start and one tick
+python3 tools/java_mods.py fetch SLUG --out DIR  # a Modrinth project and its required dependencies
 python3 tools/java_mods.py surface --jars DIR    # what these jars call, by what the port ledger knows of it
 ```
 

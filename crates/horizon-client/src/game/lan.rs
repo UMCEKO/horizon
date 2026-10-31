@@ -1813,6 +1813,8 @@ impl Game<'_> {
                             }
                         }
                         self.lan_crafting_left(&mut host, &mut guest);
+                        #[cfg(feature = "java-mods")]
+                        self.java_player_left(guest.uuid);
                         if guest.placed {
                             host.award_leave_game(guest.conn);
                         }

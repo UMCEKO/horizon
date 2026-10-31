@@ -50,6 +50,8 @@ public final class Boot {
         Host.mark("validate");
         ServerModLoader.load(false);
         Host.mark("mod_loading_done");
+        Host.gameLoader = Boot.class.getClassLoader();
+        Host.serverGroup = net.neoforged.fml.util.thread.SidedThreadGroups.SERVER;
         Host.entry = Boot::op;
         Host.handler = GameBridge::call;
     }
@@ -73,6 +75,7 @@ public final class Boot {
                 case "shapes" -> ShapeBridge.report();
                 case "nmt" -> nmt();
                 case "values_bench" -> ValuesBench.op(arg);
+                case "world" -> GameBridge.worldProbe();
                 case "use_probe" -> GameBridge.probe(arg, false);
                 case "use_probe_sneaking" -> GameBridge.probe(arg, true);
                 case "exit" -> { System.exit(0); yield ""; }

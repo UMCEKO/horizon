@@ -9,6 +9,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -47,6 +48,7 @@ import net.minecraft.util.Util;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
@@ -60,11 +62,18 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.level.dimension.BuiltinDimensionTypes;
 import net.minecraft.world.level.dimension.DimensionType;
+import net.minecraft.world.level.levelgen.WorldDimensions;
+import net.minecraft.world.level.levelgen.presets.WorldPresets;
 import net.minecraft.world.level.storage.TagValueOutput;
 import net.minecraft.world.level.storage.WritableLevelData;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.common.CommonHooks;
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.EventHooks;
+import net.neoforged.neoforge.event.level.LevelEvent;
 import net.neoforged.neoforge.resource.ResourcePackLoader;
+import net.neoforged.neoforge.server.ServerLifecycleHooks;
 import sun.reflect.ReflectionFactory;
 
 /** The game's own objects as views of Horizon's state: built without a server, filled for each call, and what the call changed goes back. */
@@ -85,6 +94,7 @@ public final class GameBridge {
     }
 
     private static MinecraftServer server;
+    private static WorldDimensions dimensions;
     private static int nextEntityId = -1;
     private static int depth;
 
@@ -102,12 +112,23 @@ public final class GameBridge {
                 case "block_entities_save" -> blockEntitiesSave(input);
                 case "block_ticks" -> blockTicks(input);
                 case "click_block" -> use(input, 2);
+                case "event_click_block" -> use(input, 3);
+                case "event_use_item" -> use(input, 4);
+                case "event_break" -> use(input, 5);
+                case "event_attack" -> use(input, 6);
+                case "player_tick" -> use(input, 7);
+                case "player_left" -> playerLeft(input);
+                case "server_start" -> lifecycle(input, true);
+                case "server_stop" -> lifecycle(input, false);
+                case "server_tick" -> serverTick(input);
+                case "level_tick" -> levelTick(input);
                 case "use_item" -> use(input, 0);
                 case "use_item_on" -> use(input, 1);
                 default -> throw new IllegalArgumentException(op);
             };
         } catch (Throwable t) {
             t.printStackTrace();
+            if (depth == 1) abandonCall();
             return new byte[0];
         } finally {
             depth--;
@@ -123,7 +144,12 @@ public final class GameBridge {
         record Loaded(CloseableResourceManager manager, ReloadableServerResources resources, LayeredRegistryAccess<RegistryLayer> layers) {}
         Loaded loaded = Util.blockUntilDone(executor -> WorldLoader.load(
                 config,
-                context -> new WorldLoader.DataLoadOutput<>(Unit.INSTANCE, context.datapackDimensions()),
+                context -> {
+                    var dimensions = context.datapackWorldRegistries().lookupOrThrow(Registries.WORLD_PRESET).getOrThrow(WorldPresets.NORMAL).value().createWorldDimensions();
+                    var complete = dimensions.bake(context.datapackDimensions().lookupOrThrow(Registries.LEVEL_STEM));
+                    GameBridge.dimensions = dimensions;
+                    return new WorldLoader.DataLoadOutput<>(Unit.INSTANCE, complete.dimensionsRegistryAccess());
+                },
                 (manager, resources, layers, unit) -> new Loaded(manager, resources, layers),
                 Util.backgroundExecutor(),
                 executor)).get();
@@ -261,6 +287,7 @@ public final class GameBridge {
         String name = text(in);
         var level = level(text(in));
         ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
+        boolean joined = !PLAYERS.containsKey(id);
         var player = player(id, name, level);
         player.setPosRaw(in.readDouble(), in.readDouble(), in.readDouble());
         player.setYRot(in.readFloat());
@@ -293,6 +320,7 @@ public final class GameBridge {
                 inventory.setItem(slot, stack);
             }
         }
+        if (joined) safely("PlayerLoggedIn", () -> EventHooks.firePlayerLoggedIn(player));
         return new Call(in, level, player, hand, before);
     }
 
@@ -309,17 +337,41 @@ public final class GameBridge {
         var hand = call.hand;
         var before = call.before;
         var inventory = player.getInventory();
-        InteractionResult result;
-        if (kind != 0) {
-            var pos = BlockPos.of(in.readLong());
-            var face = Direction.from3DDataValue(in.readInt());
-            var hit = new BlockHitResult(new Vec3(in.readDouble(), in.readDouble(), in.readDouble()), face, pos, false);
-            ItemStack held = player.getItemInHand(hand);
-            result = kind == 2 ? player.gameMode.useItemOn(player, level, held, hand, hit) : held.useOn(new UseOnContext(player, hand, hit));
-        } else {
-            result = player.gameMode.useItem(player, level, player.getItemInHand(hand), hand);
+        InteractionResult result = InteractionResult.PASS;
+        ItemStack held = player.getItemInHand(hand);
+        switch (kind) {
+            case 0 -> result = player.gameMode.useItem(player, level, held, hand);
+            case 1, 2, 3 -> {
+                var pos = BlockPos.of(in.readLong());
+                var face = Direction.from3DDataValue(in.readInt());
+                var hit = new BlockHitResult(new Vec3(in.readDouble(), in.readDouble(), in.readDouble()), face, pos, false);
+                if (kind == 1) result = held.useOn(new UseOnContext(player, hand, hit));
+                else if (kind == 2) result = player.gameMode.useItemOn(player, level, held, hand, hit);
+                else if (CommonHooks.onRightClickBlock(player, hand, pos, hit).isCanceled()) result = InteractionResult.SUCCESS;
+            }
+            case 4 -> {
+                var answer = CommonHooks.onItemRightClick(player, hand);
+                if (answer != null) result = answer;
+            }
+            case 5 -> {
+                var pos = BlockPos.of(in.readLong());
+                if (CommonHooks.fireBlockBreak(level, type(player), player, pos, level.getBlockState(pos)).isCanceled()) result = InteractionResult.FAIL;
+            }
+            case 6 -> {
+                var target = level.getEntity(in.readInt());
+                if (target != null && !CommonHooks.onPlayerAttackTarget(player, target)) result = InteractionResult.FAIL;
+            }
+            default -> {
+                EventHooks.firePlayerTickPre(player);
+                for (int slot = 0; slot < Inventory.INVENTORY_SIZE; slot++) {
+                    ItemStack stack = inventory.getItem(slot);
+                    if (!stack.isEmpty() && !BuiltInRegistries.ITEM.getKey(stack.getItem()).getNamespace().equals("minecraft")) {
+                        stack.inventoryTick(level, player, slot == inventory.getSelectedSlot() ? EquipmentSlot.MAINHAND : null);
+                    }
+                }
+                EventHooks.firePlayerTickPost(player);
+            }
         }
-
         if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: use kind=" + kind + " result=" + result + " held=" + player.getItemInHand(hand));
         var bytes = new ByteArrayOutputStream();
         var out = new DataOutputStream(bytes);
@@ -341,6 +393,14 @@ public final class GameBridge {
         }
         writeEffects(out);
         return bytes.toByteArray();
+    }
+
+    /** A call that threw has no reply to carry its effects, and the next must not read its copies. */
+    private static void abandonCall() {
+        SOUNDS.clear();
+        SPAWNED.clear();
+        BlockEntities.abandonCopies();
+        EntityViews.abandon();
     }
 
     /** What Java did to the world since the last reply. */
@@ -381,6 +441,78 @@ public final class GameBridge {
         var bytes = new ByteArrayOutputStream();
         writeEffects(new DataOutputStream(bytes));
         return bytes.toByteArray();
+    }
+
+    private static GameType type(ServerPlayer player) {
+        return player.gameMode.getGameModeForPlayer();
+    }
+
+    private static void safely(String what, Runnable step) {
+        try {
+            step.run();
+        } catch (Throwable t) {
+            System.err.println("Horizon: a Java mod threw during " + what);
+            t.printStackTrace();
+        }
+    }
+
+    private static boolean serverStarted;
+    private static Path worldFolder = Path.of("world");
+
+    public static Path worldFolder() {
+        return worldFolder;
+    }
+
+    private static byte[] lifecycle(byte[] input, boolean start) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        var here = levelOf(in);
+        if (start && !serverStarted) {
+            serverStarted = true;
+            worldFolder = Path.of(text(in));
+            for (String id : List.of("minecraft:overworld", "minecraft:the_nether", "minecraft:the_end")) level(id);
+            ServerView.openWorld(server, LEVELS.values(), worldFolder, here.getSeed(), dimensions);
+            safely("ServerAboutToStart", () -> ServerLifecycleHooks.handleServerAboutToStart(server));
+            safely("ServerStarting", () -> ServerLifecycleHooks.handleServerStarting(server));
+            for (ServerLevel level : LEVELS.values()) safely("LevelEvent.Load", () -> NeoForge.EVENT_BUS.post(new LevelEvent.Load(level)));
+            safely("ServerStarted", () -> ServerLifecycleHooks.handleServerStarted(server));
+        } else if (!start && serverStarted) {
+            serverStarted = false;
+            safely("ServerStopping", () -> ServerLifecycleHooks.handleServerStopping(server));
+            for (ServerLevel level : LEVELS.values()) safely("LevelEvent.Unload", () -> NeoForge.EVENT_BUS.post(new LevelEvent.Unload(level)));
+            safely("ServerStopped", () -> ServerLifecycleHooks.handleServerStopped(server));
+            safely("saving saved data", () -> ServerView.saveWorld(server, LEVELS.values()));
+        }
+        return effects();
+    }
+
+    private static byte[] serverTick(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        levelOf(in);
+        if (in.readBoolean()) {
+            safely("ServerTickEvent.Post", () -> EventHooks.fireServerTickPost(() -> true, server));
+        } else {
+            ServerView.tick(server);
+            safely("ServerTickEvent.Pre", () -> EventHooks.fireServerTickPre(() -> true, server));
+        }
+        return effects();
+    }
+
+    private static byte[] levelTick(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        var level = levelOf(in);
+        if (in.readBoolean()) safely("LevelTickEvent.Post", () -> EventHooks.fireLevelTickPost(level, () -> true));
+        else safely("LevelTickEvent.Pre", () -> EventHooks.fireLevelTickPre(level, () -> true));
+        return effects();
+    }
+
+    private static byte[] playerLeft(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        var player = PLAYERS.remove(new UUID(in.readLong(), in.readLong()));
+        if (player != null) {
+            safely("PlayerLoggedOut", () -> EventHooks.firePlayerLoggedOut(player));
+            ServerView.detach(server, player);
+        }
+        return effects();
     }
 
     /** The level a call acts on, with the time it arrived at. */
@@ -438,6 +570,7 @@ public final class GameBridge {
 
     private static byte[] blockEntitiesSave(byte[] input) throws Exception {
         var in = new DataInputStream(new ByteArrayInputStream(input));
+        safely("saving saved data", () -> ServerView.saveWorld(server, LEVELS.values()));
         var saved = BlockEntities.saveAll(level(text(in)));
         var bytes = new ByteArrayOutputStream();
         var out = new DataOutputStream(bytes);
@@ -451,6 +584,25 @@ public final class GameBridge {
         var id = Identifier.tryParse(new String(input, java.nio.charset.StandardCharsets.UTF_8));
         if (id == null || !BuiltInRegistries.BLOCK.containsKey(id)) return new byte[0];
         return BlockEntities.ticks(BuiltInRegistries.BLOCK.getValue(id), level("minecraft:overworld")) ? new byte[] {1} : new byte[0];
+    }
+
+    /** A dev run without the game: real data packs, then a level and a player view of each dimension; a mod's reload listener or a mixin on these classes shows here. */
+    static String worldProbe() throws Exception {
+        prepare();
+        var ids = List.of("minecraft:overworld", "minecraft:the_nether", "minecraft:the_end");
+        for (String id : ids) level(id);
+        ServerView.openWorld(server, LEVELS.values(), Path.of("world").toAbsolutePath(), 1L, dimensions);
+        worldFolder = Path.of("world").toAbsolutePath();
+        ServerLifecycleHooks.handleServerAboutToStart(server);
+        ServerLifecycleHooks.handleServerStarting(server);
+        for (ServerLevel level : LEVELS.values()) NeoForge.EVENT_BUS.post(new LevelEvent.Load(level));
+        ServerLifecycleHooks.handleServerStarted(server);
+        int views = 0;
+        for (String id : ids) player(new UUID(1, views++), "Probe", level(id));
+        ServerView.tick(server);
+        EventHooks.fireServerTickPre(() -> true, server);
+        EventHooks.fireServerTickPost(() -> true, server);
+        return "WORLD OK " + views + " levels, " + BuiltInRegistries.ITEM.size() + " items, " + Block.BLOCK_STATE_REGISTRY.size() + " states";
     }
 
     /** A dev run without the game: one use of item `id` by a level 10 player, as text. */

@@ -4996,9 +4996,13 @@ impl Game<'_> {
                 return Ok(true);
             }
             #[cfg(feature = "java-mods")]
-            if self.java_click_block(hit) {
-                self.swing_arm();
-                return Ok(true);
+            match self.java_click_block(hit) {
+                Some(true) => {
+                    self.swing_arm();
+                    return Ok(true);
+                }
+                Some(false) => return Ok(true),
+                None => {}
             }
         }
         // MultiPlayerGameMode.useItemOn: blocks react first.

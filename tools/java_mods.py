@@ -2,6 +2,7 @@
 """Dev driver for horizon-java-host: real mod jars on real NeoForge classes in a JVM embedded in Rust (needs nix-shell -p jdk25 pkg-config)."""
 import argparse
 import collections
+import concurrent.futures
 import fcntl
 import io
 import json
@@ -15,6 +16,8 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
+import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -30,6 +33,7 @@ HOST_JAR = LOCAL / 'horizon-java-host.jar'
 BOOT_JAR = LOCAL / 'horizon-java-boot.jar'
 PLUGIN_JAR = LOCAL / 'horizon-java-plugin.jar'
 TEST_JAR = LOCAL / 'horizon-java-test.jar'
+LIBRARIES = LOCAL / 'library-jars'
 
 
 def java_home():
@@ -130,7 +134,7 @@ def session(args, drive):
         env[name] = str(scratch / name)
         Path(env[name]).mkdir(exist_ok=True)
     ctl = [str(oracle.ROOT / 'target' / 'fast' / 'horizon-ctl'), '--socket', str(scratch / 'ctl.sock')]
-    launch = [*ctl, 'launch', '--world', 'J', '--offscreen', '--wait', '--resources', str(oracle.ROOT / '.local' / 'horizon-client' / '26.3')]
+    launch = [*ctl, 'launch', '--world', 'J', '--seed', str(args.seed), '--offscreen', '--wait', '--resources', str(oracle.ROOT / '.local' / 'horizon-client' / '26.3')]
     for mod in args.dev_mod:
         launch += ['--dev-mod', str(Path(mod).resolve())]
     began = time.perf_counter()
@@ -164,6 +168,8 @@ def bridges(args):
     """The test mod's wand on a real click: each block of the column it builds says one bridge answered as vanilla does."""
     jars = Path(tempfile.mkdtemp(prefix='horizon-java-test-'))
     (jars / TEST_JAR.name).symlink_to(TEST_JAR)
+    for extra in Path(args.extra_jars).rglob('*.jar') if args.extra_jars else ():
+        (jars / extra.name).symlink_to(extra.resolve())
     args.jars, args.scratch, args.dev_mod = str(jars), args.scratch, [str(SOURCES / 'testmod' / 'content')]
     wrong, positions = [], []
 
@@ -171,6 +177,12 @@ def bridges(args):
         x, y, z = json.loads(send('state'))['player']['block_pos']
         base = (x + 3, y, z)
         send(f'command fill {x + 1} {y - 1} {z - 2} {x + 5} {y + 12} {z + 2} air')
+        # Each family's checks build in their own stretch, on the same flat ground in any world.
+        for at in range(x + 6, x + 52, 15):
+            send(f'command fill {at} {y} {z - 6} {at + 14} {y + 14} {z + 4} air')
+            send(f'command fill {at} {y - 1} {z - 6} {at + 14} {y - 1} {z + 4} minecraft:stone')
+        send('wait 2')
+        send('command kill @e[type=item]')
         send(f'command setblock {base[0]} {base[1]} {base[2]} minecraft:stone')
         send(f'command setblock {base[0]} {base[1]} {base[2] + 2} minecraft:stone')
         machine = base[0] + 32
@@ -386,6 +398,99 @@ def check_bridges(_args=None):
     sys.exit(1 if errors else 0)
 
 
+def modrinth(path):
+    request = urllib.request.Request('https://api.modrinth.com/v2/' + path, headers={'User-Agent': 'horizon-rust/horizon tools/java_mods.py'})
+    with urllib.request.urlopen(request, timeout=60) as reply:
+        return json.load(reply)
+
+
+def fetch_mod(project, seen):
+    """A project's newest 26.3 NeoForge jar and its required dependencies, into LIBRARIES; returns the jars' paths, or None when it has no such version."""
+    versions = modrinth(f'project/{project}/version?game_versions=%5B%2226.3%22%5D&loaders=%5B%22neoforge%22%5D')
+    if not versions:
+        return None
+    version = versions[0]
+    project = version['project_id']
+    if project in seen:
+        return seen[project]
+    chosen = next((f for f in version['files'] if f['primary']), version['files'][0])
+    folder = LIBRARIES / project
+    folder.mkdir(parents=True, exist_ok=True)
+    jar = folder / chosen['filename']
+    if not jar.exists():
+        urllib.request.urlretrieve(chosen['url'], jar)
+    seen[project] = [jar]
+    for dep in version['dependencies']:
+        if dep['dependency_type'] == 'required' and dep.get('project_id'):
+            jars = fetch_mod(dep['project_id'], seen)
+            if jars:
+                seen[project] = seen[project] + [j for j in jars if j not in seen[project]]
+    return seen[project]
+
+
+def boot_one(name, jars, opts, timeout):
+    """Real mod loading, real data packs and the real views, with only these jars; (ok, why, seconds)."""
+    folder = LOCAL / 'library-sets' / name
+    shutil.rmtree(folder, ignore_errors=True)
+    folder.mkdir(parents=True)
+    for jar in jars:
+        (folder / Path(jar).name).symlink_to(Path(jar).resolve())
+    run = instance(f'library-{name}', folder, True)
+    java = java_home()
+    env = {**os.environ, 'JAVA_HOME': java, 'LD_LIBRARY_PATH': f'{java}/lib/server:{java}/lib', 'HORIZON_NEOFORGE': NEOFORGE,
+           'HORIZON_JAVA_RUN': str(run), 'HORIZON_JAVA_HOST_JAR': str(HOST_JAR), 'HORIZON_JAVA_OPTS': opts}
+    began = time.perf_counter()
+    try:
+        p = subprocess.run([str(TARGET / 'fast' / 'horizon-java-host'), 'world', 'exit'], env=env, capture_output=True, text=True, errors='replace', timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        return False, 'hung: ' + ((e.stdout or b'').decode(errors='replace').strip().splitlines() or [''])[-1][:200], timeout
+    took = time.perf_counter() - began
+    (run / 'host.log').write_text(p.stdout + p.stderr)
+    if 'WORLD OK' in p.stdout:
+        return True, '', took
+    text = p.stdout + p.stderr
+    for pattern in (r'Failed to start FML: .*', r'- .*', r'ERROR .*', r'Caused by: .*', r'.*Exception.*'):
+        found = re.findall(pattern, text)
+        if found and not pattern.startswith('- '):
+            detail = re.findall(r'^\s*- (.+)$', text, re.M)
+            return False, (found[-1] + (' | ' + ' | '.join(detail[:3]) if detail else ''))[:400], took
+    return False, 'no answer, exit ' + str(p.returncode), took
+
+
+def libraries(args):
+    """Boots the most used 26.3 NeoForge library mods one by one, each with its required dependencies; `--top` picks how many."""
+    facets = urllib.parse.quote(json.dumps([['categories:library'], ['categories:neoforge'], ['versions:26.3'], ['project_type:mod']]))
+    hits = []
+    for offset in range(0, args.top, 100):
+        hits += modrinth(f'search?limit={min(100, args.top - offset)}&offset={offset}&index=downloads&facets={facets}')['hits']
+    seen, sets = {}, {}
+    for hit in hits:
+        try:
+            jars = fetch_mod(hit['project_id'], seen)
+        except OSError as e:
+            print(f"{hit['slug']}: download failed: {e}", flush=True)
+            continue
+        if jars:
+            sets[hit['slug']] = jars
+    print(f'{len(sets)} of {len(hits)} libraries have a 26.3 NeoForge jar', flush=True)
+    results = {}
+
+    def one(item):
+        return item[0], boot_one(item[0], item[1], args.opts, args.timeout), len(item[1])
+
+    with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
+        for slug, (ok, why, took), jars in pool.map(one, sets.items()):
+            results[slug] = {'ok': ok, 'why': why, 'seconds': round(took, 1), 'jars': jars}
+            print(f"{'ok  ' if ok else 'FAIL'} {slug} ({jars} jars, {took:.1f} s) {why}", flush=True)
+    good = sorted({j for slug, jars in sets.items() if results[slug]['ok'] for j in jars})
+    together = boot_one('all-together', good, args.opts, args.timeout * 3)
+    results['all-together'] = {'ok': together[0], 'why': together[1], 'seconds': round(together[2], 1), 'jars': len(good)}
+    print(f"{'ok  ' if together[0] else 'FAIL'} all {len(good)} that booted, together ({together[2]:.1f} s) {together[1]}", flush=True)
+    Path(args.out).write_text(json.dumps(results, indent=1))
+    passed = sum(r['ok'] for r in results.values())
+    print(f'RESULT {passed} of {len(results)} booted', flush=True)
+
+
 def references(data):
     """The (class, method) pairs a class file's constant pool names."""
     count = struct.unpack('>H', data[8:10])[0]
@@ -524,13 +629,25 @@ def main():
     b.add_argument('--case', action='append', default=[])
     g = sub.add_parser('play')
     g.add_argument('--jars', help='no JVM without it')
+    g.add_argument('--seed', type=int, default=1)
     g.add_argument('--scratch', help='reuse this folder: its world and settings')
     g.add_argument('--opts', default='--enable-native-access=ALL-UNNAMED')
     g.add_argument('--dev-mod', action='append', default=[])
     g.add_argument('commands', nargs='*')
     t = sub.add_parser('bridges')
+    t.add_argument('--extra-jars', help='also load these, to see them live with the bridges')
+    t.add_argument('--seed', type=int, default=1)
     t.add_argument('--opts', default='--enable-native-access=ALL-UNNAMED')
     t.add_argument('--scratch')
+    l = sub.add_parser('libraries')
+    l.add_argument('--top', type=int, default=60)
+    l.add_argument('--jobs', type=int, default=4)
+    l.add_argument('--timeout', type=int, default=180)
+    l.add_argument('--opts', default='--enable-native-access=ALL-UNNAMED -Xmx2g')
+    l.add_argument('--out', default=str(LOCAL / 'libraries.json'))
+    f = sub.add_parser('fetch', help='a Modrinth project and its required dependencies, linked into a folder')
+    f.add_argument('project')
+    f.add_argument('--out', required=True)
     c = sub.add_parser('surface')
     c.add_argument('--jars', required=True)
     c.add_argument('--top', type=int, default=40)
@@ -553,6 +670,15 @@ def main():
         surface(args)
     elif args.command == 'bridges':
         bridges(args)
+    elif args.command == 'libraries':
+        libraries(args)
+    elif args.command == 'fetch':
+        folder = Path(args.out)
+        folder.mkdir(parents=True, exist_ok=True)
+        for jar in fetch_mod(args.project, {}) or []:
+            if not (folder / jar.name).exists():
+                (folder / jar.name).symlink_to(jar.resolve())
+            print(jar.name)
     elif args.command == 'check':
         check_bridges()
     else:

@@ -477,6 +477,8 @@ impl Game<'_> {
         error_text: &str,
     ) {
         let _ = (context, phase, error_text);
+        #[cfg(feature = "java-mods")]
+        self.java_world_phase(matches!(phase, WorldPhase::WorldOpenReady));
     }
     /// The authoritative server tick's phases: `ServerTickStart` before any
     /// level is ticked (NeoForge's `ServerTickEvent.Pre`), `ServerTickEnd`
@@ -490,6 +492,8 @@ impl Game<'_> {
         phase: ServerTickPhase,
     ) {
         let _ = (context, phase);
+        #[cfg(feature = "java-mods")]
+        self.java_server_tick(!matches!(phase, ServerTickPhase::ServerTickStart { .. }));
     }
     /// The HUD (not drawn under F1), after the minimap: place a box with
     /// `corners.place` (boxes stack away from their edge) and draw it with
@@ -741,7 +745,9 @@ impl Game<'_> {
         state: BlockStateId,
         canceled: &mut bool,
     ) {
-        let _ = (pos, state, canceled);
+        let _ = (pos, state, &canceled);
+        #[cfg(feature = "java-mods")]
+        self.java_break_event(pos, canceled);
     }
     /// A player placed `stack` as the block `state` at `pos`: where
     /// `BlockItem.place` set it, before the stack shrinks. It only hears; a
@@ -809,7 +815,9 @@ impl Game<'_> {
         pos: [f64; 3],
         canceled: &mut bool,
     ) {
-        let _ = (entity, kind, pos, canceled);
+        let _ = (entity, kind, pos, &canceled);
+        #[cfg(feature = "java-mods")]
+        self.java_attack_event(entity, canceled);
     }
 }
 

@@ -18,7 +18,11 @@ final class ChecksEntities {
         Level level = context.getLevel();
         Player player = context.getPlayer();
         AABB box = new AABB(area).inflate(3);
-        Checks.check("entities_empty_area", () -> level.getEntitiesOfClass(ItemEntity.class, box).isEmpty());
+        Checks.check("entities_empty_area", () -> {
+            var found = level.getEntitiesOfClass(ItemEntity.class, box);
+            if (!found.isEmpty()) System.out.println("entities_empty_area found " + found);
+            return found.isEmpty();
+        });
         Checks.check("player_in_own_box", () -> level.getEntitiesOfClass(Player.class, player.getBoundingBox().inflate(1)).contains(player));
         Checks.check("nearest_player", () -> level.getNearestPlayer(player.getX(), player.getY(), player.getZ(), 5, false) == player);
         Checks.check("server_entity_lookup", () -> ((net.minecraft.server.level.ServerLevel) level).getEntity(player.getUUID()) == player);
@@ -27,6 +31,8 @@ final class ChecksEntities {
         Checks.check("spawned_item_visible", () -> level.getEntitiesOfClass(ItemEntity.class, box).stream().anyMatch(e -> e.getItem().is(Items.DIAMOND) && e.getItem().getCount() == 2));
         var chicken = EntityTypes.CHICKEN.create(level, net.minecraft.world.entity.EntitySpawnReason.COMMAND);
         chicken.setPos(area.getX() + 0.5, area.getY() + 1, area.getZ() + 2.5);
+        // It stays put to be found later, as a live one wanders out of the box.
+        chicken.setNoAi(true);
         Checks.check("spawn_mob", () -> level.addFreshEntity(chicken));
     }
 

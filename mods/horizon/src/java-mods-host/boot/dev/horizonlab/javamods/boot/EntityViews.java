@@ -66,7 +66,10 @@ public final class EntityViews implements LevelEntityGetter<Entity> {
                     CompoundTag tag = NbtIo.read(new DataInputStream(new ByteArrayInputStream(nbt)), NbtAccounter.unlimitedHeap());
                     var input = TagValueInput.create(ProblemReporter.DISCARDING, level.registryAccess(), tag);
                     Entity entity = EntityType.create(input, level, new EntitySpawnRequest(EntitySpawnReason.LOAD, true)).orElse(null);
-                    if (entity == null) continue;
+                    if (entity == null) {
+                        System.err.println("Horizon: no Java entity for a saved form: " + tag);
+                        continue;
+                    }
                     entity.setId(id);
                     view = new View(entity, save(entity));
                     VIEWS.put(id, view);
@@ -126,6 +129,10 @@ public final class EntityViews implements LevelEntityGetter<Entity> {
             U cast = type.tryCast(entity);
             if (cast != null && consumer.accept(cast).shouldAbort()) return;
         }
+    }
+
+    static void abandon() {
+        VIEWS.clear();
     }
 
     /** At the end of a call: entities it changed and removed, then none held, since Horizon moves them between calls. */
