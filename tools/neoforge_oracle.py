@@ -21,9 +21,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL = ROOT / '.local' / 'neoforge-oracle'
-SOURCE = ROOT / 'mods' / 'horizon' / 'src' / 'neoforge-oracle'
 # ATM10 8.x: Minecraft 1.21.1 on NeoForge 21.1.259 (docs/modpacks.md).
 NEOFORGE = os.environ.get('HORIZON_NEOFORGE', '21.1.259')
+SOURCE = ROOT / 'mods' / 'horizon' / 'src' / ('neoforge-oracle-26' if NEOFORGE.startswith('26.') else 'neoforge-oracle')
 MAVEN = 'https://maven.neoforged.net/releases/net/neoforged/neoforge'
 
 
@@ -134,7 +134,7 @@ def classpath(home):
 
 def build(home, source=SOURCE, name='horizon-oracle.jar', cp=None):
     """A dev-only mod jar (by default the exporter), rebuilt when its sources change."""
-    out = LOCAL / 'build'
+    out = LOCAL / 'build' / NEOFORGE
     jar = out / name
     sources = sorted((source / 'java').rglob('*.java'))
     resources = sorted(p for p in (source / 'resources').rglob('*') if p.is_file())
