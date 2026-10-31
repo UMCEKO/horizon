@@ -90,7 +90,7 @@ def host(run, opts, ops, facts=None):
            'HORIZON_JAVA_RUN': str(run), 'HORIZON_JAVA_HOST_JAR': str(HOST_JAR), 'HORIZON_JAVA_OPTS': opts}
     if facts:
         env['HORIZON_JAVA_FACTS'] = str(Path(facts).resolve())
-    return subprocess.run([str(TARGET / 'fast' / 'horizon-java-host'), *ops], env=env, capture_output=True, text=True)
+    return subprocess.run([str(TARGET / 'fast' / 'horizon-java-host'), *ops], env=env, cwd=run, capture_output=True, text=True)
 
 
 def stock(run):
@@ -441,7 +441,7 @@ def boot_one(name, jars, opts, timeout):
            'HORIZON_JAVA_RUN': str(run), 'HORIZON_JAVA_HOST_JAR': str(HOST_JAR), 'HORIZON_JAVA_OPTS': opts}
     began = time.perf_counter()
     try:
-        p = subprocess.run([str(TARGET / 'fast' / 'horizon-java-host'), 'world', 'exit'], env=env, capture_output=True, text=True, errors='replace', timeout=timeout)
+        p = subprocess.run([str(TARGET / 'fast' / 'horizon-java-host'), 'world', 'exit'], env=env, cwd=run, capture_output=True, text=True, errors='replace', timeout=timeout)
     except subprocess.TimeoutExpired as e:
         return False, 'hung: ' + ((e.stdout or b'').decode(errors='replace').strip().splitlines() or [''])[-1][:200], timeout
     took = time.perf_counter() - began
