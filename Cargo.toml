@@ -1,7 +1,8 @@
 [workspace]
-exclude = ["launcher", "crates/horizon-telemetry-server", "crates/horizon-mod-registry", "crates/horizon-java-host", "third_party/wgpu-hal"]
+exclude = ["launcher", "crates/horizon-telemetry-server", "crates/horizon-mod-registry", "third_party/wgpu-hal"]
 members = [
     "crates/horizon-core",
+    "crates/horizon-java-host",
     "crates/horizon-dualsense",
     "crates/horizon-threads",
     "crates/horizon-hdr",

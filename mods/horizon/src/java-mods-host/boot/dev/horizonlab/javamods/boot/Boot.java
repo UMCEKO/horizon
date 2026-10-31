@@ -51,6 +51,7 @@ public final class Boot {
         ServerModLoader.load(false);
         Host.mark("mod_loading_done");
         Host.entry = Boot::op;
+        Host.handler = GameBridge::call;
     }
 
     static RegistryAccess access() {
@@ -71,6 +72,8 @@ public final class Boot {
                 case "stats" -> stats();
                 case "shapes" -> ShapeBridge.report();
                 case "nmt" -> nmt();
+                case "use_probe" -> GameBridge.probe(arg, false);
+                case "use_probe_sneaking" -> GameBridge.probe(arg, true);
                 case "exit" -> { System.exit(0); yield ""; }
                 default -> "unknown op " + op;
             };

@@ -1,21 +1,7 @@
-mod shapes;
-
-use jni::objects::{JClass, JObject, JString, JValue};
-use jni::{InitArgsBuilder, JNIEnv, JNIVersion, JavaVM, NativeMethod};
-use std::ffi::c_void;
-use std::sync::Mutex;
+use horizon_java_host::{create_vm, js, register_natives, run_fml};
+use jni::JNIEnv;
+use jni::objects::{JString, JValue};
 use std::time::Instant;
-
-static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
-fn js(env: &mut JNIEnv, s: &JString) -> String {
-    env.get_string(s).map(|x| x.into()).unwrap_or_default()
-}
-
-extern "system" fn n_on_event(mut env: JNIEnv, _c: JClass, s: JString) {
-    let s = js(&mut env, &s);
-    println!("[rust] listener: {s}");
-    EVENTS.lock().unwrap().push(s);
-}
 
 fn status(key: &str) -> u64 {
     let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
@@ -82,94 +68,19 @@ fn call(env: &mut JNIEnv, op: &str, arg: &str) -> String {
     js(env, &JString::from(r))
 }
 
-fn create_vm(run_dir: &str) -> (JavaVM, Vec<String>) {
-    // the JVM options of NeoForge's own unix_args.txt, minus the launcher-only parts
-    let neoforge = std::env::var("HORIZON_NEOFORGE").unwrap();
-    let args = std::fs::read_to_string(format!(
-        "{run_dir}/libraries/net/neoforged/neoforge/{neoforge}/unix_args.txt"
-    ))
-    .unwrap();
-    let lines: Vec<&str> = args.lines().collect();
-    let mut b = InitArgsBuilder::new().version(JNIVersion::V8);
-    let mut prog = vec![];
-    let mut i = 0;
-    let host_jar = std::env::var("HORIZON_JAVA_HOST_JAR").unwrap();
-    while i < lines.len() {
-        let l = lines[i].trim();
-        if l == "-classpath" {
-            b = b.option(format!(
-                "-Djava.class.path={}:{}",
-                lines[i + 1].trim(),
-                host_jar
-            ));
-            i += 2;
-            continue;
-        }
-        if let Some((a, rest)) = l.split_once(' ') {
-            if a == "--add-opens" || a == "--add-exports" {
-                b = b.option(format!("{a}={rest}"));
-            } else if a.starts_with("--fml") {
-                prog.push(a.to_string());
-                prog.push(rest.to_string());
-            }
-        } else if l.starts_with('-') {
-            b = b.option(l);
-        } else if l == "net.neoforged.fml.startup.Server" {
-        }
-        i += 1;
-    }
-    let extra = std::env::var("HORIZON_JAVA_OPTS").unwrap_or_default();
-    for o in extra.split_whitespace() {
-        b = b.option(o);
-    }
-    (JavaVM::new(b.build().unwrap()).expect("JavaVM::new"), prog)
-}
-
 fn main() {
     let t0 = Instant::now();
     let run_dir = std::env::var("HORIZON_JAVA_RUN").unwrap();
-    std::env::set_current_dir(&run_dir).unwrap();
     let ops: Vec<String> = std::env::args().skip(1).collect();
     let rss_before = status("VmRSS");
     let t = Instant::now();
     let (vm, prog) = create_vm(&run_dir);
     let t_create = ms(t);
     let mut env = vm.attach_current_thread_permanently().unwrap();
-    {
-        let c = env.find_class("dev/horizonlab/javamods/host/Host").unwrap();
-        let ms_: Vec<NativeMethod> = vec![
-            NativeMethod {
-                name: "onEvent".into(),
-                sig: "(Ljava/lang/String;)V".into(),
-                fn_ptr: n_on_event as *mut c_void,
-            },
-            NativeMethod {
-                name: "shapeFlags".into(),
-                sig: "([D[D[D[Z)I".into(),
-                fn_ptr: shapes::n_shape_flags as *mut c_void,
-            },
-        ];
-        env.register_native_methods(&c, &ms_).unwrap();
-    }
+    register_natives(&mut env);
     let rss_vm = status("VmRSS");
     let t = Instant::now();
-    let jprog = env
-        .new_object_array(prog.len() as i32, "java/lang/String", JObject::null())
-        .unwrap();
-    for (i, p) in prog.iter().enumerate() {
-        let s = env.new_string(p).unwrap();
-        env.set_object_array_element(&jprog, i as i32, s).unwrap();
-    }
-    env.call_static_method(
-        "dev/horizonlab/javamods/host/Host",
-        "run",
-        "([Ljava/lang/String;)V",
-        &[JValue::Object(&jprog)],
-    )
-    .unwrap_or_else(|e| {
-        env.exception_describe().ok();
-        panic!("Host.run: {e}")
-    });
+    run_fml(&mut env, &prog);
     check(&mut env, "run");
     let t_boot = ms(t);
     let t_point = ms(t0);

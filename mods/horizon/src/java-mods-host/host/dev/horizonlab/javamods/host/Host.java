@@ -11,6 +11,7 @@ import net.neoforged.fml.startup.Entrypoint;
 public final class Host extends Entrypoint {
     public static final Map<String, Long> MARKS = new LinkedHashMap<>();
     public static volatile BiFunction<String, String, String> entry;
+    public static volatile BiFunction<String, byte[], byte[]> handler;
     static long t0;
 
     private Host() {}
@@ -36,6 +37,10 @@ public final class Host extends Entrypoint {
         MethodHandle main = createMainMethodCallable(result, "dev.horizonlab.javamods.boot.Boot");
         main.invokeExact(new String[0]);
         mark("boot_returned");
+    }
+
+    public static byte[] handle(String op, byte[] input) {
+        return handler.apply(op, input);
     }
 
     public static String call(String op, String arg) {

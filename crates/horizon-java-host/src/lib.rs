@@ -1,0 +1,187 @@
+//! Real NeoForge and real mod jars in a JVM embedded in this process (`docs/java-mods.md`).
+
+pub mod shapes;
+pub mod wire;
+
+use jni::objects::{JByteArray, JClass, JObject, JString, JValue};
+use jni::{InitArgsBuilder, JNIEnv, JNIVersion, JavaVM, NativeMethod};
+use std::collections::HashSet;
+use std::ffi::c_void;
+use std::sync::{LazyLock, Mutex};
+
+const HOST: &str = "dev/horizonlab/javamods/host/Host";
+static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+pub fn js(env: &mut JNIEnv, s: &JString) -> String {
+    env.get_string(s).map(|x| x.into()).unwrap_or_default()
+}
+
+extern "system" fn n_on_event(mut env: JNIEnv, _c: JClass, s: JString) {
+    let s = js(&mut env, &s);
+    println!("[rust] listener: {s}");
+    EVENTS.lock().unwrap().push(s);
+}
+
+/// The JVM options of NeoForge's own `unix_args.txt`, minus the launcher-only parts, and FML's program arguments.
+pub fn create_vm(run_dir: &str) -> (JavaVM, Vec<String>) {
+    let neoforge = std::env::var("HORIZON_NEOFORGE").unwrap();
+    let args = std::fs::read_to_string(format!(
+        "{run_dir}/libraries/net/neoforged/neoforge/{neoforge}/unix_args.txt"
+    ))
+    .unwrap();
+    let lines: Vec<&str> = args.lines().collect();
+    let mut b = InitArgsBuilder::new().version(JNIVersion::V8);
+    let mut prog = vec!["--gameDir".to_string(), run_dir.to_string()];
+    let mut i = 0;
+    let host_jar = std::env::var("HORIZON_JAVA_HOST_JAR").unwrap();
+    while i < lines.len() {
+        let l = lines[i].trim();
+        if l == "-classpath" {
+            let classpath: Vec<String> = lines[i + 1]
+                .trim()
+                .split(':')
+                .map(|entry| format!("{run_dir}/{entry}"))
+                .collect();
+            b = b.option(format!(
+                "-Djava.class.path={}:{host_jar}",
+                classpath.join(":")
+            ));
+            i += 2;
+            continue;
+        }
+        if let Some((a, rest)) = l.split_once(' ') {
+            if a == "--add-opens" || a == "--add-exports" {
+                b = b.option(format!("{a}={rest}"));
+            } else if a.starts_with("--fml") {
+                prog.push(a.to_string());
+                prog.push(rest.to_string());
+            }
+        } else if l.starts_with('-') {
+            b = b.option(l.replace("=libraries", &format!("={run_dir}/libraries")));
+        }
+        i += 1;
+    }
+    let extra = std::env::var("HORIZON_JAVA_OPTS").unwrap_or_default();
+    for o in extra.split_whitespace() {
+        b = b.option(o);
+    }
+    (JavaVM::new(b.build().unwrap()).expect("JavaVM::new"), prog)
+}
+
+pub fn register_natives(env: &mut JNIEnv) {
+    let c = env.find_class(HOST).unwrap();
+    let methods = [
+        NativeMethod {
+            name: "onEvent".into(),
+            sig: "(Ljava/lang/String;)V".into(),
+            fn_ptr: n_on_event as *mut c_void,
+        },
+        NativeMethod {
+            name: "shapeFlags".into(),
+            sig: "([D[D[D[Z)I".into(),
+            fn_ptr: shapes::n_shape_flags as *mut c_void,
+        },
+    ];
+    env.register_native_methods(&c, &methods).unwrap();
+}
+
+/// Starts FML and loads the mods, on this thread.
+pub fn run_fml(env: &mut JNIEnv, prog: &[String]) {
+    let args = env
+        .new_object_array(prog.len() as i32, "java/lang/String", JObject::null())
+        .unwrap();
+    for (i, p) in prog.iter().enumerate() {
+        let s = env.new_string(p).unwrap();
+        env.set_object_array_element(&args, i as i32, s).unwrap();
+    }
+    env.call_static_method(
+        HOST,
+        "run",
+        "([Ljava/lang/String;)V",
+        &[JValue::Object(&args)],
+    )
+    .unwrap_or_else(|e| {
+        env.exception_describe().ok();
+        panic!("Host.run: {e}")
+    });
+}
+
+pub struct Host {
+    vm: JavaVM,
+    items: HashSet<String>,
+}
+
+static RUNNING: LazyLock<Option<Host>> = LazyLock::new(|| {
+    let run_dir = std::env::var("HORIZON_JAVA_RUN").ok()?;
+    let began = std::time::Instant::now();
+    let (vm, prog) = create_vm(&run_dir);
+    {
+        let mut env = vm.attach_current_thread_permanently().unwrap();
+        register_natives(&mut env);
+        run_fml(&mut env, &prog);
+    }
+    let mut host = Host {
+        vm,
+        items: HashSet::new(),
+    };
+    host.request("prepare", &[]);
+    let list = host.request("items", &[]).unwrap_or_default();
+    let mut list = wire::In(&list);
+    for _ in 0..list.int().unwrap_or(0) {
+        host.items.extend(list.text().map(str::to_string));
+    }
+    println!(
+        "Horizon: Java mods ready in {:.1}s, {} items",
+        began.elapsed().as_secs_f64(),
+        host.items.len()
+    );
+    Some(host)
+});
+
+/// Starts the JVM behind the game's back when this run has Java mods, so a title screen never waits for it.
+pub fn start() {
+    if std::env::var_os("HORIZON_JAVA_RUN").is_some() {
+        let _ = std::thread::Builder::new()
+            .name("Java mods".into())
+            .stack_size(16 << 20)
+            .spawn(|| {
+                LazyLock::force(&RUNNING);
+            });
+    }
+}
+
+/// The running host, once the mods have loaded (this waits for them); None when this run has no Java mods.
+pub fn get() -> Option<&'static Host> {
+    RUNNING.as_ref()
+}
+
+impl Host {
+    /// Whether the item is one a Java mod registered.
+    pub fn owns_item(&self, id: &str) -> bool {
+        self.items.contains(id)
+    }
+
+    /// One call into `GameBridge`; None when it threw, which its own stack trace explains.
+    pub fn request(&self, op: &str, input: &[u8]) -> Option<Vec<u8>> {
+        let mut env = self.vm.attach_current_thread_permanently().ok()?;
+        env.with_local_frame(8, |env| -> jni::errors::Result<_> {
+            let name = env.new_string(op)?;
+            let bytes = env.byte_array_from_slice(input)?;
+            let out = env
+                .call_static_method(
+                    HOST,
+                    "handle",
+                    "(Ljava/lang/String;[B)[B",
+                    &[JValue::Object(&name), JValue::Object(&bytes)],
+                )?
+                .l()?;
+            env.convert_byte_array(JByteArray::from(out))
+        })
+        .inspect_err(|_| {
+            let _ = env.exception_describe();
+            let _ = env.exception_clear();
+        })
+        .ok()
+        .filter(|out| !out.is_empty())
+    }
+}

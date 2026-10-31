@@ -586,6 +586,9 @@ impl Game<'_> {
         // IntegratedServer runs the server mods; the window the client mods.
         self.mods.dev = self.options.dev_mods.clone();
         self.start_mods();
+        // A world opens with its Java mods loaded, so a tick never waits for them.
+        #[cfg(feature = "java-mods")]
+        horizon_java_host::get();
         // Math.max(2, options.renderDistance): past vanilla's 32 when the
         // window's render distance is (Horizon's options go to 64).
         let view_distance = self.settings.render_distance.max(2);

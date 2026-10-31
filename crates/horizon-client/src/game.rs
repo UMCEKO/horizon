@@ -124,6 +124,8 @@ mod integrated;
 mod interactions;
 mod item_draw;
 mod item_particles;
+#[cfg(feature = "java-mods")]
+mod java_mods;
 mod jigsaw_blocks;
 mod jigsaw_edit;
 mod jukebox;
@@ -5161,6 +5163,10 @@ impl Game<'_> {
         }
         if !claimed && !on_block {
             self.native_use_item(&stack, &mut claimed);
+        }
+        #[cfg(feature = "java-mods")]
+        if !claimed && !on_block {
+            self.java_use_item(&stack, &mut claimed);
         }
         if claimed {
             self.swing_arm();
@@ -17234,6 +17240,8 @@ pub fn run() -> Result<()> {
     let Some(mut options) = Options::read()? else {
         return Ok(());
     };
+    #[cfg(feature = "java-mods")]
+    horizon_java_host::start();
     if options.execution_role == execution_role::ExecutionRole::DedicatedServer
         && !dedicated::preflight(&mut options)?
     {
