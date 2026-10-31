@@ -1,7 +1,10 @@
 //! Real NeoForge and real mod jars in a JVM embedded in this process (`docs/java-mods.md`).
 
+pub mod bridge;
 pub mod shapes;
 pub mod wire;
+
+pub use jni;
 
 use jni::objects::{JByteArray, JClass, JObject, JString, JValue};
 use jni::{InitArgsBuilder, JNIEnv, JNIVersion, JavaVM, NativeMethod};
@@ -81,12 +84,43 @@ pub fn register_natives(env: &mut JNIEnv) {
             sig: "([D[D[D[Z)I".into(),
             fn_ptr: shapes::n_shape_flags as *mut c_void,
         },
+        NativeMethod {
+            name: "link".into(),
+            sig: "(Ljava/lang/Class;)V".into(),
+            fn_ptr: bridge::n_link as *mut c_void,
+        },
     ];
     env.register_native_methods(&c, &methods).unwrap();
 }
 
+/// Tells the class processor which methods to serve from Rust, before FML loads a class.
+fn publish_bridges(env: &mut JNIEnv) {
+    let lines: Vec<String> = bridge::TABLE
+        .get()
+        .into_iter()
+        .flatten()
+        .map(bridge::Bridge::line)
+        .collect();
+    let array = env
+        .new_object_array(lines.len() as i32, "java/lang/String", JObject::null())
+        .unwrap();
+    for (i, line) in lines.iter().enumerate() {
+        let line = env.new_string(line).unwrap();
+        env.set_object_array_element(&array, i as i32, line)
+            .unwrap();
+    }
+    env.call_static_method(
+        HOST,
+        "publish",
+        "([Ljava/lang/String;)V",
+        &[JValue::Object(&array)],
+    )
+    .unwrap();
+}
+
 /// Starts FML and loads the mods, on this thread.
 pub fn run_fml(env: &mut JNIEnv, prog: &[String]) {
+    publish_bridges(env);
     let args = env
         .new_object_array(prog.len() as i32, "java/lang/String", JObject::null())
         .unwrap();
@@ -120,27 +154,29 @@ static RUNNING: LazyLock<Option<Host>> = LazyLock::new(|| {
         register_natives(&mut env);
         run_fml(&mut env, &prog);
     }
+    let booted = began.elapsed().as_secs_f64();
     let mut host = Host {
         vm,
         items: HashSet::new(),
     };
     host.request("prepare", &[]);
+    let prepared = began.elapsed().as_secs_f64();
     let list = host.request("items", &[]).unwrap_or_default();
     let mut list = wire::In(&list);
     for _ in 0..list.int().unwrap_or(0) {
         host.items.extend(list.text().map(str::to_string));
     }
     println!(
-        "Horizon: Java mods ready in {:.1}s, {} items",
-        began.elapsed().as_secs_f64(),
+        "Horizon: Java mods ready in {prepared:.1}s (mods {booted:.1}s), {} items",
         host.items.len()
     );
     Some(host)
 });
 
 /// Starts the JVM behind the game's back when this run has Java mods, so a title screen never waits for it.
-pub fn start() {
+pub fn start(bridges: Vec<bridge::Bridge>) {
     if std::env::var_os("HORIZON_JAVA_RUN").is_some() {
+        let _ = bridge::TABLE.set(bridges);
         let _ = std::thread::Builder::new()
             .name("Java mods".into())
             .stack_size(16 << 20)

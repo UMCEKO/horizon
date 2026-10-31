@@ -37,16 +37,48 @@ impl Game<'_> {
 
     /// `ServerPlayerGameMode.useItem` of an item a Java mod registered.
     pub(super) fn java_use_item(&mut self, stack: &ItemStack, claimed: &mut bool) {
+        self.java_use(stack, None, claimed);
+    }
+
+    /// `ItemStack.useOn`, the same way, once the block let the click through.
+    pub(super) fn java_use_item_on(&mut self, stack: &ItemStack, hit: &Hit, claimed: &mut bool) {
+        self.java_use(stack, Some(hit), claimed);
+    }
+
+    fn java_use(&mut self, stack: &ItemStack, hit: Option<&Hit>, claimed: &mut bool) {
         let Some(host) = horizon_java_host::get() else {
             return;
         };
         if !host.owns_item(&stack.item) {
             return;
         }
-        let Some(request) = self.java_use_request() else {
+        self.java_bind_states();
+        let Some(mut request) = self.java_use_request() else {
             return;
         };
-        let Some(reply) = host.request("use_item", &request) else {
+        if let Some(hit) = hit {
+            let mut out = Out::default();
+            out.long(BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]).pack());
+            out.int(match hit.face {
+                [0, -1, 0] => 0,
+                [0, 1, 0] => 1,
+                [0, 0, -1] => 2,
+                [0, 0, 1] => 3,
+                [-1, 0, 0] => 4,
+                _ => 5,
+            });
+            out.double(hit.point[0]);
+            out.double(hit.point[1]);
+            out.double(hit.point[2]);
+            request.extend(out.0);
+        }
+        let op = if hit.is_some() {
+            "use_item_on"
+        } else {
+            "use_item"
+        };
+        let reply = horizon_java_host::bridge::with_active(self, || host.request(op, &request));
+        let Some(reply) = reply else {
             return;
         };
         if self.java_apply_use(&reply, claimed).is_none() {
@@ -55,6 +87,62 @@ impl Game<'_> {
                 stack.item
             );
         }
+    }
+
+    /// Java's block state ids against this game's, once.
+    pub(super) fn java_bind_states(&mut self) {
+        use horizon_java_host::bridge::{STATES, StateMap};
+        let Some(host) = horizon_java_host::get() else {
+            return;
+        };
+        if STATES.get().is_some() {
+            return;
+        }
+        let Some(listed) = host.request("states", &[]) else {
+            return;
+        };
+        let registry = &self.pack.assets.registry;
+        let mut map = StateMap {
+            to_horizon: Vec::new(),
+            to_java: Vec::new(),
+            java_air: 0,
+        };
+        let mut listed = In(&listed);
+        let (Some(count), Some(air)) = (listed.int(), listed.int()) else {
+            return;
+        };
+        map.java_air = air;
+        map.to_horizon.resize(count as usize, None);
+        for _ in 0..count {
+            let read = (|| {
+                let java = listed.int()?;
+                let name = listed.text()?.to_string();
+                let mut properties = Vec::new();
+                for _ in 0..listed.int()? {
+                    properties.push((listed.text()?.to_string(), listed.text()?.to_string()));
+                }
+                Some((java, name, properties))
+            })();
+            let Some((java, name, properties)) = read else {
+                return;
+            };
+            let state = horizon_world::chunk::BlockState {
+                name,
+                properties: properties.into_iter().collect(),
+            };
+            let Ok(id) = registry.resolve(&state) else {
+                continue;
+            };
+            if let Some(cell) = map.to_horizon.get_mut(java as usize) {
+                *cell = Some(id);
+            }
+            let at = id.0 as usize;
+            if map.to_java.len() <= at {
+                map.to_java.resize(at + 1, air);
+            }
+            map.to_java[at] = java;
+        }
+        let _ = STATES.set(map);
     }
 
     fn java_use_request(&mut self) -> Option<Vec<u8>> {

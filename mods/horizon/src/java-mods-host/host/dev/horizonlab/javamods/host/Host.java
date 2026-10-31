@@ -12,6 +12,8 @@ public final class Host extends Entrypoint {
     public static final Map<String, Long> MARKS = new LinkedHashMap<>();
     public static volatile BiFunction<String, String, String> entry;
     public static volatile BiFunction<String, byte[], byte[]> handler;
+    /** The methods the class processor serves from Rust, set before FML starts. */
+    public static volatile String[] bridges = new String[0];
     static long t0;
 
     private Host() {}
@@ -19,6 +21,11 @@ public final class Host extends Entrypoint {
     // natives are registered by the Rust host on this class
     public static native void onEvent(String what);
     public static native int shapeFlags(double[] x, double[] y, double[] z, boolean[] occupied);
+    public static native void link(Class<?> target);
+
+    public static void publish(String[] table) {
+        bridges = table;
+    }
 
     public static void mark(String name) {
         MARKS.put(name, (System.nanoTime() - t0) / 1000);

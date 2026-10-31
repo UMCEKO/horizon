@@ -789,7 +789,7 @@ impl Game<'_> {
             .then_some(Target::Mob(id))
     }
     /// The highest block of a heightmap type at a column (`Level.getHeight`).
-    fn heightmap_at(&self, kind: &str, x: i32, z: i32) -> i32 {
+    pub(in crate::game) fn heightmap_at(&self, kind: &str, x: i32, z: i32) -> i32 {
         let top = self.world.top_y();
         for y in (self.world.bottom_y()..top).rev() {
             let state = self.world.block(x, y, z);

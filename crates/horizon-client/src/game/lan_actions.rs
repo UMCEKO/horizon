@@ -1396,7 +1396,7 @@ impl Game<'_> {
                 {
                     let logged = self.world.block_log.as_ref().map_or(0, Vec::len);
                     let heard = self.audio.capture.as_ref().map_or(0, Vec::len);
-                    let used = self.as_guest(host, conn, |g| {
+                    let used = self.as_guest_messaged(host, conn, |g| {
                         let attempt = g.was_block_placement_attempt(hand);
                         g.forced_hit = Some(hit);
                         g.guest_use = Some(GuestUse::OnBlock(hand));
@@ -1446,7 +1446,7 @@ impl Game<'_> {
                 let g = &mut host.hub.guests[gi];
                 (g.yaw, g.pitch) = (p.yaw, p.pitch);
                 let heard = self.audio.capture.as_ref().map_or(0, Vec::len);
-                let used = self.as_guest(host, conn, |g| {
+                let used = self.as_guest_messaged(host, conn, |g| {
                     // A horn's sound, inline instruments included.
                     let horn = g.with_hand(hand, |g| {
                         let held = g.held()?;

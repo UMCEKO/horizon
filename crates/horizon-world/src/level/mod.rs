@@ -941,6 +941,15 @@ impl Behaviours {
     ) -> bool {
         self.sim(level, ticks).has_neighbor_signal(pos)
     }
+    pub fn signal<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        direction: Direction,
+    ) -> i32 {
+        self.sim(level, ticks).signal(pos, direction)
+    }
     pub fn best_neighbor_signal<L: LevelAccess + ?Sized>(
         &self,
         level: &mut L,

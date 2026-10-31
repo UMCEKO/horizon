@@ -15,6 +15,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import net.minecraft.commands.Commands;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.Holder;
 import net.minecraft.core.RegistryAccess;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -43,13 +45,20 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.WorldDataConfiguration;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.level.dimension.BuiltinDimensionTypes;
 import net.minecraft.world.level.dimension.DimensionType;
 import net.minecraft.world.level.storage.TagValueOutput;
 import net.minecraft.world.level.storage.WritableLevelData;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.resource.ResourcePackLoader;
 import sun.reflect.ReflectionFactory;
 
@@ -72,7 +81,9 @@ public final class GameBridge {
             return switch (op) {
                 case "prepare" -> prepare();
                 case "items" -> items();
-                case "use_item" -> useItem(input);
+                case "states" -> states();
+                case "use_item" -> use(input, false);
+                case "use_item_on" -> use(input, true);
                 default -> throw new IllegalArgumentException(op);
             };
         } catch (Throwable t) {
@@ -103,6 +114,29 @@ public final class GameBridge {
         out.writeInt(ids.size());
         for (String id : ids) text(out, id);
         return bytes.toByteArray();
+    }
+
+    /** Every Java block state by id: name, then property and value pairs. */
+    private static byte[] states() throws IOException {
+        var bytes = new ByteArrayOutputStream();
+        var out = new DataOutputStream(bytes);
+        out.writeInt(Block.BLOCK_STATE_REGISTRY.size());
+        out.writeInt(Block.BLOCK_STATE_REGISTRY.getId(Blocks.AIR.defaultBlockState()));
+        for (BlockState state : Block.BLOCK_STATE_REGISTRY) {
+            out.writeInt(Block.BLOCK_STATE_REGISTRY.getId(state));
+            text(out, BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString());
+            var properties = state.getProperties();
+            out.writeInt(properties.size());
+            for (Property<?> property : properties) {
+                text(out, property.getName());
+                text(out, valueName(state, property));
+            }
+        }
+        return bytes.toByteArray();
+    }
+
+    private static <T extends Comparable<T>> String valueName(BlockState state, Property<T> property) {
+        return property.getName(state.getValue(property));
     }
 
     private static <T> T construct(Class<T> type, Constructor<?> parent, Object... args) throws ReflectiveOperationException {
@@ -173,6 +207,10 @@ public final class GameBridge {
     }
 
     private static byte[] useItem(byte[] input) throws Exception {
+        return use(input, false);
+    }
+
+    private static byte[] use(byte[] input, boolean onBlock) throws Exception {
         var in = new DataInputStream(new ByteArrayInputStream(input));
         var id = new UUID(in.readLong(), in.readLong());
         String name = text(in);
@@ -203,7 +241,15 @@ public final class GameBridge {
         }
         SOUNDS.clear();
         SPAWNED.clear();
-        InteractionResult result = player.gameMode.useItem(player, level, player.getItemInHand(hand), hand);
+        InteractionResult result;
+        if (onBlock) {
+            var pos = BlockPos.of(in.readLong());
+            var face = Direction.from3DDataValue(in.readInt());
+            var hit = new BlockHitResult(new Vec3(in.readDouble(), in.readDouble(), in.readDouble()), face, pos, false);
+            result = player.getItemInHand(hand).useOn(new UseOnContext(player, hand, hit));
+        } else {
+            result = player.gameMode.useItem(player, level, player.getItemInHand(hand), hand);
+        }
 
         var bytes = new ByteArrayOutputStream();
         var out = new DataOutputStream(bytes);

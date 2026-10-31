@@ -27,6 +27,8 @@ LOCAL = oracle.ROOT / '.local' / 'java-mods'
 TARGET = LOCAL / 'target'
 HOST_JAR = LOCAL / 'horizon-java-host.jar'
 BOOT_JAR = LOCAL / 'horizon-java-boot.jar'
+PLUGIN_JAR = LOCAL / 'horizon-java-plugin.jar'
+TEST_JAR = LOCAL / 'horizon-java-test.jar'
 
 
 def java_home():
@@ -39,14 +41,19 @@ def java_home():
 def build():
     home = oracle.install()
     LOCAL.mkdir(parents=True, exist_ok=True)
-    cp = oracle.classpath(home)
-    for name, jar, extra in (('host', HOST_JAR, ''), ('boot', BOOT_JAR, str(LOCAL / 'classes' / 'host'))):
+    cp = ':'.join(jar for jar in oracle.classpath(home).split(':') if 'installertools' not in jar)
+    host_classes = str(LOCAL / 'classes' / 'host')
+    for name, jar, extra in (('host', HOST_JAR, ''), ('plugin', PLUGIN_JAR, host_classes), ('boot', BOOT_JAR, host_classes), ('testmod', TEST_JAR, '')):
         classes = LOCAL / 'classes' / name
         shutil.rmtree(classes, ignore_errors=True)
         classes.mkdir(parents=True)
         sources = [str(p) for p in sorted((SOURCES / name).rglob('*.java'))]
         subprocess.run(['javac', '--release', '25', '-proc:none', '-nowarn', '-cp', f'{cp}:{extra}', '-d', str(classes), *sources], check=True)
         jar_args = ['jar', 'cf', str(jar), '-C', str(classes), '.']
+        if name == 'plugin':
+            manifest = LOCAL / 'plugin.manifest'
+            manifest.write_text('FMLModType: LIBRARY\n')
+            jar_args = ['jar', 'cfm', str(jar), str(manifest), '-C', str(classes), '.']
         if (SOURCES / name / 'res').exists():
             jar_args += ['-C', str(SOURCES / name / 'res'), '.']
         subprocess.run(jar_args, check=True)
@@ -66,6 +73,7 @@ def instance(name, jars, boot):
         (run / 'mods' / jar.name).symlink_to(jar.resolve())
     if boot:
         (run / 'mods' / BOOT_JAR.name).symlink_to(BOOT_JAR)
+        (run / 'mods' / PLUGIN_JAR.name).symlink_to(PLUGIN_JAR)
     return run
 
 
@@ -106,8 +114,8 @@ def rss_mb(pid):
     return int(re.search(r'VmRSS:\s+(\d+)', Path(f'/proc/{pid}/status').read_text()).group(1)) // 1024
 
 
-def play(args):
-    """The real game with these jars in its JVM, in scratch folders, driven by horizon-ctl commands; each reply is printed."""
+def session(args, drive):
+    """The real game with these jars in its JVM, in scratch folders; `drive` sends it horizon-ctl commands."""
     scratch = Path(args.scratch or tempfile.mkdtemp(prefix='horizon-java-mods-'))
     java = java_home()
     env = {**os.environ, 'JAVA_HOME': java, 'HORIZON_NEOFORGE': NEOFORGE, 'HORIZON_JAVA_HOST_JAR': str(HOST_JAR), 'HORIZON_JAVA_OPTS': args.opts,
@@ -126,14 +134,61 @@ def play(args):
     opened = subprocess.run(launch, env=env, check=True, cwd=scratch, capture_output=True, text=True)
     pid = json.loads(opened.stdout)['launch']['pid']
     print(f'world open after {time.perf_counter() - began:.1f} s, {rss_mb(pid)} MB', flush=True)
+
+    def send(line):
+        reply = subprocess.run([*ctl, *shlex.split(line)], env=env, capture_output=True, text=True, cwd=scratch)
+        return reply.stdout.strip() + reply.stderr.strip()
+
     try:
-        for line in args.commands:
-            reply = subprocess.run([*ctl, *shlex.split(line)], env=env, capture_output=True, text=True, cwd=scratch)
-            print(f'> {line}\n{reply.stdout.strip()}{reply.stderr.strip()}', flush=True)
+        drive(send)
         print(f'{rss_mb(pid)} MB after the commands', flush=True)
     finally:
         subprocess.run([*ctl, 'quit'], env=env, capture_output=True, cwd=scratch)
     print(f'scratch folder: {scratch}')
+
+
+def play(args):
+    def drive(send):
+        for line in args.commands:
+            print(f'> {line}\n{send(line)}', flush=True)
+
+    session(args, drive)
+
+
+def bridges(args):
+    """The test mod's wand on a real click: each block of the column it builds says one bridge answered as vanilla does."""
+    jars = Path(tempfile.mkdtemp(prefix='horizon-java-test-'))
+    (jars / TEST_JAR.name).symlink_to(TEST_JAR)
+    args.jars, args.scratch, args.dev_mod = str(jars), args.scratch, [str(SOURCES / 'testmod' / 'content')]
+    wrong = []
+
+    def drive(send):
+        x, y, z = json.loads(send('state'))['player']['block_pos']
+        base = (x + 3, y, z)
+        send(f'command fill {x + 1} {y - 1} {z - 2} {x + 5} {y + 12} {z + 2} air')
+        send(f'command setblock {base[0]} {base[1]} {base[2]} minecraft:stone')
+        send('give horizon_java_test:wand')
+        send('wait 20')
+        send('select horizon_java_test:wand')
+        send(f'look-at-block {base[0]} {base[1]} {base[2]} up')
+        send('wait 5')
+        print(send('use-item')[:200], flush=True)
+        send('wait 40')
+        expected = {(0, 1, 0): 'gold_block', (0, 2, 0): 'redstone_block', (0, 3, 0): 'emerald_block', (0, 4, 0): 'diamond_block', (0, 5, 0): 'lapis_block',
+                    (0, 6, 0): 'iron_block', (0, 7, 0): 'quartz_block', (0, 8, 0): 'sand', (0, 9, 0): 'air', (1, 1, 0): 'obsidian', (-1, 1, 0): 'glowstone'}
+        for offset, block in expected.items():
+            at = f'{base[0] + offset[0]} {base[1] + offset[1]} {base[2] + offset[2]}'
+            state = send(f'block {at}')
+            ok = f'minecraft:{block}' in state
+            print(f"  {offset}: want {block}: {'ok' if ok else 'WRONG ' + state[:160]}", flush=True)
+            wrong.extend([] if ok else [block])
+        if 'wand ok' not in send('messages'):
+            print('  no chat line', flush=True)
+            wrong.append('chat')
+
+    session(args, drive)
+    print('RESULT', 'all bridges answered' if not wrong else f'wrong at {wrong}')
+    sys.exit(1 if wrong else 0)
 
 
 def references(data):
@@ -203,12 +258,18 @@ def surface(args):
                 found.add('game' if '/horizon-client/src/game' in file else 'client' if '/horizon-client' in file else 'library')
         return found
 
+    table = (oracle.ROOT / 'crates' / 'horizon-client' / 'src' / 'game' / 'java_bridges.rs').read_text()
+    bound = {f'{owner}#{name}' for owner, name in re.findall(r'"([\w/$]+)"\.(\w+)\s+"\(', table)}
     print(f'{len(users)} vanilla methods called by {args.jars}')
     print(collections.Counter(status(k) for k in users).most_common())
     ported = [k for k in users if status(k) in ('ported', 'mapped', 'named', 'structural', 'linked')]
     print('their Rust ports live in', collections.Counter(next((h for h in ('library', 'client', 'game') if h in homes(k)), 'none') for k in ported).most_common())
-    ported.sort(key=lambda k: (-len(users[k]), -methods[k].get('size', 0)))
-    for key in ported[:args.top]:
+    ported = [k for k in ported if not methods[k].get('accessor') and methods[k].get('size', 99) > 4]
+    client = [k for k in ported if methods[k].get('client') or methods[k]['class'].startswith(('net/minecraft/client/', 'com/mojang/blaze3d'))]
+    print(f'worth serving from Rust: {len(ported)} ({len(client)} client only); bridged: {len(bound)}, of which these jars call {len(bound & users.keys())}')
+    open_ = [k for k in ported if k not in bound]
+    open_.sort(key=lambda k: (-len(users[k]), -methods[k].get('size', 0)))
+    for key in open_[:args.top]:
         print(len(users[key]), methods[key].get('size', 0), key.removeprefix('net/minecraft/'), status(key), sorted(homes(key)))
 
 
@@ -263,6 +324,9 @@ def main():
     g.add_argument('--opts', default='--enable-native-access=ALL-UNNAMED')
     g.add_argument('--dev-mod', action='append', default=[])
     g.add_argument('commands', nargs='*')
+    t = sub.add_parser('bridges')
+    t.add_argument('--opts', default='--enable-native-access=ALL-UNNAMED')
+    t.add_argument('--scratch')
     c = sub.add_parser('surface')
     c.add_argument('--jars', required=True)
     c.add_argument('--top', type=int, default=40)
@@ -278,6 +342,8 @@ def main():
         play(args)
     elif args.command == 'surface':
         surface(args)
+    elif args.command == 'bridges':
+        bridges(args)
     else:
         bench(args)
 

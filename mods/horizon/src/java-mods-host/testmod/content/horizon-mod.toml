@@ -1,0 +1,6 @@
+id = "horizon_java_test"
+name = "Horizon Java test"
+version = "1"
+api = "0.2"
+side = "both"
+capabilities = ["registries"]

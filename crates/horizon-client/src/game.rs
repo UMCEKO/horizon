@@ -125,6 +125,8 @@ mod interactions;
 mod item_draw;
 mod item_particles;
 #[cfg(feature = "java-mods")]
+mod java_bridges;
+#[cfg(feature = "java-mods")]
 mod java_mods;
 mod jigsaw_blocks;
 mod jigsaw_edit;
@@ -5160,6 +5162,10 @@ impl Game<'_> {
         let mut claimed = false;
         if let Some(hit) = block_hit {
             self.native_use_item_on(&stack, hit.pos, hit.face, &mut claimed);
+        }
+        #[cfg(feature = "java-mods")]
+        if !claimed && let Some(hit) = block_hit {
+            self.java_use_item_on(&stack, hit, &mut claimed);
         }
         if !claimed && !on_block {
             self.native_use_item(&stack, &mut claimed);
@@ -17241,7 +17247,7 @@ pub fn run() -> Result<()> {
         return Ok(());
     };
     #[cfg(feature = "java-mods")]
-    horizon_java_host::start();
+    horizon_java_host::start(java_bridges::bridges());
     if options.execution_role == execution_role::ExecutionRole::DedicatedServer
         && !dedicated::preflight(&mut options)?
     {
