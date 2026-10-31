@@ -1,0 +1,12 @@
+modLoader = "javafml"
+loaderVersion = "[4,)"
+license = "MIT"
+
+[[mods]]
+modId = "horizon_java"
+version = "1"
+displayName = "Horizon Java host"
+description = "Boots mods in Horizon's embedded JVM and serves heavy vanilla work from Rust."
+
+[[mixins]]
+config = "horizon_java.mixins.json"
