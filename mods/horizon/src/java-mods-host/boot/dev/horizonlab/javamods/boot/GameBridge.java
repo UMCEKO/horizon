@@ -204,6 +204,7 @@ public final class GameBridge {
         var parent = Level.class.getDeclaredConstructor(WritableLevelData.class, ResourceKey.class, RegistryAccess.class, Holder.class, boolean.class, boolean.class, long.class, int.class);
         level = construct(ServerLevel.class, parent, new ViewLevelData(), key, registries, holder, false, false, 0L, 1000000);
         ServerView.attach(server, level);
+        Inits.run(level, server, key, holder, level.getLevelData());
         LEVELS.put(id, level);
         return level;
     }
@@ -214,6 +215,8 @@ public final class GameBridge {
             player = construct(ServerPlayer.class, Player.class.getConstructor(Level.class, GameProfile.class), level, new GameProfile(id, name));
             ((ServerPlayerAccessor) player).horizon$gameMode(new ServerPlayerGameMode(player));
             ServerView.attach(server, player);
+            Inits.run(player, server, level, player.getGameProfile());
+            Inits.run(player.connection, server, player);
             PLAYERS.put(id, player);
         } else if (player.level() != level) {
             player.setServerLevel(level);

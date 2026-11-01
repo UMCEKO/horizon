@@ -80,7 +80,7 @@ fn main() {
     register_natives(&mut env);
     let rss_vm = status("VmRSS");
     let t = Instant::now();
-    run_fml(&mut env, &prog);
+    run_fml(&mut env, &prog, &run_dir);
     check(&mut env, "run");
     let t_boot = ms(t);
     let t_point = ms(t0);

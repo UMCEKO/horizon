@@ -27,50 +27,33 @@ extern "system" fn n_on_event(mut env: JNIEnv, _c: JClass, s: JString) {
     EVENTS.lock().unwrap().push(s);
 }
 
-/// The JVM options of NeoForge's own `unix_args.txt`, minus the launcher-only parts, and FML's program arguments.
+/// The JVM options, classpath and FML arguments `java_mods.py` wrote for this run, one `kind value` per line.
 pub fn create_vm(run_dir: &str) -> (JavaVM, Vec<String>) {
-    let neoforge = std::env::var("HORIZON_NEOFORGE").unwrap();
-    let args = std::fs::read_to_string(format!(
-        "{run_dir}/libraries/net/neoforged/neoforge/{neoforge}/unix_args.txt"
-    ))
-    .unwrap();
-    let lines: Vec<&str> = args.lines().collect();
+    let args = std::fs::read_to_string(format!("{run_dir}/horizon-java.args")).unwrap();
+    let host_jar = std::env::var("HORIZON_JAVA_HOST_JAR").unwrap();
     let mut b = InitArgsBuilder::new().version(JNIVersion::V8);
     let mut prog = vec!["--gameDir".to_string(), run_dir.to_string()];
-    let mut i = 0;
-    let host_jar = std::env::var("HORIZON_JAVA_HOST_JAR").unwrap();
-    while i < lines.len() {
-        let l = lines[i].trim();
-        if l == "-classpath" {
-            let classpath: Vec<String> = lines[i + 1]
-                .trim()
-                .split(':')
-                .map(|entry| format!("{run_dir}/{entry}"))
-                .collect();
-            b = b.option(format!(
-                "-Djava.class.path={}:{host_jar}",
-                classpath.join(":")
-            ));
-            i += 2;
-            continue;
-        }
-        if let Some((a, rest)) = l.split_once(' ') {
-            if a == "--add-opens" || a == "--add-exports" {
-                b = b.option(format!("{a}={rest}"));
-            } else if a.starts_with("--fml") {
-                prog.push(a.to_string());
-                prog.push(rest.to_string());
+    for line in args.lines() {
+        match line.split_once(' ') {
+            Some(("jvm", option)) => b = b.option(option),
+            Some(("cp", classpath)) => {
+                b = b.option(format!("-Djava.class.path={classpath}:{host_jar}"))
             }
-        } else if l.starts_with('-') {
-            b = b.option(l.replace("=libraries", &format!("={run_dir}/libraries")));
+            Some(("prog", arg)) => prog.push(arg.to_string()),
+            _ => {}
         }
-        i += 1;
     }
     let extra = std::env::var("HORIZON_JAVA_OPTS").unwrap_or_default();
     for o in extra.split_whitespace() {
         b = b.option(o);
     }
     (JavaVM::new(b.build().unwrap()).expect("JavaVM::new"), prog)
+}
+
+/// Whether this run boots NeoForge's client side, as a game window does, rather than a dedicated server's.
+fn client_side(run_dir: &str) -> bool {
+    std::fs::read_to_string(format!("{run_dir}/horizon-java.args"))
+        .is_ok_and(|args| args.lines().any(|line| line == "dist client"))
 }
 
 pub fn register_natives(env: &mut JNIEnv) {
@@ -131,8 +114,9 @@ fn publish_bridges(env: &mut JNIEnv) {
 }
 
 /// Starts FML and loads the mods, on this thread.
-pub fn run_fml(env: &mut JNIEnv, prog: &[String]) {
+pub fn run_fml(env: &mut JNIEnv, prog: &[String], run_dir: &str) {
     publish_bridges(env);
+    let client = client_side(run_dir);
     let args = env
         .new_object_array(prog.len() as i32, "java/lang/String", JObject::null())
         .unwrap();
@@ -143,8 +127,8 @@ pub fn run_fml(env: &mut JNIEnv, prog: &[String]) {
     env.call_static_method(
         HOST,
         "run",
-        "([Ljava/lang/String;)V",
-        &[JValue::Object(&args)],
+        "([Ljava/lang/String;Z)V",
+        &[JValue::Object(&args), JValue::Bool(client.into())],
     )
     .unwrap_or_else(|e| {
         env.exception_describe().ok();
@@ -187,7 +171,7 @@ fn boot() -> Option<Host> {
     let server_group = {
         let mut env = vm.attach_current_thread_permanently().unwrap();
         register_natives(&mut env);
-        run_fml(&mut env, &prog);
+        run_fml(&mut env, &prog, &run_dir);
         let group = env
             .get_static_field(HOST, "serverGroup", "Ljava/lang/ThreadGroup;")
             .and_then(|group| group.l())

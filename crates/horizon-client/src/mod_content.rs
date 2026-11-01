@@ -321,7 +321,136 @@ struct NewBlock<'a> {
     /// The template's item, if it has one.
     item: Option<String>,
     shapes: Option<Vec<VoxelShape>>,
+    /// The default state's id once added.
     default: u32,
+    /// The template state each new state copies.
+    sources: Vec<u32>,
+    /// Each new state's properties when the block declares its own; else empty.
+    declared: Vec<BTreeMap<String, String>>,
+    /// Each new state's overrides, by its index.
+    overrides: BTreeMap<usize, ResolvedOverride>,
+}
+/// A state's `per_state` entry with its boxes as shapes.
+struct ResolvedOverride {
+    light: Option<u8>,
+    random_ticks: Option<bool>,
+    outline: Option<VoxelShape>,
+    collision: Option<VoxelShape>,
+}
+impl NewBlock<'_> {
+    fn first(&self) -> u32 {
+        self.rename.first
+    }
+    /// A `facts.json` row with this state's own properties.
+    fn declare_row(&self, row: &mut J, own: &BTreeMap<String, String>) {
+        let J::Arr(cells) = row else {
+            return;
+        };
+        let pairs: Vec<String> = own.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        cells[3] = J::Str(format!("Block{{{}}}[{}]", self.decl.id, pairs.join(",")));
+        let map = own
+            .iter()
+            .map(|(k, v)| (k.clone(), J::Str(v.clone())))
+            .collect();
+        cells[4].set("properties", J::Obj(map));
+    }
+    /// The state this one becomes once `turn` changes its properties.
+    fn turned(&self, state: usize, turn: impl Fn(&str, &str) -> Option<String>) -> u32 {
+        let mut wanted = self.declared[state].clone();
+        for (key, value) in &mut wanted {
+            if let Some(new) = turn(key, value) {
+                *value = new;
+            }
+        }
+        let found = self.declared.iter().position(|p| *p == wanted);
+        self.first() + found.unwrap_or(state) as u32
+    }
+}
+/// The direction `turns` quarter turns clockwise round Y from `value`, as `Rotation` turns it.
+fn rotated(key: &str, value: &str, turns: usize) -> Option<String> {
+    const SIDES: [&str; 4] = ["north", "east", "south", "west"];
+    match key {
+        "facing" | "horizontal_facing" => {
+            let at = SIDES.iter().position(|s| *s == value)?;
+            Some(SIDES[(at + turns) % 4].to_owned())
+        }
+        "axis" if turns % 2 == 1 => match value {
+            "x" => Some("z".to_owned()),
+            "z" => Some("x".to_owned()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+/// The direction in `Mirror.LEFT_RIGHT` (swaps north and south) or `FRONT_BACK` (swaps east and west).
+fn mirrored(key: &str, value: &str, left_right: bool) -> Option<String> {
+    if key != "facing" && key != "horizontal_facing" {
+        return None;
+    }
+    match (value, left_right) {
+        ("north", true) => Some("south".to_owned()),
+        ("south", true) => Some("north".to_owned()),
+        ("east", false) => Some("west".to_owned()),
+        ("west", false) => Some("east".to_owned()),
+        _ => None,
+    }
+}
+/// A state's canonical key: its pairs sorted, as `per_state` names it.
+fn state_key(properties: &BTreeMap<String, String>) -> String {
+    let pairs: Vec<String> = properties.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    pairs.join(",")
+}
+/// Every combination of a block's own properties, the first property changing slowest, as `StateDefinition` lists them.
+fn combinations(states: &BTreeMap<String, Vec<String>>) -> Vec<BTreeMap<String, String>> {
+    let mut out = vec![BTreeMap::new()];
+    for (name, values) in states {
+        out = out
+            .iter()
+            .flat_map(|have| {
+                values.iter().map(move |value| {
+                    let mut next: BTreeMap<String, String> = have.clone();
+                    next.insert(name.clone(), value.clone());
+                    next
+                })
+            })
+            .collect();
+    }
+    out
+}
+/// A gameplay row's outline and its edges.
+fn set_outline(row: &mut J, shape: &VoxelShape) {
+    let boxes = shape
+        .boxes()
+        .iter()
+        .map(|b| {
+            J::Arr(
+                [
+                    b.min(Axis::X),
+                    b.min(Axis::Y),
+                    b.min(Axis::Z),
+                    b.max(Axis::X),
+                    b.max(Axis::Y),
+                    b.max(Axis::Z),
+                ]
+                .into_iter()
+                .map(J::f64)
+                .collect(),
+            )
+        })
+        .collect();
+    row.set("outline", J::Arr(boxes));
+    row.set("outline_edges", J::Arr(shape_edges(shape)));
+}
+fn boxes_shape(boxes: &[[f64; 6]]) -> Result<VoxelShape> {
+    let mut shape = VoxelShape::empty();
+    for b in boxes {
+        let part = VoxelShape::from_box(Aabb::new(
+            Vec3::new(b[0], b[1], b[2]),
+            Vec3::new(b[3], b[4], b[5]),
+        ))?;
+        shape = shape.join_unoptimized(&part, ShapeOp::OR)?;
+    }
+    Ok(shape)
 }
 /// An item being added (declared, or a block's).
 struct NewItem {
@@ -411,21 +540,64 @@ impl<'a> Plan<'a> {
                 let states = range(&decl.template).ok_or_else(|| {
                     format!("{}: template {} is not a block", decl.id, decl.template)
                 })?;
+                let Some(J::Arr(rows)) = facts.get("states") else {
+                    unreachable!()
+                };
+                let row_properties = |id: u32| -> BTreeMap<String, String> {
+                    let mut out = BTreeMap::new();
+                    if let Some(J::Arr(row)) = rows.get(id as usize)
+                        && let Some(J::Obj(pairs)) = row.get(4).and_then(|x| x.get("properties"))
+                    {
+                        for (k, v) in pairs {
+                            if let J::Str(v) = v {
+                                out.insert(k.clone(), v.clone());
+                            }
+                        }
+                    }
+                    out
+                };
+                let template_default = *defaults.get(&decl.template).ok_or_else(|| {
+                    format!(
+                        "{}: template {} has no default state",
+                        decl.id, decl.template
+                    )
+                })?;
+                let declared = if decl.states.is_empty() {
+                    Vec::new()
+                } else {
+                    combinations(&decl.states)
+                };
+                // Each new state copies the template state agreeing with it on what they share.
+                let sources: Vec<u32> = if declared.is_empty() {
+                    states.clone().collect()
+                } else {
+                    let base = row_properties(template_default);
+                    declared
+                        .iter()
+                        .map(|own| {
+                            let mut wanted = base.clone();
+                            for (key, value) in &mut wanted {
+                                if let Some(v) = own.get(key) {
+                                    value.clone_from(v);
+                                }
+                            }
+                            states
+                                .clone()
+                                .find(|id| row_properties(*id) == wanted)
+                                .unwrap_or(template_default)
+                        })
+                        .collect()
+                };
+                let state_properties: Vec<BTreeMap<String, String>> = if declared.is_empty() {
+                    sources.iter().map(|id| row_properties(*id)).collect()
+                } else {
+                    declared.clone()
+                };
                 let shapes = if let Some(spec) = &decl.shapes {
-                    let Some(J::Arr(rows)) = facts.get("states") else {
-                        unreachable!()
-                    };
                     let mut used = BTreeSet::new();
                     let mut out = Vec::new();
-                    for id in states.clone() {
-                        let J::Arr(row) = &rows[id as usize] else {
-                            unreachable!()
-                        };
-                        let Some(J::Str(value)) = row
-                            .get(4)
-                            .and_then(|x| x.get("properties"))
-                            .and_then(|x| x.get(&spec.property))
-                        else {
+                    for properties in &state_properties {
+                        let Some(value) = properties.get(&spec.property) else {
                             return Err(format!(
                                 "{}: template state lacks property {}",
                                 decl.id, spec.property
@@ -436,15 +608,7 @@ impl<'a> Plan<'a> {
                             format!("{}: no shape for {}={value}", decl.id, spec.property)
                         })?;
                         used.insert(value.as_str());
-                        let mut shape = VoxelShape::empty();
-                        for b in boxes {
-                            let part = VoxelShape::from_box(Aabb::new(
-                                Vec3::new(b[0], b[1], b[2]),
-                                Vec3::new(b[3], b[4], b[5]),
-                            ))?;
-                            shape = shape.join_unoptimized(&part, ShapeOp::OR)?;
-                        }
-                        out.push(shape);
+                        out.push(boxes_shape(boxes)?);
                     }
                     if used.len() != spec.values.len() {
                         return Err(format!(
@@ -457,62 +621,68 @@ impl<'a> Plan<'a> {
                 } else {
                     None
                 };
-                let mut default = *defaults.get(&decl.template).ok_or_else(|| {
-                    format!(
-                        "{}: template {} has no default state",
-                        decl.id, decl.template
-                    )
-                })?;
-                if !decl.default_state.is_empty() {
-                    let Some(J::Arr(rows)) = facts.get("states") else {
-                        unreachable!()
-                    };
-                    let properties = |id: u32| -> Option<&J> {
-                        let J::Arr(row) = rows.get(id as usize)? else {
-                            return None;
-                        };
-                        row.get(4)?.get("properties")
-                    };
-                    let mut wanted = properties(default).cloned().ok_or_else(|| {
-                        format!("{}: template default has no state properties", decl.id)
-                    })?;
-                    for (key, value) in &decl.default_state {
-                        if wanted.get(key).is_none() {
-                            return Err(format!(
-                                "{}: unknown state property {key} on {}",
-                                decl.id, decl.template
-                            )
-                            .into());
-                        }
-                        wanted.set(key, J::Str(value.clone()));
+                let mut wanted = if declared.is_empty() {
+                    row_properties(template_default)
+                } else {
+                    declared[0].clone()
+                };
+                for (key, value) in &decl.default_state {
+                    if !wanted.contains_key(key) {
+                        return Err(format!(
+                            "{}: unknown state property {key} on {}",
+                            decl.id, decl.template
+                        )
+                        .into());
                     }
-                    let matches: Vec<u32> = states
-                        .clone()
-                        .filter(|id| {
-                            properties(*id).is_some_and(|p| {
-                                let (J::Obj(a), J::Obj(b)) = (p, &wanted) else {
-                                    return false;
-                                };
-                                a.len() == b.len() && b.iter().all(|(k, v)| p.get(k) == Some(v))
-                            })
-                        })
+                    wanted.insert(key.clone(), value.clone());
+                }
+                let default_index = if declared.is_empty() && decl.default_state.is_empty() {
+                    (template_default - states.start) as usize
+                } else {
+                    let found: Vec<usize> = state_properties
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, p)| **p == wanted)
+                        .map(|(i, _)| i)
                         .collect();
-                    if matches.len() != 1 {
+                    let [index] = found[..] else {
                         return Err(format!(
                             "{}: default_state {:?} matches {} states of {}",
                             decl.id,
                             decl.default_state,
-                            matches.len(),
+                            found.len(),
                             decl.template
                         )
                         .into());
-                    }
-                    default = matches[0];
+                    };
+                    index
+                };
+                let mut overrides = BTreeMap::new();
+                for (key, over) in &decl.per_state {
+                    let index = state_properties
+                        .iter()
+                        .position(|p| state_key(p) == *key)
+                        .ok_or_else(|| format!("{}: per_state names no state: {key}", decl.id))?;
+                    let shape = |boxes: &Option<Vec<[f64; 6]>>| -> Result<Option<VoxelShape>> {
+                        boxes.as_deref().map(boxes_shape).transpose()
+                    };
+                    overrides.insert(
+                        index,
+                        ResolvedOverride {
+                            light: over.light,
+                            random_ticks: over.random_ticks,
+                            outline: shape(&over.outline)?,
+                            collision: shape(&over.collision)?,
+                        },
+                    );
                 }
                 let mut rename = Rename::new(&decl.template, &decl.id);
                 rename.first = next;
-                next += states.len() as u32;
-                rename.states = states;
+                let default = next + default_index as u32;
+                next += sources.len() as u32;
+                if declared.is_empty() {
+                    rename.states = states;
+                }
                 if let Some(s) = &decl.properties.sounds {
                     if !defaults.contains_key(s) {
                         return Err(format!("{}: sounds {s} is not a block", decl.id).into());
@@ -525,6 +695,9 @@ impl<'a> Plan<'a> {
                     item: None,
                     shapes,
                     default,
+                    sources,
+                    declared,
+                    overrides,
                 });
             }
         }
@@ -533,7 +706,7 @@ impl<'a> Plan<'a> {
             for b in &blocks {
                 *by_mod
                     .entry(&b.decl.id[..b.decl.id.find(':').unwrap_or(0)])
-                    .or_default() += b.rename.states.len() as u32;
+                    .or_default() += b.sources.len() as u32;
             }
             let list: Vec<String> = by_mod.iter().map(|(m, n)| format!("{m} {n}")).collect();
             return Err(format!(
@@ -557,7 +730,7 @@ impl<'a> Plan<'a> {
         }
         let mut items = Vec::new();
         for b in &mut blocks {
-            let row = &rows[b.rename.states.start as usize];
+            let row = &rows[b.sources[0] as usize];
             b.item = match row.get("item") {
                 Some(J::Str(i)) if i != "minecraft:air" => Some(i.clone()),
                 _ => None,
@@ -616,16 +789,19 @@ impl<'a> Plan<'a> {
 
     /// Appends each new block's copies of the template's states to `list`;
     /// `gameplay` rows get their index and the declared overrides.
-    fn states(&self, list: &mut Vec<J>, ids: bool, gameplay: bool) -> Result<()> {
+    fn states(&self, list: &mut Vec<J>, ids: bool, gameplay: bool, facts: bool) -> Result<()> {
         if list.len() != self.states {
             return Err(format!("{} states, not {}", list.len(), self.states).into());
         }
         for b in &self.blocks {
             let renames = self.renames(b);
-            for (i, id) in b.rename.states.clone().enumerate() {
-                let mut row = list[id as usize].clone();
+            for (i, id) in b.sources.iter().enumerate() {
+                let mut row = list[*id as usize].clone();
                 for r in &renames {
                     row.rename(r, ids);
+                }
+                if let (true, Some(own)) = (facts, b.declared.get(i)) {
+                    b.declare_row(&mut row, own);
                 }
                 if gameplay {
                     row.set("id", J::Num((b.rename.first + i as u32).into()));
@@ -635,31 +811,30 @@ impl<'a> Plan<'a> {
                     self.override_gameplay(b, &mut row);
                     if let Some(shapes) = &b.shapes {
                         let shape = &shapes[i];
-                        let boxes = shape
-                            .boxes()
-                            .iter()
-                            .map(|b| {
-                                J::Arr(
-                                    [
-                                        b.min(Axis::X),
-                                        b.min(Axis::Y),
-                                        b.min(Axis::Z),
-                                        b.max(Axis::X),
-                                        b.max(Axis::Y),
-                                        b.max(Axis::Z),
-                                    ]
-                                    .into_iter()
-                                    .map(J::f64)
-                                    .collect(),
-                                )
-                            })
-                            .collect();
-                        row.set("outline", J::Arr(boxes));
-                        row.set("outline_edges", J::Arr(shape_edges(shape)));
+                        set_outline(&mut row, shape);
                         row.set(
                             "full_collision",
                             J::Bool(!shape.join_is_not_empty(&VoxelShape::block(), ShapeOp::XOR)?),
                         );
+                    }
+                    if let Some(over) = b.overrides.get(&i) {
+                        if let Some(light) = over.light {
+                            row.set("emission", J::Num(light.into()));
+                        }
+                        if let Some(ticks) = over.random_ticks {
+                            row.set("random_ticks", J::Bool(ticks));
+                        }
+                        if let Some(shape) = &over.outline {
+                            set_outline(&mut row, shape);
+                        }
+                        if let Some(shape) = &over.collision {
+                            row.set(
+                                "full_collision",
+                                J::Bool(
+                                    !shape.join_is_not_empty(&VoxelShape::block(), ShapeOp::XOR)?,
+                                ),
+                            );
+                        }
                     }
                 }
                 list.push(row);
@@ -702,6 +877,13 @@ impl<'a> Plan<'a> {
                 let mut v = v.clone();
                 for r in &self.renames(b) {
                     v.rename(r, ids);
+                }
+                if !b.declared.is_empty() && ids {
+                    let all = (0..b.sources.len() as u32)
+                        .map(|i| J::Num((b.first() + i).into()))
+                        .collect();
+                    v.set("states", J::Arr(all));
+                    v.set("default", J::Num(b.default.into()));
                 }
                 map.set(&b.decl.id, v);
             }
@@ -753,7 +935,7 @@ impl<'a> Plan<'a> {
     fn json(&self, name: &str, doc: &mut J) -> Result<()> {
         let states = |doc: &mut J, path: &str, ids: bool, gameplay: bool| -> Result<()> {
             match doc.at(path) {
-                Some(J::Arr(a)) => self.states(a, ids, gameplay),
+                Some(J::Arr(a)) => self.states(a, ids, gameplay, name == "facts.json"),
                 _ => Err(format!("no list at /{path}").into()),
             }
         };
@@ -762,9 +944,7 @@ impl<'a> Plan<'a> {
                 states(doc, "states", false, false)?;
                 let defaults = doc.at("defaults").ok_or("no defaults")?;
                 for b in &self.blocks {
-                    let default = b.default;
-                    let id = b.rename.id(default).ok_or("a default outside its block")?;
-                    defaults.set(&b.decl.id, J::Num(id.into()));
+                    defaults.set(&b.decl.id, J::Num(b.default.into()));
                 }
             }
             "gameplay-facts.json" => states(doc, "states", false, true)?,
@@ -794,9 +974,15 @@ impl<'a> Plan<'a> {
                     }
                 }
             }
-            "model-states.json"
-            | "landing-definitions.json"
-            | "worldgen/blocks/survival-rules.json" => self.names(doc, false),
+            "model-states.json" => {
+                self.names(doc, false);
+                for b in self.blocks.iter().filter(|b| !b.declared.is_empty()) {
+                    doc.set(&b.decl.id, model_states(b));
+                }
+            }
+            "landing-definitions.json" | "worldgen/blocks/survival-rules.json" => {
+                self.names(doc, false);
+            }
             "render-definitions.json" => self.names(doc, true),
             "worldgen/blocks/survival-extra-definitions.json" => {
                 if let Some(map) = doc.at("ignition_odds") {
@@ -837,6 +1023,20 @@ impl<'a> Plan<'a> {
             }
             "command-registries.json" => {
                 self.names(doc.at("blocks").ok_or("no blocks")?, false);
+                for b in self.blocks.iter().filter(|b| !b.declared.is_empty()) {
+                    let schema = b
+                        .decl
+                        .states
+                        .iter()
+                        .map(|(name, values)| {
+                            let values = values.iter().cloned().map(J::Str).collect();
+                            J::Arr(vec![J::Str(name.clone()), J::Arr(values)])
+                        })
+                        .collect();
+                    doc.at("blocks")
+                        .ok_or("no blocks")?
+                        .set(&b.decl.id, J::Arr(schema));
+                }
                 let new_items = || self.items.iter().map(|i| J::Str(i.rename.to.clone()));
                 let new_blocks = || self.blocks.iter().map(|b| J::Str(b.decl.id.clone()));
                 let Some(J::Arr(items)) = doc.at("items") else {
@@ -857,10 +1057,40 @@ impl<'a> Plan<'a> {
                 for key in ["rotate", "mirror", "full_block"] {
                     states(doc, key, true, false)?;
                 }
-                let added: usize = self.blocks.iter().map(|b| b.rename.states.len()).sum();
+                self.turns(doc)?;
+                let added: usize = self.blocks.iter().map(|b| b.sources.len()).sum();
                 doc.set("states", J::Num(((self.states + added) as u64).into()));
             }
             _ => return Err("no rule for this table".into()),
+        }
+        Ok(())
+    }
+
+    /// Declared states' rotations and mirrors, which no template row can give.
+    fn turns(&self, doc: &mut J) -> Result<()> {
+        let mut turned = Vec::new();
+        for b in self.blocks.iter().filter(|b| !b.declared.is_empty()) {
+            for i in 0..b.sources.len() {
+                let quarter = |t| J::Num(b.turned(i, |k, v| rotated(k, v, t)).into());
+                let side = |lr| J::Num(b.turned(i, |k, v| mirrored(k, v, lr)).into());
+                turned.push((
+                    b.first() as usize + i,
+                    J::Arr(vec![quarter(1), quarter(2), quarter(3)]),
+                    J::Arr(vec![side(true), side(false)]),
+                ));
+            }
+        }
+        for (key, pick) in [("rotate", 1), ("mirror", 2)] {
+            let Some(J::Arr(table)) = doc.at(key) else {
+                return Err(format!("no {key} table").into());
+            };
+            for row in &turned {
+                table[row.0] = if pick == 1 {
+                    row.1.clone()
+                } else {
+                    row.2.clone()
+                };
+            }
         }
         Ok(())
     }
@@ -876,6 +1106,13 @@ impl<'a> Plan<'a> {
         for block in &self.blocks {
             if let Some(shapes) = &block.shapes {
                 for (i, shape) in shapes.iter().enumerate() {
+                    let id = entries.len() as i32;
+                    entries.push(encode_shape(shape));
+                    indices.push((block.rename.first as usize + i, id));
+                }
+            }
+            for (i, over) in &block.overrides {
+                if let Some(shape) = &over.collision {
                     let id = entries.len() as i32;
                     entries.push(encode_shape(shape));
                     indices.push((block.rename.first as usize + i, id));
@@ -901,10 +1138,18 @@ impl<'a> Plan<'a> {
             match (key.to_string_lossy().as_str(), value) {
                 ("states", Tag::List(list)) if list.len() == self.states => {
                     for b in &self.blocks {
-                        for id in b.rename.states.clone() {
-                            let mut state = list[id as usize].clone();
+                        for (i, id) in b.sources.iter().enumerate() {
+                            let mut state = list[*id as usize].clone();
                             if let Some(slot) = state.get_mut("id") {
                                 *slot = Tag::String(b.decl.id.as_str().into());
+                            }
+                            if let (Some(own), Tag::Compound(c)) = (b.declared.get(i), &mut state) {
+                                let mut properties = nbt::Compound::new();
+                                for (k, v) in own {
+                                    properties
+                                        .insert(k.as_str().into(), Tag::String(v.as_str().into()));
+                                }
+                                c.insert("properties".into(), Tag::Compound(properties));
                             }
                             list.push(state);
                         }
@@ -912,8 +1157,7 @@ impl<'a> Plan<'a> {
                 }
                 ("cached_shapes", Tag::IntArray(a)) if a.len() == self.states => {
                     for b in &self.blocks {
-                        let r = &b.rename.states;
-                        let copy = a[r.start as usize..r.end as usize].to_vec();
+                        let copy: Vec<i32> = b.sources.iter().map(|id| a[*id as usize]).collect();
                         a.extend(copy);
                     }
                 }
@@ -938,6 +1182,50 @@ impl<'a> Plan<'a> {
             }
         }
     }
+}
+
+/// A block's `model-states.json` entry from its own properties.
+fn model_states(b: &NewBlock) -> J {
+    let schema = b
+        .decl
+        .states
+        .iter()
+        .map(|(name, values)| {
+            let numbers: Option<Vec<i64>> = values.iter().map(|v| v.parse().ok()).collect();
+            let kind = match numbers.as_deref() {
+                Some(n) if n.iter().enumerate().all(|(i, v)| *v == n[0] + i as i64) => {
+                    J::Obj(vec![(
+                        "integer".to_owned(),
+                        J::Arr(vec![J::Num(n[0].into()), J::Num(n[n.len() - 1].into())]),
+                    )])
+                }
+                _ => {
+                    let mut sorted = values.clone();
+                    sorted.sort();
+                    J::Obj(vec![(
+                        "named".to_owned(),
+                        J::Arr(sorted.into_iter().map(J::Str).collect()),
+                    )])
+                }
+            };
+            (name.clone(), kind)
+        })
+        .collect();
+    let states = b
+        .declared
+        .iter()
+        .map(|own| {
+            J::Obj(
+                own.iter()
+                    .map(|(k, v)| (k.clone(), J::Str(v.clone())))
+                    .collect(),
+            )
+        })
+        .collect();
+    J::Obj(vec![
+        ("schema".to_owned(), J::Obj(schema)),
+        ("states".to_owned(), J::Arr(states)),
+    ])
 }
 
 /// The JSON and NBT tables rewritten for new blocks and items.

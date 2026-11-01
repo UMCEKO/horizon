@@ -45,6 +45,8 @@ refill the view, or Java sees the old value until the next call.
 | FML, mixins, registries, mods' own code | `crates/horizon-java-host/src/lib.rs`, `mods/horizon/src/java-mods-host/` | Real classes, started on a background thread; a title screen doesn't wait, a world does |
 | Data packs: tags, recipes, data maps, dynamic registries | `GameBridge.prepare` | Real `WorldLoader`, mods' packs included |
 | `ServerLevel`, `ServerPlayer`, `MinecraftServer` | `GameBridge`, `ServerView`, `mixin/` | Real classes built without a world, filled from Horizon for each call |
+| The client side | `ClientLoader`, `Host.run` | NeoForge's real client mod loading on a `Minecraft` built without a window, so mods with client code load as on a real client. `HORIZON_JAVA_DIST=server` boots the dedicated side instead |
+| What mods add to constructors | `ViewInits`, `Inits` | A view skips its constructor, so a class processor after Mixin keeps mods' injections and field initializers from it, and they run once the view is filled. An injection capturing a local gets a default for it |
 | `Item.use`, `Item.useOn`, clicks on mods' blocks | `game/java_mods.rs`, beside the native hooks | The real `ServerPlayerGameMode` and `ItemStack.useOn`, so NeoForge's events fire |
 | Mods' blocks | `BlockEntities.blockChanged`, `GameBridge.blockEvents` | Real `onPlace`, removal, neighbour changes, scheduled and random ticks |
 | Mods' block entities | `BlockEntities`, `game/java_bridges/block_entities.rs` | Real objects in Java; their saved form lives in Horizon's chunk, and Horizon's list gives them their turn to tick |
@@ -60,14 +62,12 @@ What isn't bound and why is in `tools/java_mods_skips/`. `java-object` is Java d
 ## Not yet
 
 - Mods' mixins into vanilla code Horizon runs in Rust never fire, since that Java never runs: `MinecraftServer`'s loop, `ServerLevel.tick`, entity AI and so on. 60 library mods aim mixins at 306 vanilla classes; nothing yet says how many of those patches matter.
-- The JVM boots the dedicated-server side, so a mod that needs `net.minecraft.client` classes to load fails as it does on a NeoForge server, and stops every Java mod from starting (the game carries on without them). It would load on a NeoForge client.
-- A Horizon block's properties come from a vanilla template of the same class, so `carry` with oracle facts leaves out a machine with `facing` and `lit` on a plain block. Without facts it keeps the block with no properties.
-- Mods' menus and screens: `openMenu` makes the real Java menu, but no client shows it. Mods' client code doesn't run at all.
+- Mods' menus and screens: `openMenu` makes the real Java menu and mods' client classes load, but nothing shows a screen, as GUI drawing isn't bridged to Rust. Text measures as 6 pixels a glyph until then.
 - Mods' own entities tick nowhere; their saved form is kept. Entity views last one call and aren't tracked between calls.
 - A mod's packets are logged and dropped (`ConnectionMixin`). Advancement triggers do nothing for a view (`CriterionMixin`).
 - Mods' item slots don't reach Horizon's hoppers, comparators or `/data` until a save.
 - Worldgen features and ore spawns from mods' Java code. Their data-driven ones come through `carry`.
-- A block whose properties didn't reach Horizon, as without oracle facts, reads as its one state there, so a `facing` set in Java doesn't survive a read. The NeoForge oracle stalled at export on Voluminous Energy, so this needs fixing.
+- A block without oracle facts keeps only its template's states, so a `facing` set in Java doesn't survive a read. `carry` with facts declares them.
 - Game rules and the world border are vanilla's defaults in Java. Other players have no views, only the acting one. Bridged calls act on the acting player's dimension.
 - A mod's redirect inside a bridged method doesn't run, since the method's Java body doesn't. An action bar message arrives as a chat line. `setBlock`'s update limit is ignored.
 - The dedicated server starts the JVM but doesn't wait for it when a world opens. The game finds NeoForge through dev variables, not a `java-mods` folder.

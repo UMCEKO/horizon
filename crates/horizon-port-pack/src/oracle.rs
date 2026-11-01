@@ -60,6 +60,10 @@ pub struct State {
     pub emission: u8,
     pub requires_tool: bool,
     pub map_color_id: u8,
+    #[serde(default = "occludes")]
+    pub can_occlude: bool,
+    #[serde(default)]
+    pub random_ticks: bool,
     pub sound: Value,
     pub outline: Value,
     pub collision: Value,
@@ -67,6 +71,10 @@ pub struct State {
     /// `shears`, `silk_touch_pickaxe`...): item id → count.
     #[serde(default)]
     pub drops: BTreeMap<String, BTreeMap<String, u32>>,
+}
+
+fn occludes() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -233,6 +241,12 @@ pub struct Choice {
     pub template: String,
     /// `data/<mod>/horizon/block/<name>.json`'s `properties`.
     pub properties: Map<String, Value>,
+    /// The block's own states, when no template has them: its `states`.
+    pub states: Option<BTreeMap<String, Vec<String>>>,
+    /// Its `default_state`.
+    pub default_state: Map<String, Value>,
+    /// Its `per_state`: only what the rest of the block doesn't already give.
+    pub per_state: Map<String, Value>,
     /// What the template does not reproduce, for the report.
     pub differences: Vec<String>,
 }
@@ -305,8 +319,55 @@ impl Facts {
                 best = Some((score, name, v));
             }
         }
-        let (_, template, t) = best?;
-        Some(self.choice(block, template, t, allowed))
+        if let Some((_, template, t)) = best {
+            return Some(self.choice(block, template, t, false, allowed));
+        }
+        self.own_states_template(block, ours, allowed)
+    }
+
+    /// No vanilla block has its states, so it declares them over the nearest vanilla block
+    /// up its class chain that has none it doesn't: `Block` always does.
+    fn own_states_template(
+        &self,
+        block: &Block,
+        ours: &State,
+        allowed: &dyn Fn(&str) -> bool,
+    ) -> Option<Choice> {
+        let chain = block
+            .class
+            .iter()
+            .filter(|c| c.starts_with(VANILLA_PACKAGE));
+        for class in chain {
+            let mut best: Option<(i64, &str, &Block)> = None;
+            for (name, v) in &self.blocks {
+                if !name.starts_with("minecraft:")
+                    || v.class.first() != Some(class)
+                    || !v
+                        .properties
+                        .keys()
+                        .all(|k| block.properties.contains_key(k))
+                    || !allowed(name)
+                {
+                    continue;
+                }
+                let Some(td) = v.default_state() else {
+                    continue;
+                };
+                let score = (td.outline == ours.outline && td.collision == ours.collision) as i64
+                    * 1000
+                    + (td.can_occlude == ours.can_occlude) as i64 * 500
+                    + (td.sound == ours.sound) as i64 * 100
+                    + (td.hardness == ours.hardness) as i64 * 5
+                    + (td.map_color_id == ours.map_color_id) as i64;
+                if best.is_none_or(|(s, n, _)| score > s || (score == s && name.as_str() < n)) {
+                    best = Some((score, name, v));
+                }
+            }
+            if let Some((_, template, t)) = best {
+                return Some(self.choice(block, template, t, true, allowed));
+            }
+        }
+        None
     }
 
     fn choice(
@@ -314,6 +375,7 @@ impl Facts {
         block: &Block,
         template: &str,
         t: &Block,
+        own_states: bool,
         allowed: &dyn Fn(&str) -> bool,
     ) -> Choice {
         let (ours, theirs) = (block.default_state(), t.default_state());
@@ -345,24 +407,39 @@ impl Facts {
             ));
         }
         let theirs = t.by_key();
-        let mut shapes = 0;
+        let fallback = t.default_state();
+        let block_light = ours.map(|s| s.emission);
+        let block_ticks = fallback.map(|s| s.random_ticks);
+        let mut per_state = Map::new();
         let mut varying = BTreeSet::new();
-        let first = ours.map(|s| (s.hardness, s.emission, s.requires_tool, s.map_color_id));
+        let first = ours.map(|s| (s.hardness, s.requires_tool, s.map_color_id));
         for (k, s) in block.by_key() {
-            let Some(v) = theirs.get(&k) else {
-                continue;
-            };
-            if v.outline != s.outline || v.collision != s.collision {
-                shapes += 1;
+            let base = theirs.get(&k).copied().or(fallback);
+            let mut over = Map::new();
+            if Some(s.emission) != block_light {
+                over.insert("light".into(), json!(s.emission));
             }
-            if Some((s.hardness, s.emission, s.requires_tool, s.map_color_id)) != first {
-                varying.insert("per-state hardness, light or map colour");
+            if Some(s.random_ticks) != block_ticks {
+                over.insert("random_ticks".into(), json!(s.random_ticks));
+            }
+            // A template with states of its own copies whichever agrees on what they share, so name them all.
+            let unsure = own_states && !t.properties.is_empty();
+            if unsure || base.is_none_or(|v| v.outline != s.outline) {
+                over.insert("outline".into(), s.outline.clone());
+            }
+            if unsure || base.is_none_or(|v| v.collision != s.collision) {
+                over.insert("collision".into(), s.collision.clone());
+            }
+            if !over.is_empty() {
+                per_state.insert(k, Value::Object(over));
+            }
+            if Some((s.hardness, s.requires_tool, s.map_color_id)) != first {
+                varying.insert("per-state hardness, tool or map colour");
             }
         }
-        if shapes > 0 {
+        if own_states {
             differences.push(format!(
-                "shapes differ from {template} in {shapes} of {} states",
-                block.states.len()
+                "its own states on {template}, whose behaviour knows none of them"
             ));
         }
         differences.extend(varying.into_iter().map(str::to_owned));
@@ -376,6 +453,12 @@ impl Facts {
         Choice {
             template: template.to_owned(),
             properties,
+            states: own_states.then(|| block.properties.clone()),
+            default_state: pairs(&block.default)
+                .into_iter()
+                .map(|(k, v)| (k, json!(v)))
+                .collect(),
+            per_state,
             differences,
         }
     }
@@ -409,8 +492,11 @@ impl Facts {
         if item.max_stack_size != 64 {
             decl["max_stack_size"] = json!(item.max_stack_size);
         }
-        if item.rarity != "common" {
-            decl["rarity"] = json!(item.rarity);
+        match item.rarity.as_str() {
+            "common" => {}
+            "uncommon" | "rare" | "epic" => decl["rarity"] = json!(item.rarity),
+            // NeoForge lets a mod extend `Rarity`; a Horizon item has vanilla's only.
+            other => differences.push(format!("rarity {other}")),
         }
         let components = self.item_components(item, template);
         if !components.is_empty() {
@@ -549,15 +635,16 @@ mod tests {
             tile.differences,
             ["class m.Tile (behaviour beyond net.minecraft.world.level.block.Block)"]
         );
-        // A plain Block is never templated on a DirtPathBlock: shapes differ, and say so.
+        // A plain Block is never templated on a DirtPathBlock: it keeps its own shape on a stone.
         let path = facts.template("m:path", &any).unwrap();
         assert_eq!(path.template, "minecraft:stone");
-        assert!(
-            path.differences[0].starts_with("shapes differ"),
-            "{:?}",
-            path.differences
-        );
-        assert_eq!(facts.template("m:gadget", &any), None);
+        assert_eq!(path.per_state[""]["outline"], low);
+        // No vanilla Block has `mode`, so the block declares it over one that has no states.
+        let gadget = facts.template("m:gadget", &any).unwrap();
+        assert_eq!(gadget.template, "minecraft:stone");
+        assert_eq!(gadget.states.unwrap()["mode"], ["a", "b"]);
+        assert_eq!(gadget.default_state["mode"], json!("a"));
+        assert!(gadget.differences[0].starts_with("its own states"));
         let tile = facts
             .template("m:wood_tile", &|n: &str| n != "minecraft:oak_planks")
             .unwrap();

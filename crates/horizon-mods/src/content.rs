@@ -83,6 +83,16 @@ pub struct BlockShapes {
     pub values: BTreeMap<String, Vec<[f64; 6]>>,
 }
 
+/// What one state changes from the rest of its block; unset keeps its value.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StateOverride {
+    pub light: Option<u8>,
+    pub random_ticks: Option<bool>,
+    pub outline: Option<Vec<[f64; 6]>>,
+    pub collision: Option<Vec<[f64; 6]>>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BlockFile {
@@ -92,6 +102,10 @@ struct BlockFile {
     shapes: Option<BlockShapes>,
     #[serde(default)]
     default_state: BTreeMap<String, String>,
+    #[serde(default)]
+    states: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    per_state: BTreeMap<String, StateOverride>,
     #[serde(default = "yes")]
     item: bool,
 }
@@ -111,6 +125,10 @@ pub struct Block {
     pub shapes: Option<BlockShapes>,
     /// State properties overlaid on the template default.
     pub default_state: BTreeMap<String, String>,
+    /// The block's own state properties and their values, in place of the template's.
+    pub states: BTreeMap<String, Vec<String>>,
+    /// Overrides by state, as sorted `property=value` pairs joined with commas.
+    pub per_state: BTreeMap<String, StateOverride>,
     /// Also add a block item with the same id.
     pub item: bool,
 }
@@ -348,6 +366,8 @@ impl Content {
                 template: file.template,
                 properties: file.properties,
                 shapes: file.shapes,
+                states: file.states,
+                per_state: file.per_state,
                 default_state: file.default_state,
                 item: file.item,
             });
@@ -402,6 +422,50 @@ fn check_components(components: &BTreeMap<String, serde_json::Value>) -> Result<
     Ok(())
 }
 
+/// Whether every box is finite with ordered bounds.
+fn valid_boxes(boxes: &[[f64; 6]]) -> bool {
+    !boxes
+        .iter()
+        .any(|b| b.iter().any(|n| !n.is_finite()) || (0..3).any(|i| b[i] > b[i + 3]))
+}
+
+const MAX_BLOCK_STATES: usize = 1 << 16;
+
+fn check_states(file: &BlockFile) -> Result<(), String> {
+    let word = |s: &str| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    };
+    let mut count = 1usize;
+    for (name, values) in &file.states {
+        let unique: BTreeSet<&String> = values.iter().collect();
+        if !word(name) || values.is_empty() || unique.len() != values.len() {
+            return Err(format!(
+                "states: {name} needs a [a-z0-9_] name and unique values"
+            ));
+        }
+        if !values.iter().all(|v| word(v)) {
+            return Err(format!("states: {name} has a value that is not [a-z0-9_]"));
+        }
+        count = count.saturating_mul(values.len());
+    }
+    if count > MAX_BLOCK_STATES {
+        return Err(format!("states: more than {MAX_BLOCK_STATES} states"));
+    }
+    for over in file.per_state.values() {
+        if over.light.is_some_and(|l| l > 15) {
+            return Err("per_state: light is 0 to 15".into());
+        }
+        for boxes in [&over.outline, &over.collision].into_iter().flatten() {
+            if !valid_boxes(boxes) {
+                return Err("per_state: boxes need finite, ordered bounds".into());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn check_block(file: &BlockFile) -> Result<(), String> {
     if !vanilla_id(&file.template) {
         return Err(format!(
@@ -409,16 +473,13 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
             file.template
         ));
     }
+    check_states(file)?;
     if let Some(shapes) = &file.shapes {
         if shapes.property.is_empty() || shapes.values.is_empty() {
             return Err("shapes needs a property and values".into());
         }
         for boxes in shapes.values.values() {
-            if boxes.len() > 16
-                || boxes
-                    .iter()
-                    .any(|b| b.iter().any(|n| !n.is_finite()) || (0..3).any(|i| b[i] > b[i + 3]))
-            {
+            if boxes.len() > 16 || !valid_boxes(boxes) {
                 return Err("shape needs at most 16 finite boxes with ordered bounds".into());
             }
         }
@@ -531,6 +592,8 @@ capabilities = ["registries"]
                 template: "minecraft:iron_block".into(),
                 shapes: None,
                 default_state: BTreeMap::new(),
+                states: BTreeMap::new(),
+                per_state: BTreeMap::new(),
                 properties: BlockProperties {
                     hardness: Some(4.0),
                     light: Some(3),
@@ -621,6 +684,34 @@ capabilities = ["registries"]
             &[(
                 "data/ruby/horizon/block/a.json",
                 br#"{"template": "minecraft:stone", "glow": true}"#,
+            )],
+        );
+        refused(
+            "states-empty",
+            &[(
+                "data/ruby/horizon/block/a.json",
+                br#"{"template":"minecraft:stone","states":{"facing":[]}}"#,
+            )],
+        );
+        refused(
+            "states-repeated",
+            &[(
+                "data/ruby/horizon/block/a.json",
+                br#"{"template":"minecraft:stone","states":{"lit":["true","true"]}}"#,
+            )],
+        );
+        refused(
+            "state-bad-name",
+            &[(
+                "data/ruby/horizon/block/a.json",
+                br#"{"template":"minecraft:stone","states":{"Lit":["true"]}}"#,
+            )],
+        );
+        refused(
+            "per-state-light",
+            &[(
+                "data/ruby/horizon/block/a.json",
+                br#"{"template":"minecraft:stone","per_state":{"":{"light":16}}}"#,
             )],
         );
         refused("shape-reversed", &[("data/ruby/horizon/block/a.json", br#"{"template":"minecraft:stone","shapes":{"property":"axis","values":{"x":[[1,0,0,0,1,1]]}}}"#)]);

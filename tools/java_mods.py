@@ -23,6 +23,7 @@ from pathlib import Path
 
 os.environ.setdefault('HORIZON_NEOFORGE', '26.3.0.99')
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import lab  # noqa: E402
 import neoforge_oracle as oracle  # noqa: E402
 
 NEOFORGE = oracle.NEOFORGE
@@ -34,6 +35,8 @@ BOOT_JAR = LOCAL / 'horizon-java-boot.jar'
 PLUGIN_JAR = LOCAL / 'horizon-java-plugin.jar'
 TEST_JAR = LOCAL / 'horizon-java-test.jar'
 LIBRARIES = LOCAL / 'library-jars'
+# A game's JVM boots the client side, as a NeoForge client does; a dedicated Horizon's would boot the server side.
+DIST = os.environ.get('HORIZON_JAVA_DIST', 'client')
 
 
 def java_home():
@@ -44,9 +47,9 @@ def java_home():
 
 
 def build(java_only=False):
-    home = oracle.install()
     LOCAL.mkdir(parents=True, exist_ok=True)
-    cp = ':'.join(jar for jar in oracle.classpath(home).split(':') if 'installertools' not in jar)
+    # Against the client, which holds the server's classes too.
+    cp = ':'.join(jar for jar in oracle.client_classpath(oracle.client()[0]).split(':') if 'installertools' not in jar)
     host_classes = str(LOCAL / 'classes' / 'host')
     for name, jar, extra in (('host', HOST_JAR, ''), ('plugin', PLUGIN_JAR, host_classes), ('boot', BOOT_JAR, host_classes), ('testmod', TEST_JAR, '')):
         classes = LOCAL / 'classes' / name
@@ -68,8 +71,43 @@ def build(java_only=False):
     subprocess.run(['cargo', 'build', '--profile', 'fast', '-q', '-p', 'horizon-java-host'], check=True, env=env, cwd=oracle.ROOT)
 
 
+def write_args(run, home):
+    """What the host starts the JVM with, in absolute paths, as NeoForge's launcher arguments would be."""
+    lines = []
+    if DIST == 'client':
+        _, neo, _, jars = oracle.client()
+        lines.append('dist client')
+        lines.append('cp ' + ':'.join(map(str, jars)))
+        jvm = [a.replace('${library_directory}', str(home / 'libraries')) for a in neo['arguments']['jvm']]
+        game = neo['arguments']['game']
+    else:
+        args = (home / 'libraries' / 'net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text().splitlines()
+        libs = str(home / 'libraries')
+        at = args.index('-classpath')
+        lines.append('cp ' + ':'.join(f'{home}/{entry}' for entry in args[at + 1].strip().split(':')))
+        jvm, game = [], []
+        for line in args[:at] + args[at + 2:]:
+            head, _, rest = line.strip().partition(' ')
+            if head in ('--add-opens', '--add-exports'):
+                jvm += [head, rest]
+            elif head.startswith('--fml'):
+                game += [head, rest]
+            elif head.startswith('-'):
+                jvm.append(head.replace('=libraries', f'={libs}'))
+    i = 0
+    while i < len(jvm):
+        if jvm[i] in ('--add-opens', '--add-exports'):
+            lines.append(f'jvm {jvm[i]}={jvm[i + 1]}')
+            i += 2
+        else:
+            lines.append(f'jvm {jvm[i]}')
+            i += 1
+    lines += [f'prog {a}' for a in game]
+    (run / 'horizon-java.args').write_text('\n'.join(lines) + '\n')
+
+
 def instance(name, jars, boot):
-    home = oracle.install()
+    home = oracle.client()[0] if DIST == 'client' and boot else oracle.install()
     run = LOCAL / 'runs' / name
     shutil.rmtree(run, ignore_errors=True)
     (run / 'mods').mkdir(parents=True)
@@ -81,6 +119,7 @@ def instance(name, jars, boot):
     if boot:
         (run / 'mods' / BOOT_JAR.name).symlink_to(BOOT_JAR)
         (run / 'mods' / PLUGIN_JAR.name).symlink_to(PLUGIN_JAR)
+        write_args(run, home)
     return run
 
 
@@ -125,14 +164,13 @@ def session(args, drive):
     """The real game with these jars in its JVM, in scratch folders; `drive` sends it horizon-ctl commands."""
     scratch = Path(args.scratch or tempfile.mkdtemp(prefix='horizon-java-mods-'))
     java = java_home()
-    env = {**os.environ, 'JAVA_HOME': java, 'HORIZON_NEOFORGE': NEOFORGE, 'HORIZON_JAVA_HOST_JAR': str(HOST_JAR), 'HORIZON_JAVA_OPTS': args.opts,
-           'HORIZON_NO_AUDIO': '1', 'HORIZON_LAUNCHER_NO_SELF_UPDATE': '1',
-           'LD_LIBRARY_PATH': f"{java}/lib/server:{java}/lib:/run/opengl-driver/lib:{os.environ.get('LD_LIBRARY_PATH', '')}"}
+    homes = {name: scratch / name for name in ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME')}
+    for home in homes.values():
+        home.mkdir(exist_ok=True)
+    env = lab.game_env(JAVA_HOME=java, HORIZON_NEOFORGE=NEOFORGE, HORIZON_JAVA_HOST_JAR=HOST_JAR, HORIZON_JAVA_OPTS=args.opts,
+                       LD_LIBRARY_PATH=f"{java}/lib/server:{java}/lib:/run/opengl-driver/lib:{os.environ.get('LD_LIBRARY_PATH', '')}", **homes)
     if args.jars:
         env['HORIZON_JAVA_RUN'] = str(instance('play', args.jars, True))
-    for name in ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME'):
-        env[name] = str(scratch / name)
-        Path(env[name]).mkdir(exist_ok=True)
     ctl = [str(oracle.ROOT / 'target' / 'fast' / 'horizon-ctl'), '--socket', str(scratch / 'ctl.sock')]
     launch = [*ctl, 'launch', '--world', 'J', '--seed', str(args.seed), '--offscreen', '--wait', '--resources', str(oracle.ROOT / '.local' / 'horizon-client' / '26.3')]
     for mod in args.dev_mod:
@@ -193,6 +231,8 @@ def bridges(args):
         send('select horizon_java_test:wand')
         send(f'look-at-block {base[0]} {base[1]} {base[2]} up')
         send('wait 5')
+        # Leaves cut off by the clearing decay meanwhile, and their saplings would land in the checked area.
+        send('command kill @e[type=item]')
         print(send('use-item')[:200], flush=True)
         send('wait 40')
         expected = {(0, 1, 0): 'gold_block', (0, 2, 0): 'redstone_block', (0, 3, 0): 'emerald_block', (0, 4, 0): 'diamond_block', (0, 5, 0): 'lapis_block',
@@ -449,7 +489,7 @@ def boot_one(name, jars, opts, timeout):
     if 'WORLD OK' in p.stdout:
         return True, '', took
     text = p.stdout + p.stderr
-    for pattern in (r'Failed to start FML: .*', r'- .*', r'ERROR .*', r'Caused by: .*', r'.*Exception.*'):
+    for pattern in (r'Failed to start FML: .*', r'Caused by: .*', r'ERROR .*', r'.*Exception.*'):
         found = re.findall(pattern, text)
         if found and not pattern.startswith('- '):
             detail = re.findall(r'^\s*- (.+)$', text, re.M)

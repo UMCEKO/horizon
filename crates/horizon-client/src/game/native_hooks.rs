@@ -476,9 +476,8 @@ impl Game<'_> {
         phase: WorldPhase,
         error_text: &str,
     ) {
+        self.java_hook_world(&phase);
         let _ = (context, phase, error_text);
-        #[cfg(feature = "java-mods")]
-        self.java_world_phase(matches!(phase, WorldPhase::WorldOpenReady));
     }
     /// The authoritative server tick's phases: `ServerTickStart` before any
     /// level is ticked (NeoForge's `ServerTickEvent.Pre`), `ServerTickEnd`
@@ -491,9 +490,8 @@ impl Game<'_> {
         context: &NativeLifecycleContext,
         phase: ServerTickPhase,
     ) {
+        self.java_hook_server_tick(&phase);
         let _ = (context, phase);
-        #[cfg(feature = "java-mods")]
-        self.java_server_tick(!matches!(phase, ServerTickPhase::ServerTickStart { .. }));
     }
     /// The HUD (not drawn under F1), after the minimap: place a box with
     /// `corners.place` (boxes stack away from their edge) and draw it with
@@ -562,10 +560,7 @@ impl Game<'_> {
     /// when a world opens. API 15.
     pub(super) fn native_block_entity_ticks(&self, block: &str, ticks: &mut bool) {
         let _ = (block, &ticks);
-        #[cfg(feature = "java-mods")]
-        if let Some(host) = horizon_java_host::get() {
-            *ticks |= host.request("block_ticks", block.as_bytes()).is_some();
-        }
+        self.java_hook_block_ticks(block, ticks);
     }
     /// Block `block`'s block entity has item slots (a `WorldlyContainer`):
     /// set `container` when the block is yours. Asked once for each mod
@@ -592,8 +587,7 @@ impl Game<'_> {
     /// get it yet. API 17.
     pub(super) fn native_block_entity_tick(&mut self, pos: [i32; 3], entity: &mut ModBlockEntity) {
         let _ = (pos, &entity);
-        #[cfg(feature = "java-mods")]
-        self.java_block_entity_tick(pos, entity);
+        self.java_hook_block_entity_tick(pos, entity);
     }
     /// A menu opens on this client for block `block`, a mod's: set `screen`
     /// when the block is yours, to lay its screen out (`native_screen_draw`
@@ -746,8 +740,7 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         let _ = (pos, state, &canceled);
-        #[cfg(feature = "java-mods")]
-        self.java_break_event(pos, canceled);
+        self.java_hook_break(pos, canceled);
     }
     /// A player placed `stack` as the block `state` at `pos`: where
     /// `BlockItem.place` set it, before the stack shrinks. It only hears; a
@@ -816,8 +809,7 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         let _ = (entity, kind, pos, &canceled);
-        #[cfg(feature = "java-mods")]
-        self.java_attack_event(entity, canceled);
+        self.java_hook_attack(entity, canceled);
     }
 }
 

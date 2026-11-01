@@ -1168,6 +1168,92 @@ fn content_shapes_drive_outline_and_collision() {
 }
 
 #[test]
+#[ignore = "full content root: needs prepared vanilla data"]
+fn a_block_declares_states_its_template_lacks() {
+    use horizon_world::{collision::CachedCollisionRegistry, registry::BlockStateId};
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch =
+        std::env::temp_dir().join(format!("horizon-content-states-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let m = folder_mod(
+        &scratch.join("mod"),
+        &[
+            ("horizon-mod.toml", &manifest("machines", "")),
+            (
+                "data/machines/horizon/block/press.json",
+                r#"{"template":"minecraft:iron_block",
+                    "states":{"facing":["north","south","west","east"],"lit":["true","false"]},
+                    "default_state":{"facing":"west","lit":"false"},
+                    "per_state":{"facing=north,lit=true":{"light":13,"collision":[[0,0,0,1,0.5,1]],"outline":[[0,0,0,1,0.5,1]]}}}"#,
+            ),
+            (
+                "assets/machines/blockstates/press.json",
+                r#"{"variants":{"":{"model":"minecraft:block/iron_block"}}}"#,
+            ),
+        ],
+    );
+    let root = resource_root(&base, &[m], &scratch.join("cache")).unwrap();
+    let assets = Assets::load(&root).unwrap();
+    let registry = assets.registry;
+    let facts = BlockFacts::load(&root, registry).unwrap();
+    let (named, _) = nbt::read_named(
+        &fs::read(root.join("cached-collision.nbt")).unwrap(),
+        Limits::tables(),
+    )
+    .unwrap();
+    let collision = CachedCollisionRegistry::from_nbt(&named.tag, registry).unwrap();
+    let state = |facing: &str, lit: &str| {
+        (0..registry.len())
+            .map(|i| BlockStateId(i as u32))
+            .find(|id| {
+                let s = registry.state(*id).unwrap();
+                s.name == "machines:press"
+                    && s.properties.get("facing").is_some_and(|v| v == facing)
+                    && s.properties.get("lit").is_some_and(|v| v == lit)
+            })
+            .unwrap()
+    };
+    assert_eq!(
+        registry.default_state("machines:press"),
+        Some(state("west", "false"))
+    );
+    assert_eq!(facts.get(state("north", "true")).emission, 13);
+    assert_eq!(facts.get(state("north", "false")).emission, 0);
+    assert_eq!(facts.get(state("north", "true")).outline[0][4], 0.5);
+    let shape = collision
+        .cached_shape(state("north", "true"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(shape.boxes().len(), 1);
+    let iron = registry.default_state("minecraft:iron_block").unwrap();
+    assert_eq!(
+        facts.get(state("south", "true")).outline,
+        facts.get(iron).outline
+    );
+    // Rotation and mirror follow `facing`, which the template row can't say.
+    let turned: serde_json::Value = serde_json::from_slice(
+        &fs::read(root.join("worldgen/blocks/structure-blocks.json")).unwrap(),
+    )
+    .unwrap();
+    let north = state("north", "false").0 as usize;
+    assert_eq!(
+        turned["rotate"][north],
+        serde_json::json!([
+            state("east", "false").0,
+            state("south", "false").0,
+            state("west", "false").0
+        ])
+    );
+    assert_eq!(
+        turned["mirror"][north],
+        serde_json::json!([state("south", "false").0, state("north", "false").0])
+    );
+    fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
 fn content_block_default_state_is_validated_and_overlaid() {
     let scratch = std::env::temp_dir().join(format!("horizon-mod-default-{}", std::process::id()));
     let _ = fs::remove_dir_all(&scratch);
@@ -1198,6 +1284,14 @@ fn content_block_default_state_is_validated_and_overlaid() {
         ),
         (
             r#"{"template":"minecraft:piston","default_state":{"direction":"north"}}"#,
+            None,
+        ),
+        (
+            r#"{"template":"minecraft:piston","states":{"lit":["true","false"]},"default_state":{"lit":"false"}}"#,
+            Some(4),
+        ),
+        (
+            r#"{"template":"minecraft:piston","states":{"lit":["true"]},"per_state":{"lit=false":{"light":1}}}"#,
             None,
         ),
     ] {

@@ -984,6 +984,15 @@ pub fn carry(
                 continue;
             };
             let mut v = json!({"template": choice.template, "properties": choice.properties});
+            if let Some(states) = &choice.states {
+                v["states"] = json!(states);
+            }
+            if !choice.default_state.is_empty() {
+                v["default_state"] = json!(choice.default_state);
+            }
+            if !choice.per_state.is_empty() {
+                v["per_state"] = json!(choice.per_state);
+            }
             if block.item == "minecraft:air" {
                 v["item"] = json!(false);
             } else if block.item != *full {

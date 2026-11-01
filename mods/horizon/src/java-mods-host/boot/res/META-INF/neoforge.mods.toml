@@ -10,3 +10,6 @@ description = "Boots mods in Horizon's embedded JVM and serves heavy vanilla wor
 
 [[mixins]]
 config = "horizon_java.mixins.json"
+
+[[mixins]]
+config="horizon_java.client.mixins.json"

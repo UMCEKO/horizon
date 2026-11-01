@@ -126,6 +126,7 @@ mod item_draw;
 mod item_particles;
 #[cfg(feature = "java-mods")]
 mod java_bridges;
+mod java_hooks;
 #[cfg(feature = "java-mods")]
 mod java_mods;
 mod jigsaw_blocks;

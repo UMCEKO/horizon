@@ -41,9 +41,9 @@ public final class Host extends Entrypoint {
         return b.toString();
     }
 
-    public static void run(String[] args) throws Throwable {
+    public static void run(String[] args, boolean client) throws Throwable {
         t0 = System.nanoTime();
-        var result = startup(args, true, Dist.DEDICATED_SERVER, true);
+        var result = startup(args, true, client ? Dist.CLIENT : Dist.DEDICATED_SERVER, true);
         mark("fml_startup");
         MethodHandle main = createMainMethodCallable(result, "dev.horizonlab.javamods.boot.Boot");
         main.invokeExact(new String[0]);

@@ -234,6 +234,24 @@ an empty list is an empty shape. Invalid bounds or values reject the content roo
 Without `shapes`, both shapes remain the template's. Other properties such as
 occlusion, light, and support still come from the template.
 
+A block can have states its template lacks, as a machine with `facing` and `lit` on a plain `Block` does. `"states"`
+lists its own properties and their values, and each new state copies the template state agreeing with it on what they
+share, or the template's default:
+
+```json
+{
+  "template": "minecraft:iron_block",
+  "states": { "facing": ["north", "south", "west", "east"], "lit": ["true", "false"] },
+  "default_state": { "facing": "north", "lit": "false" },
+  "per_state": { "facing=north,lit=true": { "light": 13, "random_ticks": false } }
+}
+```
+
+`per_state` changes one state, on any block: `light`, `random_ticks`, `outline` and `collision` (lists of boxes). Its keys
+are the state's `property=value` pairs sorted by name. Rotation and mirror follow `facing` and `axis`. The template's behaviour knows nothing
+of a new property: `carry` writes these when no vanilla block of the class has the states, and a Java mod's own code is what
+uses them ([java-mods.md](java-mods.md)).
+
 A declaration may also set `"default_state": {"facing": "north"}`. The map
 changes only those state properties on the template's default; omitted properties keep
 their template values. Names and values must identify exactly one template state, or

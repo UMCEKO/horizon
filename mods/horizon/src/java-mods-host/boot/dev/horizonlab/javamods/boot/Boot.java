@@ -26,6 +26,7 @@ import net.minecraft.world.item.ItemStack;
 import net.neoforged.bus.api.Event;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.fml.ModList;
+import net.neoforged.fml.loading.FMLEnvironment;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.server.loading.ServerModLoader;
@@ -40,15 +41,19 @@ public final class Boot {
         public HzPing(String payload) { this.payload = payload; }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
         Host.mark("boot_main");
         SharedConstants.tryDetectVersion();
         Host.mark("detect_version");
         Bootstrap.bootStrap();
         Host.mark("bootstrap");
-        Bootstrap.validate();
-        Host.mark("validate");
-        ServerModLoader.load(false);
+        if (FMLEnvironment.getDist().isClient()) {
+            ClientLoader.load();
+        } else {
+            Bootstrap.validate();
+            Host.mark("validate");
+            ServerModLoader.load(false);
+        }
         Host.mark("mod_loading_done");
         Host.gameLoader = Boot.class.getClassLoader();
         Host.serverGroup = net.neoforged.fml.util.thread.SidedThreadGroups.SERVER;

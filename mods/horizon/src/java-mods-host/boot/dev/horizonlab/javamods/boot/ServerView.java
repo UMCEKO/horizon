@@ -1,6 +1,7 @@
 package dev.horizonlab.javamods.boot;
 
 import com.mojang.serialization.Lifecycle;
+import net.neoforged.fml.loading.FMLEnvironment;
 import io.netty.channel.embedded.EmbeddedChannel;
 import com.mojang.authlib.GameProfileRepository;
 import java.lang.reflect.Field;
@@ -25,8 +26,6 @@ import net.minecraft.world.level.levelgen.WorldGenSettings;
 import net.minecraft.world.level.levelgen.WorldOptions;
 import net.minecraft.world.level.storage.SavedDataStorage;
 import com.mojang.authlib.services.ServicesKeySet;
-import net.minecraft.server.dedicated.DedicatedPlayerList;
-import net.minecraft.server.dedicated.DedicatedServer;
 import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
@@ -85,9 +84,15 @@ final class ServerView {
         return f.get(target);
     }
 
+    /** By name, as a class of the other side doesn't exist on this one. */
+    private static <T> Class<? extends T> viewClass(String name, Class<T> base) throws ClassNotFoundException {
+        return Class.forName(name, true, ServerView.class.getClassLoader()).asSubclass(base);
+    }
+
     static MinecraftServer create(CloseableResourceManager manager, ReloadableServerResources resources, LayeredRegistryAccess<RegistryLayer> layers) throws ReflectiveOperationException {
         var loop = ReentrantBlockableEventLoop.class.getDeclaredConstructor(String.class, boolean.class);
-        DedicatedServer server = GameBridge.construct(DedicatedServer.class, loop, "Horizon", false);
+        boolean client = FMLEnvironment.getDist().isClient();
+        MinecraftServer server = GameBridge.construct(viewClass(client ? "net.minecraft.client.server.IntegratedServer" : "net.minecraft.server.dedicated.DedicatedServer", MinecraftServer.class), loop, "Horizon", false);
         set(MinecraftServer.class, server, "registries", layers);
         set(MinecraftServer.class, server, "levels", new java.util.LinkedHashMap<ResourceKey<Level>, ServerLevel>());
         Class<?> holder = Class.forName("net.minecraft.server.MinecraftServer$ReloadableResources");
@@ -104,7 +109,7 @@ final class ServerView {
         set(MinecraftServer.class, server, "clockManager", clockManager);
         clockManager.init(server);
         set(MinecraftServer.class, server, "gameRules", new GameRules(WorldDataConfiguration.DEFAULT.enabledFeatures()));
-        PlayerList players = GameBridge.construct(DedicatedPlayerList.class, Object.class.getDeclaredConstructor());
+        PlayerList players = GameBridge.construct(viewClass(client ? "net.minecraft.client.server.IntegratedPlayerList" : "net.minecraft.server.dedicated.DedicatedPlayerList", PlayerList.class), Object.class.getDeclaredConstructor());
         set(PlayerList.class, players, "server", server);
         var playing = new ArrayList<ServerPlayer>();
         set(PlayerList.class, players, "players", playing);
@@ -115,6 +120,9 @@ final class ServerView {
         set(MinecraftServer.class, server, "playerList", players);
         set(MinecraftServer.class, server, "tickRateManager", new ServerTickRateManager(server));
         if (players.getPlayers() == null) throw new IllegalStateException("the player list has no players");
+        if (client) ClientLoader.attach(server);
+        Inits.run(server, layers, manager);
+        Inits.run(players, server, layers);
         return server;
     }
 
@@ -128,6 +136,8 @@ final class ServerView {
         var chunks = GameBridge.construct(ServerChunkCache.class, Object.class.getDeclaredConstructor());
         set(ServerChunkCache.class, chunks, "chunkMap", GameBridge.construct(ChunkMap.class, Object.class.getDeclaredConstructor()));
         set(ServerLevel.class, level, "chunkSource", chunks);
+        Inits.run(chunks.chunkMap, level);
+        Inits.run(chunks, level);
         set(ServerLevel.class, level, "environmentAttributes", EnvironmentAttributeSystem.builder().addDefaultLayers(level).build());
         ((Map<ResourceKey<Level>, ServerLevel>) get(MinecraftServer.class, server, "levels")).put(level.dimension(), level);
     }
