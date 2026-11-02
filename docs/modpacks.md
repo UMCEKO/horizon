@@ -247,7 +247,9 @@ share, or the template's default:
 }
 ```
 
-`per_state` changes one state, on any block: `light`, `random_ticks`, `outline` and `collision` (lists of boxes). Its keys
+`per_state` changes one state, on any block: `light`, `random_ticks`, `outline` and `collision` (lists of boxes), and what
+light does through it: `light_dampening` (0 to 15), `skylight_down`, `solid_render`, `can_occlude`, `shape_occlusion` and `occlusion`
+(boxes). `carry` writes the light ones where the template's differ, so a mod's partial block lets sky light in as it does in Java. Its keys
 are the state's `property=value` pairs sorted by name. Rotation and mirror follow `facing` and `axis`. The template's behaviour knows nothing
 of a new property: `carry` writes these when no vanilla block of the class has the states, and a Java mod's own code is what
 uses them ([java-mods.md](java-mods.md)).

@@ -412,6 +412,75 @@ impl Game<'_> {
         });
     }
 
+    /// `data get block` of a block entity Java holds: its live saved form replaces the chunk's copy first.
+    pub(in crate::game) fn java_refresh_block_entity(&mut self, pos: BlockPos) {
+        let Some(host) = horizon_java_host::get() else {
+            return;
+        };
+        self.java_bind_states();
+        let mut out = Out::default();
+        out.text(self.dim.id());
+        out.long(self.world.game_time);
+        out.long(pos.pack());
+        let reply = horizon_java_host::bridge::with_active(self, || {
+            host.request("block_entity_data", &out.0)
+        });
+        let Some(tag) = reply
+            .filter(|r| !r.is_empty())
+            .and_then(|r| In(&r).bytes().and_then(read_tag))
+        else {
+            return;
+        };
+        if let Some((key, entity)) = horizon_client::save::decode_block_entity(&tag) {
+            self.world.block_entities.insert(key, entity);
+        }
+    }
+
+    /// `data merge`/`modify` of a block entity Java holds: it reads the new form, as vanilla's does.
+    pub(in crate::game) fn java_set_block_entity(
+        &mut self,
+        pos: BlockPos,
+        tag: horizon_world::nbt::Tag,
+    ) {
+        let Some(bytes) = write_tag(tag) else {
+            return;
+        };
+        self.java_level_call("block_entity_set", |out| {
+            out.long(pos.pack());
+            out.bytes(&bytes);
+        });
+    }
+
+    /// NeoForge's `VanillaInventoryCodeHooks` for a hopper and the item handler of the block at `target`, if it has one.
+    pub(in crate::game) fn java_hopper(
+        &mut self,
+        hopper: (i32, i32, i32),
+        target: (i32, i32, i32),
+        side: horizon_core::geometry::Direction,
+        insert: bool,
+    ) -> Option<bool> {
+        let host = horizon_java_host::get()?;
+        self.java_bind_states();
+        if !horizon_java_host::bridge::java_block(self.world.block(target.0, target.1, target.2)) {
+            return None;
+        }
+        let pos = |p: (i32, i32, i32)| BlockPos::new(p.0, p.1, p.2).pack();
+        let mut out = Out::default();
+        out.text(self.dim.id());
+        out.long(self.world.game_time);
+        out.long(pos(hopper));
+        out.long(pos(target));
+        out.int(side as i32);
+        out.bool(insert);
+        let reply = horizon_java_host::bridge::with_active(self, || {
+            host.request("hopper_transfer", &out.0)
+        })?;
+        let mut reply = In(&reply);
+        let (found, moved) = (reply.bool()?, reply.bool()?);
+        self.java_apply_effects(&mut reply);
+        found.then_some(moved)
+    }
+
     /// Java made a block entity: its place in the chunk, which saves it and gives it its turn to tick.
     pub(in crate::game) fn java_adopt_block_entity(&mut self, pos: BlockPos, id: String) {
         let entity = BlockEntity::Mod(Box::new(horizon_client::containers::ModBlockEntity {

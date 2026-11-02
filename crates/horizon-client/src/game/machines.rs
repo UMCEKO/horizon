@@ -715,6 +715,10 @@ impl Game<'_> {
         if let Some(target) = c.view(front, false) {
             return self.eject_into(pos, hopper, &target, face);
         }
+        // NeoForge's getContainerOrHandlerAt: a block's item handler comes before container entities.
+        if let Some(moved) = self.java_hook_hopper(pos, front, face, true) {
+            return moved;
+        }
         let Some(id) = self.entity_container_at([
             f64::from(front.0) + 0.5,
             f64::from(front.1) + 0.5,
@@ -752,7 +756,7 @@ impl Game<'_> {
             f64::from(pos.1) + 1.5,
             f64::from(pos.2) + 0.5,
         ];
-        if let Some(took) = self.suck_from_container(above, at, hopper) {
+        if let Some(took) = self.suck_from_container(above, at, hopper, Some(pos)) {
             return took;
         }
         let above_state = self.world.block(above.0, above.1, above.2);
@@ -789,9 +793,20 @@ impl Game<'_> {
     /// container at `above`, through its bottom face; with no block container
     /// there, from a container entity whose box meets the one around `at`
     /// (`getSourceContainerOrHandler`). `None` when there is no container.
-    fn suck_from_container(&mut self, above: Pos, at: [f64; 3], hopper: &View) -> Option<bool> {
+    fn suck_from_container(
+        &mut self,
+        above: Pos,
+        at: [f64; 3],
+        hopper: &View,
+        block_hopper: Option<Pos>,
+    ) -> Option<bool> {
         let c = self.containers();
         let Some(source) = c.view(above, false) else {
+            if let Some(took) = block_hopper
+                .and_then(|pos| self.java_hook_hopper(pos, above, Direction::Down, false))
+            {
+                return Some(took);
+            }
             let id = self.entity_container_at(at)?;
             return self
                 .with_entity_container(id, |g, source| g.suck_from_slots(None, source, hopper));
@@ -988,7 +1003,7 @@ impl Game<'_> {
             p.z.floor() as i32,
         );
         let at = [p.x, p.y + 1.5, p.z];
-        let took = match self.suck_from_container(above, at, &view) {
+        let took = match self.suck_from_container(above, at, &view, None) {
             Some(took) => took,
             None => self.suck_item_entities(
                 &view,

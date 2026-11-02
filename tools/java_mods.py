@@ -21,7 +21,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-os.environ.setdefault('HORIZON_NEOFORGE', '26.3.0.99')
+os.environ.setdefault('HORIZON_NEOFORGE', '26.3.0.101')
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lab  # noqa: E402
 import neoforge_oracle as oracle  # noqa: E402
@@ -181,7 +181,9 @@ def session(args, drive):
     print(f'world open after {time.perf_counter() - began:.1f} s, {rss_mb(pid)} MB', flush=True)
 
     def send(line):
-        reply = subprocess.run([*ctl, *shlex.split(line)], env=env, capture_output=True, text=True, cwd=scratch)
+        # A command's own quotes (SNBT strings) must reach the game.
+        words = ['command', line.split(' ', 1)[1]] if line.startswith('command ') else shlex.split(line)
+        reply = subprocess.run([*ctl, *words], env=env, capture_output=True, text=True, cwd=scratch)
         return reply.stdout.strip() + reply.stderr.strip()
 
     try:

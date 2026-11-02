@@ -110,6 +110,9 @@ public final class GameBridge {
                 case "block_entity_tick" -> blockEntityTick(input);
                 case "block_entity_load" -> blockEntityLoad(input);
                 case "block_entities_save" -> blockEntitiesSave(input);
+                case "block_entity_data" -> blockEntityData(input);
+                case "block_entity_set" -> blockEntitySet(input);
+                case "hopper_transfer" -> hopperTransfer(input);
                 case "block_ticks" -> blockTicks(input);
                 case "click_block" -> use(input, 2);
                 case "event_click_block" -> use(input, 3);
@@ -504,7 +507,10 @@ public final class GameBridge {
         var in = new DataInputStream(new ByteArrayInputStream(input));
         var level = levelOf(in);
         if (in.readBoolean()) safely("LevelTickEvent.Post", () -> EventHooks.fireLevelTickPost(level, () -> true));
-        else safely("LevelTickEvent.Pre", () -> EventHooks.fireLevelTickPre(level, () -> true));
+        else {
+            safely("LevelTickEvent.Pre", () -> EventHooks.fireLevelTickPre(level, () -> true));
+            BlockEntities.loadFresh();
+        }
         return effects();
     }
 
@@ -579,6 +585,50 @@ public final class GameBridge {
         var out = new DataOutputStream(bytes);
         out.writeInt(saved.size());
         for (CompoundTag tag : saved) writeTag(out, tag);
+        return bytes.toByteArray();
+    }
+
+    /** `BlockDataAccessor.getData` of a block entity Java holds; an empty reply when it holds none. */
+    private static byte[] blockEntityData(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        var tag = BlockEntities.data(levelOf(in), BlockPos.of(in.readLong()));
+        if (tag == null) return new byte[0];
+        var bytes = new ByteArrayOutputStream();
+        writeTag(new DataOutputStream(bytes), tag);
+        return bytes.toByteArray();
+    }
+
+    /** `BlockDataAccessor.setData`: the block entity Java holds reads the tag, or one is made from it. */
+    private static byte[] blockEntitySet(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        var level = levelOf(in);
+        var pos = BlockPos.of(in.readLong());
+        var tag = NbtIo.read(new DataInputStream(new ByteArrayInputStream(in.readNBytes(in.readInt()))), NbtAccounter.unlimitedHeap());
+        if (!BlockEntities.setData(level, pos, tag)) BlockEntities.load(level, pos, tag);
+        return effects();
+    }
+
+    /** NeoForge's hopper past vanilla containers: `VanillaInventoryCodeHooks` with the item handler at the target, if there is one. */
+    private static byte[] hopperTransfer(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        var level = levelOf(in);
+        var hopperPos = BlockPos.of(in.readLong());
+        var target = BlockPos.of(in.readLong());
+        var side = net.minecraft.core.Direction.from3DDataValue(in.readInt());
+        boolean insert = in.readBoolean();
+        var handler = level.getCapability(net.neoforged.neoforge.capabilities.Capabilities.Item.BLOCK, target, side);
+        boolean moved = false;
+        if (handler != null && BlockEntities.get(level, hopperPos) instanceof net.minecraft.world.level.block.entity.HopperBlockEntity hopper) {
+            moved = insert
+                    ? net.neoforged.neoforge.transfer.item.VanillaInventoryCodeHooks.insertHook(hopper, handler)
+                    : net.neoforged.neoforge.transfer.item.VanillaInventoryCodeHooks.extractHook(hopper, handler);
+            if (moved) BlockEntities.changed(level, hopperPos);
+        }
+        var bytes = new ByteArrayOutputStream();
+        var out = new DataOutputStream(bytes);
+        out.writeBoolean(handler != null);
+        out.writeBoolean(moved);
+        writeEffects(out);
         return bytes.toByteArray();
     }
 

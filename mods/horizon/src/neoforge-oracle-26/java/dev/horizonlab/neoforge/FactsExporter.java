@@ -190,6 +190,12 @@ public final class FactsExporter {
                     json.name("can_occlude").value(state.canOcclude());
                     json.name("replaceable").value(state.canBeReplaced());
                     json.name("random_ticks").value(state.isRandomlyTicking());
+                    json.name("light_dampening").value(state.getLightDampening());
+                    json.name("skylight_down").value(state.propagatesSkylightDown());
+                    json.name("solid_render").value(state.isSolidRender());
+                    json.name("shape_occlusion").value(state.useShapeForLightOcclusion());
+                    json.name("occlusion");
+                    boxes(state.getOcclusionShape());
                     var color = state.getMapColor(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
                     json.name("map_color").value(color.col);
                     json.name("map_color_id").value(color.id);

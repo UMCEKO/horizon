@@ -50,6 +50,10 @@ refill the view, or Java sees the old value until the next call.
 | `Item.use`, `Item.useOn`, clicks on mods' blocks | `game/java_mods.rs`, beside the native hooks | The real `ServerPlayerGameMode` and `ItemStack.useOn`, so NeoForge's events fire |
 | Mods' blocks | `BlockEntities.blockChanged`, `GameBridge.blockEvents` | Real `onPlace`, removal, neighbour changes, scheduled and random ticks |
 | Mods' block entities | `BlockEntities`, `game/java_bridges/block_entities.rs` | Real objects in Java; their saved form lives in Horizon's chunk, and Horizon's list gives them their turn to tick |
+| Joining the level | `BlockEntities.join`, `loadFresh` | `setLevel` and `clearRemoved` as `LevelChunk.setBlockEntity` does, then `onLoad` before the next ticker, as `Level.tickBlockEntities` does |
+| Chunks | `ChunkViews`, `LevelChunkMixin`, `ChunkCacheMixin` | `getChunk`, `getChunkNow` and `hasChunk` answer for chunks Horizon has loaded with a `LevelChunk` holding nothing: its blocks and block entities are the level's |
+| `/data` on a mod's block entity | `data.rs`, `java_hooks.rs` | Reads Java's live form; `merge` and `modify` go to the real `loadWithComponents` |
+| Hoppers into and out of mods' blocks | `machines.rs`, `GameBridge.hopperTransfer` | Past vanilla containers, NeoForge's `VanillaInventoryCodeHooks` with the block's item handler, on a copy of the hopper |
 | Vanilla block entities and all entities | `BlockEntities`, `EntityViews` | Real Java objects read from Horizon's saved form for one call, with what it changed written back |
 | Forge Energy and other capabilities | NeoForge's own code | Run as they are on the above |
 | Server start and stop, server, level and player ticks, logins, right clicks, breaks, attacks | `GameBridge`, the native hooks | NeoForge's real `ServerLifecycleHooks`, `EventHooks` and `CommonHooks`; `level_tick` with its level in place |
@@ -65,7 +69,7 @@ What isn't bound and why is in `tools/java_mods_skips/`. `java-object` is Java d
 - Mods' menus and screens: `openMenu` makes the real Java menu and mods' client classes load, but nothing shows a screen, as GUI drawing isn't bridged to Rust. Text measures as 6 pixels a glyph until then.
 - Mods' own entities tick nowhere; their saved form is kept. Entity views last one call and aren't tracked between calls.
 - A mod's packets are logged and dropped (`ConnectionMixin`). Advancement triggers do nothing for a view (`CriterionMixin`).
-- Mods' item slots don't reach Horizon's hoppers, comparators or `/data` until a save.
+- Mods' item slots don't reach Horizon's comparators until a save, and hopper minecarts don't reach mods' item handlers.
 - Worldgen features and ore spawns from mods' Java code. Their data-driven ones come through `carry`.
 - A block without oracle facts keeps only its template's states, so a `facing` set in Java doesn't survive a read. `carry` with facts declares them.
 - Game rules and the world border are vanilla's defaults in Java. Other players have no views, only the acting one. Bridged calls act on the acting player's dimension.

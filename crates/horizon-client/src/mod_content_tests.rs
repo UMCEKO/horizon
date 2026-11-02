@@ -1186,7 +1186,8 @@ fn a_block_declares_states_its_template_lacks() {
                 r#"{"template":"minecraft:iron_block",
                     "states":{"facing":["north","south","west","east"],"lit":["true","false"]},
                     "default_state":{"facing":"west","lit":"false"},
-                    "per_state":{"facing=north,lit=true":{"light":13,"collision":[[0,0,0,1,0.5,1]],"outline":[[0,0,0,1,0.5,1]]}}}"#,
+                    "per_state":{"facing=north,lit=true":{"light":13,"collision":[[0,0,0,1,0.5,1]],"outline":[[0,0,0,1,0.5,1]]},
+                        "facing=south,lit=false":{"light_dampening":0,"skylight_down":true,"solid_render":false,"occlusion":[[0,0,0,1,0.25,1]]}}}"#,
             ),
             (
                 "assets/machines/blockstates/press.json",
@@ -1232,6 +1233,30 @@ fn a_block_declares_states_its_template_lacks() {
         facts.get(state("south", "true")).outline,
         facts.get(iron).outline
     );
+    // A state's own light values, which the light engine reads instead of the template's.
+    let (glassy, solid) = (
+        facts.get(state("south", "false")),
+        facts.get(state("south", "true")),
+    );
+    assert_eq!(
+        (glassy.dampening, glassy.skylight_down, glassy.solid_render),
+        (0, true, false)
+    );
+    assert_eq!(
+        (solid.dampening, solid.skylight_down),
+        (facts.get(iron).dampening, false)
+    );
+    let (named, _) = nbt::read_named(
+        &fs::read(root.join("occlusion.nbt")).unwrap(),
+        Limits::tables(),
+    )
+    .unwrap();
+    let occlusion = CachedCollisionRegistry::from_nbt(&named.tag, registry).unwrap();
+    let low = occlusion
+        .cached_shape(state("south", "false"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(low.boxes().len(), 1);
     // Rotation and mirror follow `facing`, which the template row can't say.
     let turned: serde_json::Value = serde_json::from_slice(
         &fs::read(root.join("worldgen/blocks/structure-blocks.json")).unwrap(),

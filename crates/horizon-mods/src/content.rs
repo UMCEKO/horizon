@@ -91,6 +91,15 @@ pub struct StateOverride {
     pub random_ticks: Option<bool>,
     pub outline: Option<Vec<[f64; 6]>>,
     pub collision: Option<Vec<[f64; 6]>>,
+    /// `BlockState.getLightDampening`, 0 to 15.
+    pub light_dampening: Option<u8>,
+    pub skylight_down: Option<bool>,
+    pub solid_render: Option<bool>,
+    pub can_occlude: Option<bool>,
+    /// `useShapeForLightOcclusion`.
+    pub shape_occlusion: Option<bool>,
+    /// `getOcclusionShape`.
+    pub occlusion: Option<Vec<[f64; 6]>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -457,7 +466,13 @@ fn check_states(file: &BlockFile) -> Result<(), String> {
         if over.light.is_some_and(|l| l > 15) {
             return Err("per_state: light is 0 to 15".into());
         }
-        for boxes in [&over.outline, &over.collision].into_iter().flatten() {
+        if over.light_dampening.is_some_and(|l| l > 15) {
+            return Err("per_state: light_dampening is 0 to 15".into());
+        }
+        for boxes in [&over.outline, &over.collision, &over.occlusion]
+            .into_iter()
+            .flatten()
+        {
             if !valid_boxes(boxes) {
                 return Err("per_state: boxes need finite, ordered bounds".into());
             }
@@ -712,6 +727,20 @@ capabilities = ["registries"]
             &[(
                 "data/ruby/horizon/block/a.json",
                 br#"{"template":"minecraft:stone","per_state":{"":{"light":16}}}"#,
+            )],
+        );
+        refused(
+            "per-state-dampening",
+            &[(
+                "data/ruby/horizon/block/a.json",
+                br#"{"template":"minecraft:stone","per_state":{"":{"light_dampening":16}}}"#,
+            )],
+        );
+        refused(
+            "per-state-occlusion",
+            &[(
+                "data/ruby/horizon/block/a.json",
+                br#"{"template":"minecraft:stone","per_state":{"":{"occlusion":[[1,0,0,0,1,1]]}}}"#,
             )],
         );
         refused("shape-reversed", &[("data/ruby/horizon/block/a.json", br#"{"template":"minecraft:stone","shapes":{"property":"axis","values":{"x":[[1,0,0,0,1,1]]}}}"#)]);

@@ -64,6 +64,17 @@ pub struct State {
     pub can_occlude: bool,
     #[serde(default)]
     pub random_ticks: bool,
+    /// Light: absent in facts exported before these were.
+    #[serde(default)]
+    pub light_dampening: Option<u8>,
+    #[serde(default)]
+    pub skylight_down: Option<bool>,
+    #[serde(default)]
+    pub solid_render: Option<bool>,
+    #[serde(default)]
+    pub shape_occlusion: Option<bool>,
+    #[serde(default)]
+    pub occlusion: Option<Value>,
     pub sound: Value,
     pub outline: Value,
     pub collision: Value,
@@ -75,6 +86,31 @@ pub struct State {
 
 fn occludes() -> bool {
     true
+}
+
+/// The light values a state's copy of `base` would get wrong, which the light engine reads per state.
+fn light_overrides(over: &mut Map<String, Value>, s: &State, base: Option<&State>, all: bool) {
+    let differs =
+        |ours: Option<Value>, theirs: Option<Value>| ours.is_some() && (all || ours != theirs);
+    let pick = |f: fn(&State) -> Option<Value>| (f(s), base.and_then(f));
+    for (key, (ours, theirs)) in [
+        (
+            "light_dampening",
+            pick(|v| v.light_dampening.map(Value::from)),
+        ),
+        ("skylight_down", pick(|v| v.skylight_down.map(Value::from))),
+        ("solid_render", pick(|v| v.solid_render.map(Value::from))),
+        ("can_occlude", pick(|v| Some(Value::from(v.can_occlude)))),
+        (
+            "shape_occlusion",
+            pick(|v| v.shape_occlusion.map(Value::from)),
+        ),
+        ("occlusion", pick(|v| v.occlusion.clone())),
+    ] {
+        if differs(ours.clone(), theirs) {
+            over.insert(key.into(), ours.unwrap_or_default());
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -430,6 +466,7 @@ impl Facts {
             if unsure || base.is_none_or(|v| v.collision != s.collision) {
                 over.insert("collision".into(), s.collision.clone());
             }
+            light_overrides(&mut over, s, base, unsure);
             if !over.is_empty() {
                 per_state.insert(k, Value::Object(over));
             }

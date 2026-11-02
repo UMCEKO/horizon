@@ -336,6 +336,9 @@ struct ResolvedOverride {
     random_ticks: Option<bool>,
     outline: Option<VoxelShape>,
     collision: Option<VoxelShape>,
+    occlusion: Option<VoxelShape>,
+    /// Gameplay row flags and numbers set as they are: `dampening`, `skylight_down`...
+    row: Vec<(&'static str, J)>,
 }
 impl NewBlock<'_> {
     fn first(&self) -> u32 {
@@ -666,6 +669,20 @@ impl<'a> Plan<'a> {
                     let shape = |boxes: &Option<Vec<[f64; 6]>>| -> Result<Option<VoxelShape>> {
                         boxes.as_deref().map(boxes_shape).transpose()
                     };
+                    let mut row = Vec::new();
+                    if let Some(v) = over.light_dampening {
+                        row.push(("dampening", J::Num(v.into())));
+                    }
+                    for (key, flag) in [
+                        ("skylight_down", over.skylight_down),
+                        ("solid_render", over.solid_render),
+                        ("can_occlude", over.can_occlude),
+                        ("shape_occlusion", over.shape_occlusion),
+                    ] {
+                        if let Some(v) = flag {
+                            row.push((key, J::Bool(v)));
+                        }
+                    }
                     overrides.insert(
                         index,
                         ResolvedOverride {
@@ -673,6 +690,8 @@ impl<'a> Plan<'a> {
                             random_ticks: over.random_ticks,
                             outline: shape(&over.outline)?,
                             collision: shape(&over.collision)?,
+                            occlusion: shape(&over.occlusion)?,
+                            row,
                         },
                     );
                 }
@@ -823,6 +842,9 @@ impl<'a> Plan<'a> {
                         }
                         if let Some(ticks) = over.random_ticks {
                             row.set("random_ticks", J::Bool(ticks));
+                        }
+                        for (key, value) in &over.row {
+                            row.set(key, value.clone());
                         }
                         if let Some(shape) = &over.outline {
                             set_outline(&mut row, shape);
@@ -1095,16 +1117,17 @@ impl<'a> Plan<'a> {
         Ok(())
     }
 
-    fn collision_shapes(&self, tag: &mut Tag) -> Result<()> {
+    /// `cached-collision.nbt`'s or `occlusion.nbt`'s shapes for the states that declare their own.
+    fn shape_overrides(&self, tag: &mut Tag, occlusion: bool) -> Result<()> {
         let Tag::Compound(root) = tag else {
-            return Err("collision table is not a compound".into());
+            return Err("shape table is not a compound".into());
         };
         let mut indices = Vec::new();
         let Some(Tag::List(entries)) = root.get_mut(&JavaString::from("shapes")) else {
-            return Err("collision table has no shapes".into());
+            return Err("shape table has no shapes".into());
         };
         for block in &self.blocks {
-            if let Some(shapes) = &block.shapes {
+            if let (false, Some(shapes)) = (occlusion, &block.shapes) {
                 for (i, shape) in shapes.iter().enumerate() {
                     let id = entries.len() as i32;
                     entries.push(encode_shape(shape));
@@ -1112,7 +1135,12 @@ impl<'a> Plan<'a> {
                 }
             }
             for (i, over) in &block.overrides {
-                if let Some(shape) = &over.collision {
+                let shape = if occlusion {
+                    &over.occlusion
+                } else {
+                    &over.collision
+                };
+                if let Some(shape) = shape {
                     let id = entries.len() as i32;
                     entries.push(encode_shape(shape));
                     indices.push((block.rename.first as usize + i, id));
@@ -1120,7 +1148,7 @@ impl<'a> Plan<'a> {
             }
         }
         let Some(Tag::IntArray(mapping)) = root.get_mut(&JavaString::from("cached_shapes")) else {
-            return Err("collision table has no mapping".into());
+            return Err("shape table has no mapping".into());
         };
         for (state, id) in indices {
             mapping[state] = id;
@@ -1644,7 +1672,10 @@ fn tables(base: &Path, plan: &Plan, overlay: &Overlay<'_>) -> Result<()> {
                 .map_err(|e| format!("{name}: {e}"))?;
             plan.nbt(&mut named.tag);
             if name == "cached-collision.nbt" || name == "worldgen/blocks/cached-collision.nbt" {
-                plan.collision_shapes(&mut named.tag)?;
+                plan.shape_overrides(&mut named.tag, false)?;
+            }
+            if name == "occlusion.nbt" {
+                plan.shape_overrides(&mut named.tag, true)?;
             }
             nbt::write_named(&named, Limits::tables()).map_err(|e| format!("{name}: {e}"))?
         };

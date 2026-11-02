@@ -72,7 +72,7 @@ final class ServerView {
         set(net.minecraft.world.entity.Entity.class, player, "onGround", onGround);
     }
 
-    private static void set(Class<?> owner, Object target, String field, Object value) throws ReflectiveOperationException {
+    static void set(Class<?> owner, Object target, String field, Object value) throws ReflectiveOperationException {
         Field f = owner.getDeclaredField(field);
         f.setAccessible(true);
         f.set(target, value);
@@ -135,7 +135,10 @@ final class ServerView {
         set(ServerLevel.class, level, "serverLevelData", server.getWorldData().overworldData());
         var chunks = GameBridge.construct(ServerChunkCache.class, Object.class.getDeclaredConstructor());
         set(ServerChunkCache.class, chunks, "chunkMap", GameBridge.construct(ChunkMap.class, Object.class.getDeclaredConstructor()));
+        set(ServerChunkCache.class, chunks, "level", level);
         set(ServerLevel.class, level, "chunkSource", chunks);
+        set(ChunkMap.class, chunks.chunkMap, "entityMap", new it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<>());
+        set(ChunkMap.class, chunks.chunkMap, "playerMap", new net.minecraft.server.level.PlayerMap());
         Inits.run(chunks.chunkMap, level);
         Inits.run(chunks, level);
         set(ServerLevel.class, level, "environmentAttributes", EnvironmentAttributeSystem.builder().addDefaultLayers(level).build());

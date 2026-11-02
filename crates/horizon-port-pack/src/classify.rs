@@ -130,6 +130,9 @@ pub fn rules(f: &Facts) -> (&'static str, &'static str, &'static str) {
     if has("utility") || has("management") || has("social") {
         return ("other", "logic", "guess");
     }
+    if f.has_content {
+        return ("content", "logic", "jar");
+    }
     ("unknown", "none", "unknown")
 }
 
@@ -214,6 +217,12 @@ mod tests {
             ("content", "data", "categories")
         );
         assert_eq!(f("", "", &[]).0, "unknown");
+        let unlisted = Facts {
+            classes: Some(400),
+            has_content: true,
+            ..Facts::default()
+        };
+        assert_eq!(rules(&unlisted), ("content", "logic", "jar"));
     }
 
     #[test]

@@ -292,6 +292,7 @@ impl Game<'_> {
             }
             DataRef::Block(p) => {
                 let key = (p[0], p[1], p[2]);
+                self.java_hook_block_entity_read(*p);
                 let name = self.data_block_name(*p);
                 let e = self
                     .world
@@ -317,6 +318,7 @@ impl Game<'_> {
                 if let Some((_, mut new)) = save::decode_block_entity(&tag) {
                     self.take_loot_table(key, &tag, &mut new);
                     self.world.block_entities.insert(key, new);
+                    self.java_hook_block_entity_written(*p, &tag);
                     self.update_spawner_display(key);
                     // BlockDataAccessor.setData: setChanged and sendBlockUpdated(3),
                     // even when the block state itself stays the same.
