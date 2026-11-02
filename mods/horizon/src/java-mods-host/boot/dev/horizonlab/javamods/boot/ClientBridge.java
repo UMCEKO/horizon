@@ -88,6 +88,8 @@ public final class ClientBridge {
                 case "client_models_probe" -> modelsProbe();
                 case "client_models_states" -> ClientModels.states();
                 case "client_models_take" -> Minecraft.getInstance().level == null ? new byte[0] : ClientModels.take(Minecraft.getInstance().level);
+                case "client_items_external" -> ClientModels.foreignItemIds();
+                case "client_items_take" -> BlockRenders.items(in);
                 case "client_renders_take" -> Minecraft.getInstance().level == null ? new byte[0] : BlockRenders.take(Minecraft.getInstance().level);
                 case "client_shape" -> shape(in);
                 default -> throw new IllegalArgumentException(op);

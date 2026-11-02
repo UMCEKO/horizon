@@ -288,14 +288,21 @@ impl Game<'_> {
         seed: i32,
     ) -> ItemRenderState {
         let level = self.item_level();
-        self.pack.item_renderer.resolve(
+        #[allow(unused_mut)]
+        let mut state = self.pack.item_renderer.resolve(
             &item_render::stack_view(stack),
             display,
             owner,
             Some(&level),
             seed,
             &self.item_env(),
-        )
+        );
+        // A mod item whose model only its code knows draws what the Java client recorded of it.
+        #[cfg(feature = "java-mods")]
+        if let Some(layer) = self.java_item_layer(stack, display, state.uses_block_light()) {
+            state.layers = vec![layer];
+        }
+        state
     }
     /// `GuiGraphics.renderItem(player, level, stack, x, y, 0)`.
     pub(super) fn draw_item_model(&self, batch: &mut HudBatch, stack: &ItemStack, x: f32, y: f32) {

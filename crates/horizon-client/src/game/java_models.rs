@@ -3,8 +3,106 @@
 
 use super::*;
 use horizon_assets::model::{BakedLayer, BakedQuadData, Direction};
+use horizon_client::item_render::{LayerGeometry, LayerRender, RecordedQuad};
 use horizon_client::{dynamic_models, dynamic_renders};
 use horizon_java_host::wire::In;
+use std::cell::RefCell;
+
+/// A stack (its saved form) and an `ItemDisplayContext` ordinal.
+pub(in crate::game) type ItemKey = (Vec<u8>, u8);
+
+/// Mod items only their own code can draw: which they are, what the Java client recorded of them, and what to ask it next.
+#[derive(Default)]
+struct ItemRecordings {
+    external: std::collections::HashSet<String>,
+    cache: HashMap<ItemKey, Option<Arc<[RecordedQuad]>>>,
+    queued: Vec<ItemKey>,
+}
+
+thread_local! {
+    static ITEMS: RefCell<ItemRecordings> = RefCell::default();
+}
+
+/// Takes the list of item ids the Java client draws.
+pub(in crate::game) fn java_items_external(reply: &[u8]) {
+    let mut input = In(reply);
+    let count = input.int().unwrap_or(0);
+    let ids: std::collections::HashSet<String> = (0..count)
+        .map_while(|_| input.text().map(str::to_owned))
+        .collect();
+    ITEMS.with_borrow_mut(|items| items.external = ids);
+}
+
+/// The queued stacks to record, as the request and its encoded form; None when there are none.
+pub(in crate::game) fn java_items_request() -> Option<(Vec<ItemKey>, Vec<u8>)> {
+    let keys = ITEMS.with_borrow_mut(|items| std::mem::take(&mut items.queued));
+    if keys.is_empty() {
+        return None;
+    }
+    let mut out = horizon_java_host::wire::Out::default();
+    out.int(keys.len() as i32);
+    for (nbt, context) in &keys {
+        out.bytes(nbt);
+        out.0.push(*context);
+    }
+    Some((keys, out.0))
+}
+
+/// Stores the recordings answering `keys`; one that failed keeps Horizon's own reading of the item.
+pub(in crate::game) fn java_items_apply(keys: Vec<ItemKey>, reply: &[u8]) {
+    let mut input = In(reply);
+    let Some(count) = input.int() else {
+        return;
+    };
+    let mut answers = Vec::new();
+    for _ in 0..count {
+        let Some(quads) = input.int() else {
+            return;
+        };
+        if quads < 0 {
+            answers.push(None);
+            continue;
+        }
+        let mut list = Vec::new();
+        for _ in 0..quads {
+            let Some(quad) = (|| {
+                let texture = input.text()?.to_owned();
+                let mut corners = [[0.0; 5]; 4];
+                let mut color = 0;
+                for corner in &mut corners {
+                    for value in corner.iter_mut() {
+                        *value = input.float()?;
+                    }
+                    color = input.int()? as u32;
+                }
+                let translucent = input.bool()?;
+                Some(RecordedQuad {
+                    texture,
+                    corners,
+                    color,
+                    translucent,
+                })
+            })() else {
+                return;
+            };
+            list.push(quad);
+        }
+        answers.push(Some(Arc::from(list)));
+    }
+    ITEMS.with_borrow_mut(|items| {
+        if items.cache.len() > 4096 {
+            items.cache.clear();
+        }
+        for (key, answer) in keys.into_iter().zip(answers) {
+            items.cache.insert(key, answer);
+        }
+    });
+}
+
+/// Whether item recordings are waiting to be asked for.
+pub(in crate::game) fn java_items_queued() -> bool {
+    ITEMS.with_borrow(|items| !items.queued.is_empty())
+}
 
 struct Entry {
     pos: [i32; 3],
@@ -185,6 +283,47 @@ fn parse_renders(reply: &[u8]) -> Option<Vec<([i32; 3], Option<Vec<dynamic_rende
 }
 
 impl Game<'_> {
+    /// The layer a mod's own item model code drew for this stack in this context, once the Java client recorded it.
+    pub(in crate::game) fn java_item_layer(
+        &self,
+        stack: &ItemStack,
+        display: horizon_assets::item_model::DisplayContext,
+        uses_block_light: bool,
+    ) -> Option<LayerRender> {
+        if !ITEMS.with_borrow(|items| items.external.contains(&*stack.item)) {
+            return None;
+        }
+        let mut one = stack.clone();
+        one.count = 1;
+        let nbt = super::java_mods::write_tag(horizon_items::item_nbt::item_to_nbt(&one))?;
+        let context = horizon_assets::item_model::DisplayContext::ALL
+            .iter()
+            .position(|c| *c == display)? as u8;
+        let key = (nbt, context);
+        let quads = ITEMS.with_borrow_mut(|items| match items.cache.get(&key) {
+            Some(answer) => answer.clone(),
+            None => {
+                if !items.queued.contains(&key) {
+                    items.queued.push(key);
+                }
+                None
+            }
+        })?;
+        let extents = quads
+            .iter()
+            .flat_map(|q| q.corners.map(|c| glam::Vec3::new(c[0], c[1], c[2])))
+            .collect();
+        Some(LayerRender {
+            geometry: LayerGeometry::Recorded(quads),
+            tints: Vec::new(),
+            foil: horizon_assets::item_model::FoilType::None,
+            matrix: glam::Mat4::IDENTITY,
+            particle: String::new(),
+            uses_block_light,
+            extents: Arc::new(extents),
+        })
+    }
+
     /// Takes a renders reply: what mods' block entity renderers draw at each changed position.
     pub(in crate::game) fn java_renders_apply(&mut self, reply: &[u8]) {
         let Some(entries) = parse_renders(reply) else {

@@ -280,7 +280,7 @@ public final class GameBridge {
         return entity.save(output) ? output.buildResult() : null;
     }
 
-    private static ItemStack decode(byte[] nbt) throws IOException {
+    static ItemStack decode(byte[] nbt) throws IOException {
         Tag tag = NbtIo.read(new DataInputStream(new ByteArrayInputStream(nbt)), NbtAccounter.unlimitedHeap());
         return ItemStack.CODEC.parse(registries.createSerializationContext(NbtOps.INSTANCE), tag).getOrThrow();
     }

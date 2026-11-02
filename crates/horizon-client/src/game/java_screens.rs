@@ -36,6 +36,7 @@ pub(in crate::game) mod live {
         font: Option<Vec<u8>>,
         tick: Vec<u8>,
         states: bool,
+        items: Option<(Vec<super::super::java_models::ItemKey>, Vec<u8>)>,
     }
 
     #[derive(Default)]
@@ -44,6 +45,8 @@ pub(in crate::game) mod live {
         states: Option<Vec<u8>>,
         models: Option<Vec<u8>>,
         renders: Option<Vec<u8>>,
+        external: Option<Vec<u8>>,
+        items: Option<(Vec<super::super::java_models::ItemKey>, Vec<u8>)>,
     }
 
     impl Job {
@@ -54,11 +57,17 @@ pub(in crate::game) mod live {
             let Some(tick) = host.request("client_tick", &self.tick) else {
                 return Done::default();
             };
-            let states = if self.states {
-                host.request("client_models_states", &[])
+            let (states, external) = if self.states {
+                (
+                    host.request("client_models_states", &[]),
+                    host.request("client_items_external", &[]),
+                )
             } else {
-                None
+                (None, None)
             };
+            let items = self.items.and_then(|(keys, request)| {
+                Some((keys, host.request("client_items_take", &request)?))
+            });
             let (models, renders) = status_pending(&tick).unwrap_or((0, 0));
             let take = |op, pending: i32| (pending > 0).then(|| host.request(op, &[])).flatten();
             Done {
@@ -66,6 +75,8 @@ pub(in crate::game) mod live {
                 renders: take("client_renders_take", renders),
                 tick: Some(tick),
                 states,
+                external,
+                items,
             }
         }
     }
@@ -377,7 +388,13 @@ pub(in crate::game) mod live {
             let poll =
                 self.world.game_time % 20 == 0 && !horizon_client::dynamic_renders::is_empty();
             if java_client_busy()
-                || (joined && !open && pending == seen && models == 0 && font >= 0x10000 && !poll)
+                || (joined
+                    && !open
+                    && pending == seen
+                    && models == 0
+                    && font >= 0x10000
+                    && !poll
+                    && !super::super::java_models::java_items_queued())
             {
                 return;
             }
@@ -388,6 +405,7 @@ pub(in crate::game) mod live {
             out.text(self.dim.id());
             self.java_client_size(&mut out);
             let job = Job {
+                items: super::super::java_models::java_items_request(),
                 font: self.java_client_font(),
                 tick: out.0,
                 states: !states,
@@ -418,6 +436,12 @@ pub(in crate::game) mod live {
             if let Some(states) = done.states {
                 self.java_models_states(&states);
                 CLIENT.with_borrow_mut(|c| c.states = true);
+            }
+            if let Some(external) = done.external {
+                super::super::java_models::java_items_external(&external);
+            }
+            if let Some((keys, reply)) = done.items {
+                super::super::java_models::java_items_apply(keys, &reply);
             }
             let taken = done.models.is_some() || done.renders.is_some();
             if let Some(models) = done.models {

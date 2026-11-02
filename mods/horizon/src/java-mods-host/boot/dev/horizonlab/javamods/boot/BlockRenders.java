@@ -775,63 +775,139 @@ public final class BlockRenders {
         return c;
     }
 
-    /** Each changed position's pieces: count -1 when nothing draws there now. */
-    static byte[] take(ClientLevel level) throws IOException {
+    private static final java.util.Set<String> FAILED = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** Each requested stack's model in one display context, as its item model submits it, in item space: count -1 when it fails. */
+    static byte[] items(java.io.DataInputStream in) throws IOException {
         var bytes = new ByteArrayOutputStream();
         var out = new DataOutputStream(bytes);
-        var positions = DIRTY.toLongArray();
-        DIRTY.clear();
-        out.writeInt(positions.length);
-        for (long at : positions) {
-            out.writeLong(at);
-            var entity = ClientBridge.blockEntity(level, BlockPos.of(at));
-            var renderer = entity == null ? null : renderers().get(entity.getType());
-            List<List<Draw>> samples = null;
-            if (renderer != null) {
+        int n = in.readInt();
+        out.writeInt(n);
+        var resolver = new net.minecraft.client.renderer.item.ItemModelResolver(Minecraft.getInstance().getModelManager());
+        for (int i = 0; i < n; i++) {
+            byte[] nbt = in.readNBytes(in.readInt());
+            int context = in.readByte();
+            List<Draw> draws;
+            try {
+                var stack = GameBridge.decode(nbt);
+                var state = new net.minecraft.client.renderer.item.ItemStackRenderState();
+                resolver.updateForTopItem(state, stack, net.minecraft.world.item.ItemDisplayContext.values()[context], Minecraft.getInstance().level, null, 0);
+                var stackPose = new PoseStack();
+                var capture = new Capture();
+                ACTIVE = capture;
+                tracking = true;
                 try {
-                    ClientBridge.refresh(level, entity);
-                    samples = samples(level, entity, renderer);
-                } catch (Throwable t) {
-                    System.err.println("Horizon: the block entity renderer at " + BlockPos.of(at) + " failed: " + t);
+                    state.submit(stackPose, capture, 0xF000F0, net.minecraft.client.renderer.texture.OverlayTexture.NO_OVERLAY, 0);
+                    capture.geometry.flush();
+                } finally {
+                    tracking = false;
+                    CURRENT = null;
+                    ACTIVE = null;
                 }
-            }
-            if (renderer != null) SEEN.put(at, seen(level, BlockPos.of(at)));
-            else SEEN.remove(at);
-            if (samples == null || samples.get(0).isEmpty()) {
+                draws = capture.geometry.draws;
+            } catch (Throwable t) {
+                if (FAILED.add(String.valueOf(t))) {
+                    System.err.println("Horizon: an item's model didn't draw in Java:");
+                    t.printStackTrace();
+                }
                 out.writeInt(-1);
                 continue;
             }
-            var first = samples.get(0);
-            boolean aligned = true;
-            for (var sample : samples) aligned &= sample.size() == first.size();
-            out.writeInt(first.size());
-            for (int i = 0; i < first.size(); i++) {
-                var d = first.get(i);
-                out.writeBoolean(d.type != null && d.type.hasBlending());
-                var across = new ArrayList<Draw>();
-                if (aligned) for (var sample : samples) across.add(sample.get(i));
-                else across.add(d);
-                writeMotion(out, across);
-                out.writeInt(d.quads.size());
+            int quads = 0;
+            for (var d : draws) quads += d.quads.size();
+            out.writeInt(quads);
+            for (var d : draws) {
+                var position = new Vector3f();
                 for (var q : d.quads) {
                     byte[] name = q.texture().getBytes(java.nio.charset.StandardCharsets.UTF_8);
                     out.writeInt(name.length);
                     out.write(name);
                     for (int k = 0; k < 4; k++) {
-                        for (int c = 0; c < 5; c++) out.writeFloat(q.xyzuv()[k * 5 + c]);
+                        d.matrix.transformPosition(q.xyzuv()[k * 5], q.xyzuv()[k * 5 + 1], q.xyzuv()[k * 5 + 2], position);
+                        out.writeFloat(position.x);
+                        out.writeFloat(position.y);
+                        out.writeFloat(position.z);
+                        out.writeFloat(q.xyzuv()[k * 5 + 3]);
+                        out.writeFloat(q.xyzuv()[k * 5 + 4]);
                         out.writeInt(q.color()[k]);
-                        out.writeInt(q.light()[k]);
                     }
-                }
-                out.writeBoolean(d.item != null);
-                if (d.item != null) {
-                    var tag = (net.minecraft.nbt.CompoundTag) net.minecraft.world.item.ItemStack.CODEC.encodeStart(GameBridge.registries().createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE), (net.minecraft.world.item.ItemStack) d.item[0]).getOrThrow();
-                    GameBridge.writeTag(out, tag);
-                    out.writeByte((int) d.item[1]);
-                    out.writeInt((int) d.item[2]);
+                    out.writeBoolean(d.type != null && d.type.hasBlending());
                 }
             }
         }
         return bytes.toByteArray();
+    }
+
+    /** Each changed position's pieces: count -1 when nothing draws there now. */
+    static byte[] take(ClientLevel level) throws IOException {
+        var bytes = new ByteArrayOutputStream();
+        var out = new DataOutputStream(bytes);
+        // The server thread waits on this JVM meanwhile: a batch stops after about 8 ms, the rest wait for the next take.
+        long began = System.nanoTime();
+        var taken = new java.util.ArrayList<Long>();
+        var iterator = DIRTY.iterator();
+        while (iterator.hasNext() && (taken.isEmpty() || System.nanoTime() - began < 8_000_000L)) {
+            long at = iterator.nextLong();
+            iterator.remove();
+            taken.add(at);
+            entry(level, at, out);
+        }
+        var whole = new ByteArrayOutputStream();
+        var header = new DataOutputStream(whole);
+        header.writeInt(taken.size());
+        bytes.writeTo(whole);
+        return whole.toByteArray();
+    }
+
+    /** One position's pieces, or -1 when nothing draws there now. */
+    private static void entry(ClientLevel level, long at, DataOutputStream out) throws IOException {
+        out.writeLong(at);
+        var entity = ClientBridge.blockEntity(level, BlockPos.of(at));
+        var renderer = entity == null ? null : renderers().get(entity.getType());
+        List<List<Draw>> samples = null;
+        if (renderer != null) {
+            try {
+                ClientBridge.refresh(level, entity);
+                samples = samples(level, entity, renderer);
+            } catch (Throwable t) {
+                System.err.println("Horizon: the block entity renderer at " + BlockPos.of(at) + " failed: " + t);
+            }
+        }
+        if (renderer != null) SEEN.put(at, seen(level, BlockPos.of(at)));
+        else SEEN.remove(at);
+        if (samples == null || samples.get(0).isEmpty()) {
+            out.writeInt(-1);
+            return;
+        }
+        var first = samples.get(0);
+        boolean aligned = true;
+        for (var sample : samples) aligned &= sample.size() == first.size();
+        out.writeInt(first.size());
+        for (int i = 0; i < first.size(); i++) {
+            var d = first.get(i);
+            out.writeBoolean(d.type != null && d.type.hasBlending());
+            var across = new ArrayList<Draw>();
+            if (aligned) for (var sample : samples) across.add(sample.get(i));
+            else across.add(d);
+            writeMotion(out, across);
+            out.writeInt(d.quads.size());
+            for (var q : d.quads) {
+                byte[] name = q.texture().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                out.writeInt(name.length);
+                out.write(name);
+                for (int k = 0; k < 4; k++) {
+                    for (int c = 0; c < 5; c++) out.writeFloat(q.xyzuv()[k * 5 + c]);
+                    out.writeInt(q.color()[k]);
+                    out.writeInt(q.light()[k]);
+                }
+            }
+            out.writeBoolean(d.item != null);
+            if (d.item != null) {
+                var tag = (net.minecraft.nbt.CompoundTag) net.minecraft.world.item.ItemStack.CODEC.encodeStart(GameBridge.registries().createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE), (net.minecraft.world.item.ItemStack) d.item[0]).getOrThrow();
+                GameBridge.writeTag(out, tag);
+                out.writeByte((int) d.item[1]);
+                out.writeInt((int) d.item[2]);
+            }
+        }
     }
 }

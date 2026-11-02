@@ -15,9 +15,16 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 abstract class SpriteContentsMixin {
     @Shadow @Final private NativeImage originalImage;
     @Shadow @Final private Transparency transparency;
+    @Shadow @Final private net.minecraft.resources.Identifier name;
 
     @Inject(method = "computeTransparency(FFFF)Lcom/mojang/blaze3d/platform/Transparency;", at = @At("HEAD"), cancellable = true)
     private void horizon$transparency(float u0, float v0, float u1, float v1, CallbackInfoReturnable<Transparency> result) {
         if (originalImage == null) result.setReturnValue(transparency);
+    }
+
+    /** A pixel's transparency from the sprite's file, as the item mesh generator reads it for a flat item's sides. */
+    @Inject(method = "isTransparent(III)Z", at = @At("HEAD"), cancellable = true)
+    private void horizon$pixel(int frame, int x, int y, CallbackInfoReturnable<Boolean> result) {
+        if (originalImage == null) result.setReturnValue(dev.horizonlab.javamods.boot.Sprites.transparentAt(name, x, y));
     }
 }

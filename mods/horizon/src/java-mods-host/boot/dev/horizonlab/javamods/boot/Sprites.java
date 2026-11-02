@@ -266,6 +266,25 @@ public final class Sprites {
         return sprite(atlas, id, sheet);
     }
 
+    private static final Map<Identifier, java.awt.image.BufferedImage> IMAGES = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Whether a texel of a sprite's first frame is fully clear; a sprite whose file won't read is opaque. */
+    public static boolean transparentAt(Identifier sprite, int x, int y) {
+        var image = IMAGES.computeIfAbsent(sprite, id -> {
+            var resource = Minecraft.getInstance().getResourceManager().getResource(id.withPath(path -> "textures/" + path + ".png"));
+            if (resource.isEmpty()) return new java.awt.image.BufferedImage(1, 1, java.awt.image.BufferedImage.TYPE_INT_ARGB);
+            try (InputStream in = resource.get().open()) {
+                var read = javax.imageio.ImageIO.read(in);
+                return read != null ? read : new java.awt.image.BufferedImage(1, 1, java.awt.image.BufferedImage.TYPE_INT_ARGB);
+            } catch (Exception e) {
+                return new java.awt.image.BufferedImage(1, 1, java.awt.image.BufferedImage.TYPE_INT_ARGB);
+            }
+        });
+        if (image.getWidth() == 1 && image.getHeight() == 1 && x + y > 0) return false;
+        if (x < 0 || y < 0 || x >= image.getWidth() || y >= image.getHeight()) return true;
+        return (image.getRGB(x, y) >>> 24) == 0;
+    }
+
     /** Whether the sprite's first frame has clear or part-clear texels, which picks its block layer. */
     private static com.mojang.blaze3d.platform.Transparency transparency(Identifier file, int width, int height) {
         var resource = Minecraft.getInstance().getResourceManager().getResource(file);

@@ -22,6 +22,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.util.Util;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.core.registries.BuiltInRegistries;
 
 /** The block models mods build in code, baked in this JVM against Horizon's sprite views; Rust draws what they give. */
 public final class ClientModels {
@@ -46,6 +47,23 @@ public final class ClientModels {
         return new SpriteLoader.Preparations(1, 1, 0, Sprites.sprite(atlas, net.minecraft.client.renderer.texture.MissingTextureAtlasSprite.getLocation(), sheet), regions, CompletableFuture.completedFuture(null));
     }
 
+    /** The client's rendering pieces item and block entity renderers reach through `Minecraft`: a block model resolver and a game renderer's state. */
+    private static void clientRendering() throws ReflectiveOperationException {
+        var minecraft = Minecraft.getInstance();
+        var resolver = Minecraft.class.getDeclaredField("blockModelResolver");
+        resolver.setAccessible(true);
+        if (resolver.get(minecraft) == null) resolver.set(minecraft, new net.minecraft.client.renderer.block.BlockModelResolver(minecraft.getModelManager()));
+        var renderer = Minecraft.class.getDeclaredField("gameRenderer");
+        renderer.setAccessible(true);
+        if (renderer.get(minecraft) == null) {
+            var view = GameBridge.construct(net.minecraft.client.renderer.GameRenderer.class, Object.class.getDeclaredConstructor());
+            var state = net.minecraft.client.renderer.GameRenderer.class.getDeclaredField("gameRenderState");
+            state.setAccessible(true);
+            state.set(view, new net.minecraft.client.renderer.state.GameRenderState());
+            renderer.set(minecraft, view);
+        }
+    }
+
     /** A root whose contents aren't one of vanilla's model types (a mod's own type, registered by its code). */
     static boolean codeBuilt(BlockStateModel.UnbakedRoot root) {
         Object contents = root;
@@ -64,6 +82,54 @@ public final class ClientModels {
     }
 
     private static final Map<Object, Integer> KEYS = new HashMap<>();
+    private static final Map<Identifier, net.minecraft.client.renderer.item.ItemModel> ITEM_MODELS = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final Map<Identifier, net.minecraft.client.renderer.item.ClientItem.Properties> ITEM_PROPERTIES = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** A mod item's model as baked here, for the items whose definitions use a type only the mod's code knows. */
+    public static net.minecraft.client.renderer.item.ItemModel itemModel(Identifier id) {
+        return ITEM_MODELS.get(id);
+    }
+
+    public static net.minecraft.client.renderer.item.ClientItem.Properties itemProperties(Identifier id) {
+        return ITEM_PROPERTIES.getOrDefault(id, net.minecraft.client.renderer.item.ClientItem.Properties.DEFAULT);
+    }
+
+    /** The item ids whose models are baked here, as text. */
+    static byte[] foreignItemIds() throws Exception {
+        baked();
+        var bytes = new java.io.ByteArrayOutputStream();
+        var out = new java.io.DataOutputStream(bytes);
+        out.writeInt(ITEM_MODELS.size());
+        for (var id : ITEM_MODELS.keySet()) {
+            byte[] text = id.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            out.writeInt(text.length);
+            out.write(text);
+        }
+        return bytes.toByteArray();
+    }
+
+    /** Items whose definition names a type outside vanilla's, anywhere in its tree: only the mod's code can draw them. */
+    private static Map<Identifier, net.minecraft.client.renderer.item.ClientItem> foreignItems(net.minecraft.server.packs.resources.ResourceManager manager, Map<Identifier, net.minecraft.client.renderer.item.ClientItem> all) {
+        var pattern = java.util.regex.Pattern.compile("\"type\"\\s*:\\s*\"([a-z0-9_.-]+):");
+        var out = new HashMap<Identifier, net.minecraft.client.renderer.item.ClientItem>();
+        all.forEach((id, item) -> {
+            if (id.getNamespace().equals("minecraft")) return;
+            var resource = manager.getResource(id.withPath(path -> "items/" + path + ".json"));
+            if (resource.isEmpty()) return;
+            try (var reader = resource.get().openAsReader()) {
+                var matcher = pattern.matcher(reader.lines().collect(java.util.stream.Collectors.joining()));
+                while (matcher.find()) {
+                    if (!matcher.group(1).equals("minecraft")) {
+                        out.put(id, item);
+                        break;
+                    }
+                }
+            } catch (java.io.IOException e) {
+                // An unreadable definition keeps Horizon's own reading.
+            }
+        });
+        return out;
+    }
     private static final Map<java.nio.ByteBuffer, Integer> CONTENT = new HashMap<>();
     private static final it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet DIRTY = new it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet();
     private static int nextKey;
@@ -204,20 +270,25 @@ public final class ClientModels {
         var models = ((CompletableFuture<Map<Identifier, net.minecraft.client.resources.model.UnbakedModel>>) loadModels.invoke(null, manager, executor)).join();
         var states = BlockStateModelLoader.loadBlockStates(manager, executor).join();
         var mine = new HashMap<BlockState, BlockStateModel.UnbakedRoot>();
+        var codeBuilt = new java.util.HashSet<BlockState>();
+        // Every mod block's model, as mods' item and block entity renderers draw them; only the code-built ones also come from block entity data.
         states.models().forEach((state, root) -> {
-            if (codeBuilt(root)) mine.put(state, root);
+            boolean built = codeBuilt(root);
+            if (built) codeBuilt.add(state);
+            if (built || !BuiltInRegistries.BLOCK.getKey(state.getBlock()).getNamespace().equals("minecraft")) mine.put(state, root);
         });
         // Models mods register to fetch by key at draw time (a cable's arms), as the client's reload loads them.
         var standalone = net.neoforged.neoforge.client.model.standalone.StandaloneModelLoader.load(executor).join();
         Method discover = null;
         for (Method m : ModelManager.class.getDeclaredMethods()) if (m.getName().equals("discoverModelDependencies") && m.getParameterCount() == 4) discover = m;
         discover.setAccessible(true);
-        Object resolved = discover.invoke(null, models, new BlockStateModelLoader.LoadedModels(mine), new ClientItemInfoLoader.LoadedClientInfos(Map.of()), standalone);
+        var clientItems = foreignItems(manager, ClientItemInfoLoader.scheduleLoad(manager, executor).join().contents());
+        Object resolved = discover.invoke(null, models, new BlockStateModelLoader.LoadedModels(mine), new ClientItemInfoLoader.LoadedClientInfos(clientItems), standalone);
         var missing = resolved.getClass().getDeclaredMethod("missing");
         var all = resolved.getClass().getDeclaredMethod("models");
         missing.setAccessible(true);
         all.setAccessible(true);
-        var bakery = new ModelBakery(EntityModelSet.vanilla(), Minecraft.getInstance().getAtlasManager(), null, mine, Map.of(),
+        var bakery = new ModelBakery(EntityModelSet.vanilla(), Minecraft.getInstance().getAtlasManager(), null, mine, clientItems,
                 (Map<Identifier, net.minecraft.client.resources.model.ResolvedModel>) all.invoke(resolved),
                 (net.minecraft.client.resources.model.ResolvedModel) missing.invoke(resolved), standalone,
                 net.neoforged.neoforge.client.entity.animation.json.AnimationLoader.PendingAnimations.EMPTY);
@@ -238,7 +309,20 @@ public final class ClientModels {
         fluids.set(Minecraft.getInstance().getModelManager(), new net.minecraft.client.renderer.block.FluidStateModelSet(
                 net.minecraft.client.renderer.block.FluidStateModelSet.bake(materials), result.missingModels().fluid()));
         net.neoforged.fml.ModLoader.postEvent(new net.neoforged.neoforge.client.event.ModelEvent.BakingCompleted(Minecraft.getInstance().getModelManager(), result, bakery));
-        baked = result.blockStateModels();
+        ITEM_MODELS.putAll(result.itemStackModels());
+        ITEM_PROPERTIES.putAll(result.itemProperties());
+        var stateModels = ModelManager.class.getDeclaredField("blockStateModelSet");
+        stateModels.setAccessible(true);
+        var stateModelSet = new net.minecraft.client.renderer.block.BlockStateModelSet(result.blockStateModels(), result.missingModels().block());
+        stateModels.set(Minecraft.getInstance().getModelManager(), stateModelSet);
+        var blockModels = ModelManager.class.getDeclaredField("blockModelSet");
+        blockModels.setAccessible(true);
+        blockModels.set(Minecraft.getInstance().getModelManager(), new net.minecraft.client.renderer.block.BlockModelSet(stateModelSet, Map.of(), net.minecraft.client.color.block.BlockColors.createDefault()));
+        clientRendering();
+        baked = new HashMap<>();
+        result.blockStateModels().forEach((state, model) -> {
+            if (codeBuilt.contains(state)) baked.put(state, model);
+        });
         System.err.println("Horizon: baked " + baked.size() + " block states whose models mods build in code");
         return baked;
     }

@@ -168,10 +168,21 @@ impl SpecialHost for NoHost {
     }
 }
 
+/// A quad a mod's item model drew in Java, in item space: its texture, corners (position and UV within the texture), ARGB colour and blending.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecordedQuad {
+    pub texture: String,
+    pub corners: [[f32; 5]; 4],
+    pub color: u32,
+    pub translucent: bool,
+}
+
 /// The geometry of one layer.
 #[derive(Clone, Debug)]
 pub enum LayerGeometry {
     Quads(Arc<BakedItemModel>),
+    /// What a mod's own item model code drew, for a type only it knows.
+    Recorded(Arc<[RecordedQuad]>),
     Special {
         model: SpecialModel,
         argument: Value,
@@ -240,6 +251,7 @@ impl ItemRenderState {
                 LayerGeometry::Quads(baked) => {
                     submit_quads(renderer, baked, layer, self.display, m, sprites, sink);
                 }
+                LayerGeometry::Recorded(quads) => submit_recorded(quads, layer, m, sprites, sink),
                 LayerGeometry::Special { model, argument } => special::submit(
                     renderer,
                     model,
@@ -278,6 +290,45 @@ pub fn transform_normal(m: Mat4, n: Vec3) -> Vec3 {
 /// An `ARGB` int as the `u32` colour of an [`ItemQuad`].
 pub fn argb(color: i32) -> u32 {
     color as u32
+}
+
+fn submit_recorded(
+    quads: &[RecordedQuad],
+    layer: &LayerRender,
+    m: Mat4,
+    sprites: &HashMap<String, Rect>,
+    sink: &mut dyn ItemSink,
+) {
+    let foil = match layer.foil {
+        FoilType::None => Foil::None,
+        FoilType::Standard => Foil::Standard,
+        FoilType::Special => Foil::Special,
+    };
+    for q in quads {
+        let Some(r) = sprites.get(sprite_name(&q.texture)).copied() else {
+            continue;
+        };
+        let pos = q
+            .corners
+            .map(|c| m.transform_point3(Vec3::new(c[0], c[1], c[2])));
+        let normal = (pos[1] - pos[0]).cross(pos[2] - pos[0]).normalize_or(
+            (pos[2] - pos[1])
+                .cross(pos[3] - pos[1])
+                .normalize_or(Vec3::Y),
+        );
+        let local = q.corners.map(|c| [c[3], c[4]]);
+        sink.quad(ItemQuad {
+            pos,
+            uv: local.map(|[u, v]| [r.u0 + (r.u1 - r.u0) * u, r.v0 + (r.v1 - r.v0) * v]),
+            foil_uv: local,
+            normal,
+            color: q.color,
+            foil,
+            light_emission: 0,
+            cull_back: false,
+            translucent: q.translucent,
+        });
+    }
 }
 
 /// `ItemFeatureRenderer.prepareMainSubmit` for one cuboid layer.
