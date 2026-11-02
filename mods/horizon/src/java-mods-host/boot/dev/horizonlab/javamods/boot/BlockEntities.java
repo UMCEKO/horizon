@@ -55,6 +55,7 @@ public final class BlockEntities {
         entity.clearRemoved();
         BlockEntity previous = held(level).put(entity.getBlockPos().asLong(), entity);
         if (previous != null && previous != entity) previous.setRemoved();
+        Clients.joined(level, entity);
     }
 
     public static BlockEntity get(ServerLevel level, BlockPos pos) {

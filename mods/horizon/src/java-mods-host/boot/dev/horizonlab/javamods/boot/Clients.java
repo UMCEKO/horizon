@@ -15,6 +15,8 @@ public final class Clients {
     private static final Map<UUID, ArrayDeque<Packet<?>>> TO_CLIENT = new HashMap<>();
     private static final Map<UUID, ArrayDeque<Packet<?>>> TO_SERVER = new HashMap<>();
     private static volatile int pending;
+    /** Whether a block's geometry comes from its block entity's data, so its clients need that data; set where the client classes exist. */
+    static volatile java.util.function.Predicate<net.minecraft.world.level.block.state.BlockState> dynamic = state -> false;
     private static final java.util.Set<UUID> JOINING = new java.util.HashSet<>();
 
     /** A window's player has a Java client from now on; the others' packets still go nowhere. */
@@ -72,6 +74,11 @@ public final class Clients {
         var packet = entity.getUpdatePacket();
         if (packet == null) return;
         for (var player : level.players()) toClient(player.getUUID(), packet);
+    }
+
+    /** A block entity whose block's geometry its data decides joined the level: clients get its data, as a chunk's arrival gives it. */
+    static void joined(net.minecraft.server.level.ServerLevel level, net.minecraft.world.level.block.entity.BlockEntity entity) {
+        if (dynamic.test(entity.getBlockState())) blockChanged(level, entity.getBlockPos());
     }
 
     /** Counts packets sent to clients, so a window can tell without the lock whether it has any to read. */

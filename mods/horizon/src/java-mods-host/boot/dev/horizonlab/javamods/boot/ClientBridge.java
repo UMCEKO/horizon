@@ -72,6 +72,7 @@ public final class ClientBridge {
 
     static void install() {
         GameBridge.client = ClientBridge::call;
+        Clients.dynamic = ClientModels::dynamic;
     }
 
     private static byte[] call(String op, byte[] input) {
@@ -84,6 +85,8 @@ public final class ClientBridge {
                 case "client_font" -> font(in);
                 case "client_leave" -> leave();
                 case "client_models_probe" -> modelsProbe();
+                case "client_models_states" -> ClientModels.states();
+                case "client_models_take" -> Minecraft.getInstance().level == null ? new byte[0] : ClientModels.take(Minecraft.getInstance().level);
                 case "client_shape" -> shape(in);
                 default -> throw new IllegalArgumentException(op);
             };
@@ -210,6 +213,7 @@ public final class ClientBridge {
         var chunks = GameBridge.construct(net.minecraft.client.multiplayer.ClientChunkCache.class, Object.class.getDeclaredConstructor());
         set(net.minecraft.client.multiplayer.ClientChunkCache.class, chunks, "level", level);
         set(ClientLevel.class, level, "chunkSource", chunks);
+        set(ClientLevel.class, level, "modelDataManager", new net.neoforged.neoforge.model.data.ModelDataManager(level));
         Inits.run(level, listener, data, key, holder);
         return level;
     }
@@ -225,6 +229,7 @@ public final class ClientBridge {
         if (held != null) {
             BLOCK_ENTITIES.remove(at);
             shapes++;
+            ClientModels.dirty(pos);
         }
         if (gone) return null;
         BlockState state = source.getBlockState();
@@ -237,6 +242,7 @@ public final class ClientBridge {
         copy.clearRemoved();
         BLOCK_ENTITIES.put(at, copy);
         shapes++;
+        if (ClientModels.dynamic(state)) ClientModels.dirty(pos);
         copy.onLoad();
         return copy;
     }
@@ -252,7 +258,10 @@ public final class ClientBridge {
         for (Packet<?> packet : Clients.takeForClient(player)) {
             try {
                 ((Packet<PacketListener>) packet).handle(listener);
-                if (packet instanceof net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket) shapes++;
+                if (packet instanceof net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket update) {
+                    shapes++;
+                    ClientModels.dirty(update.getPos());
+                }
             } catch (RunningOnDifferentThreadException e) {
                 // Queued on the client's loop; its tasks run below.
             } catch (Throwable t) {
@@ -319,6 +328,7 @@ public final class ClientBridge {
         }
         SOUNDS.clear();
         out.writeInt(shapes);
+        out.writeInt(ClientModels.pending());
         return bytes.toByteArray();
     }
 
@@ -421,6 +431,7 @@ public final class ClientBridge {
         set(Minecraft.class, minecraft, "player", null);
         set(Minecraft.class, minecraft, "level", null);
         BLOCK_ENTITIES.clear();
+        ClientModels.forget();
         if (player != null) Clients.leave(player);
         player = null;
         serverView = null;

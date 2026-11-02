@@ -20,6 +20,7 @@ import net.minecraft.client.resources.model.sprite.MaterialBaker;
 import net.minecraft.data.AtlasIds;
 import net.minecraft.resources.Identifier;
 import net.minecraft.util.Util;
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.state.BlockState;
 
 /** The block models mods build in code, baked in this JVM against Horizon's sprite views; Rust draws what they give. */
@@ -60,6 +61,121 @@ public final class ClientModels {
         var type = contents.getClass();
         String outer = type.getEnclosingClass() != null ? type.getEnclosingClass().getSimpleName() : type.getSimpleName();
         return !type.getName().startsWith("net.minecraft.") || !VANILLA.contains(outer);
+    }
+
+    private static final Map<Object, Integer> KEYS = new HashMap<>();
+    private static final it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet DIRTY = new it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet();
+    private static int nextKey;
+
+    static boolean dynamic(BlockState state) {
+        try {
+            return baked().containsKey(state);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** The block at `pos` changed in the window's level: its geometry is baked again on the next take. */
+    static void dirty(BlockPos pos) {
+        DIRTY.add(pos.asLong());
+    }
+
+    static int pending() {
+        return DIRTY.size();
+    }
+
+    static void forget() {
+        DIRTY.clear();
+        KEYS.clear();
+        nextKey = 0;
+    }
+
+    /** Java state ids whose geometry may come from a block entity's data. */
+    static byte[] states() throws Exception {
+        var bytes = new java.io.ByteArrayOutputStream();
+        var out = new java.io.DataOutputStream(bytes);
+        var states = baked().keySet();
+        out.writeInt(states.size());
+        for (BlockState state : states) out.writeInt(net.minecraft.world.level.block.Block.BLOCK_STATE_REGISTRY.getId(state));
+        return bytes.toByteArray();
+    }
+
+    /** Each changed position's geometry, from its block entity's model data; an equal geometry key bakes once and is sent once. */
+    static byte[] take(net.minecraft.client.multiplayer.ClientLevel level) throws Exception {
+        var models = baked();
+        var bytes = new java.io.ByteArrayOutputStream();
+        var out = new java.io.DataOutputStream(bytes);
+        var positions = new long[DIRTY.size()];
+        int n = 0;
+        for (long at : DIRTY) positions[n++] = at;
+        DIRTY.clear();
+        out.writeInt(n);
+        var random = net.minecraft.util.RandomSource.create();
+        for (long at : positions) {
+            var pos = BlockPos.of(at);
+            out.writeLong(at);
+            var entity = ClientBridge.blockEntity(level, pos);
+            BlockState state = entity == null ? null : entity.getBlockState();
+            BlockStateModel model = state == null ? null : models.get(state);
+            if (model == null) {
+                out.writeInt(-1);
+                out.writeBoolean(false);
+                continue;
+            }
+            level.getModelDataManager().requestRefresh(entity);
+            long seed = state.getSeed(pos);
+            random.setSeed(seed);
+            Object geometry = model.createGeometryKey(level, pos, state, random);
+            Integer key = geometry == null ? null : KEYS.get(geometry);
+            if (key != null) {
+                out.writeInt(key);
+                out.writeBoolean(false);
+                continue;
+            }
+            key = nextKey++;
+            if (geometry != null) KEYS.put(geometry, key);
+            var parts = new java.util.ArrayList<net.minecraft.client.renderer.block.dispatch.BlockStateModelPart>();
+            random.setSeed(seed);
+            model.collectParts(level, pos, state, random, parts);
+            var quads = new java.util.ArrayList<Object[]>();
+            for (var part : parts) {
+                for (var d : net.minecraft.core.Direction.values()) for (var q : part.getQuads(d)) quads.add(new Object[] {q, d});
+                for (var q : part.getQuads(null)) quads.add(new Object[] {q, null});
+            }
+            out.writeInt(key);
+            out.writeBoolean(true);
+            out.writeInt(quads.size());
+            for (Object[] pair : quads) quad(out, (net.minecraft.client.resources.model.geometry.BakedQuad) pair[0], (net.minecraft.core.Direction) pair[1]);
+        }
+        return bytes.toByteArray();
+    }
+
+    private static void quad(java.io.DataOutputStream out, net.minecraft.client.resources.model.geometry.BakedQuad quad, net.minecraft.core.Direction cull) throws java.io.IOException {
+        var info = quad.materialInfo();
+        var sprite = info.sprite();
+        float u0 = sprite.getU0(), u1 = sprite.getU1(), v0 = sprite.getV0(), v1 = sprite.getV1();
+        for (int i = 0; i < 4; i++) {
+            var p = quad.position(i);
+            long uv = quad.packedUV(i);
+            out.writeFloat(p.x());
+            out.writeFloat(p.y());
+            out.writeFloat(p.z());
+            out.writeFloat((net.minecraft.client.model.geom.builders.UVPair.unpackU(uv) - u0) / (u1 - u0));
+            out.writeFloat((net.minecraft.client.model.geom.builders.UVPair.unpackV(uv) - v0) / (v1 - v0));
+        }
+        byte[] id = sprite.contents().name().toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        out.writeInt(id.length);
+        out.write(id);
+        out.writeByte(quad.direction().get3DDataValue());
+        out.writeByte(cull == null ? 6 : cull.get3DDataValue());
+        out.writeInt(info.tintIndex());
+        out.writeBoolean(info.shadeDirectionOverride() == null);
+        out.writeByte(info.lightEmission());
+        out.writeByte(switch (info.layer()) {
+            case SOLID -> 0;
+            case CUTOUT -> 1;
+            case TRANSLUCENT -> 3;
+        });
     }
 
     /** Bakes once, on first use, only the block states whose unbaked model isn't one of vanilla's own types. */

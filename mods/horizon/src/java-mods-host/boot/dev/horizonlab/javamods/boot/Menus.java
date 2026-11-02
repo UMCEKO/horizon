@@ -37,6 +37,8 @@ final class Menus {
         player.connection.send(new net.minecraft.network.protocol.game.ClientboundUpdateRecipesPacket(recipes.getSynchronizedItemProperties(), recipes.getSynchronizedStonecutterRecipes()));
         var sync = net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.OnDatapackSyncEvent(server.getPlayerList(), player));
         player.connection.send(net.neoforged.neoforge.network.payload.RecipeContentPayload.create(sync.getRecipeTypesToSend(), recipes.recipeMap()));
+        var level = (net.minecraft.server.level.ServerLevel) player.level();
+        for (var entity : new java.util.ArrayList<>(BlockEntities.held(level).values())) Clients.joined(level, entity);
     }
 
     /** The player left: Java's menu closes as a disconnect closes it. */
