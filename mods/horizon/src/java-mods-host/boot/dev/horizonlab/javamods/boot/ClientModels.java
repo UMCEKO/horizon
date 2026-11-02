@@ -64,6 +64,7 @@ public final class ClientModels {
     }
 
     private static final Map<Object, Integer> KEYS = new HashMap<>();
+    private static final Map<java.nio.ByteBuffer, Integer> CONTENT = new HashMap<>();
     private static final it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet DIRTY = new it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet();
     private static int nextKey;
 
@@ -87,6 +88,7 @@ public final class ClientModels {
     static void forget() {
         DIRTY.clear();
         KEYS.clear();
+        CONTENT.clear();
         nextKey = 0;
     }
 
@@ -132,8 +134,6 @@ public final class ClientModels {
                 out.writeBoolean(false);
                 continue;
             }
-            key = nextKey++;
-            if (geometry != null) KEYS.put(geometry, key);
             var parts = new java.util.ArrayList<net.minecraft.client.renderer.block.dispatch.BlockStateModelPart>();
             random.setSeed(seed);
             model.collectParts(level, pos, state, random, parts);
@@ -142,10 +142,22 @@ public final class ClientModels {
                 for (var d : net.minecraft.core.Direction.values()) for (var q : part.getQuads(d)) quads.add(new Object[] {q, d});
                 for (var q : part.getQuads(null)) quads.add(new Object[] {q, null});
             }
+            var encoded = new java.io.ByteArrayOutputStream();
+            var data = new java.io.DataOutputStream(encoded);
+            data.writeInt(quads.size());
+            for (Object[] pair : quads) quad(data, (net.minecraft.client.resources.model.geometry.BakedQuad) pair[0], (net.minecraft.core.Direction) pair[1]);
+            // Mods without a geometry key still repeat shapes: equal quads share one key, as a block state's model is shared.
+            var content = java.nio.ByteBuffer.wrap(encoded.toByteArray());
+            key = CONTENT.get(content);
+            boolean fresh = key == null;
+            if (fresh) {
+                key = nextKey++;
+                CONTENT.put(content, key);
+            }
+            if (geometry != null) KEYS.put(geometry, key);
             out.writeInt(key);
-            out.writeBoolean(true);
-            out.writeInt(quads.size());
-            for (Object[] pair : quads) quad(out, (net.minecraft.client.resources.model.geometry.BakedQuad) pair[0], (net.minecraft.core.Direction) pair[1]);
+            out.writeBoolean(fresh);
+            if (fresh) out.write(content.array());
         }
         return bytes.toByteArray();
     }
@@ -195,19 +207,33 @@ public final class ClientModels {
         states.models().forEach((state, root) -> {
             if (codeBuilt(root)) mine.put(state, root);
         });
+        // Models mods register to fetch by key at draw time (a cable's arms), as the client's reload loads them.
+        var standalone = net.neoforged.neoforge.client.model.standalone.StandaloneModelLoader.load(executor).join();
         Method discover = null;
-        for (Method m : ModelManager.class.getDeclaredMethods()) if (m.getName().equals("discoverModelDependencies")) discover = m;
+        for (Method m : ModelManager.class.getDeclaredMethods()) if (m.getName().equals("discoverModelDependencies") && m.getParameterCount() == 4) discover = m;
         discover.setAccessible(true);
-        Object resolved = discover.invoke(null, models, new BlockStateModelLoader.LoadedModels(mine), new ClientItemInfoLoader.LoadedClientInfos(Map.of()));
+        Object resolved = discover.invoke(null, models, new BlockStateModelLoader.LoadedModels(mine), new ClientItemInfoLoader.LoadedClientInfos(Map.of()), standalone);
         var missing = resolved.getClass().getDeclaredMethod("missing");
         var all = resolved.getClass().getDeclaredMethod("models");
         missing.setAccessible(true);
         all.setAccessible(true);
         var bakery = new ModelBakery(EntityModelSet.vanilla(), Minecraft.getInstance().getAtlasManager(), null, mine, Map.of(),
                 (Map<Identifier, net.minecraft.client.resources.model.ResolvedModel>) all.invoke(resolved),
-                (net.minecraft.client.resources.model.ResolvedModel) missing.invoke(resolved));
-        var materials = new MaterialBaker(atlas(AtlasIds.BLOCKS, net.minecraft.client.renderer.texture.TextureAtlas.LOCATION_BLOCKS), atlas(AtlasIds.ITEMS, net.minecraft.client.renderer.texture.TextureAtlas.LOCATION_ITEMS));
-        baked = bakery.bakeModels(materials, executor).join().blockStateModels();
+                (net.minecraft.client.resources.model.ResolvedModel) missing.invoke(resolved), standalone,
+                net.neoforged.neoforge.client.entity.animation.json.AnimationLoader.PendingAnimations.EMPTY);
+        var blocks = atlas(AtlasIds.BLOCKS, net.minecraft.client.renderer.texture.TextureAtlas.LOCATION_BLOCKS);
+        var items = atlas(AtlasIds.ITEMS, net.minecraft.client.renderer.texture.TextureAtlas.LOCATION_ITEMS);
+        var materials = new MaterialBaker(blocks, items);
+        var result = bakery.bakeModels(materials, executor).join();
+        materials.logMissingTextures();
+        // The client's resource reload posts these after stitching and baking; mods take their sprites and models from them.
+        net.neoforged.fml.ModLoader.postEvent(new net.neoforged.neoforge.client.event.TextureAtlasStitchedEvent(Sprites.atlas(AtlasIds.BLOCKS)));
+        net.neoforged.fml.ModLoader.postEvent(new net.neoforged.neoforge.client.event.TextureAtlasStitchedEvent(Sprites.atlas(AtlasIds.ITEMS)));
+        net.neoforged.fml.ModLoader.postEvent(new net.neoforged.neoforge.client.event.ModelEvent.ModifyBakingResult(result, materials, blocks, items, bakery));
+        var standaloneField = ModelManager.class.getDeclaredField("bakedStandaloneModels");
+        standaloneField.setAccessible(true);
+        standaloneField.set(Minecraft.getInstance().getModelManager(), result.standaloneModels());
+        baked = result.blockStateModels();
         System.err.println("Horizon: baked " + baked.size() + " block states whose models mods build in code");
         return baked;
     }

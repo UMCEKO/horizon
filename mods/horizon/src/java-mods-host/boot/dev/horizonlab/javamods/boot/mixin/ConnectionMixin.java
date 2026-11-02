@@ -21,6 +21,7 @@ abstract class ConnectionMixin {
     private void horizon$send(Packet<?> packet, CallbackInfo info) {
         info.cancel();
         if ((Object) this instanceof ServerGamePacketListenerImpl game && Clients.toClient(game.player.getUUID(), packet)) return;
-        if (HORIZON$DROPPED.add(packet.getClass().getName())) System.err.println("Horizon: a Java mod's packet doesn't reach clients yet: " + packet.getClass().getName());
+        String name = packet instanceof net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket custom ? custom.payload().type().id().toString() : packet.getClass().getName();
+        if (HORIZON$DROPPED.add(name)) System.err.println("Horizon: a Java mod's packet doesn't reach clients yet: " + name);
     }
 }

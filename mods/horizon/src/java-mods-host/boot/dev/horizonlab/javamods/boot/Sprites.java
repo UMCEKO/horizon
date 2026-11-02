@@ -195,9 +195,40 @@ public final class Sprites {
         });
     }
 
-    /** The sprite, or null when its file isn't in the packs, as a stitched atlas lacks it. */
+    private static final Map<Identifier, java.util.Set<Identifier>> LISTED = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** The sprite ids an atlas's definition lists (`SpriteSourceList.list`'s, without loading their images). */
+    private static java.util.Set<Identifier> listed(Identifier atlas) {
+        return LISTED.computeIfAbsent(atlas, id -> {
+            var manager = Minecraft.getInstance().getResourceManager();
+            var ids = new java.util.HashSet<Identifier>();
+            var output = new net.minecraft.client.renderer.texture.atlas.SpriteSource.Output() {
+                @Override
+                public void add(Identifier sprite, net.minecraft.client.renderer.texture.atlas.SpriteSource.DiscardableLoader loader) {
+                    ids.add(sprite);
+                }
+
+                @Override
+                public void removeAll(java.util.function.Predicate<Identifier> predicate) {
+                    ids.removeIf(predicate);
+                }
+            };
+            try {
+                var sources = net.minecraft.client.renderer.texture.atlas.SpriteSourceList.class.getDeclaredField("sources");
+                sources.setAccessible(true);
+                @SuppressWarnings("unchecked")
+                var list = (List<net.minecraft.client.renderer.texture.atlas.SpriteSource>) sources.get(net.minecraft.client.renderer.texture.atlas.SpriteSourceList.load(manager, id));
+                list.forEach(source -> source.run(manager, output));
+            } catch (ReflectiveOperationException e) {
+                throw new IllegalStateException(e);
+            }
+            return java.util.Set.copyOf(ids);
+        });
+    }
+
+    /** The sprite, or null when the atlas's definition doesn't list it, as a stitched atlas lacks it. */
     public static TextureAtlasSprite spriteIfPresent(Identifier atlas, Identifier id, Identifier sheet) {
-        if (Minecraft.getInstance().getResourceManager().getResource(file(atlas, id)).isEmpty()) return null;
+        if (!listed(atlas).contains(id)) return null;
         return sprite(atlas, id, sheet);
     }
 

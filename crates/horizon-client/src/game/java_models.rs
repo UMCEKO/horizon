@@ -82,8 +82,6 @@ fn parse_states(reply: &[u8], to_horizon: &[Option<BlockStateId>]) -> Option<Vec
     Some(states)
 }
 
-// The Java client's model delivery calls these.
-#[allow(dead_code)]
 impl Game<'_> {
     /// Takes a models reply: stores the geometry and remeshes the sections whose blocks changed.
     pub(in crate::game) fn java_models_apply(&mut self, reply: &[u8]) {

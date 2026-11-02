@@ -26,9 +26,11 @@ abstract class ClientLevelMixin extends Level {
         return net.minecraft.world.level.lighting.LevelLightEngine.EMPTY;
     }
 
-    /** The window draws its own world, so there is no extractor to tell. */
+    /** A block entity's client data changed: the window bakes the block's geometry again. */
     @Override
-    public void sendBlockUpdated(BlockPos pos, BlockState old, BlockState current, int flags) {}
+    public void sendBlockUpdated(BlockPos pos, BlockState old, BlockState current, int flags) {
+        ClientBridge.redraw(current, pos);
+    }
 
     @Override
     public BlockEntity getBlockEntity(BlockPos pos) {

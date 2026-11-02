@@ -247,6 +247,11 @@ public final class ClientBridge {
         return copy;
     }
 
+    /** A block of the window's level changed on the client side: its geometry is baked again if its data decides it. */
+    public static void redraw(BlockState state, BlockPos pos) {
+        if (ClientModels.dynamic(state)) ClientModels.dirty(pos);
+    }
+
     /** The state of a block the window's level has a copy of; air elsewhere, until the client level reads Horizon's own world. */
     public static BlockState blockState(ClientLevel level, BlockPos pos) {
         var entity = blockEntity(level, pos);
@@ -463,12 +468,21 @@ public final class ClientBridge {
     }
 
     /** The advance of each character as Horizon's font draws it, so text mods lay out measures as it shows. */
+    private static float[] advances = new float[0];
+
+    /** A range of Horizon's font's advances; the one from 0 starts a new table, in this language. */
     private static byte[] font(DataInputStream in) throws Exception {
-        ClientLoader.language(text(in));
+        String language = text(in);
+        int start = in.readInt();
         int count = in.readInt();
-        float[] advances = new float[count];
-        for (int i = 0; i < count; i++) advances[i] = in.readFloat();
-        ClientLoader.advances(advances);
+        if (start == 0) {
+            ClientLoader.language(language);
+            advances = new float[0];
+        }
+        float[] table = java.util.Arrays.copyOf(advances, Math.max(advances.length, start + count));
+        for (int i = 0; i < count; i++) table[start + i] = in.readFloat();
+        advances = table;
+        ClientLoader.advances(table);
         return new byte[] {1};
     }
 }

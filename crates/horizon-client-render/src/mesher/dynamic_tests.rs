@@ -87,3 +87,121 @@ fn a_dynamic_block_meshes_the_registry_quads_instead_of_its_model() {
     dynamic_models::set_dynamic_states([]);
     dynamic_models::clear();
 }
+
+/// Meshing a section of blocks drawn from block entity geometry costs about what their native models do.
+#[test]
+#[ignore = "a timing comparison: cargo test --release ... -- --ignored --nocapture"]
+fn dynamic_geometry_meshes_as_fast_as_native_models() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/horizon-client/26.3");
+    if !root.join("horizon-resources.json").exists() {
+        return;
+    }
+    let _guard = dynamic_models::TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let assets = Assets::load(&root).unwrap();
+    let render = assets.reload(&root).unwrap();
+    let facts = BlockFacts::load(&root, assets.registry).unwrap();
+    let visibility = crate::models::load_visibility(&root, assets.registry).unwrap();
+    let tables = MeshTables::new(&assets, &render, &facts, visibility).unwrap();
+    let biomes = Biomes::load(&root).unwrap();
+    let stone = assets.registry.default_state("minecraft:stone").unwrap();
+    let mut chunk = Chunk::empty(0, 0);
+    let mut placed = Vec::new();
+    for x in 0..16 {
+        for y in 64..80 {
+            for z in 0..16 {
+                if (x + y + z) % 2 == 0 {
+                    chunk.set(x, y, z, stone.0);
+                    placed.push([x, y, z]);
+                }
+            }
+        }
+    }
+    let sy = (64 - chunk.min_y()) >> 4;
+    let mut region = [[None; 3]; 3];
+    region[1][1] = Some(&chunk);
+    let mesh = || {
+        let mut mesher = Mesher {
+            nether_shading: false,
+            assets: &assets,
+            render: &render,
+            tables: &tables,
+            biomes: &biomes,
+            visibility: tables.visibility.clone(),
+            zoom: BiomeZoom::new(0),
+            blend_radius: 0,
+            smooth_lighting: true,
+            cutout_leaves: true,
+        };
+        mesher.mesh(&region, sy)
+    };
+    let time = |label: &str| {
+        let first = mesh();
+        let start = std::time::Instant::now();
+        for _ in 0..40 {
+            std::hint::black_box(mesh());
+        }
+        let each = start.elapsed() / 40;
+        eprintln!(
+            "{label}: {each:?} a section, {} vertices",
+            first.solid.len() + first.translucent.len()
+        );
+        each
+    };
+    dynamic_models::clear();
+    dynamic_models::set_dynamic_states([]);
+    let native = time("native models");
+    let face = |face: Direction, corners: [[f32; 3]; 4]| BakedQuadData {
+        vertices: [0, 1, 2, 3].map(|i| {
+            let [x, y, z] = corners[i];
+            [x, y, z, [0.0, 0.0, 1.0, 1.0][i], [0.0, 1.0, 1.0, 0.0][i]]
+        }),
+        sprite: "minecraft:block/stone".to_owned(),
+        face,
+        cull: Some(face),
+        tint: -1,
+        shade: true,
+        emission: 0,
+        layer: BakedLayer::Solid,
+    };
+    let cube = vec![
+        face(
+            Direction::Down,
+            [[0., 0., 1.], [0., 0., 0.], [1., 0., 0.], [1., 0., 1.]],
+        ),
+        face(
+            Direction::Up,
+            [[0., 1., 0.], [0., 1., 1.], [1., 1., 1.], [1., 1., 0.]],
+        ),
+        face(
+            Direction::North,
+            [[1., 1., 0.], [1., 0., 0.], [0., 0., 0.], [0., 1., 0.]],
+        ),
+        face(
+            Direction::South,
+            [[0., 1., 1.], [0., 0., 1.], [1., 0., 1.], [1., 1., 1.]],
+        ),
+        face(
+            Direction::West,
+            [[0., 1., 0.], [0., 0., 0.], [0., 0., 1.], [0., 1., 1.]],
+        ),
+        face(
+            Direction::East,
+            [[1., 1., 1.], [1., 0., 1.], [1., 0., 0.], [1., 1., 0.]],
+        ),
+    ];
+    dynamic_models::put_geometry(1, Arc::from(cube));
+    for pos in &placed {
+        dynamic_models::place(*pos, Some(1));
+    }
+    dynamic_models::set_dynamic_states([stone]);
+    let dynamic = time("block entity geometry");
+    dynamic_models::set_dynamic_states([]);
+    dynamic_models::clear();
+    assert!(
+        dynamic.as_secs_f64() < native.as_secs_f64() * 1.5,
+        "{dynamic:?} against {native:?}"
+    );
+}

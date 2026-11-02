@@ -11,20 +11,132 @@ pub(in crate::game) mod live {
     use horizon_client::text::{Style, Text};
     use horizon_java_host::wire::{In, Out};
     use std::cell::RefCell;
+    use std::sync::mpsc::TryRecvError;
 
     #[derive(Default)]
     pub(in crate::game) struct Client {
         joined: bool,
-        font: bool,
+        font: u32,
         pending: i32,
         open: bool,
         held: Option<i32>,
         shapes: i32,
+        models: i32,
+        states: bool,
         last: (f64, f64),
     }
 
     thread_local! {
         pub(in crate::game) static CLIENT: RefCell<Client> = RefCell::default();
+        static WORKER: RefCell<Option<Worker>> = const { RefCell::new(None) };
+    }
+
+    /// One client tick's calls: the tick, the dynamic states once, and the geometry its status says changed.
+    struct Job {
+        font: Option<Vec<u8>>,
+        tick: Vec<u8>,
+        states: bool,
+    }
+
+    #[derive(Default)]
+    struct Done {
+        tick: Option<Vec<u8>>,
+        states: Option<Vec<u8>>,
+        models: Option<Vec<u8>>,
+    }
+
+    impl Job {
+        fn run(self, host: &horizon_java_host::Host) -> Done {
+            if let Some(font) = &self.font {
+                host.request("client_font", font);
+            }
+            let Some(tick) = host.request("client_tick", &self.tick) else {
+                return Done::default();
+            };
+            let states = if self.states {
+                host.request("client_models_states", &[])
+            } else {
+                None
+            };
+            let models = if status_models(&tick).unwrap_or(0) > 0 {
+                host.request("client_models_take", &[])
+            } else {
+                None
+            };
+            Done {
+                tick: Some(tick),
+                states,
+                models,
+            }
+        }
+    }
+
+    /// The pending geometry count at the end of a status reply.
+    fn status_models(status: &[u8]) -> Option<i32> {
+        let mut status = In(status);
+        status.bool()?;
+        status.int()?;
+        status.bool()?;
+        for _ in 0..status.int()? {
+            status.text()?;
+            status.float()?;
+            status.float()?;
+        }
+        status.int()?;
+        status.int()
+    }
+
+    /// Runs the Java client's ticks off the window's thread while no Java screen is open, as chunk meshing runs off it.
+    struct Worker {
+        jobs: std::sync::mpsc::Sender<Job>,
+        done: std::sync::mpsc::Receiver<Done>,
+        busy: bool,
+    }
+
+    impl Worker {
+        fn start() -> Self {
+            let (jobs, queue) = std::sync::mpsc::channel::<Job>();
+            let (finished, done) = std::sync::mpsc::channel();
+            let _ = std::thread::Builder::new()
+                .name("Java client".into())
+                .spawn(move || {
+                    let Some(host) = horizon_java_host::get() else {
+                        return;
+                    };
+                    for job in queue {
+                        if finished.send(job.run(host)).is_err() {
+                            return;
+                        }
+                    }
+                });
+            Self {
+                jobs,
+                done,
+                busy: false,
+            }
+        }
+
+        fn send(&mut self, job: Job) {
+            self.busy = self.jobs.send(job).is_ok();
+        }
+
+        fn collect(&mut self, wait: bool) -> Option<Done> {
+            if !self.busy {
+                return None;
+            }
+            let done = if wait {
+                self.done.recv().map_err(|_| TryRecvError::Disconnected)
+            } else {
+                self.done.try_recv()
+            };
+            self.busy = matches!(done, Err(TryRecvError::Empty));
+            done.ok()
+        }
+    }
+
+    /// Whether a background client tick is running, during which the window doesn't wait on Java.
+    pub(in crate::game) fn java_client_busy() -> bool {
+        WORKER.with_borrow(|w| w.as_ref().is_some_and(|w| w.busy))
     }
 
     /// Changes whenever a block entity's client copy was made, dropped or updated, so cached shapes may be stale.
@@ -185,7 +297,11 @@ pub(in crate::game) mod live {
                 self.audio.play(event, None, volume, pitch);
             }
             let shapes = reply.int()?;
-            CLIENT.with_borrow_mut(|c| c.shapes = shapes);
+            let models = reply.int()?;
+            CLIENT.with_borrow_mut(|c| {
+                c.shapes = shapes;
+                c.models = models;
+            });
             CLIENT.with_borrow_mut(|c| c.open = open);
             if open && self.screen != Screen::Java {
                 self.screen = Screen::Java;
@@ -197,18 +313,33 @@ pub(in crate::game) mod live {
             Some(())
         }
 
-        /// Horizon's font's advances, which the Java client measures text with.
-        fn java_client_font(&mut self, host: &horizon_java_host::Host) {
+        /// The next range of Horizon's font's advances, which the Java client measures text with; None once all are sent.
+        fn java_client_font(&self) -> Option<Vec<u8>> {
+            const COUNT: u32 = 0x10000;
+            let start = CLIENT.with_borrow(|c| c.font);
+            if start >= COUNT {
+                return None;
+            }
+            // About a millisecond's worth a tick, as each glyph is rasterized to be measured.
+            let began = std::time::Instant::now();
+            let mut advances = Vec::new();
+            for c in start..COUNT {
+                advances.push(
+                    char::from_u32(c).map_or(0.0, |ch| self.gui.atlas.font.glyph(ch).advance),
+                );
+                if began.elapsed() >= std::time::Duration::from_millis(1) {
+                    break;
+                }
+            }
             let mut out = Out::default();
             out.text(&self.settings.language);
-            const COUNT: u32 = 0x10000;
-            out.int(COUNT as i32);
-            for c in 0..COUNT {
-                let advance =
-                    char::from_u32(c).map_or(0.0, |ch| self.gui.atlas.font.glyph(ch).advance);
-                out.float(advance);
+            out.int(start as i32);
+            out.int(advances.len() as i32);
+            for advance in &advances {
+                out.float(*advance);
             }
-            host.request("client_font", &out.0);
+            CLIENT.with_borrow_mut(|c| c.font = start + advances.len() as u32);
+            Some(out.0)
         }
 
         /// `Minecraft.tick`'s part for the Java client: what the server sent it, then the open screen's tick.
@@ -222,11 +353,13 @@ pub(in crate::game) mod live {
                 return;
             };
             let Some((profile, name)) = profile else {
+                self.java_client_collect(true);
                 host.request("client_leave", &[]);
                 horizon_client::dynamic_models::clear();
                 CLIENT.with_borrow_mut(|c| {
                     c.joined = false;
                     c.open = false;
+                    c.states = false;
                 });
                 return;
             };
@@ -234,13 +367,14 @@ pub(in crate::game) mod live {
                 .request("client_pending", &[])
                 .and_then(|b| In(&b).int())
                 .unwrap_or(0);
-            let (joined, font, seen, open) =
-                CLIENT.with_borrow(|c| (c.joined, c.font, c.pending, c.open));
-            if !font {
-                self.java_client_font(host);
-                CLIENT.with_borrow_mut(|c| c.font = true);
-            }
-            if joined && !open && pending == seen {
+            let open = CLIENT.with_borrow(|c| c.open);
+            // A screen ticks in step with the window, so its tick waits for any background one first.
+            self.java_client_collect(open);
+            let (joined, seen, models, states, font) =
+                CLIENT.with_borrow(|c| (c.joined, c.pending, c.models, c.states, c.font));
+            if java_client_busy()
+                || (joined && !open && pending == seen && models == 0 && font >= 0x10000)
+            {
                 return;
             }
             let mut out = Out::default();
@@ -249,14 +383,42 @@ pub(in crate::game) mod live {
             out.text(&name);
             out.text(self.dim.id());
             self.java_client_size(&mut out);
-            let Some(reply) = host.request("client_tick", &out.0) else {
+            let job = Job {
+                font: self.java_client_font(),
+                tick: out.0,
+                states: !states,
+            };
+            CLIENT.with_borrow_mut(|c| c.pending = pending);
+            if open {
+                let done = job.run(host);
+                self.java_client_apply(done);
+            } else {
+                WORKER.with_borrow_mut(|w| w.get_or_insert_with(Worker::start).send(job));
+            }
+        }
+
+        /// The background tick's results, once it finished; `wait` blocks until it has.
+        fn java_client_collect(&mut self, wait: bool) {
+            let done = WORKER.with_borrow_mut(|w| w.as_mut().and_then(|w| w.collect(wait)));
+            if let Some(done) = done {
+                self.java_client_apply(done);
+            }
+        }
+
+        fn java_client_apply(&mut self, done: Done) {
+            let Some(tick) = done.tick else {
                 return;
             };
-            CLIENT.with_borrow_mut(|c| {
-                c.joined = true;
-                c.pending = pending;
-            });
-            self.java_client_status(&mut In(&reply));
+            CLIENT.with_borrow_mut(|c| c.joined = true);
+            self.java_client_status(&mut In(&tick));
+            if let Some(states) = done.states {
+                self.java_models_states(&states);
+                CLIENT.with_borrow_mut(|c| c.states = true);
+            }
+            if let Some(models) = done.models {
+                self.java_models_apply(&models);
+                CLIENT.with_borrow_mut(|c| c.models = 0);
+            }
         }
 
         /// The open Java screen, drawn as it extracted itself this frame.

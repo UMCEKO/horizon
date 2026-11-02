@@ -1,7 +1,7 @@
 //! Outlines of mods' blocks whose shape depends on their block entity: the Java client in the same
 //! JVM shapes them from its copy of the block entity, and the answer is cached until it may change.
 
-use super::java_screens::live::java_shape_generation;
+use super::java_screens::live::{java_client_busy, java_shape_generation};
 use super::*;
 use horizon_java_host::wire::{In, Out};
 use std::cell::RefCell;
@@ -28,12 +28,14 @@ impl Game<'_> {
         }
         let host = horizon_java_host::get()?;
         let generation = java_shape_generation();
+        // While the Java client ticks in the background, the last answer stands rather than the window waiting.
+        let busy = java_client_busy();
         let cached = CACHE.with_borrow(|c| {
             c.get(&pos)
-                .filter(|(s, g, _)| *s == state && *g == generation)
+                .filter(|(s, g, _)| *s == state && (*g == generation || busy))
                 .map(|(_, _, boxes)| boxes.clone())
         });
-        if cached.is_some() {
+        if cached.is_some() || busy {
             return cached;
         }
         let mut out = Out::default();
