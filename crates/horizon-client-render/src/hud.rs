@@ -314,6 +314,10 @@ impl HudAtlas {
             }
         }
     }
+    /// The plain white texel fills sample.
+    pub fn white(&self) -> Rect {
+        self.white
+    }
     /// A font glyph's atlas cell (8x8 GUI pixels) and advance.
     pub fn glyph(&self, ch: char) -> Option<(Rect, f32)> {
         let g = self.font.glyph(ch);

@@ -4462,6 +4462,13 @@ impl Game<'_> {
     }
 
     /// One client tick while connected (Minecraft.tick with a ClientLevel).
+    /// The local player's profile UUID and name, once the server let it join.
+    #[cfg(feature = "java-mods")]
+    pub(super) fn remote_profile(&self) -> Option<(u128, String)> {
+        let r = self.remote.as_ref().filter(|r| r.joined)?;
+        Some((r.profile, r.profile_name.clone()))
+    }
+
     pub(super) fn tick_remote(&mut self) -> Result<()> {
         self.tick_remote_level()?;
         // Client mods tick on any server, single player's own included.

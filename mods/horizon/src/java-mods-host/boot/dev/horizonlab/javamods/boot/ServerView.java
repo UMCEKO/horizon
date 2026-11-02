@@ -161,15 +161,19 @@ final class ServerView {
     /** What a server reads from its world folder, once Horizon has opened one: mods' saved data lands beside vanilla's. */
     static void openWorld(MinecraftServer server, Iterable<ServerLevel> levels, Path folder, long seed, WorldDimensions dimensions) throws ReflectiveOperationException {
         set(MinecraftServer.class, server, "serverThread", Thread.currentThread());
+        set(MinecraftServer.class, server, "packetProcessor", new net.minecraft.network.PacketProcessor(Thread.currentThread()));
         var registries = server.registryAccess();
         var fixer = net.minecraft.util.datafix.DataFixers.getDataFixer();
         set(MinecraftServer.class, server, "fixerUpper", fixer);
-        set(MinecraftServer.class, server, "savedDataStorage", new SavedDataStorage(folder.resolve("data"), fixer, registries));
+        ServerLevel overworld = null;
+        for (ServerLevel level : levels) if (level.dimension() == Level.OVERWORLD) overworld = level;
+        // NeoForge's storages know their level, as mods' saved data reads it; the server's is the overworld's.
+        set(MinecraftServer.class, server, "savedDataStorage", new SavedDataStorage(overworld, folder.resolve("data"), fixer, registries));
         set(MinecraftServer.class, server, "worldGenSettings", new WorldGenSettings(new WorldOptions(seed, true, false), dimensions));
         for (ServerLevel level : levels) {
             var id = level.dimension().identifier();
             var dataFolder = folder.resolve("dimensions").resolve(id.getNamespace()).resolve(id.getPath()).resolve("data");
-            set(ServerChunkCache.class, level.getChunkSource(), "savedDataStorage", new SavedDataStorage(dataFolder, fixer, registries));
+            set(ServerChunkCache.class, level.getChunkSource(), "savedDataStorage", new SavedDataStorage(level, dataFolder, fixer, registries));
         }
         GameProfileRepository names = new OfflineNames();
         var cache = new CachedUserNameToIdResolver(names, folder.resolve("usercache.json").toFile());
@@ -216,6 +220,23 @@ final class ServerView {
         ((Map<UUID, ServerPlayer>) get(PlayerList.class, list, "playersByUUID")).remove(player.getUUID());
     }
 
+    /** The instance of `outer`'s anonymous class implementing `type`, as its field initializer makes it. */
+    static Object anonymous(Class<?> outer, Object instance, Class<?> type) throws ReflectiveOperationException {
+        for (int n = 1; n < 64; n++) {
+            Class<?> candidate;
+            try {
+                candidate = Class.forName(outer.getName() + "$" + n, false, outer.getClassLoader());
+            } catch (ClassNotFoundException e) {
+                continue;
+            }
+            if (!type.isAssignableFrom(candidate)) continue;
+            var make = candidate.getDeclaredConstructor(outer);
+            make.setAccessible(true);
+            return make.newInstance(instance);
+        }
+        throw new NoSuchFieldException(outer.getName() + " has no anonymous " + type.getName());
+    }
+
     /** A player's server and a connection whose packets go nowhere yet; Horizon tells clients what it knows itself. */
     @SuppressWarnings("unchecked")
     static void attach(MinecraftServer server, ServerPlayer player) throws ReflectiveOperationException {
@@ -227,6 +248,18 @@ final class ServerView {
         set(Connection.class, network, "channel", new EmbeddedChannel());
         set(ServerCommonPacketListenerImpl.class, connection, "connection", network);
         player.connection = connection;
+        net.neoforged.neoforge.network.registration.NetworkRegistry.configureMockConnection(network);
+        // Configuration syncs the configs a client gets; the Java client shares this JVM's, so none are owed.
+        var owed = net.neoforged.neoforge.network.ConfigSync.class.getDeclaredField("configsToSync");
+        owed.setAccessible(true);
+        synchronized (get(net.neoforged.neoforge.network.ConfigSync.class, null, "lock")) {
+            ((Map<Connection, Map<String, byte[]>>) owed.get(null)).put(network, new HashMap<>());
+        }
+        for (String field : List.of("containerSynchronizer", "containerListener", "commandSource")) {
+            Field f = ServerPlayer.class.getDeclaredField(field);
+            f.setAccessible(true);
+            f.set(player, anonymous(ServerPlayer.class, player, f.getType()));
+        }
         PlayerList list = server.getPlayerList();
         ((List<ServerPlayer>) get(PlayerList.class, list, "players")).add(player);
         ((Map<UUID, ServerPlayer>) get(PlayerList.class, list, "playersByUUID")).put(player.getUUID(), player);

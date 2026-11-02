@@ -6,6 +6,7 @@ import java.util.IdentityHashMap;
 import java.util.Map;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -15,18 +16,23 @@ import net.minecraft.world.level.chunk.LevelChunkSection;
 public final class ChunkViews {
     private ChunkViews() {}
 
-    private static final Map<ServerLevel, Long2ObjectOpenHashMap<LevelChunk>> VIEWS = new IdentityHashMap<>();
+    private static final Map<Level, Long2ObjectOpenHashMap<LevelChunk>> VIEWS = new IdentityHashMap<>();
 
-    public static boolean loaded(ServerLevel level, int x, int z) {
-        return level.isLoaded(new BlockPos(x << 4, level.getMinY(), z << 4));
+    /** The window's level reads only what its player's screens need, so every chunk counts as there. */
+    public static boolean loaded(Level level, int x, int z) {
+        return !(level instanceof ServerLevel server) || server.isLoaded(new BlockPos(x << 4, level.getMinY(), z << 4));
     }
 
-    public static LevelChunk get(ServerLevel level, int x, int z) {
+    public static LevelChunk get(Level level, int x, int z) {
         if (!loaded(level, x, z)) return null;
         return VIEWS.computeIfAbsent(level, l -> new Long2ObjectOpenHashMap<>()).computeIfAbsent(ChunkPos.pack(x, z), key -> view(level, x, z));
     }
 
-    private static LevelChunk view(ServerLevel level, int x, int z) {
+    static void forget(Level level) {
+        VIEWS.remove(level);
+    }
+
+    private static LevelChunk view(Level level, int x, int z) {
         try {
             var chunk = GameBridge.construct(LevelChunk.class, Object.class.getDeclaredConstructor());
             ServerView.set(LevelChunk.class, chunk, "level", level);

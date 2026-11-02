@@ -82,6 +82,24 @@ fn tags_merge_without_repeats() {
     );
 }
 
+#[test]
+fn a_mods_atlas_sources_follow_vanillas() {
+    let vanilla = r#"{"sources": [{"type": "directory", "source": "block", "prefix": "block/"}]}"#;
+    let more = [J::Obj(vec![
+        ("type".into(), J::Str("directory".into())),
+        ("source".into(), J::Str("mek_chemical".into())),
+    ])];
+    let merged: serde_json::Value =
+        serde_json::from_str(&merge_atlas(Some(vanilla), &more, "a").unwrap()).unwrap();
+    let sources: Vec<_> = merged["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["source"].as_str().unwrap())
+        .collect();
+    assert_eq!(sources, ["block", "mek_chemical"]);
+}
+
 /// Registry IDs and state IDs must not depend on package discovery order.
 #[test]
 fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {

@@ -41,7 +41,7 @@ public final class BlockEntities {
         throw new IllegalStateException("not bridged");
     }
 
-    private static Long2ObjectOpenHashMap<BlockEntity> held(ServerLevel level) {
+    static Long2ObjectOpenHashMap<BlockEntity> held(ServerLevel level) {
         return HELD.computeIfAbsent(level, l -> new Long2ObjectOpenHashMap<>());
     }
 

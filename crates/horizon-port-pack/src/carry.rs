@@ -505,12 +505,18 @@ fn shared_tag(root: &str, ns: &str, rest: &str) -> bool {
     root == "data" && (ns == "minecraft" || ns == "c") && rest.starts_with("tags/")
 }
 
+/// Sprites a mod adds to vanilla's atlases (`assets/minecraft/atlases/`), which
+/// the game appends to vanilla's sources as a resource reload does.
+fn shared_atlas(root: &str, ns: &str, rest: &str) -> bool {
+    root == "assets" && ns == "minecraft" && rest.starts_with("atlases/") && rest.ends_with(".json")
+}
+
 /// Where a jar entry goes: `Some(true)` inside the content mod (its own
-/// namespaces, additions to vanilla and convention tags), `Some(false)`
+/// namespaces, additions to vanilla and convention tags and to vanilla's atlases), `Some(false)`
 /// to `outside/`, `None` not carried (code, metadata).
 fn place(name: &str, owned: &[&str]) -> Option<bool> {
     let (root, ns, rest) = split(name)?;
-    Some(owned.contains(&ns) || shared_tag(root, ns, rest))
+    Some(owned.contains(&ns) || shared_tag(root, ns, rest) || shared_atlas(root, ns, rest))
 }
 
 /// Namespaces no carried mod claims: vanilla's, the convention tags', the

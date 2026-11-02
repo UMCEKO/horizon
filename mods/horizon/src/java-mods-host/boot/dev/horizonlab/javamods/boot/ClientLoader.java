@@ -44,28 +44,44 @@ final class ClientLoader {
         f.set(target, value);
     }
 
-    /** Measures text for mods that lay out at load; nothing draws through it, and every glyph is as wide as the default font's usual. */
-    private static Font font() {
-        BakedGlyph glyph = new BakedGlyph() {
-            @Override
-            public GlyphInfo info() {
-                return GlyphInfo.simple(6);
-            }
+    private static volatile float[] advances = new float[0];
+    private static final java.util.Map<Integer, BakedGlyph> GLYPHS = new java.util.concurrent.ConcurrentHashMap<>();
 
-            @Override
-            public TextRenderable.Styled createGlyph(float x, float y, int color, int shadow, Style style, float bold, float offset) {
-                return null;
-            }
-        };
+    /** Horizon's font's advances by character, so text measures in Java as Horizon draws it. */
+    static void advances(float[] table) {
+        advances = table;
+        GLYPHS.clear();
+    }
+
+    private static BakedGlyph glyph(int codepoint) {
+        return GLYPHS.computeIfAbsent(codepoint, c -> {
+            float[] table = advances;
+            float advance = c < table.length ? table[c] : 6;
+            return new BakedGlyph() {
+                @Override
+                public GlyphInfo info() {
+                    return GlyphInfo.simple(advance);
+                }
+
+                @Override
+                public TextRenderable.Styled createGlyph(float x, float y, int color, int shadow, Style style, float bold, float offset) {
+                    return null;
+                }
+            };
+        });
+    }
+
+    /** Measures text for mods; nothing draws through it, as Horizon draws the text itself. Until Horizon's font arrives every glyph is the default font's usual 6. */
+    private static Font font() {
         GlyphSource source = new GlyphSource() {
             @Override
             public BakedGlyph getGlyph(int codepoint) {
-                return glyph;
+                return glyph(codepoint);
             }
 
             @Override
             public BakedGlyph getRandomGlyph(RandomSource random, int width) {
-                return glyph;
+                return glyph('a');
             }
         };
         return new Font(new Font.Provider() {
@@ -99,6 +115,49 @@ final class ClientLoader {
         set(minecraft, "singleplayerServer", server);
     }
 
+    /** The game's and mods' client resources, readable as after a reload, without running the reload: Horizon loads what it draws. */
+    private static void packs(ReloadableResourceManager resources, File folder) throws ReflectiveOperationException {
+        var repository = new net.minecraft.server.packs.repository.PackRepository(
+                new net.minecraft.client.resources.ClientPackSource(folder.toPath().resolve("assets"), new net.minecraft.world.level.validation.DirectoryValidator(path -> true)));
+        net.neoforged.neoforge.resource.ResourcePackLoader.populatePackRepository(repository, PackType.CLIENT_RESOURCES, false);
+        repository.reload();
+        repository.setSelected(repository.getAvailableIds());
+        var manager = new net.minecraft.server.packs.resources.MultiPackResourceManager(PackType.CLIENT_RESOURCES, repository.openAllSelected());
+        Field held = ReloadableResourceManager.class.getDeclaredField("resources");
+        held.setAccessible(true);
+        held.set(resources, manager);
+    }
+
+    /** The player's language, with English under it as the game stacks them, for the client and the server in this JVM alike. */
+    static void language(String code) {
+        try {
+            var current = net.minecraft.client.resources.language.LanguageManager.class.getDeclaredField("currentCode");
+            current.setAccessible(true);
+            current.set(Minecraft.getInstance().getLanguageManager(), code);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
+        var stack = code.equals("en_us") ? java.util.List.of("en_us") : java.util.List.of("en_us", code);
+        var resources = Minecraft.getInstance().getResourceManager();
+        net.minecraft.locale.Language.inject(net.minecraft.client.resources.language.ClientLanguage.loadFrom(resources, stack, false));
+    }
+
+    /** The reload listeners mods added run once over the packs, as a first resource load runs them; the game's own stay idle, as Horizon loads what it draws. */
+    private static void reloadMods(ReloadableResourceManager resources, Object vanilla) throws ReflectiveOperationException {
+        Field held = ReloadableResourceManager.class.getDeclaredField("listeners");
+        held.setAccessible(true);
+        var known = ((java.util.Map<?, ?>) vanilla).keySet();
+        for (var listener : new java.util.ArrayList<>((java.util.List<net.minecraft.server.packs.resources.PreparableReloadListener>) held.get(resources))) {
+            if (known.contains(listener.getClass())) continue;
+            try {
+                net.minecraft.server.packs.resources.SimpleReloadInstance.of(resources, java.util.List.of(listener), net.minecraft.util.Util.backgroundExecutor(), Runnable::run,
+                        java.util.concurrent.CompletableFuture.completedFuture(net.minecraft.util.Unit.INSTANCE)).done().join();
+            } catch (Throwable t) {
+                System.err.println("Horizon: a mod's client reload listener " + listener.getClass().getName() + " failed: " + t);
+            }
+        }
+    }
+
     static void load() throws ReflectiveOperationException {
         ClientModLoader.begin();
         ClientBootstrap.bootstrap();
@@ -115,6 +174,11 @@ final class ClientLoader {
         set(minecraft, "user", user);
         set(minecraft, "window", GameBridge.construct(Window.class, object));
         set(minecraft, "modelManager", GameBridge.construct(ModelManager.class, object));
+        set(minecraft, "languageManager", new net.minecraft.client.resources.language.LanguageManager(minecraft, "en_us", language -> {}));
+        set(minecraft, "deltaTracker", new net.minecraft.client.DeltaTracker.Timer(20.0F, 0L, target -> target));
+        set(minecraft, "soundManager", GameBridge.construct(net.minecraft.client.sounds.SoundManager.class, object));
+        set(minecraft, "textureManager", GameBridge.construct(net.minecraft.client.renderer.texture.TextureManager.class, object));
+        set(minecraft, "atlasManager", GameBridge.construct(net.minecraft.client.resources.model.sprite.AtlasManager.class, object));
         var resources = new ReloadableResourceManager(PackType.CLIENT_RESOURCES);
         // NeoForge sorts mods' listeners among the game's by class; these never reload, as Horizon reloads its own resources.
         Field known = VanillaClientListeners.class.getDeclaredField("KNOWN_CLASSES");
@@ -123,16 +187,22 @@ final class ClientLoader {
             resources.registerReloadListener((net.minecraft.server.packs.resources.PreparableReloadListener) GameBridge.construct((Class<?>) listener, object));
         }
         set(minecraft, "resourceManager", resources);
+        packs(resources, folder);
         set(minecraft, "options", new Options(minecraft, folder));
         Gui gui = GameBridge.construct(Gui.class, object);
         Field hud = Gui.class.getDeclaredField("hud");
         hud.setAccessible(true);
         hud.set(gui, new Hud(minecraft));
+        Field layers = Gui.class.getDeclaredField("screenLayers");
+        layers.setAccessible(true);
+        layers.set(gui, new java.util.Stack<>());
         set(minecraft, "gui", gui);
         set(minecraft, "font", font());
         Inits.run(minecraft, config(user, folder));
         Inits.run(gui, minecraft);
         ClientHooks.initClientHooks(minecraft, resources);
         ClientModLoader.finish();
+        reloadMods(resources, known.get(null));
+        ClientBridge.install();
     }
 }

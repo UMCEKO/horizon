@@ -38,6 +38,9 @@ final class ViewInits implements ClassProcessor {
     private static final Set<String> VIEWS = Set.of(
             "net/minecraft/client/Minecraft",
             "net/minecraft/client/gui/Gui",
+            "net/minecraft/client/multiplayer/ClientLevel",
+            "net/minecraft/client/multiplayer/ClientPacketListener",
+            "net/minecraft/client/player/LocalPlayer",
             "net/minecraft/client/server/IntegratedServer",
             "net/minecraft/client/server/IntegratedPlayerList",
             "net/minecraft/server/MinecraftServer",

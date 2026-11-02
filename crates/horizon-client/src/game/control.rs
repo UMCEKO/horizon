@@ -293,6 +293,16 @@ impl Game<'_> {
                     return ok();
                 }
                 self.require_world()?;
+                if self.screen == Screen::Java {
+                    let action = arg(2)?;
+                    if action != "up" {
+                        self.java_screen_key_code(key, true, None);
+                    }
+                    if action != "down" && self.screen == Screen::Java {
+                        self.java_screen_key_code(key, false, None);
+                    }
+                    return ok();
+                }
                 // The sign editor takes raw presses (Enter, arrows, Backspace, Escape).
                 if self.sign_edit.is_some() {
                     if arg(2)? != "up" {
@@ -908,6 +918,7 @@ impl Game<'_> {
             Screen::CommandBlock => "command-block",
             Screen::BlockEditor => "block-editor",
             Screen::Win => "win",
+            Screen::Java => "java",
         }
     }
 

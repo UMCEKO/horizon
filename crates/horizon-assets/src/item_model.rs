@@ -602,6 +602,8 @@ impl TintSource {
             "minecraft:firework" => Self::Firework(default()?),
             "minecraft:potion" => Self::Potion(default()?),
             "minecraft:team" => Self::Team(default()?),
+            // A mod's own tint source, which its Java code computes: untinted here.
+            other if !other.starts_with("minecraft:") => Self::Constant(-1),
             _ => return Err(err("unknown item tint source")),
         })
     }

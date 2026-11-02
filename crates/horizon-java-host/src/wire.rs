@@ -48,6 +48,9 @@ impl<'a> In<'a> {
     pub fn bool(&mut self) -> Option<bool> {
         self.take::<1>().map(|b| b[0] != 0)
     }
+    pub fn byte(&mut self) -> Option<u8> {
+        self.take::<1>().map(|b| b[0])
+    }
     pub fn bytes(&mut self) -> Option<&'a [u8]> {
         let len = usize::try_from(self.int()?).ok()?;
         let (head, rest) = self.0.split_at_checked(len)?;

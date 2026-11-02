@@ -98,7 +98,20 @@ public final class GameBridge {
     private static int nextEntityId = -1;
     private static int depth;
 
+    /** The client side's own calls, from the window's thread: set where the client classes exist. */
+    static volatile java.util.function.BiFunction<String, byte[], byte[]> client;
+    private static final Object LOCK = new Object();
+
+    /** One call at a time, as the window's thread and the server's both call in; the views between them are shared. */
     public static byte[] call(String op, byte[] input) {
+        if (op.equals("client_pending")) return java.nio.ByteBuffer.allocate(4).putInt(Clients.pending()).array();
+        synchronized (LOCK) {
+            if (op.startsWith("client_")) return client == null ? new byte[0] : client.apply(op, input);
+            return callLocked(op, input);
+        }
+    }
+
+    private static byte[] callLocked(String op, byte[] input) {
         depth++;
         try {
             return switch (op) {
@@ -210,6 +223,14 @@ public final class GameBridge {
         Inits.run(level, server, key, holder, level.getLevelData());
         LEVELS.put(id, level);
         return level;
+    }
+
+    static ServerPlayer playerView(UUID id) {
+        return PLAYERS.get(id);
+    }
+
+    static ServerLevel levelOrNull(String id) {
+        return LEVELS.get(id);
     }
 
     private static ServerPlayer player(UUID id, String name, ServerLevel level) throws ReflectiveOperationException {
@@ -368,6 +389,7 @@ public final class GameBridge {
                 if (target != null && !CommonHooks.onPlayerAttackTarget(player, target)) result = InteractionResult.FAIL;
             }
             default -> {
+                Menus.serverTick(player);
                 EventHooks.firePlayerTickPre(player);
                 for (int slot = 0; slot < Inventory.INVENTORY_SIZE; slot++) {
                     ItemStack stack = inventory.getItem(slot);
@@ -518,6 +540,7 @@ public final class GameBridge {
         var in = new DataInputStream(new ByteArrayInputStream(input));
         var player = PLAYERS.remove(new UUID(in.readLong(), in.readLong()));
         if (player != null) {
+            safely("closing the open menu", () -> Menus.close(player));
             safely("PlayerLoggedOut", () -> EventHooks.firePlayerLoggedOut(player));
             ServerView.detach(server, player);
         }

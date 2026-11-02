@@ -129,6 +129,7 @@ mod java_bridges;
 mod java_hooks;
 #[cfg(feature = "java-mods")]
 mod java_mods;
+mod java_screens;
 mod jigsaw_blocks;
 mod jigsaw_edit;
 mod jukebox;
@@ -698,6 +699,8 @@ enum Screen {
     DialogWarning,
     /// WinScreen: the end poem and the credits (game/win.rs).
     Win,
+    /// A Java mod's screen, drawn and driven by the Java client (game/java_screens.rs).
+    Java,
 }
 struct Mining {
     pos: [i32; 3],
@@ -6024,6 +6027,7 @@ impl Game<'_> {
         if self.screen == Screen::Creative {
             self.refresh_creative_tabs();
         }
+        self.java_client_tick();
         if self.remote.is_some() {
             return self.tick_remote();
         }
@@ -7264,6 +7268,7 @@ impl Game<'_> {
             Screen::DialogWarning => self.draw_dialog_warning(&mut batch),
             Screen::CommandBlock => self.draw_command_block(&mut batch),
             Screen::BlockEditor => self.draw_block_editor(&mut batch),
+            Screen::Java => self.draw_java_screen(&mut batch),
             Screen::Inventory => {
                 self.draw_inventory(&mut batch);
                 self.draw_mod_browser(&mut batch);
@@ -13658,6 +13663,7 @@ impl Game<'_> {
                 Screen::WorldOptions => self.world_options_escape(),
                 Screen::CommandBlock => self.close_command_block(),
                 Screen::BlockEditor => self.close_block_editor(),
+                Screen::Java => {}
                 Screen::Chat => self.close_chat(chat::ChatExit::Intentional),
                 Screen::Win => self.close_win_screen()?,
             },
@@ -14390,6 +14396,9 @@ impl ApplicationHandler for Game<'_> {
                         if self.screen == Screen::BlockEditor {
                             self.block_editor_drag();
                         }
+                        if self.screen == Screen::Java {
+                            self.java_screen_moved();
+                        }
                         if self.screen == Screen::Advancements {
                             self.advancements_drag();
                         }
@@ -14435,7 +14444,9 @@ impl ApplicationHandler for Game<'_> {
                         }) * wheel_sensitivity
                     };
                     let d = scaled(raw_y) as f32;
-                    if self.dialog_open() {
+                    if self.screen == Screen::Java {
+                        self.java_screen_scroll(scaled(raw_x), scaled(raw_y));
+                    } else if self.dialog_open() {
                         self.dialog_scroll(d);
                     } else if self.code_of_conduct.is_some() {
                         self.code_of_conduct_scroll(d);
@@ -14550,6 +14561,9 @@ impl ApplicationHandler for Game<'_> {
                     }
                 }
                 WindowEvent::MouseInput { .. } if self.screen == Screen::Win => {}
+                WindowEvent::MouseInput { state, button, .. } if self.screen == Screen::Java => {
+                    self.java_screen_click(button, state == ElementState::Pressed)
+                }
                 WindowEvent::MouseInput { state, button, .. } if self.screen == Screen::Options => {
                     if self.options_waiting_for_key() && state == ElementState::Pressed {
                         self.options_bind_mouse(button)?;
@@ -14866,6 +14880,9 @@ impl ApplicationHandler for Game<'_> {
                         let backspace = event.physical_key == PhysicalKey::Code(KeyCode::Backspace);
                         self.station_text(event.text.as_deref(), backspace);
                     }
+                }
+                WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::Java => {
+                    self.java_screen_key(&event)
                 }
                 WindowEvent::KeyboardInput { event, .. }
                     if self.screen == Screen::WorldOptions

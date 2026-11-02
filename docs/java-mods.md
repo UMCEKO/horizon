@@ -53,6 +53,8 @@ refill the view, or Java sees the old value until the next call.
 | Joining the level | `BlockEntities.join`, `loadFresh` | `setLevel` and `clearRemoved` as `LevelChunk.setBlockEntity` does, then `onLoad` before the next ticker, as `Level.tickBlockEntities` does |
 | Chunks | `ChunkViews`, `LevelChunkMixin`, `ChunkCacheMixin` | `getChunk`, `getChunkNow` and `hasChunk` answer for chunks Horizon has loaded with a `LevelChunk` holding nothing: its blocks and block entities are the level's |
 | `/data` on a mod's block entity | `data.rs`, `java_hooks.rs` | Reads Java's live form; `merge` and `modify` go to the real `loadWithComponents` |
+| Mods' menus and screens | `Menus`, `ClientBridge`, `Recorder`, `Sprites`, `game/java_screens.rs` | The real server menu and the real client screen: packets between them are two queues in this JVM, and a joining client gets a login's recipe sync. The screen draws through the real `GuiGraphicsExtractor`; quads (with their texture's file), text and items reach Rust in call order, and Rust paints them with its GUI atlas, items and font. Mouse and keys go back as `MouseHandler` and `KeyboardHandler` hand them over |
+| The Java client | `ClientBridge`, `mixin/Client*` | Its own `ClientLevel`, `LocalPlayer` and connection as views; block entities are client copies made from the server's update tag. Mods' client reload listeners run once over the real packs; text measures with Horizon's font |
 | Hoppers into and out of mods' blocks | `machines.rs`, `GameBridge.hopperTransfer` | Past vanilla containers, NeoForge's `VanillaInventoryCodeHooks` with the block's item handler, on a copy of the hopper |
 | Vanilla block entities and all entities | `BlockEntities`, `EntityViews` | Real Java objects read from Horizon's saved form for one call, with what it changed written back |
 | Forge Energy and other capabilities | NeoForge's own code | Run as they are on the above |
@@ -66,7 +68,8 @@ What isn't bound and why is in `tools/java_mods_skips/`. `java-object` is Java d
 ## Not yet
 
 - Mods' mixins into vanilla code Horizon runs in Rust never fire, since that Java never runs: `MinecraftServer`'s loop, `ServerLevel.tick`, entity AI and so on. 60 library mods aim mixins at 306 vanilla classes; nothing yet says how many of those patches matter.
-- Mods' menus and screens: `openMenu` makes the real Java menu and mods' client classes load, but nothing shows a screen, as GUI drawing isn't bridged to Rust. Text measures as 6 pixels a glyph until then.
+- Screens work for the player of the window that hosts the world; a LAN guest or a dedicated server's player gets none, as their client has no JVM of its own. Pictures in a screen (an entity, a 3D block) and mods' own render pipelines draw nothing, and the client level sees only the block entities the player's screens use.
+- Mods' blocks whose shape depends on their block entity (AE2's cable bus) have no outline in Horizon, so the crosshair passes through them.
 - Mods' own entities tick nowhere; their saved form is kept. Entity views last one call and aren't tracked between calls.
 - A mod's packets are logged and dropped (`ConnectionMixin`). Advancement triggers do nothing for a view (`CriterionMixin`).
 - Mods' item slots don't reach Horizon's comparators until a save, and hopper minecarts don't reach mods' item handlers.
