@@ -135,14 +135,18 @@ public final class Recorder extends GuiRenderState {
             String texture = setup != null && setup.texure0() instanceof Sprites.View view ? view.id().toString() : "";
             var pipeline = element.pipeline();
             int kind = pipeline == RenderPipelines.GUI_INVERT ? 1 : pipeline == RenderPipelines.GUI_TEXT_HIGHLIGHT ? 2 : 0;
+            boolean atlas = texture.contains(":textures/atlas/");
             for (int q = 0; q + 3 <= corners.n; q += 4) {
+                // The block and item atlases' sprites sit one unit of U apart: the quad's middle names its sprite.
+                var sprite = atlas ? Sprites.indexed((corners.u[q] + corners.u[q + 1] + corners.u[q + 2] + corners.u[q + 3]) / 4) : null;
+                float shift = sprite == null ? 0 : sprite.getU0();
                 out.writeByte(QUAD);
-                text(out, texture);
+                text(out, sprite == null ? texture : Sprites.textureFile(sprite));
                 out.writeByte(kind);
                 for (int i = q; i < q + 4; i++) {
                     out.writeFloat(corners.x[i]);
                     out.writeFloat(corners.y[i]);
-                    out.writeFloat(corners.u[i]);
+                    out.writeFloat(corners.u[i] - shift);
                     out.writeFloat(corners.v[i]);
                     out.writeInt(corners.color[i]);
                 }

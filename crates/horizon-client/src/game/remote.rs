@@ -1700,6 +1700,10 @@ impl Game<'_> {
             self.sync_block_entity((pos[0], pos[1], pos[2]), state);
             if previous != state {
                 horizon_client::dynamic_models::place(pos, None);
+                // Another block has another block entity, if any: the Java client records it anew.
+                if self.res.facts().get(previous).name != self.res.facts().get(state).name {
+                    horizon_client::dynamic_renders::remove(pos);
+                }
             }
             // LevelChunk.setBlockState removes the block entity of a block
             // that changes: the moving piston the client's moveBlocks made

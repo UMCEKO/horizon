@@ -81,6 +81,9 @@ public final class Clients {
         if (dynamic.test(entity.getBlockState())) blockChanged(level, entity.getBlockPos());
     }
 
+    /** A held block entity marked itself changed on the server (energy, progress, active state); the client side may draw it anew. */
+    static java.util.function.BiConsumer<net.minecraft.server.level.ServerLevel, net.minecraft.world.level.block.entity.BlockEntity> changed = (level, entity) -> {};
+
     /** Counts packets sent to clients, so a window can tell without the lock whether it has any to read. */
     static int pending() {
         return pending;

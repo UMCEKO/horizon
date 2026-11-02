@@ -72,7 +72,8 @@ public final class ClientBridge {
 
     static void install() {
         GameBridge.client = ClientBridge::call;
-        Clients.dynamic = ClientModels::dynamic;
+        Clients.dynamic = state -> ClientModels.dynamic(state) || BlockRenders.has(state);
+        Clients.changed = BlockRenders::changed;
     }
 
     private static byte[] call(String op, byte[] input) {
@@ -87,6 +88,7 @@ public final class ClientBridge {
                 case "client_models_probe" -> modelsProbe();
                 case "client_models_states" -> ClientModels.states();
                 case "client_models_take" -> Minecraft.getInstance().level == null ? new byte[0] : ClientModels.take(Minecraft.getInstance().level);
+                case "client_renders_take" -> Minecraft.getInstance().level == null ? new byte[0] : BlockRenders.take(Minecraft.getInstance().level);
                 case "client_shape" -> shape(in);
                 default -> throw new IllegalArgumentException(op);
             };
@@ -225,11 +227,16 @@ public final class ClientBridge {
         ServerLevel server = GameBridge.levelOrNull(level.dimension().identifier().toString());
         BlockEntity source = server == null ? null : BlockEntities.held(server).get(at);
         boolean gone = source == null || source.isRemoved();
-        if (held != null && !held.isRemoved() && !gone && held.getType() == source.getType()) return held;
+        if (held != null && !held.isRemoved() && !gone && held.getType() == source.getType()) {
+            // The server's block may change state under the same block entity (active, facing): the copy follows it.
+            if (held.getBlockState() != source.getBlockState()) held.setBlockState(source.getBlockState());
+            return held;
+        }
         if (held != null) {
             BLOCK_ENTITIES.remove(at);
             shapes++;
             ClientModels.dirty(pos);
+            BlockRenders.dirty(pos);
         }
         if (gone) return null;
         BlockState state = source.getBlockState();
@@ -243,13 +250,44 @@ public final class ClientBridge {
         BLOCK_ENTITIES.put(at, copy);
         shapes++;
         if (ClientModels.dynamic(state)) ClientModels.dirty(pos);
+        if (BlockRenders.has(state)) BlockRenders.dirty(pos);
         copy.onLoad();
         return copy;
+    }
+
+    /** Loads the server's full saved form into the client copy, as some of what renderers read is never in an update tag. */
+    static void refresh(ClientLevel level, BlockEntity copy) {
+        ServerLevel server = GameBridge.levelOrNull(level.dimension().identifier().toString());
+        BlockEntity source = server == null ? null : BlockEntities.held(server).get(copy.getBlockPos().asLong());
+        if (source == null || source.isRemoved() || source.getType() != copy.getType()) return;
+        if (copy.getBlockState() != source.getBlockState()) copy.setBlockState(source.getBlockState());
+        var registries = level.registryAccess();
+        copy.loadWithComponents(TagValueInput.create(ProblemReporter.DISCARDING, registries, source.saveWithFullMetadata(server.registryAccess())));
+        mirror(source, copy);
+    }
+
+    /** The mod's own plain values (an active flag, a speed, a progress) as the server holds them, which a real client gets by packets this one never sees. */
+    private static void mirror(BlockEntity source, BlockEntity copy) {
+        for (Class<?> c = source.getClass(); c != null && c != BlockEntity.class; c = c.getSuperclass()) {
+            String name = c.getName();
+            if (name.startsWith("net.minecraft.") || name.startsWith("net.neoforged.")) continue;
+            for (var field : c.getDeclaredFields()) {
+                int modifiers = field.getModifiers();
+                if (java.lang.reflect.Modifier.isStatic(modifiers) || java.lang.reflect.Modifier.isFinal(modifiers) || !field.getType().isPrimitive()) continue;
+                try {
+                    field.setAccessible(true);
+                    field.set(copy, field.get(source));
+                } catch (ReflectiveOperationException | RuntimeException e) {
+                    // A field this JVM won't open stays the client's.
+                }
+            }
+        }
     }
 
     /** A block of the window's level changed on the client side: its geometry is baked again if its data decides it. */
     public static void redraw(BlockState state, BlockPos pos) {
         if (ClientModels.dynamic(state)) ClientModels.dirty(pos);
+        if (BlockRenders.has(state)) BlockRenders.dirty(pos);
     }
 
     /** The state of a block the window's level has a copy of; air elsewhere, until the client level reads Horizon's own world. */
@@ -266,6 +304,7 @@ public final class ClientBridge {
                 if (packet instanceof net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket update) {
                     shapes++;
                     ClientModels.dirty(update.getPos());
+                    BlockRenders.dirty(update.getPos());
                 }
             } catch (RunningOnDifferentThreadException e) {
                 // Queued on the client's loop; its tasks run below.
@@ -289,6 +328,7 @@ public final class ClientBridge {
         // An empty answer: not joined yet, so the window asks again next tick.
         if (player == null) return new byte[0];
         receive();
+        BlockRenders.poll(Minecraft.getInstance().level);
         Screen screen = Minecraft.getInstance().gui.screen();
         if (screen != null) screen.tick();
         return status();
@@ -334,6 +374,7 @@ public final class ClientBridge {
         SOUNDS.clear();
         out.writeInt(shapes);
         out.writeInt(ClientModels.pending());
+        out.writeInt(BlockRenders.pending());
         return bytes.toByteArray();
     }
 
@@ -437,6 +478,7 @@ public final class ClientBridge {
         set(Minecraft.class, minecraft, "level", null);
         BLOCK_ENTITIES.clear();
         ClientModels.forget();
+        BlockRenders.forget();
         if (player != null) Clients.leave(player);
         player = null;
         serverView = null;

@@ -43,6 +43,7 @@ pub(in crate::game) mod live {
         tick: Option<Vec<u8>>,
         states: Option<Vec<u8>>,
         models: Option<Vec<u8>>,
+        renders: Option<Vec<u8>>,
     }
 
     impl Job {
@@ -58,21 +59,19 @@ pub(in crate::game) mod live {
             } else {
                 None
             };
-            let models = if status_models(&tick).unwrap_or(0) > 0 {
-                host.request("client_models_take", &[])
-            } else {
-                None
-            };
+            let (models, renders) = status_pending(&tick).unwrap_or((0, 0));
+            let take = |op, pending: i32| (pending > 0).then(|| host.request(op, &[])).flatten();
             Done {
+                models: take("client_models_take", models),
+                renders: take("client_renders_take", renders),
                 tick: Some(tick),
                 states,
-                models,
             }
         }
     }
 
-    /// The pending geometry count at the end of a status reply.
-    fn status_models(status: &[u8]) -> Option<i32> {
+    /// The pending geometry and renderer counts at the end of a status reply.
+    fn status_pending(status: &[u8]) -> Option<(i32, i32)> {
         let mut status = In(status);
         status.bool()?;
         status.int()?;
@@ -83,7 +82,7 @@ pub(in crate::game) mod live {
             status.float()?;
         }
         status.int()?;
-        status.int()
+        Some((status.int()?, status.int()?))
     }
 
     /// Runs the Java client's ticks off the window's thread while no Java screen is open, as chunk meshing runs off it.
@@ -298,9 +297,10 @@ pub(in crate::game) mod live {
             }
             let shapes = reply.int()?;
             let models = reply.int()?;
+            let renders = reply.int()?;
             CLIENT.with_borrow_mut(|c| {
                 c.shapes = shapes;
-                c.models = models;
+                c.models = models + renders;
             });
             CLIENT.with_borrow_mut(|c| c.open = open);
             if open && self.screen != Screen::Java {
@@ -356,6 +356,7 @@ pub(in crate::game) mod live {
                 self.java_client_collect(true);
                 host.request("client_leave", &[]);
                 horizon_client::dynamic_models::clear();
+                horizon_client::dynamic_renders::clear();
                 CLIENT.with_borrow_mut(|c| {
                     c.joined = false;
                     c.open = false;
@@ -372,8 +373,11 @@ pub(in crate::game) mod live {
             self.java_client_collect(open);
             let (joined, seen, models, states, font) =
                 CLIENT.with_borrow(|c| (c.joined, c.pending, c.models, c.states, c.font));
+            // Recorded renderers are checked against the server once a second.
+            let poll =
+                self.world.game_time % 20 == 0 && !horizon_client::dynamic_renders::is_empty();
             if java_client_busy()
-                || (joined && !open && pending == seen && models == 0 && font >= 0x10000)
+                || (joined && !open && pending == seen && models == 0 && font >= 0x10000 && !poll)
             {
                 return;
             }
@@ -415,8 +419,14 @@ pub(in crate::game) mod live {
                 self.java_models_states(&states);
                 CLIENT.with_borrow_mut(|c| c.states = true);
             }
+            let taken = done.models.is_some() || done.renders.is_some();
             if let Some(models) = done.models {
                 self.java_models_apply(&models);
+            }
+            if let Some(renders) = done.renders {
+                self.java_renders_apply(&renders);
+            }
+            if taken {
                 CLIENT.with_borrow_mut(|c| c.models = 0);
             }
         }

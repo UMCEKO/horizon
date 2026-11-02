@@ -9329,6 +9329,36 @@ impl Game<'_> {
                     .block_entity_render()
                     .render(&scene, visible, &mut out);
             }
+            // What mods' block entity renderers draw, recorded by the Java client.
+            let recorded = horizon_client::dynamic_renders::Frame {
+                camera,
+                game_time: self.world.game_time,
+                partial: alpha as f32,
+                sprites: &self.gui.atlas.sprites,
+                nether: self.dim == Dim::Nether,
+                light: &|p| self.world.light(p[0], p[1], p[2]),
+                visible: &|p| {
+                    view.is_none_or(|v| {
+                        let o =
+                            (glam::DVec3::new(f64::from(p[0]), f64::from(p[1]), f64::from(p[2]))
+                                - camera)
+                                .as_vec3();
+                        v.intersects(o - glam::Vec3::ONE, o + glam::Vec3::splat(2.0))
+                    })
+                },
+            };
+            horizon_client::dynamic_renders::draw(&recorded, &mut out);
+            for (pose, item, pos) in horizon_client::dynamic_renders::items(&recorded) {
+                let context = horizon_assets::item_model::DisplayContext::ALL
+                    .get(usize::from(item.context))
+                    .copied()
+                    .unwrap_or(horizon_assets::item_model::DisplayContext::Fixed);
+                let state = self.resolve_item(&item.stack, context, None, item.seed);
+                let light = horizon_client::block_entity_render::vertex_light(
+                    self.world.light(pos[0], pos[1], pos[2]),
+                );
+                self.submit_item_world(&state, pose, light, &mut out);
+            }
             self.mark_stage(out.len(), "DESTROY");
             for &(pos, stage) in &cracks {
                 let state = self.world.block(pos[0], pos[1], pos[2]);

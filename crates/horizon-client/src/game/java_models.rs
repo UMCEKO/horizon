@@ -3,7 +3,7 @@
 
 use super::*;
 use horizon_assets::model::{BakedLayer, BakedQuadData, Direction};
-use horizon_client::dynamic_models;
+use horizon_client::{dynamic_models, dynamic_renders};
 use horizon_java_host::wire::In;
 
 struct Entry {
@@ -82,7 +82,123 @@ fn parse_states(reply: &[u8], to_horizon: &[Option<BlockStateId>]) -> Option<Vec
     Some(states)
 }
 
+fn param(input: &mut In) -> Option<dynamic_renders::Param> {
+    use dynamic_renders::Param;
+    Some(match input.float()? as i32 {
+        0 => Param::Const(input.float()?),
+        1 => Param::Linear(input.float()?, input.float()?),
+        2 => Param::Sine(
+            input.float()?,
+            input.float()?,
+            input.float()?,
+            input.float()?,
+        ),
+        _ => return None,
+    })
+}
+
+fn op(input: &mut In) -> Option<dynamic_renders::Op> {
+    use dynamic_renders::Op;
+    fn floats(input: &mut In, n: usize) -> Option<Vec<f32>> {
+        (0..n).map(|_| input.float()).collect()
+    }
+    Some(match input.byte()? {
+        b'T' => Op::Translate([param(input)?, param(input)?, param(input)?]),
+        b'S' => Op::Scale([param(input)?, param(input)?, param(input)?]),
+        b'R' => {
+            let axis = floats(input, 3)?;
+            Op::Rotate(
+                glam::Vec3::new(axis[0], axis[1], axis[2]).normalize_or(glam::Vec3::Y),
+                param(input)?,
+            )
+        }
+        b'Q' => {
+            let q = floats(input, 4)?;
+            Op::Quat(glam::Quat::from_xyzw(q[0], q[1], q[2], q[3]).normalize())
+        }
+        b'M' => Op::Matrix(glam::Mat4::from_cols_slice(&floats(input, 16)?)),
+        _ => return None,
+    })
+}
+
+/// The renders reply: each position's pieces, or None there when nothing draws now.
+fn parse_renders(reply: &[u8]) -> Option<Vec<([i32; 3], Option<Vec<dynamic_renders::Draw>>)>> {
+    let mut input = In(reply);
+    let count = usize::try_from(input.int()?).ok()?;
+    let mut entries = Vec::with_capacity(count.min(4096));
+    for _ in 0..count {
+        let pos = BlockPos::unpack(input.long()?);
+        let pos = [pos.x, pos.y, pos.z];
+        let draws = input.int()?;
+        if draws < 0 {
+            entries.push((pos, None));
+            continue;
+        }
+        let mut list = Vec::new();
+        for _ in 0..draws {
+            let translucent = input.bool()?;
+            let ops = (0..input.int()?)
+                .map(|_| op(&mut input))
+                .collect::<Option<Vec<_>>>()?;
+            let quads = (0..input.int()?)
+                .map(|_| {
+                    let texture = input.text()?.to_owned();
+                    let mut corners = [[0.0; 5]; 4];
+                    let (mut color, mut light) = ([0; 4], [0; 4]);
+                    for k in 0..4 {
+                        for value in &mut corners[k] {
+                            *value = input.float()?;
+                        }
+                        color[k] = input.int()? as u32;
+                        light[k] = input.int()? as u32;
+                    }
+                    Some(dynamic_renders::Quad {
+                        texture,
+                        corners,
+                        color,
+                        light,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            let item = if input.bool()? {
+                let tag = super::java_mods::read_tag(input.bytes()?);
+                let (context, seed) = (input.byte()?, input.int()?);
+                tag.and_then(|tag| horizon_client::save::item_from_nbt(&tag))
+                    .map(|stack| dynamic_renders::Item {
+                        stack,
+                        context,
+                        seed,
+                    })
+            } else {
+                None
+            };
+            list.push(dynamic_renders::Draw {
+                translucent,
+                ops,
+                quads,
+                item,
+            });
+        }
+        entries.push((pos, Some(list)));
+    }
+    Some(entries)
+}
+
 impl Game<'_> {
+    /// Takes a renders reply: what mods' block entity renderers draw at each changed position.
+    pub(in crate::game) fn java_renders_apply(&mut self, reply: &[u8]) {
+        let Some(entries) = parse_renders(reply) else {
+            log::warn!("Horizon: a malformed Java renders reply was dropped");
+            return;
+        };
+        for (pos, draws) in entries {
+            match draws {
+                Some(draws) => dynamic_renders::set(pos, draws, self.world.game_time),
+                None => dynamic_renders::remove(pos),
+            }
+        }
+    }
+
     /// Takes a models reply: stores the geometry and remeshes the sections whose blocks changed.
     pub(in crate::game) fn java_models_apply(&mut self, reply: &[u8]) {
         let Some(entries) = parse_models(reply) else {

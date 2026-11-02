@@ -233,6 +233,11 @@ public final class ClientModels {
         var standaloneField = ModelManager.class.getDeclaredField("bakedStandaloneModels");
         standaloneField.setAccessible(true);
         standaloneField.set(Minecraft.getInstance().getModelManager(), result.standaloneModels());
+        var fluids = ModelManager.class.getDeclaredField("fluidStateModelSet");
+        fluids.setAccessible(true);
+        fluids.set(Minecraft.getInstance().getModelManager(), new net.minecraft.client.renderer.block.FluidStateModelSet(
+                net.minecraft.client.renderer.block.FluidStateModelSet.bake(materials), result.missingModels().fluid()));
+        net.neoforged.fml.ModLoader.postEvent(new net.neoforged.neoforge.client.event.ModelEvent.BakingCompleted(Minecraft.getInstance().getModelManager(), result, bakery));
         baked = result.blockStateModels();
         System.err.println("Horizon: baked " + baked.size() + " block states whose models mods build in code");
         return baked;

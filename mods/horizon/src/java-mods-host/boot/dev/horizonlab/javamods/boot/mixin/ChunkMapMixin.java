@@ -25,6 +25,11 @@ abstract class ChunkMapMixin {
     @Final
     ServerLevel level;
 
+    @Inject(method = "isChunkTracked", at = @At("HEAD"), cancellable = true)
+    private void horizon$tracked(ServerPlayer player, int x, int z, CallbackInfoReturnable<Boolean> result) {
+        result.setReturnValue(player.level() == level);
+    }
+
     /** Every player of the level tracks every chunk Java holds, so a mod's chunk-tracking packets reach their Java clients. */
     @Inject(method = "getPlayers", at = @At("HEAD"), cancellable = true)
     private void horizon$players(ChunkPos pos, boolean boundaryOnly, CallbackInfoReturnable<List<ServerPlayer>> result) {

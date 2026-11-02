@@ -139,6 +139,13 @@ public final class Sprites {
                 var f = TextureAtlas.class.getDeclaredField("location");
                 f.setAccessible(true);
                 f.set(atlas, key);
+                Identifier sheet = sheet(key);
+                if (sheet != null) {
+                    // The block and item atlases draw as their own texture, whose sprites `indexed` tells apart.
+                    var view = new View(sheet, 1, 1);
+                    set(AbstractTexture.class, atlas, "textureView", view);
+                    set(AbstractTexture.class, atlas, "texture", view);
+                }
                 return atlas;
             } catch (ReflectiveOperationException e) {
                 throw new IllegalStateException(e);
@@ -161,8 +168,30 @@ public final class Sprites {
         return sprite(atlas, id, null);
     }
 
-    /** As `sprite`, but as baked models see it: in the atlas texture `sheet`, as the baker checks, still spanning 0..1. */
-    public static TextureAtlasSprite sprite(Identifier atlas, Identifier id, Identifier sheet) {
+    private static final List<TextureAtlasSprite> INDEXED = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    /** The texture of the block or item atlas, for its id or its texture's; null for every other atlas. */
+    private static Identifier sheet(Identifier atlas) {
+        if (atlas.equals(AtlasIds.BLOCKS) || atlas.equals(TextureAtlas.LOCATION_BLOCKS)) return TextureAtlas.LOCATION_BLOCKS;
+        if (atlas.equals(AtlasIds.ITEMS) || atlas.equals(TextureAtlas.LOCATION_ITEMS)) return TextureAtlas.LOCATION_ITEMS;
+        return null;
+    }
+
+    /** The block or item atlas sprite whose U span starts at `u`'s whole part, as each sits one unit right of the last. */
+    public static TextureAtlasSprite indexed(float u) {
+        int index = (int) Math.floor(u);
+        return index >= 0 && index < INDEXED.size() ? INDEXED.get(index) : null;
+    }
+
+    /** A sprite's texture file, as the GUI recorder names textures. */
+    public static String textureFile(TextureAtlasSprite sprite) {
+        return sprite.contents().name().withPath(path -> "textures/" + path + ".png").toString();
+    }
+
+    /** As `sprite`, but as baked models see it: in the atlas texture `sheet`, as the baker checks, each sprite one unit of U wide. */
+    public static TextureAtlasSprite sprite(Identifier requested, Identifier id, Identifier requestedSheet) {
+        Identifier sheet = sheet(requested) != null ? sheet(requested) : requestedSheet;
+        Identifier atlas = sheet(requested) == null ? requested : sheet.equals(TextureAtlas.LOCATION_BLOCKS) ? AtlasIds.BLOCKS : AtlasIds.ITEMS;
         Identifier key = sheet == null ? atlas : atlas.withSuffix("/baked");
         return SPRITES.computeIfAbsent(key, a -> new java.util.concurrent.ConcurrentHashMap<>()).computeIfAbsent(id, sprite -> {
             try {
@@ -188,7 +217,12 @@ public final class Sprites {
                 var make = TextureAtlasSprite.class.getDeclaredConstructor(Identifier.class, SpriteContents.class, int.class, int.class, int.class, int.class, int.class);
                 make.setAccessible(true);
                 // One sprite a texture: its coordinates span the file, which Rust maps onto where its atlas put it.
-                return make.newInstance(sheet != null ? sheet : file, contents, size[0], size[1], 0, 0, 0);
+                if (sheet == null) return make.newInstance(file, contents, size[0], size[1], 0, 0, 0);
+                synchronized (INDEXED) {
+                    var placed = make.newInstance(sheet, contents, size[0], size[1], INDEXED.size() * size[0], 0, 0);
+                    INDEXED.add(placed);
+                    return placed;
+                }
             } catch (Exception e) {
                 throw new IllegalStateException(e);
             }
