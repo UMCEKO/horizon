@@ -502,11 +502,16 @@ fn load_definitions(root: &Path) -> BTreeMap<String, ClientItem> {
             if path.is_dir() {
                 walk(&path, &rel, namespace, out);
             } else if let Some(id) = rel.strip_suffix(".json")
-                && let Some(item) = fs::read_to_string(&path)
-                    .ok()
-                    .and_then(|t| ClientItem::from_json(&t).ok())
+                && let Ok(text) = fs::read_to_string(&path)
             {
-                out.insert(format!("{namespace}:{id}"), item);
+                match ClientItem::from_json(&text) {
+                    Ok(item) => {
+                        out.insert(format!("{namespace}:{id}"), item);
+                    }
+                    Err(e) => {
+                        log::warn!("Horizon: item definition {namespace}:{id} not loaded: {e}")
+                    }
+                }
             }
         }
     }
