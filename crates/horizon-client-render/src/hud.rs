@@ -469,11 +469,12 @@ impl HudAtlas {
             }
         }
         let assets = root.join("assets");
-        // Content mods' GUI textures, for their screens: `<namespace>:gui/...`.
+        // Content mods' GUI textures, for their screens: `<namespace>:gui/...` (some mods use `guis/`).
         if full && let Ok(namespaces) = fs::read_dir(&assets) {
             for ns in namespaces.flatten() {
                 if ns.file_name() != "minecraft" {
                     walk(&ns.path().join("textures/gui"), &mut files);
+                    walk(&ns.path().join("textures/guis"), &mut files);
                 }
             }
         }

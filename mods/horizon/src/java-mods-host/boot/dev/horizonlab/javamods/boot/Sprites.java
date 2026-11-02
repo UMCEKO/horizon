@@ -84,7 +84,7 @@ public final class Sprites {
         public void close() {}
     }
 
-    private static final Map<Identifier, AbstractTexture> TEXTURES = new HashMap<>();
+    private static final Map<Identifier, TextureAtlas> TEXTURES = new HashMap<>();
     private static final Map<Identifier, TextureAtlas> ATLASES = new HashMap<>();
     private static final Map<Identifier, Map<Identifier, TextureAtlasSprite>> SPRITES = new HashMap<>();
     private static final Identifier MISSING = Identifier.withDefaultNamespace("missingno");
@@ -105,9 +105,18 @@ public final class Sprites {
     }
 
     public static AbstractTexture texture(Identifier id) {
+        // An atlas's own texture (`textures/atlas/blocks.png`) is that atlas, as mods cast it to one.
+        String path = id.getPath();
+        if (path.startsWith("textures/atlas/") && path.endsWith(".png")) {
+            return atlas(id.withPath(path.substring("textures/atlas/".length(), path.length() - ".png".length())));
+        }
         return TEXTURES.computeIfAbsent(id, file -> {
             try {
-                AbstractTexture texture = GameBridge.construct(Holder.class, Object.class.getDeclaredConstructor());
+                // A sprite's own file stands as its atlas, since mods cast a sprite's atlas texture to one.
+                TextureAtlas texture = GameBridge.construct(TextureAtlas.class, Object.class.getDeclaredConstructor());
+                var location = TextureAtlas.class.getDeclaredField("location");
+                location.setAccessible(true);
+                location.set(texture, file);
                 int[] size = size(file);
                 var view = new View(file, size[0], size[1]);
                 var f = AbstractTexture.class.getDeclaredField("textureView");
@@ -122,9 +131,6 @@ public final class Sprites {
             }
         });
     }
-
-    /** A texture with no loading of its own. */
-    static final class Holder extends AbstractTexture {}
 
     public static TextureAtlas atlas(Identifier id) {
         return ATLASES.computeIfAbsent(id, key -> {
@@ -142,6 +148,7 @@ public final class Sprites {
 
     /** Where an atlas's sprites come from, as its definition's directory source names them. */
     private static Identifier file(Identifier atlas, Identifier sprite) {
+        if (atlas.getPath().endsWith(".png")) return atlas;
         String folder = atlas.equals(AtlasIds.GUI) ? "gui/sprites/"
                 : atlas.equals(AtlasIds.PAINTINGS) ? "painting/"
                 : atlas.equals(AtlasIds.PARTICLES) ? "particle/"

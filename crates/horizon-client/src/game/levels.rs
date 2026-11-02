@@ -399,12 +399,7 @@ impl Game<'_> {
                 if running {
                     self.tick_weather_effects();
                 }
-                #[cfg(feature = "java-mods")]
-                self.java_level_tick(false);
-                let ticked = self.tick_world(running);
-                #[cfg(feature = "java-mods")]
-                self.java_level_tick(true);
-                ticked
+                self.tick_world(running)
             };
             if result.is_err() {
                 break;

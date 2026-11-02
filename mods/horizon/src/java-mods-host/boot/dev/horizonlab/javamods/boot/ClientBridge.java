@@ -67,6 +67,7 @@ public final class ClientBridge {
     private static final Map<Long, BlockEntity> BLOCK_ENTITIES = new HashMap<>();
     private static final Set<Integer> KEYS_DOWN = new HashSet<>();
     private static int opened;
+    private static int shapes;
     private static int guiWidth = 427, guiHeight = 240, guiScale = 2, windowWidth = 854, windowHeight = 480;
 
     static void install() {
@@ -82,6 +83,7 @@ public final class ClientBridge {
                 case "client_input" -> input(in);
                 case "client_font" -> font(in);
                 case "client_leave" -> leave();
+                case "client_shape" -> shape(in);
                 default -> throw new IllegalArgumentException(op);
             };
         } catch (Throwable t) {
@@ -215,11 +217,15 @@ public final class ClientBridge {
     public static BlockEntity blockEntity(ClientLevel level, BlockPos pos) {
         long at = pos.asLong();
         var held = BLOCK_ENTITIES.get(at);
-        if (held != null && !held.isRemoved()) return held;
         ServerLevel server = GameBridge.levelOrNull(level.dimension().identifier().toString());
-        if (server == null) return null;
-        BlockEntity source = BlockEntities.held(server).get(at);
-        if (source == null || source.isRemoved()) return null;
+        BlockEntity source = server == null ? null : BlockEntities.held(server).get(at);
+        boolean gone = source == null || source.isRemoved();
+        if (held != null && !held.isRemoved() && !gone && held.getType() == source.getType()) return held;
+        if (held != null) {
+            BLOCK_ENTITIES.remove(at);
+            shapes++;
+        }
+        if (gone) return null;
         BlockState state = source.getBlockState();
         if (!(state.getBlock() instanceof EntityBlock block)) return null;
         BlockEntity copy = block.newBlockEntity(pos, state);
@@ -229,6 +235,7 @@ public final class ClientBridge {
         copy.handleUpdateTag(TagValueInput.create(ProblemReporter.DISCARDING, registries, source.getUpdateTag(registries)));
         copy.clearRemoved();
         BLOCK_ENTITIES.put(at, copy);
+        shapes++;
         copy.onLoad();
         return copy;
     }
@@ -244,6 +251,7 @@ public final class ClientBridge {
         for (Packet<?> packet : Clients.takeForClient(player)) {
             try {
                 ((Packet<PacketListener>) packet).handle(listener);
+                if (packet instanceof net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket) shapes++;
             } catch (RunningOnDifferentThreadException e) {
                 // Queued on the client's loop; its tasks run below.
             } catch (Throwable t) {
@@ -309,6 +317,7 @@ public final class ClientBridge {
             out.writeFloat(sound.pitch);
         }
         SOUNDS.clear();
+        out.writeInt(shapes);
         return bytes.toByteArray();
     }
 
@@ -401,6 +410,29 @@ public final class ClientBridge {
         serverView = null;
         dimension = null;
         return new byte[] {1};
+    }
+
+    /** The outline of a block with a block entity, as its client copy shapes it; empty when there is no copy. */
+    private static byte[] shape(DataInputStream in) throws IOException {
+        var level = Minecraft.getInstance().level;
+        if (level == null) return new byte[0];
+        var pos = BlockPos.of(in.readLong());
+        var entity = blockEntity(level, pos);
+        if (entity == null) return new byte[0];
+        var boxes = entity.getBlockState().getShape(level, pos, net.minecraft.world.phys.shapes.CollisionContext.empty()).toAabbs();
+        var bytes = new ByteArrayOutputStream();
+        var out = new DataOutputStream(bytes);
+        out.writeByte(1);
+        out.writeInt(boxes.size());
+        for (var box : boxes) {
+            out.writeDouble(box.minX);
+            out.writeDouble(box.minY);
+            out.writeDouble(box.minZ);
+            out.writeDouble(box.maxX);
+            out.writeDouble(box.maxY);
+            out.writeDouble(box.maxZ);
+        }
+        return bytes.toByteArray();
     }
 
     /** The advance of each character as Horizon's font draws it, so text mods lay out measures as it shows. */

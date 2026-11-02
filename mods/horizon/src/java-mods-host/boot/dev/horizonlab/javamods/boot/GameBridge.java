@@ -198,6 +198,7 @@ public final class GameBridge {
                 text(out, property.getName());
                 text(out, valueName(state, property));
             }
+            out.writeBoolean(state.hasBlockEntity());
         }
         return bytes.toByteArray();
     }

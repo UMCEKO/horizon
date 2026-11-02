@@ -36,6 +36,12 @@ abstract class ChunkCacheMixin {
         result.setReturnValue(ChunkViews.loaded(level, x, z));
     }
 
+    /** Horizon decides which chunks tick; one it has loaded is ticking here, as there are no chunk holders to ask. */
+    @Inject(method = "isPositionTicking", at = @At("HEAD"), cancellable = true)
+    private void horizon$ticking(long chunk, CallbackInfoReturnable<Boolean> result) {
+        result.setReturnValue(ChunkViews.loaded(level, net.minecraft.world.level.ChunkPos.getX(chunk), net.minecraft.world.level.ChunkPos.getZ(chunk)));
+    }
+
     @Inject(method = "sendToTrackingPlayers", at = @At("HEAD"), cancellable = true)
     private void horizon$tracking(Entity entity, Packet<?> packet, CallbackInfo info) {
         info.cancel();

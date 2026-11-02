@@ -130,6 +130,8 @@ mod java_hooks;
 #[cfg(feature = "java-mods")]
 mod java_mods;
 mod java_screens;
+#[cfg(feature = "java-mods")]
+mod java_shapes;
 mod jigsaw_blocks;
 mod jigsaw_edit;
 mod jukebox;
@@ -2551,6 +2553,13 @@ impl Game<'_> {
         let state = self.world.block(pos[0], pos[1], pos[2]);
         if let Some(b) = self.context_outline(pos, state) {
             return vec![std::array::from_fn(|i| f64::from(pos[i % 3]) + b[i])];
+        }
+        #[cfg(feature = "java-mods")]
+        if let Some(boxes) = self.java_outline(pos, state) {
+            return boxes
+                .iter()
+                .map(|b| std::array::from_fn(|i| f64::from(pos[i % 3]) + b[i]))
+                .collect();
         }
         let f = self.res.facts().get(state);
         let o = if f.outline_offset {
@@ -6427,8 +6436,16 @@ impl Game<'_> {
         self.tick_world(running)
     }
     /// What the tick runs after the local player's own update: effects, the
-    /// world's entities and blocks, and the network hub.
+    /// world's entities and blocks, and the network hub; Java mods hear it as `LevelTickEvent`.
     fn tick_world(&mut self, running: bool) -> Result<()> {
+        #[cfg(feature = "java-mods")]
+        self.java_level_tick(false);
+        let ticked = self.tick_level(running);
+        #[cfg(feature = "java-mods")]
+        self.java_level_tick(true);
+        ticked
+    }
+    fn tick_level(&mut self, running: bool) -> Result<()> {
         self.share_spawn_conditions();
         self.update_chunk_tickets();
         horizon_client::spans::time("tick_effects", || self.tick_effects(running));

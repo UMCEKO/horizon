@@ -1,6 +1,7 @@
 package dev.horizonlab.javamods.boot.mixin;
 
 import dev.horizonlab.javamods.boot.BlockEntities;
+import dev.horizonlab.javamods.boot.Clients;
 import dev.horizonlab.javamods.boot.EntityViews;
 import dev.horizonlab.javamods.boot.GameBridge;
 import net.minecraft.core.BlockPos;
@@ -10,6 +11,7 @@ import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.entity.LevelEntityGetter;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
@@ -32,6 +34,12 @@ abstract class ServerLevelMixin extends Level {
     @Override
     public FluidState getFluidState(BlockPos pos) {
         return ((ServerLevel) (Object) this).getBlockState(pos).getFluidState();
+    }
+
+    /** Horizon lights its own chunks; a mod's light check has no engine to reach. */
+    @Override
+    public net.minecraft.world.level.lighting.LevelLightEngine getLightEngine() {
+        return net.minecraft.world.level.lighting.LevelLightEngine.EMPTY;
     }
 
     @Override
@@ -67,6 +75,18 @@ abstract class ServerLevelMixin extends Level {
     private void horizon$entities(CallbackInfoReturnable<LevelEntityGetter<Entity>> result) {
         if (horizon$entities == null) horizon$entities = new EntityViews((ServerLevel) (Object) this);
         result.setReturnValue(horizon$entities);
+    }
+
+    /** `ServerChunkCache.blockChanged` never runs, as Horizon binds `sendBlockUpdated` to a no-op; this tells clients of a block entity's change. */
+    @Inject(method = "sendBlockUpdated", at = @At("HEAD"))
+    private void horizon$blockUpdated(BlockPos pos, BlockState old, BlockState current, int flags, CallbackInfo info) {
+        Clients.blockChanged((ServerLevel) (Object) this, pos);
+    }
+
+    /** Horizon decides which chunks tick; a chunk it has loaded counts, as no distance manager exists here. */
+    @Inject(method = "shouldTickBlocksAt(J)Z", at = @At("HEAD"), cancellable = true)
+    private void horizon$ticking(long chunk, CallbackInfoReturnable<Boolean> result) {
+        result.setReturnValue(dev.horizonlab.javamods.boot.ChunkViews.loaded((ServerLevel) (Object) this, net.minecraft.world.level.ChunkPos.getX(chunk), net.minecraft.world.level.ChunkPos.getZ(chunk)));
     }
 
     @Inject(method = "broadcastEntityEvent", at = @At("HEAD"), cancellable = true)

@@ -5,7 +5,7 @@
 use super::*;
 
 #[cfg(feature = "java-mods")]
-mod live {
+pub(in crate::game) mod live {
     use super::*;
     use horizon_client::hud::{HudAtlas, HudVertex};
     use horizon_client::text::{Style, Text};
@@ -19,11 +19,17 @@ mod live {
         pending: i32,
         open: bool,
         held: Option<i32>,
+        shapes: i32,
         last: (f64, f64),
     }
 
     thread_local! {
         pub(in crate::game) static CLIENT: RefCell<Client> = RefCell::default();
+    }
+
+    /// Changes whenever a block entity's client copy was made, dropped or updated, so cached shapes may be stale.
+    pub(in crate::game) fn java_shape_generation() -> i32 {
+        CLIENT.with_borrow(|c| c.shapes)
     }
 
     const QUAD: u8 = 0;
@@ -178,6 +184,8 @@ mod live {
                 let event = id.strip_prefix("minecraft:").unwrap_or(id);
                 self.audio.play(event, None, volume, pitch);
             }
+            let shapes = reply.int()?;
+            CLIENT.with_borrow_mut(|c| c.shapes = shapes);
             CLIENT.with_borrow_mut(|c| c.open = open);
             if open && self.screen != Screen::Java {
                 self.screen = Screen::Java;

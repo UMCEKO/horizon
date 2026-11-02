@@ -349,6 +349,8 @@ pub struct StateMap {
     pub java_air: i32,
     /// By Horizon's id: the block is a mod's, so its behaviour runs in Java.
     pub owned: Vec<bool>,
+    /// By Horizon's id: the state has a block entity, which may shape it.
+    pub entity: Vec<bool>,
 }
 pub static STATES: OnceLock<StateMap> = OnceLock::new();
 

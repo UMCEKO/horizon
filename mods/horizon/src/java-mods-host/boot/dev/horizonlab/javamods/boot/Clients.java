@@ -65,6 +65,15 @@ public final class Clients {
         return out;
     }
 
+    /** `ChunkHolder.blockChanged`: a block entity's update packet goes to the windows' Java clients. */
+    public static void blockChanged(net.minecraft.server.level.ServerLevel level, net.minecraft.core.BlockPos pos) {
+        var entity = BlockEntities.held(level).get(pos.asLong());
+        if (entity == null || entity.isRemoved()) return;
+        var packet = entity.getUpdatePacket();
+        if (packet == null) return;
+        for (var player : level.players()) toClient(player.getUUID(), packet);
+    }
+
     /** Counts packets sent to clients, so a window can tell without the lock whether it has any to read. */
     static int pending() {
         return pending;

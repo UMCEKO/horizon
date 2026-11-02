@@ -20,6 +20,16 @@ abstract class ClientLevelMixin extends Level {
         super(data, dimension, registries, type, client, debug, seed, updates);
     }
 
+    /** Horizon lights its own chunks; a mod's light check has no engine to reach. */
+    @Override
+    public net.minecraft.world.level.lighting.LevelLightEngine getLightEngine() {
+        return net.minecraft.world.level.lighting.LevelLightEngine.EMPTY;
+    }
+
+    /** The window draws its own world, so there is no extractor to tell. */
+    @Override
+    public void sendBlockUpdated(BlockPos pos, BlockState old, BlockState current, int flags) {}
+
     @Override
     public BlockEntity getBlockEntity(BlockPos pos) {
         return ClientBridge.blockEntity((ClientLevel) (Object) this, pos);

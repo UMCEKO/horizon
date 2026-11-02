@@ -124,6 +124,7 @@ impl Game<'_> {
             to_java: Vec::new(),
             java_air: 0,
             owned: Vec::new(),
+            entity: Vec::new(),
         };
         let mut listed = In(&listed);
         let (Some(count), Some(air)) = (listed.int(), listed.int()) else {
@@ -139,9 +140,10 @@ impl Game<'_> {
                 for _ in 0..listed.int()? {
                     properties.push((listed.text()?.to_string(), listed.text()?.to_string()));
                 }
-                Some((java, name, properties))
+                let entity = listed.bool()?;
+                Some((java, name, properties, entity))
             })();
-            let Some((java, name, properties)) = read else {
+            let Some((java, name, properties, entity)) = read else {
                 return;
             };
             let owned = !name.starts_with("minecraft:");
@@ -161,11 +163,13 @@ impl Game<'_> {
             if map.to_java.len() <= at {
                 map.to_java.resize(at + 1, air);
                 map.owned.resize(at + 1, false);
+                map.entity.resize(at + 1, false);
             }
             if exact.is_some() || map.to_java[at] == air {
                 map.to_java[at] = java;
             }
             map.owned[at] = owned;
+            map.entity[at] = entity;
         }
         let _ = STATES.set(map);
     }
