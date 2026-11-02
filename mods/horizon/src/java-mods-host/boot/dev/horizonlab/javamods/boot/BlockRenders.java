@@ -146,57 +146,7 @@ public final class BlockRenders {
 
     static void dirty(BlockPos pos) {
         // What a client ticker run while sampling changes is part of the motion, not a change to record again.
-        if (!sampling) DIRTY.add(pos.asLong());
-    }
-
-    /** What a client of a block entity would have now, made on the server thread: its block state and update tag. */
-    record Snapshot(BlockState state, net.minecraft.nbt.CompoundTag update, int hash) {}
-
-    private static final it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<Snapshot> SNAPSHOTS = new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
-
-    static Snapshot snapshot(long at) {
-        return SNAPSHOTS.get(at);
-    }
-
-    /** On the server thread: a renderer's block entity as a client sees it; a change from the last snapshot records it again. */
-    static void changed(net.minecraft.server.level.ServerLevel level, BlockEntity entity) {
-        if (!has(entity.getBlockState())) return;
-        long at = entity.getBlockPos().asLong();
-        try {
-            var update = entity.getUpdateTag(level.registryAccess());
-            int hash = (update.hashCode() * 31 + entity.getBlockState().hashCode()) * 31 + ClientBridge.fieldsHash(entity);
-            var last = SNAPSHOTS.put(at, new Snapshot(entity.getBlockState(), update, hash));
-            if (last == null || last.hash() != hash) dirty(entity.getBlockPos());
-        } catch (Throwable t) {
-            // A block entity that can't say what a client sees keeps its last snapshot.
-        }
-    }
-
-    private static final it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap MARKED = new it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap();
-
-    /** `setChanged` on the server thread: a snapshot at most every ten ticks a position. */
-    static void marked(net.minecraft.server.level.ServerLevel level, BlockEntity entity) {
-        long at = entity.getBlockPos().asLong();
-        long now = level.getGameTime();
-        long last = MARKED.getOrDefault(at, Long.MIN_VALUE / 2);
-        if (now - last < 10 && now >= last) return;
-        MARKED.put(at, now);
-        changed(level, entity);
-    }
-
-    private static final java.util.Map<net.minecraft.server.level.ServerLevel, Long> POLLED = new java.util.WeakHashMap<>();
-
-    /** On the server thread, once a second a level: every snapshotted block entity is looked at again, as some change without saying so. */
-    static void poll(net.minecraft.server.level.ServerLevel level) {
-        long now = level.getGameTime();
-        Long last = POLLED.get(level);
-        if (last != null && now - last < 20 && now >= last) return;
-        POLLED.put(level, now);
-        var held = BlockEntities.held(level);
-        for (long at : SNAPSHOTS.keySet().toLongArray()) {
-            var entity = held.get(at);
-            if (entity != null && !entity.isRemoved()) changed(level, entity);
-        }
+        if (!sampling && DIRTY.add(pos.asLong())) Clients.changes.incrementAndGet();
     }
 
     static int pending() {
@@ -205,8 +155,6 @@ public final class BlockRenders {
 
     static void forget() {
         DIRTY.clear();
-        SNAPSHOTS.clear();
-        MARKED.clear();
     }
 
     // --- Recording
@@ -882,7 +830,6 @@ public final class BlockRenders {
         List<List<Draw>> samples = null;
         if (renderer != null) {
             try {
-                ClientBridge.refresh(level, entity);
                 samples = samples(level, entity, renderer);
             } catch (Throwable t) {
                 System.err.println("Horizon: the block entity renderer at " + BlockPos.of(at) + " failed: " + t);

@@ -384,16 +384,12 @@ pub(in crate::game) mod live {
             self.java_client_collect(open);
             let (joined, seen, models, states, font) =
                 CLIENT.with_borrow(|c| (c.joined, c.pending, c.models, c.states, c.font));
-            // Recorded renderers are checked against the server once a second.
-            let poll =
-                self.world.game_time % 20 == 0 && !horizon_client::dynamic_renders::is_empty();
             if java_client_busy()
                 || (joined
                     && !open
                     && pending == seen
                     && models == 0
                     && font >= 0x10000
-                    && !poll
                     && !super::super::java_models::java_items_queued())
             {
                 return;

@@ -32,6 +32,20 @@ abstract class ClientLevelMixin extends Level {
         ClientBridge.redraw(current, pos);
     }
 
+    /** The client's own record of blocks takes what the client itself sets. */
+    @Override
+    public boolean setBlock(BlockPos pos, BlockState state, int flags, int limit) {
+        ClientBridge.setBlock(pos, state);
+        return true;
+    }
+
+    /** A server's block update: vanilla's `super.setBlock` would reach the server's chunk views, so the client's record takes it here. */
+    @org.spongepowered.asm.mixin.injection.Inject(method = "setServerVerifiedBlockState", at = @org.spongepowered.asm.mixin.injection.At("HEAD"), cancellable = true)
+    private void horizon$serverState(BlockPos pos, BlockState state, int flags, org.spongepowered.asm.mixin.injection.callback.CallbackInfo info) {
+        ClientBridge.setBlock(pos, state);
+        info.cancel();
+    }
+
     @Override
     public BlockEntity getBlockEntity(BlockPos pos) {
         return ClientBridge.blockEntity((ClientLevel) (Object) this, pos);

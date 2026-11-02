@@ -67,32 +67,47 @@ public final class Clients {
         return out;
     }
 
-    /** `ChunkHolder.blockChanged`: a block entity's update packet goes to the windows' Java clients. */
-    public static void blockChanged(net.minecraft.server.level.ServerLevel level, net.minecraft.core.BlockPos pos) {
-        var entity = BlockEntities.held(level).get(pos.asLong());
-        if (entity == null || entity.isRemoved()) return;
-        changed.accept(level, entity);
-        var packet = entity.getUpdatePacket();
-        if (packet == null) return;
+    private static final java.util.Map<net.minecraft.server.level.ServerLevel, it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet> CHANGED = new java.util.IdentityHashMap<>();
+
+    /** `ChunkHolder.blockChanged`: the position is sent at the level's next `broadcastChanges`. */
+    public static synchronized void blockChanged(net.minecraft.server.level.ServerLevel level, net.minecraft.core.BlockPos pos) {
+        CHANGED.computeIfAbsent(level, l -> new it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet()).add(pos.asLong());
+    }
+
+    /** `ChunkHolder.broadcastChanges`, as the level's chunk source ticks: each changed block's state, then its block entity's update packet. */
+    static void broadcastChanges(net.minecraft.server.level.ServerLevel level) {
+        it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet changed;
+        synchronized (Clients.class) {
+            changed = CHANGED.remove(level);
+        }
+        if (changed == null || level.players().isEmpty()) return;
+        for (long at : changed) {
+            var pos = net.minecraft.core.BlockPos.of(at);
+            var state = level.getBlockState(pos);
+            send(level, new net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket(pos, state));
+            if (!state.hasBlockEntity()) continue;
+            var entity = level.getBlockEntity(pos);
+            var packet = entity == null ? null : entity.getUpdatePacket();
+            if (packet != null) send(level, packet);
+        }
+    }
+
+    /** A block entity joined the level: its block and its update tag, as a chunk's arrival carries them (`ClientboundLevelChunkPacketData`). */
+    static void joined(net.minecraft.server.level.ServerLevel level, net.minecraft.world.level.block.entity.BlockEntity entity) {
+        if (level.players().isEmpty()) return;
+        send(level, new net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket(entity.getBlockPos(), entity.getBlockState()));
+        send(level, net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket.create(entity, net.minecraft.world.level.block.entity.BlockEntity::getUpdateTag));
+    }
+
+    private static void send(net.minecraft.server.level.ServerLevel level, Packet<?> packet) {
         for (var player : level.players()) toClient(player.getUUID(), packet);
     }
 
-    /** A block entity whose block's geometry its data decides joined the level: clients get its data, as a chunk's arrival gives it. */
-    static void joined(net.minecraft.server.level.ServerLevel level, net.minecraft.world.level.block.entity.BlockEntity entity) {
-        if (dynamic.test(entity.getBlockState())) blockChanged(level, entity.getBlockPos());
-    }
-
-    /** A held block entity marked itself changed on the server (energy, progress, active state); the client side may draw it anew. */
-    static java.util.function.BiConsumer<net.minecraft.server.level.ServerLevel, net.minecraft.world.level.block.entity.BlockEntity> changed = (level, entity) -> {};
-
-    /** A held block entity's `setChanged`, which some call every tick: looked at no more than twice a second. */
-    static java.util.function.BiConsumer<net.minecraft.server.level.ServerLevel, net.minecraft.world.level.block.entity.BlockEntity> marked = (level, entity) -> {};
-
-    /** Once a server tick per player's level: renderers' block entities are checked against what was last recorded. */
-    static java.util.function.Consumer<net.minecraft.server.level.ServerLevel> poll = level -> {};
-
-    /** Counts packets sent to clients, so a window can tell without the lock whether it has any to read. */
+    /** Counts packets sent to clients and geometry marked to record, so a window knows without the lock when it has work. */
     static int pending() {
-        return pending;
+        return pending + changes.get();
     }
+
+    /** Counts geometry and renderers marked to record again, which a window reads with the packets to know when to ask. */
+    static final java.util.concurrent.atomic.AtomicInteger changes = new java.util.concurrent.atomic.AtomicInteger();
 }

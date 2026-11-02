@@ -73,9 +73,6 @@ public final class ClientBridge {
     static void install() {
         GameBridge.client = ClientBridge::call;
         Clients.dynamic = state -> ClientModels.dynamic(state) || BlockRenders.has(state);
-        Clients.changed = BlockRenders::changed;
-        Clients.poll = BlockRenders::poll;
-        Clients.marked = BlockRenders::marked;
     }
 
     private static byte[] call(String op, byte[] input) {
@@ -183,6 +180,7 @@ public final class ClientBridge {
             if (Minecraft.getInstance().level != null) ChunkViews.forget(Minecraft.getInstance().level);
             dimension = dim;
             BLOCK_ENTITIES.clear();
+            STATES.clear();
             ClientLevel level = level(minecraft, dim);
             set(ClientPacketListener.class, listener, "level", level);
             LocalPlayer local = GameBridge.construct(LocalPlayer.class, Player.class.getConstructor(Level.class, GameProfile.class), level, listener.getLocalGameProfile());
@@ -220,43 +218,23 @@ public final class ClientBridge {
         set(net.minecraft.client.multiplayer.ClientChunkCache.class, chunks, "level", level);
         set(ClientLevel.class, level, "chunkSource", chunks);
         set(ClientLevel.class, level, "modelDataManager", new net.neoforged.neoforge.model.data.ModelDataManager(level));
+        set(ClientLevel.class, level, "blockStatePredictionHandler", new net.minecraft.client.multiplayer.prediction.BlockStatePredictionHandler());
         Inits.run(level, listener, data, key, holder);
         return level;
     }
 
-    /** A block entity of the window's level: a client copy of the server's, made from its update tag as a chunk's arrival would. */
+    private static final it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<BlockState> STATES = new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
+
+    /** A block entity of the window's level, as `LevelChunk.getBlockEntity` makes one for a block the server said has one; its data comes with the server's packet. */
     public static BlockEntity blockEntity(ClientLevel level, BlockPos pos) {
         long at = pos.asLong();
         var held = BLOCK_ENTITIES.get(at);
-        ServerLevel server = GameBridge.levelOrNull(level.dimension().identifier().toString());
-        BlockEntity source = server == null ? null : BlockEntities.held(server).get(at);
-        boolean gone = source == null || source.isRemoved();
-        if (held != null && !held.isRemoved() && !gone && held.getType() == source.getType()) {
-            // The server's block may change state under the same block entity (active, facing): the copy follows it.
-            if (held.getBlockState() != source.getBlockState()) held.setBlockState(source.getBlockState());
-            return held;
-        }
-        if (held != null) {
-            BLOCK_ENTITIES.remove(at);
-            shapes++;
-            ClientModels.dirty(pos);
-            BlockRenders.dirty(pos);
-        }
-        if (gone) return null;
-        BlockState state = source.getBlockState();
-        if (!(state.getBlock() instanceof EntityBlock block)) return null;
+        if (held != null && !held.isRemoved()) return held;
+        BlockState state = STATES.get(at);
+        if (state == null || !state.hasBlockEntity() || !(state.getBlock() instanceof EntityBlock block)) return null;
         BlockEntity copy = block.newBlockEntity(pos, state);
         if (copy == null) return null;
         copy.setLevel(level);
-        var registries = level.registryAccess();
-        var snapshot = BlockRenders.snapshot(at);
-        net.minecraft.nbt.CompoundTag update;
-        try {
-            update = snapshot != null ? snapshot.update() : source.getUpdateTag(registries);
-        } catch (Throwable t) {
-            update = new net.minecraft.nbt.CompoundTag();
-        }
-        copy.handleUpdateTag(TagValueInput.create(ProblemReporter.DISCARDING, registries, update));
         copy.clearRemoved();
         BLOCK_ENTITIES.put(at, copy);
         shapes++;
@@ -266,55 +244,23 @@ public final class ClientBridge {
         return copy;
     }
 
-    /** The client copy as a client would have it now: the server thread's last snapshot of it, and the mod's own plain values. */
-    static void refresh(ClientLevel level, BlockEntity copy) {
-        ServerLevel server = GameBridge.levelOrNull(level.dimension().identifier().toString());
-        BlockEntity source = server == null ? null : BlockEntities.held(server).get(copy.getBlockPos().asLong());
-        if (source == null || source.isRemoved() || source.getType() != copy.getType()) return;
-        var snapshot = BlockRenders.snapshot(copy.getBlockPos().asLong());
-        if (snapshot != null) {
-            if (copy.getBlockState() != snapshot.state()) copy.setBlockState(snapshot.state());
-            copy.handleUpdateTag(TagValueInput.create(ProblemReporter.DISCARDING, level.registryAccess(), snapshot.update()));
-        }
-        mirror(source, copy);
-    }
-
-    /** A hash of the mod's own plain values, which change what a renderer draws without changing an update tag. */
-    static int fieldsHash(BlockEntity entity) {
-        int hash = 1;
-        for (Class<?> c = entity.getClass(); c != null && c != BlockEntity.class; c = c.getSuperclass()) {
-            String name = c.getName();
-            if (name.startsWith("net.minecraft.") || name.startsWith("net.neoforged.")) continue;
-            for (var field : c.getDeclaredFields()) {
-                int modifiers = field.getModifiers();
-                if (java.lang.reflect.Modifier.isStatic(modifiers) || java.lang.reflect.Modifier.isFinal(modifiers) || !field.getType().isPrimitive()) continue;
-                try {
-                    field.setAccessible(true);
-                    hash = hash * 31 + java.util.Objects.hashCode(field.get(entity));
-                } catch (ReflectiveOperationException | RuntimeException e) {
-                    // A field this JVM won't open counts for nothing.
-                }
+    /** `LevelChunk.setBlockState` on the client, as a server's block update applies: a block entity of the same type stays with the new state, another is removed. */
+    public static void setBlock(BlockPos pos, BlockState state) {
+        long at = pos.asLong();
+        if (state.isAir()) STATES.remove(at);
+        else STATES.put(at, state);
+        var held = BLOCK_ENTITIES.get(at);
+        if (held != null) {
+            if (state.hasBlockEntity() && held.getType().isValid(state)) {
+                held.setBlockState(state);
+            } else {
+                held.setRemoved();
+                BLOCK_ENTITIES.remove(at);
             }
         }
-        return hash;
-    }
-
-    /** The mod's own plain values (an active flag, a speed, a progress) as the server holds them, which a real client gets by packets this one never sees. */
-    private static void mirror(BlockEntity source, BlockEntity copy) {
-        for (Class<?> c = source.getClass(); c != null && c != BlockEntity.class; c = c.getSuperclass()) {
-            String name = c.getName();
-            if (name.startsWith("net.minecraft.") || name.startsWith("net.neoforged.")) continue;
-            for (var field : c.getDeclaredFields()) {
-                int modifiers = field.getModifiers();
-                if (java.lang.reflect.Modifier.isStatic(modifiers) || java.lang.reflect.Modifier.isFinal(modifiers) || !field.getType().isPrimitive()) continue;
-                try {
-                    field.setAccessible(true);
-                    field.set(copy, field.get(source));
-                } catch (ReflectiveOperationException | RuntimeException e) {
-                    // A field this JVM won't open stays the client's.
-                }
-            }
-        }
+        shapes++;
+        ClientModels.dirty(pos);
+        BlockRenders.dirty(pos);
     }
 
     /** A block of the window's level changed on the client side: its geometry is baked again if its data decides it. */
@@ -323,10 +269,9 @@ public final class ClientBridge {
         if (BlockRenders.has(state)) BlockRenders.dirty(pos);
     }
 
-    /** The state of a block the window's level has a copy of; air elsewhere, until the client level reads Horizon's own world. */
+    /** The state the server last sent for a block; air for one it never sent. */
     public static BlockState blockState(ClientLevel level, BlockPos pos) {
-        var entity = blockEntity(level, pos);
-        return entity != null ? entity.getBlockState() : net.minecraft.world.level.block.Blocks.AIR.defaultBlockState();
+        return STATES.getOrDefault(pos.asLong(), net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
     }
 
     @SuppressWarnings("unchecked")
@@ -509,6 +454,7 @@ public final class ClientBridge {
         set(Minecraft.class, minecraft, "player", null);
         set(Minecraft.class, minecraft, "level", null);
         BLOCK_ENTITIES.clear();
+        STATES.clear();
         ClientModels.forget();
         BlockRenders.forget();
         if (player != null) Clients.leave(player);

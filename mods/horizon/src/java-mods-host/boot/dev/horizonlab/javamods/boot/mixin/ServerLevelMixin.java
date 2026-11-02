@@ -77,7 +77,7 @@ abstract class ServerLevelMixin extends Level {
         result.setReturnValue(horizon$entities);
     }
 
-    /** `ServerChunkCache.blockChanged` never runs, as Horizon binds `sendBlockUpdated` to a no-op; this tells clients of a block entity's change. */
+    /** `ServerLevel.sendBlockUpdated`'s `ServerChunkCache.blockChanged`, which Horizon's binding of the method skips. */
     @Inject(method = "sendBlockUpdated", at = @At("HEAD"))
     private void horizon$blockUpdated(BlockPos pos, BlockState old, BlockState current, int flags, CallbackInfo info) {
         Clients.blockChanged((ServerLevel) (Object) this, pos);

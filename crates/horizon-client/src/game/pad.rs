@@ -102,7 +102,12 @@ impl Game<'_> {
             }
             return;
         }
-        let hardware = self.pad.read();
+        // An offscreen game has no window to focus: the desk's controllers are someone else's.
+        let hardware = if self.options.offscreen {
+            PadState::default()
+        } else {
+            self.pad.read()
+        };
         self.ui.options.pad_style = self.settings.controller.glyphs.resolve(self.pad.style);
         let state = hardware.merge(&self.pad.injected);
         self.pad.virtual_input = self.pad.injected != PadState::default();

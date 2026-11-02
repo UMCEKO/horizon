@@ -138,7 +138,6 @@ public final class BlockEntities {
     /** `Level.blockEntityChanged`: a mod's saves when the world does, a vanilla copy goes back after this call. */
     public static void changed(ServerLevel level, BlockPos pos) {
         BlockEntity entity = held(level).get(pos.asLong());
-        if (entity != null && !entity.isRemoved()) Clients.marked.accept(level, entity);
         if (entity != null && COPIES.contains(entity) && !CHANGED_COPIES.contains(entity)) CHANGED_COPIES.add(entity);
     }
 
@@ -207,6 +206,7 @@ public final class BlockEntities {
 
     /** `LevelChunk.setBlockState`'s steps after the storage write, in its order, for a mod's block. */
     static void blockChanged(ServerLevel level, BlockPos pos, BlockState old, BlockState now) {
+        Clients.blockChanged(level, pos);
         if (old.getBlock() != now.getBlock()) {
             BlockEntity entity = held(level).get(pos.asLong());
             if (entity != null) {

@@ -144,7 +144,7 @@ public final class ClientModels {
 
     /** The block at `pos` changed in the window's level: its geometry is baked again on the next take. */
     static void dirty(BlockPos pos) {
-        DIRTY.add(pos.asLong());
+        if (DIRTY.add(pos.asLong())) Clients.changes.incrementAndGet();
     }
 
     static int pending() {

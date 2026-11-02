@@ -215,6 +215,8 @@ final class ServerView {
     @SuppressWarnings("unchecked")
     static void detach(MinecraftServer server, ServerPlayer player) throws ReflectiveOperationException {
         ((List<ServerPlayer>) get(ServerLevel.class, player.level(), "players")).remove(player);
+        // `ChunkMap.updatePlayerStatus(player, false)`: no longer among the players its chunks are tracked by.
+        ((net.minecraft.server.level.PlayerMap) get(ChunkMap.class, player.level().getChunkSource().chunkMap, "playerMap")).removePlayer(player);
         PlayerList list = server.getPlayerList();
         ((List<ServerPlayer>) get(PlayerList.class, list, "players")).remove(player);
         ((Map<UUID, ServerPlayer>) get(PlayerList.class, list, "playersByUUID")).remove(player.getUUID());
@@ -242,6 +244,8 @@ final class ServerView {
     static void attach(MinecraftServer server, ServerPlayer player) throws ReflectiveOperationException {
         set(ServerPlayer.class, player, "server", server);
         ((List<ServerPlayer>) get(ServerLevel.class, player.level(), "players")).add(player);
+        // `ChunkMap.updatePlayerStatus(player, true)`: the level's chunks are tracked by this player, as mods ask before sending.
+        ((net.minecraft.server.level.PlayerMap) get(ChunkMap.class, player.level().getChunkSource().chunkMap, "playerMap")).addPlayer(player, false);
         var connection = GameBridge.construct(ServerGamePacketListenerImpl.class, Object.class.getDeclaredConstructor());
         set(ServerGamePacketListenerImpl.class, connection, "player", player);
         var network = new Connection(PacketFlow.SERVERBOUND);

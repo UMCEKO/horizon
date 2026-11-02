@@ -42,6 +42,12 @@ abstract class ChunkCacheMixin {
         result.setReturnValue(ChunkViews.loaded(level, net.minecraft.world.level.ChunkPos.getX(chunk), net.minecraft.world.level.ChunkPos.getZ(chunk)));
     }
 
+    /** `ServerChunkCache.blockChanged`: no chunk holder here, so the position goes to the windows' clients' next broadcast. */
+    @Inject(method = "blockChanged", at = @At("HEAD"))
+    private void horizon$blockChanged(net.minecraft.core.BlockPos pos, CallbackInfo info) {
+        dev.horizonlab.javamods.boot.Clients.blockChanged(level, pos);
+    }
+
     @Inject(method = "sendToTrackingPlayers", at = @At("HEAD"), cancellable = true)
     private void horizon$tracking(Entity entity, Packet<?> packet, CallbackInfo info) {
         info.cancel();

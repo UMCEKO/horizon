@@ -24,7 +24,6 @@ final class Menus {
         }
         // `MinecraftServer.tickServer`: what payload handlers queued for the server thread runs now.
         player.level().getServer().packetProcessor().processQueuedPackets();
-        Clients.poll.accept(player.level());
         if (player.containerMenu == player.inventoryMenu) return;
         player.containerMenu.broadcastChanges();
         if (!player.containerMenu.stillValid(player)) {

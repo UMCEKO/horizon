@@ -533,6 +533,7 @@ public final class GameBridge {
         else {
             safely("LevelTickEvent.Pre", () -> EventHooks.fireLevelTickPre(level, () -> true));
             BlockEntities.loadFresh();
+            safely("broadcasting block changes", () -> Clients.broadcastChanges(level));
         }
         return effects();
     }
