@@ -990,7 +990,11 @@ impl Mesher<'_> {
         let q = &face.quad;
         let tier = state.tier.max(hdr_tier("", q.light_emission));
         let shade_face = q.shade_direction_override.unwrap_or(q.facing);
-        let directional = lighting::cardinal(self.nether_shading, shade_face);
+        let directional = if q.shade {
+            lighting::cardinal(self.nether_shading, shade_face)
+        } else {
+            1.0
+        };
         // Grey level per vertex before tinting, and vanilla light coords.
         let (gray, coords) = if ao {
             let info = &self.tables.info;

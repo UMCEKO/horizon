@@ -135,6 +135,7 @@ mod tests {
                     tint_index: -1,
                     shade_direction_override: None,
                     light_emission: 0,
+                    shade: true,
                 },
             }],
         }
