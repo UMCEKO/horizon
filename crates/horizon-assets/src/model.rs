@@ -84,8 +84,87 @@ pub enum Loader {
         shade_quads: Option<bool>,
         mtl_override: Option<String>,
     },
+    /// `horizon:baked`: finished quads written by the pack importer, no elements.
+    Baked { quads: Vec<BakedQuadData> },
     /// A loader this decoder does not know: it adds no geometry.
     Unknown(String),
+}
+/// The render layer a baked quad asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BakedLayer {
+    Solid,
+    Cutout,
+    CutoutMipped,
+    Translucent,
+    Tripwire,
+}
+impl BakedLayer {
+    fn by_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "solid" => Self::Solid,
+            "cutout" => Self::Cutout,
+            "cutout_mipped" => Self::CutoutMipped,
+            "translucent" => Self::Translucent,
+            "tripwire" => Self::Tripwire,
+            _ => return None,
+        })
+    }
+}
+/// One `horizon:baked` quad: block-unit vertices `[x, y, z, u, v]` with sprite-relative uvs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BakedQuadData {
+    pub vertices: [[f32; 5]; 4],
+    pub sprite: String,
+    pub face: Direction,
+    pub cull: Option<Direction>,
+    pub tint: i32,
+    pub shade: bool,
+    pub emission: u8,
+    pub layer: BakedLayer,
+}
+impl BakedQuadData {
+    fn decode(raw: &RawValue) -> Result<Self> {
+        let obj = object(raw)?;
+        let vertices = array(required(&obj, "v")?)?;
+        let vertices: [[f32; 5]; 4] = vertices
+            .into_iter()
+            .map(vector::<5>)
+            .collect::<Result<Vec<_>>>()?
+            .try_into()
+            .map_err(|_| error("baked quad needs 4 vertices"))?;
+        let direction = |raw: &RawValue| {
+            Direction::by_name(&string(raw)?).ok_or_else(|| error("invalid baked direction"))
+        };
+        let optional = |key: &str| obj.get(key).filter(|raw| raw.get() != "null");
+        let emission = optional("emission")
+            .map(|r| integer(r))
+            .transpose()?
+            .unwrap_or(0);
+        if !(0..=15).contains(&emission) {
+            return Err(error("invalid light emission"));
+        }
+        Ok(Self {
+            vertices,
+            sprite: identifier(&string(required(&obj, "sprite")?)?)?,
+            face: direction(required(&obj, "face")?)?,
+            cull: optional("cull").map(|r| direction(r)).transpose()?,
+            tint: optional("tint")
+                .map(|r| integer(r))
+                .transpose()?
+                .unwrap_or(-1),
+            shade: optional("shade")
+                .map(|r| boolean(r))
+                .transpose()?
+                .unwrap_or(true),
+            emission: emission as u8,
+            layer: optional("layer")
+                .map(|raw| {
+                    BakedLayer::by_name(&string(raw)?).ok_or_else(|| error("invalid baked layer"))
+                })
+                .transpose()?
+                .unwrap_or(BakedLayer::Solid),
+        })
+    }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Element {
@@ -283,6 +362,16 @@ impl Loader {
                         .map(|name| identifier(&name))
                         .transpose()?,
                 })
+            }
+            "horizon:baked" => {
+                let quads = match obj.get("quads") {
+                    Some(raw) => array(raw)?
+                        .into_iter()
+                        .map(BakedQuadData::decode)
+                        .collect::<Result<Vec<_>>>()?,
+                    None => Vec::new(),
+                };
+                Ok(Self::Baked { quads })
             }
             _ => Ok(Self::Unknown(name)),
         }

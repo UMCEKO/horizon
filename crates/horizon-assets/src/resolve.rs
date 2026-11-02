@@ -40,6 +40,8 @@ pub enum ResolvedLoader {
         /// Objects the model chain's `visibility` hides.
         hidden: BTreeSet<String>,
     },
+    /// Finished quads from `horizon:baked`.
+    Baked(Arc<[BakedQuadData]>),
 }
 #[derive(Clone, Debug)]
 pub struct ResolvedCuboidModel {
@@ -253,9 +255,14 @@ impl ModelLibrary {
                     model: self.load_obj(label, model, mtl_override.as_deref()),
                     flip_v: *flip_v,
                     shade: shade_quads.unwrap_or(true),
-                    hidden: visibility.into_iter().filter(|(_, v)| !v).map(|(k, _)| k).collect(),
+                    hidden: visibility
+                        .into_iter()
+                        .filter(|(_, v)| !v)
+                        .map(|(k, _)| k)
+                        .collect(),
                 })
             }
+            Some(Loader::Baked { quads }) => Some(ResolvedLoader::Baked(quads.as_slice().into())),
             Some(Loader::Unknown(_)) | None => None,
         };
         let mut textures = BTreeMap::<String, Material>::new();
