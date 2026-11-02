@@ -223,6 +223,7 @@ pub(in crate::game) mod live {
             };
             let Some((profile, name)) = profile else {
                 host.request("client_leave", &[]);
+                horizon_client::dynamic_models::clear();
                 CLIENT.with_borrow_mut(|c| {
                     c.joined = false;
                     c.open = false;

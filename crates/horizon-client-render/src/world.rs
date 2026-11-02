@@ -278,6 +278,15 @@ impl World {
     /// Resident storage write; marks the touched sections (and neighbours on
     /// section borders) for remeshing and the surrounding chunks for relighting.
     /// Neighbour updates, drops and block entities belong to the gameplay layer.
+    /// Remeshes the section holding this block when its model changed without a block write.
+    pub fn mark_block_dirty(&mut self, x: i32, y: i32, z: i32) {
+        let Some(chunk) = self.chunks.get(&(x >> 4, z >> 4)) else {
+            return;
+        };
+        if let Some(sy) = chunk.section_index(y) {
+            self.dirty_sections.insert((x >> 4, sy as i32, z >> 4));
+        }
+    }
     pub fn set(&mut self, x: i32, y: i32, z: i32, state: BlockStateId) -> crate::Result<()> {
         let Some(chunk) = self.chunks.get_mut(&(x >> 4, z >> 4)) else {
             return Err("write outside resident chunks".into());

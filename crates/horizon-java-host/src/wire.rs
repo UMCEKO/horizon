@@ -39,6 +39,9 @@ impl<'a> In<'a> {
     pub fn int(&mut self) -> Option<i32> {
         self.take().map(i32::from_be_bytes)
     }
+    pub fn long(&mut self) -> Option<i64> {
+        self.take().map(i64::from_be_bytes)
+    }
     pub fn float(&mut self) -> Option<f32> {
         self.take().map(f32::from_be_bytes)
     }
@@ -70,12 +73,14 @@ mod tests {
     fn fields_round_trip_and_short_input_ends() {
         let mut out = Out::default();
         out.int(-5);
+        out.long(-1 << 40);
         out.float(1.5);
         out.double(-2.25);
         out.bool(true);
         out.text("minecraft:stone");
         let mut input = In(&out.0);
         assert_eq!(input.int(), Some(-5));
+        assert_eq!(input.long(), Some(-1 << 40));
         assert_eq!(input.float(), Some(1.5));
         assert_eq!(input.double(), Some(-2.25));
         assert_eq!(input.bool(), Some(true));

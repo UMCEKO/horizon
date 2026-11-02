@@ -11,6 +11,7 @@ use crate::{
     biome::Biomes,
     blocks::{BlockFacts, RenderShape},
     chunk::{Chunk, MIN_Y},
+    dynamic_models,
     models::catalog::BakedFace,
 };
 use horizon_core::{
@@ -268,6 +269,8 @@ fn visibility(pad: &Padded, info: &[Info]) -> u64 {
     }
     result
 }
+#[cfg(test)]
+mod dynamic_tests;
 #[cfg(test)]
 mod particle_tests;
 #[cfg(test)]
@@ -893,22 +896,32 @@ impl Mesher<'_> {
                         let nether = self.nether_shading;
                         fluid::tesselate(self.tables, nether, &pad, water, &mut out, [x, y, z]);
                     }
-                    if !state.model {
-                        continue;
-                    }
                     let world = BlockPos::new(center.x * 16 + x, base_y + y, center.z * 16 + z);
-                    if catalog
-                        .models_at(BlockStateId(id), world, &mut models)
-                        .is_err()
-                    {
-                        continue;
+                    // A mod's block entity baked this block's geometry (dynamic_models).
+                    let dynamic = if dynamic_models::is_dynamic(BlockStateId(id)) {
+                        dynamic_models::faces_at([world.x, world.y, world.z], self.render)
+                    } else {
+                        None
+                    };
+                    if dynamic.is_none() {
+                        if !state.model {
+                            continue;
+                        }
+                        if catalog
+                            .models_at(BlockStateId(id), world, &mut models)
+                            .is_err()
+                        {
+                            continue;
+                        }
                     }
                     // ModelBlockRenderer: the first part decides smooth lighting
                     // for all; light-emitting blocks are always lit flat.
-                    let Some(first) = models.first() else {
-                        continue;
+                    let smooth = match (&dynamic, models.first()) {
+                        (Some(_), _) => true,
+                        (None, Some(first)) => first.ambient_occlusion,
+                        (None, None) => continue,
                     };
-                    let ao = self.smooth_lighting && state.emission == 0 && first.ambient_occlusion;
+                    let ao = self.smooth_lighting && state.emission == 0 && smooth;
                     let origin = match offset(state, world.x, world.z) {
                         Some(o) => [
                             x as f32 + o[0] as f32,
@@ -935,8 +948,8 @@ impl Mesher<'_> {
                                 )
                                 .unwrap_or(true);
                     }
-                    for model in &models {
-                        for face in &model.faces {
+                    let mut draw = |faces: &[BakedFace]| {
+                        for face in faces {
                             if face.quad.cull.is_some_and(|d| !visible[d as usize]) {
                                 continue;
                             }
@@ -951,6 +964,10 @@ impl Mesher<'_> {
                                 state,
                             );
                         }
+                    };
+                    match &dynamic {
+                        Some(faces) => draw(faces),
+                        None => models.iter().for_each(|model| draw(&model.faces)),
                     }
                 }
             }

@@ -24,6 +24,7 @@ pub mod containers;
 pub mod crash;
 pub mod datapack;
 pub mod dynamic_light;
+pub mod dynamic_models;
 pub mod effects;
 pub mod environment;
 pub mod extras;

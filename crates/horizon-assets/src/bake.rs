@@ -247,6 +247,10 @@ fn bake_into(
     }
     Ok(())
 }
+/// A baked quad as the mesher draws it, with no blockstate transform.
+pub fn baked_model_quad(quad: &BakedQuadData) -> ModelQuad {
+    baked_quad(quad, BlockModelTransform::new([0; 3], false))
+}
 /// A `horizon:baked` quad is final geometry in block units; the blockstate transform moves it whole.
 fn baked_quad(quad: &BakedQuadData, transform: BlockModelTransform) -> ModelQuad {
     ModelQuad {

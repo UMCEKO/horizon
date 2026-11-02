@@ -128,6 +128,8 @@ mod item_particles;
 mod java_bridges;
 mod java_hooks;
 #[cfg(feature = "java-mods")]
+mod java_models;
+#[cfg(feature = "java-mods")]
 mod java_mods;
 mod java_screens;
 #[cfg(feature = "java-mods")]
