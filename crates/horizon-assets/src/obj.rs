@@ -13,6 +13,8 @@ pub struct ObjVertex {
 pub struct ObjFace {
     /// Empty before any `usemtl`.
     pub material: String,
+    /// The `o` (else `g`) it belongs to, which a model's `visibility` names.
+    pub object: String,
     pub vertices: [ObjVertex; 4],
 }
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -39,6 +41,7 @@ pub fn parse_obj(text: &str) -> Result<ParsedObj, String> {
     let mut uvs: Vec<[f32; 2]> = Vec::new();
     let mut parsed = ParsedObj::default();
     let mut material = String::new();
+    let mut object = String::new();
     for (number, line) in text.lines().enumerate() {
         let mut words = line.split_whitespace();
         let Some(keyword) = words.next() else {
@@ -59,6 +62,7 @@ pub fn parse_obj(text: &str) -> Result<ParsedObj, String> {
             }
             "mtllib" => parsed.mtllib = words.next().map(str::to_owned),
             "usemtl" => material = words.next().unwrap_or("").to_owned(),
+            "o" | "g" => object = words.next().unwrap_or("").to_owned(),
             "f" => {
                 let mut corners = Vec::new();
                 for word in words {
@@ -82,6 +86,7 @@ pub fn parse_obj(text: &str) -> Result<ParsedObj, String> {
                 let mut push = |vertices: [ObjVertex; 4]| {
                     parsed.faces.push(ObjFace {
                         material: material.clone(),
+                        object: object.clone(),
                         vertices,
                     });
                 };

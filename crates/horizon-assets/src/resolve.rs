@@ -37,6 +37,8 @@ pub enum ResolvedLoader {
         model: Option<Arc<ObjModel>>,
         flip_v: bool,
         shade: bool,
+        /// Objects the model chain's `visibility` hides.
+        hidden: BTreeSet<String>,
     },
 }
 #[derive(Clone, Debug)]
@@ -105,6 +107,7 @@ impl ModelLibrary {
             )]),
             elements: None,
             display: None,
+            visibility: BTreeMap::new(),
         }
     }
     pub fn new(models: BTreeMap<String, CuboidModel>) -> Result<Self> {
@@ -241,11 +244,18 @@ impl ModelLibrary {
                 flip_v,
                 shade_quads,
                 mtl_override,
-            }) => Some(ResolvedLoader::Obj {
-                model: self.load_obj(label, model, mtl_override.as_deref()),
-                flip_v: *flip_v,
-                shade: shade_quads.unwrap_or(true),
-            }),
+            }) => {
+                let mut visibility = BTreeMap::new();
+                for model in chain.iter().rev() {
+                    visibility.extend(model.visibility.iter().map(|(k, v)| (k.clone(), *v)));
+                }
+                Some(ResolvedLoader::Obj {
+                    model: self.load_obj(label, model, mtl_override.as_deref()),
+                    flip_v: *flip_v,
+                    shade: shade_quads.unwrap_or(true),
+                    hidden: visibility.into_iter().filter(|(_, v)| !v).map(|(k, _)| k).collect(),
+                })
+            }
             Some(Loader::Unknown(_)) | None => None,
         };
         let mut textures = BTreeMap::<String, Material>::new();
@@ -390,6 +400,7 @@ pub fn missing_model() -> CuboidModel {
                 }),
             ),
         ]),
+        visibility: BTreeMap::new(),
     }
 }
 

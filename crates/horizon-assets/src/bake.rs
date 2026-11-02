@@ -238,7 +238,8 @@ fn bake_into(
             model: Some(obj),
             flip_v,
             shade,
-        }) => bake_obj(model, obj, *flip_v, *shade, transform, output)?,
+            hidden,
+        }) => bake_obj(model, obj, *flip_v, *shade, hidden, transform, output)?,
         Some(ResolvedLoader::Obj { model: None, .. }) | None => {}
     }
     Ok(())
@@ -249,10 +250,11 @@ fn bake_obj(
     obj: &ObjModel,
     flip_v: bool,
     shade: bool,
+    hidden: &std::collections::BTreeSet<String>,
     transform: BlockModelTransform,
     output: &mut Vec<ModelQuad>,
 ) -> Result<()> {
-    for face in &obj.faces {
+    for face in obj.faces.iter().filter(|f| !hidden.contains(&f.object)) {
         let slot = match obj.materials.get(&face.material) {
             Some(MtlTexture::Sprite(sprite)) => {
                 output.push(obj_quad(

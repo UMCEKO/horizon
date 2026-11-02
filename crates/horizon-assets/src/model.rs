@@ -65,6 +65,8 @@ pub struct CuboidModel {
     pub textures: BTreeMap<String, TextureSlot>,
     pub elements: Option<Vec<Option<Element>>>,
     pub display: Option<ItemTransforms>,
+    /// NeoForge's `visibility`: an obj object or composite child name to shown; absent is shown.
+    pub visibility: BTreeMap<String, bool>,
 }
 /// A custom model loader's payload; a model inherits its parent's loader unless it names its own.
 #[derive(Clone, Debug, PartialEq)]
@@ -210,6 +212,12 @@ impl CuboidModel {
             .get("display")
             .map(|r| ItemTransforms::decode(r))
             .transpose()?;
+        let mut visibility = BTreeMap::new();
+        if let Some(raw) = obj.get("visibility") {
+            for (key, raw) in object(raw)? {
+                visibility.insert(key, boolean(raw)?);
+            }
+        }
         Ok(Self {
             parent,
             loader,
@@ -218,6 +226,7 @@ impl CuboidModel {
             textures,
             elements,
             display,
+            visibility,
         })
     }
 }
