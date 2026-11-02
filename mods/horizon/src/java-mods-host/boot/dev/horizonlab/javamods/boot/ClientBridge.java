@@ -83,6 +83,7 @@ public final class ClientBridge {
                 case "client_input" -> input(in);
                 case "client_font" -> font(in);
                 case "client_leave" -> leave();
+                case "client_models_probe" -> modelsProbe();
                 case "client_shape" -> shape(in);
                 default -> throw new IllegalArgumentException(op);
             };
@@ -391,6 +392,21 @@ public final class ClientBridge {
         out.writeBoolean(handled);
         bytes.write(status());
         return bytes.toByteArray();
+    }
+
+    /** Dev: bakes the code-built block models and reports how many states have quads. */
+    private static byte[] modelsProbe() throws Exception {
+        var models = ClientModels.baked();
+        int withQuads = 0;
+        var random = net.minecraft.util.RandomSource.create(42);
+        for (var model : models.values()) {
+            var parts = new java.util.ArrayList<net.minecraft.client.renderer.block.dispatch.BlockStateModelPart>();
+            model.collectParts(random, parts);
+            if (!parts.isEmpty()) withQuads++;
+        }
+        String text = models.size() + " states, " + withQuads + " with parts";
+        System.err.println("Horizon: models probe " + text);
+        return text.getBytes(java.nio.charset.StandardCharsets.UTF_8);
     }
 
     /** The window left its world: no screen, no level, no player, until it joins another. */

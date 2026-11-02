@@ -81,6 +81,7 @@ public final class Boot {
                 case "nmt" -> nmt();
                 case "values_bench" -> ValuesBench.op(arg);
                 case "world" -> GameBridge.worldProbe();
+                case "models" -> new String(GameBridge.call("client_models_probe", new byte[0]), java.nio.charset.StandardCharsets.UTF_8);
                 case "use_probe" -> GameBridge.probe(arg, false);
                 case "use_probe_sneaking" -> GameBridge.probe(arg, true);
                 case "exit" -> { System.exit(0); yield ""; }

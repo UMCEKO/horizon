@@ -84,9 +84,9 @@ public final class Sprites {
         public void close() {}
     }
 
-    private static final Map<Identifier, TextureAtlas> TEXTURES = new HashMap<>();
-    private static final Map<Identifier, TextureAtlas> ATLASES = new HashMap<>();
-    private static final Map<Identifier, Map<Identifier, TextureAtlasSprite>> SPRITES = new HashMap<>();
+    private static final Map<Identifier, TextureAtlas> TEXTURES = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final Map<Identifier, TextureAtlas> ATLASES = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final Map<Identifier, Map<Identifier, TextureAtlasSprite>> SPRITES = new java.util.concurrent.ConcurrentHashMap<>();
     private static final Identifier MISSING = Identifier.withDefaultNamespace("missingno");
 
     /** Width and height from a PNG's header; 16 a side when the file isn't there. */
@@ -158,7 +158,13 @@ public final class Sprites {
     }
 
     public static TextureAtlasSprite sprite(Identifier atlas, Identifier id) {
-        return SPRITES.computeIfAbsent(atlas, a -> new HashMap<>()).computeIfAbsent(id, sprite -> {
+        return sprite(atlas, id, null);
+    }
+
+    /** As `sprite`, but as baked models see it: in the atlas texture `sheet`, as the baker checks, still spanning 0..1. */
+    public static TextureAtlasSprite sprite(Identifier atlas, Identifier id, Identifier sheet) {
+        Identifier key = sheet == null ? atlas : atlas.withSuffix("/baked");
+        return SPRITES.computeIfAbsent(key, a -> new java.util.concurrent.ConcurrentHashMap<>()).computeIfAbsent(id, sprite -> {
             try {
                 Identifier file = file(atlas, sprite);
                 int[] size = size(file);
@@ -178,14 +184,41 @@ public final class Sprites {
                 set(SpriteContents.class, contents, "width", size[0]);
                 set(SpriteContents.class, contents, "height", size[1]);
                 set(SpriteContents.class, contents, "additionalMetadata", metadata);
+                set(SpriteContents.class, contents, "transparency", transparency(file, size[0], size[1]));
                 var make = TextureAtlasSprite.class.getDeclaredConstructor(Identifier.class, SpriteContents.class, int.class, int.class, int.class, int.class, int.class);
                 make.setAccessible(true);
                 // One sprite a texture: its coordinates span the file, which Rust maps onto where its atlas put it.
-                return make.newInstance(file, contents, size[0], size[1], 0, 0, 0);
+                return make.newInstance(sheet != null ? sheet : file, contents, size[0], size[1], 0, 0, 0);
             } catch (Exception e) {
                 throw new IllegalStateException(e);
             }
         });
+    }
+
+    /** The sprite, or null when its file isn't in the packs, as a stitched atlas lacks it. */
+    public static TextureAtlasSprite spriteIfPresent(Identifier atlas, Identifier id, Identifier sheet) {
+        if (Minecraft.getInstance().getResourceManager().getResource(file(atlas, id)).isEmpty()) return null;
+        return sprite(atlas, id, sheet);
+    }
+
+    /** Whether the sprite's first frame has clear or part-clear texels, which picks its block layer. */
+    private static com.mojang.blaze3d.platform.Transparency transparency(Identifier file, int width, int height) {
+        var resource = Minecraft.getInstance().getResourceManager().getResource(file);
+        if (resource.isEmpty()) return com.mojang.blaze3d.platform.Transparency.NONE;
+        try (InputStream in = resource.get().open()) {
+            var image = javax.imageio.ImageIO.read(in);
+            boolean clear = false, partly = false;
+            for (int y = 0; y < Math.min(height, image.getHeight()); y++) {
+                for (int x = 0; x < Math.min(width, image.getWidth()); x++) {
+                    int alpha = image.getRGB(x, y) >>> 24;
+                    if (alpha == 0) clear = true;
+                    else if (alpha < 255) partly = true;
+                }
+            }
+            return com.mojang.blaze3d.platform.Transparency.of(clear, partly);
+        } catch (Exception e) {
+            return com.mojang.blaze3d.platform.Transparency.NONE;
+        }
     }
 
     public static TextureAtlasSprite missing(Identifier atlas) {
