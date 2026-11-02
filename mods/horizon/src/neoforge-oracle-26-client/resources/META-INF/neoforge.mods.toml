@@ -1,0 +1,11 @@
+# Dev-only: bakes the block models mods build in code, on a real client (tools/neoforge_oracle.py bake).
+# Built and run by tools/neoforge_oracle.py; never shipped.
+modLoader = "javafml"
+loaderVersion = "[4,)"
+license = "MIT"
+
+[[mods]]
+modId = "horizon_oracle_client"
+version = "1"
+displayName = "Horizon client oracle (dev only)"
+description = "Bakes each block state whose model a mod's code builds, once, and quits."

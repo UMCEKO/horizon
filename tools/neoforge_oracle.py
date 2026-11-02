@@ -7,6 +7,12 @@ installs a NeoForge server under .local/neoforge-oracle (once), builds the expor
 mods/horizon/src/neoforge-oracle, starts the server headless with the given mod jars, and writes every
 block, item, recipe and tag of the mods' namespaces (and the vanilla blocks, for templates) to
 FACTS.json. The jars are the user's own; nothing here is shipped or committed.
+
+    neoforge_oracle.py bake --jars DIR [--deps DIR] --out BAKED.json
+
+starts the NeoForge client (26.x only; it needs a display) with the mods and the client oracle in
+mods/horizon/src/neoforge-oracle-26-client, and writes every block state whose model a mod's code builds,
+baked once, for `carry` to turn into `horizon:baked` models.
 """
 import argparse
 import json
@@ -227,6 +233,42 @@ def export(args):
           f'({namespaces}); server ran {seconds:.1f} s')
 
 
+def bake(args):
+    if not NEOFORGE.startswith('26.'):
+        sys.exit('bake needs a 26.x client: set HORIZON_NEOFORGE')
+    import perf_bench
+    home = client()[0]
+    oracle = build(home, ROOT / 'mods/horizon/src/neoforge-oracle-26-client', 'horizon-oracle-client.jar', client_classpath(home))
+    work = LOCAL / 'bake'
+    shutil.rmtree(work, ignore_errors=True)
+    game = work / 'game'
+    (game / 'mods').mkdir(parents=True)
+    (game / 'config').mkdir()
+    # The early loading window needs a context this launch doesn't give it.
+    (game / 'config' / 'fml.toml').write_text('earlyWindowControl = false\n')
+    for jar in [oracle, *Path(args.jars).glob('*.jar'), *(Path(args.deps).glob('*.jar') if args.deps else [])]:
+        shutil.copy(jar, game / 'mods')
+    natives = work / 'natives'
+    natives.mkdir()
+    perf_bench.extract_natives(client()[3], natives)
+    assets = work / 'assets'
+    (assets / 'indexes').mkdir(parents=True)
+    out = Path(args.out).resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.unlink(missing_ok=True)
+    java = Path(os.environ['JAVA_HOME']) / 'bin/java' if os.environ.get('JAVA_HOME') else 'java'
+    _, command = client_command(java, '4G', game, natives, assets, jvm=[f'-Dhorizon.oracle.baked={out}'],
+                                game=['--width', '640', '--height', '360'])
+    began = time.time()
+    with (work / 'client.log').open('w') as log:
+        subprocess.run(command, cwd=game, env=dict(os.environ, ALSOFT_DRIVERS='null'), stdout=log, stderr=log, timeout=900)
+    if not out.exists():
+        tail = '\n'.join((work / 'client.log').read_text(errors='replace').splitlines()[-40:])
+        sys.exit(f'the client oracle wrote nothing; the end of {work / "client.log"}:\n{tail}')
+    baked = json.loads(out.read_text())['blocks']
+    print(f'{out}: {len(baked)} blocks, {sum(len(s) for s in baked.values())} states; client ran {time.time() - began:.1f} s')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -235,8 +277,12 @@ def main():
     e.add_argument('--deps', help='their required libraries (loaded, not exported)')
     e.add_argument('--namespaces', help='comma-separated; default: the jars\' mod ids')
     e.add_argument('--out', required=True)
+    b = sub.add_parser('bake', help='bake the block models the mods in --jars build in code (needs a display)')
+    b.add_argument('--jars', required=True, help='the mods to bake')
+    b.add_argument('--deps', help='their required libraries')
+    b.add_argument('--out', required=True)
     args = parser.parse_args()
-    {'export': export}[args.command](args)
+    {'export': export, 'bake': bake}[args.command](args)
 
 
 if __name__ == '__main__':
