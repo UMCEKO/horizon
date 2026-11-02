@@ -67,6 +67,8 @@ pub struct CuboidModel {
     pub display: Option<ItemTransforms>,
     /// NeoForge's `visibility`: an obj object or composite child name to shown; absent is shown.
     pub visibility: BTreeMap<String, bool>,
+    /// NeoForge's root `transform` of all this model's geometry.
+    pub root_transform: Option<crate::root_transform::RootTransform>,
 }
 /// A custom model loader's payload; a model inherits its parent's loader unless it names its own.
 #[derive(Clone, Debug, PartialEq)]
@@ -297,6 +299,11 @@ impl CuboidModel {
                 visibility.insert(key, boolean(raw)?);
             }
         }
+        let root_transform = obj
+            .get("transform")
+            .filter(|raw| raw.get() != "null")
+            .map(|raw| crate::root_transform::decode(raw))
+            .transpose()?;
         Ok(Self {
             parent,
             loader,
@@ -306,6 +313,7 @@ impl CuboidModel {
             elements,
             display,
             visibility,
+            root_transform,
         })
     }
 }

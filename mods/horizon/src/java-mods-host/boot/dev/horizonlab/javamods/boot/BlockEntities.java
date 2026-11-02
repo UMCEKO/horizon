@@ -138,7 +138,7 @@ public final class BlockEntities {
     /** `Level.blockEntityChanged`: a mod's saves when the world does, a vanilla copy goes back after this call. */
     public static void changed(ServerLevel level, BlockPos pos) {
         BlockEntity entity = held(level).get(pos.asLong());
-        if (entity != null && !entity.isRemoved()) Clients.changed.accept(level, entity);
+        if (entity != null && !entity.isRemoved()) Clients.marked.accept(level, entity);
         if (entity != null && COPIES.contains(entity) && !CHANGED_COPIES.contains(entity)) CHANGED_COPIES.add(entity);
     }
 

@@ -149,38 +149,53 @@ public final class BlockRenders {
         if (!sampling) DIRTY.add(pos.asLong());
     }
 
-    private static final it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap RECORDED = new it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap();
+    /** What a client of a block entity would have now, made on the server thread: its block state and update tag. */
+    record Snapshot(BlockState state, net.minecraft.nbt.CompoundTag update, int hash) {}
 
-    /** The server side changed a block entity a renderer draws: recorded again, at most once a second. */
+    private static final it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<Snapshot> SNAPSHOTS = new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
+
+    static Snapshot snapshot(long at) {
+        return SNAPSHOTS.get(at);
+    }
+
+    /** On the server thread: a renderer's block entity as a client sees it; a change from the last snapshot records it again. */
     static void changed(net.minecraft.server.level.ServerLevel level, BlockEntity entity) {
         if (!has(entity.getBlockState())) return;
         long at = entity.getBlockPos().asLong();
+        try {
+            var update = entity.getUpdateTag(level.registryAccess());
+            int hash = (update.hashCode() * 31 + entity.getBlockState().hashCode()) * 31 + ClientBridge.fieldsHash(entity);
+            var last = SNAPSHOTS.put(at, new Snapshot(entity.getBlockState(), update, hash));
+            if (last == null || last.hash() != hash) dirty(entity.getBlockPos());
+        } catch (Throwable t) {
+            // A block entity that can't say what a client sees keeps its last snapshot.
+        }
+    }
+
+    private static final it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap MARKED = new it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap();
+
+    /** `setChanged` on the server thread: a snapshot at most every ten ticks a position. */
+    static void marked(net.minecraft.server.level.ServerLevel level, BlockEntity entity) {
+        long at = entity.getBlockPos().asLong();
         long now = level.getGameTime();
-        if (now - RECORDED.getOrDefault(at, Long.MIN_VALUE / 2) < 20) return;
-        RECORDED.put(at, now);
-        dirty(entity.getBlockPos());
+        long last = MARKED.getOrDefault(at, Long.MIN_VALUE / 2);
+        if (now - last < 10 && now >= last) return;
+        MARKED.put(at, now);
+        changed(level, entity);
     }
 
-    private static final it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap SEEN = new it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap();
+    private static final java.util.Map<net.minecraft.server.level.ServerLevel, Long> POLLED = new java.util.WeakHashMap<>();
 
-    /** What a recording drew from on the server: its saved form and block state, which some mods change without saying so. */
-    private static int seen(ClientLevel level, BlockPos pos) {
-        var server = GameBridge.levelOrNull(level.dimension().identifier().toString());
-        var source = server == null ? null : BlockEntities.held(server).get(pos.asLong());
-        if (source == null || source.isRemoved()) return 0;
-        return source.saveWithFullMetadata(server.registryAccess()).hashCode() * 31 + source.getBlockState().hashCode();
-    }
-
-    /** Once a second: the recorded block entities whose server side changed are recorded again. */
-    private static long polled;
-
-    static void poll(ClientLevel level) {
-        long now = System.nanoTime();
-        if (level == null || SEEN.isEmpty() || now - polled < 1_000_000_000L) return;
-        polled = now;
-        for (var entry : SEEN.long2IntEntrySet()) {
-            var pos = BlockPos.of(entry.getLongKey());
-            if (seen(level, pos) != entry.getIntValue()) dirty(pos);
+    /** On the server thread, once a second a level: every snapshotted block entity is looked at again, as some change without saying so. */
+    static void poll(net.minecraft.server.level.ServerLevel level) {
+        long now = level.getGameTime();
+        Long last = POLLED.get(level);
+        if (last != null && now - last < 20 && now >= last) return;
+        POLLED.put(level, now);
+        var held = BlockEntities.held(level);
+        for (long at : SNAPSHOTS.keySet().toLongArray()) {
+            var entity = held.get(at);
+            if (entity != null && !entity.isRemoved()) changed(level, entity);
         }
     }
 
@@ -190,8 +205,8 @@ public final class BlockRenders {
 
     static void forget() {
         DIRTY.clear();
-        RECORDED.clear();
-        SEEN.clear();
+        SNAPSHOTS.clear();
+        MARKED.clear();
     }
 
     // --- Recording
@@ -873,8 +888,6 @@ public final class BlockRenders {
                 System.err.println("Horizon: the block entity renderer at " + BlockPos.of(at) + " failed: " + t);
             }
         }
-        if (renderer != null) SEEN.put(at, seen(level, BlockPos.of(at)));
-        else SEEN.remove(at);
         if (samples == null || samples.get(0).isEmpty()) {
             out.writeInt(-1);
             return;

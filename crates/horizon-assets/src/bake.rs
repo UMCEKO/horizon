@@ -203,6 +203,37 @@ fn bake_into(
     skip_flat: bool,
     output: &mut Vec<ModelQuad>,
 ) -> Result<()> {
+    let Some(root) = model.root_transform else {
+        return bake_geometry(model, transform, skip_flat, output);
+    };
+    // NeoForge's root transform moves the model's own geometry, before the blockstate turns it.
+    let mut local = Vec::new();
+    bake_geometry(
+        model,
+        BlockModelTransform::new([0; 3], false),
+        skip_flat,
+        &mut local,
+    )?;
+    let turn = |d: Direction| transform.direction(crate::root_transform::direction(&root, d));
+    output.extend(local.into_iter().map(|q| {
+        ModelQuad {
+            positions: q
+                .positions
+                .map(|p| transform.position(crate::root_transform::position(&root, p))),
+            facing: turn(q.facing),
+            cull: q.cull.map(turn),
+            shade_direction_override: q.shade_direction_override.map(turn),
+            ..q
+        }
+    }));
+    Ok(())
+}
+fn bake_geometry(
+    model: &ResolvedCuboidModel,
+    transform: BlockModelTransform,
+    skip_flat: bool,
+    output: &mut Vec<ModelQuad>,
+) -> Result<()> {
     for element in model.elements() {
         let element = element
             .as_ref()

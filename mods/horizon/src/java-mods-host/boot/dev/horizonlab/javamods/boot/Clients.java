@@ -71,6 +71,7 @@ public final class Clients {
     public static void blockChanged(net.minecraft.server.level.ServerLevel level, net.minecraft.core.BlockPos pos) {
         var entity = BlockEntities.held(level).get(pos.asLong());
         if (entity == null || entity.isRemoved()) return;
+        changed.accept(level, entity);
         var packet = entity.getUpdatePacket();
         if (packet == null) return;
         for (var player : level.players()) toClient(player.getUUID(), packet);
@@ -83,6 +84,12 @@ public final class Clients {
 
     /** A held block entity marked itself changed on the server (energy, progress, active state); the client side may draw it anew. */
     static java.util.function.BiConsumer<net.minecraft.server.level.ServerLevel, net.minecraft.world.level.block.entity.BlockEntity> changed = (level, entity) -> {};
+
+    /** A held block entity's `setChanged`, which some call every tick: looked at no more than twice a second. */
+    static java.util.function.BiConsumer<net.minecraft.server.level.ServerLevel, net.minecraft.world.level.block.entity.BlockEntity> marked = (level, entity) -> {};
+
+    /** Once a server tick per player's level: renderers' block entities are checked against what was last recorded. */
+    static java.util.function.Consumer<net.minecraft.server.level.ServerLevel> poll = level -> {};
 
     /** Counts packets sent to clients, so a window can tell without the lock whether it has any to read. */
     static int pending() {

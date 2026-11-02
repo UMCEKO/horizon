@@ -12,5 +12,6 @@ pub mod model;
 pub mod obj;
 pub mod palette;
 pub mod resolve;
+pub mod root_transform;
 
 pub use json::DecodeError;

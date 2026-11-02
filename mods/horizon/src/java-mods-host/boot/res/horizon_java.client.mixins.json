@@ -3,6 +3,6 @@
   "minVersion": "0.8",
   "package": "dev.horizonlab.javamods.boot.mixin",
   "compatibilityLevel": "JAVA_21",
-  "client": ["AtlasManagerMixin", "AtlasMixin", "ClientChunkCacheMixin", "ClientLevelMixin", "ClientSendMixin", "GuiItemMixin", "GuiScreenMixin", "ItemRenderMixin", "ItemStateMixin", "KeysMixin", "ModelManagerMixin", "ModelPartMixin", "PoseMixin", "ScreenNarrationMixin", "SoundsMixin", "SpriteContentsMixin", "TextureManagerMixin"],
+  "client": ["AtlasManagerMixin", "AtlasMixin", "ClientChunkCacheMixin", "ClientLevelMixin", "ClientSendMixin", "GuiItemMixin", "GuiScreenMixin", "ItemRenderMixin", "ItemStateMixin", "KeysMixin", "ModelDataMixin", "ModelManagerMixin", "ModelPartMixin", "PoseMixin", "ScreenNarrationMixin", "SoundsMixin", "SpriteContentsMixin", "TextureManagerMixin"],
   "injectors": {"defaultRequire": 1}
 }

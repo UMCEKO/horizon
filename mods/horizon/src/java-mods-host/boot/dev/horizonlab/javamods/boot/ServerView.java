@@ -247,6 +247,7 @@ final class ServerView {
         var network = new Connection(PacketFlow.SERVERBOUND);
         set(Connection.class, network, "channel", new EmbeddedChannel());
         set(ServerCommonPacketListenerImpl.class, connection, "connection", network);
+        set(ServerCommonPacketListenerImpl.class, connection, "server", server);
         player.connection = connection;
         net.neoforged.neoforge.network.registration.NetworkRegistry.configureMockConnection(network);
         // Configuration syncs the configs a client gets; the Java client shares this JVM's, so none are owed.

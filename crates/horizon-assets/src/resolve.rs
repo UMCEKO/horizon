@@ -54,6 +54,8 @@ pub struct ResolvedCuboidModel {
     geometry: Option<Arc<CuboidModel>>,
     generated: bool,
     loader: Option<ResolvedLoader>,
+    /// NeoForge's root `transform`, the closest in the parent chain.
+    pub root_transform: Option<crate::root_transform::RootTransform>,
 }
 impl ResolvedCuboidModel {
     /// Geometry from a custom loader, baked after the elements.
@@ -110,6 +112,7 @@ impl ModelLibrary {
             elements: None,
             display: None,
             visibility: BTreeMap::new(),
+            root_transform: None,
         }
     }
     pub fn new(models: BTreeMap<String, CuboidModel>) -> Result<Self> {
@@ -193,6 +196,7 @@ impl ModelLibrary {
             .find_map(|m| m.gui_light)
             .unwrap_or(GuiLight::Side);
         let geometry = chain.iter().find(|m| m.elements.is_some()).map(Arc::clone);
+        let root_transform = chain.iter().find_map(|m| m.root_transform);
         let generated = chain
             .iter()
             .zip(&names)
@@ -309,6 +313,7 @@ impl ModelLibrary {
             geometry,
             generated,
             loader,
+            root_transform,
         })
     }
     /// Parse an obj and its materials once; a failure warns once and yields no geometry.
@@ -408,6 +413,7 @@ pub fn missing_model() -> CuboidModel {
             ),
         ]),
         visibility: BTreeMap::new(),
+        root_transform: None,
     }
 }
 

@@ -74,6 +74,8 @@ public final class ClientBridge {
         GameBridge.client = ClientBridge::call;
         Clients.dynamic = state -> ClientModels.dynamic(state) || BlockRenders.has(state);
         Clients.changed = BlockRenders::changed;
+        Clients.poll = BlockRenders::poll;
+        Clients.marked = BlockRenders::marked;
     }
 
     private static byte[] call(String op, byte[] input) {
@@ -247,7 +249,14 @@ public final class ClientBridge {
         if (copy == null) return null;
         copy.setLevel(level);
         var registries = level.registryAccess();
-        copy.handleUpdateTag(TagValueInput.create(ProblemReporter.DISCARDING, registries, source.getUpdateTag(registries)));
+        var snapshot = BlockRenders.snapshot(at);
+        net.minecraft.nbt.CompoundTag update;
+        try {
+            update = snapshot != null ? snapshot.update() : source.getUpdateTag(registries);
+        } catch (Throwable t) {
+            update = new net.minecraft.nbt.CompoundTag();
+        }
+        copy.handleUpdateTag(TagValueInput.create(ProblemReporter.DISCARDING, registries, update));
         copy.clearRemoved();
         BLOCK_ENTITIES.put(at, copy);
         shapes++;
@@ -257,15 +266,37 @@ public final class ClientBridge {
         return copy;
     }
 
-    /** Loads the server's full saved form into the client copy, as some of what renderers read is never in an update tag. */
+    /** The client copy as a client would have it now: the server thread's last snapshot of it, and the mod's own plain values. */
     static void refresh(ClientLevel level, BlockEntity copy) {
         ServerLevel server = GameBridge.levelOrNull(level.dimension().identifier().toString());
         BlockEntity source = server == null ? null : BlockEntities.held(server).get(copy.getBlockPos().asLong());
         if (source == null || source.isRemoved() || source.getType() != copy.getType()) return;
-        if (copy.getBlockState() != source.getBlockState()) copy.setBlockState(source.getBlockState());
-        var registries = level.registryAccess();
-        copy.loadWithComponents(TagValueInput.create(ProblemReporter.DISCARDING, registries, source.saveWithFullMetadata(server.registryAccess())));
+        var snapshot = BlockRenders.snapshot(copy.getBlockPos().asLong());
+        if (snapshot != null) {
+            if (copy.getBlockState() != snapshot.state()) copy.setBlockState(snapshot.state());
+            copy.handleUpdateTag(TagValueInput.create(ProblemReporter.DISCARDING, level.registryAccess(), snapshot.update()));
+        }
         mirror(source, copy);
+    }
+
+    /** A hash of the mod's own plain values, which change what a renderer draws without changing an update tag. */
+    static int fieldsHash(BlockEntity entity) {
+        int hash = 1;
+        for (Class<?> c = entity.getClass(); c != null && c != BlockEntity.class; c = c.getSuperclass()) {
+            String name = c.getName();
+            if (name.startsWith("net.minecraft.") || name.startsWith("net.neoforged.")) continue;
+            for (var field : c.getDeclaredFields()) {
+                int modifiers = field.getModifiers();
+                if (java.lang.reflect.Modifier.isStatic(modifiers) || java.lang.reflect.Modifier.isFinal(modifiers) || !field.getType().isPrimitive()) continue;
+                try {
+                    field.setAccessible(true);
+                    hash = hash * 31 + java.util.Objects.hashCode(field.get(entity));
+                } catch (ReflectiveOperationException | RuntimeException e) {
+                    // A field this JVM won't open counts for nothing.
+                }
+            }
+        }
+        return hash;
     }
 
     /** The mod's own plain values (an active flag, a speed, a progress) as the server holds them, which a real client gets by packets this one never sees. */
@@ -330,7 +361,6 @@ public final class ClientBridge {
         // An empty answer: not joined yet, so the window asks again next tick.
         if (player == null) return new byte[0];
         receive();
-        BlockRenders.poll(Minecraft.getInstance().level);
         Screen screen = Minecraft.getInstance().gui.screen();
         if (screen != null) screen.tick();
         return status();
