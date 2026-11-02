@@ -97,6 +97,19 @@ pub struct RenderAssets {
     /// Each layer's `MipmapGenerator` settings.
     pub sprite_mips: Vec<crate::mipmap::Settings>,
 }
+/// Every whole file the block atlas lists, as vanilla stitches them, including ones only code-built models use.
+fn block_atlas_files(root: &Path) -> Vec<String> {
+    use crate::atlas_sources::{self, SpriteOrigin};
+    let Some(sources) = atlas_sources::atlases(root).remove("minecraft:blocks") else {
+        return Vec::new();
+    };
+    let textures = atlas_sources::list_textures(root);
+    atlas_sources::list(&sources, &textures)
+        .into_iter()
+        .filter(|(id, origin)| matches!(origin, SpriteOrigin::File(texture) if texture == id))
+        .map(|(id, _)| id)
+        .collect()
+}
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -231,6 +244,11 @@ impl RenderAssets {
         for stage in 0..10 {
             sprites.insert(root, &format!("minecraft:block/destroy_stage_{stage}"))?;
         }
+        if draws {
+            for name in block_atlas_files(root) {
+                sprites.insert(root, &name)?;
+            }
+        }
         sprites.save_disk_cache();
         if draws {
             sprites.finish();
@@ -260,6 +278,28 @@ impl RenderAssets {
 mod tests {
     use crate::items::ConsumeEffect;
     use horizon_world::loot::PackOverlay;
+
+    #[test]
+    fn the_block_atlas_lists_whole_files_of_every_source() {
+        let root = std::env::temp_dir().join(format!("horizon-block-atlas-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let write = |path: &str, text: &str| {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(
+            "assets/minecraft/atlases/blocks.json",
+            r#"{"sources":[{"type":"directory","source":"part","prefix":"part/"},
+                {"type":"single","resource":"demo:entity/ball","sprite":"demo:ball"}]}"#,
+        );
+        write("assets/demo/textures/part/cable/glass.png", "");
+        write("assets/demo/textures/entity/ball.png", "");
+        write("assets/demo/textures/other/skip.png", "");
+        let files = super::block_atlas_files(&root);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(files, ["demo:part/cable/glass"]);
+    }
 
     #[test]
     fn always_edible_and_consume_effects_loaded() {

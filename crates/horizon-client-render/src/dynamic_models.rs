@@ -1,5 +1,4 @@
-//! Geometry a mod's client code bakes from a block entity's data (cable connections, inserted cells),
-//! cached per position for the mesher; the Java side delivers it, nothing here runs Java.
+//! Geometry baked from a block entity's data (cable connections, inserted cells), cached per position.
 use crate::{assets::RenderAssets, models::catalog::BakedFace};
 use horizon_assets::{
     bake::baked_model_quad,
@@ -149,6 +148,9 @@ fn to_face(
     } else {
         format!("minecraft:{}", quad.sprite)
     };
+    if !layers.contains_key(&name) {
+        log::warn!("Horizon: a block entity's model uses {name}, which the block atlas lacks");
+    }
     let layer = layers
         .get(&name)
         .or_else(|| layers.get("minecraft:missingno"))
