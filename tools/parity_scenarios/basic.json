@@ -1,0 +1,14 @@
+[
+  {"name": "join"}, {"wait": 60},
+  {"name": "creative"}, {"command": "/gamemode creative"}, {"wait": 10},
+  {"name": "platform"}, {"command": "/fill ~-3 ~-1 ~-3 ~3 ~-1 ~3 minecraft:stone"}, {"wait": 20},
+  {"name": "give block"}, {"command": "/give @s mekanism:steel_casing 4"}, {"wait": 10},
+  {"name": "select block"}, {"slot": 0}, {"look": [0, 50]}, {"wait": 5},
+  {"name": "place block"}, {"use": 2}, {"wait": 20},
+  {"name": "break block"}, {"attack": 8}, {"wait": 20},
+  {"name": "open inventory"}, {"key": "key.inventory"}, {"wait": 20},
+  {"name": "close inventory"}, {"close": true}, {"wait": 10},
+  {"name": "give potion"}, {"command": "/give @s minecraft:potion 1"}, {"wait": 10},
+  {"name": "select potion"}, {"slot": 1}, {"wait": 5},
+  {"name": "drink"}, {"use": 40}, {"wait": 20}
+]

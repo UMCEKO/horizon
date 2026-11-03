@@ -2,7 +2,8 @@
 //! defaults, `key_<name>:key.keyboard.x` persistence, display names, and the
 //! translation of rebound physical keys back to the default keys the game
 //! logic listens for.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Arc, Mutex, RwLock};
 use winit::{event::MouseButton, keyboard::KeyCode};
 
 /// (name, default key, category) in Options.keyMappings order.
@@ -89,6 +90,222 @@ pub const CATEGORIES: [&str; 8] = [
     "spectator",
     "debug",
 ];
+
+/// NeoForge's `KeyModifier`, as `options.txt` saves it after the key.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Modifier {
+    #[default]
+    None,
+    Control,
+    ControlOrCommand,
+    Shift,
+    Alt,
+}
+impl Modifier {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::None => "NONE",
+            Self::Control => "CONTROL",
+            Self::ControlOrCommand => "CONTROL_OR_COMMAND",
+            Self::Shift => "SHIFT",
+            Self::Alt => "ALT",
+        }
+    }
+    /// `KeyModifier.valueFromString`; a name it doesn't know is no modifier.
+    pub fn parse(name: &str) -> Self {
+        [
+            Self::Control,
+            Self::ControlOrCommand,
+            Self::Shift,
+            Self::Alt,
+        ]
+        .into_iter()
+        .find(|m| m.name().eq_ignore_ascii_case(name))
+        .unwrap_or(Self::None)
+    }
+    /// The language key `getCombinedName` formats the key with.
+    pub const fn lang_key(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Control | Self::ControlOrCommand => Some("neoforge.controlsgui.control"),
+            Self::Shift => Some("neoforge.controlsgui.shift"),
+            Self::Alt => Some("neoforge.controlsgui.alt"),
+        }
+    }
+    /// `KeyModifier.getActiveModifier`: the first held of control, shift, alt.
+    pub fn active(control: bool, shift: bool, alt: bool) -> Self {
+        if control {
+            Self::Control
+        } else if shift {
+            Self::Shift
+        } else if alt {
+            Self::Alt
+        } else {
+            Self::None
+        }
+    }
+    /// `KeyModifier.isKeyCodeModifier`: a key that is itself a modifier is bound alone.
+    pub fn is_modifier_key(key: &str) -> bool {
+        matches!(
+            key,
+            "key.keyboard.left.control"
+                | "key.keyboard.right.control"
+                | "key.keyboard.left.shift"
+                | "key.keyboard.right.shift"
+                | "key.keyboard.left.alt"
+                | "key.keyboard.right.alt"
+        )
+    }
+}
+
+/// NeoForge's `KeyConflictContext`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Context {
+    Universal,
+    Gui,
+    InGame,
+}
+impl Context {
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "UNIVERSAL" => Self::Universal,
+            "GUI" => Self::Gui,
+            "IN_GAME" => Self::InGame,
+            _ => return None,
+        })
+    }
+    /// `IKeyConflictContext.conflicts`: universal meets every context, the others only themselves.
+    pub fn conflicts(self, other: Self) -> bool {
+        self == Self::Universal || other == Self::Universal || self == other
+    }
+}
+
+/// A key and the modifier held with it, saved as `key` or `key:MODIFIER`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Binding {
+    pub key: String,
+    pub modifier: Modifier,
+}
+impl Binding {
+    pub fn new(key: &str, modifier: Modifier) -> Self {
+        Self {
+            key: key.to_owned(),
+            modifier,
+        }
+    }
+    pub fn unbound() -> Self {
+        Self::new("key.keyboard.unknown", Modifier::None)
+    }
+    pub fn parse(text: &str) -> Self {
+        match text.split_once(':') {
+            Some((key, modifier)) => Self::new(key, Modifier::parse(modifier)),
+            None => Self::new(text, Modifier::None),
+        }
+    }
+    pub fn text(&self) -> String {
+        match self.modifier {
+            Modifier::None => self.key.clone(),
+            m => format!("{}:{}", self.key, m.name()),
+        }
+    }
+}
+
+/// A key mapping a Java mod registered, as the Java client's boot exports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModKey {
+    pub name: &'static str,
+    /// The category's identifier, `namespace:path`.
+    pub category: String,
+    pub default: Binding,
+    pub context: Context,
+}
+impl ModKey {
+    /// `Category.label`: `Identifier.toLanguageKey("key.category")`.
+    pub fn category_lang_key(&self) -> String {
+        category_lang_key(&self.category)
+    }
+}
+pub fn category_lang_key(id: &str) -> String {
+    let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
+    format!("key.category.{namespace}.{}", path.replace('/', "."))
+}
+
+/// What the boot exported: the mods' mappings in the order the client lists them, and the conflict context of each of vanilla's.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModKeys {
+    pub keys: Vec<ModKey>,
+    pub vanilla: HashMap<String, Context>,
+}
+
+fn intern(name: &str) -> &'static str {
+    static NAMES: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
+    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    let names = names.get_or_insert_with(HashSet::new);
+    if let Some(known) = names.get(name) {
+        return known;
+    }
+    let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
+    names.insert(leaked);
+    leaked
+}
+
+impl ModKeys {
+    /// The boot's key list: a line per mapping, `name`, `1` when vanilla's, category, default key, default modifier and conflict context, tab separated.
+    pub fn parse_export(text: &str) -> Result<Self, String> {
+        let mut out = Self::default();
+        for line in text.lines().filter(|l| !l.is_empty()) {
+            let fields: Vec<&str> = line.split('\t').collect();
+            let [name, vanilla, category, key, modifier, context] = fields[..] else {
+                return Err(format!(
+                    "a key mapping line has {} fields: {line}",
+                    fields.len()
+                ));
+            };
+            let context =
+                Context::parse(context).ok_or_else(|| format!("no conflict context {context}"))?;
+            if vanilla == "1" {
+                out.vanilla.insert(name.to_owned(), context);
+            } else {
+                out.keys.push(ModKey {
+                    name: intern(name),
+                    category: category.to_owned(),
+                    default: Binding::new(key, Modifier::parse(modifier)),
+                    context,
+                });
+            }
+        }
+        Ok(out)
+    }
+}
+
+static MOD_KEYS: RwLock<Option<Arc<ModKeys>>> = RwLock::new(None);
+
+thread_local! {
+    static LOCAL_MOD_KEYS: std::cell::RefCell<Option<Arc<ModKeys>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `f` with these as this thread's mod keys, so tests don't share the process's.
+pub fn with_thread_mod_keys<R>(keys: ModKeys, f: impl FnOnce() -> R) -> R {
+    let before = LOCAL_MOD_KEYS.with(|l| l.replace(Some(Arc::new(keys))));
+    let out = f();
+    LOCAL_MOD_KEYS.with(|l| *l.borrow_mut() = before);
+    out
+}
+
+/// The mods' mappings, once the boot exported them (none before, and none without a Java client).
+pub fn mod_keys() -> Arc<ModKeys> {
+    if let Some(local) = LOCAL_MOD_KEYS.with(|l| l.borrow().clone()) {
+        return local;
+    }
+    MOD_KEYS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .unwrap_or_default()
+}
+pub fn set_mod_keys(keys: ModKeys) {
+    *MOD_KEYS.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(keys));
+}
 
 /// InputConstants key names <-> winit physical keys.
 const KEYS: &[(&str, KeyCode)] = &[
@@ -308,6 +525,8 @@ pub fn learn_layout(event: &winit::event::KeyEvent) {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyBinds {
     keys: BTreeMap<&'static str, String>,
+    /// The mods' mappings by name, as loaded or rebound; one not here is on its default.
+    mods: BTreeMap<String, Binding>,
 }
 impl Default for KeyBinds {
     fn default() -> Self {
@@ -316,6 +535,7 @@ impl Default for KeyBinds {
                 .iter()
                 .map(|(n, d, _)| (*n, (*d).to_owned()))
                 .collect(),
+            mods: BTreeMap::new(),
         }
     }
 }
@@ -330,6 +550,24 @@ fn distinct<T: PartialEq>(keys: Vec<T>) -> Vec<T> {
         }
     }
     out
+}
+
+/// One mapping as `KeyMapping.same` compares them.
+struct Entry {
+    binding: Binding,
+    context: Context,
+    default: bool,
+}
+impl Entry {
+    fn same(&self, other: &Self) -> bool {
+        let in_game = |c: Context| c.conflicts(Context::InGame);
+        (self.context.conflicts(other.context) || other.context.conflicts(self.context))
+            && (self.binding.modifier == other.binding.modifier
+                || ((in_game(self.context) || in_game(other.context))
+                    && (self.binding.modifier == Modifier::None
+                        || other.binding.modifier == Modifier::None)))
+            && self.binding.key == other.binding.key
+    }
 }
 
 impl KeyBinds {
@@ -363,17 +601,78 @@ impl KeyBinds {
     }
     /// Mappings sharing `name`'s key (KeyMapping.same), for conflict marks.
     pub fn conflicts(&self, name: &str) -> Vec<&'static str> {
-        let key = self.get(name);
-        if key == "key.keyboard.unknown" {
+        let table = mod_keys();
+        let Some(me) = self.entry(name, &table) else {
+            return Vec::new();
+        };
+        if me.binding.key == "key.keyboard.unknown" {
             return Vec::new();
         }
-        MAPPINGS
-            .iter()
-            .filter(|(n, _, _)| {
-                *n != name && self.get(n) == key && (!self.is_default(n) || !self.is_default(name))
+        let vanilla = MAPPINGS.iter().map(|m| m.0);
+        let mods = table.keys.iter().map(|m| m.name);
+        vanilla
+            .chain(mods)
+            .filter(|n| *n != name)
+            .filter(|n| {
+                let Some(other) = self.entry(n, &table) else {
+                    return false;
+                };
+                me.same(&other) && (!other.default || !me.default)
             })
-            .map(|(n, _, _)| *n)
             .collect()
+    }
+    fn entry(&self, name: &str, table: &ModKeys) -> Option<Entry> {
+        if MAPPINGS.iter().any(|m| m.0 == name) {
+            return Some(Entry {
+                binding: Binding::new(self.get(name), Modifier::None),
+                context: table
+                    .vanilla
+                    .get(name)
+                    .copied()
+                    .unwrap_or(Context::Universal),
+                default: self.is_default(name),
+            });
+        }
+        let key = table.keys.iter().find(|k| k.name == name)?;
+        let binding = self.mods.get(name).unwrap_or(&key.default).clone();
+        Some(Entry {
+            default: binding == key.default,
+            binding,
+            context: key.context,
+        })
+    }
+    /// A mod's mapping now (its default until rebound); `None` for a name no mod registered.
+    pub fn mod_binding(&self, name: &str) -> Option<Binding> {
+        let table = mod_keys();
+        let key = table.keys.iter().find(|k| k.name == name)?;
+        Some(self.mods.get(name).unwrap_or(&key.default).clone())
+    }
+    pub fn is_mod_key(name: &str) -> bool {
+        mod_keys().keys.iter().any(|k| k.name == name)
+    }
+    pub fn is_default_mod(&self, name: &str) -> bool {
+        let table = mod_keys();
+        table
+            .keys
+            .iter()
+            .find(|k| k.name == name)
+            .is_none_or(|k| self.mods.get(name).is_none_or(|b| *b == k.default))
+    }
+    pub fn set_mod(&mut self, name: &str, binding: Binding) {
+        self.mods.insert(name.to_owned(), binding);
+    }
+    pub fn reset_mod(&mut self, name: &str) {
+        self.mods.remove(name);
+    }
+    /// What `options.txt` saves for the mods: every mapping the boot exported, and the ones a mod no longer registers are kept as they were.
+    pub fn saved_mods(&self) -> Vec<(String, Binding)> {
+        let table = mod_keys();
+        let mut out: BTreeMap<String, Binding> = self.mods.clone();
+        for key in &table.keys {
+            out.entry(key.name.to_owned())
+                .or_insert_with(|| key.default.clone());
+        }
+        out.into_iter().collect()
     }
     /// The mapping a physical input triggers (first in list order).
     pub fn mapping_for(&self, key: &str) -> Option<&'static str> {
@@ -561,6 +860,107 @@ mod tests {
         assert_eq!(k.translate_all(KeyCode::Digit2), [Ok(KeyCode::Digit2)]);
         assert_eq!(k.translate_all(KeyCode::Digit9), [Ok(KeyCode::Digit9)]);
         assert_eq!(k.translate_all(KeyCode::F3), [Ok(KeyCode::F3)]);
+    }
+    fn export() -> ModKeys {
+        ModKeys::parse_export(
+            "key.forward\t1\tminecraft:movement\tkey.keyboard.w\tNONE\tIN_GAME\n\
+             key.test_mod.mode\t0\ttest_mod:keys\tkey.keyboard.n\tNONE\tIN_GAME\n\
+             key.test_mod.menu\t0\ttest_mod:keys\tkey.keyboard.m\tCONTROL\tGUI\n\
+             key.test_mod.any\t0\ttest_mod:more/keys\tkey.keyboard.n\tNONE\tUNIVERSAL\n",
+        )
+        .unwrap()
+    }
+    #[test]
+    fn the_boot_export_decodes() {
+        let keys = export();
+        assert_eq!(keys.vanilla["key.forward"], Context::InGame);
+        let names: Vec<_> = keys.keys.iter().map(|k| k.name).collect();
+        assert_eq!(
+            names,
+            ["key.test_mod.mode", "key.test_mod.menu", "key.test_mod.any"]
+        );
+        assert_eq!(
+            keys.keys[1].default,
+            Binding::new("key.keyboard.m", Modifier::Control)
+        );
+        assert_eq!(keys.keys[1].context, Context::Gui);
+        assert_eq!(
+            keys.keys[0].category_lang_key(),
+            "key.category.test_mod.keys"
+        );
+        assert_eq!(
+            keys.keys[2].category_lang_key(),
+            "key.category.test_mod.more.keys"
+        );
+        assert!(ModKeys::parse_export("key.a\t0\tx:y\tkey.keyboard.a\tNONE").is_err());
+        assert!(ModKeys::parse_export("a\t0\tx:y\tkey.keyboard.a\tNONE\tSOMETIMES").is_err());
+    }
+    #[test]
+    fn a_binding_saves_as_key_and_modifier() {
+        let plain = Binding::parse("key.keyboard.k");
+        assert_eq!(plain, Binding::new("key.keyboard.k", Modifier::None));
+        assert_eq!(plain.text(), "key.keyboard.k");
+        let shifted = Binding::parse("key.keyboard.k:SHIFT");
+        assert_eq!(shifted.modifier, Modifier::Shift);
+        assert_eq!(shifted.text(), "key.keyboard.k:SHIFT");
+        assert_eq!(
+            Binding::parse("key.keyboard.k:bogus").modifier,
+            Modifier::None
+        );
+        assert_eq!(Modifier::active(true, true, false), Modifier::Control);
+        assert_eq!(Modifier::active(false, false, true), Modifier::Alt);
+    }
+    #[test]
+    fn mod_keys_rebind_reset_and_conflict_as_neoforge_says() {
+        with_thread_mod_keys(export(), mod_keys_rebind_body);
+    }
+    fn mod_keys_rebind_body() {
+        let mut k = KeyBinds::default();
+        assert!(KeyBinds::is_mod_key("key.test_mod.mode"));
+        assert!(k.is_default_mod("key.test_mod.mode"));
+        // Two defaults on one key aren't marked, as vanilla's aren't.
+        assert!(k.conflicts("key.test_mod.mode").is_empty());
+        k.set_mod(
+            "key.test_mod.mode",
+            Binding::new("key.keyboard.k", Modifier::None),
+        );
+        assert!(!k.is_default_mod("key.test_mod.mode"));
+        assert!(k.conflicts("key.test_mod.mode").is_empty());
+        k.set_mod(
+            "key.test_mod.any",
+            Binding::new("key.keyboard.k", Modifier::None),
+        );
+        assert_eq!(k.conflicts("key.test_mod.mode"), ["key.test_mod.any"]);
+        k.reset_mod("key.test_mod.any");
+        // A vanilla key and a mod's on W, both in game.
+        k.set_mod(
+            "key.test_mod.mode",
+            Binding::new("key.keyboard.w", Modifier::None),
+        );
+        assert_eq!(k.conflicts("key.test_mod.mode"), ["key.forward"]);
+        assert_eq!(k.conflicts("key.forward"), ["key.test_mod.mode"]);
+        // A modifier lets an in-game key share the key with an unmodified one only when the contexts meet in game.
+        k.set_mod(
+            "key.test_mod.mode",
+            Binding::new("key.keyboard.w", Modifier::Shift),
+        );
+        assert_eq!(k.conflicts("key.forward"), ["key.test_mod.mode"]);
+        // A gui key and an in-game key never meet.
+        k.set_mod(
+            "key.test_mod.menu",
+            Binding::new("key.keyboard.w", Modifier::None),
+        );
+        assert!(!k.conflicts("key.test_mod.menu").contains(&"key.forward"));
+        k.reset_mod("key.test_mod.menu");
+        assert!(k.is_default_mod("key.test_mod.menu"));
+        let saved = k.saved_mods();
+        assert_eq!(saved.len(), 3);
+        assert!(saved.contains(&(
+            "key.test_mod.mode".to_owned(),
+            Binding::new("key.keyboard.w", Modifier::Shift)
+        )));
+        k.reset_all();
+        assert!(k.is_default_mod("key.test_mod.mode"));
     }
     #[test]
     fn display_names() {

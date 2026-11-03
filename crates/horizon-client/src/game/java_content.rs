@@ -15,6 +15,7 @@ use std::{
 const GENERATION: u32 = 2;
 const DONE: &str = "done";
 const FACTS_HASH: &str = "facts.sha256";
+const KEYS: &str = "keys.tsv";
 
 static CARRIED: OnceLock<Vec<PathBuf>> = OnceLock::new();
 /// The mods' configs as this run's boot found them, before the mods could write theirs.
@@ -87,6 +88,7 @@ fn content(run: &Path, resources: &Path) -> Result<Vec<PathBuf>, String> {
             began.elapsed().as_secs_f64()
         );
         let mods = carried_in(&at);
+        load_keys(&at.join(KEYS));
         let (run, resources) = (run.to_owned(), resources.to_owned());
         let _ = std::thread::Builder::new()
             .name("Java mods' facts".into())
@@ -124,10 +126,12 @@ fn verify(run: &Path, resources: &Path, at: &Path, next: &Path) {
             return;
         }
     };
+    refresh_keys(&host.keys(), &at.join(KEYS));
     let cached = fs::read_to_string(at.join(FACTS_HASH)).unwrap_or_default();
     if live == cached.trim() {
         let _ = fs::remove_file(host.facts());
         let _ = fs::remove_file(host.baked());
+        let _ = fs::remove_file(host.keys());
         return;
     }
     let warning = "Horizon: WARNING: the Java mods registered other blocks or items than the cached content was built from; this run's tables don't match them, and the next launch uses rebuilt ones";
@@ -163,6 +167,13 @@ fn generate(
             "Horizon: the Java mods' boot baked no models, so blocks whose models their code builds have none"
         );
     }
+    if let Some(host) = horizon_java_host::get() {
+        let live = host.keys();
+        if live.exists() {
+            fs::copy(&live, partial.join(KEYS)).map_err(|e| format!("{}: {e}", live.display()))?;
+            load_keys(&partial.join(KEYS));
+        }
+    }
     fs::write(partial.join(FACTS_HASH), boot_hash(&kept, &kept_baked)?)
         .map_err(|e| e.to_string())?;
     let log = |line: String| log::info!("Horizon: Java mods' content: {line}");
@@ -179,6 +190,30 @@ fn generate(
     let _ = fs::remove_dir_all(dest);
     fs::rename(&partial, dest).map_err(|e| format!("{}: {e}", dest.display()))?;
     Ok(carried_in(dest))
+}
+
+/// The Controls screen's mod keys from a boot's key list.
+fn load_keys(path: &Path) {
+    let Ok(text) = fs::read_to_string(path) else {
+        return;
+    };
+    match horizon_client::keybinds::ModKeys::parse_export(&text) {
+        Ok(keys) => horizon_client::keybinds::set_mod_keys(keys),
+        Err(e) => log::error!("Horizon: the Java mods' key mappings are unreadable: {e}"),
+    }
+}
+
+/// After a cached launch, the live boot's key list replaces the cached one when they differ.
+fn refresh_keys(live: &Path, cached: &Path) {
+    let Ok(text) = fs::read_to_string(live) else {
+        return;
+    };
+    if fs::read_to_string(cached).is_ok_and(|c| c == text) {
+        return;
+    }
+    if fs::write(cached, &text).is_ok() {
+        load_keys(cached);
+    }
 }
 
 fn carried_in(at: &Path) -> Vec<PathBuf> {
@@ -383,6 +418,26 @@ mod tests {
             fingerprint(&run, &res).unwrap(),
             "the loader's classpath"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_live_boots_keys_replace_the_cached_ones() {
+        let dir = scratch("keys");
+        let (live, cached) = (dir.join("live.tsv"), dir.join("cached.tsv"));
+        let line =
+            |name: &str| format!("{name}\t0\ttest_mod:keys\tkey.keyboard.k\tNONE\tIN_GAME\n");
+        fs::write(&cached, line("key.test_mod.old")).unwrap();
+        fs::write(&live, line("key.test_mod.new")).unwrap();
+        refresh_keys(&live, &cached);
+        assert_eq!(
+            fs::read_to_string(&cached).unwrap(),
+            line("key.test_mod.new")
+        );
+        let keys = horizon_client::keybinds::mod_keys();
+        assert_eq!(keys.keys.len(), 1);
+        assert_eq!(keys.keys[0].name, "key.test_mod.new");
+        horizon_client::keybinds::set_mod_keys(Default::default());
         let _ = fs::remove_dir_all(&dir);
     }
 

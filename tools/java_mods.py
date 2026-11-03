@@ -360,6 +360,13 @@ def bridges(args):
         send('wait 3')
         send('key k up')
         send('wait 3')
+        # The window's rebind of a mod's key reaches its own KeyMapping: the mapping follows the new key.
+        send('options-set key_key.horizon_java_test.probe key.keyboard.j')
+        send('wait 3')
+        send('key j down')
+        send('wait 3')
+        send('key j up')
+        send('wait 3')
         # A real survival break with a tool whose speed and harvest are its mod's code: stone drops, a snow layer goes at once.
         send('command gamemode survival')
         send('give horizon_java_test:digger')
@@ -420,7 +427,7 @@ def bridges(args):
     session(args, drive)
     checks = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     shutil.copy(Path(args.scratch) / 'ctl.log', Path(args.scratch) / 'first-session.log')
-    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen') if (name, 'ok') not in checks)
+    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'mod_key_follows_the_rebind') if (name, 'ok') not in checks)
     session(args, again)
     second = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks += [(name + ' (second session)', result) for name, result in second]
@@ -1081,6 +1088,9 @@ def main():
     i.add_argument('--minecraft', default=str(lab.GAME), help='the Minecraft 26.3 install horizon-prepare read (its manifest.json)')
     i.add_argument('--host-jars', default=str(JARS), help='the built horizon-java-{host,boot,plugin}.jar')
     i.add_argument('--accept-eula', action='store_true', help='write eula.txt for the dedicated server: you agree to https://aka.ms/MinecraftEULA')
+    x = sub.add_parser('mixins', help='the static list of every mixin handler of an install\'s mods (see mod_parity.py)')
+    x.add_argument('--install', required=True)
+    x.add_argument('--out', required=True)
     n = sub.add_parser('launch', allow_abbrev=False, help='starts the game from an install; other arguments go to the game (--dedicated starts the server)')
     n.add_argument('--install', required=True)
     n.add_argument('--game', help='the horizon-client built with --features java-mods')
@@ -1091,6 +1101,12 @@ def main():
         parser.error(f'unrecognized arguments: {" ".join(extra)}')
     if args.command == 'install':
         return install_pack(args)
+    if args.command == 'mixins':
+        try:
+            from . import mod_parity
+        except ImportError:
+            import mod_parity
+        return mod_parity.scan_install(args.install, args.out)
     LOCAL.mkdir(parents=True, exist_ok=True)
     JARS.mkdir(parents=True, exist_ok=True)
     # Several agents build and check at once, and a build replaces the class folders.

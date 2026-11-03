@@ -410,6 +410,9 @@ impl Settings {
         for (name, _, _) in crate::keybinds::MAPPINGS {
             keys.set(name, &f.key_binding(name));
         }
+        for (name, binding) in &f.mod_keys {
+            keys.set_mod(name, crate::keybinds::Binding::parse(binding));
+        }
         let mut volumes = [1.0; 11];
         for (i, source) in SOUND_SOURCES.iter().enumerate() {
             volumes[i] = f.double(&format!("soundCategory_{source}")) as f32;
@@ -613,6 +616,12 @@ impl Settings {
         for (name, key) in self.keys.saved() {
             put_s(&mut f, &format!("key_{name}"), &key);
         }
+        f.mod_keys = self
+            .keys
+            .saved_mods()
+            .into_iter()
+            .map(|(name, binding)| (name, binding.text()))
+            .collect();
         f
     }
     /// These settings with one `options.txt` value changed (`horizon-ctl

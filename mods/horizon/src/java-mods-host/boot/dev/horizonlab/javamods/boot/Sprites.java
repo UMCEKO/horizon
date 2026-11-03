@@ -15,6 +15,7 @@ import net.minecraft.client.renderer.texture.atlas.SpriteSource;
 import net.minecraft.client.renderer.texture.atlas.SpriteSourceList;
 import net.minecraft.client.renderer.texture.atlas.sources.DirectoryLister;
 import net.minecraft.client.renderer.texture.atlas.sources.SingleFile;
+import net.minecraft.client.resources.metadata.texture.TextureMetadataSection;
 import net.minecraft.resources.FileToIdConverter;
 import net.minecraft.resources.Identifier;
 
@@ -22,8 +23,8 @@ import net.minecraft.resources.Identifier;
 public final class Sprites {
     private Sprites() {}
 
-    /** The id of a texture stands for its pixels, which Rust has. */
-    public record View(Identifier id, int width, int height) implements GpuTextureView, GpuTexture {
+    /** The id of a texture stands for its pixels, which Rust has; `repeat` is its sampler's address mode (atlases clamp). */
+    public record View(Identifier id, int width, int height, boolean repeat) implements GpuTextureView, GpuTexture {
         @Override
         public boolean isClosed() {
             return false;
@@ -100,6 +101,16 @@ public final class Sprites {
         }
     }
 
+    /** `TextureContents.clamp` of a texture file's metadata. */
+    private static boolean clamps(Identifier file) {
+        var resource = Minecraft.getInstance().getResourceManager().getResource(file);
+        try {
+            return resource.isPresent() && resource.get().metadata().getSection(TextureMetadataSection.TYPE).map(TextureMetadataSection::clamp).orElse(false);
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
     /** A texture no atlas registered: its file, standing as an atlas since mods cast a texture to one. */
     public static AbstractTexture texture(Identifier id) {
         return TEXTURES.computeIfAbsent(id, file -> {
@@ -107,7 +118,7 @@ public final class Sprites {
                 TextureAtlas texture = GameBridge.construct(TextureAtlas.class, Object.class.getDeclaredConstructor());
                 set(TextureAtlas.class, texture, "location", file);
                 int[] size = size(file);
-                var view = new View(file, size[0], size[1]);
+                var view = new View(file, size[0], size[1], !clamps(file));
                 set(AbstractTexture.class, texture, "textureView", view);
                 set(AbstractTexture.class, texture, "texture", view);
                 return texture;
@@ -128,7 +139,7 @@ public final class Sprites {
 
     /** What `TextureAtlas.createTexture` would allocate on a GPU: the atlas's texture, as its id and size. */
     public static void stitched(TextureAtlas atlas, Identifier location, int width, int height) {
-        var view = new View(location, width, height);
+        var view = new View(location, width, height, false);
         try {
             set(AbstractTexture.class, atlas, "textureView", view);
             set(AbstractTexture.class, atlas, "texture", view);

@@ -28,8 +28,10 @@ final class ClientKeys {
     private static void tick() {
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.level == null) return;
-        boolean down = InputConstants.isKeyDown(K.getValue());
-        if (down && !wasDown) {
+        boolean down = InputConstants.isKeyDown(KEY.getKey().getValue());
+        if (down && !wasDown && !KEY.getKey().equals(K)) {
+            Checks.check("mod_key_follows_the_rebind", () -> KEY.isDown() && !KEY.isUnbound() && KEY.getKeyModifier() == KeyModifier.NONE);
+        } else if (down && !wasDown) {
             boolean screen = minecraft.gui.screen() != null;
             if (screen) Checks.check("key_quiet_under_a_native_screen", () -> !KeyConflictContext.IN_GAME.isActive() && !KEY.isDown() && KeyConflictContext.GUI.isActive());
             else Checks.check("key_fires_without_a_screen", () -> KeyConflictContext.IN_GAME.isActive() && KEY.isDown());

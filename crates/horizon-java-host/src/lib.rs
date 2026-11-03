@@ -304,6 +304,10 @@ fn boot(run_dir: &str) -> Result<Host, String> {
         std::fs::write(host.baked(), baked)
             .map_err(|e| format!("{}: {e}", host.baked().display()))?;
     }
+    let keys = host.request("client_keys", &[]).unwrap_or_default();
+    if !keys.is_empty() {
+        std::fs::write(host.keys(), keys).map_err(|e| format!("{}: {e}", host.keys().display()))?;
+    }
     println!(
         "Horizon: Java mods ready in {exported:.1}s (mods {booted:.1}s, data {:.1}s, facts {:.1}s), {} items",
         prepared - booted,
@@ -357,6 +361,11 @@ impl Host {
     /// Where the boot writes the block models its mods' code builds, from the Java client's resource reload export (absent without a client).
     pub fn baked(&self) -> PathBuf {
         self.facts.with_extension("baked.json")
+    }
+
+    /// Where the boot writes the client's key mappings, the mods' and vanilla's conflict contexts (absent without a client).
+    pub fn keys(&self) -> PathBuf {
+        self.facts.with_extension("keys.tsv")
     }
 
     /// What the Java client's first resource reload made for the window (`ClientResources`), taken as the boot ended; empty without a client.

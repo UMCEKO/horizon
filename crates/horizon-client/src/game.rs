@@ -13707,6 +13707,7 @@ impl Game<'_> {
             || (self.title.is_none()
                 && self.player.is_some()
                 && (self.screen.blurs_background(self.pause_menu)
+                    || (self.screen == Screen::Java && self.java_screen_blurred())
                     || self.dialog_open()
                     || (self.screen == Screen::Win && self.win_screen_pauses())));
         let radius = self.settings.menu_blur as f32;

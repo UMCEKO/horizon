@@ -1292,6 +1292,8 @@ pub enum Event {
     Credits,
     /// Copy how an agent connects (the AI Agent page).
     CopyAgentDetails,
+    /// A mod's key binding changed: the game tells the Java client (after `Changed`).
+    ModKeys,
 }
 /// `SliderableValueSet.applyValueImmediately`: these apply 600 ms after
 /// the last change (`OptionInstanceSliderButton.delayedApplyAt`).
@@ -1323,6 +1325,8 @@ pub struct OptionsUi {
     /// Key Binds: the mapping waiting for a key ([`NATIVE_KEY`]: a native
     /// mod's, `selected_native_key`).
     pub selected_key: Option<&'static str>,
+    /// The modifier held as a key or button is bound (NeoForge's `KeyModifier.getActiveModifier`); the game sets it before passing the input.
+    pub held: keybinds::Modifier,
     /// The native mod's key waiting: (mod, key) in `mods.installed`.
     selected_native_key: Option<(usize, usize)>,
     /// Controller Binds: the action waiting for a pad button.
@@ -1369,6 +1373,7 @@ impl Default for OptionsUi {
             slider_value: None,
             scrollbar_drag_y: None,
             selected_key: None,
+            held: keybinds::Modifier::None,
             selected_native_key: None,
             selected_pad_action: None,
             pad_style: GlyphStyle::Xbox,
@@ -2138,16 +2143,32 @@ impl OptionsUi {
                     },
                     list: false,
                 });
-                let mut mappings: Vec<(&str, &str)> =
-                    MAPPINGS.iter().map(|(n, _, c)| (*n, *c)).collect();
+                let mods = keybinds::mod_keys();
+                let mut mappings: Vec<(&'static str, usize, String)> = MAPPINGS
+                    .iter()
+                    .map(|(n, _, c)| {
+                        let rank = CATEGORIES.iter().position(|x| x == c).unwrap_or(99);
+                        (*n, rank, format!("key.category.minecraft.{c}"))
+                    })
+                    .collect();
+                let mut categories: Vec<&str> = Vec::new();
+                for key in &mods.keys {
+                    if !categories.contains(&key.category.as_str()) {
+                        categories.push(&key.category);
+                    }
+                    let rank = CATEGORIES.len()
+                        + categories
+                            .iter()
+                            .position(|c| *c == key.category)
+                            .unwrap_or(0);
+                    mappings.push((key.name, rank, key.category_lang_key()));
+                }
                 let query = self.settings_search.value.to_lowercase();
-                mappings.retain(|(name, _)| {
+                mappings.retain(|(name, ..)| {
                     query.is_empty() || lang::get(name).to_lowercase().contains(&query)
                 });
                 mappings.sort_by(|a, b| {
-                    let ca = CATEGORIES.iter().position(|c| *c == a.1).unwrap_or(99);
-                    let cb = CATEGORIES.iter().position(|c| *c == b.1).unwrap_or(99);
-                    ca.cmp(&cb)
+                    a.1.cmp(&b.1)
                         .then_with(|| lang::get(a.0).cmp(&lang::get(b.0)))
                 });
                 let row_left = cx - 170.0;
@@ -2169,17 +2190,14 @@ impl OptionsUi {
                 }
                 let list_start = out.len();
                 let mut y = top + 2.0 - self.scroll;
-                let mut last_category = "";
-                for (name, category) in mappings {
+                let mut last_category = String::new();
+                for (name, _, category) in mappings {
                     if category != last_category {
-                        last_category = category;
-                        let label =
-                            Text::translate(&format!("key.category.minecraft.{category}"), &[])
-                                .with_style(&Style {
-                                    bold: Some(true),
-                                    underlined: Some(true),
-                                    ..Style::default()
-                                });
+                        let label = Text::translate(&category, &[]).with_style(&Style {
+                            bold: Some(true),
+                            underlined: Some(true),
+                            ..Style::default()
+                        });
                         out.push(Widget {
                             x: 0.0,
                             y: y + 7.0,
@@ -2193,6 +2211,7 @@ impl OptionsUi {
                             list: false,
                         });
                         y += 20.0;
+                        last_category = category;
                     }
                     out.push(Widget {
                         x: row_left + 2.0,
@@ -2206,8 +2225,19 @@ impl OptionsUi {
                         },
                         list: false,
                     });
-                    let key = s.keys.get(name).to_owned();
-                    let mut message = keybinds::display_name(&key);
+                    let mod_binding = s.keys.mod_binding(name);
+                    let mut message = match &mod_binding {
+                        Some(b) => {
+                            let key = keybinds::display_name(&b.key);
+                            match b.modifier.lang_key() {
+                                Some(format) if b.key != "key.keyboard.unknown" => {
+                                    Text::translate(format, &[key])
+                                }
+                                _ => key,
+                            }
+                        }
+                        None => keybinds::display_name(s.keys.get(name)),
+                    };
                     let conflicts = s.keys.conflicts(name);
                     if !conflicts.is_empty() {
                         message = Text::literal("[ ")
@@ -2227,8 +2257,7 @@ impl OptionsUi {
                     }
                     let reset_x = scrollbar_x - 50.0 - 10.0;
                     let change_x = reset_x - 5.0 - 75.0;
-                    let name_static = MAPPINGS.iter().find(|m| m.0 == name).map_or("", |m| m.0);
-                    out.push(button(change_x, y, 75.0, message, Act::Key(name_static)));
+                    out.push(button(change_x, y, 75.0, message, Act::Key(name)));
                     if !conflicts.is_empty() {
                         out.push(Widget {
                             x: change_x - 6.0,
@@ -2243,18 +2272,13 @@ impl OptionsUi {
                             list: false,
                         });
                     }
-                    let reset = button(
-                        reset_x,
-                        y,
-                        50.0,
-                        tr("controls.reset"),
-                        Act::ResetKey(name_static),
-                    );
-                    out.push(if s.keys.is_default(name) {
-                        inactive(reset)
+                    let reset = button(reset_x, y, 50.0, tr("controls.reset"), Act::ResetKey(name));
+                    let is_default = if mod_binding.is_some() {
+                        s.keys.is_default_mod(name)
                     } else {
-                        reset
-                    });
+                        s.keys.is_default(name)
+                    };
+                    out.push(if is_default { inactive(reset) } else { reset });
                     y += 20.0;
                 }
                 content = y + self.scroll - top + 2.0;
@@ -3001,12 +3025,19 @@ impl OptionsUi {
                         }
                         Act::Key(name) => self.selected_key = Some(name),
                         Act::ResetKey(name) => {
-                            s.keys.set(name, KeyBinds::default_of(name));
-                            events.push(Event::Changed);
+                            if KeyBinds::is_mod_key(name) {
+                                s.keys.reset_mod(name);
+                                events.push(Event::Changed);
+                                events.push(Event::ModKeys);
+                            } else {
+                                s.keys.set(name, KeyBinds::default_of(name));
+                                events.push(Event::Changed);
+                            }
                         }
                         Act::ResetKeys => {
                             s.keys.reset_all();
                             events.push(Event::Changed);
+                            events.push(Event::ModKeys);
                         }
                         Act::PadKey(action) => self.selected_pad_action = Some(action),
                         Act::ResetPadKey(action) => {
@@ -3348,6 +3379,17 @@ impl OptionsUi {
             let keys = s.mods.keys.entry(m.id.clone()).or_default();
             keys.insert(key.clone(), value);
             return vec![Event::Changed];
+        }
+        if KeyBinds::is_mod_key(name) {
+            let modifier =
+                if keybinds::Modifier::is_modifier_key(&value) || value == "key.keyboard.unknown" {
+                    keybinds::Modifier::None
+                } else {
+                    std::mem::take(&mut self.held)
+                };
+            s.keys
+                .set_mod(name, keybinds::Binding::new(&value, modifier));
+            return vec![Event::Changed, Event::ModKeys];
         }
         if !s.extras.set_key(name, value.clone()) {
             s.keys.set(name, &value);
@@ -4750,6 +4792,61 @@ mod tests {
             ui.scroll_at(&s, size, (240.0, 60.0), -0.25);
             assert_eq!(ui.scroll, 4.5, "{page:?}");
         }
+    }
+
+    #[test]
+    fn mods_keys_list_after_vanillas_and_bind_with_the_held_modifier() {
+        let keys = keybinds::ModKeys::parse_export(
+            "key.test_mod.mode\t0\ttest_mod:keys\tkey.keyboard.n\tNONE\tIN_GAME\n",
+        )
+        .unwrap();
+        keybinds::with_thread_mod_keys(keys, mods_key_body);
+    }
+    fn mods_key_body() {
+        use winit::keyboard::KeyCode as K;
+        let atlas = atlas();
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        ui.show(Page::KeyBinds);
+        let (widgets, ..) = ui.layout(&s, 480.0, 240.0);
+        let last = widgets.iter().rev().find_map(|w| match w.kind {
+            WKind::Button {
+                act: Act::Key(name),
+                ..
+            } => Some(name),
+            _ => None,
+        });
+        assert_eq!(last, Some("key.test_mod.mode"));
+        let events = ui.click(
+            &mut s,
+            &atlas,
+            0.0,
+            0.0,
+            (480.0, 240.0),
+            [960, 480],
+            false,
+            false,
+        );
+        assert!(events.is_empty());
+        ui.selected_key = Some("key.test_mod.mode");
+        ui.held = keybinds::Modifier::Shift;
+        let events = ui.key(&mut s, &atlas, K::KeyK, None);
+        assert_eq!(events, [Event::Changed, Event::ModKeys]);
+        assert_eq!(
+            s.keys.mod_binding("key.test_mod.mode"),
+            Some(keybinds::Binding::new(
+                "key.keyboard.k",
+                keybinds::Modifier::Shift
+            ))
+        );
+        assert_eq!(ui.held, keybinds::Modifier::None);
+        ui.selected_key = Some("key.test_mod.mode");
+        ui.held = keybinds::Modifier::Control;
+        ui.key(&mut s, &atlas, K::ShiftLeft, None);
+        assert_eq!(
+            s.keys.mod_binding("key.test_mod.mode").map(|b| b.modifier),
+            Some(keybinds::Modifier::None)
+        );
     }
 
     #[test]

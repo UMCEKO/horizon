@@ -171,6 +171,8 @@ public final class ClientBridge {
                 case "client_models_probe" -> modelsProbe();
                 case "client_resources" -> ClientResources.export();
                 case "client_baked" -> ClientResources.baked();
+                case "client_keys" -> ModKeyMappings.export();
+                case "client_keys_apply" -> ModKeyMappings.apply(in);
                 case "client_models_take" -> Minecraft.getInstance().level == null ? new byte[0] : ClientModels.take(Minecraft.getInstance().level);
                 case "client_items_take" -> BlockRenders.items(in);
                 case "client_items_decorations" -> BlockRenders.decorations(in);

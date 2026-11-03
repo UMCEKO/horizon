@@ -10,7 +10,7 @@ Java.
 
 ## Serving a method from Rust
 
-One entry in `crates/horizon-client/src/game/java_bridges.rs`, and nothing in Java:
+One entry in a family's `table()` under `crates/horizon-client/src/game/java_bridges/`, and nothing in Java:
 
 ```rust
 horizon_java_host::java_bridges! { table for Game<'static> {

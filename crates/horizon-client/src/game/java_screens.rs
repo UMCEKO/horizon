@@ -43,6 +43,8 @@ pub(in crate::game) mod live {
         /// The Java client's playing sounds by its handle.
         sounds: std::collections::HashMap<i32, horizon_client::sound_engine::InstanceId>,
         sent: Sent,
+        /// The open screen's frame blurs what is behind it (`blurBeforeThisStratum`).
+        blurred: bool,
     }
 
     /// The window's input as the callbacks of its library would hand it to a real client.
@@ -309,6 +311,83 @@ pub(in crate::game) mod live {
     const QUAD: u8 = 0;
     const TEXT: u8 = 1;
     const ITEM: u8 = 2;
+    const BLUR: u8 = 3;
+
+    type Corner = ([f32; 2], [f32; 2], u32);
+
+    /// What a recorded frame asked of the window beyond its pieces.
+    struct Painted {
+        blur: bool,
+    }
+
+    /// A UV within 1e-4 of an integer is that integer.
+    fn snapped(x: f32) -> f32 {
+        let r = x.round();
+        if (x - r).abs() < 1e-4 { r } else { x }
+    }
+
+    /// `[start, integer crossings.., end]` of a UV range from `a` to `b`, in that order, and the fractions they sit at.
+    fn uv_cuts(a: f32, b: f32) -> Vec<(f32, f32)> {
+        let (a, b) = (snapped(a), snapped(b));
+        let mut cuts = vec![(0.0, a)];
+        if a != b {
+            let (lo, hi) = (a.min(b), a.max(b));
+            let mut k = lo.floor() + 1.0;
+            let mut inside = Vec::new();
+            while k < hi {
+                inside.push((((k - a) / (b - a)), k));
+                k += 1.0;
+            }
+            inside.sort_by(|x, y| x.0.total_cmp(&y.0));
+            cuts.extend(inside);
+        }
+        cuts.push((1.0, b));
+        cuts
+    }
+
+    /// A quad whose UVs leave [0,1] as one quad a tile, each tile's UVs inside [0,1], as REPEAT would sample it.
+    fn repeat_cells(corners: [Corner; 4]) -> Vec<[Corner; 4]> {
+        let outside = |x: f32| {
+            let x = snapped(x);
+            !(0.0..=1.0).contains(&x)
+        };
+        if !corners.iter().any(|c| outside(c.1[0]) || outside(c.1[1])) {
+            return vec![corners];
+        }
+        let across = uv_cuts(corners[0].1[0], corners[3].1[0]);
+        let down = uv_cuts(corners[0].1[1], corners[1].1[1]);
+        let mix = |s: f32, t: f32| -> Corner {
+            let w = [(1.0 - s) * (1.0 - t), (1.0 - s) * t, s * t, s * (1.0 - t)];
+            let sum = |f: &dyn Fn(&Corner) -> f32| {
+                corners.iter().zip(w).map(|(c, w)| f(c) * w).sum::<f32>()
+            };
+            let channel = |shift: u32| {
+                sum(&|c| ((c.2 >> shift) & 255) as f32)
+                    .round()
+                    .clamp(0.0, 255.0) as u32
+            };
+            (
+                [sum(&|c| c.0[0]), sum(&|c| c.0[1])],
+                [0.0, 0.0],
+                channel(24) << 24 | channel(16) << 16 | channel(8) << 8 | channel(0),
+            )
+        };
+        let mut cells = Vec::new();
+        for s in across.windows(2) {
+            let ku = s[0].1.min(s[1].1).floor();
+            for t in down.windows(2) {
+                let kv = t[0].1.min(t[1].1).floor();
+                let at = |(si, ti): (usize, usize)| {
+                    let (s, t) = (s[si], t[ti]);
+                    let mut c = mix(s.0, t.0);
+                    c.1 = [s.1 - ku, t.1 - kv];
+                    c
+                };
+                cells.push([at((0, 0)), at((0, 1)), at((1, 1)), at((1, 0))]);
+            }
+        }
+        cells
+    }
 
     /// `Identifier` of a texture file to its name in Horizon's GUI atlas.
     fn atlas_key(id: &str) -> Option<String> {
@@ -337,6 +416,7 @@ pub(in crate::game) mod live {
     fn quad(batch: &mut HudBatch, atlas: &HudAtlas, reply: &mut In) -> Option<()> {
         let texture = reply.text()?;
         let kind = reply.byte()?;
+        let wrap = reply.byte()? == 1;
         let mut corners = [([0f32; 2], [0f32; 2], 0u32); 4];
         for corner in &mut corners {
             *corner = (
@@ -359,20 +439,27 @@ pub(in crate::game) mod live {
             return Some(());
         };
         let start = batch.vertices.len();
-        for i in [0, 1, 2, 0, 2, 3] {
-            let (pos, uv, color) = corners[i];
-            let uv = if texture.is_empty() {
-                [(r.u0 + r.u1) / 2.0, (r.v0 + r.v1) / 2.0]
-            } else {
-                [r.u0 + uv[0] * (r.u1 - r.u0), r.v0 + uv[1] * (r.v1 - r.v0)]
-            };
-            batch.vertices.push(HudVertex {
-                pos,
-                uv,
-                color,
-                depth: 0.0,
-                glint_uv: [0.0, 0.0],
-            });
+        let cells = if wrap && !texture.is_empty() {
+            repeat_cells(corners)
+        } else {
+            vec![corners]
+        };
+        for cell in cells {
+            for i in [0, 1, 2, 0, 2, 3] {
+                let (pos, uv, color) = cell[i];
+                let uv = if texture.is_empty() {
+                    [(r.u0 + r.u1) / 2.0, (r.v0 + r.v1) / 2.0]
+                } else {
+                    [r.u0 + uv[0] * (r.u1 - r.u0), r.v0 + uv[1] * (r.v1 - r.v0)]
+                };
+                batch.vertices.push(HudVertex {
+                    pos,
+                    uv,
+                    color,
+                    depth: 0.0,
+                    glint_uv: [0.0, 0.0],
+                });
+            }
         }
         match kind {
             1 => batch.invert_since(start),
@@ -436,27 +523,32 @@ pub(in crate::game) mod live {
         Some(())
     }
 
-    /// A recorded frame's pieces in call order; `item` paints an item entry. False when it ended in pieces.
+    /// A recorded frame's pieces in call order; `item` paints an item entry. None when it ended in pieces.
     fn paint_frame(
         batch: &mut HudBatch,
         atlas: &HudAtlas,
         frame: &[u8],
         item: impl Fn(&mut HudBatch, &mut In) -> Option<()>,
-    ) -> bool {
+    ) -> Option<Painted> {
         let mut reply = In(frame);
+        let mut painted = Painted { blur: false };
         for _ in 0..reply.int().unwrap_or(0) {
             let ok = match reply.byte() {
                 Some(QUAD) => quad(batch, atlas, &mut reply),
+                Some(BLUR) => {
+                    painted.blur = true;
+                    Some(())
+                }
                 Some(TEXT) => text(batch, atlas, &mut reply),
                 Some(ITEM) => item(batch, &mut reply),
                 _ => None,
             };
             if ok.is_none() {
                 log::warn!("Horizon: a Java frame ended in pieces");
-                return false;
+                return None;
             }
         }
-        true
+        Some(painted)
     }
 
     /// Whether this frame records the HUD: only while it animates, and not on the frame that took a tick's status or while a tick runs.
@@ -777,6 +869,30 @@ pub(in crate::game) mod live {
             });
         }
 
+        /// The window's bindings for the mods' key mappings, set on the Java client's own `KeyMapping`s: at its login, and when a binding changes.
+        pub(in crate::game) fn java_apply_mod_keys(&self) {
+            let table = horizon_client::keybinds::mod_keys();
+            if table.keys.is_empty() {
+                return;
+            }
+            let Some(host) = horizon_java_host::get() else {
+                return;
+            };
+            let mut out = Out::default();
+            out.int(table.keys.len() as i32);
+            for key in &table.keys {
+                let binding = self
+                    .settings
+                    .keys
+                    .mod_binding(key.name)
+                    .unwrap_or_else(|| key.default.clone());
+                out.text(key.name);
+                out.text(&binding.key);
+                out.text(binding.modifier.name());
+            }
+            host.request("client_keys_apply", &out.0);
+        }
+
         /// The window joined a server in another process whose Java side the Java client connected to in configuration: its play packets go over the window's connection.
         pub(in crate::game) fn java_remote_joined(&mut self) {
             CLIENT.with_borrow_mut(|c| c.remote = true);
@@ -984,7 +1100,9 @@ pub(in crate::game) mod live {
                 CLIENT.with_borrow_mut(|c| c.armed = false);
                 return;
             };
-            CLIENT.with_borrow_mut(|c| c.joined = true);
+            if !CLIENT.with_borrow_mut(|c| std::mem::replace(&mut c.joined, true)) {
+                self.java_apply_mod_keys();
+            }
             // A status answers once the Java client's login is done: until then nothing is held for it.
             if !tick.is_empty() && !CLIENT.with_borrow(|c| c.armed) {
                 CLIENT.with_borrow_mut(|c| c.armed = true);
@@ -1092,8 +1210,14 @@ pub(in crate::game) mod live {
             });
         }
 
+        /// The open Java screen asked for the menu blur this frame.
+        pub(in crate::game) fn java_screen_blurred(&self) -> bool {
+            CLIENT.with_borrow(|c| c.blurred)
+        }
+
         /// The open Java screen, drawn as it extracted itself this frame.
         pub(in crate::game) fn draw_java_screen(&mut self, batch: &mut HudBatch) {
+            CLIENT.with_borrow_mut(|c| c.blurred = false);
             let Some(host) = horizon_java_host::get() else {
                 return;
             };
@@ -1106,9 +1230,10 @@ pub(in crate::game) mod live {
             let Some(reply) = host.request("client_frame", &out.0) else {
                 return;
             };
-            paint_frame(batch, &self.gui.atlas, &reply, |batch, reply| {
+            let painted = paint_frame(batch, &self.gui.atlas, &reply, |batch, reply| {
                 self.java_screen_item(batch, reply)
             });
+            CLIENT.with_borrow_mut(|c| c.blurred = painted.is_some_and(|p| p.blur));
         }
 
         fn java_screen_item(&self, batch: &mut HudBatch, reply: &mut In) -> Option<()> {
@@ -1250,15 +1375,58 @@ pub(in crate::game) mod live {
         use super::*;
 
         fn atlas() -> HudAtlas {
+            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let root =
-                std::env::temp_dir().join(format!("horizon-java-hud-{}", std::process::id()));
-            std::fs::create_dir_all(root.join("assets/minecraft/textures/gui")).unwrap();
+                std::env::temp_dir().join(format!("horizon-java-hud-{}-{n}", std::process::id()));
+            let gui = root.join("assets/minecraft/textures/gui");
+            std::fs::create_dir_all(&gui).unwrap();
+            let file = std::fs::File::create(gui.join("x.png")).unwrap();
+            let mut encoder = png::Encoder::new(file, 64, 32);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[255; 64 * 32 * 4])
+                .unwrap();
             HudAtlas::build(&root).unwrap()
+        }
+
+        fn sprite_quad(wrap: bool, width: f32, uv: [f32; 4]) -> Vec<u8> {
+            let mut out = Out::default();
+            out.int(1);
+            out.0.push(QUAD);
+            out.text("minecraft:textures/gui/x.png");
+            out.0.push(0);
+            out.0.push(u8::from(wrap));
+            let [u0, v0, u1, v1] = uv;
+            for (x, y, u, v) in [
+                (0.0, 0.0, u0, v0),
+                (0.0, 32.0, u0, v1),
+                (width, 32.0, u1, v1),
+                (width, 0.0, u1, v0),
+            ] {
+                for f in [x, y, u, v] {
+                    out.float(f);
+                }
+                out.int(-1);
+            }
+            out.bool(false);
+            out.0
+        }
+
+        fn painted(frame: &[u8]) -> (Vec<HudVertex>, HudAtlas) {
+            let atlas = atlas();
+            let mut batch = HudBatch::new([854, 480]);
+            assert!(paint_frame(&mut batch, &atlas, frame, |_, _| Some(())).is_some());
+            (batch.vertices, atlas)
         }
 
         fn white_quad(out: &mut Out, x: f32, y: f32, size: f32) {
             out.0.push(QUAD);
             out.text("");
+            out.0.push(0);
             out.0.push(0);
             for (cx, cy) in [(x, y), (x, y + size), (x + size, y + size), (x + size, y)] {
                 for v in [cx, cy, 0.0, 0.0] {
@@ -1285,7 +1453,7 @@ pub(in crate::game) mod live {
             white_quad(&mut out, 10.0, 20.0, 4.0);
             white_quad(&mut out, 30.0, 40.0, 8.0);
             let mut batch = HudBatch::new([854, 480]);
-            assert!(paint_frame(&mut batch, &atlas, &out.0, |_, _| Some(())));
+            assert!(paint_frame(&mut batch, &atlas, &out.0, |_, _| Some(())).is_some());
             assert_eq!(batch.vertices.len(), 12);
             assert_eq!(batch.vertices[0].pos, [10.0, 20.0]);
             assert_eq!(batch.vertices[6].pos, [30.0, 40.0]);
@@ -1296,17 +1464,110 @@ pub(in crate::game) mod live {
             white_quad(&mut cut, 1.0, 2.0, 3.0);
             cut.0.push(QUAD);
             let mut batch = HudBatch::new([854, 480]);
-            assert!(!paint_frame(&mut batch, &atlas, &cut.0, |_, _| Some(())));
+            assert!(paint_frame(&mut batch, &atlas, &cut.0, |_, _| Some(())).is_none());
             assert_eq!(batch.vertices.len(), 6);
 
             let mut batch = HudBatch::new([854, 480]);
-            assert!(paint_frame(
-                &mut batch,
-                &atlas,
-                &Out::default().0,
-                |_, _| None
-            ));
+            assert!(paint_frame(&mut batch, &atlas, &Out::default().0, |_, _| None).is_some());
             assert!(batch.vertices.is_empty());
+        }
+
+        #[test]
+        fn a_repeating_quad_splits_into_a_cell_per_tile() {
+            let (v, atlas) = painted(&sprite_quad(true, 64.0, [0.0, 0.0, 2.0, 1.0]));
+            let r = atlas.sprites["gui/x"];
+            assert_eq!(v.len(), 12);
+            for (cell, x) in [(0, [0.0, 32.0]), (6, [32.0, 64.0])] {
+                assert_eq!(v[cell].pos, [x[0], 0.0]);
+                assert_eq!(v[cell + 2].pos, [x[1], 32.0]);
+                assert_eq!(v[cell].uv, [r.u0, r.v0]);
+                assert!((v[cell + 2].uv[0] - r.u1).abs() < 1e-6);
+                assert!((v[cell + 2].uv[1] - r.v1).abs() < 1e-6);
+            }
+        }
+
+        #[test]
+        fn a_partial_last_tile_ends_part_way_through_the_sprite() {
+            let (v, atlas) = painted(&sprite_quad(true, 48.0, [0.0, 0.0, 1.5, 1.0]));
+            let r = atlas.sprites["gui/x"];
+            assert_eq!(v.len(), 12);
+            assert_eq!(v[6].pos[0], 32.0);
+            assert_eq!(v[8].pos[0], 48.0);
+            assert_eq!(v[6].uv[0], r.u0);
+            assert!((v[8].uv[0] - (r.u0 + 0.5 * (r.u1 - r.u0))).abs() < 1e-6);
+        }
+
+        #[test]
+        fn a_negative_range_splits_at_zero() {
+            let (v, atlas) = painted(&sprite_quad(true, 64.0, [-0.5, 0.0, 0.5, 1.0]));
+            let r = atlas.sprites["gui/x"];
+            assert_eq!(v.len(), 12);
+            assert_eq!(v[0].pos[0], 0.0);
+            assert_eq!(v[2].pos[0], 32.0);
+            assert_eq!(v[8].pos[0], 64.0);
+            let half = r.u0 + 0.5 * (r.u1 - r.u0);
+            assert!((v[0].uv[0] - half).abs() < 1e-6);
+            assert!((v[2].uv[0] - r.u1).abs() < 1e-6);
+            assert!((v[6].uv[0] - r.u0).abs() < 1e-6);
+            assert!((v[8].uv[0] - half).abs() < 1e-6);
+        }
+
+        #[test]
+        fn a_clamped_or_in_range_quad_stays_one() {
+            let (v, _) = painted(&sprite_quad(false, 64.0, [0.0, 0.0, 2.0, 1.0]));
+            assert_eq!(v.len(), 6);
+            let (v, _) = painted(&sprite_quad(true, 64.0, [0.0, 0.0, 1.0, 1.0]));
+            assert_eq!(v.len(), 6);
+        }
+
+        fn triangle(clip: Option<[i32; 4]>) -> Vec<u8> {
+            let mut out = Out::default();
+            out.int(1);
+            out.0.push(QUAD);
+            out.text("");
+            out.0.push(0);
+            out.0.push(0);
+            for (x, y) in [(0.0, 0.0), (20.0, 0.0), (0.0, 20.0), (0.0, 20.0)] {
+                for f in [x, y, 0.0, 0.0] {
+                    out.float(f);
+                }
+                out.int(0x80ff_ffffu32 as i32);
+            }
+            out.bool(clip.is_some());
+            for v in clip.into_iter().flatten() {
+                out.int(v);
+            }
+            out.0
+        }
+
+        #[test]
+        fn a_triangle_recorded_as_a_degenerate_quad_draws_once() {
+            let (v, _) = painted(&triangle(None));
+            assert_eq!(v.len(), 6);
+            let tri = |a: usize, b: usize, c: usize| [v[a].pos, v[b].pos, v[c].pos];
+            assert_eq!(tri(0, 1, 2), [[0.0, 0.0], [20.0, 0.0], [0.0, 20.0]]);
+            assert_eq!(tri(3, 4, 5), [[0.0, 0.0], [0.0, 20.0], [0.0, 20.0]]);
+        }
+
+        #[test]
+        fn a_scissor_that_cuts_a_triangle_keeps_its_visible_part() {
+            let (v, _) = painted(&triangle(Some([0, 0, 10, 10])));
+            assert!(!v.is_empty());
+            assert!(v.iter().all(|p| p.pos[0] <= 10.0 && p.pos[1] <= 10.0));
+        }
+
+        #[test]
+        fn a_blur_entry_is_reported() {
+            let atlas = atlas();
+            let mut blurred = Out::default();
+            blurred.int(1);
+            blurred.0.push(BLUR);
+            let mut batch = HudBatch::new([854, 480]);
+            let painted = paint_frame(&mut batch, &atlas, &blurred.0, |_, _| Some(()));
+            assert!(painted.is_some_and(|p| p.blur));
+            let plain = Out::default();
+            let painted = paint_frame(&mut batch, &atlas, &plain.0, |_, _| Some(()));
+            assert!(painted.is_some_and(|p| !p.blur));
         }
     }
 }
@@ -1354,6 +1615,9 @@ impl Game<'_> {
     }
     pub(super) fn java_key_action(&mut self, _action: JavaKeyAction) {}
     pub(super) fn draw_java_screen(&mut self, _batch: &mut HudBatch) {}
+    pub(super) fn java_screen_blurred(&self) -> bool {
+        false
+    }
     pub(super) fn draw_java_hud(&mut self, _batch: &mut HudBatch) {}
     pub(super) fn java_screen_click(&mut self, _button: MouseButton, _pressed: bool) {}
     pub(super) fn java_screen_moved(&mut self) {}
@@ -1377,5 +1641,6 @@ impl Game<'_> {
     pub(super) fn java_client_left(&mut self) {}
     pub(super) fn java_client_font(&self) {}
     pub(super) fn java_remote_joined(&mut self) {}
+    pub(super) fn java_apply_mod_keys(&self) {}
     pub(super) fn java_wire_in(&mut self, _frame: &[u8]) {}
 }

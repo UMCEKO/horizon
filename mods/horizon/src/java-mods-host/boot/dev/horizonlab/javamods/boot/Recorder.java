@@ -6,6 +6,9 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
+import com.mojang.renderpearl.api.pipeline.BlendFunction;
+import com.mojang.renderpearl.api.pipeline.PrimitiveTopology;
+import com.mojang.renderpearl.api.pipeline.RenderPipeline;
 import net.minecraft.client.gui.navigation.ScreenRectangle;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.renderer.state.gui.BlitRenderState;
@@ -24,7 +27,7 @@ import org.joml.Matrix3x2fc;
 
 /** A frame's GUI as the extractor submits it, in call order: quads with their texture's id, text with its styles, items; Rust draws them. */
 public final class Recorder extends GuiRenderState {
-    private static final int QUAD = 0, TEXT = 1, ITEM = 2;
+    private static final int QUAD = 0, TEXT = 1, ITEM = 2, BLUR = 3;
     private static final Field TEXT_TEXT = field("text"), TEXT_X = field("x"), TEXT_Y = field("y"), TEXT_COLOR = field("color"),
             TEXT_BACKGROUND = field("backgroundColor"), TEXT_SHADOW = field("dropShadow");
 
@@ -145,28 +148,88 @@ public final class Recorder extends GuiRenderState {
             var setup = element.textureSetup();
             String texture = setup != null && setup.texure0() instanceof Sprites.View view ? view.id().toString() : "";
             var pipeline = element.pipeline();
-            int kind = pipeline == RenderPipelines.GUI_INVERT ? 1 : pipeline == RenderPipelines.GUI_TEXT_HIGHLIGHT ? 2 : 0;
+            int kind = blend(pipeline);
+            boolean repeat = setup != null && setup.texure0() instanceof Sprites.View view && view.repeat();
             var atlas = texture.isEmpty() ? null : net.minecraft.resources.Identifier.tryParse(texture);
-            for (int q = 0; q + 3 <= corners.n; q += 4) {
-                // A stitched atlas's quad is its sprite's: the quad's middle names it, and Rust draws that texture's file.
-                var spot = atlas == null ? null : Sprites.locate(atlas, (corners.u[q] + corners.u[q + 1] + corners.u[q + 2] + corners.u[q + 3]) / 4, (corners.v[q] + corners.v[q + 1] + corners.v[q + 2] + corners.v[q + 3]) / 4);
-                var sprite = spot == null ? null : spot.sprite();
-                out.writeByte(QUAD);
-                text(out, spot == null ? texture : spot.file());
-                out.writeByte(kind);
-                for (int i = q; i < q + 4; i++) {
-                    out.writeFloat(corners.x[i]);
-                    out.writeFloat(corners.y[i]);
-                    out.writeFloat(sprite == null ? corners.u[i] : (corners.u[i] - sprite.getU0()) / (sprite.getU1() - sprite.getU0()));
-                    out.writeFloat(sprite == null ? corners.v[i] : (corners.v[i] - sprite.getV0()) / (sprite.getV1() - sprite.getV0()));
-                    out.writeInt(corners.color[i]);
-                }
-                scissor(element.scissorArea());
-                count++;
+            var topology = pipeline.getPrimitiveTopology();
+            var primitives = primitives(topology, corners.n + 1);
+            if (primitives == null && WARNED.add(pipeline.getLocation().toString() + topology)) {
+                System.err.println("Horizon: a GUI pipeline " + pipeline.getLocation() + " draws " + topology + ", which a Java screen can't show");
             }
+            if (primitives != null) for (int[] p : primitives) primitive(corners, p, element, texture, atlas, kind, repeat);
         } catch (IOException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    private static final java.util.Set<String> WARNED = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** The `QUAD` entries of vertex indices a topology builds from `count` vertices; a triangle repeats its last. Null when Rust has no such primitive. */
+    static int[][] primitives(PrimitiveTopology topology, int count) {
+        switch (topology) {
+            case QUADS, LINES -> {
+                var quads = new int[Math.max(count / 4, 0)][];
+                for (int i = 0; i < quads.length; i++) quads[i] = new int[] {i * 4, i * 4 + 1, i * 4 + 2, i * 4 + 3};
+                return quads;
+            }
+            case TRIANGLES -> {
+                var triangles = new int[Math.max(count / 3, 0)][];
+                for (int i = 0; i < triangles.length; i++) triangles[i] = new int[] {i * 3, i * 3 + 1, i * 3 + 2, i * 3 + 2};
+                return triangles;
+            }
+            case TRIANGLE_STRIP -> {
+                var triangles = new int[Math.max(count - 2, 0)][];
+                for (int i = 0; i < triangles.length; i++) triangles[i] = new int[] {i, i + 1, i + 2, i + 2};
+                return triangles;
+            }
+            case TRIANGLE_FAN -> {
+                var triangles = new int[Math.max(count - 2, 0)][];
+                for (int i = 0; i < triangles.length; i++) triangles[i] = new int[] {0, i + 1, i + 2, i + 2};
+                return triangles;
+            }
+            default -> {
+                return null;
+            }
+        }
+    }
+
+    /** 1 inverts, 2 adds, 0 blends as translucent; any other blend function is drawn as translucent. */
+    private static int blend(RenderPipeline pipeline) {
+        var target = pipeline.getColorTargetStates().get(0);
+        var function = target == null ? null : target.blendFunction().orElse(null);
+        if (function == null || function.equals(BlendFunction.TRANSLUCENT)) return 0;
+        if (function.equals(BlendFunction.INVERT)) return 1;
+        if (function.equals(BlendFunction.ADDITIVE)) return 2;
+        if (WARNED.add(pipeline.getLocation().toString())) {
+            System.err.println("Horizon: a GUI pipeline " + pipeline.getLocation() + " blends with " + function + ", drawn as translucent");
+        }
+        return 0;
+    }
+
+    private void primitive(Corners corners, int[] at, GuiElementRenderState element, String texture, net.minecraft.resources.Identifier atlas, int kind, boolean repeat) throws IOException {
+        // A stitched atlas's quad is its sprite's: the primitive's middle names it, and Rust draws that texture's file.
+        boolean triangle = at[2] == at[3];
+        float middleU = 0, middleV = 0;
+        int points = triangle ? 3 : 4;
+        for (int i = 0; i < points; i++) {
+            middleU += corners.u[at[i]];
+            middleV += corners.v[at[i]];
+        }
+        var spot = atlas == null ? null : Sprites.locate(atlas, middleU / points, middleV / points);
+        var sprite = spot == null ? null : spot.sprite();
+        out.writeByte(QUAD);
+        text(out, spot == null ? texture : spot.file());
+        out.writeByte(kind);
+        out.writeByte(!triangle && spot == null && repeat && !texture.isEmpty() ? 1 : 0);
+        for (int i : at) {
+            out.writeFloat(corners.x[i]);
+            out.writeFloat(corners.y[i]);
+            out.writeFloat(sprite == null ? corners.u[i] : (corners.u[i] - sprite.getU0()) / (sprite.getU1() - sprite.getU0()));
+            out.writeFloat(sprite == null ? corners.v[i] : (corners.v[i] - sprite.getV0()) / (sprite.getV1() - sprite.getV0()));
+            out.writeInt(corners.color[i]);
+        }
+        scissor(element.scissorArea());
+        count++;
     }
 
     @Override
@@ -256,6 +319,18 @@ public final class Recorder extends GuiRenderState {
             return (ScreenRectangle) peek.invoke(scissorStack.get(graphics));
         } catch (ReflectiveOperationException e) {
             return null;
+        }
+    }
+
+    @Override
+    public void blurBeforeThisStratum() {
+        super.blurBeforeThisStratum();
+        if (discard) return;
+        try {
+            out.writeByte(BLUR);
+            count++;
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
         }
     }
 

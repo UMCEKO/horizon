@@ -1,0 +1,8 @@
+[
+  {"name": "give"}, {"command": "/give @s minecraft:stone 4"}, {"wait": 10},
+  {"check": {"output": "Gave 4"}},
+  {"name": "select"}, {"slot": 0}, {"wait": 5},
+  {"check": {"slot": 0, "item": "stone", "count": 4}},
+  {"check": {"held": "stone"}},
+  {"check": {"log": "Exception", "present": false}}
+]

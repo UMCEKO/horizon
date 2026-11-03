@@ -458,6 +458,8 @@ impl Loading {
                 // The startup menu runs before the game opens a control socket,
                 // and before its sound engine (no clicks, no volume previews).
                 Event::ButtonClick | Event::CopyAgentDetails | Event::Volume(..) => {}
+                // The Java client starts with the world and takes the bindings at its login.
+                Event::ModKeys => {}
             }
         }
     }
@@ -589,6 +591,11 @@ impl Loading {
             }
             WindowEvent::MouseInput { state, button, .. } if self.menu.options_open => {
                 if state == ElementState::Pressed && self.menu.options.selected_key.is_some() {
+                    self.menu.options.held = horizon_client::keybinds::Modifier::active(
+                        self.menu.modifiers.control_key(),
+                        self.menu.modifiers.shift_key(),
+                        self.menu.modifiers.alt_key(),
+                    );
                     let events = self.menu.options.bind_mouse(&mut self.settings, button);
                     self.menu_option_events(events);
                 } else if matches!(button, MouseButton::Left | MouseButton::Right) {
@@ -672,6 +679,11 @@ impl Loading {
                             .shortcut(atlas, s, &mut self.menu.clipboard)
                     });
                     if !handled && let PhysicalKey::Code(key) = event.physical_key {
+                        self.menu.options.held = horizon_client::keybinds::Modifier::active(
+                            self.menu.modifiers.control_key(),
+                            self.menu.modifiers.shift_key(),
+                            self.menu.modifiers.alt_key(),
+                        );
                         let events = self.menu.options.key(
                             &mut self.settings,
                             atlas,

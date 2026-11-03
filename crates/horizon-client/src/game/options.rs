@@ -65,7 +65,11 @@ impl Game<'_> {
                     .ok_or("options-set KEY VALUE: missing the value")?;
                 self.settings = self.settings.with_option(key, value)?;
                 // As the options screen applies a change.
-                self.handle_option_events(vec![Event::Changed])?;
+                let mut events = vec![Event::Changed];
+                if key.starts_with("key_") {
+                    events.push(Event::ModKeys);
+                }
+                self.handle_option_events(events)?;
                 match *key {
                     "lang" => self.load_language(&self.settings.language.clone()),
                     "resourcePacks" | "incompatibleResourcePacks" => self.reload_packs(),
@@ -168,6 +172,7 @@ impl Game<'_> {
     }
     pub(super) fn options_key(&mut self, key: KeyCode, text: Option<&str>) -> Result<()> {
         let mut ui = std::mem::take(&mut self.ui.options);
+        ui.held = self.held_modifier();
         let events = ui.key(&mut self.settings, &self.gui.atlas, key, text);
         self.ui.options = ui;
         self.handle_option_events(events)
@@ -204,8 +209,18 @@ impl Game<'_> {
         self.ui.options.selected_key.is_some()
     }
     pub(super) fn options_bind_mouse(&mut self, button: MouseButton) -> Result<()> {
+        self.ui.options.held = self.held_modifier();
         let events = self.ui.options.bind_mouse(&mut self.settings, button);
         self.handle_option_events(events)
+    }
+    /// The physical modifiers held now, as a binding takes them.
+    fn held_modifier(&self) -> horizon_client::keybinds::Modifier {
+        let held = |a, b| self.physical_keys.contains(&a) || self.physical_keys.contains(&b);
+        horizon_client::keybinds::Modifier::active(
+            held(KeyCode::ControlLeft, KeyCode::ControlRight),
+            held(KeyCode::ShiftLeft, KeyCode::ShiftRight),
+            held(KeyCode::AltLeft, KeyCode::AltRight),
+        )
     }
     pub(super) fn handle_option_events(&mut self, events: Vec<Event>) -> Result<()> {
         for e in events {
@@ -220,6 +235,7 @@ impl Game<'_> {
                 Event::SliderDrag => {
                     self.apply_settings();
                 }
+                Event::ModKeys => self.java_apply_mod_keys(),
                 // Options.createSoundSliderOptionInstance: the preview plays
                 // only without a level (on the title screen's options).
                 Event::Volume(source, volume) if self.title.is_some() => {
