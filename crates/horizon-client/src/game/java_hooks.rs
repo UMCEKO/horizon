@@ -132,3 +132,27 @@ impl Game<'_> {
         let _ = (entity, canceled);
     }
 }
+
+/// What a server of this run tells a Java client joining from another process in configuration, when it has Java mods: the Java side's configuration frames.
+pub(super) fn java_frames() -> Option<std::sync::Arc<dyn Fn() -> Vec<Vec<u8>> + Send + Sync>> {
+    #[cfg(feature = "java-mods")]
+    return horizon_java_host::configured().then(|| {
+        std::sync::Arc::new(|| {
+            let mut frames = Vec::new();
+            if let Some(reply) =
+                horizon_java_host::get().and_then(|host| host.request("remote_config", &[]))
+            {
+                let mut reply = horizon_java_host::wire::In(&reply);
+                for _ in 0..reply.int().unwrap_or(0) {
+                    match reply.bytes() {
+                        Some(frame) => frames.push(frame.to_vec()),
+                        None => break,
+                    }
+                }
+            }
+            frames
+        }) as std::sync::Arc<dyn Fn() -> Vec<Vec<u8>> + Send + Sync>
+    });
+    #[cfg(not(feature = "java-mods"))]
+    None
+}

@@ -51,6 +51,14 @@ public final class BlockEntities {
         return HELD.computeIfAbsent(level, l -> new Long2ObjectOpenHashMap<>());
     }
 
+    static void reset() {
+        HELD.clear();
+        COPIES.clear();
+        FRESH.clear();
+        CHANGED_COPIES.clear();
+        UNSAVED.clear();
+    }
+
     static boolean ours(BlockState state) {
         return BootFacts.ownsBlock(state.getBlock());
     }
@@ -242,7 +250,10 @@ public final class BlockEntities {
         @SuppressWarnings("unchecked")
         var type = (net.minecraft.world.level.block.entity.BlockEntityType<T>) entity.getType();
         BlockEntityTicker<T> ticker = block.getTicker(level, state, type);
-        if (ticker != null) ticker.tick(level, entity.getBlockPos(), state, entity);
+        if (ticker == null) return;
+        long started = Profile.ON ? System.nanoTime() : 0;
+        ticker.tick(level, entity.getBlockPos(), state, entity);
+        if (Profile.ON) Profile.tick(type, System.nanoTime() - started);
     }
 
     /** `LevelChunk.getBlockEntity(pos, CHECK)`: the one held, or the saved form Horizon keeps for it, never a new one. */

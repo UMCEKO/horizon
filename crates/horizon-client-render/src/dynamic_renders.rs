@@ -133,6 +133,10 @@ pub fn set(pos: [i32; 3], draws: Vec<Draw>, now: i64) {
         },
     );
 }
+/// Whether a recording of block `old` no longer holds once the position becomes `new`: another block, or one with no block entity.
+pub fn stale(old: &str, new: &str, new_has_block_entity: bool) -> bool {
+    old != new || !new_has_block_entity
+}
 pub fn remove(pos: [i32; 3]) {
     if REGISTRY.read().unwrap().contains_key(&pos) {
         REGISTRY.write().unwrap().remove(&pos);
@@ -307,6 +311,53 @@ mod tests {
         );
         assert_eq!(REGISTRY.read().unwrap()[&[1, 2, 3]].since, 60);
         clear();
+    }
+
+    #[test]
+    fn a_recording_from_another_camera_replaces_the_positions_quads() {
+        clear();
+        let face = |texture: &str| Quad {
+            texture: texture.to_owned(),
+            corners: [[0.0; 5]; 4],
+            color: [0; 4],
+            light: [0; 4],
+        };
+        let draw = |quads: Vec<Quad>| Draw {
+            translucent: false,
+            ops: Vec::new(),
+            quads,
+            item: None,
+        };
+        set([4, 5, 6], vec![draw(vec![face("a:top")])], 1);
+        set(
+            [4, 5, 6],
+            vec![draw(vec![face("a:top"), face("a:side")])],
+            2,
+        );
+        let registry = REGISTRY.read().unwrap();
+        assert_eq!(registry[&[4, 5, 6]].draws[0].quads.len(), 2);
+        assert_eq!(registry[&[4, 5, 6]].since, 2);
+        drop(registry);
+        clear();
+    }
+
+    #[test]
+    fn a_block_change_to_air_drops_the_recorded_output() {
+        clear();
+        let draw = Draw {
+            translucent: false,
+            ops: Vec::new(),
+            quads: Vec::new(),
+            item: None,
+        };
+        set([7, 8, 9], vec![draw], 1);
+        assert!(stale("a:tank", "minecraft:air", false));
+        assert!(!stale("a:tank", "a:tank", true));
+        assert!(stale("a:tank", "a:tank", false));
+        if stale("a:tank", "minecraft:air", false) {
+            remove([7, 8, 9]);
+        }
+        assert!(is_empty());
     }
 
     #[test]

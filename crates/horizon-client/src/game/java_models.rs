@@ -613,14 +613,23 @@ impl Game<'_> {
         }
     }
 
+    /// As the window joins, before its chunks: the states drawn from block entity data, and columns holding them wait for the Java client's answer.
+    pub(in crate::game) fn java_client_arm(&mut self) {
+        let Some(resources) = client_resources() else {
+            return;
+        };
+        let Some(map) = horizon_java_host::bridge::STATES.get() else {
+            return;
+        };
+        dynamic_models::set_dynamic_states(horizon_states(&resources.states, &map.to_horizon));
+        dynamic_models::set_answering(true);
+    }
+
     /// As the Java client joins: the block states whose geometry it bakes and the items it draws, from what its boot's resource reload exported.
     pub(in crate::game) fn java_client_resources(&mut self) {
         let Some(resources) = client_resources() else {
             return;
         };
-        if let Some(map) = horizon_java_host::bridge::STATES.get() {
-            dynamic_models::set_dynamic_states(horizon_states(&resources.states, &map.to_horizon));
-        }
         ITEMS.with_borrow_mut(|items| {
             items.external = resources.external.clone();
             items.decorated = resources.decorated.clone();

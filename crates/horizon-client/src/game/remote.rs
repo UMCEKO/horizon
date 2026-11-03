@@ -454,9 +454,7 @@ impl Game<'_> {
             |a| (a.name.clone(), a.uuid),
         );
         self.server_packs_connect(local.is_none().then_some(address), user);
-        if local.is_some() {
-            self.java_client_font();
-        }
+        self.java_client_font();
         let session = match local {
             Some(pipe) => {
                 Session::connect_local(pipe, name, info.clone(), lang.clone(), root.clone())
@@ -1176,7 +1174,11 @@ impl Game<'_> {
                     registries,
                     name,
                     uuid,
+                    java,
                 } => {
+                    if java {
+                        self.java_remote_joined();
+                    }
                     self.set_registries(registries);
                     self.extras_joined();
                     // handleLogin: the level loading screen replaces any dialog.
@@ -1197,6 +1199,7 @@ impl Game<'_> {
                         remote.brand = brand;
                     }
                 }
+                Event::Java(frame) => self.java_wire_in(&frame),
                 Event::QuietCommands => {
                     if let Some(remote) = &mut self.remote {
                         remote.quiet_commands = true;
@@ -1698,6 +1701,18 @@ impl Game<'_> {
             }
         }
     }
+    /// A block changed here: what the Java client recorded for the old one stops drawing now, as the renderer does once the client removes the block entity; the Java client records the new one anew.
+    fn drop_recorded(&mut self, pos: [i32; 3], previous: BlockStateId, state: BlockStateId) {
+        if previous == state {
+            return;
+        }
+        horizon_client::dynamic_models::place(pos, None);
+        let facts = self.res.facts();
+        let (old, new) = (facts.get(previous), facts.get(state));
+        if horizon_client::dynamic_renders::stale(&old.name, &new.name, new.block_entity) {
+            horizon_client::dynamic_renders::remove(pos);
+        }
+    }
     fn set_block(&mut self, pos: [i32; 3], state: i32) {
         let state = BlockStateId(state.max(0) as u32);
         let previous = self.world.block(pos[0], pos[1], pos[2]);
@@ -1705,13 +1720,7 @@ impl Game<'_> {
             && self.world.set(pos[0], pos[1], pos[2], state).is_ok()
         {
             self.sync_block_entity((pos[0], pos[1], pos[2]), state);
-            if previous != state {
-                horizon_client::dynamic_models::place(pos, None);
-                // Another block has another block entity, if any: the Java client records it anew.
-                if self.res.facts().get(previous).name != self.res.facts().get(state).name {
-                    horizon_client::dynamic_renders::remove(pos);
-                }
-            }
+            self.drop_recorded(pos, previous, state);
             // LevelChunk.setBlockState removes the block entity of a block
             // that changes: the moving piston the client's moveBlocks made
             // stops when the server places what it moved (#3002).
@@ -5729,6 +5738,7 @@ impl Game<'_> {
         let air = self.world.air;
         if self.world.set(pos[0], pos[1], pos[2], air).is_ok() {
             self.world.block_entities.remove(&(pos[0], pos[1], pos[2]));
+            self.drop_recorded(pos, state, air);
         }
         self.mining = None;
     }
@@ -5878,7 +5888,14 @@ impl Game<'_> {
                     && (self.stack_in(self.selected).is_some() || self.offhand.is_some()))
                 && self.shelf_hit(&hit).is_some();
             let spectator = self.spectator();
-            let (result, changes) = if hand == Hand::Main && !spectator {
+            let java = if hand == Hand::Main && !spectator {
+                self.java_block_prediction(hit.pos)
+            } else {
+                None
+            };
+            let (result, changes) = if let Some(result) = java {
+                (result, DryUse::default())
+            } else if hand == Hand::Main && !spectator {
                 self.remote_block_reacts(&hit, held.as_ref())
             } else {
                 // useItemOn runs for the off hand too (useWithoutItem doesn't):

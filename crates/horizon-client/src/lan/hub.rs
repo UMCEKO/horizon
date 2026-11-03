@@ -620,6 +620,21 @@ impl Hub {
             g.sender.send(body.clone());
         }
     }
+    /// One frame of `horizon:java` for the Java client of the guest `uuid`.
+    pub fn send_java(&self, uuid: u128, frame: Vec<u8>) {
+        let body = C::CustomPayload(horizon_protocol::packets::configuration::CustomPayload {
+            channel: horizon_protocol::java::CHANNEL.into(),
+            data: frame,
+        })
+        .encode();
+        for g in self.guests.iter().filter(|g| g.java && g.uuid == uuid) {
+            g.sender.send(body.clone());
+        }
+    }
+    /// The guests that have a Java client of their own, in the order they joined.
+    pub fn java_guests(&self) -> impl Iterator<Item = u128> + '_ {
+        self.guests.iter().filter(|g| g.java).map(|g| g.uuid)
+    }
     /// `ServerPlayer.sendOverlayMessage` to every guest (the action bar).
     pub fn overlay_message(&self, content: Tag) {
         self.broadcast(&C::SystemChat(play::SystemChat {

@@ -24,6 +24,7 @@ mod instance_icons;
 mod instance_mods;
 mod instances_page;
 mod internet;
+mod java_mods_page;
 mod language_page;
 mod launch_page;
 mod line_edit;
@@ -91,7 +92,7 @@ impl Page {
     /// `HORIZON_LAUNCHER_PAGE=mods` (or `modpacks`, `shaders`, `servers`, `versions`, `notes`,
     /// `settings`) opens on that page, for screenshots; Home otherwise (`getting-ready`: Home
     /// preparing, `home::getting_ready_preview`; `sign-in`: the owner gate's sheet with a
-    /// made-up code, `owner_page::sign_in_preview`; `new-instance`: Home with the New instance
+    /// made-up code, `owner_page::sign_in_preview`; `java-mods`: Home with the Java mods panel open; `new-instance`: Home with the New instance
     /// dialog open on Modded; `edit-instance`: the selected one's Edit dialog; `worlds`, `packs`...: Home on that tab, `HomeTab::from_env`).
     fn from_env() -> Page {
         match std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() {
@@ -320,6 +321,7 @@ struct Launcher {
     world_packs: datapacks_page::WorldPacks,
     export: Option<export_page::ExportPanel>,
     launch: Option<launch_page::LaunchPanel>,
+    java_mods: Option<java_mods_page::JavaModsPanel>,
     importing: import_page::Importing,
     console: console_page::Console,
     /// What the window did when the game started (`while_playing.rs`).
@@ -521,6 +523,7 @@ impl Launcher {
             world_packs: datapacks_page::WorldPacks::default(),
             export: None,
             launch: None,
+            java_mods: None,
             importing: Default::default(),
             console: Default::default(),
             aside: while_playing::Aside::new(window.window_handle()),
@@ -563,6 +566,9 @@ impl Launcher {
         }
         if std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() == Ok("edit-instance") {
             this.open_instance_dialog(this.selected_instance().cloned());
+        }
+        if std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() == Ok("java-mods") {
+            this.toggle_java_mods();
         }
         // What the game and the launcher kept, if the player allows it and there is a server.
         telemetry::send_in_background();
@@ -820,6 +826,16 @@ impl Launcher {
                             self.client_error = Some(e);
                             continue;
                         }
+                        if horizon_launcher::java_mods::Config::load().enabled {
+                            if let Err(e) =
+                                horizon_launcher::java_mods::apply(&mut cmd, &tag, false, None)
+                            {
+                                self.client_error = Some(e);
+                                self.joining = None;
+                                self.quick_play = None;
+                                continue;
+                            }
+                        }
                         if let Some(code) = self.joining.take() {
                             if let Err(e) = backend::join_friend(&mut cmd, &code) {
                                 self.client_error = Some(e);
@@ -914,6 +930,8 @@ impl Launcher {
                 }
                 Msg::Updates(Err(e)) => self.update_error = Some(e),
                 Msg::NativeProgress(step) => self.native_step = Some(step),
+                Msg::JavaModsStep(label, fraction) => self.java_mods_step(label, fraction),
+                Msg::JavaModsDone(result) => self.java_mods_done(result),
                 Msg::Native(result) => {
                     self.native_step = None;
                     self.installed = backend::installed();
@@ -2591,7 +2609,8 @@ impl Launcher {
             .flex_col()
             .children(self.instance_row(1, cx))
             .children(self.export_panel(cx))
-            .children(self.launch_panel(cx));
+            .children(self.launch_panel(cx))
+            .children(self.java_mods_panel(cx));
         rows = match &java {
             Some(java) => rows.child(index_row(
                 2,

@@ -621,6 +621,7 @@ impl Game<'_> {
                     .then(|| translatable("multiplayer.disconnect.not_whitelisted", &[]))
             })),
             levels: self.level_shapes,
+            java_frames: super::java_hooks::java_frames(),
             owner_profile: launch.owner_profile.clone(),
             // IntegratedServer.initServer: the MOTD names the owner and the world.
             ..NetConfig::lan(
@@ -672,6 +673,8 @@ impl Game<'_> {
     fn stop_integrated(&mut self) -> Result<()> {
         // The close request: lifecycle observation stops.
         self.native_lifecycle.begin_close();
+        #[cfg(feature = "java-mods")]
+        self.java_server_stopping();
         // IntegratedServer.stopServer: teardownPublishedState.
         if let Some(s) = self.serving.take() {
             s.flags.published.store(0, Ordering::Relaxed);
@@ -694,6 +697,8 @@ impl Game<'_> {
         std::thread::sleep(Duration::from_millis(100));
         // ServerPlayer.disconnect: nobody is left in a bed.
         self.free_player_beds()?;
+        #[cfg(feature = "java-mods")]
+        self.java_close_levels()?;
         self.save_game()?;
         self.lan_close(false);
         self.save.flush()?;

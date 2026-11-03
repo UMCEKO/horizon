@@ -1,6 +1,6 @@
 //! Shapes of mods' blocks that depend on their block entity: the server's collisions from the server's Java block, the window's from the Java client's copy.
 
-use super::java_screens::live::{java_client_busy, java_shape_generation};
+use super::java_screens::live::{java_client_running, java_shape_generation};
 use super::*;
 use horizon_core::geometry::{Aabb, ShapeOp, Vec3, VoxelShape};
 use horizon_java_host::wire::{In, Out};
@@ -52,7 +52,7 @@ impl Game<'_> {
         let host = horizon_java_host::get()?;
         let generation = java_shape_generation();
         // While the Java client ticks in the background, the last answer stands rather than the window waiting.
-        let busy = java_client_busy();
+        let busy = java_client_running();
         let cached = CACHE.with_borrow(|c| {
             c.get(&pos)
                 .filter(|(s, g, _)| *s == state && (*g == generation || busy))
@@ -104,7 +104,9 @@ impl Game<'_> {
     /// The window's collisions take the Java client's shapes of blocks whose client copy changed since the last take.
     pub(super) fn java_client_collisions(&mut self) {
         let generation = java_shape_generation();
-        if self.remote.is_none() || java_client_busy() || COLLISIONS_TAKEN.get() == Some(generation)
+        if self.remote.is_none()
+            || java_client_running()
+            || COLLISIONS_TAKEN.get() == Some(generation)
         {
             return;
         }

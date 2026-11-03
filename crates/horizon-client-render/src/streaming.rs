@@ -796,6 +796,7 @@ impl Streaming {
     pub fn forget(&mut self, world: &mut World, x: i32, z: i32) -> Option<Arc<Chunk>> {
         self.lit.remove(&(x, z));
         self.meshed.remove(&(x, z));
+        crate::dynamic_models::forget_column((x, z));
         self.lighting.remove(&(x, z));
         // By key, not by a pass over every pending section: a moved or
         // shrunk storage forgets thousands of columns in one frame.
@@ -1172,6 +1173,7 @@ impl Streaming {
                 }
                 self.lit.remove(key);
                 self.meshed.remove(key);
+                crate::dynamic_models::forget_column(*key);
                 self.lighting.remove(key);
                 self.light_snapshots.remove(key);
             }
@@ -1444,6 +1446,17 @@ impl Streaming {
             let Some(region) = Self::region(world, x, z) else {
                 continue;
             };
+            // A column holding states drawn from block entity data waits for the Java client's answer, so it meshes once, whole.
+            if !self.meshed.contains(&(x, z))
+                && crate::dynamic_models::holds_first_mesh((x, z), || {
+                    world
+                        .chunks
+                        .get(&(x, z))
+                        .is_some_and(|chunk| crate::dynamic_models::column_has_dynamic(chunk))
+                })
+            {
+                continue;
+            }
             world.dirty_sections.take_column(x, z);
             for sy in sections.iter().map(|sy| sy as i32) {
                 let first = self.meshed.insert((x, z));

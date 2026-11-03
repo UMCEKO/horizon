@@ -259,6 +259,13 @@ impl Assets {
             .to_vec();
         fs::create_dir_all(&target).map_err(|e| e.to_string())?;
         crate::write_if_changed(&target.join("asset-index.json"), &bytes)?;
+        if let Some(id) = manifest
+            .get("assetIndex")
+            .and_then(|i| i.get("id"))
+            .and_then(Value::as_str)
+        {
+            crate::write_if_changed(&target.join("asset-index-id.txt"), id.as_bytes())?;
+        }
         Ok(Self {
             store,
             target,

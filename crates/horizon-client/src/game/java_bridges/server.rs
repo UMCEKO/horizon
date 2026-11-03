@@ -50,6 +50,12 @@ horizon_java_host::java_bridges! { table for Game<'static> {
         game.java_permission(&player.0)
     }
 
+    "dev/horizonlab/javamods/boot/Wire".wire
+    "(Ljava/lang/String;[B)V" =>
+    fn wire_send(_game, player: Text, frame: Bytes) -> () {
+        super::super::java_mods::java_wire_push(&player.0, frame.0);
+    }
+
     "net/minecraft/world/level/storage/PrimaryLevelData".isHardcore
     "()Z" =>
     fn world_data_hardcore(game) -> bool {

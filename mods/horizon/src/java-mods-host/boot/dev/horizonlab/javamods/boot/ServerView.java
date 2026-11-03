@@ -119,6 +119,8 @@ final class ServerView {
         set(PlayerList.class, players, "stats", new HashMap<>());
         set(PlayerList.class, players, "advancements", new HashMap<>());
         set(MinecraftServer.class, server, "playerList", players);
+        // The dedicated server's limits (players, distances) are its properties file's, which the game's own server reads from the same folder.
+        if (!client) set(server.getClass(), server, "settings", viewClass("net.minecraft.server.dedicated.DedicatedServerSettings", Object.class).getConstructor(Path.class).newInstance(Path.of("server.properties")));
         set(MinecraftServer.class, server, "tickRateManager", new ServerTickRateManager(server));
         if (players.getPlayers() == null) throw new IllegalStateException("the player list has no players");
         if (client) ClientLoader.attach(server);
@@ -189,6 +191,15 @@ final class ServerView {
         set(PlayerList.class, players, "whitelist", new UserWhiteList(folder.resolve("horizon_java_whitelist.json").toFile(), notices));
         set(PlayerList.class, players, "bans", new UserBanList(folder.resolve("horizon_java_bans.json").toFile(), notices));
         set(PlayerList.class, players, "ipBans", new IpBanList(folder.resolve("horizon_java_ip_bans.json").toFile(), notices));
+    }
+
+    @SuppressWarnings("unchecked")
+    static void closeWorld(MinecraftServer server) {
+        try {
+            ((Map<ResourceKey<Level>, ServerLevel>) get(MinecraftServer.class, server, "levels")).clear();
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     static void saveWorld(MinecraftServer server, Iterable<ServerLevel> levels) {

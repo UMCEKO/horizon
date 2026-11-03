@@ -1173,6 +1173,7 @@ impl Game<'_> {
         let net = NetConfig {
             levels: self.level_shapes,
             online: horizon_client::lan::OnlineMode::lan(),
+            java_frames: super::java_hooks::java_frames(),
             ..NetConfig::lan(settings.port, motd, MAX_PLAYERS)
         };
         self.lan_host(settings, net, config, Some(host_uuid))
@@ -1871,6 +1872,8 @@ impl Game<'_> {
         let tracking = host.hub.take_tracking();
         #[cfg(feature = "java-mods")]
         self.java_tracking(tracking);
+        #[cfg(feature = "java-mods")]
+        super::java_mods::java_wire_flush(&host.hub);
         #[cfg(not(feature = "java-mods"))]
         let _ = tracking;
         self.lan_flush_effects(&mut host);
@@ -1916,6 +1919,11 @@ impl Game<'_> {
         let Some(g) = host.hub.guest_mut(conn) else {
             return;
         };
+        #[cfg(feature = "java-mods")]
+        if g.java {
+            let uuid = g.uuid;
+            self.java_remote_join(uuid);
+        }
         let saved = owner
             .filter(|o| o.uuid == g.uuid)
             .and_then(|o| o.saved.take());

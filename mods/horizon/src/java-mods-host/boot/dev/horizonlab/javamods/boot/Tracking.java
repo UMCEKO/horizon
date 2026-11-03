@@ -32,6 +32,11 @@ public final class Tracking {
     private static final Map<UUID, Seen> PLAYERS = new HashMap<>();
     private static final Int2ObjectOpenHashMap<Set<UUID>> SEEN_BY = new Int2ObjectOpenHashMap<>();
 
+    static void reset() {
+        PLAYERS.clear();
+        SEEN_BY.clear();
+    }
+
     private static Seen seen(UUID player) {
         return PLAYERS.computeIfAbsent(player, id -> new Seen());
     }

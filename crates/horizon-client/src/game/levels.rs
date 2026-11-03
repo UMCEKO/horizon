@@ -438,6 +438,7 @@ impl Game<'_> {
             return self.tick_server(paused);
         }
         let (started, cpu) = (Instant::now(), horizon_client::spans::thread_cpu());
+        super::profile::begin_tick();
         let result = self.tick_server(paused);
         let wall = started.elapsed().as_secs_f32() * 1000.0;
         let cpu = horizon_client::spans::thread_cpu()
@@ -455,6 +456,7 @@ impl Game<'_> {
                 horizon_client::spans::describe(&spans)
             );
         }
+        self.profile_tick(wall, &spans);
         record(wall, cpu, spans);
         result
     }
@@ -557,9 +559,28 @@ impl Game<'_> {
         let back = self.dim;
         for dim in closing {
             self.enter_level(None, dim)?;
+            #[cfg(feature = "java-mods")]
+            self.java_level_closing();
             self.save_level(true)?;
             self.enter_level(None, back)?;
             self.levels.parked.remove(&dim);
+        }
+        Ok(())
+    }
+
+    /// The server closing: its players leave Java's server, then every level's columns unload from it.
+    #[cfg(feature = "java-mods")]
+    pub(super) fn java_close_levels(&mut self) -> Result<()> {
+        self.java_players_removed();
+        self.java_level_closing();
+        let back = self.dim;
+        let dims: Vec<Dim> = self.levels.parked.keys().copied().collect();
+        for dim in dims {
+            self.enter_level(None, dim)?;
+            self.java_level_closing();
+        }
+        if !self.levels.parked.is_empty() {
+            self.enter_level(None, back)?;
         }
         Ok(())
     }

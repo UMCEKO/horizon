@@ -12,8 +12,10 @@ import re
 import shlex
 import shutil
 import struct
+import platform
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -122,18 +124,18 @@ def assets_index(resources, index_id, root):
     return folder
 
 
-def write_args(run, home):
-    """What the host starts the JVM with, in absolute paths, as NeoForge's launcher arguments would be."""
+def args_lines(dist, libs, neoforge, client=None, server=None, assets=None):
+    """The lines of `horizon-java.args`: `client` is (NeoForge's client profile, its library jars), `server` the text of its `unix_args.txt`, `assets` (folder, index id)."""
     lines = []
-    if DIST == 'client':
-        _, neo, _, jars = oracle.client()
+    if dist == 'client':
+        neo, jars = client
         lines.append('dist client')
         lines.append('cp ' + ':'.join(map(str, jars)))
-        jvm = [a.replace('${library_directory}', str(home / 'libraries')) for a in neo['arguments']['jvm']]
+        jvm = [a.replace('${library_directory}', str(libs)) for a in neo['arguments']['jvm']]
         game = neo['arguments']['game']
     else:
-        args = (home / 'libraries' / 'net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text().splitlines()
-        libs = str(home / 'libraries')
+        args = server.splitlines()
+        home = libs.parent
         at = args.index('-classpath')
         lines.append('cp ' + ':'.join(f'{home}/{entry}' for entry in args[at + 1].strip().split(':')))
         jvm, game = [], []
@@ -154,10 +156,22 @@ def write_args(run, home):
             lines.append(f'jvm {jvm[i]}')
             i += 1
     lines += [f'prog {a}' for a in game]
-    lines.append(f'mod {home}/libraries/net/neoforged/neoforge/{NEOFORGE}/neoforge-{NEOFORGE}-universal.jar')
+    lines.append(f'mod {libs}/net/neoforged/neoforge/{neoforge}/neoforge-{neoforge}-universal.jar')
+    if dist == 'client':
+        folder, index_id = assets
+        lines += ['prog --assetsDir', f'prog {folder}', 'prog --assetIndex', f'prog {index_id}']
+    return lines
+
+
+def write_args(run, home):
+    """What the host starts the JVM with, in absolute paths, as NeoForge's launcher arguments would be."""
+    libs = home / 'libraries'
     if DIST == 'client':
+        _, neo, _, jars = oracle.client()
         index_id = json.loads((lab.GAME / 'manifest.json').read_text())['assetIndex']['id']
-        lines += ['prog --assetsDir', f'prog {assets_index(lab.RESOURCES, index_id, JARS)}', 'prog --assetIndex', f'prog {index_id}']
+        lines = args_lines('client', libs, NEOFORGE, client=(neo, jars), assets=(assets_index(lab.RESOURCES, index_id, JARS), index_id))
+    else:
+        lines = args_lines('server', libs, NEOFORGE, server=(libs / 'net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text())
     (run / 'horizon-java.args').write_text('\n'.join(lines) + '\n')
 
 
@@ -715,6 +729,251 @@ def bench(args):
                 print('stock', row['total_ms'], row['rss_mb'], flush=True)
 
 
+# ---- a player's install: `install` builds a self-contained folder from a pack of mod jars, `launch` starts the game from it ----
+
+JDK_FEATURE = 25
+INSTALL_FORMAT = 1
+FETCH_HEADERS = {'User-Agent': 'horizon-java-mods/1', 'Accept': 'application/json'}
+
+
+def default_cache():
+    return Path(os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache') / 'horizon' / 'java-mods'
+
+
+def jdk_platform(system=None, machine=None):
+    """Adoptium's (os, architecture) names for this machine."""
+    system = system or sys.platform
+    machine = (machine or platform.machine()).lower()
+    names = {'linux': 'linux', 'darwin': 'mac'}
+    arches = {'x86_64': 'x64', 'amd64': 'x64', 'aarch64': 'aarch64', 'arm64': 'aarch64'}
+    if system not in names or machine not in arches:
+        sys.exit(f'no JDK {JDK_FEATURE} download for {system}/{machine}: pass --java with one')
+    return names[system], arches[machine]
+
+
+def jdk_query(os_name, arch):
+    return (f'https://api.adoptium.net/v3/assets/latest/{JDK_FEATURE}/hotspot?architecture={arch}'
+            f'&image_type=jdk&os={os_name}&vendor=eclipse')
+
+
+def jdk_asset(listing):
+    """The archive to fetch out of Adoptium's answer: its link, name and published sha256."""
+    package = listing[0]['binary']['package']
+    if not package['name'].endswith(('.tar.gz', '.tgz')):
+        sys.exit(f'unexpected JDK archive {package["name"]}')
+    return {'name': package['name'], 'url': package['link'], 'sha256': package['checksum'], 'release': listing[0]['release_name']}
+
+
+def download(url, dest, sha256=None):
+    """`url` into `dest`, kept: an existing file with the right checksum is reused."""
+    def digest(path):
+        return lab.digest(path, 'sha256')
+    if dest.exists() and (sha256 is None or digest(dest) == sha256):
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_name(dest.name + f'.{os.getpid()}.part')
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=FETCH_HEADERS), timeout=120) as r, part.open('wb') as out:
+            shutil.copyfileobj(r, out)
+        if sha256 and digest(part) != sha256:
+            sys.exit(f'{url}: sha256 mismatch')
+        part.replace(dest)
+    finally:
+        part.unlink(missing_ok=True)
+    return dest
+
+
+def jdk_major(home):
+    """The feature version a JDK folder says it is (its `release` file), or None."""
+    try:
+        text = (Path(home) / 'release').read_text()
+    except OSError:
+        return None
+    found = re.search(r'JAVA_VERSION="?(\d+)', text)
+    return int(found.group(1)) if found and (Path(home) / 'bin' / 'java').exists() else None
+
+
+def find_jdk(root):
+    """The JDK home inside an extracted archive (`jdk-25+8/`, or `jdk-25+8/Contents/Home` on macOS)."""
+    for candidate in (*sorted(Path(root).glob('*/Contents/Home')), *sorted(Path(root).glob('*')), Path(root)):
+        if jdk_major(candidate):
+            return candidate
+    return None
+
+
+def provide_jdk(install, cache, given):
+    """The JDK 25 home the install uses: `given`, or Temurin downloaded into the cache (sha256-checked) and extracted into the install."""
+    if given:
+        home = Path(given).resolve()
+        if jdk_major(home) != JDK_FEATURE:
+            sys.exit(f'{home} is not a JDK {JDK_FEATURE} (no bin/java, or its release file says {jdk_major(home)})')
+        return home
+    target = install / 'jdk'
+    marker = target / '.horizon-jdk'
+    os_name, arch = jdk_platform()
+    with urllib.request.urlopen(urllib.request.Request(jdk_query(os_name, arch), headers=FETCH_HEADERS), timeout=60) as r:
+        asset = jdk_asset(json.load(r))
+    if marker.exists() and marker.read_text() == asset['sha256'] and find_jdk(target):
+        return find_jdk(target)
+    archive = download(asset['url'], cache / 'jdk' / asset['name'], asset['sha256'])
+    building = install / f'jdk.{os.getpid()}'
+    shutil.rmtree(building, ignore_errors=True)
+    building.mkdir(parents=True)
+    with tarfile.open(archive) as tar:
+        tar.extractall(building, filter='data')
+    (building / '.horizon-jdk').write_text(asset['sha256'])
+    shutil.rmtree(target, ignore_errors=True)
+    building.rename(target)
+    print(f'JDK: {asset["release"]}')
+    return find_jdk(target)
+
+
+def sync_file(source, dest):
+    """`dest` as a copy (a hard link when the disk allows) of `source`, untouched when it already is one."""
+    if dest.is_symlink() or (dest.exists() and (dest.stat().st_size, dest.stat().st_mtime_ns) != (source.stat().st_size, source.stat().st_mtime_ns)):
+        dest.unlink()
+    if dest.exists():
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(source, dest)
+    except OSError:
+        shutil.copy2(source, dest)
+
+
+def sync_tree(source, dest):
+    for path in sorted(source.rglob('*')):
+        if path.is_file():
+            sync_file(path.resolve(), dest / path.relative_to(source))
+
+
+def sync_links(folder, targets):
+    """`folder` holds exactly relative symlinks to `targets`."""
+    folder.mkdir(parents=True, exist_ok=True)
+    wanted = {t.name for t in targets}
+    for old in folder.iterdir():
+        if old.name not in wanted and (old.is_symlink() or old.suffix == '.jar'):
+            old.unlink()
+    for target in targets:
+        link = folder / target.name
+        want = Path(os.path.relpath(target, folder))
+        if not link.is_symlink() or Path(os.readlink(link)) != want:
+            link.unlink(missing_ok=True)
+            link.symlink_to(want)
+
+
+def write_if_changed(path, text):
+    if not path.exists() or path.read_text() != text:
+        path.write_text(text)
+
+
+def run_name(dedicated):
+    return 'server' if dedicated else 'client'
+
+
+def install_pack(args):
+    """Builds the install folder; running it again brings the folder up to date and downloads nothing it has."""
+    pack = sorted(Path(args.pack).glob('*.jar'))
+    if not pack:
+        sys.exit(f'{args.pack} holds no .jar files')
+    resources = Path(args.resources).resolve()
+    if not (resources / 'asset-index.json').is_file():
+        sys.exit(f'{resources} is not a prepared Horizon (no asset-index.json): prepare it first')
+    manifest = Path(args.minecraft) / 'manifest.json'
+    if not manifest.is_file():
+        sys.exit(f'{manifest} is missing: it names the asset index of the Minecraft install')
+    index_id = json.loads(manifest.read_text())['assetIndex']['id']
+    jars = {name: Path(args.host_jars) / name for name in ('horizon-java-host.jar', 'horizon-java-boot.jar', 'horizon-java-plugin.jar')}
+    for jar in jars.values():
+        if not jar.is_file():
+            sys.exit(f'{jar} is missing: build the Java side with `java_mods.py build`')
+    install = Path(args.out).resolve()
+    install.mkdir(parents=True, exist_ok=True)
+    cache = Path(args.cache) if args.cache else default_cache()
+    java = provide_jdk(install, cache, args.java)
+    # NeoForge's installers run on this JDK, and keep their downloads in the cache.
+    os.environ['PATH'] = f'{java}/bin{os.pathsep}{os.environ["PATH"]}'
+    oracle.LOCAL = cache / 'neoforge'
+    oracle.LOCAL.mkdir(parents=True, exist_ok=True)
+    client_home, neo, _, client_jars = oracle.client()
+    server_home = oracle.install()
+    libs = install / 'libraries'
+    for home in (client_home, server_home):
+        sync_tree(home / 'libraries', libs)
+    for name, jar in jars.items():
+        sync_file(jar.resolve(), install / 'host' / name)
+    mods = install / 'mods'
+    mods.mkdir(exist_ok=True)
+    for old in mods.glob('*.jar'):
+        if old.name not in {j.name for j in pack}:
+            old.unlink()
+    for jar in pack:
+        sync_file(jar.resolve(), mods / jar.name)
+    assets = assets_index(resources, index_id, install)
+    mod_links = [*sorted(mods.glob('*.jar')), install / 'host' / 'horizon-java-boot.jar', install / 'host' / 'horizon-java-plugin.jar']
+    for dedicated in (False, True):
+        run = install / run_name(dedicated)
+        run.mkdir(exist_ok=True)
+        sync_links(run / 'mods', mod_links)
+        if not (run / 'libraries').is_symlink():
+            (run / 'libraries').symlink_to(Path('..') / 'libraries')
+        if dedicated:
+            lines = args_lines('server', libs, NEOFORGE, server=(server_home / 'libraries/net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text())
+            if args.accept_eula:
+                write_if_changed(run / 'eula.txt', 'eula=true\n')
+        else:
+            lines = args_lines('client', libs, NEOFORGE, client=(neo, [libs / j.relative_to(client_home / 'libraries') for j in client_jars]), assets=(assets, index_id))
+        write_if_changed(run / 'horizon-java.args', '\n'.join(lines) + '\n')
+    record = {'format': INSTALL_FORMAT, 'neoforge': NEOFORGE, 'java': str(java), 'resources': str(resources),
+              'mods': [j.name for j in pack]}
+    write_if_changed(install / 'install.json', json.dumps(record, indent=2) + '\n')
+    print(f'{install}: {len(pack)} mods, NeoForge {NEOFORGE}, JDK at {java}')
+    if not (install / 'server' / 'eula.txt').exists():
+        print('the dedicated server needs its folder\'s eula.txt to say eula=true (or install with --accept-eula)')
+
+
+def launch_env(install, record, dedicated, base):
+    """The environment the game needs for the Java mods of `install`; a home folder the caller set stays theirs, the rest live in the install."""
+    java = record['java']
+    env = dict(base)
+    library_path = 'DYLD_LIBRARY_PATH' if sys.platform == 'darwin' else 'LD_LIBRARY_PATH'
+    drivers = '/run/opengl-driver/lib' if Path('/run/opengl-driver/lib').is_dir() else ''
+    env[library_path] = ':'.join(p for p in (f'{java}/lib/server', f'{java}/lib', drivers, base.get(library_path, '')) if p)
+    env.update(JAVA_HOME=java, HORIZON_NEOFORGE=record['neoforge'], HORIZON_JAVA_HOST_JAR=str(install / 'host' / 'horizon-java-host.jar'),
+               HORIZON_JAVA_RUN=str(install / run_name(dedicated)))
+    for name, folder in (('HORIZON_HOME', 'horizon'), ('HORIZON_LAUNCHER_HOME', 'launcher'), ('XDG_DATA_HOME', 'xdg-data'), ('XDG_CONFIG_HOME', 'xdg-config')):
+        if not env.get(name):
+            env[name] = str(install / 'home' / folder)
+    return env
+
+
+def launch_command(game, record, game_args):
+    """The game's command line: the install's prepared resources unless the caller names theirs."""
+    command = [str(game)]
+    if '--resources' not in game_args:
+        command += ['--resources', record['resources']]
+    return command + game_args
+
+
+def launch(args, game_args):
+    install = Path(args.install).resolve()
+    try:
+        record = json.loads((install / 'install.json').read_text())
+    except OSError:
+        sys.exit(f'{install} is not an install: run `java_mods.py install` first')
+    dedicated = '--dedicated' in game_args
+    game = Path(args.game or oracle.ROOT / 'target' / 'fast' / 'horizon-client')
+    if not game.is_file():
+        sys.exit(f'{game} is not a file: build the game with --features java-mods, or pass --game')
+    env = launch_env(install, record, dedicated, os.environ)
+    cwd = install / 'server' if dedicated else Path(env['HORIZON_HOME'])
+    cwd.mkdir(parents=True, exist_ok=True)
+    for name in ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME'):
+        Path(env[name]).mkdir(parents=True, exist_ok=True)
+    os.chdir(cwd)
+    os.execve(game, launch_command(game, record, game_args), env)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -756,7 +1015,25 @@ def main():
     c = sub.add_parser('surface')
     c.add_argument('--jars', required=True)
     c.add_argument('--top', type=int, default=40)
-    args = parser.parse_args()
+    i = sub.add_parser('install', help='a self-contained install folder (JDK, NeoForge, mods, host) from a folder of mod jars')
+    i.add_argument('--pack', required=True, help='a folder of mod jars')
+    i.add_argument('--out', required=True, help='the install folder, made or brought up to date')
+    i.add_argument('--java', help='a JDK 25 home; default: Eclipse Temurin, downloaded and checksum-verified')
+    i.add_argument('--cache', help=f'downloads kept here; default {default_cache()}')
+    i.add_argument('--resources', default=str(lab.RESOURCES), help='the prepared Horizon resources')
+    i.add_argument('--minecraft', default=str(lab.GAME), help='the Minecraft 26.3 install horizon-prepare read (its manifest.json)')
+    i.add_argument('--host-jars', default=str(JARS), help='the built horizon-java-{host,boot,plugin}.jar')
+    i.add_argument('--accept-eula', action='store_true', help='write eula.txt for the dedicated server: you agree to https://aka.ms/MinecraftEULA')
+    n = sub.add_parser('launch', allow_abbrev=False, help='starts the game from an install; other arguments go to the game (--dedicated starts the server)')
+    n.add_argument('--install', required=True)
+    n.add_argument('--game', help='the horizon-client built with --features java-mods')
+    args, extra = parser.parse_known_args()
+    if args.command == 'launch':
+        return launch(args, [a for a in extra if a != '--'])
+    if extra:
+        parser.error(f'unrecognized arguments: {" ".join(extra)}')
+    if args.command == 'install':
+        return install_pack(args)
     LOCAL.mkdir(parents=True, exist_ok=True)
     JARS.mkdir(parents=True, exist_ok=True)
     # Several agents build and check at once, and a build replaces the class folders.

@@ -88,6 +88,8 @@ pub struct Guest {
     pub latency: Arc<AtomicI32>,
     pub info: ClientInformation,
     pub brand: String,
+    /// The client has a Java client of its own, which hears of the Java mods over `horizon:java`.
+    pub java: bool,
     /// The chunk radius this client is sent.
     pub view_distance: i32,
     pub position: [f64; 3],
@@ -319,6 +321,7 @@ impl Guest {
             view_distance: (i32::from(j.info.view_distance)).clamp(2, view_distance),
             info: j.info,
             brand: j.brand,
+            java: j.java,
             position,
             previous_position: position,
             yaw: 0.0,
@@ -1123,6 +1126,7 @@ mod tests {
                 properties: Vec::new(),
                 info: ClientInformation::new(8),
                 brand: String::new(),
+                java: false,
                 sender: PlayerSender::new(tx, Arc::new(std::sync::atomic::AtomicUsize::new(0))),
                 latency: Arc::new(AtomicI32::new(0)),
                 address: "127.0.0.1:1".parse().unwrap(),

@@ -13,6 +13,9 @@ public interface MinecraftActions {
     @Invoker("startUseItem")
     void horizon$startUseItem();
 
+    @Invoker("pick")
+    void horizon$pick(float partialTicks);
+
     @Invoker("pickBlockOrEntity")
     void horizon$pickBlockOrEntity();
 }

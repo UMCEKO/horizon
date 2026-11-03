@@ -131,6 +131,81 @@ public final class BlockRenders {
 
     static void forget() {
         DIRTY.clear();
+        PROBED.clear();
+        DEPENDENT.clear();
+        camera = null;
+    }
+
+    private static volatile Vec3 camera;
+    /** Positions whose renderer draws different faces from another side: what a camera move records again. */
+    private static final it.unimi.dsi.fastutil.longs.LongOpenHashSet DEPENDENT = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+
+    /** The window's camera, as `extractRenderState` gets it each frame: renderers choose faces by it, so those in range record again when its block changes. */
+    static void camera(double x, double y, double z) {
+        camera = new Vec3(x, y, z);
+        var around = camera;
+        var it = DEPENDENT.iterator();
+        while (it.hasNext()) {
+            var pos = BlockPos.of(it.nextLong());
+            if (Vec3.atCenterOf(pos).distanceToSqr(around) <= 64.0 * 64.0) dirty(pos);
+        }
+    }
+
+    /** The camera state a renderer sees for a block, the real camera or it mirrored through the block's centre. */
+    private static CameraRenderState cameraAt(BlockPos pos, boolean mirrored) {
+        var state = new CameraRenderState();
+        var real = camera != null ? camera : Vec3.atCenterOf(pos).add(0, 1, 4);
+        state.pos = mirrored ? Vec3.atCenterOf(pos).scale(2).subtract(real) : real;
+        state.blockPos = BlockPos.containing(state.pos);
+        state.initialized = true;
+        return state;
+    }
+
+    /** Whether what is drawn differs between the camera and its mirror through the centre: such a renderer chooses its faces by the camera. */
+    static boolean dependsOnCamera(java.util.function.Function<Vec3, List<Draw>> render, Vec3 center, Vec3 camera) {
+        return hash(render.apply(camera)) != hash(render.apply(center.scale(2).subtract(camera)));
+    }
+
+    private static final it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap PROBED = new it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap();
+
+    /** Vanilla draws every block entity each frame from the client's state, which a mod's payload changes without a block update: what a renderer draws now against what it drew at the last look, and a position whose drawing differs is recorded again. */
+    static void probe(ClientLevel level, java.util.Collection<BlockEntity> entities) {
+        for (var entity : entities) {
+            var renderer = renderers().get(entity.getType());
+            if (renderer == null || entity.isRemoved()) {
+                DEPENDENT.remove(entity.getBlockPos().asLong());
+                continue;
+            }
+            long at = entity.getBlockPos().asLong();
+            if (DIRTY.contains(at)) continue;
+            long hash;
+            try {
+                hash = hash(sample(renderer, entity, cameraAt(entity.getBlockPos(), false)));
+            } catch (Throwable t) {
+                failedOnce("a block entity renderer looked at " + entity.getBlockPos() + " and", t);
+                continue;
+            }
+            boolean seen = PROBED.containsKey(at);
+            if (PROBED.put(at, hash) != hash && seen) dirty(entity.getBlockPos());
+        }
+        ITEMS.clear();
+
+    }
+
+    /** What a piece draws, not where its pose has moved it: a turning piece keeps its hash. */
+    static long hash(List<Draw> draws) {
+        long h = draws.size();
+        for (var d : draws) {
+            h = h * 31 + d.quads.size();
+            for (var q : d.quads) {
+                h = h * 31 + q.texture().hashCode();
+                h = h * 31 + java.util.Arrays.hashCode(q.xyzuv());
+                h = h * 31 + java.util.Arrays.hashCode(q.color());
+                h = h * 31 + java.util.Arrays.hashCode(q.light());
+            }
+            if (d.item != null) h = h * 31 + net.minecraft.world.item.ItemStack.hashItemAndComponents((net.minecraft.world.item.ItemStack) d.item[0]);
+        }
+        return h;
     }
 
     // --- Recording
@@ -545,10 +620,7 @@ public final class BlockRenders {
 
     /** Each piece of the block entity's drawing at successive ticks, with the client's ticker run between them on the state it puts back after. */
     private static List<List<Draw>> samples(ClientLevel level, BlockEntity entity, BlockEntityRenderer<?, ?> renderer) {
-        var camera = new CameraRenderState();
-        camera.pos = Vec3.atCenterOf(entity.getBlockPos()).add(0, 1, 4);
-        camera.blockPos = BlockPos.containing(camera.pos);
-        camera.initialized = true;
+        var camera = cameraAt(entity.getBlockPos(), false);
         long base = level.getGameTime();
         var samples = new ArrayList<List<Draw>>();
         var restore = fields(entity);
@@ -942,14 +1014,25 @@ public final class BlockRenders {
             try {
                 samples = samples(level, entity, renderer);
             } catch (Throwable t) {
-                System.err.println("Horizon: the block entity renderer at " + BlockPos.of(at) + " failed: " + t);
+                failedOnce("the block entity renderer at " + BlockPos.of(at), t);
             }
         }
         if (samples == null || samples.get(0).isEmpty()) {
+            if (entity == null || renderer == null) DEPENDENT.remove(at);
             out.writeInt(-1);
             return;
         }
         var first = samples.get(0);
+        PROBED.put(at, hash(first));
+        try {
+            var mirror = cameraAt(BlockPos.of(at), true);
+            if (hash(sample(renderer, entity, mirror)) != hash(first)) DEPENDENT.add(at);
+            else DEPENDENT.remove(at);
+        } catch (Throwable t) {
+            DEPENDENT.remove(at);
+        } finally {
+            ITEMS.clear();
+        }
         boolean aligned = true;
         for (var sample : samples) aligned &= sample.size() == first.size();
         out.writeInt(first.size());

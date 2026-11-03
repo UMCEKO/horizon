@@ -1243,7 +1243,7 @@ fn complete_assets_in(
 /// chosen in the launcher, the official launcher's (or HORIZON_MINECRAFT_DIR), the folder
 /// other launchers' files are linked into and Horizon's own download, then every launcher's
 /// default folder.
-fn minecraft_folders() -> Vec<PathBuf> {
+pub(crate) fn minecraft_folders() -> Vec<PathBuf> {
     let mut folders: Vec<PathBuf> = Settings::load().minecraft_dir.into_iter().collect();
     folders.extend([
         horizon_prepare::artifacts::minecraft_dir(None),
@@ -2259,7 +2259,12 @@ pub fn need_prepared(tag: &str) -> Result<(), String> {
 /// the gate, a sign-in that can't be renewed (no network, expired) still lets the game start,
 /// offline.
 pub fn client(tag: &str) -> Result<Command, String> {
-    let (session, offline) = account::session_for_game(&game_home(), false)
+    client_with(tag, false)
+}
+
+/// [`client`], where `offline_without_owner` is the developer option's pass (`Settings::dev_offline`).
+pub fn client_with(tag: &str, offline_without_owner: bool) -> Result<Command, String> {
+    let (session, offline) = account::session_for_game(&game_home(), offline_without_owner)
         .map_err(|refused| format!("{refused} Sign in with `horizon-launcher account sign-in`."))?;
     need_prepared(tag)?;
     complete_assets(tag);
@@ -2853,6 +2858,10 @@ pub enum Msg {
     NativeProgress(String),
     /// The native-mods build ended: the version built, or why not.
     Native(Result<String, String>),
+    /// A step of the Java mods install, and how far it is when known (`java_mods::install`).
+    JavaModsStep(String, Option<f32>),
+    /// The Java mods install ended: what it says, or why not.
+    JavaModsDone(Result<String, String>),
     /// A Java instance's game is ready to start (`java_game`, wrapped): the instance's id and
     /// game folder, and the command or why not.
     /// A Java instance's game ready to start, and its variables for the post-exit command.

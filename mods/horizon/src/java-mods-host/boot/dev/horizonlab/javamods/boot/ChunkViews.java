@@ -52,6 +52,10 @@ public final class ChunkViews {
         return view != null ? view : view(level, x, z);
     }
 
+    static void reset() {
+        VIEWS.clear();
+    }
+
     static void forget(Level level) {
         VIEWS.remove(level);
     }

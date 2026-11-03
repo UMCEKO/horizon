@@ -32,8 +32,9 @@ struct Watch {
     all: bool,
 }
 
-/// What a watcher must re-read: every column, or only these keys.
+/// What a watcher must re-read: everything of a map it has not seen, every column, or only these keys.
 pub enum Touched {
+    Fresh,
     All,
     Keys(Vec<Key>),
 }
@@ -55,12 +56,12 @@ impl ChunkMap {
             watch.touched.push(key);
         }
     }
-    /// Starts logging writes on the first call (all columns are touched); later calls return what was written since.
+    /// Starts logging writes on the first call; later calls return what was written since.
     pub fn take_touched(&mut self) -> Touched {
         match &mut self.watch {
             None => {
                 self.watch = Some(Watch::default());
-                Touched::All
+                Touched::Fresh
             }
             Some(watch) if watch.all => {
                 watch.all = false;
@@ -142,7 +143,7 @@ mod tests {
     fn a_watcher_takes_only_the_columns_written_since_its_last_take() {
         let mut map = ChunkMap::default();
         map.insert((0, 0), Arc::new(Chunk::empty(0, 0)));
-        assert!(matches!(map.take_touched(), Touched::All));
+        assert!(matches!(map.take_touched(), Touched::Fresh));
         assert!(matches!(map.take_touched(), Touched::Keys(k) if k.is_empty()));
         map.insert((1, 0), Arc::new(Chunk::empty(1, 0)));
         Arc::make_mut(map.get_mut(&(0, 0)).unwrap()).lit = true;

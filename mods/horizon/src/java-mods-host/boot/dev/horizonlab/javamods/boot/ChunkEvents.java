@@ -33,6 +33,10 @@ final class ChunkEvents {
     // Views of columns leaving the level: their attachments are saved after Horizon has let the column go.
     private static final Map<ServerLevel, Long2ObjectLinkedOpenHashMap<LevelChunk>> LEAVING = new IdentityHashMap<>();
 
+    static void reset() {
+        LEAVING.clear();
+    }
+
     static void run(ServerLevel level, DataInputStream in, DataOutputStream out) throws IOException {
         switch (in.readInt()) {
             case DATA_LOAD -> dataLoad(level, in);

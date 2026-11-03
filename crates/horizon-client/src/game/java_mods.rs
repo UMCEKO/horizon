@@ -713,6 +713,30 @@ impl Game<'_> {
         self.java_chunks_full(&joined);
     }
 
+    /// `MinecraftServer.stopServer`'s first step: `ServerStopping`, before the players leave.
+    pub(super) fn java_server_stopping(&mut self) {
+        if self.remote.is_none() && JAVA_SERVER.with_borrow(|s| s.started) {
+            self.java_level_call("server_stopping", |_| {});
+        }
+    }
+
+    /// `PlayerList.removeAll`: the players still in Java's server log out.
+    pub(super) fn java_players_removed(&mut self) {
+        if self.remote.is_none() && JAVA_SERVER.with_borrow(|s| s.started) {
+            self.java_level_call("players_removed", |_| {});
+        }
+    }
+
+    /// `ServerLevel.unload` of every column of the level in place, as `MinecraftServer.stopServer` does before `saveAllChunks`.
+    pub(super) fn java_level_closing(&mut self) {
+        if !self.java_level_running() {
+            return;
+        }
+        let all: Vec<Arc<horizon_client::chunk::Chunk>> =
+            self.world.chunks.values().cloned().collect();
+        self.java_chunks_changed(&[], &all);
+    }
+
     /// Whether this level's chunks are the Java server's: it started, and the level caught up on its chunks.
     pub(super) fn java_level_running(&self) -> bool {
         self.remote.is_none()
@@ -886,12 +910,14 @@ impl Game<'_> {
     pub(super) fn java_server_tick(&mut self, post: bool) {
         self.java_level_call("server_tick", |out| out.bool(post));
         self.java_drain_block_events();
+        self.java_wire_flush_lan();
     }
 
     /// `LevelTickEvent`, with this level in place.
     pub(super) fn java_level_tick(&mut self, post: bool) {
         self.java_level_call("level_tick", |out| out.bool(post));
         self.java_drain_block_events();
+        self.java_wire_flush_lan();
     }
 
     /// `PlayerLoggedOutEvent`, and that player's view gone.
@@ -961,6 +987,7 @@ struct JavaServer {
 thread_local! {
     static JAVA_SERVER: std::cell::RefCell<JavaServer> = Default::default();
     static BLOCK_EVENTS: std::cell::RefCell<Vec<BlockEvent>> = const { std::cell::RefCell::new(Vec::new()) };
+    static WIRE_OUT: std::cell::RefCell<Vec<(u128, Vec<u8>)>> = const { std::cell::RefCell::new(Vec::new()) };
     static PUMPED_UNLOADS: std::cell::RefCell<Vec<Arc<horizon_client::chunk::Chunk>>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
@@ -1001,5 +1028,51 @@ pub(super) fn note_neighbor_changed(
 pub(super) fn note_block_tick(pos: BlockPos, state: BlockStateId, random: bool) {
     if horizon_java_host::bridge::java_block(state) {
         push_event(if random { 3 } else { 2 }, pos, java_id(state), 0, 0);
+    }
+}
+
+/// A frame of the Java side for the Java client of a player in another process; the hub carries it at the next flush.
+pub(super) fn java_wire_push(player: &str, frame: Vec<u8>) {
+    if let Ok(uuid) = u128::from_str_radix(&player.replace('-', ""), 16) {
+        WIRE_OUT.with_borrow_mut(|out| out.push((uuid, frame)));
+    }
+}
+
+/// Sends what the Java side wrote for remote Java clients since the last flush, in the order it wrote it.
+pub(super) fn java_wire_flush(hub: &horizon_client::lan::hub::Hub) {
+    for (uuid, frame) in WIRE_OUT.take() {
+        hub.send_java(uuid, frame);
+    }
+}
+
+impl Game<'_> {
+    /// A guest connected with Java mods of its own: its Java client hears of its login over its connection.
+    pub(super) fn java_remote_join(&mut self, uuid: u128) {
+        let Some(host) = horizon_java_host::get() else {
+            return;
+        };
+        let mut out = Out::default();
+        out.long((uuid >> 64) as i64);
+        out.long(uuid as i64);
+        host.request("remote_join", &out.0);
+    }
+
+    /// A frame from a guest's Java client: the packet it wrote, for the player's listener at its next turn.
+    pub(super) fn java_remote_in(&mut self, uuid: u128, frame: &[u8]) {
+        let Some(host) = horizon_java_host::get() else {
+            return;
+        };
+        let mut out = Out::default();
+        out.long((uuid >> 64) as i64);
+        out.long(uuid as i64);
+        out.bytes(frame);
+        host.request("remote_in", &out.0);
+    }
+
+    /// The frames the Java side wrote while the hub was in use elsewhere, now that it is free.
+    pub(super) fn java_wire_flush_lan(&self) {
+        if let Some(host) = &self.lan {
+            java_wire_flush(&host.hub);
+        }
     }
 }

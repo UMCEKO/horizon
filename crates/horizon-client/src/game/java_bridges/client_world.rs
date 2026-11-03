@@ -117,6 +117,9 @@ impl Game<'_> {
     /// Brings the Java client's shared columns up to the window's chunks: only the columns written since the last call are re-read.
     pub(in crate::game) fn java_publish_client_world(&mut self) {
         let touched = self.world.chunks.take_touched();
+        if matches!(touched, Touched::Fresh) {
+            *ANNOUNCED.lock().unwrap() = None;
+        }
         let fresh = VIEW.read().unwrap().is_none();
         let keys = match touched {
             Touched::Keys(keys) if !fresh => {

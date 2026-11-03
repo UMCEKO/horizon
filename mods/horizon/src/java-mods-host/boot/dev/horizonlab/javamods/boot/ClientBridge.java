@@ -157,9 +157,13 @@ public final class ClientBridge {
             var in = new DataInputStream(new ByteArrayInputStream(input));
             return switch (op) {
                 case "client_connect" -> connect(in);
+                case "client_connect_remote" -> RemoteClient.connect(in);
+                case "client_wire_take" -> RemoteClient.take();
+                case "client_remote_frame" -> RemoteClient.configure(in);
                 case "client_click" -> click(in);
                 case "client_tick" -> tick(in);
                 case "client_frame" -> frame(in);
+                case "client_hud_frame" -> hudFrame(in);
                 case "client_input" -> input(in);
                 case "client_scroll" -> scroll(in);
                 case "client_font" -> font(in);
@@ -188,7 +192,9 @@ public final class ClientBridge {
     }
 
     public static void send(Packet<?> packet) {
-        if (player != null && !sentByWindow(packet)) Clients.toServer(player, packet);
+        if (player == null || sentByWindow(packet)) return;
+        if (RemoteClient.active()) RemoteClient.outbound(Wire.toServer(packet));
+        else Clients.toServer(player, packet);
     }
 
     /** The window moves this player and acts for it, and Horizon's own client tells the server, so these would say it twice. */
@@ -280,17 +286,23 @@ public final class ClientBridge {
             filter.setAccessible(true);
             registries = (RegistryAccess.Frozen) filter.invoke(null, local.registryAccess(), registries.listRegistryKeys());
         }
+        begin(id, name, registries, features, null);
+        Clients.join(id);
+        return new byte[] {1};
+    }
+
+    /** The play phase's listener over a mock connection, with the registries configuration gave. */
+    static void begin(UUID id, String name, RegistryAccess.Frozen registries, net.minecraft.world.flag.FeatureFlagSet features, net.minecraft.client.multiplayer.ServerData server) throws Exception {
+        Minecraft minecraft = Minecraft.getInstance();
         var network = new Connection(PacketFlow.CLIENTBOUND);
         set(Connection.class, network, "channel", new EmbeddedChannel());
         NetworkRegistry.configureMockConnection(network);
         var telemetry = new WorldSessionTelemetryManager(TelemetryEventSender.DISABLED, false, null, null, UUID.randomUUID());
-        var cookie = new CommonListenerCookie(new LevelLoadTracker(), new GameProfile(id, name), telemetry, registries, features, null, null, null, new HashMap<>(), null, Map.of(), ServerLinks.EMPTY, Map.of(), false, ConnectionType.NEOFORGE);
+        var cookie = new CommonListenerCookie(new LevelLoadTracker(), new GameProfile(id, name), telemetry, registries, features, null, server, null, new HashMap<>(), null, Map.of(), ServerLinks.EMPTY, Map.of(), false, ConnectionType.NEOFORGE);
         listener = new ClientPacketListener(minecraft, network, cookie);
         set(Connection.class, network, "packetListener", listener);
         Clients.registries = registries;
         player = id;
-        Clients.join(id);
-        return new byte[] {1};
     }
 
     /** The level changed, as `Minecraft.setLevel`: what this client knew of the last one is gone, as a real client's chunks go. */
@@ -301,6 +313,7 @@ public final class ClientBridge {
         TICKERS.clear();
         STATES.clear();
         CHUNKS.clear();
+        HELD.clear();
     }
 
     /** `LevelChunk.updateBlockEntityTicker`: one ticker a block entity keeps, its `getTicker` asked again when its state changes. */
@@ -359,8 +372,8 @@ public final class ClientBridge {
         long at = pos.asLong();
         var held = BLOCK_ENTITIES.get(at);
         if (held != null && !held.isRemoved()) return held;
-        BlockState state = STATES.get(at);
-        if (state == null || !hasChunk(pos.getX() >> 4, pos.getZ() >> 4) || !state.hasBlockEntity() || !(state.getBlock() instanceof EntityBlock block)) return null;
+        BlockState state = hasChunk(pos.getX() >> 4, pos.getZ() >> 4) ? blockState(level, pos) : null;
+        if (state == null || !state.hasBlockEntity() || !(state.getBlock() instanceof EntityBlock block)) return null;
         BlockEntity copy = block.newBlockEntity(pos, state);
         if (copy == null) return null;
         copy.setLevel(level);
@@ -414,11 +427,21 @@ public final class ClientBridge {
         return held != null ? held : ClientWorld.state(pos);
     }
 
+    private static final Map<Long, ArrayList<net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket>> HELD = new HashMap<>();
+
     @SuppressWarnings("unchecked")
     private static void receive() throws ReflectiveOperationException {
         var updated = new ArrayList<BlockPos>();
         for (Packet<?> packet : Clients.takeForClient(player)) {
-            if (packet instanceof net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket update) updated.add(update.getPos());
+            if (packet instanceof net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket update) {
+                var at = update.getPos();
+                // A chunk's block entities travel with its data: until the window has the chunk, this client has no block entity to give theirs to.
+                if (!hasChunk(at.getX() >> 4, at.getZ() >> 4)) {
+                    HELD.computeIfAbsent(net.minecraft.world.level.ChunkPos.pack(at.getX() >> 4, at.getZ() >> 4), key -> new ArrayList<>()).add(update);
+                    continue;
+                }
+                updated.add(at);
+            }
             try {
                 ((Packet<PacketListener>) packet).handle(listener);
             } catch (RunningOnDifferentThreadException e) {
@@ -450,9 +473,143 @@ public final class ClientBridge {
         if (in.readBoolean()) moved = new Motion(in.readDouble(), in.readDouble(), in.readDouble(), in.readFloat(), in.readFloat(), in.readDouble(), in.readDouble(), in.readDouble(), in.readBoolean());
         ClientSounds.finished(in);
         if (player == null) return new byte[0];
+        turnPlayer(minecraft);
         receive();
+        chunkEvents();
+        cameraAndPick(minecraft);
         for (int n = 0; n < ticks; n++) minecraft.tick();
-        return status();
+        windowTicks++;
+        if (minecraft.level != null) BlockRenders.probe(minecraft.level, BLOCK_ENTITIES.values());
+        cameraAndPick(minecraft);
+        return status(hud());
+    }
+
+    private static byte[] lastHud;
+
+    /** The frame after a tick, in `runTick`'s order: the camera aligns with the player (mods aim from it), then the crosshair target is picked. `Camera.update` also builds the culling frustum on the GPU device, so only its alignment step runs. */
+    private static void cameraAndPick(Minecraft minecraft) {
+        if (minecraft.player == null || minecraft.level == null) return;
+        var camera = minecraft.gameRenderer.mainCamera();
+        if (camera.entity() == null) camera.setEntity(minecraft.player);
+        ((dev.horizonlab.javamods.boot.mixin.CameraAccess) camera).horizon$align(1.0F);
+        ((dev.horizonlab.javamods.boot.mixin.MinecraftActions) minecraft).horizon$pick(1.0F);
+    }
+
+    private static final boolean HUD_DEBUG = System.getenv("HORIZON_JAVA_DEBUG") != null;
+    private static String lastHudDebug;
+
+    /** The recording of the mods' HUD layers with a frame's own timing; `tick` is `ONE`. */
+    private static byte[] record(Minecraft minecraft, net.minecraft.client.DeltaTracker delta) throws IOException {
+        var recorder = new Recorder();
+        if (minecraft.player != null && minecraft.level != null) {
+            int x = (int) minecraft.mouseHandler.getScaledXPos(minecraft.getWindow());
+            int y = (int) minecraft.mouseHandler.getScaledYPos(minecraft.getWindow());
+            var graphics = new GuiGraphicsExtractor(minecraft, recorder, x, y);
+            minecraft.gui.hud.extractRenderState(graphics, delta);
+            graphics.extractDeferredElements(x, y, delta.getGameTimeDeltaPartialTick(false));
+        }
+        return recorder.bytes();
+    }
+
+    /** True while the HUD is changing: the window also records frames with their own timing, between the tick's recordings. */
+    private static boolean animating;
+    private static byte[] lastRecorded;
+    private static int ticksSinceFrame;
+
+    /** A recording of either source: differing from the one before it means the HUD is changing, two alike end it. */
+    private static void noted(byte[] bytes) {
+        boolean was = animating;
+        animating = !java.util.Arrays.equals(bytes, lastRecorded);
+        lastRecorded = bytes;
+        if (animating && !was) ticksSinceFrame = 0;
+    }
+
+    private record FrameTime(float partial, float delta) implements net.minecraft.client.DeltaTracker {
+        @Override
+        public float getGameTimeDeltaTicks() {
+            return delta;
+        }
+
+        @Override
+        public float getGameTimeDeltaPartialTick(boolean ignoreFrozenGame) {
+            return partial;
+        }
+
+        @Override
+        public float getRealtimeDeltaTicks() {
+            return delta;
+        }
+    }
+
+    /** `Hud.extractRenderState` for one window frame while the HUD animates: Jade's box size follows the frame's delta, so the window records it as vanilla would draw it. Answers whether it still animates, then the recording if it differs from the last. */
+    private static byte[] hudFrame(DataInputStream in) throws Exception {
+        size(in);
+        float partial = in.readFloat();
+        float delta = in.readFloat();
+        Minecraft minecraft = Minecraft.getInstance();
+        byte[] bytes = record(minecraft, new FrameTime(partial, delta));
+        ticksSinceFrame = 0;
+        noted(bytes);
+        boolean changed = !java.util.Arrays.equals(bytes, lastHud);
+        if (changed) lastHud = bytes;
+        var out = new ByteArrayOutputStream();
+        var data = new DataOutputStream(out);
+        data.writeBoolean(animating);
+        data.writeBoolean(changed);
+        if (changed) {
+            data.writeInt(bytes.length);
+            data.write(bytes);
+        }
+        return out.toByteArray();
+    }
+
+    /** `Hud.extractRenderState` once a tick, as the frame after it would see it: only the mods' layers draw (`HudLayersMixin`), then `RenderGuiEvent.Post`. Null when it equals what the window already has. */
+    private static byte[] hud() {
+        Minecraft minecraft = Minecraft.getInstance();
+        try {
+            byte[] bytes = record(minecraft, net.minecraft.client.DeltaTracker.ONE);
+            if (HUD_DEBUG) {
+                String seen = String.valueOf(minecraft.hitResult == null ? null : minecraft.hitResult.getType()) + " " + bytes.length;
+                if (!seen.equals(lastHudDebug)) System.err.println("Horizon: HUD target " + seen + (minecraft.hitResult instanceof net.minecraft.world.phys.BlockHitResult b ? " " + b.getBlockPos() : ""));
+                lastHudDebug = seen;
+            }
+            noted(bytes);
+            // No frame recording for two ticks: the window isn't serving them, and the tick's own carry the HUD.
+            if (animating && ++ticksSinceFrame > 2) animating = false;
+            if (java.util.Arrays.equals(bytes, lastHud)) return null;
+            lastHud = bytes;
+            if (HUD_DEBUG && lookAt >= 0) {
+                System.err.println("Horizon: HUD changed " + (windowTicks - lookAt) + " tick(s) after the window's look changed");
+                lookAt = -1;
+            }
+            return bytes;
+        } catch (Throwable t) {
+            System.err.println("Horizon: a mod's HUD layer failed");
+            t.printStackTrace();
+            return null;
+        }
+    }
+
+    private static int windowTicks;
+    private static int lookAt = -1;
+    private static float lookYaw = Float.NaN, lookPitch = Float.NaN;
+
+    /** `MouseHandler.handleAccumulatedMovement`'s `turnPlayer`, per frame in vanilla: the window's look reaches the player before the camera and pick that precede the tick, with the previous rotation moved along so it doesn't interpolate. */
+    private static void turnPlayer(Minecraft minecraft) {
+        Motion motion = moved;
+        LocalPlayer local = minecraft.player;
+        if (motion == null || local == null) return;
+        float dy = motion.yaw - local.getYRot();
+        float dx = motion.pitch - local.getXRot();
+        local.setYRot(motion.yaw);
+        local.setXRot(motion.pitch);
+        local.yRotO += dy;
+        local.xRotO += dx;
+        if (HUD_DEBUG && (motion.yaw != lookYaw || motion.pitch != lookPitch)) {
+            lookYaw = motion.yaw;
+            lookPitch = motion.pitch;
+            lookAt = windowTicks;
+        }
     }
 
     private record Motion(double x, double y, double z, float yaw, float pitch, double dx, double dy, double dz, boolean ground) {}
@@ -460,14 +617,12 @@ public final class ClientBridge {
     /** The native movement's last result this client hasn't applied yet. */
     private static Motion moved;
 
-    /** `LocalPlayer.move`: the window's movement code is the motion authority, so the player takes where it moved and looks. */
+    /** `LocalPlayer.move`: the window's movement code is the motion authority, so the player takes where it moved; its look came in `turnPlayer`. */
     public static void move(LocalPlayer local) {
         Motion motion = moved;
         if (motion == null) return;
         moved = null;
         local.setPos(motion.x, motion.y, motion.z);
-        local.setYRot(motion.yaw);
-        local.setXRot(motion.pitch);
         local.setDeltaMovement(motion.dx, motion.dy, motion.dz);
         local.setOnGround(motion.ground);
     }
@@ -484,6 +639,8 @@ public final class ClientBridge {
     private static final byte SWAP_HANDS = 9;
     private static final byte HOTBAR = 10;
     private static final byte CHUNK = 11;
+    private static final byte WIRE = 12;
+    private static final byte CAMERA = 13;
 
     private static double cursorX, cursorY;
 
@@ -527,11 +684,9 @@ public final class ClientBridge {
                     if (minecraft.player != null && !minecraft.player.isSpectator()) minecraft.getConnection().send(new net.minecraft.network.protocol.game.ServerboundPlayerActionPacket(
                             net.minecraft.network.protocol.game.ServerboundPlayerActionPacket.Action.SWAP_ITEM_WITH_OFFHAND, BlockPos.ZERO, net.minecraft.core.Direction.DOWN));
                 }
-                case CHUNK -> {
-                    int x = in.readInt(), z = in.readInt();
-                    if (in.readBoolean()) chunkArrived(x, z);
-                    else chunkLeft(x, z);
-                }
+                case CAMERA -> BlockRenders.camera(in.readDouble(), in.readDouble(), in.readDouble());
+                case WIRE -> RemoteClient.inbound(in.readNBytes(in.readInt()));
+                case CHUNK -> CHUNK_EVENTS.add(new int[] {in.readInt(), in.readInt(), in.readBoolean() ? 1 : 0});
                 case HOTBAR -> {
                     int slot = in.readInt();
                     if (minecraft.player != null) minecraft.player.getInventory().setSelectedSlot(slot);
@@ -539,6 +694,21 @@ public final class ClientBridge {
                 default -> throw new IllegalStateException("input event");
             }
         }
+    }
+
+    private static final java.util.ArrayList<int[]> CHUNK_EVENTS = new java.util.ArrayList<>();
+    private static final java.util.ArrayList<int[]> TOLD = new java.util.ArrayList<>();
+
+    /** The window's chunk arrivals and drops, applied after the packets of the tick so a level they belong to exists, as chunk packets follow the login. */
+    private static void chunkEvents() {
+        if (Minecraft.getInstance().level == null) return;
+        for (int[] event : CHUNK_EVENTS) {
+            if (event[2] == 1) {
+                chunkArrived(event[0], event[1]);
+                TOLD.add(new int[] {event[0], event[1]});
+            } else chunkLeft(event[0], event[1]);
+        }
+        CHUNK_EVENTS.clear();
     }
 
     /** `ClientChunkCache.replaceWithPacketData`'s part after the data: the column's entities tick, and `ChunkEvent.Load` fires. */
@@ -552,6 +722,16 @@ public final class ClientBridge {
             if ((pos.getX() >> 4) == x && (pos.getZ() >> 4) == z) blockEntity(level, pos);
         }
         var pos = new net.minecraft.world.level.ChunkPos(x, z);
+        var held = HELD.remove(net.minecraft.world.level.ChunkPos.pack(x, z));
+        if (held != null) {
+            for (var update : held) {
+                update.handle(listener);
+                shapes++;
+                RESHAPED.add(update.getPos().asLong());
+                ClientModels.dirty(update.getPos());
+                BlockRenders.dirty(update.getPos());
+            }
+        }
         level.onChunkLoaded(pos);
         var chunk = ChunkViews.get(level, x, z);
         if (chunk != null) net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.level.ChunkEvent.Load(chunk, false));
@@ -567,6 +747,7 @@ public final class ClientBridge {
             level.unload(chunk);
         }
         CHUNKS.remove(net.minecraft.world.level.ChunkPos.pack(x, z));
+        HELD.remove(net.minecraft.world.level.ChunkPos.pack(x, z));
         var pos = new net.minecraft.world.level.ChunkPos(x, z);
         BLOCK_ENTITIES.entrySet().removeIf(entry -> {
             if (!net.minecraft.world.level.ChunkPos.containing(BlockPos.of(entry.getKey())).equals(pos)) return false;
@@ -599,7 +780,18 @@ public final class ClientBridge {
     }
 
     private static boolean clicking;
+
+    static boolean clicking() {
+        return clicking;
+    }
     private static int clickCanceled;
+    private static int blockUse;
+
+    /** `MultiPlayerGameMode.useItemOn`'s answer for the main hand during a click: 0 none, 1 passed, 2 success, 3 consumed. */
+    public static void blockUsed(net.minecraft.world.InteractionHand hand, net.minecraft.world.InteractionResult result) {
+        if (!clicking || hand != net.minecraft.world.InteractionHand.MAIN_HAND || blockUse != 0) return;
+        blockUse = result instanceof net.minecraft.world.InteractionResult.Success ? 2 : result.consumesAction() ? 3 : 1;
+    }
 
     /** The first canceled `InteractionKeyMappingTriggered` of a click: 1, or 2 and 3 for a main or off hand to swing. */
     private static void clicked(net.neoforged.neoforge.client.event.InputEvent.InteractionKeyMappingTriggered event) {
@@ -611,7 +803,7 @@ public final class ClientBridge {
     private static byte[] click(DataInputStream in) throws Exception {
         int kind = in.readInt();
         Minecraft minecraft = Minecraft.getInstance();
-        if (player == null || minecraft.player == null || minecraft.level == null) return new byte[] {0};
+        if (player == null || minecraft.player == null || minecraft.level == null) return new byte[] {4}; // not run: the window acts alone
         net.minecraft.world.phys.HitResult hit;
         if (in.readBoolean()) {
             var pos = BlockPos.of(in.readLong());
@@ -626,6 +818,7 @@ public final class ClientBridge {
         minecraft.crosshairPickEntity = null;
         clicking = true;
         clickCanceled = 0;
+        blockUse = 0;
         try {
             switch (kind) {
                 case 0 -> actions.horizon$startAttack();
@@ -636,7 +829,7 @@ public final class ClientBridge {
             clicking = false;
             minecraft.hitResult = previous;
         }
-        return new byte[] {(byte) clickCanceled};
+        return new byte[] {(byte) clickCanceled, (byte) blockUse};
     }
 
     private static boolean scrollCanceled;
@@ -652,7 +845,7 @@ public final class ClientBridge {
         return new byte[] {(byte) (scrollCanceled ? 1 : 0)};
     }
 
-    private static byte[] status() throws IOException {
+    private static byte[] status(byte[] hud) throws IOException {
         Screen screen = Minecraft.getInstance().gui.screen();
         if (screen != null && screen != lastScreen) opened++;
         lastScreen = screen;
@@ -661,10 +854,23 @@ public final class ClientBridge {
         out.writeBoolean(screen != null);
         out.writeInt(opened);
         out.writeBoolean(screen != null && screen.isPauseScreen());
-        ClientSounds.take(out);
-        out.writeInt(shapes);
+        // The counts lead so the window reads them without parsing the sound events after.
         out.writeInt(ClientModels.pending());
         out.writeInt(BlockRenders.pending());
+        out.writeInt(TOLD.size());
+        for (int[] column : TOLD) {
+            out.writeInt(column[0]);
+            out.writeInt(column[1]);
+        }
+        TOLD.clear();
+        ClientSounds.take(out);
+        out.writeInt(shapes);
+        out.writeBoolean(hud != null);
+        if (hud != null) {
+            out.writeInt(hud.length);
+            out.write(hud);
+        }
+        out.writeBoolean(animating);
         out.writeBoolean(CreativeTabs.ready());
         return bytes.toByteArray();
     }
@@ -694,7 +900,8 @@ public final class ClientBridge {
         size(in);
         events(in);
         receive();
-        return status();
+        chunkEvents();
+        return status(null);
     }
 
     /** Dev: how many of the code-built block models the reload baked have parts. */
@@ -713,11 +920,21 @@ public final class ClientBridge {
     }
 
     /** The window left its world: no screen, no level, no player, until it joins another. */
+    static void localServer(boolean local) throws ReflectiveOperationException {
+        set(Minecraft.class, Minecraft.getInstance(), "isLocalServer", local);
+    }
+
+    static void leaveFor() throws ReflectiveOperationException {
+        leave();
+    }
+
     private static byte[] leave() throws ReflectiveOperationException {
         Minecraft minecraft = Minecraft.getInstance();
+        RemoteClient.left();
         levelChanged();
-        // The integrated server's stop is Horizon's, which runs the server's own hooks: the client only leaves it.
-        // `disconnectFromWorld` of a local server: the saving screen while it stops, then the title screen, which is the window's; so are server resource packs.
+        CHUNK_EVENTS.clear();
+        TOLD.clear();
+        // The integrated server's stop is Horizon's, which runs the server's own hooks: the client only leaves it, with the saving screen and then no screen, as the title screen is the window's.
         minecraft.disconnect(new net.minecraft.client.gui.screens.GenericMessageScreen(net.minecraft.client.gui.Gui.SAVING_LEVEL), true);
         minecraft.gui.setScreen(null);
         ClientModels.forget();
@@ -727,6 +944,9 @@ public final class ClientBridge {
         listener = null;
         moved = null;
         lastScreen = null;
+        lastHud = null;
+        lastRecorded = null;
+        animating = false;
         ClientSounds.forget();
         Clients.registries = null;
         return new byte[] {1};

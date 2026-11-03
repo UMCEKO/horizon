@@ -159,6 +159,8 @@ public final class Sprites {
     private static Index index(Identifier texture) {
         return INDEX.computeIfAbsent(texture, id -> {
             if (!(Minecraft.getInstance().getTextureManager().getTexture(id) instanceof TextureAtlas atlas) || !(atlas.getTextureView() instanceof View view)) return null;
+            // A plain texture stands as an atlas with nothing stitched in it.
+            if (TEXTURES.get(id) == atlas) return null;
             var cells = new java.util.HashMap<Integer, List<TextureAtlasSprite>>();
             int columns = (view.width() + CELL - 1) / CELL;
             for (var sprite : atlas.getTextures().values()) {

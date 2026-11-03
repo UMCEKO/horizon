@@ -798,6 +798,7 @@ impl Game<'_> {
                 Vec::new()
             },
             owner_profile: None,
+            java_frames: super::java_hooks::java_frames(),
         };
         let config = HubConfig {
             allow_flight: props.allow_flight,
@@ -1154,6 +1155,12 @@ impl Game<'_> {
                     }
                 }
             }
+            // Horizon's own, on the console only: the JVM's flight recording written now (profile.rs).
+            "profile" if rest == ["dump"] => match self.profile_dump() {
+                Ok(path) => log("INFO", &format!("Profile written to {}", path.display())),
+                Err(e) => log("ERROR", &format!("profile dump: {e}")),
+            },
+            "profile" => log("INFO", "profile dump"),
             "save-all" => {
                 self.console_reply(Text::translate("commands.save.saving", &[]));
                 match self.save_game() {
@@ -1617,7 +1624,16 @@ impl Game<'_> {
     fn stop_dedicated(&mut self) -> Result<()> {
         // The close request starts before player and world saves.
         self.native_lifecycle.begin_close();
+        #[cfg(feature = "java-mods")]
+        self.java_server_stopping();
         log("INFO", "Stopping server");
+        // The process exits without the JVM's own shutdown, so its exit dump never fires.
+        if super::profile::dir().is_some() {
+            match self.profile_dump() {
+                Ok(path) => log("INFO", &format!("Profile written to {}", path.display())),
+                Err(e) => log("WARN", &format!("profile dump: {e}")),
+            }
+        }
         log("INFO", "Saving players");
         if let Some(host) = self.lan.take() {
             for g in &host.hub.guests {
@@ -1645,6 +1661,8 @@ impl Game<'_> {
         log("INFO", "Saving worlds");
         // ServerPlayer.disconnect: nobody is left in a bed.
         self.free_player_beds()?;
+        #[cfg(feature = "java-mods")]
+        self.java_close_levels()?;
         self.save_game()?;
         self.log_saved_levels();
         // Only a successful final save closes the epoch; storage is still held.

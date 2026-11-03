@@ -87,7 +87,7 @@ impl Folders {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Os {
     Linux,
     MacOs,

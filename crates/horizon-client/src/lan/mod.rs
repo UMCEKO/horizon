@@ -69,6 +69,8 @@ pub struct Joined {
     pub properties: Vec<horizon_protocol::packets::login::Property>,
     pub info: ClientInformation,
     pub brand: String,
+    /// The client answered the server's `horizon:java` probe: it has Java mods of its own.
+    pub java: bool,
     pub sender: PlayerSender,
     /// Smoothed keep-alive round trip in milliseconds.
     pub latency: Arc<AtomicI32>,
@@ -192,6 +194,8 @@ pub struct NetConfig {
     /// client whose `minecraft:brand` isn't Horizon's is turned away during
     /// configuration. A brand can be spoofed: a gate, not security.
     pub horizon_clients_only: bool,
+    /// The server has a Java side for mods: clients with a Java client of their own are told, and get its configuration (these frames) in configuration and its packets over `horizon:java`.
+    pub java_frames: Option<Arc<dyn Fn() -> Vec<Vec<u8>> + Send + Sync>>,
     /// The shapes of the world's levels: their dimension types go to
     /// clients when the world's data packs changed them.
     pub levels: crate::chunk::LevelShapes,
@@ -225,6 +229,7 @@ impl NetConfig {
             code_of_conducts: Vec::new(),
             server_links: Vec::new(),
             horizon_clients_only: false,
+            java_frames: None,
             levels: crate::chunk::LevelShapes::VANILLA,
             owner_profile: None,
         }

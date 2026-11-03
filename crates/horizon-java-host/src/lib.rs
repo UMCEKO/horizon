@@ -1,6 +1,7 @@
 //! Real NeoForge and real mod jars in a JVM embedded in this process (`docs/java-mods.md`).
 
 pub mod bridge;
+pub mod profile;
 pub mod shapes;
 pub mod values_bench;
 pub mod wire;
@@ -31,6 +32,9 @@ extern "system" fn n_on_event(mut env: JNIEnv, _c: JClass, s: JString) {
 /// The embedded JVM's memory, as a pack's launcher sets it: Rust holds the world, so Java keeps only mods' state (`docs/java-mods.md`).
 pub const MEMORY: &[&str] = &["-Xmx640m"];
 
+/// The platform's classpath separator; the `cp` line of the args file uses it too.
+const CP_SEP: char = if cfg!(windows) { ';' } else { ':' };
+
 /// The JVM options, classpath and FML arguments `java_mods.py` wrote for this run, one `kind value` per line.
 pub fn create_vm(run_dir: &str) -> (JavaVM, Vec<String>) {
     let args = std::fs::read_to_string(format!("{run_dir}/horizon-java.args")).unwrap();
@@ -40,12 +44,17 @@ pub fn create_vm(run_dir: &str) -> (JavaVM, Vec<String>) {
     for option in MEMORY {
         b = b.option(*option);
     }
+    if let Some(dir) = profile::dir() {
+        for option in profile::jfr_options(dir) {
+            b = b.option(option);
+        }
+    }
     let mut prog = vec!["--gameDir".to_string(), run_dir.to_string()];
     for line in args.lines() {
         match line.split_once(' ') {
             Some(("jvm", option)) => b = b.option(option),
             Some(("cp", classpath)) => {
-                b = b.option(format!("-Djava.class.path={classpath}:{host_jar}"))
+                b = b.option(format!("-Djava.class.path={classpath}{CP_SEP}{host_jar}"))
             }
             Some(("prog", arg)) => prog.push(arg.to_string()),
             _ => {}
@@ -378,6 +387,12 @@ impl Host {
         }
     }
 
+    /// The JVM's side of the profile since the last take (`be=... lock=...`), a `profile_dump` to `path` when given.
+    pub fn profile(&self, op: &str, input: &[u8]) -> Option<String> {
+        let out = self.request_untimed(op, input)?;
+        String::from_utf8(out).ok()
+    }
+
     /// Whether the item is one a Java mod registered.
     pub fn owns_item(&self, id: &str) -> bool {
         self.items.owned.contains(id)
@@ -437,6 +452,15 @@ impl Host {
 
     /// One call into `GameBridge`; None when it threw, which its own stack trace explains.
     pub fn request(&self, op: &str, input: &[u8]) -> Option<Vec<u8>> {
+        let started = profile::dir().map(|_| std::time::Instant::now());
+        let out = self.request_untimed(op, input);
+        if let Some(started) = started {
+            profile::record_call(op, started.elapsed());
+        }
+        out
+    }
+
+    fn request_untimed(&self, op: &str, input: &[u8]) -> Option<Vec<u8>> {
         self.attach();
         let mut env = self.vm.attach_current_thread_permanently().ok()?;
         env.with_local_frame(8, |env| -> jni::errors::Result<_> {

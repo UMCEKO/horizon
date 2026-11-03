@@ -25,6 +25,8 @@ public final class Clients {
     /** Whether a block's geometry comes from its block entity's data, so its clients need that data; set where the client classes exist. */
     static volatile java.util.function.Predicate<net.minecraft.world.level.block.state.BlockState> dynamic = state -> false;
     private static final java.util.Set<UUID> JOINING = new java.util.HashSet<>();
+    /** The players whose Java client is in another process: their packets go over their connection. */
+    private static final java.util.Set<UUID> REMOTE = new java.util.HashSet<>();
 
     static synchronized void configuration(Configuration server) {
         configuration = server;
@@ -41,12 +43,35 @@ public final class Clients {
         TO_SERVER.computeIfAbsent(player, id -> new ArrayDeque<>());
     }
 
+    /** A player on another process has a Java client from now on, which hears of its login over the connection. */
+    static synchronized void joinRemote(UUID player) {
+        REMOTE.add(player);
+        join(player);
+    }
+
+    static synchronized boolean remote(UUID player) {
+        return REMOTE.contains(player);
+    }
+
+    /** The packets a remote client hears of arrive in this queue; the server's own side of this JVM has nothing to do with them. */
+    static synchronized void expect(UUID player) {
+        TO_CLIENT.computeIfAbsent(player, id -> new ArrayDeque<>());
+    }
+
+    /** A packet that came over the connection for the client of this JVM. */
+    static synchronized void deliver(UUID player, Packet<?> packet) {
+        var queue = TO_CLIENT.get(player);
+        if (queue != null) queue.add(packet);
+    }
+
     /** True once for a client that just joined, which the server then sends what a login sends. */
     static synchronized boolean joining(UUID player) {
         return JOINING.remove(player);
     }
 
     static synchronized void leave(UUID player) {
+        REMOTE.remove(player);
+        Wire.forget(player);
         JOINING.remove(player);
         TO_CLIENT.remove(player);
         TO_SERVER.remove(player);
@@ -57,7 +82,9 @@ public final class Clients {
         var queue = TO_CLIENT.get(player);
         if (queue == null) return false;
         // Still in configuration: play packets start with its login, which sends what it missed.
-        if (!JOINING.contains(player)) queue.add(packet);
+        if (JOINING.contains(player)) return true;
+        if (REMOTE.contains(player)) Wire.toClient(player, packet);
+        else queue.add(packet);
         return true;
     }
 
@@ -85,6 +112,11 @@ public final class Clients {
     private static final java.util.Map<net.minecraft.server.level.ServerLevel, it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet> CHANGED = new java.util.IdentityHashMap<>();
 
     private static final java.util.Map<net.minecraft.server.level.ServerLevel, it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet> RESHAPED = new java.util.IdentityHashMap<>();
+
+    static synchronized void reset() {
+        CHANGED.clear();
+        RESHAPED.clear();
+    }
 
     /** `ChunkHolder.blockChanged`: the position is sent at the level's next `broadcastChanges`. */
     public static synchronized void blockChanged(net.minecraft.server.level.ServerLevel level, net.minecraft.core.BlockPos pos) {

@@ -6,7 +6,7 @@ use horizon_assets::{
 };
 use horizon_world::registry::BlockStateId;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{
         Arc, LazyLock, Mutex, RwLock,
         atomic::{AtomicBool, Ordering},
@@ -148,6 +148,56 @@ pub fn faces_at(pos: [i32; 3], render: &RenderAssets) -> Option<Arc<[BakedFace]>
 /// Drops every position and geometry (the window left its world); the dynamic states stay.
 pub fn clear() {
     *REGISTRY.write().unwrap() = Registry::default();
+    set_answering(false);
+}
+
+/// Columns the Java client has answered for, and whether a first mesh waited on one.
+#[derive(Default)]
+struct Awaiting {
+    answered: HashSet<(i32, i32)>,
+    decided: HashMap<(i32, i32), bool>,
+}
+static ANSWERING: AtomicBool = AtomicBool::new(false);
+static AWAITING: LazyLock<Mutex<Awaiting>> = LazyLock::new(Mutex::default);
+
+/// A Java client is running and will answer for each column it is told of; off, nothing waits for it.
+pub fn set_answering(on: bool) {
+    ANSWERING.store(on, Ordering::Release);
+    *AWAITING.lock().unwrap() = Awaiting::default();
+}
+/// Whether a column's first mesh waits for the Java client's answer: it holds states drawn from per-block data.
+pub fn holds_first_mesh(column: (i32, i32), has_dynamic: impl FnOnce() -> bool) -> bool {
+    if !ANSWERING.load(Ordering::Acquire) {
+        return false;
+    }
+    let mut awaiting = AWAITING.lock().unwrap();
+    if awaiting.answered.contains(&column) {
+        return false;
+    }
+    *awaiting.decided.entry(column).or_insert_with(has_dynamic)
+}
+/// The Java client answered for these columns' block entities: their first mesh no longer waits.
+pub fn answered(columns: impl IntoIterator<Item = (i32, i32)>) {
+    AWAITING.lock().unwrap().answered.extend(columns);
+}
+/// A column left the window's level: its next arrival waits again.
+pub fn forget_column(column: (i32, i32)) {
+    let mut awaiting = AWAITING.lock().unwrap();
+    awaiting.answered.remove(&column);
+    awaiting.decided.remove(&column);
+}
+/// Whether any block of the column is in a dynamic state.
+pub fn column_has_dynamic(chunk: &crate::chunk::Chunk) -> bool {
+    if !ANY_STATE.load(Ordering::Acquire) {
+        return false;
+    }
+    let states = STATES.read().unwrap();
+    let mut ids = [0u32; 4096];
+    chunk.sections.iter().any(|section| {
+        section.blocks.unpack(&mut ids);
+        ids.iter()
+            .any(|&id| states.get(id as usize).copied().unwrap_or(false))
+    })
 }
 
 fn to_face(
@@ -234,6 +284,48 @@ mod tests {
         clear();
         assert!(at([-4, 70, 9]).is_none());
         assert!(!place([-4, 70, 9], None));
+    }
+
+    #[test]
+    fn one_state_draws_each_positions_own_geometry_and_the_static_model_elsewhere() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        set_dynamic_states([BlockStateId(9)]);
+        let core: Arc<[BakedQuadData]> = Arc::from(vec![quad("a:core", BakedLayer::Solid)]);
+        let arms: Arc<[BakedQuadData]> = Arc::from(vec![
+            quad("a:core", BakedLayer::Solid),
+            quad("a:arm", BakedLayer::Solid),
+        ]);
+        put_geometry(1, core.clone(), Arc::from([]));
+        put_geometry(2, arms.clone(), Arc::from([]));
+        place([0, 65, 0], Some(1));
+        place([1, 65, 0], Some(2));
+        assert!(is_dynamic(BlockStateId(9)));
+        assert_eq!(at([0, 65, 0]).as_deref(), Some(&*core));
+        assert_eq!(at([1, 65, 0]).as_deref(), Some(&*arms));
+        assert!(at([2, 65, 0]).is_none());
+        assert!(place([0, 65, 0], Some(2)));
+        assert_eq!(at([0, 65, 0]).as_deref(), Some(&*arms));
+        set_dynamic_states([]);
+        clear();
+    }
+
+    #[test]
+    fn a_first_mesh_waits_for_the_java_client_only_while_one_answers() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        assert!(!holds_first_mesh((1, 2), || true));
+        set_answering(true);
+        assert!(!holds_first_mesh((1, 2), || false));
+        assert!(holds_first_mesh((3, 4), || true));
+        assert!(holds_first_mesh((3, 4), || unreachable!()));
+        answered([(3, 4)]);
+        assert!(!holds_first_mesh((3, 4), || true));
+        forget_column((3, 4));
+        assert!(holds_first_mesh((3, 4), || true));
+        set_answering(false);
+        assert!(!holds_first_mesh((3, 4), || true));
+        clear();
     }
 
     #[test]

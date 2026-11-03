@@ -216,6 +216,7 @@ mod postprocess;
 mod potent_sulfur;
 mod potions;
 mod powder_snow;
+mod profile;
 mod pumpkin;
 mod raids;
 mod recipe_book;
@@ -7285,6 +7286,9 @@ impl Game<'_> {
         }
         self.draw_chat(&mut batch);
         self.draw_tab_list(&mut batch);
+        if show_hud {
+            self.draw_java_hud(&mut batch);
+        }
         // Screen.extractBlurredBackground blurs the world and HUD, while the
         // screen's background, widgets, toasts and debug overlay stay sharp.
         batch.blur_at = batch.vertices.len() as u32;
@@ -17484,7 +17488,7 @@ pub fn run() -> Result<()> {
         horizon_threads::catch_stop_signals();
     }
     let started = Instant::now();
-    horizon_client::spans::enable(options.spikes.is_some());
+    horizon_client::spans::enable(options.spikes.is_some() || profile::dir().is_some());
     let vanilla_root = options.resources.clone();
     if let Some(error) = missing_resources(&vanilla_root) {
         // The game build started by hand (the release's zip), not by the

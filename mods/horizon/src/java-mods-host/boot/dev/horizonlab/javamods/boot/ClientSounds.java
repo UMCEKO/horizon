@@ -31,6 +31,8 @@ public final class ClientSounds {
     private static final List<TickableSoundInstance> QUEUED_TICKING = new ArrayList<>();
     private static final ByteArrayOutputStream BYTES = new ByteArrayOutputStream();
     private static final DataOutputStream OUT = new DataOutputStream(BYTES);
+    /** The engine mods get in `SoundEngineLoadEvent` and `PlaySoundEvent`. */
+    public static SoundEngine engine;
     private static int events;
     private static int next;
     private static Field volume;
@@ -62,6 +64,11 @@ public final class ClientSounds {
     public static SoundEngine.PlayResult play(SoundInstance instance, int delay) {
         // Ticks run only to record a renderer's motion make no sound.
         if (BlockRenders.sampling() || !instance.canPlaySound()) return SoundEngine.PlayResult.NOT_STARTED;
+        // `PlaySoundEvent` is where mods swap, wrap or drop a sound and learn which ones to stop later.
+        instance = net.neoforged.neoforge.client.ClientHooks.playSound(engine, instance);
+        if (instance == null) return SoundEngine.PlayResult.NOT_STARTED;
+        // A click's prediction repeats the window's own: the window already plays that placement's block sound.
+        if (ClientBridge.clicking() && instance.getSource() == SoundSource.BLOCKS) return SoundEngine.PlayResult.NOT_STARTED;
         stop(instance);
         int handle = ++next;
         PLAYING.put(instance, handle);

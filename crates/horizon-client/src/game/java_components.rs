@@ -1,5 +1,6 @@
 //! Mods' data components on the wire: each type's own stream codec, in the JVM.
 use super::java_mods::{read_tag, write_tag};
+use horizon_client::net::JavaLink;
 use horizon_java_host::wire::{In, Out};
 use horizon_protocol::item::foreign::{self, StreamCodecs};
 use horizon_world::nbt::Tag;
@@ -97,6 +98,29 @@ pub(super) fn prepare_font(table: Vec<u8>) {
 
 /// The window joined its own server: the Java client starts and runs its configuration, before any play packet.
 fn java_client_login(profile: u128, name: &str) {
+    connect("client_connect", profile, name, "");
+}
+
+/// A server in another process has a Java side: its configuration, then its play packets, come to the Java client over the connection.
+fn java_link(link: JavaLink<'_>) {
+    match link {
+        JavaLink::Connect {
+            profile,
+            name,
+            address,
+        } => connect("client_connect_remote", profile, name, address),
+        JavaLink::Frame(frame) => {
+            let Some(host) = horizon_java_host::get() else {
+                return;
+            };
+            let mut out = Out::default();
+            out.bytes(frame);
+            host.request("client_remote_frame", &out.0);
+        }
+    }
+}
+
+fn connect(op: &str, profile: u128, name: &str, address: &str) {
     let Some(host) = horizon_java_host::get() else {
         return;
     };
@@ -107,11 +131,15 @@ fn java_client_login(profile: u128, name: &str) {
     out.long((profile >> 64) as i64);
     out.long(profile as i64);
     out.text(name);
-    host.request("client_connect", &out.0);
+    if op == "client_connect_remote" {
+        out.text(address);
+    }
+    host.request(op, &out.0);
 }
 
 pub(super) fn install() {
     horizon_client::net::on_local_login(java_client_login);
+    horizon_client::net::on_java_link(java_link);
     if std::env::var_os("HORIZON_JAVA_RUN").is_some() {
         foreign::install(Box::new(Codecs::default()));
     }

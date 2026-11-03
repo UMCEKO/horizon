@@ -349,8 +349,12 @@ impl Game<'_> {
                         self.debug_key(key, KeyAction::Release);
                     }
                 }
-                // Native mods see the key as the keyboard hook does.
                 let action = arg(2)?;
+                self.java_key_input(physical, action != "up", action == "repeat");
+                if action == "tap" {
+                    self.java_key_input(physical, false, false);
+                }
+                // Native mods see the key as the keyboard hook does.
                 self.native_key_event(physical, action != "up", action == "repeat");
                 if action == "tap" {
                     self.native_key_event(physical, false, false);

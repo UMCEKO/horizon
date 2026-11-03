@@ -17,6 +17,7 @@ pub mod import;
 pub mod instances;
 pub mod java;
 pub mod java_launch;
+pub mod java_mods;
 pub mod launch;
 pub mod loaders;
 pub mod minecraft_versions;

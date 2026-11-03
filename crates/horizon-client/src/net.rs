@@ -43,11 +43,15 @@ pub enum Event {
     Brand(String),
     /// The server runs mods' quiet commands (`horizon_protocol::quiet`).
     QuietCommands,
+    /// A frame of the server's Java mods for this client's Java client (`horizon_protocol::java`).
+    Java(Vec<u8>),
     /// Configuration finished: the play state begins with these registries.
     Joined {
         registries: Arc<Dynamic>,
         uuid: u128,
         name: String,
+        /// The server's Java side asked, and this client has Java mods to answer with.
+        java: bool,
     },
     Packet(Box<play::Clientbound>),
     /// A packet that failed to decode (skipped, like vanilla's skippable packets).
@@ -239,6 +243,13 @@ impl Session {
             w.shutdown();
         }
     }
+    /// One frame of this client's Java mods for the server's Java side.
+    pub fn send_java(&self, frame: Vec<u8>) {
+        self.send(play::Serverbound::CustomPayload(cfg::CustomPayload {
+            channel: horizon_protocol::java::CHANNEL.into(),
+            data: frame,
+        }));
+    }
     /// ServerboundResourcePackPacket, in whichever phase the connection is.
     pub fn send_pack_status(&self, id: u128, action: i32) {
         let status = cfg::ResourcePackResponse { id, action };
@@ -425,6 +436,32 @@ fn connection_lost(e: horizon_protocol::Error, lang: &Language) -> String {
 /// What a client in this process does as its login to a memory connection finishes.
 static LOCAL_LOGIN: std::sync::OnceLock<fn(u128, &str)> = std::sync::OnceLock::new();
 
+/// What a server's Java side tells this process's Java client during configuration.
+pub enum JavaLink<'a> {
+    /// The server has a Java side: this player's Java client connects.
+    Connect {
+        profile: u128,
+        name: &'a str,
+        address: &'a str,
+    },
+    /// A frame of its configuration (`horizon_protocol::java`).
+    Frame(&'a [u8]),
+}
+
+static JAVA_LINK: std::sync::OnceLock<fn(JavaLink<'_>)> = std::sync::OnceLock::new();
+
+/// This process has a Java client of its own for the mods a server may run; `hook` runs on the connection's thread.
+pub fn on_java_link(hook: fn(JavaLink<'_>)) {
+    let _ = JAVA_LINK.set(hook);
+}
+
+/// Who a connection logged in as, for the Java client that joins with it.
+struct Who<'a> {
+    profile: u128,
+    name: &'a str,
+    address: &'a str,
+}
+
 /// `hook` runs on the connection's thread before configuration, so it is done before any later packet is read.
 pub fn on_local_login(hook: fn(u128, &str)) {
     let _ = LOCAL_LOGIN.set(hook);
@@ -575,7 +612,7 @@ fn run(
     .map_err(e)?;
     let (mut reader, writer) = c.split();
     *shared_writer.lock().unwrap() = Some(writer);
-    let registries = configure(
+    let (registries, java) = configure(
         &mut reader,
         shared_writer,
         configuring,
@@ -583,11 +620,17 @@ fn run(
         send,
         cookies,
         resources,
+        Some(&Who {
+            profile: profile.uuid,
+            name: &profile.name,
+            address,
+        }),
     )?;
     let _ = send.send(Event::Joined {
         registries: Arc::new(registries),
         uuid: profile.uuid,
         name: profile.name,
+        java,
     });
     receive_play(
         &mut reader,
@@ -643,7 +686,7 @@ fn receive_play(
                     let _ = w.send(&play::Serverbound::ConfigurationAcknowledged(Empty).encode());
                     configuring.store(true, Ordering::Relaxed);
                 }
-                let registries = configure(
+                let (registries, _) = configure(
                     reader,
                     shared_writer,
                     configuring,
@@ -651,6 +694,7 @@ fn receive_play(
                     send,
                     cookies,
                     resources,
+                    None,
                 )?;
                 let _ = send.send(Event::Reconfigured(Arc::new(registries)));
             }
@@ -682,6 +726,9 @@ fn receive_play(
             play::Clientbound::CustomPayload(p) if p.channel == "minecraft:brand" => {
                 receive_brand(&p, send);
             }
+            play::Clientbound::CustomPayload(p) if p.channel == horizon_protocol::java::CHANNEL => {
+                let _ = send.send(Event::Java(p.data));
+            }
             other => {
                 if send.send(Event::Packet(Box::new(other))).is_err() {
                     return Ok("Disconnected".into());
@@ -701,8 +748,10 @@ fn configure(
     send: &Sender<Event>,
     cookies: &Cookies,
     resources: &Path,
-) -> Result<Dynamic, String> {
+    who: Option<&Who<'_>>,
+) -> Result<(Dynamic, bool), String> {
     let mut registries = Dynamic::default();
+    let mut java = false;
     let reply = |p: cfg::Serverbound| -> Result<(), String> {
         match writer.lock().unwrap().as_mut() {
             Some(w) => w.send(&p.encode()).map_err(|e| connection_lost(e, lang)),
@@ -720,6 +769,26 @@ fn configure(
                     channel: crate::content_identity::CHANNEL.into(),
                     data: hash.to_vec(),
                 }))?;
+            }
+            cfg::Clientbound::CustomPayload(p) if p.channel == horizon_protocol::java::CHANNEL => {
+                match (JAVA_LINK.get(), who) {
+                    (Some(link), Some(who)) if p.data.is_empty() => {
+                        java = true;
+                        link(JavaLink::Connect {
+                            profile: who.profile,
+                            name: who.name,
+                            address: who.address,
+                        });
+                    }
+                    (Some(link), _) if java => link(JavaLink::Frame(&p.data)),
+                    _ => {}
+                }
+                if p.data.is_empty() {
+                    reply(cfg::Serverbound::CustomPayload(cfg::CustomPayload {
+                        channel: horizon_protocol::java::CHANNEL.into(),
+                        data: vec![u8::from(java)],
+                    }))?;
+                }
             }
             cfg::Clientbound::CustomPayload(p) => receive_brand(&p, send),
             cfg::Clientbound::Ping(p) => reply(cfg::Serverbound::Pong(p))?,
@@ -775,7 +844,7 @@ fn configure(
                 w.send(&cfg::Serverbound::FinishConfiguration(Empty).encode())
                     .map_err(|e| connection_lost(e, lang))?;
                 configuring.store(false, Ordering::Relaxed);
-                return Ok(registries);
+                return Ok((registries, java));
             }
             _ => {}
         }
@@ -1089,6 +1158,7 @@ mod tests {
                 &send,
                 &Cookies::default(),
                 &root,
+                None,
             )
         });
         let mut server = Connection::local(server);
@@ -1130,6 +1200,66 @@ mod tests {
             std::env::temp_dir().join(format!("horizon-content-identity-{}", std::process::id())),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn configuration_answers_the_java_probe_and_hands_its_frames_to_the_java_client() {
+        static HEARD: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        fn hear(link: JavaLink<'_>) {
+            HEARD.lock().unwrap().push(match link {
+                JavaLink::Connect { name, address, .. } => format!("connect {name} {address}"),
+                JavaLink::Frame(frame) => format!("frame {frame:?}"),
+            });
+        }
+        on_java_link(hear);
+        let (client, server) = horizon_protocol::connection::Pipe::pair();
+        let (mut reader, writer) = Connection::local(client).split();
+        let writer = Mutex::new(Some(writer));
+        let thread = std::thread::spawn(move || {
+            let (send, _events) = channel();
+            configure(
+                &mut reader,
+                &writer,
+                &AtomicBool::new(true),
+                &Language::new(),
+                &send,
+                &Cookies::default(),
+                Path::new("."),
+                Some(&Who {
+                    profile: 7,
+                    name: "Alice",
+                    address: "play.test",
+                }),
+            )
+        });
+        let mut server = Connection::local(server);
+        let payload = |data: Vec<u8>| {
+            cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+                channel: horizon_protocol::java::CHANNEL.into(),
+                data,
+            })
+            .encode()
+        };
+        server.send(&payload(vec![])).unwrap();
+        let (id, body) = server.recv().unwrap();
+        assert_eq!(
+            cfg::Serverbound::decode(id, &body).unwrap(),
+            cfg::Serverbound::CustomPayload(cfg::CustomPayload {
+                channel: horizon_protocol::java::CHANNEL.into(),
+                data: vec![1],
+            })
+        );
+        server.send(&payload(vec![9, 8])).unwrap();
+        server
+            .send(&cfg::Clientbound::FinishConfiguration(Empty).encode())
+            .unwrap();
+        server.recv().unwrap();
+        let (_, java) = thread.join().unwrap().unwrap();
+        assert!(java);
+        assert_eq!(
+            *HEARD.lock().unwrap(),
+            ["connect Alice play.test", "frame [9, 8]"]
+        );
     }
 
     #[test]

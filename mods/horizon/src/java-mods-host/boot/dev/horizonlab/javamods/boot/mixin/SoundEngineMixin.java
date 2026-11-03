@@ -65,5 +65,12 @@ abstract class SoundEngineMixin {
     @Inject(method = "loadLibrary", at = @At("HEAD"), cancellable = true)
     private void horizon$library(CallbackInfo info) {
         info.cancel();
+        // Mods keep the engine this event hands them, to stop their sounds with.
+        net.neoforged.fml.ModLoader.postEvent(new net.neoforged.neoforge.client.event.sound.SoundEngineLoadEvent((SoundEngine) (Object) this));
+    }
+
+    @Inject(method = "<init>", at = @At("RETURN"))
+    private void horizon$made(CallbackInfo info) {
+        ClientSounds.engine = (SoundEngine) (Object) this;
     }
 }

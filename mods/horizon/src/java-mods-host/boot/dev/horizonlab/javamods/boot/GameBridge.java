@@ -111,9 +111,21 @@ public final class GameBridge {
         // Codecs touch no view, and a window's network thread must not wait out a server tick for one.
         if (op.equals("component_read")) return StackComponents.read(input);
         if (op.equals("component_write")) return StackComponents.write(input);
+        if (op.equals("profile_take")) return Profile.take().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        if (op.equals("profile_dump")) return profileDump(input);
+        long queued = Profile.ON ? System.nanoTime() : 0;
         synchronized (LOCK) {
+            if (Profile.ON) Profile.wait(op, System.nanoTime() - queued);
             if (op.startsWith("client_")) return client == null ? new byte[0] : client.apply(op, input);
             return callLocked(op, input);
+        }
+    }
+
+    private static byte[] profileDump(byte[] input) {
+        try {
+            return Profile.dump(new String(input, java.nio.charset.StandardCharsets.UTF_8)).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Throwable t) {
+            return ("ERROR " + t).getBytes(java.nio.charset.StandardCharsets.UTF_8);
         }
     }
 
@@ -143,8 +155,13 @@ public final class GameBridge {
                 case "event_attack" -> use(input, 6);
                 case "player_tick" -> use(input, 7);
                 case "player_left" -> playerLeft(input);
+                case "remote_join" -> remoteJoin(input);
+                case "remote_in" -> remoteIn(input);
+                case "remote_config" -> remoteConfig();
                 case "server_start" -> lifecycle(input, true);
                 case "server_stop" -> lifecycle(input, false);
+                case "server_stopping" -> serverStopping(input);
+                case "players_removed" -> playersRemoved(input);
                 case "server_tick" -> serverTick(input);
                 case "level_tick" -> levelTick(input);
                 case "use_item" -> use(input, 0);
@@ -456,7 +473,7 @@ public final class GameBridge {
                 EventHooks.firePlayerTickPost(player);
             }
         }
-        if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: use kind=" + kind + " result=" + result + " held=" + player.getItemInHand(hand) + " ticks=" + player.getTicksUsingItem() + " ammo=" + player.getProjectile(player.getItemInHand(hand)) + " spawned=" + SPAWNED.size());
+        if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: use kind=" + kind + " result=" + result + " held=" + player.getItemInHand(hand));
         var bytes = new ByteArrayOutputStream();
         var out = new DataOutputStream(bytes);
         out.writeBoolean(result != InteractionResult.PASS && result != InteractionResult.TRY_WITH_EMPTY_HAND);
@@ -534,12 +551,14 @@ public final class GameBridge {
     }
 
     private static void safely(String what, Runnable step) {
+        long start = Profile.ON ? System.nanoTime() : 0;
         try {
             step.run();
         } catch (Throwable t) {
             System.err.println("Horizon: a Java mod threw during " + what);
             t.printStackTrace();
         }
+        if (Profile.ON) Profile.event(what, System.nanoTime() - start);
     }
 
     private static boolean serverStarted;
@@ -566,12 +585,49 @@ public final class GameBridge {
             safely("ServerStarted", () -> ServerLifecycleHooks.handleServerStarted(server));
         } else if (!start && serverStarted) {
             serverStarted = false;
-            safely("ServerStopping", () -> ServerLifecycleHooks.handleServerStopping(server));
+            if (!stopping) safely("ServerStopping", () -> ServerLifecycleHooks.handleServerStopping(server));
+            stopping = false;
             for (ServerLevel level : LEVELS.values()) safely("LevelEvent.Unload", () -> NeoForge.EVENT_BUS.post(new LevelEvent.Unload(level)));
             safely("ServerStopped", () -> ServerLifecycleHooks.handleServerStopped(server));
             safely("saving saved data", () -> ServerView.saveWorld(server, LEVELS.values()));
+            closeWorld();
         }
         return effects();
+    }
+
+    private static boolean stopping;
+
+    /** `MinecraftServer.stopServer`'s first step, before the players leave and the levels close. */
+    private static byte[] serverStopping(byte[] input) throws Exception {
+        levelOf(new DataInputStream(new ByteArrayInputStream(input)));
+        if (serverStarted && !stopping) {
+            stopping = true;
+            safely("ServerStopping", () -> ServerLifecycleHooks.handleServerStopping(server));
+        }
+        return effects();
+    }
+
+    /** `PlayerList.removeAll`: every player still in the world logs out before its levels close. */
+    private static byte[] playersRemoved(byte[] input) throws Exception {
+        levelOf(new DataInputStream(new ByteArrayInputStream(input)));
+        for (UUID id : List.copyOf(PLAYERS.keySet())) removePlayer(id);
+        return effects();
+    }
+
+    /** A server's levels, players and block entities are its own: the next world's start builds new ones. */
+    private static void closeWorld() {
+        LEVELS.clear();
+        PLAYERS.clear();
+        SOUNDS.clear();
+        SPAWNED.clear();
+        nextEntityId = -1;
+        ServerView.closeWorld(server);
+        BlockEntities.reset();
+        ChunkViews.reset();
+        ChunkEvents.reset();
+        Clients.reset();
+        Tracking.reset();
+        EntityViews.abandon();
     }
 
     private static byte[] serverTick(byte[] input) throws Exception {
@@ -601,15 +657,50 @@ public final class GameBridge {
         return effects();
     }
 
+    /** A player connected from another process with a Java client of its own: its login reaches it over its connection. */
+    private static byte[] remoteJoin(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        Clients.joinRemote(new UUID(in.readLong(), in.readLong()));
+        return new byte[] {1};
+    }
+
+    /** The configuration frames of a client in another process, which the connection sends in its own configuration phase. */
+    private static byte[] remoteConfig() throws Exception {
+        var frames = Menus.remoteConfiguration(server);
+        var bytes = new ByteArrayOutputStream();
+        var out = new DataOutputStream(bytes);
+        out.writeInt(frames.size());
+        for (var frame : frames) {
+            out.writeInt(frame.length);
+            out.write(frame);
+        }
+        return bytes.toByteArray();
+    }
+
+    /** A packet a remote Java client sent, as its connection's reader hands it to the player's listener. */
+    private static byte[] remoteIn(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        var id = new UUID(in.readLong(), in.readLong());
+        var packet = Wire.fromClient(id, in.readNBytes(in.readInt()));
+        if (packet != null) Clients.toServer(id, packet);
+        return new byte[] {1};
+    }
+
     private static byte[] playerLeft(byte[] input) throws Exception {
         var in = new DataInputStream(new ByteArrayInputStream(input));
-        var player = PLAYERS.remove(new UUID(in.readLong(), in.readLong()));
+        var left = new UUID(in.readLong(), in.readLong());
+        removePlayer(left);
+        return effects();
+    }
+
+    private static void removePlayer(UUID left) throws ReflectiveOperationException {
+        var player = PLAYERS.remove(left);
         if (player != null) {
             safely("closing the open menu", () -> Menus.close(player));
             safely("PlayerLoggedOut", () -> EventHooks.firePlayerLoggedOut(player));
             ServerView.detach(server, player);
         }
-        return effects();
+        if (Clients.remote(left)) Clients.leave(left);
     }
 
     /** The level a call acts on, with the time it arrived at. */

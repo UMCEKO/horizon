@@ -78,6 +78,49 @@ final class Menus {
         return new SynchronizeRegistriesTask(known, server.registries());
     }
 
+    /** The configuration for a client in another process, which knows no packs: the features, then every registry and tag in full, and the configs NeoForge syncs. */
+    static List<byte[]> remoteConfiguration(MinecraftServer server) {
+        var packets = new ArrayList<Packet<?>>();
+        packets.add(new ClientboundUpdateEnabledFeaturesPacket(FeatureFlags.REGISTRY.toNames(server.getWorldData().enabledFeatures())));
+        synchronizeRegistries(server).handleResponse(List.of(), packets::add);
+        syncConfigs(packets::add);
+        packets.add(ClientboundFinishConfigurationPacket.INSTANCE);
+        return packets.stream().map(Wire::configuration).toList();
+    }
+
+    /** NeoForge's own configuration task for a remote client: the server configs it syncs, sent through a listener that hands each packet on. */
+    private static void syncConfigs(java.util.function.Consumer<Packet<?>> out) {
+        var listener = (net.minecraft.network.protocol.configuration.ServerConfigurationPacketListener) java.lang.reflect.Proxy.newProxyInstance(
+                Menus.class.getClassLoader(), new Class<?>[] {net.minecraft.network.protocol.configuration.ServerConfigurationPacketListener.class}, (proxy, method, args) -> {
+                    switch (method.getName()) {
+                        case "send" -> {
+                            if (args[0] instanceof Packet<?> packet) out.accept(packet);
+                            else out.accept(new net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket((net.minecraft.network.protocol.common.custom.CustomPacketPayload) args[0]));
+                            return null;
+                        }
+                        case "protocol" -> {
+                            return net.minecraft.network.ConnectionProtocol.CONFIGURATION;
+                        }
+                        case "getConnectionType" -> {
+                            return net.neoforged.neoforge.network.connection.ConnectionType.NEOFORGE;
+                        }
+                        case "hasChannel" -> {
+                            return true;
+                        }
+                        case "getConnection" -> {
+                            var network = new net.minecraft.network.Connection(net.minecraft.network.protocol.PacketFlow.SERVERBOUND);
+                            ServerView.set(net.minecraft.network.Connection.class, network, "channel", new io.netty.channel.embedded.EmbeddedChannel());
+                            return network;
+                        }
+                        default -> {
+                            System.err.println("Horizon: NeoForge's config sync called " + method);
+                            return method.getReturnType() == boolean.class ? (Object) false : null;
+                        }
+                    }
+                });
+        net.neoforged.neoforge.network.ConfigSync.syncAllConfigs(listener);
+    }
+
     /** `PlayerList.placeNewPlayer`'s packets, in its order, without what stays Horizon's: the scoreboard, the join message, boss bars and entity pairing. */
     static void login(ServerPlayer player) {
         var server = player.level().getServer();
