@@ -1087,16 +1087,28 @@ impl Game<'_> {
         }
         Ok((true, count))
     }
-    /// The biome name at a block position.
+    /// `Level.getBiome`: `BiomeManager`'s fuzzy zoom picks the noise cell, which may lie in a neighbouring chunk.
     fn biome_name_at_block(&self, p: [i32; 3]) -> Option<String> {
-        let chunk = self.world.chunks.get(&(p[0] >> 4, p[2] >> 4))?;
-        Some(
-            self.res
+        self.world.chunks.get(&(p[0] >> 4, p[2] >> 4))?;
+        let at = horizon_core::position::BlockPos::new(p[0], p[1], p[2]);
+        let [x, y, z] = self.streaming.biome_zoom.quart_at_block(at);
+        Some(self.noise_biome_name(x, y, z))
+    }
+    /// `Level.getNoiseBiome`: the loaded chunk's cell, else the generator's biome source.
+    pub(in crate::game) fn noise_biome_name(&self, qx: i32, qy: i32, qz: i32) -> String {
+        match self.world.chunks.get(&(qx >> 2, qz >> 2)) {
+            Some(chunk) => self
+                .res
                 .biomes()
-                .get(chunk.biome(p[0], p[1], p[2]))
+                .get(chunk.biome(qx << 2, qy << 2, qz << 2))
                 .name
                 .clone(),
-        )
+            None => self
+                .end
+                .locator()
+                .and_then(|terrain| terrain.noise_biomes(&[[qx, qy, qz]]).pop().flatten())
+                .unwrap_or_else(|| "minecraft:plains".to_owned()),
+        }
     }
     /// A biome id or `#tag` matched against a biome name.
     pub(super) fn biome_matches(&self, wanted: &str, biome: &str) -> bool {

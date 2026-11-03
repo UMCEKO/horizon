@@ -118,9 +118,22 @@ struct BlockFile {
     per_state: BTreeMap<String, StateOverride>,
     #[serde(default = "yes")]
     item: bool,
+    #[serde(default)]
+    item_properties: ItemProperties,
 }
 fn yes() -> bool {
     true
+}
+
+/// What a block's item changes from its template block's item, as an item file does.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ItemProperties {
+    pub max_stack_size: Option<u8>,
+    pub rarity: Option<Rarity>,
+    /// A 26.3 data component patch over the template's: `!minecraft:<type>` removes one.
+    #[serde(default)]
+    pub components: BTreeMap<String, serde_json::Value>,
 }
 
 /// A block the mod adds: a vanilla template's behaviour, states and shapes
@@ -141,6 +154,8 @@ pub struct Block {
     pub per_state: BTreeMap<String, StateOverride>,
     /// Also add a block item with the same id.
     pub item: bool,
+    /// What that item changes from the template block's.
+    pub item_properties: ItemProperties,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -388,6 +403,11 @@ impl Content {
             let file: BlockFile =
                 serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
             check_block(&file).map_err(|e| format!("{name}: {e}"))?;
+            check_item(
+                file.item_properties.max_stack_size,
+                &file.item_properties.components,
+            )
+            .map_err(|e| format!("{name}: item_properties: {e}"))?;
             if file.item {
                 ids.insert(block.clone());
             }
@@ -400,6 +420,7 @@ impl Content {
                 per_state: file.per_state,
                 default_state: file.default_state,
                 item: file.item,
+                item_properties: file.item_properties,
             });
         }
         for (item, name) in items {
@@ -411,10 +432,8 @@ impl Content {
                     file.template
                 ));
             }
-            if file.max_stack_size.is_some_and(|n| !(1..=99).contains(&n)) {
-                return Err(format!("{name}: max_stack_size is 1 to 99"));
-            }
-            check_components(&file.components).map_err(|e| format!("{name}: {e}"))?;
+            check_item(file.max_stack_size, &file.components)
+                .map_err(|e| format!("{name}: {e}"))?;
             if !ids.insert(item.clone()) {
                 return Err(format!("{name}: {item} is also a block's item"));
             }
@@ -439,6 +458,16 @@ impl Content {
 }
 
 /// Vanilla component types only, removals as `{}`, none the item file has its own key for.
+fn check_item(
+    max_stack_size: Option<u8>,
+    components: &BTreeMap<String, serde_json::Value>,
+) -> Result<(), String> {
+    if max_stack_size.is_some_and(|n| !(1..=99).contains(&n)) {
+        return Err("max_stack_size is 1 to 99".into());
+    }
+    check_components(components)
+}
+
 fn check_components(components: &BTreeMap<String, serde_json::Value>) -> Result<(), String> {
     for (key, value) in components {
         let (removed, kind) = match key.strip_prefix('!') {
@@ -646,6 +675,7 @@ capabilities = ["registries"]
                     ..BlockProperties::default()
                 },
                 item: true,
+                item_properties: Default::default(),
             }]
         );
         assert_eq!(content.items[0].id, "ruby:ruby");
@@ -826,6 +856,20 @@ capabilities = ["registries"]
             &[(
                 "data/ruby/horizon/item/a.json",
                 br#"{"template": "minecraft:stick", "max_stack_size": 100}"#,
+            )],
+        );
+        refused(
+            "block-item-stack",
+            &[(
+                "data/ruby/horizon/block/a.json",
+                br#"{"template": "minecraft:stone", "item_properties": {"max_stack_size": 0}}"#,
+            )],
+        );
+        refused(
+            "block-item-component",
+            &[(
+                "data/ruby/horizon/block/a.json",
+                br#"{"template": "minecraft:stone", "item_properties": {"components": {"minecraft:rarity": "rare"}}}"#,
             )],
         );
         for (case, components, why) in [

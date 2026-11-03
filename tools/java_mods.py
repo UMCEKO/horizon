@@ -4,6 +4,7 @@ import argparse
 import collections
 import concurrent.futures
 import fcntl
+import hashlib
 import io
 import json
 import os
@@ -22,18 +23,23 @@ import zipfile
 from pathlib import Path
 
 os.environ.setdefault('HORIZON_NEOFORGE', '26.3.0.101')
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import lab  # noqa: E402
-import neoforge_oracle as oracle  # noqa: E402
+try:
+    from . import lab, neoforge_oracle as oracle
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import lab  # noqa: E402
+    import neoforge_oracle as oracle  # noqa: E402
 
 NEOFORGE = oracle.NEOFORGE
 SOURCES = oracle.ROOT / 'mods' / 'horizon' / 'src' / 'java-mods-host'
 LOCAL = oracle.ROOT / '.local' / 'java-mods'
 TARGET = LOCAL / 'target'
-HOST_JAR = LOCAL / 'horizon-java-host.jar'
-BOOT_JAR = LOCAL / 'horizon-java-boot.jar'
-PLUGIN_JAR = LOCAL / 'horizon-java-plugin.jar'
-TEST_JAR = LOCAL / 'horizon-java-test.jar'
+# A private folder for an unproven build: its jars, classes and runs, instead of the shared ones every game uses.
+JARS = Path(os.environ.get('HORIZON_JAVA_MODS_DIR') or LOCAL)
+HOST_JAR = JARS / 'horizon-java-host.jar'
+BOOT_JAR = JARS / 'horizon-java-boot.jar'
+PLUGIN_JAR = JARS / 'horizon-java-plugin.jar'
+TEST_JAR = JARS / 'horizon-java-test.jar'
 LIBRARIES = LOCAL / 'library-jars'
 # A game's JVM boots the client side, as a NeoForge client does; a dedicated Horizon's would boot the server side.
 DIST = os.environ.get('HORIZON_JAVA_DIST', 'client')
@@ -47,19 +53,22 @@ def java_home():
 
 
 def build(java_only=False):
-    LOCAL.mkdir(parents=True, exist_ok=True)
+    JARS.mkdir(parents=True, exist_ok=True)
     # Against the client, which holds the server's classes too.
     cp = ':'.join(jar for jar in oracle.client_classpath(oracle.client()[0]).split(':') if 'installertools' not in jar)
-    host_classes = str(LOCAL / 'classes' / 'host')
+    host_classes = str(JARS / 'classes' / 'host')
     for name, jar, extra in (('host', HOST_JAR, ''), ('plugin', PLUGIN_JAR, host_classes), ('boot', BOOT_JAR, host_classes), ('testmod', TEST_JAR, '')):
-        classes = LOCAL / 'classes' / name
+        classes = JARS / 'classes' / name
         shutil.rmtree(classes, ignore_errors=True)
         classes.mkdir(parents=True)
         sources = [str(p) for p in sorted((SOURCES / name).rglob('*.java'))]
+        if name == 'boot':
+            sources += [str(p) for p in sorted(oracle.SHARED.rglob('*.java'))]
+            sources += [str(p) for p in sorted(oracle.SHARED_CLIENT.rglob('*.java'))]
         subprocess.run(['javac', '--release', '25', '-proc:none', '-nowarn', '-cp', f'{cp}:{extra}', '-d', str(classes), *sources], check=True)
         jar_args = ['jar', 'cf', str(jar), '-C', str(classes), '.']
         if name == 'plugin':
-            manifest = LOCAL / 'plugin.manifest'
+            manifest = JARS / 'plugin.manifest'
             manifest.write_text('FMLModType: LIBRARY\n')
             jar_args = ['jar', 'cfm', str(jar), str(manifest), '-C', str(classes), '.']
         if (SOURCES / name / 'res').exists():
@@ -69,6 +78,48 @@ def build(java_only=False):
         return
     env = {**os.environ, 'JAVA_HOME': java_home(), 'CARGO_TARGET_DIR': str(TARGET), 'RUSTC_WRAPPER': ''}
     subprocess.run(['cargo', 'build', '--profile', 'fast', '-q', '-p', 'horizon-java-host'], check=True, env=env, cwd=oracle.ROOT)
+
+
+def unit():
+    """The host's Java unit checks (`unit/**/*Check.java`): plain JVMs over the built classes, no boot."""
+    cp = ':'.join(jar for jar in oracle.client_classpath(oracle.client()[0]).split(':') if 'installertools' not in jar)
+    built = f"{LOCAL / 'classes' / 'boot'}:{LOCAL / 'classes' / 'host'}"
+    classes = LOCAL / 'classes' / 'unit'
+    shutil.rmtree(classes, ignore_errors=True)
+    classes.mkdir(parents=True)
+    sources = sorted((SOURCES / 'unit').rglob('*.java'))
+    subprocess.run(['javac', '--release', '25', '-proc:none', '-nowarn', '-cp', f'{cp}:{built}', '-d', str(classes), *map(str, sources)], check=True)
+    failed = 0
+    for source in sources:
+        if source.stem.endswith('Check'):
+            name = '.'.join(source.relative_to(SOURCES / 'unit').with_suffix('').parts)
+            failed += subprocess.run(['java', '-cp', f'{cp}:{built}:{classes}', name]).returncode != 0
+    sys.exit(1 if failed else 0)
+
+
+def assets_index(resources, index_id, root):
+    """Vanilla's assets folder (`indexes/<id>.json`, `objects/<2 hex>/<sha1>`) as symlinks over the prepared assets, built once per content."""
+    source = json.loads((resources / 'asset-index.json').read_text())['objects']
+    assets = (resources / 'assets').resolve()
+    objects = {key: entry for key, entry in sorted(source.items()) if (assets / key).is_file()}
+    index = json.dumps({'objects': objects}, separators=(',', ':'))
+    key = hashlib.sha1(f'{assets}\0{index_id}\0{index}'.encode()).hexdigest()[:16]
+    folder = root / 'assets-index' / key
+    if not (folder / 'indexes' / f'{index_id}.json').is_file():
+        building = folder.with_name(f'{key}.{os.getpid()}')
+        shutil.rmtree(building, ignore_errors=True)
+        (building / 'indexes').mkdir(parents=True)
+        for name, entry in objects.items():
+            link = building / 'objects' / entry['hash'][:2] / entry['hash']
+            link.parent.mkdir(parents=True, exist_ok=True)
+            if not link.is_symlink():
+                link.symlink_to(assets / name)
+        (building / 'indexes' / f'{index_id}.json').write_text(index)
+        try:
+            building.rename(folder)
+        except OSError:
+            shutil.rmtree(building, ignore_errors=True)
+    return folder
 
 
 def write_args(run, home):
@@ -103,12 +154,16 @@ def write_args(run, home):
             lines.append(f'jvm {jvm[i]}')
             i += 1
     lines += [f'prog {a}' for a in game]
+    lines.append(f'mod {home}/libraries/net/neoforged/neoforge/{NEOFORGE}/neoforge-{NEOFORGE}-universal.jar')
+    if DIST == 'client':
+        index_id = json.loads((lab.GAME / 'manifest.json').read_text())['assetIndex']['id']
+        lines += ['prog --assetsDir', f'prog {assets_index(lab.RESOURCES, index_id, JARS)}', 'prog --assetIndex', f'prog {index_id}']
     (run / 'horizon-java.args').write_text('\n'.join(lines) + '\n')
 
 
 def instance(name, jars, boot):
     home = oracle.client()[0] if DIST == 'client' and boot else oracle.install()
-    run = LOCAL / 'runs' / name
+    run = JARS / 'runs' / name
     shutil.rmtree(run, ignore_errors=True)
     (run / 'mods').mkdir(parents=True)
     (run / 'libraries').symlink_to(home / 'libraries')
@@ -375,7 +430,7 @@ def check_bridges(_args=None):
                     if name.endswith('.class'):
                         info = class_methods(z.read(name))
                         classes[info[0]] = info
-    for path in (LOCAL / 'classes' / 'boot').rglob('*.class'):
+    for path in (JARS / 'classes' / 'boot').rglob('*.class'):
         info = class_methods(path.read_bytes())
         classes[info[0]] = info
     flat = set(classes['dev/horizonlab/javamods/boot/Flat'][2])
@@ -664,6 +719,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('build').add_argument('--java-only', action='store_true')
+    sub.add_parser('unit', help='the host\'s Java unit checks, after build')
     sub.add_parser('check')
     r = sub.add_parser('run')
     r.add_argument('--jars', required=True)
@@ -702,12 +758,15 @@ def main():
     c.add_argument('--top', type=int, default=40)
     args = parser.parse_args()
     LOCAL.mkdir(parents=True, exist_ok=True)
+    JARS.mkdir(parents=True, exist_ok=True)
     # Several agents build and check at once, and a build replaces the class folders.
-    lock = (LOCAL / 'build.lock').open('w')
+    lock = (JARS / 'build.lock').open('w')
     if args.command in ('build', 'check'):
         fcntl.flock(lock, fcntl.LOCK_EX)
     if args.command == 'build':
         build(args.java_only)
+    elif args.command == 'unit':
+        unit()
     elif args.command == 'run':
         p = host(instance('run', args.jars, True), args.opts, args.ops, args.facts)
         print(p.stdout)

@@ -2,7 +2,7 @@
 use crate::{
     json::*,
     model::*,
-    obj::{ObjModel, parse_mtl, parse_obj},
+    obj::{ObjModel, parse_mtl, parse_mtl_diffuse, parse_obj},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -349,19 +349,20 @@ impl ModelLibrary {
             }
             (None, None) => None,
         };
-        let materials = match mtl {
+        let (materials, diffuse) = match mtl {
             Some(location) => match assets.read_text(&location) {
-                Some(text) => parse_mtl(&text),
+                Some(text) => (parse_mtl(&text), parse_mtl_diffuse(&text)),
                 None => {
                     log::warn!("Horizon: obj material file {location} not found");
-                    BTreeMap::new()
+                    Default::default()
                 }
             },
-            None => BTreeMap::new(),
+            None => Default::default(),
         };
         Ok(ObjModel {
             faces: parsed.faces,
             materials,
+            diffuse,
         })
     }
 }

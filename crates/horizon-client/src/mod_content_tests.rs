@@ -100,6 +100,51 @@ fn a_mods_atlas_sources_follow_vanillas() {
     assert_eq!(sources, ["block", "mek_chemical"]);
 }
 
+#[test]
+fn block_items_take_their_declared_numbers() {
+    let scratch =
+        std::env::temp_dir().join(format!("horizon-mod-block-item-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let base = scratch.join("base");
+    fs::create_dir_all(&base).unwrap();
+    fs::write(
+        base.join("facts.json"),
+        r#"{"states": [["minecraft:stone"]], "defaults": {"minecraft:stone": 0}}"#,
+    )
+    .unwrap();
+    fs::write(
+        base.join("gameplay-facts.json"),
+        r#"{"states": [{"item":"minecraft:stone"}]}"#,
+    )
+    .unwrap();
+    let machine = folder_mod(
+        &scratch.join("m"),
+        &[
+            ("horizon-mod.toml", &manifest("m", "")),
+            (
+                "data/m/horizon/block/machine.json",
+                r#"{"template":"minecraft:stone", "item_properties": {"max_stack_size": 1,
+                    "rarity": "rare", "components": {"!minecraft:lore": {}}}}"#,
+            ),
+        ],
+    );
+    let mods = vec![machine];
+    let plan = Plan::new(&base, &mods).unwrap();
+    let mut items: J = serde_json::from_str(
+        r#"{"minecraft:stone": {"minecraft:max_stack_size": 64, "minecraft:rarity": "common",
+            "minecraft:lore": []}}"#,
+    )
+    .unwrap();
+    plan.json("items.json", &mut items).unwrap();
+    let items: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&items).unwrap()).unwrap();
+    assert_eq!(
+        items["m:machine"],
+        serde_json::json!({"minecraft:max_stack_size": 1, "minecraft:rarity": "rare"})
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}
+
 /// Registry IDs and state IDs must not depend on package discovery order.
 #[test]
 fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {

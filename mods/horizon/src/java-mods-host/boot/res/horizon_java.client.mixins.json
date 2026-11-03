@@ -3,6 +3,6 @@
   "minVersion": "0.8",
   "package": "dev.horizonlab.javamods.boot.mixin",
   "compatibilityLevel": "JAVA_21",
-  "client": ["AtlasManagerMixin", "AtlasMixin", "ClientChunkCacheMixin", "ClientLevelMixin", "ClientSendMixin", "GuiItemMixin", "GuiScreenMixin", "ItemRenderMixin", "ItemStateMixin", "KeysMixin", "ModelDataMixin", "ModelManagerMixin", "ModelPartMixin", "PoseMixin", "ScreenNarrationMixin", "SoundsMixin", "SpriteContentsMixin", "TextureManagerMixin"],
+  "client": ["AtlasMixin", "ClientChunkCacheMixin", "ClientLevelMixin", "ClientSendMixin", "ClockMixin", "CursorMixin", "DebugKeysMixin", "FontManagerMixin", "GameRendererMixin", "GpuWarnlistMixin", "GuiItemMixin", "ItemRenderMixin", "ItemStateMixin", "KeysMixin", "LevelExtractorMixin", "LevelLoadingMixin", "LocalPlayerMoveMixin", "MapperBootstrapMixin", "MinecraftActions", "MinecraftTickMixin", "ModelManagerMixin", "ModelPartMixin", "MousePositionMixin", "MusicManagerMixin", "ParticleEngineMixin", "PoseMixin", "ProjectionBufferMixin", "ScreenNarrationMixin", "ShaderManagerMixin", "SoundEngineMixin", "SoundsMixin", "TextInputMixin", "TitleScreenMixin", "TextureManagerMixin"],
   "injectors": {"defaultRequire": 1}
 }

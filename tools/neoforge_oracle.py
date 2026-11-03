@@ -31,6 +31,10 @@ LOCAL = ROOT / '.local' / 'neoforge-oracle'
 NEOFORGE = os.environ.get('HORIZON_NEOFORGE', '21.1.259')
 SOURCE = ROOT / 'mods' / 'horizon' / 'src' / ('neoforge-oracle-26' if NEOFORGE.startswith('26.') else 'neoforge-oracle')
 MAVEN = 'https://maven.neoforged.net/releases/net/neoforged/neoforge'
+# The facts writer the 26.x oracle shares with the game's Java boot (java_mods.py).
+SHARED = ROOT / 'mods' / 'horizon' / 'src' / 'facts-shared' / 'java'
+# Its client half, for the client oracle and the game's Java client.
+SHARED_CLIENT = ROOT / 'mods' / 'horizon' / 'src' / 'facts-shared-client' / 'java'
 
 
 def install():
@@ -143,6 +147,10 @@ def build(home, source=SOURCE, name='horizon-oracle.jar', cp=None):
     out = LOCAL / 'build' / NEOFORGE
     jar = out / name
     sources = sorted((source / 'java').rglob('*.java'))
+    if source.name == 'neoforge-oracle-26':
+        sources += sorted(SHARED.rglob('*.java'))
+    if source.name == 'neoforge-oracle-26-client':
+        sources += sorted(SHARED_CLIENT.rglob('*.java'))
     resources = sorted(p for p in (source / 'resources').rglob('*') if p.is_file())
     newest = max(p.stat().st_mtime for p in sources + resources)
     if jar.exists() and jar.stat().st_mtime > newest:

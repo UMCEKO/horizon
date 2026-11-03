@@ -422,6 +422,14 @@ fn connection_lost(e: horizon_protocol::Error, lang: &Language) -> String {
 
 /// The whole connection. Ok: why it ended for good (the server's reason, or
 /// a refusal no retry fixes); Err: the connection failed.
+/// What a client in this process does as its login to a memory connection finishes.
+static LOCAL_LOGIN: std::sync::OnceLock<fn(u128, &str)> = std::sync::OnceLock::new();
+
+/// `hook` runs on the connection's thread before configuration, so it is done before any later packet is read.
+pub fn on_local_login(hook: fn(u128, &str)) {
+    let _ = LOCAL_LOGIN.set(hook);
+}
+
 fn run(
     local: Option<horizon_protocol::connection::Pipe>,
     address: &str,
@@ -437,6 +445,7 @@ fn run(
     transferred: bool,
     resources: &Path,
 ) -> Result<String, String> {
+    let is_local = local.is_some();
     let (host, port, mut c) = if let Some(pipe) = local {
         (address.to_owned(), 0, Connection::local(pipe))
     } else {
@@ -484,6 +493,9 @@ fn run(
         match login::Clientbound::decode(id, &payload).map_err(e)? {
             login::Clientbound::Compression(p) => c.set_compression(p.threshold),
             login::Clientbound::LoginFinished(p) => {
+                if is_local && let Some(hook) = LOCAL_LOGIN.get() {
+                    hook(p.profile.uuid, &p.profile.name);
+                }
                 c.send(&login::Serverbound::LoginAcknowledged(Empty).encode())
                     .map_err(e)?;
                 break p.profile;

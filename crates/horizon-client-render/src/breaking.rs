@@ -137,6 +137,7 @@ mod tests {
                     shade_direction_override: None,
                     light_emission: 0,
                     shade: true,
+                    color: u32::MAX,
                 },
             }],
         }

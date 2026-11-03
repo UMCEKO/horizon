@@ -298,6 +298,16 @@ pub fn argb(color: i32) -> u32 {
     color as u32
 }
 
+/// A sprite's place in the atlas; one the atlas lacks draws as the missing texture, as a stitched atlas gives it.
+fn atlas_sprite(sprites: &HashMap<String, Rect>, sprite: &str) -> Option<Rect> {
+    sprites
+        .get(sprite_name(sprite))
+        .or_else(|| sprites.get("missingno"))
+        .or_else(|| sprites.get("misc/missingno"))
+        .or_else(|| sprites.get("horizon/missingno"))
+        .copied()
+}
+
 fn submit_recorded(
     quads: &[RecordedQuad],
     layer: &LayerRender,
@@ -311,7 +321,7 @@ fn submit_recorded(
         FoilType::Special => Foil::Special,
     };
     for q in quads {
-        let Some(r) = sprites.get(sprite_name(&q.texture)).copied() else {
+        let Some(r) = atlas_sprite(sprites, &q.texture) else {
             continue;
         };
         let pos = q
@@ -353,17 +363,12 @@ fn submit_quads(
     // Quads of one layer mostly share a sprite: look its translucency up once.
     let mut last: Option<(&str, bool)> = None;
     for q in &baked.quads {
-        let Some(r) = sprites
-            .get(sprite_name(&q.material.sprite))
-            .or_else(|| sprites.get("misc/missingno"))
-            .or_else(|| sprites.get("horizon/missingno"))
-            .copied()
-        else {
+        let Some(r) = atlas_sprite(sprites, &q.material.sprite) else {
             continue;
         };
         // `getLayerColorSafe`: an untinted quad, or a tint index past the
         // tints, draws white.
-        let color = if q.tint_index >= 0 {
+        let tint = if q.tint_index >= 0 {
             layer
                 .tints
                 .get(q.tint_index as usize)
@@ -371,6 +376,15 @@ fn submit_quads(
                 .unwrap_or(-1)
         } else {
             -1
+        };
+        // `ItemFeatureRenderer`: the tint over the quad's baked colours.
+        let color = if q.color == u32::MAX {
+            argb(tint)
+        } else {
+            let [a, r, g, b] = argb(tint).to_be_bytes();
+            let [ba, br, bg, bb] = q.color.to_be_bytes();
+            let mul = |x: u8, y: u8| (u16::from(x) * u16::from(y) / 255) as u8;
+            u32::from_be_bytes([mul(a, ba), mul(r, br), mul(g, bg), mul(b, bb)])
         };
         let pos = q.positions.map(|p| m.transform_point3(Vec3::from(p)));
         let uv =
@@ -390,7 +404,7 @@ fn submit_quads(
             uv,
             foil_uv: q.uv,
             normal: transform_normal(m, direction_vector(q.facing)),
-            color: argb(color),
+            color,
             foil,
             light_emission: q.light_emission,
             cull_back: false,
@@ -965,6 +979,27 @@ pub fn cluster_poses(state: &ItemRenderState, pose: Mat4, amount: u32, seed: i64
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sprite_the_atlas_lacks_draws_the_missing_texture() {
+        let rect = |u0: f32| Rect {
+            u0,
+            v0: 0.0,
+            u1: u0 + 0.1,
+            v1: 0.1,
+            w: 16,
+            h: 16,
+        };
+        let sprites: HashMap<String, Rect> = [
+            ("item/apple".to_owned(), rect(0.0)),
+            ("missingno".to_owned(), rect(0.5)),
+        ]
+        .into();
+        let u0 = |sprite| atlas_sprite(&sprites, sprite).map(|r| r.u0);
+        assert_eq!(u0("minecraft:item/apple"), Some(0.0));
+        assert_eq!(u0("mod:part/gone"), Some(0.5));
+        assert_eq!(u0("minecraft:missingno"), Some(0.5));
+    }
 
     /// One frame's glint is read once and shared: every item drawn from the
     /// same `GlintFrame` scrolls by the same phase, and without the atlas

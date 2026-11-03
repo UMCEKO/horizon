@@ -34,6 +34,8 @@ pub enum MtlTexture {
 pub struct ObjModel {
     pub faces: Vec<ObjFace>,
     pub materials: BTreeMap<String, MtlTexture>,
+    /// Material name to its `Kd`, which colours its quads.
+    pub diffuse: BTreeMap<String, [f32; 3]>,
 }
 
 pub fn parse_obj(text: &str) -> Result<ParsedObj, String> {
@@ -148,9 +150,36 @@ pub fn parse_mtl(text: &str) -> BTreeMap<String, MtlTexture> {
     materials
 }
 
+/// Material name to its `Kd`; a material without one is white.
+pub fn parse_mtl_diffuse(text: &str) -> BTreeMap<String, [f32; 3]> {
+    let mut colors = BTreeMap::new();
+    let mut current = None;
+    for line in text.lines() {
+        let mut words = line.split_whitespace();
+        match words.next() {
+            Some("newmtl") => current = words.next().map(str::to_owned),
+            Some("Kd") => {
+                if let (Some(name), Some(color)) = (&current, floats::<3>(words)) {
+                    colors.insert(name.clone(), color);
+                }
+            }
+            _ => {}
+        }
+    }
+    colors
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mtl_diffuse_colours_by_material() {
+        let colors =
+            parse_mtl_diffuse("newmtl a\nKd 0.8 0.5 1\nmap_Kd #top\nnewmtl b\nmap_Kd #x\n");
+        assert_eq!(colors["a"], [0.8, 0.5, 1.0]);
+        assert!(!colors.contains_key("b"));
+    }
 
     #[test]
     fn quads_triangles_and_negative_indices() {

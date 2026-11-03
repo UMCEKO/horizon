@@ -14,10 +14,25 @@ public final class Clients {
 
     private static final Map<UUID, ArrayDeque<Packet<?>>> TO_CLIENT = new HashMap<>();
     private static final Map<UUID, ArrayDeque<Packet<?>>> TO_SERVER = new HashMap<>();
-    private static volatile int pending;
+    /** The server's side of a client's configuration: its first packets, then its answer to the client's known packs. */
+    record Configuration(java.util.function.Supplier<List<Packet<?>>> start, java.util.function.Function<net.minecraft.network.protocol.configuration.ServerboundSelectKnownPacks, List<Packet<?>>> knownPacks) {}
+
+    private static Configuration configuration;
+    /** The registries the client's inbound play protocol decodes with, as its configuration set them; null with no client connected. */
+    static volatile net.minecraft.core.RegistryAccess.Frozen registries;
+    /** The client's block entities in a chunk; set where the client classes exist. */
+    public static volatile java.util.function.Function<net.minecraft.world.level.ChunkPos, Map<net.minecraft.core.BlockPos, net.minecraft.world.level.block.entity.BlockEntity>> clientEntities = chunk -> Map.of();
     /** Whether a block's geometry comes from its block entity's data, so its clients need that data; set where the client classes exist. */
     static volatile java.util.function.Predicate<net.minecraft.world.level.block.state.BlockState> dynamic = state -> false;
     private static final java.util.Set<UUID> JOINING = new java.util.HashSet<>();
+
+    static synchronized void configuration(Configuration server) {
+        configuration = server;
+    }
+
+    static synchronized Configuration configuration() {
+        return configuration;
+    }
 
     /** A window's player has a Java client from now on; the others' packets still go nowhere. */
     static synchronized void join(UUID player) {
@@ -41,8 +56,8 @@ public final class Clients {
     public static synchronized boolean toClient(UUID player, Packet<?> packet) {
         var queue = TO_CLIENT.get(player);
         if (queue == null) return false;
-        queue.add(packet);
-        pending++;
+        // Still in configuration: play packets start with its login, which sends what it missed.
+        if (!JOINING.contains(player)) queue.add(packet);
         return true;
     }
 
@@ -157,11 +172,6 @@ public final class Clients {
         for (var player : level.getChunkSource().chunkMap.getPlayers(net.minecraft.world.level.ChunkPos.containing(pos), false)) toClient(player.getUUID(), packet);
     }
 
-    /** Counts packets sent to clients and geometry marked to record, so a window knows without the lock when it has work. */
-    static int pending() {
-        return pending + changes.get();
-    }
-
-    /** Counts geometry and renderers marked to record again, which a window reads with the packets to know when to ask. */
+    /** Counts geometry and renderers marked to record again. */
     static final java.util.concurrent.atomic.AtomicInteger changes = new java.util.concurrent.atomic.AtomicInteger();
 }

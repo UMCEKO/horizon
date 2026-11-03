@@ -62,6 +62,8 @@ gilrs = { version = "0.11", optional = true }
 # The DualSense's rumble, adaptive triggers and lights over HID (gilrs only reads it).
 horizon-dualsense = { path = "../horizon-dualsense", optional = true }
 horizon-java-host = { path = "../horizon-java-host", optional = true }
+# Java mods' boot facts carried into content at launch (docs/java-mods.md).
+horizon-port-pack = { path = "../horizon-port-pack", optional = true }
 # HTTPS to the Minecraft services (online-mode session join).
 ureq = { version = "2", default-features = false, features = ["tls"] }
 unicode-bidi = "0.3.18"
@@ -99,7 +101,9 @@ controllers = ["dep:gilrs", "dep:horizon-dualsense", "horizon-client-input/contr
 # Records the call sites of mob random draws (`mob_ai_probe` traces).
 rng-trace = ["horizon-core/rng-trace"]
 # Real Java mods in an embedded JVM (docs/java-mods.md).
-java-mods = ["dep:horizon-java-host"]
+java-mods = ["dep:horizon-java-host", "dep:horizon-port-pack"]
+# Live memory by thread and by call stack, for memory investigations (horizon-threads' `alloc_report`).
+alloc-report = ["horizon-threads/alloc-report"]
 
 # Its own name, not `probe`: Cargo copies every crate's examples into one target/<profile>/examples.
 [[example]]

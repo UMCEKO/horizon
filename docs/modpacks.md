@@ -264,7 +264,7 @@ Most decoration and resource blocks are vanilla classes with other numbers: Maca
 data tier without code. Templates also give mod blocks every behaviour Horizon already
 implements and the harnesses already check. Items work the same way (`"template":
 "minecraft:diamond"`, overriding `max_stack_size`, `rarity` and any data component in
-`components`).
+`components`). A block's own item takes the same three fields under `"item_properties"`, over its template block's item.
 
 A Java mod's data component types are declared as `data/<mod>/horizon/data_component_type/<name>.json`, holding
 `{"persistent": true}` when the type has a codec (`carry` writes them from the oracle's `data_component_types`). They join
@@ -414,11 +414,15 @@ resistance, light, tool need, friction, map colour and sounds as overrides. `--r
 <prepared>` limits templates to blocks Horizon's tables have. `carry-report.json` lists, per
 block, what the template does not reproduce (other shapes, sounds no vanilla block has, a class
 of its own), and the blocks left out: those whose vanilla class has no vanilla block with the
-same states (Macaw's garage doors, multi-part gates). An item of a vanilla tool or armour class
-(`SwordItem`, `PickaxeItem`, `ArmorItem`, ...) gets the iron item of that class and slot as its
-template, and the oracle's durability, attribute modifiers, tool rules, enchantability and repair
-items as a component patch over it, minus what the template already has (`--resources` gives the
-template's components); other items keep `minecraft:stick`. Recipes get the convention tags they use
+same states (Macaw's garage doors, multi-part gates). An item's template comes from its components, never its class: the
+vanilla item with no class behaviour of its own whose default components are nearest (the same equipment slot, then the
+most types shared and the fewest extra), so food stands on a food, armour on an armour piece. Every vanilla component
+type the item has then becomes a patch over the template's, with the template's others removed, so its stack size,
+rarity, food, equippable, durability and the rest are the mod's exactly; `--resources` gives the templates' components.
+A block's item gets the same patch in `item_properties`. Types a mod registers stay in Java, which holds those values;
+facts from a 1.21.1 oracle keep their older numbers only (durability, modifiers, tool rules, enchantability, repair
+items). The facts list what the mods registered under `owned`, and carry declares those, whatever their namespace's
+other entries. Recipes get the convention tags they use
 (`c:dyes/red`), filled from the oracle with vanilla's and the mod's own members. Without the
 oracle, templates are guessed from the blockstate's properties: the template whose properties
 include them with the fewest left over (models often ignore `powered` or `waterlogged`), the
@@ -497,7 +501,8 @@ Mechanical, the same for every mod, and no agent:
 Two cases the oracle fills in:
 
 - **Loot registered in code.** Chipped ships 7 loot tables for about 7,000 blocks; the rest
-  drop themselves through Java code. When a declared block has no table in the jar and the
+  drop themselves through Java code. When a declared block has no table in the jar, facts from the game's own Java boot
+  hold its loaded table, which carry writes as it is. Otherwise, when the
   oracle shows vanilla's drop-self, carry writes that table in 26.3's shape. When only the
   states with one property value drop it (a door's lower half), the entry gets vanilla's
   `match_block` condition. Chipped: 6,843 tables added.

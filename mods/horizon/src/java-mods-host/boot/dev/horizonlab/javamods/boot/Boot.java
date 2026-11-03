@@ -41,11 +41,22 @@ public final class Boot {
         public HzPing(String payload) { this.payload = payload; }
     }
 
+    /** The JVM only shuts down by `System.exit` or a signal, which end the game with it: say who did it. */
+    private static void exiting() {
+        System.err.println("Horizon: the JVM is shutting down (System.exit, or a signal such as an out-of-memory killer's SIGTERM), which ends the game; its threads now:");
+        Thread.getAllStackTraces().forEach((thread, stack) -> {
+            if (thread == Thread.currentThread() || stack.length == 0) return;
+            System.err.println("  \"" + thread.getName() + "\"");
+            for (var frame : stack) System.err.println("    at " + frame);
+        });
+    }
+
     public static void main(String[] args) throws Exception {
         Host.mark("boot_main");
         SharedConstants.tryDetectVersion();
         Host.mark("detect_version");
         Bootstrap.bootStrap();
+        BootFacts.snapshot(FMLEnvironment.getDist().isClient());
         Host.mark("bootstrap");
         if (FMLEnvironment.getDist().isClient()) {
             ClientLoader.load();
@@ -55,6 +66,14 @@ public final class Boot {
             ServerModLoader.load(false);
         }
         Host.mark("mod_loading_done");
+        // A real client stops at its loading error screen here; this boot stops with the same errors.
+        if (net.neoforged.fml.ModLoader.hasErrors()) {
+            var errors = new StringBuilder("the mods didn't load:");
+            for (var issue : net.neoforged.fml.ModLoader.getLoadingErrors()) errors.append("\n  ").append(issue);
+            throw new IllegalStateException(errors.toString());
+        }
+        BootFacts.seal();
+        Runtime.getRuntime().addShutdownHook(new Thread(Boot::exiting, "Horizon exit report"));
         Host.gameLoader = Boot.class.getClassLoader();
         Host.serverGroup = net.neoforged.fml.util.thread.SidedThreadGroups.SERVER;
         Host.entry = Boot::op;
@@ -68,6 +87,9 @@ public final class Boot {
     static String op(String op, String arg) {
         try {
             return switch (op) {
+                case "prepare" -> { GameBridge.prepare(); yield "ok"; }
+                case "boot_facts" -> BootFacts.export(arg);
+                case "own_code" -> ownCode();
                 case "mods" -> mods();
                 case "registries" -> registries();
                 case "items" -> items(arg);
@@ -85,7 +107,7 @@ public final class Boot {
                 case "use_probe" -> GameBridge.probe(arg, false);
                 case "use_probe_sneaking" -> GameBridge.probe(arg, true);
                 case "exit" -> { System.exit(0); yield ""; }
-                default -> "unknown op " + op;
+                default -> throw new IllegalArgumentException("unknown op " + op);
             };
         } catch (Throwable t) {
             var sw = new java.io.StringWriter();
@@ -158,6 +180,9 @@ public final class Boot {
             o.addProperty("class", item.getClass().getName());
             o.addProperty("max_stack_size", stack.getMaxStackSize());
             o.addProperty("rarity", stack.getRarity().getSerializedName());
+            o.addProperty("own_use", ItemCode.use(item.getClass()));
+            o.addProperty("own_use_on", ItemCode.useOn(item));
+            o.addProperty("own_entity", ItemCode.entity(item.getClass()));
             var comps = new JsonObject();
             for (TypedDataComponent<?> c : stack.getComponents()) {
                 var enc = c.encodeValue(ops).result();
@@ -167,6 +192,16 @@ public final class Boot {
             out.add(id.toString(), o);
         }
         return out.toString();
+    }
+
+    static String ownCode() {
+        var sb = new StringBuilder();
+        for (Item item : BuiltInRegistries.ITEM) {
+            if (!BootFacts.ownsItem(item)) continue;
+            sb.append(BuiltInRegistries.ITEM.getKey(item)).append(" use=").append(ItemCode.use(item.getClass())).append(" useOn=").append(ItemCode.useOn(item))
+                    .append(" entity=").append(ItemCode.entity(item.getClass())).append(" class=").append(item.getClass().getName()).append('\n');
+        }
+        return sb.toString();
     }
 
     static String mixin(String target) throws Exception {

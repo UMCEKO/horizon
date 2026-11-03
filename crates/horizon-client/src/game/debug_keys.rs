@@ -100,7 +100,7 @@ impl Game<'_> {
                 | Screen::BlockEditor
         ) || self.sign_edit.is_some()
             || self.book.is_some()
-            || (self.screen == Screen::Creative && self.creative_screen.tab().search)
+            || (self.screen == Screen::Creative && self.creative_screen.tab().has_search_box())
             || self.recipe_search_focused()
             || self.station_typing()
             || self

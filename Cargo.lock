@@ -1151,6 +1151,7 @@ dependencies = [
  "horizon-items",
  "horizon-java-host",
  "horizon-mods",
+ "horizon-port-pack",
  "horizon-protocol",
  "horizon-server-files",
  "horizon-shader-api",

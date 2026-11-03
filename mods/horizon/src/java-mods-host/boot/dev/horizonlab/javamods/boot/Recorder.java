@@ -135,19 +135,19 @@ public final class Recorder extends GuiRenderState {
             String texture = setup != null && setup.texure0() instanceof Sprites.View view ? view.id().toString() : "";
             var pipeline = element.pipeline();
             int kind = pipeline == RenderPipelines.GUI_INVERT ? 1 : pipeline == RenderPipelines.GUI_TEXT_HIGHLIGHT ? 2 : 0;
-            boolean atlas = texture.contains(":textures/atlas/");
+            var atlas = texture.isEmpty() ? null : net.minecraft.resources.Identifier.tryParse(texture);
             for (int q = 0; q + 3 <= corners.n; q += 4) {
-                // The block and item atlases' sprites sit one unit of U apart: the quad's middle names its sprite.
-                var sprite = atlas ? Sprites.indexed((corners.u[q] + corners.u[q + 1] + corners.u[q + 2] + corners.u[q + 3]) / 4) : null;
-                float shift = sprite == null ? 0 : sprite.getU0();
+                // A stitched atlas's quad is its sprite's: the quad's middle names it, and Rust draws that texture's file.
+                var spot = atlas == null ? null : Sprites.locate(atlas, (corners.u[q] + corners.u[q + 1] + corners.u[q + 2] + corners.u[q + 3]) / 4, (corners.v[q] + corners.v[q + 1] + corners.v[q + 2] + corners.v[q + 3]) / 4);
+                var sprite = spot == null ? null : spot.sprite();
                 out.writeByte(QUAD);
-                text(out, sprite == null ? texture : Sprites.textureFile(sprite));
+                text(out, spot == null ? texture : spot.file());
                 out.writeByte(kind);
                 for (int i = q; i < q + 4; i++) {
                     out.writeFloat(corners.x[i]);
                     out.writeFloat(corners.y[i]);
-                    out.writeFloat(corners.u[i] - shift);
-                    out.writeFloat(corners.v[i]);
+                    out.writeFloat(sprite == null ? corners.u[i] : (corners.u[i] - sprite.getU0()) / (sprite.getU1() - sprite.getU0()));
+                    out.writeFloat(sprite == null ? corners.v[i] : (corners.v[i] - sprite.getV0()) / (sprite.getV1() - sprite.getV0()));
                     out.writeInt(corners.color[i]);
                 }
                 scissor(element.scissorArea());
@@ -216,7 +216,7 @@ public final class Recorder extends GuiRenderState {
     public void item(Matrix3x2fc pose, ItemStack stack, int x, int y, ScreenRectangle scissor) {
         if (stack.isEmpty()) return;
         try {
-            var tag = (CompoundTag) ItemStack.CODEC.encodeStart(GameBridge.registries().createSerializationContext(NbtOps.INSTANCE), stack).getOrThrow();
+            var tag = (CompoundTag) ItemStack.CODEC.encodeStart(Clients.registries.createSerializationContext(NbtOps.INSTANCE), stack).getOrThrow();
             out.writeByte(ITEM);
             pose(pose, x, y);
             GameBridge.writeTag(out, tag);

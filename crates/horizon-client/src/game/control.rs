@@ -296,10 +296,10 @@ impl Game<'_> {
                 if self.screen == Screen::Java {
                     let action = arg(2)?;
                     if action != "up" {
-                        self.java_screen_key_code(key, true, None);
+                        self.java_screen_key_code(key, true, false, None);
                     }
                     if action != "down" && self.screen == Screen::Java {
-                        self.java_screen_key_code(key, false, None);
+                        self.java_screen_key_code(key, false, false, None);
                     }
                     return ok();
                 }
@@ -479,6 +479,7 @@ impl Game<'_> {
                     return Err("hotbar slot must be 1..9".into());
                 }
                 self.selected = slot - 1;
+                self.java_key_action(super::java_screens::JavaKeyAction::Hotbar(slot - 1));
                 ok()
             }
             "give" => {
@@ -659,7 +660,7 @@ impl Game<'_> {
                     {
                         self.station_text(Some(text), false)
                     }
-                    Screen::Creative if self.creative_screen.tab().search => {
+                    Screen::Creative if self.creative_screen.tab().has_search_box() => {
                         // As typed: replaces a selected query, keeps the length limit.
                         self.creative_search_edit(Some(text))
                     }

@@ -1040,6 +1040,8 @@ impl Mesher<'_> {
                 Some(t) => [16, 8, 0].map(|shift| g * (t >> shift & 255) / 255),
                 None => [g; 3],
             };
+            let rgb: [u32; 3] =
+                std::array::from_fn(|c| rgb[c] * (q.color >> (16 - 8 * c) & 255) / 255);
             let p = q.positions[i];
             target.push(TerrainVertex::new(
                 [p[0] + origin[0], p[1] + origin[1], p[2] + origin[2]],

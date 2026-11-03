@@ -3,8 +3,8 @@ package dev.horizonlab.neoforge;
 import com.google.gson.JsonElement;
 import com.google.gson.stream.JsonWriter;
 import com.mojang.serialization.DataResult;
-import com.mojang.serialization.DynamicOps;
 import com.mojang.serialization.JsonOps;
+import dev.horizonlab.facts.FactsWriter;
 import java.io.IOException;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
@@ -12,7 +12,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -20,23 +19,19 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.core.component.TypedDataComponent;
+import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.sounds.SoundEvent;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.BlockItem;
-import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.item.crafting.Recipe;
 import net.minecraft.world.item.crafting.RecipeHolder;
 import net.minecraft.world.item.enchantment.Enchantments;
-import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.SoundType;
@@ -44,10 +39,8 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.level.storage.loot.LootParams;
 import net.minecraft.world.level.storage.loot.parameters.LootContextParams;
-import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
-import net.minecraft.world.phys.shapes.VoxelShape;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.common.NeoForge;
@@ -86,19 +79,31 @@ public final class FactsExporter {
         server.halt(false);
     }
 
-    private static final class Export {
+    /** The oracle's scope is the namespaces it was given; it runs on a real server, so it also samples drops and placement in its level. */
+    private static final class Export extends FactsWriter {
         final MinecraftServer server;
         final ServerLevel level;
         final Set<String> namespaces;
-        final JsonWriter json;
         final List<ItemStack> tools = new ArrayList<>();
         final List<String> toolNames = new ArrayList<>();
 
         Export(MinecraftServer server, Set<String> namespaces, JsonWriter json) {
+            super(json, server.registryAccess().createSerializationContext(JsonOps.INSTANCE), new Scope() {
+                public boolean mod(Registry<?> registry, Identifier id) {
+                    return namespaces.contains(id.getNamespace());
+                }
+
+                public boolean vanilla(Registry<?> registry, Identifier id) {
+                    return id.getNamespace().equals("minecraft");
+                }
+
+                public boolean wholeTag(Identifier tag) {
+                    return tag.getNamespace().equals("c") || namespaces.contains(tag.getNamespace());
+                }
+            });
             this.server = server;
             this.level = server.overworld();
             this.namespaces = namespaces;
-            this.json = json;
             tool("hand", ItemStack.EMPTY);
             tool("diamond_pickaxe", new ItemStack(Items.DIAMOND_PICKAXE));
             tool("diamond_axe", new ItemStack(Items.DIAMOND_AXE));
@@ -115,13 +120,9 @@ public final class FactsExporter {
             tools.add(stack);
         }
 
-        boolean ours(Identifier id) {
-            return namespaces.contains(id.getNamespace());
-        }
-
         void run() throws IOException {
             json.beginObject();
-            json.name("schema").value(2);
+            json.name("schema").value(3);
             json.name("minecraft").value(net.minecraft.SharedConstants.getCurrentVersion().name());
             json.name("namespaces");
             json.beginArray();
@@ -131,15 +132,10 @@ public final class FactsExporter {
             json.beginArray();
             for (String n : toolNames) json.value(n);
             json.endArray();
+            owned();
+            level.setBlock(FLOOR, Blocks.STONE.defaultBlockState(), 3);
             blocks();
-            // Vanilla's items, so harnesses can tell later versions' additions apart.
-            json.name("vanilla_items");
-            json.beginArray();
-            for (Item item : BuiltInRegistries.ITEM) {
-                Identifier id = BuiltInRegistries.ITEM.getKey(item);
-                if (id.getNamespace().equals("minecraft")) json.value(id.toString());
-            }
-            json.endArray();
+            vanillaItems();
             items();
             dataComponentTypes();
             recipes();
@@ -147,72 +143,19 @@ public final class FactsExporter {
             json.endObject();
         }
 
-        void blocks() throws IOException {
-            level.setBlock(FLOOR, Blocks.STONE.defaultBlockState(), 3);
-            json.name("blocks");
-            json.beginObject();
-            for (Block block : BuiltInRegistries.BLOCK) {
-                Identifier id = BuiltInRegistries.BLOCK.getKey(block);
-                boolean mod = ours(id);
-                if (!mod && !id.getNamespace().equals("minecraft")) continue;
-                json.name(id.toString());
-                json.beginObject();
-                json.name("class");
-                json.beginArray();
-                for (Class<?> c = block.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
-                    json.value(c.getName());
-                }
-                json.endArray();
-                BlockState def = block.defaultBlockState();
-                json.name("properties");
-                json.beginObject();
-                for (Property<?> p : block.getStateDefinition().getProperties()) {
-                    json.name(p.getName());
-                    json.beginArray();
-                    for (Object v : p.getPossibleValues()) json.value(name(p, v));
-                    json.endArray();
-                }
-                json.endObject();
-                json.name("default").value(stateKey(def));
-                json.name("item").value(BuiltInRegistries.ITEM.getKey(block.asItem()).toString());
-                json.name("explosion_resistance").value(block.getExplosionResistance());
-                json.name("friction").value(block.getFriction());
-                json.name("speed_factor").value(block.getSpeedFactor());
-                json.name("jump_factor").value(block.getJumpFactor());
-                blockSetType(block);
-                json.name("states");
-                json.beginObject();
-                for (BlockState state : block.getStateDefinition().getPossibleStates()) {
-                    json.name(stateKey(state));
-                    json.beginObject();
-                    json.name("hardness").value(state.getDestroySpeed(EmptyBlockGetter.INSTANCE, BlockPos.ZERO));
-                    json.name("emission").value(state.getLightEmission());
-                    json.name("requires_tool").value(state.requiresCorrectToolForDrops());
-                    json.name("can_occlude").value(state.canOcclude());
-                    json.name("replaceable").value(state.canBeReplaced());
-                    json.name("random_ticks").value(state.isRandomlyTicking());
-                    json.name("light_dampening").value(state.getLightDampening());
-                    json.name("skylight_down").value(state.propagatesSkylightDown());
-                    json.name("solid_render").value(state.isSolidRender());
-                    json.name("shape_occlusion").value(state.useShapeForLightOcclusion());
-                    json.name("occlusion");
-                    boxes(state.getOcclusionShape());
-                    var color = state.getMapColor(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
-                    json.name("map_color").value(color.col);
-                    json.name("map_color_id").value(color.id);
-                    sound(state.getSoundType(level, FLOOR.above(), null));
-                    json.name("outline");
-                    boxes(state.getShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO));
-                    json.name("collision");
-                    boxes(state.getCollisionShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO));
-                    if (mod && lootSample(block, state)) drops(state);
-                    json.endObject();
-                }
-                json.endObject();
-                if (block.asItem() instanceof BlockItem bi) placement(bi);
-                json.endObject();
-            }
-            json.endObject();
+        @Override
+        protected SoundType sound(BlockState state) {
+            return state.getSoundType(level, FLOOR.above(), null);
+        }
+
+        @Override
+        protected void stateExtras(Block block, BlockState state) throws IOException {
+            if (lootSample(block, state)) drops(state);
+        }
+
+        @Override
+        protected void blockExtras(Block block) throws IOException {
+            if (block.asItem() instanceof BlockItem bi) placement(bi);
         }
 
         /** Every state of a small block; else the default and each one-property change from it. */
@@ -272,126 +215,6 @@ public final class FactsExporter {
             json.endObject();
         }
 
-        /** The BlockSetType (doors, trapdoors, buttons, plates) and WoodType (fence gates) a block keeps. */
-        void blockSetType(Block block) throws IOException {
-            String setType = null, woodType = null;
-            Boolean byHand = null;
-            for (Class<?> c = block.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
-                for (var f : c.getDeclaredFields()) {
-                    try {
-                        if (f.getType() == net.minecraft.world.level.block.state.properties.BlockSetType.class && setType == null) {
-                            f.setAccessible(true);
-                            var t = (net.minecraft.world.level.block.state.properties.BlockSetType) f.get(block);
-                            if (t != null) {
-                                setType = t.name();
-                                byHand = t.canOpenByHand();
-                            }
-                        } else if (f.getType() == net.minecraft.world.level.block.state.properties.WoodType.class && woodType == null) {
-                            f.setAccessible(true);
-                            var t = (net.minecraft.world.level.block.state.properties.WoodType) f.get(block);
-                            if (t != null) woodType = t.name();
-                        }
-                    } catch (ReflectiveOperationException | RuntimeException e) {
-                        // Not readable: left out.
-                    }
-                }
-            }
-            if (setType != null) {
-                json.name("block_set_type");
-                json.beginObject();
-                json.name("name").value(setType);
-                json.name("can_open_by_hand").value(byHand);
-                json.endObject();
-            }
-            if (woodType != null) json.name("wood_type").value(woodType);
-        }
-
-        void sound(SoundType s) throws IOException {
-            json.name("sound");
-            json.beginObject();
-            json.name("volume").value(s.getVolume());
-            json.name("pitch").value(s.getPitch());
-            event("break", s.getBreakSound());
-            event("step", s.getStepSound());
-            event("place", s.getPlaceSound());
-            event("hit", s.getHitSound());
-            event("fall", s.getFallSound());
-            json.endObject();
-        }
-
-        void event(String name, SoundEvent e) throws IOException {
-            json.name(name).value(e.location().toString());
-        }
-
-        void boxes(VoxelShape shape) throws IOException {
-            json.beginArray();
-            for (AABB b : shape.toAabbs()) {
-                json.beginArray();
-                json.value(b.minX).value(b.minY).value(b.minZ).value(b.maxX).value(b.maxY).value(b.maxZ);
-                json.endArray();
-            }
-            json.endArray();
-        }
-
-        void items() throws IOException {
-            json.name("items");
-            json.beginObject();
-            for (Item item : BuiltInRegistries.ITEM) {
-                Identifier id = BuiltInRegistries.ITEM.getKey(item);
-                if (!ours(id)) continue;
-                ItemStack stack = new ItemStack(item);
-                json.name(id.toString());
-                json.beginObject();
-                json.name("class").value(item.getClass().getName());
-                json.name("max_stack_size").value(stack.getMaxStackSize());
-                json.name("rarity").value(stack.getRarity().getSerializedName());
-                if (item instanceof BlockItem bi) {
-                    json.name("block").value(BuiltInRegistries.BLOCK.getKey(bi.getBlock()).toString());
-                }
-                var food = stack.get(net.minecraft.core.component.DataComponents.FOOD);
-                if (food != null) {
-                    json.name("food");
-                    json.beginObject();
-                    json.name("nutrition").value(food.nutrition());
-                    json.name("saturation").value(food.saturation());
-                    json.endObject();
-                }
-                itemComponents(item, stack);
-                json.endObject();
-            }
-            json.endObject();
-        }
-
-        // The item's own numbers in 1.21.1's forms: its default components, and what it keeps outside them.
-        void itemComponents(Item item, ItemStack stack) throws IOException {
-            DynamicOps<JsonElement> ops = server.registryAccess().createSerializationContext(JsonOps.INSTANCE);
-            json.name("components");
-            json.beginObject();
-            for (TypedDataComponent<?> c : stack.getComponents()) {
-                var encoded = c.encodeValue(ops).result();
-                if (encoded.isPresent()) {
-                    json.name(BuiltInRegistries.DATA_COMPONENT_TYPE.getKey(c.type()).toString());
-                    json.jsonValue(encoded.get().toString());
-                }
-            }
-            json.endObject();
-
-        }
-
-        void dataComponentTypes() throws IOException {
-            json.name("data_component_types");
-            json.beginObject();
-            for (var type : BuiltInRegistries.DATA_COMPONENT_TYPE) {
-                Identifier id = BuiltInRegistries.DATA_COMPONENT_TYPE.getKey(type);
-                if (!ours(id)) continue;
-                json.name(id.toString());
-                json.beginObject();
-                json.name("persistent").value(!type.isTransient());
-                json.endObject();
-            }
-            json.endObject();
-        }
-
         void raw(String name, DataResult<JsonElement> encoded) throws IOException {
             var value = encoded.result();
             if (value.isPresent()) {
@@ -404,7 +227,7 @@ public final class FactsExporter {
             json.name("recipes");
             json.beginObject();
             for (RecipeHolder<?> holder : server.getRecipeManager().getRecipes()) {
-                if (!ours(holder.id().identifier())) continue;
+                if (!namespaces.contains(holder.id().identifier().getNamespace())) continue;
                 var recipe = holder.value();
                 json.name(holder.id().identifier().toString());
                 json.beginObject();
@@ -419,50 +242,6 @@ public final class FactsExporter {
                 json.endObject();
             }
             json.endObject();
-        }
-
-        /** Tags that hold one of our ids, with only those members; and every `c` tag, whole. */
-        void tags() throws IOException {
-            json.name("tags");
-            json.beginObject();
-            for (String kind : new String[] {"block", "item"}) {
-                json.name(kind);
-                json.beginObject();
-                Map<String, Set<String>> out = new TreeMap<>();
-                var registry = kind.equals("block") ? BuiltInRegistries.BLOCK : BuiltInRegistries.ITEM;
-                registry.getTags().forEach(pair -> {
-                    String tag = pair.key().location().toString();
-                    boolean convention = pair.key().location().getNamespace().equals("c");
-                    Set<String> members = new LinkedHashSet<>();
-                    for (var holder : pair.contents()) {
-                        Identifier id = holder.unwrapKey().orElseThrow().identifier();
-                        if (convention || ours(id) || ours(pair.key().location())) members.add(id.toString());
-                    }
-                    if (!members.isEmpty()) out.put(tag, new TreeSet<>(members));
-                });
-                for (var e : out.entrySet()) {
-                    json.name(e.getKey());
-                    json.beginArray();
-                    for (String m : e.getValue()) json.value(m);
-                    json.endArray();
-                }
-                json.endObject();
-            }
-            json.endObject();
-        }
-
-        static String stateKey(BlockState state) {
-            StringBuilder b = new StringBuilder();
-            for (Property<?> p : state.getProperties()) {
-                if (b.length() > 0) b.append(',');
-                b.append(p.getName()).append('=').append(name(p, state.getValue(p)));
-            }
-            return b.toString();
-        }
-
-        @SuppressWarnings({"unchecked", "rawtypes"})
-        static String name(Property p, Object v) {
-            return p.getName((Comparable) v);
         }
     }
 }

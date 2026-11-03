@@ -10,17 +10,12 @@ use horizon_world::fluid::FluidKind;
 use horizon_world::level::BlockEventData;
 
 impl Game<'_> {
-    /// `LevelReader.getNoiseBiome`: the loaded chunk's, else the generator's biome source's.
-    fn java_biome(&self, x: i32, y: i32, z: i32) -> Text {
-        let name = match self.world.chunks.get(&(x >> 4, z >> 4)) {
-            Some(chunk) => self.res.biomes().get(chunk.biome(x, y, z)).name.clone(),
-            None => self
-                .end
-                .locator()
-                .and_then(|terrain| terrain.noise_biomes(&[[x >> 2, y >> 2, z >> 2]]).pop().flatten())
-                .unwrap_or_else(|| "minecraft:plains".to_owned()),
-        };
-        Text(format!("worldgen/biome\t{name}"))
+    /// `LevelReader.getNoiseBiome` at a quart position.
+    fn java_biome(&self, qx: i32, qy: i32, qz: i32) -> Text {
+        Text(format!(
+            "worldgen/biome\t{}",
+            self.noise_biome_name(qx, qy, qz)
+        ))
     }
 
     /// `ChunkGenerator.getSeaLevel`: the noise settings', `FlatLevelSource`'s and `DebugLevelSource`'s.
@@ -94,20 +89,20 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     "net/minecraft/world/level/LevelReader".getBiome
     "(Lnet/minecraft/core/BlockPos;)Lnet/minecraft/core/Holder;" if "net/minecraft/server/level/ServerLevel" =>
     fn level_biome(game, pos: Pos) -> Text {
-        let [x, y, z] = game.streaming.biome_zoom.quart_at_block(pos.0).map(|quart| quart << 2);
+        let [x, y, z] = game.streaming.biome_zoom.quart_at_block(pos.0);
         game.java_biome(x, y, z)
     }
 
     "net/minecraft/world/level/LevelReader".getNoiseBiome
     "(III)Lnet/minecraft/core/Holder;" if "net/minecraft/server/level/ServerLevel" =>
     fn level_noise_biome(game, x: i32, y: i32, z: i32) -> Text {
-        game.java_biome(x << 2, y << 2, z << 2)
+        game.java_biome(x, y, z)
     }
 
     "net/minecraft/server/level/ServerLevel".getUncachedNoiseBiome
     "(III)Lnet/minecraft/core/Holder;" =>
     fn level_uncached_noise_biome(game, x: i32, y: i32, z: i32) -> Text {
-        game.java_biome(x << 2, y << 2, z << 2)
+        game.java_biome(x, y, z)
     }
 
     "net/minecraft/server/level/ServerLevel".getSeaLevel

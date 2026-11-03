@@ -1536,6 +1536,16 @@ const GENERATED_KEYS: [&str; 14] = [
     "entities",
     "CarvingMask",
 ];
+/// The root keys of a chunk tag that Horizon keeps as loaded and writes back.
+pub fn kept_root(tag: &Tag) -> Compound {
+    let Tag::Compound(map) = tag else {
+        return Compound::new();
+    };
+    map.iter()
+        .filter(|(k, _)| !GENERATED_KEYS.contains(&k.to_string_lossy().as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
 pub fn decode(root: &NamedTag, registry: &BlockRegistry, biomes: &Biomes) -> Option<Chunk> {
     decode_with(root, registry, biomes, None, ColumnLayout::VANILLA)
 }
@@ -1690,13 +1700,7 @@ fn decode_column(
             }
         }
     }
-    if let Tag::Compound(map) = tag {
-        extras.root = map
-            .iter()
-            .filter(|(k, _)| !GENERATED_KEYS.contains(&k.to_string_lossy().as_str()))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-    }
+    extras.root = kept_root(tag);
     if let Some(t) = tables {
         extras.block_ticks = read_ticks(tag.get("block_ticks"), (*x, *z), |n| {
             t.block_ids.get(n).map(|&i| u32::from(i))
@@ -2609,6 +2613,36 @@ impl SaveDir {
         registry: &'static BlockRegistry,
         biomes: &Arc<Biomes>,
     ) -> Result<usize> {
+        self.save_later_as(chunks, registry, biomes, Vec::new())
+    }
+    /// The chunk's record as `save` writes it, for a caller that changes it before it is written.
+    pub fn encode_chunk(
+        &self,
+        chunk: &Chunk,
+        registry: &BlockRegistry,
+        biomes: &Biomes,
+    ) -> NamedTag {
+        encode_with(
+            chunk,
+            registry,
+            biomes,
+            self.tables.get().map(|t| &**t),
+            self.shape,
+        )
+    }
+    /// The chunk's record as the region file (or the writer's queue) holds it now.
+    pub fn read_chunk_tag(&self, x: i32, z: i32) -> Option<NamedTag> {
+        self.read_record("region", x, z)
+    }
+    /// `save_later` where `written` holds the records some chunks are saved as, instead of their encoding.
+    pub fn save_later_as(
+        &self,
+        chunks: &[Arc<Chunk>],
+        registry: &'static BlockRegistry,
+        biomes: &Arc<Biomes>,
+        written: Vec<((i32, i32), NamedTag)>,
+    ) -> Result<usize> {
+        let mut written: HashMap<(i32, i32), NamedTag> = written.into_iter().collect();
         let encoding = Arc::new(Encoding {
             registry,
             biomes: biomes.clone(),
@@ -2617,7 +2651,13 @@ impl SaveDir {
         });
         let records = chunks
             .iter()
-            .map(|c| ((c.x, c.z), Record::Chunk(c.clone(), encoding.clone())))
+            .map(|c| {
+                let key = (c.x, c.z);
+                match written.remove(&key) {
+                    Some(tag) => (key, Record::Tag(Arc::new(tag))),
+                    None => (key, Record::Chunk(c.clone(), encoding.clone())),
+                }
+            })
             .collect();
         self.queue(Folder::Region, records, false)?;
         self.save_poi(chunks, false)?;

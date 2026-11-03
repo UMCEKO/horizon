@@ -561,7 +561,6 @@ pub struct Renderer {
     section_copy_bytes: u64,
     /// Whether `lightmap` holds `lightmap_pixels` yet.
     lightmap_uploaded: bool,
-    sprite_minimum_size: u32,
     indices: wgpu::Buffer,
     index_quads: u32,
     instances: wgpu::Buffer,
@@ -690,7 +689,7 @@ pub struct Renderer {
 pub(crate) const SPRITE_SPLIT: u32 = 2048;
 /// [`SPRITE_SPLIT`], or a smaller split from `HORIZON_SPRITE_SPLIT` (dev
 /// only: vanilla's sprites drawn from several arrays must look the same).
-fn sprite_split() -> u32 {
+pub(crate) fn sprite_split() -> u32 {
     std::env::var("HORIZON_SPRITE_SPLIT")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -698,7 +697,7 @@ fn sprite_split() -> u32 {
         .unwrap_or(SPRITE_SPLIT)
 }
 /// Sprite arrays terrain.wgsl binds (`sprites`, `sprites_1`...).
-const SPRITE_ARRAYS: u32 = 8;
+pub(crate) const SPRITE_ARRAYS: u32 = 8;
 /// The layers to give a square texture of `count` layers viewed as a 2D
 /// array. wgpu's OpenGL backend picks a texture's target from its layer
 /// count when it is created: one layer makes a 2D texture and a multiple of
@@ -722,7 +721,7 @@ fn sprite_views(
         .map(|i| match textures.get(i) {
             Some(t) => t.create_view(&wgpu::TextureViewDescriptor {
                 dimension: Some(wgpu::TextureViewDimension::D2Array),
-                mip_level_count: mips,
+                mip_level_count: mips.map(|m| m.min(t.mip_level_count())),
                 ..Default::default()
             }),
             None => unused.clone(),
@@ -810,32 +809,46 @@ pub struct PreparedTextures {
     forcefield: (Vec<u8>, u32),
 }
 impl PreparedTextures {
+    /// `pixels` holds each of `arrays`' layers at its array's size, array after array.
     pub fn new(
         pixels: &[u8],
-        size: u32,
-        layers: u32,
+        arrays: &[crate::sprites::SpriteArray],
         settings: &[crate::mipmap::Settings],
         forcefield: (&[u8], u32),
     ) -> Self {
-        Self::with_split(pixels, size, layers, settings, forcefield, sprite_split())
+        Self::with_split(pixels, arrays, settings, forcefield, sprite_split())
     }
 
     fn with_split(
         pixels: &[u8],
-        size: u32,
-        layers: u32,
+        arrays: &[crate::sprites::SpriteArray],
         settings: &[crate::mipmap::Settings],
         forcefield: (&[u8], u32),
         split: u32,
     ) -> Self {
-        let layer_bytes = (size * size * 4) as usize;
+        let mut start = 0;
         Self {
-            sprites: (0..layers.div_ceil(split).max(1))
-                .map(|array| {
-                    let first = array * split;
-                    let count = layers.saturating_sub(first).clamp(1, split);
-                    let start = (first as usize * layer_bytes).min(pixels.len());
-                    mip_chain(&pixels[start..], size, settings, first, count)
+            sprites: arrays
+                .iter()
+                .enumerate()
+                .map(|(a, array)| {
+                    let bytes = array.layers as usize * (array.size * array.size * 4) as usize;
+                    let own = &pixels[start.min(pixels.len())..(start + bytes).min(pixels.len())];
+                    start += bytes;
+                    let blank;
+                    let own = if array.layers == 0 {
+                        blank = vec![0; (array.size * array.size * 4) as usize];
+                        &blank[..]
+                    } else {
+                        own
+                    };
+                    mip_chain(
+                        own,
+                        array.size,
+                        settings,
+                        a as u32 * split,
+                        array.layers.max(1),
+                    )
                 })
                 .collect(),
             forcefield: mip_chain(forcefield.0, forcefield.1, &[], 0, 1),
@@ -1261,8 +1274,7 @@ impl Renderer {
         window: Arc<Window>,
         offscreen: bool,
         sprite_pixels: &[u8],
-        sprite_size: u32,
-        sprite_minimum_size: u32,
+        sprite_arrays_sizes: &[crate::sprites::SpriteArray],
         layers: u32,
         sprite_mips: &[crate::mipmap::Settings],
         animations: &[SpriteAnimation],
@@ -1668,7 +1680,7 @@ impl Renderer {
             mapped_at_creation: false,
         });
         let prepared = prepared.unwrap_or_else(|| {
-            PreparedTextures::new(sprite_pixels, sprite_size, layers, sprite_mips, forcefield)
+            PreparedTextures::new(sprite_pixels, sprite_arrays_sizes, sprite_mips, forcefield)
         });
         let mut mip_levels = 1;
         let gl = adapter.get_info().backend == wgpu::Backend::Gl;
@@ -1677,12 +1689,18 @@ impl Renderer {
             .into_iter()
             .enumerate()
             .map(|(array, (mut mips, levels))| {
-                let first = array as u32 * split;
-                let used = layers.saturating_sub(first).clamp(1, split);
+                let own = sprite_arrays_sizes.get(array).copied().unwrap_or(
+                    crate::sprites::SpriteArray {
+                        size: crate::sprites::SPRITE_SIZE,
+                        layers: 1,
+                    },
+                );
+                let sprite_size = own.size;
+                let used = own.layers.max(1);
                 let count = array_layers(used, gl);
                 // The extra layers are empty.
                 mips.resize(mips.len() / used as usize * count as usize, 0);
-                mip_levels = levels;
+                mip_levels = mip_levels.max(levels);
                 device.create_texture_with_data(
                     &queue,
                     &wgpu::TextureDescriptor {
@@ -1711,7 +1729,6 @@ impl Renderer {
         let animations = animate::SpriteAnimator::new(
             &device,
             animations,
-            sprite_size,
             sprite_mips,
             &sprite_textures,
             split,
@@ -2878,7 +2895,6 @@ impl Renderer {
             section_copies: None,
             section_copy_bytes: 0,
             lightmap_uploaded: false,
-            sprite_minimum_size,
             indices,
             index_quads,
             instances,
@@ -3780,18 +3796,11 @@ impl Renderer {
     fn pack_terrain_inputs(&mut self) -> Option<horizon_shaders::GbuffersInputs> {
         if self.pack_atlas.is_none() {
             let mut encoder = self.device.create_command_encoder(&Default::default());
-            let layers = self
-                .sprite_textures
-                .iter()
-                .map(|t| t.depth_or_array_layers())
-                .sum();
             self.pack_atlas = pack_atlas::PackAtlas::new(
                 &self.device,
                 &mut encoder,
                 &self.sprite_textures,
                 sprite_split(),
-                layers,
-                self.sprite_textures[0].width(),
             );
             self.queue.submit([encoder.finish()]);
         }
@@ -3876,12 +3885,8 @@ impl Renderer {
     /// The Mipmap Levels option: block textures sample at most `levels`
     /// reduced copies (0: none).
     pub fn set_mipmap_levels(&mut self, levels: u32) {
-        let levels = crate::sprites::sprite_mipmap_limit(
-            levels,
-            self.sprite_textures[0].width(),
-            self.sprite_minimum_size,
-            self.mip_levels,
-        );
+        // Each array keeps its own sprites' size, so a level reduces every sprite alike.
+        let levels = levels.min(self.mip_levels - 1);
         if levels == self.mipmaps {
             return;
         }
@@ -6655,17 +6660,18 @@ mod sprite_upload_tests {
             .collect();
         sprites.insert(&root, "minecraft:block/oak_sign").unwrap();
         sprites.finish();
-        assert_eq!(sprites.size, 32);
+        // The 32x sign takes an array of its own; the rails stay 16x16.
+        assert_eq!((sprites.size, sprites.arrays[0].size), (32, 16));
         for (&layer, expected) in layers.iter().zip(native) {
-            let start = layer as usize * 32 * 32 * 4;
+            let start = layer as usize * 16 * 16 * 4;
             let (actual, _) = mip_chain(
-                &sprites.pixels[start..start + 32 * 32 * 4],
-                32,
+                &sprites.pixels[start..start + 16 * 16 * 4],
+                16,
                 &sprites.mips,
                 layer,
                 1,
             );
-            assert_eq!(&actual[32 * 32 * 4..], expected, "rail layer {layer}");
+            assert_eq!(actual, expected, "rail layer {layer}");
         }
     }
     #[test]
@@ -6690,14 +6696,14 @@ mod sprite_upload_tests {
         // A partial final array and an exact boundary exercise the global
         // layer offset used to select each sprite's mipmap settings.
         for split in [1, 2, 5, 8] {
-            let prepared = PreparedTextures::with_split(
-                &pixels,
-                size,
-                layers,
-                &settings,
-                (&border, size),
-                split,
-            );
+            let arrays: Vec<_> = (0..layers.div_ceil(split))
+                .map(|a| crate::sprites::SpriteArray {
+                    size,
+                    layers: (layers - a * split).min(split),
+                })
+                .collect();
+            let prepared =
+                PreparedTextures::with_split(&pixels, &arrays, &settings, (&border, size), split);
             assert_eq!(prepared.sprites.len(), layers.div_ceil(split) as usize);
             let actual: Vec<_> = prepared
                 .sprites

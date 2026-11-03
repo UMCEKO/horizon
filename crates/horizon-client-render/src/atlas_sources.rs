@@ -47,6 +47,13 @@ pub enum SpriteSource {
         permutations: BTreeMap<String, String>,
         separator: String,
     },
+    /// NeoForge's `neoforge:directory_paletted_permutations`: every texture of a folder under every palette of a folder, of any namespace.
+    DirectoryPalettedPermutations {
+        textures: String,
+        palette_key: String,
+        palettes: String,
+        separator: String,
+    },
 }
 /// Where a listed sprite's pixels come from.
 #[derive(Clone, Debug, PartialEq)]
@@ -161,6 +168,15 @@ fn decode_source(s: &Value) -> Option<SpriteSource> {
                 .iter()
                 .map(|(k, v)| Some((k.clone(), qualified(v.as_str()?))))
                 .collect::<Option<_>>()?,
+            separator: match s.get("separator") {
+                None => "_".to_owned(),
+                Some(v) => v.as_str()?.to_owned(),
+            },
+        },
+        "neoforge:directory_paletted_permutations" => SpriteSource::DirectoryPalettedPermutations {
+            textures: string(s, "textures")?,
+            palette_key: qualified(&string(s, "palette_key")?),
+            palettes: string(s, "palettes")?,
             separator: match s.get("separator") {
                 None => "_".to_owned(),
                 Some(v) => v.as_str()?.to_owned(),
@@ -291,6 +307,34 @@ pub fn list(sources: &[SpriteSource], textures: &[String]) -> BTreeMap<String, S
                     }
                 }
             }
+            SpriteSource::DirectoryPalettedPermutations {
+                textures: folder,
+                palette_key,
+                palettes,
+                separator,
+            } => {
+                let under = |t: &str, dir: &str| {
+                    let (namespace, path) = t.split_once(':').unwrap_or(("minecraft", t));
+                    path.strip_prefix(&format!("{dir}/"))
+                        .map(|rest| (namespace.to_owned(), rest.to_owned()))
+                };
+                let found: Vec<_> = textures
+                    .iter()
+                    .filter_map(|t| under(t, &format!("palettes/{palettes}")))
+                    .collect();
+                for base in textures.iter().filter(|t| under(t, folder).is_some()) {
+                    for (namespace, name) in &found {
+                        out.insert(
+                            format!("{base}{separator}{name}"),
+                            SpriteOrigin::Paletted {
+                                texture: base.clone(),
+                                palette_key: palette_key.clone(),
+                                palette: format!("{namespace}:{palettes}/{name}"),
+                            },
+                        );
+                    }
+                }
+            }
         }
     }
     out
@@ -366,28 +410,36 @@ pub fn generate(
     }
 }
 
-/// Every atlas definition of a resource tree (`atlases/*.json` in every
-/// namespace), by atlas id.
+/// Every atlas definition of a resource tree (`atlases/**/*.json` in every
+/// namespace, as a mod's `mekanism:entity/robit`), by atlas id.
 pub fn atlases(root: &Path) -> BTreeMap<String, Vec<SpriteSource>> {
+    fn walk(dir: &Path, rel: &str, namespace: &str, out: &mut BTreeMap<String, Vec<SpriteSource>>) {
+        let Ok(files) = fs::read_dir(dir) else {
+            return;
+        };
+        for f in files.flatten() {
+            let path = f.path();
+            let name = path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            if path.is_dir() {
+                walk(&path, &format!("{rel}{name}/"), namespace, out);
+            } else if path.extension().is_some_and(|e| e == "json")
+                && let Some(sources) = fs::read_to_string(&path).ok().and_then(|t| decode(&t))
+            {
+                out.insert(format!("{namespace}:{rel}{name}"), sources);
+            }
+        }
+    }
     let mut out = BTreeMap::new();
     let Ok(namespaces) = fs::read_dir(root.join("assets")) else {
         return out;
     };
     for ns in namespaces.flatten() {
         let namespace = ns.file_name().to_string_lossy().into_owned();
-        let Ok(files) = fs::read_dir(ns.path().join("atlases")) else {
-            continue;
-        };
-        for f in files.flatten() {
-            let path = f.path();
-            if path.extension().is_none_or(|e| e != "json") {
-                continue;
-            }
-            let name = path.file_stem().unwrap_or_default().to_string_lossy();
-            if let Some(sources) = fs::read_to_string(&path).ok().and_then(|t| decode(&t)) {
-                out.insert(format!("{namespace}:{name}"), sources);
-            }
-        }
+        walk(&ns.path().join("atlases"), "", &namespace, &mut out);
     }
     out
 }
@@ -436,6 +488,55 @@ mod tests {
         assert_eq!(
             listed["minecraft:item/stone"],
             SpriteOrigin::File("minecraft:block/stone".into())
+        );
+    }
+    #[test]
+    fn a_directory_of_textures_under_a_directory_of_palettes() {
+        let sources = decode(
+            r#"{"sources":[{"type":"neoforge:directory_paletted_permutations","palette_key":"minecraft:trim_base","palettes":"trim","textures":"trims/items"}]}"#,
+        )
+        .unwrap();
+        let mut all = textures();
+        all.extend(
+            [
+                "minecraft:palettes/trim/quartz",
+                "mekanism:palettes/trim/mekanism_lead",
+                "mekanism:palettes/other/skipped",
+                "minecraft:palettes/trim_base",
+            ]
+            .map(String::from),
+        );
+        all.sort();
+        let listed = list(&sources, &all);
+        assert_eq!(
+            listed.keys().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "minecraft:trims/items/boots_trim_mekanism_lead",
+                "minecraft:trims/items/boots_trim_quartz"
+            ]
+        );
+        assert_eq!(
+            listed["minecraft:trims/items/boots_trim_mekanism_lead"],
+            SpriteOrigin::Paletted {
+                texture: "minecraft:trims/items/boots_trim".into(),
+                palette_key: "minecraft:trim_base".into(),
+                palette: "mekanism:trim/mekanism_lead".into(),
+            }
+        );
+    }
+    #[test]
+    fn a_separator_joins_the_directory_permutations() {
+        let sources = decode(
+            r#"{"sources":[{"type":"neoforge:directory_paletted_permutations","palette_key":"k","palettes":"p","textures":"item","separator":"-"}]}"#,
+        )
+        .unwrap();
+        let mut all = textures();
+        all.push("minecraft:palettes/p/red".into());
+        all.sort();
+        assert!(list(&sources, &all).contains_key("minecraft:item/apple-red"));
+        assert!(
+            decode(r#"{"sources":[{"type":"neoforge:directory_paletted_permutations","palettes":"p","textures":"item"}]}"#)
+                .is_none()
         );
     }
     #[test]

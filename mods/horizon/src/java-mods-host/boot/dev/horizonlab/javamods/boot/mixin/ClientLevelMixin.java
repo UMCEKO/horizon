@@ -1,6 +1,7 @@
 package dev.horizonlab.javamods.boot.mixin;
 
 import dev.horizonlab.javamods.boot.ClientBridge;
+import dev.horizonlab.javamods.boot.ClientWorld;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
@@ -13,14 +14,14 @@ import net.minecraft.world.level.dimension.DimensionType;
 import net.minecraft.world.level.storage.WritableLevelData;
 import org.spongepowered.asm.mixin.Mixin;
 
-/** The window's level has no chunks in Java: its block entities are client copies of the server's. */
+/** The window's level holds the chunks in Java: its blocks, heights, light and biomes are read from them, and its block entities are client copies of the server's. */
 @Mixin(ClientLevel.class)
 abstract class ClientLevelMixin extends Level {
     protected ClientLevelMixin(WritableLevelData data, ResourceKey<Level> dimension, RegistryAccess registries, Holder<DimensionType> type, boolean client, boolean debug, long seed, int updates) {
         super(data, dimension, registries, type, client, debug, seed, updates);
     }
 
-    /** Horizon lights its own chunks; a mod's light check has no engine to reach. */
+    /** Light is read from the window's chunks (`getBrightness`); there is no engine to run here. */
     @Override
     public net.minecraft.world.level.lighting.LevelLightEngine getLightEngine() {
         return net.minecraft.world.level.lighting.LevelLightEngine.EMPTY;
@@ -54,5 +55,30 @@ abstract class ClientLevelMixin extends Level {
     @Override
     public BlockState getBlockState(BlockPos pos) {
         return ClientBridge.blockState((ClientLevel) (Object) this, pos);
+    }
+
+    @Override
+    public Holder<net.minecraft.world.level.biome.Biome> getNoiseBiome(int x, int y, int z) {
+        return ClientWorld.biome(x, y, z);
+    }
+
+    @Override
+    public int getHeight(net.minecraft.world.level.levelgen.Heightmap.Types type, int x, int z) {
+        return ClientWorld.height(type, x, z);
+    }
+
+    @Override
+    public int getBrightness(net.minecraft.world.level.LightLayer layer, BlockPos pos) {
+        return ClientWorld.brightness(layer, pos);
+    }
+
+    @Override
+    public int getRawBrightness(BlockPos pos, int darken) {
+        return ClientWorld.rawBrightness(pos, darken);
+    }
+
+    @Override
+    public net.minecraft.world.level.material.FluidState getFluidState(BlockPos pos) {
+        return ClientBridge.blockState((ClientLevel) (Object) this, pos).getFluidState();
     }
 }

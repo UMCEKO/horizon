@@ -29,24 +29,27 @@ final class StackComponents {
         return BuiltInRegistries.DATA_COMPONENT_TYPE.getValue(Identifier.parse(name));
     }
 
-    /** The registries of the Java client's connection and of the server view alike; a connection is NeoForge's on both ends. */
-    private static RegistryFriendlyByteBuf buffer(io.netty.buffer.ByteBuf bytes) {
-        return new RegistryFriendlyByteBuf(bytes, GameBridge.registries(), ConnectionType.NEOFORGE);
+    /** The registries reading the wire: the client's from its configuration, or on a dedicated server its own; a connection is NeoForge's on both ends. */
+    private static net.minecraft.core.RegistryAccess reading() {
+        if (!net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) return GameBridge.registries();
+        var registries = Clients.registries;
+        if (registries == null) throw new IllegalStateException("component_read before the Java client's configuration");
+        return registries;
     }
 
     static byte[] read(byte[] input) {
         try {
             var in = new DataInputStream(new ByteArrayInputStream(input));
             var type = type(text(in));
-            return type == null ? new byte[0] : read(type, in.readNBytes(in.readInt()));
+            return type == null ? new byte[0] : read(type, in.readNBytes(in.readInt()), reading());
         } catch (Throwable t) {
             t.printStackTrace();
             return new byte[0];
         }
     }
 
-    private static <T> byte[] read(DataComponentType<T> type, byte[] input) throws IOException {
-        var buffer = buffer(Unpooled.wrappedBuffer(input));
+    private static <T> byte[] read(DataComponentType<T> type, byte[] input, net.minecraft.core.RegistryAccess registries) throws IOException {
+        var buffer = new RegistryFriendlyByteBuf(Unpooled.wrappedBuffer(input), registries, ConnectionType.NEOFORGE);
         T value = type.streamCodec().decode(buffer);
         var bytes = new ByteArrayOutputStream();
         var out = new DataOutputStream(bytes);
@@ -55,7 +58,7 @@ final class StackComponents {
         out.writeBoolean(codec != null);
         if (codec != null) {
             var root = new CompoundTag();
-            root.put("v", codec.encodeStart(GameBridge.registries().createSerializationContext(NbtOps.INSTANCE), value).getOrThrow());
+            root.put("v", codec.encodeStart(registries.createSerializationContext(NbtOps.INSTANCE), value).getOrThrow());
             GameBridge.writeTag(out, root);
         }
         return bytes.toByteArray();
@@ -90,7 +93,7 @@ final class StackComponents {
         try {
             T value = codec.parse(GameBridge.registries().createSerializationContext(NbtOps.INSTANCE), saved.get("v")).getOrThrow();
             var bytes = Unpooled.buffer();
-            type.streamCodec().encode(buffer(bytes), value);
+            type.streamCodec().encode(new RegistryFriendlyByteBuf(bytes, GameBridge.registries(), ConnectionType.NEOFORGE), value);
             byte[] out = new byte[bytes.readableBytes()];
             bytes.readBytes(out);
             return out;

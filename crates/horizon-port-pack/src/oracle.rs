@@ -13,6 +13,12 @@ use std::{
 
 #[derive(Debug, Deserialize)]
 pub struct Facts {
+    /// The game version that exported them (`1.21.1` facts keep components in that version's form).
+    #[serde(default)]
+    pub minecraft: String,
+    /// What the mods registered; absent in facts from before it was exported.
+    #[serde(default)]
+    pub owned: Option<Owned>,
     pub blocks: BTreeMap<String, Block>,
     pub items: BTreeMap<String, Item>,
     /// The mods' entries of `minecraft:data_component_type`; empty in facts from before they were exported.
@@ -23,6 +29,22 @@ pub struct Facts {
     /// The game's items' default components (`items.json`), so item ports leave out what their template has.
     #[serde(skip)]
     pub vanilla_items: BTreeMap<String, Value>,
+    /// The game's items with a class behaviour (`block-behaviours.json`'s `items`), never a template.
+    #[serde(skip)]
+    pub vanilla_item_classes: BTreeSet<String>,
+}
+
+/// The ids the mods registered, by registry.
+#[derive(Debug, Default, Deserialize)]
+pub struct Owned {
+    #[serde(default)]
+    pub block: BTreeSet<String>,
+    #[serde(default)]
+    pub item: BTreeSet<String>,
+    #[serde(default)]
+    pub block_entity_type: BTreeSet<String>,
+    #[serde(default)]
+    pub data_component_type: BTreeSet<String>,
 }
 
 /// A JSON object read with its keys in file order.
@@ -97,6 +119,11 @@ pub struct Block {
     #[serde(default)]
     pub wood_type: Option<String>,
     pub states: BTreeMap<String, State>,
+    /// Its loot table in 26.3's form, from the game's loaded data (boot facts only).
+    #[serde(default)]
+    pub loot_table: Option<Value>,
+    #[serde(default)]
+    pub loot_table_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -186,6 +213,35 @@ pub struct Item {
     pub armor: Option<Armor>,
 }
 
+/// An item's declaration in a content mod: its template and what it changes.
+#[derive(Debug, Default, PartialEq)]
+pub struct ItemDecl {
+    pub template: String,
+    pub max_stack_size: Option<u8>,
+    pub rarity: Option<String>,
+    /// The component patch over the template's.
+    pub components: Map<String, Value>,
+    /// What the declaration can't carry, for the report.
+    pub differences: Vec<String>,
+}
+
+impl ItemDecl {
+    /// The fields of an item file (`template` left to the caller), or of a block file's `item_properties`.
+    pub fn fields(&self) -> Map<String, Value> {
+        let mut out = Map::new();
+        if let Some(n) = self.max_stack_size {
+            out.insert("max_stack_size".into(), json!(n));
+        }
+        if let Some(r) = &self.rarity {
+            out.insert("rarity".into(), json!(r));
+        }
+        if !self.components.is_empty() {
+            out.insert("components".into(), Value::Object(self.components.clone()));
+        }
+        out
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct DataComponentType {
     /// `!DataComponentType.isTransient()`: it has a codec, so stacks save it and commands name it.
@@ -196,23 +252,6 @@ pub struct DataComponentType {
 pub struct Armor {
     /// `head`, `chest`, `legs` or `feet`.
     pub slot: String,
-}
-
-/// The vanilla item standing in for an item of a vanilla class, for the behaviour the class gives.
-fn item_template(item: &Item) -> &'static str {
-    let class = item.class.strip_prefix("net.minecraft.world.item.");
-    match (class, item.armor.as_ref().map(|a| a.slot.as_str())) {
-        (Some("SwordItem"), _) => "minecraft:iron_sword",
-        (Some("PickaxeItem"), _) => "minecraft:iron_pickaxe",
-        (Some("AxeItem"), _) => "minecraft:iron_axe",
-        (Some("ShovelItem"), _) => "minecraft:iron_shovel",
-        (Some("HoeItem"), _) => "minecraft:iron_hoe",
-        (Some("ArmorItem"), Some("head")) => "minecraft:iron_helmet",
-        (Some("ArmorItem"), Some("chest")) => "minecraft:iron_chestplate",
-        (Some("ArmorItem"), Some("legs")) => "minecraft:iron_leggings",
-        (Some("ArmorItem"), Some("feet")) => "minecraft:iron_boots",
-        _ => "minecraft:stick",
-    }
 }
 
 /// 1.21.1's `{"modifiers": [...]}` as 26.3's list, with attribute ids' `generic.` and `player.` dropped.
@@ -375,7 +414,7 @@ impl Facts {
         let ours = block.default_state()?;
         let mut best: Option<(i64, &str, &Block)> = None;
         for (name, v) in &self.blocks {
-            if !name.starts_with("minecraft:")
+            if self.owns_block(name)
                 || v.vanilla_class() != class
                 || v.custom_class()
                 || !block.same_states(v)
@@ -433,7 +472,7 @@ impl Facts {
         for class in chain {
             let mut best: Option<(i64, &str, &Block)> = None;
             for (name, v) in &self.blocks {
-                if !name.starts_with("minecraft:")
+                if self.owns_block(name)
                     || v.class.first() != Some(class)
                     || !v
                         .properties
@@ -561,50 +600,183 @@ impl Facts {
     fn sound_block(&self, sound: &Value, allowed: &dyn Fn(&str) -> bool) -> Option<&str> {
         self.blocks
             .iter()
-            .filter(|(n, _)| n.starts_with("minecraft:") && allowed(n))
+            .filter(|(n, _)| !self.owns_block(n) && allowed(n))
             .find(|(_, b)| b.default_state().is_some_and(|s| &s.sound == sound))
             .map(|(n, _)| n.as_str())
     }
 
-    /// An item declaration for a mod item that is not a declared block's:
-    /// the vanilla item of its class with its stack size, rarity and numbers,
-    /// and what it does not reproduce.
+    /// Whether a mod registered the block; facts without `owned` know only vanilla's namespace.
+    pub fn owns_block(&self, id: &str) -> bool {
+        match &self.owned {
+            Some(o) => o.block.contains(id),
+            None => !id.starts_with("minecraft:"),
+        }
+    }
+
+    /// Whether a mod registered the item, as [`Facts::owns_block`].
+    pub fn owns_item(&self, id: &str) -> bool {
+        match &self.owned {
+            Some(o) => o.item.contains(id),
+            None => !id.starts_with("minecraft:"),
+        }
+    }
+
+    /// Facts exported by a 1.21 game, whose components aren't 26.3's.
+    fn legacy(&self) -> bool {
+        self.minecraft.starts_with("1.")
+    }
+
+    /// A mod item that isn't a declared block's: a template derived from its components, and its components as a patch over it.
     pub fn item(&self, id: &str) -> Result<(Value, Vec<String>), String> {
         let item = self.items.get(id).ok_or("not in the oracle")?;
         if item.block.is_some() {
             return Err("a block item without a block".into());
         }
-        let mut differences = Vec::new();
-        if !item.class.starts_with(VANILLA_PACKAGE) {
-            differences.push(format!("class {} (behaviour beyond Item)", item.class));
-        }
-        if item.food.is_some() {
-            return Err("food (no food template yet)".into());
-        }
-        let template = item_template(item);
-        let mut decl = json!({"template": template});
-        if item.max_stack_size != 64 {
-            decl["max_stack_size"] = json!(item.max_stack_size);
-        }
-        match item.rarity.as_str() {
-            "common" => {}
-            "uncommon" | "rare" | "epic" => decl["rarity"] = json!(item.rarity),
-            // NeoForge lets a mod extend `Rarity`; a Horizon item has vanilla's only.
-            other => differences.push(format!("rarity {other}")),
-        }
-        let components = self.item_components(item, template);
-        if !components.is_empty() {
-            decl["components"] = Value::Object(components);
-        }
-        Ok((decl, differences))
+        let template = self.item_template(&self.template_components(item));
+        let decl = self.item_decl(item, &template);
+        let mut v = json!({"template": decl.template});
+        v.as_object_mut().expect("an object").extend(decl.fields());
+        Ok((v, decl.differences))
     }
 
-    /// The item's numbers as a 26.3 component patch over `template`'s, leaving out what already matches.
-    fn item_components(&self, item: &Item, template: &str) -> Map<String, Value> {
+    /// A declared block's item: the block template's item stands in, with the mod item's components.
+    pub fn block_item(&self, id: &str, template_item: &str) -> Option<ItemDecl> {
+        let item = self.items.get(id)?;
+        Some(self.item_decl(item, template_item))
+    }
+
+    /// The components a template is derived from; 1.21 armor names its slot outside them.
+    fn template_components(&self, item: &Item) -> Map<String, Value> {
+        let mut c = item.components.clone();
+        if let Some(armor) = item.armor.as_ref().filter(|_| self.legacy()) {
+            c.insert("minecraft:equippable".into(), json!({"slot": armor.slot}));
+        }
+        c
+    }
+
+    /// The class-less vanilla item whose components are nearest: the same equipment slot, then the most types shared, the fewest extra.
+    pub fn item_template(&self, components: &Map<String, Value>) -> String {
+        let slot = |c: &Map<String, Value>| {
+            c.get("minecraft:equippable")
+                .and_then(|e| e.get("slot"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        };
+        let ours = slot(components);
+        let mut best: Option<(i64, &str)> = None;
+        for (name, theirs) in &self.vanilla_items {
+            let Some(theirs) = theirs.as_object() else {
+                continue;
+            };
+            // Air is the empty stack's item, never a stack's template.
+            if self.vanilla_item_classes.contains(name) || name == "minecraft:air" {
+                continue;
+            }
+            let shared = theirs
+                .keys()
+                .filter(|k| components.contains_key(*k))
+                .count() as i64;
+            let extra = theirs.len() as i64 - shared;
+            let score = (slot(theirs) == ours) as i64 * 1000 + shared * 2 - extra;
+            if best.is_none_or(|(s, n)| score > s || (score == s && name.as_str() < n)) {
+                best = Some((score, name));
+            }
+        }
+        best.map_or("minecraft:stick", |(_, n)| n).to_owned()
+    }
+
+    fn item_decl(&self, item: &Item, template: &str) -> ItemDecl {
+        let mut decl = ItemDecl {
+            template: template.to_owned(),
+            ..Default::default()
+        };
+        if !item.class.starts_with(VANILLA_PACKAGE) {
+            decl.differences
+                .push(format!("class {} (its code runs in Java)", item.class));
+        }
+        let base = self.vanilla_items.get(template).and_then(Value::as_object);
+        let had = |key: &str| base.and_then(|b| b.get(key));
+        if had("minecraft:max_stack_size").and_then(Value::as_u64)
+            != Some(item.max_stack_size.into())
+        {
+            decl.max_stack_size = Some(item.max_stack_size);
+        }
+        match item.rarity.as_str() {
+            r if had("minecraft:rarity").and_then(Value::as_str) == Some(r) => {}
+            r @ ("common" | "uncommon" | "rare" | "epic") => decl.rarity = Some(r.to_owned()),
+            // A loader lets a mod extend `Rarity`; a Horizon item has vanilla's only.
+            other => decl.differences.push(format!("rarity {other}")),
+        }
+        decl.components = if self.legacy() {
+            self.legacy_components(item, base)
+        } else {
+            self.component_patch(item, base, &mut decl.differences)
+        };
+        decl
+    }
+
+    /// Every default component as the patch over the template's that gives exactly them.
+    fn component_patch(
+        &self,
+        item: &Item,
+        base: Option<&Map<String, Value>>,
+        differences: &mut Vec<String>,
+    ) -> Map<String, Value> {
+        let known: BTreeSet<&str> = self
+            .vanilla_items
+            .values()
+            .filter_map(Value::as_object)
+            .flat_map(|c| c.keys().map(String::as_str))
+            .collect();
+        let own = |k: &str| {
+            self.data_component_types.contains_key(k)
+                || self
+                    .owned
+                    .as_ref()
+                    .is_some_and(|o| o.data_component_type.contains(k))
+        };
+        let mut patch = Map::new();
+        for (key, value) in &item.components {
+            if matches!(
+                key.as_str(),
+                "minecraft:max_stack_size" | "minecraft:rarity"
+            ) || own(key)
+            {
+                continue;
+            }
+            if !known.contains(key.as_str()) {
+                differences.push(format!("component {key}: no item of the game has it"));
+                continue;
+            }
+            if base
+                .and_then(|b| b.get(key))
+                .is_none_or(|h| !same(value, h))
+            {
+                patch.insert(key.clone(), value.clone());
+            }
+        }
+        for key in base.into_iter().flat_map(|b| b.keys()) {
+            if !item.components.contains_key(key)
+                && !matches!(
+                    key.as_str(),
+                    "minecraft:max_stack_size" | "minecraft:rarity"
+                )
+            {
+                patch.insert(format!("!{key}"), json!({}));
+            }
+        }
+        patch
+    }
+
+    /// 1.21.1's numbers as a 26.3 component patch over the template's, leaving out what already matches.
+    fn legacy_components(
+        &self,
+        item: &Item,
+        base: Option<&Map<String, Value>>,
+    ) -> Map<String, Value> {
         if item.components.is_empty() {
             return Map::new();
         }
-        let base = self.vanilla_items.get(template);
         let mut want = Map::new();
         want.insert(
             "minecraft:max_damage".into(),
@@ -806,8 +978,9 @@ mod tests {
     }
 
     #[test]
-    fn items_of_vanilla_classes_take_their_template_and_numbers() {
+    fn legacy_items_take_a_template_and_their_numbers() {
         let mut facts: Facts = serde_json::from_value(json!({
+            "minecraft": "1.21.1",
             "blocks": {},
             "items": {
                 "m:sword": {"class": "net.minecraft.world.item.SwordItem", "max_stack_size": 1, "rarity": "common",
@@ -829,7 +1002,9 @@ mod tests {
                 "minecraft:tool": {"can_destroy_blocks_in_creative": false, "damage_per_block": 2,
                     "rules": [{"blocks": "#minecraft:sword_efficient", "speed": 1.5}]}},
             "minecraft:iron_boots": {"minecraft:max_damage": 195, "minecraft:enchantable": {"value": 9},
-                "minecraft:repairable": {"items": "#minecraft:repairs_iron_armor"}},
+                "minecraft:repairable": {"items": "#minecraft:repairs_iron_armor"},
+                "minecraft:equippable": {"slot": "feet"}},
+            "minecraft:stick": {"minecraft:max_stack_size": 64, "minecraft:rarity": "common"},
         }))
         .unwrap();
         let (sword, _) = facts.item("m:sword").unwrap();
@@ -859,6 +1034,93 @@ mod tests {
         // Facts without components (exported before they were) keep the plain template.
         let (gem, _) = facts.item("m:gem").unwrap();
         assert_eq!(gem, json!({"template": "minecraft:stick"}));
+    }
+
+    fn current_facts() -> Facts {
+        let mut facts: Facts = serde_json::from_value(json!({
+            "minecraft": "26.3",
+            "owned": {"item": ["m:pie", "m:vest", "m:gadget"], "data_component_type": ["m:energy"]},
+            "blocks": {},
+            "items": {
+                "m:pie": {"class": "m.Pie", "max_stack_size": 64, "rarity": "common", "components": {
+                    "minecraft:max_stack_size": 64, "minecraft:rarity": "common",
+                    "minecraft:food": {"nutrition": 6, "saturation": 7.2}, "minecraft:consumable": {},
+                    "m:energy": 0}},
+                "m:vest": {"class": "m.Hazmat", "max_stack_size": 1, "rarity": "rare", "components": {
+                    "minecraft:max_stack_size": 1, "minecraft:rarity": "rare", "minecraft:max_damage": 500,
+                    "minecraft:equippable": {"slot": "chest", "asset_id": "m:hazmat"}}},
+                "m:gadget": {"class": "m.Gadget", "max_stack_size": 16, "rarity": "epic", "components": {
+                    "minecraft:max_stack_size": 16, "minecraft:rarity": "epic"}},
+                "m:block": {"class": "net.minecraft.world.item.BlockItem", "max_stack_size": 16, "rarity": "uncommon",
+                    "block": "m:block", "components": {"minecraft:max_stack_size": 16, "minecraft:rarity": "uncommon",
+                    "minecraft:lore": []}},
+            }
+        }))
+        .unwrap();
+        facts.vanilla_items = serde_json::from_value(json!({
+            "minecraft:air": {"minecraft:max_stack_size": 64, "minecraft:rarity": "common"},
+            "minecraft:stick": {"minecraft:max_stack_size": 64, "minecraft:rarity": "common",
+                "minecraft:cooking_fuel": {"burn_time": 100}},
+            "minecraft:apple": {"minecraft:max_stack_size": 64, "minecraft:rarity": "common",
+                "minecraft:food": {"nutrition": 4, "saturation": 2.4}, "minecraft:consumable": {}},
+            "minecraft:iron_chestplate": {"minecraft:max_stack_size": 1, "minecraft:rarity": "common",
+                "minecraft:max_damage": 240, "minecraft:equippable": {"slot": "chest", "asset_id": "minecraft:iron"}},
+            "minecraft:golden_carrot": {"minecraft:max_stack_size": 64, "minecraft:rarity": "common",
+                "minecraft:food": {"nutrition": 6, "saturation": 14.4}, "minecraft:consumable": {}},
+            "minecraft:stone": {"minecraft:max_stack_size": 64, "minecraft:rarity": "common", "minecraft:lore": []},
+        }))
+        .unwrap();
+        facts.vanilla_item_classes = [
+            "minecraft:golden_carrot".to_owned(),
+            "minecraft:stone".to_owned(),
+        ]
+        .into();
+        facts
+    }
+
+    #[test]
+    fn templates_follow_components_not_classes() {
+        let facts = current_facts();
+        let (pie, differences) = facts.item("m:pie").unwrap();
+        assert_eq!(
+            pie["template"], "minecraft:apple",
+            "food, and golden_carrot has a class"
+        );
+        assert_eq!(
+            pie["components"],
+            json!({"minecraft:food": {"nutrition": 6, "saturation": 7.2}}),
+            "the mod's own component stays in Java"
+        );
+        assert!(pie.get("max_stack_size").is_none() && pie.get("rarity").is_none());
+        assert_eq!(differences, ["class m.Pie (its code runs in Java)"]);
+        let (vest, _) = facts.item("m:vest").unwrap();
+        assert_eq!(vest["template"], "minecraft:iron_chestplate");
+        assert_eq!(vest["rarity"], "rare");
+        assert!(vest.get("max_stack_size").is_none());
+        assert_eq!(vest["components"]["minecraft:max_damage"], 500);
+        assert_eq!(
+            vest["components"]["minecraft:equippable"]["asset_id"],
+            "m:hazmat"
+        );
+        let (gadget, _) = facts.item("m:gadget").unwrap();
+        assert_eq!(gadget["template"], "minecraft:stick");
+        assert_eq!(gadget["max_stack_size"], 16);
+        assert_eq!(gadget["rarity"], "epic");
+        assert_eq!(gadget["components"], json!({"!minecraft:cooking_fuel": {}}));
+    }
+
+    #[test]
+    fn block_items_keep_their_numbers() {
+        let facts = current_facts();
+        let item = facts.block_item("m:block", "minecraft:stone").unwrap();
+        assert_eq!(item.max_stack_size, Some(16));
+        assert_eq!(item.rarity.as_deref(), Some("uncommon"));
+        assert!(item.components.is_empty(), "{:?}", item.components);
+        assert!(
+            facts.owns_item("m:pie")
+                && !facts.owns_item("m:block")
+                && !facts.owns_item("minecraft:stick")
+        );
     }
 
     #[test]

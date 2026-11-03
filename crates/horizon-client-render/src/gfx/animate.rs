@@ -49,6 +49,8 @@ struct Group {
     /// Its sprite array and its frames, for the CPU.
     array: usize,
     buffer: usize,
+    /// Edge of its array's layers.
+    size: u32,
 }
 
 /// Where the jobs run.
@@ -68,20 +70,17 @@ pub(super) struct SpriteAnimator {
     sprites: Vec<Sprite>,
     groups: Vec<Group>,
     writer: Writer,
-    /// Edge of the arrays' layers.
-    size: u32,
     /// The layers the last `animate` rewrote, counted over all arrays.
     changed: Vec<u32>,
 }
 
 impl SpriteAnimator {
-    /// `textures` are the sprite arrays, `split` layers each, `size` pixels
-    /// wide; `animations` hold their frames at that size. `compute`: whether
+    /// `textures` are the sprite arrays, `split` layers each, each its own
+    /// size; `animations` hold their frames at their array's size. `compute`: whether
     /// the device says it runs compute shaders writing storage textures.
     pub fn new(
         device: &wgpu::Device,
         animations: &[SpriteAnimation],
-        size: u32,
         settings: &[Settings],
         textures: &[wgpu::Texture],
         split: u32,
@@ -106,6 +105,12 @@ impl SpriteAnimator {
             let pixels: Vec<_> = (0..animation.frame_count())
                 .map(|frame| animation.pixels(frame))
                 .collect();
+            let Some(size) = textures
+                .get((animation.layer / split) as usize)
+                .map(wgpu::Texture::width)
+            else {
+                continue;
+            };
             let (chains, edge) = source_chains(&pixels, size, settings, animation.layer);
             let bytes: u64 = chains.iter().map(|chain| chain.len() as u64).sum();
             if bytes > limit {
@@ -157,6 +162,7 @@ impl SpriteAnimator {
                     jobs: Vec::with_capacity(count * JOB_BYTES),
                     array: array as usize,
                     buffer,
+                    size: textures[array as usize].width(),
                 })
                 .collect();
             return Self {
@@ -166,7 +172,6 @@ impl SpriteAnimator {
                     frames,
                     textures: textures.to_vec(),
                 },
-                size,
                 changed: Vec::new(),
             };
         };
@@ -238,6 +243,7 @@ impl SpriteAnimator {
                     jobs: Vec::with_capacity(count * JOB_BYTES),
                     array: array as usize,
                     buffer,
+                    size: texture.width(),
                 }
             })
             .collect();
@@ -245,7 +251,6 @@ impl SpriteAnimator {
             sprites,
             groups,
             writer: Writer::Gpu { jobs, pipeline },
-            size,
             changed: Vec::new(),
         }
     }
@@ -288,7 +293,7 @@ impl SpriteAnimator {
                         let (words, _) = job.as_chunks::<4>();
                         let job: [u32; 5] = std::array::from_fn(|i| u32::from_le_bytes(words[i]));
                         for level in 0..texture.mip_level_count() {
-                            let width = self.size >> level;
+                            let width = group.size >> level;
                             uploads.texture(
                                 encoder,
                                 wgpu::TexelCopyTextureInfo {
@@ -326,7 +331,7 @@ impl SpriteAnimator {
                 continue;
             }
             for (level, bind) in group.levels.iter().enumerate() {
-                let groups = (self.size >> level).div_ceil(WORKGROUP);
+                let groups = (group.size >> level).div_ceil(WORKGROUP);
                 pass.set_bind_group(0, bind, &[]);
                 pass.dispatch_workgroups(groups, groups, count);
             }
@@ -614,13 +619,16 @@ mod tests {
         assert_eq!(sprites.size, 64);
         assert_eq!(sprites.animations.len(), 9);
         for animation in &sprites.animations {
+            // Each animation is in the array of its own size, not the 64x bed's.
+            let size = sprites.array_of(animation.layer).unwrap().size;
+            assert!(size < 64, "layer {}", animation.layer);
             for frame in 0..animation.frame_count() {
                 let pixels = animation.pixels(frame);
                 let (expected, _) =
-                    super::super::mip_chain(pixels, 64, &sprites.mips, animation.layer, 1);
-                let (chain, edge) = source_chain(pixels, 64, &sprites.mips, animation.layer);
-                assert!(edge < 64, "layer {}", animation.layer);
-                assert_eq!(reference(&chain, &chain, 0, edge, 64), expected);
+                    super::super::mip_chain(pixels, size, &sprites.mips, animation.layer, 1);
+                let (chain, edge) = source_chain(pixels, size, &sprites.mips, animation.layer);
+                assert!(edge <= size, "layer {}", animation.layer);
+                assert_eq!(reference(&chain, &chain, 0, edge, size), expected);
             }
         }
     }
@@ -821,7 +829,7 @@ mod tests {
             })
             .collect();
         let mut animator =
-            SpriteAnimator::new(&device, &animations, size, &mips, &textures, split, compute);
+            SpriteAnimator::new(&device, &animations, &mips, &textures, split, compute);
         let mut uploads = Uploads::new(&device);
         let mut writes = Vec::new();
         for tick in [0, 0, 1, 2, 3, 4, 7, 7, 12, 30] {

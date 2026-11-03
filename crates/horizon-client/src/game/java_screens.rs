@@ -16,16 +16,136 @@ pub(in crate::game) mod live {
     #[derive(Default)]
     pub(in crate::game) struct Client {
         joined: bool,
-        font: u32,
-        pending: i32,
+        font: bool,
+        owed: i32,
         open: bool,
-        held: Option<i32>,
         shapes: i32,
-        models: i32,
         states: bool,
-        last: (f64, f64),
-        keys: std::collections::BTreeSet<&'static str>,
-        selected: usize,
+        /// Input the world took since the last tick, in order, as `events` reads it.
+        queue: Vec<u8>,
+        queued: i32,
+        focused: Option<bool>,
+        /// The Java client's playing sounds by its handle.
+        sounds: std::collections::HashMap<i32, horizon_client::sound_engine::InstanceId>,
+        sent: Sent,
+    }
+
+    /// The window's input as the callbacks of its library would hand it to a real client.
+    enum Input<'a> {
+        /// `KeyboardHandler.keyPress`: the key's name, the action (release 0, press 1, repeat 2), the modifiers.
+        Key(&'a str, i32, i32),
+        /// A key the window's own screen took: only the keyboard's state hears of it.
+        KeyState(&'a str, bool),
+        Char(u32),
+        /// `MouseHandler.onButton`: SDL's button number, the action, the modifiers.
+        Button(i32, i32, i32),
+        /// `MouseHandler.onMove`, in window pixels.
+        Move(f64, f64),
+        Scroll(f64, f64),
+        /// One of the window's own screens opened over the world (and whether it pauses), or closed.
+        Screen(bool, bool),
+        Focus(bool),
+        /// `handleKeybinds`' drop, with the whole stack or not.
+        Drop(bool),
+        SwapHands,
+        Hotbar(i32),
+        /// A column of the window's arrived (true) or left.
+        Chunk(i32, i32, bool),
+    }
+
+    impl Input<'_> {
+        fn write(&self, out: &mut Out) {
+            let kind = match self {
+                Input::Key(..) => 0,
+                Input::KeyState(..) => 1,
+                Input::Char(_) => 2,
+                Input::Button(..) => 3,
+                Input::Move(..) => 4,
+                Input::Scroll(..) => 5,
+                Input::Screen(..) => 6,
+                Input::Focus(_) => 7,
+                Input::Drop(_) => 8,
+                Input::SwapHands => 9,
+                Input::Hotbar(_) => 10,
+                Input::Chunk(..) => 11,
+            };
+            out.0.push(kind);
+            match *self {
+                Input::Key(name, action, modifiers) => {
+                    out.text(name);
+                    out.int(action);
+                    out.int(modifiers);
+                }
+                Input::KeyState(name, down) => {
+                    out.text(name);
+                    out.bool(down);
+                }
+                Input::Char(c) => out.int(c as i32),
+                Input::Button(button, action, modifiers) => {
+                    out.int(button);
+                    out.int(action);
+                    out.int(modifiers);
+                }
+                Input::Move(x, y) | Input::Scroll(x, y) => {
+                    out.double(x);
+                    out.double(y);
+                }
+                Input::Screen(open, pauses) => {
+                    out.bool(open);
+                    out.bool(pauses);
+                }
+                Input::Focus(focused) | Input::Drop(focused) => out.bool(focused),
+                Input::SwapHands => {}
+                Input::Hotbar(slot) => out.int(slot),
+                Input::Chunk(x, z, arrived) => {
+                    out.int(x);
+                    out.int(z);
+                    out.bool(arrived);
+                }
+            }
+        }
+    }
+
+    const SOUND_PLAY: u8 = 0;
+    const SOUND_UPDATE: u8 = 1;
+    const SOUND_STOP: u8 = 2;
+
+    /// SDL's numbering, left 1, middle 2, right 3.
+    fn button_number(button: MouseButton) -> i32 {
+        match button {
+            MouseButton::Left => 1,
+            MouseButton::Middle => 2,
+            MouseButton::Right => 3,
+            MouseButton::Back => 4,
+            MouseButton::Forward => 5,
+            MouseButton::Other(n) => i32::from(n) + 1,
+        }
+    }
+
+    /// What the Java client last heard of the window's own state, so each is sent only when it changes.
+    #[derive(Default)]
+    struct Sent {
+        size: Option<[i32; 3]>,
+        native_screen: Option<(bool, bool)>,
+        focused: Option<bool>,
+        cursor: Option<(f64, f64)>,
+        motion: Option<Motion>,
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    struct Motion {
+        position: [f64; 3],
+        look: [f32; 2],
+        velocity: [f64; 3],
+        on_ground: bool,
+    }
+
+    /// Writes whether `now` differs from what was last sent, and remembers it.
+    fn changed<T: PartialEq + Copy>(out: &mut Out, last: &mut Option<T>, now: T) -> bool {
+        let changed = *last != Some(now);
+        *last = Some(now);
+        out.bool(changed);
+        changed
     }
 
     thread_local! {
@@ -33,11 +153,9 @@ pub(in crate::game) mod live {
         static WORKER: RefCell<Option<Worker>> = const { RefCell::new(None) };
     }
 
-    /// One client tick's calls: the tick, the dynamic states once, and the geometry its status says changed.
+    /// One client tick's calls: the tick and the geometry its status says changed.
     struct Job {
-        font: Option<Vec<u8>>,
         tick: Vec<u8>,
-        states: bool,
         items: Option<(Vec<super::super::java_models::ItemKey>, Vec<u8>)>,
         decorations: Option<(Vec<Vec<u8>>, Vec<u8>)>,
     }
@@ -45,29 +163,16 @@ pub(in crate::game) mod live {
     #[derive(Default)]
     struct Done {
         tick: Option<Vec<u8>>,
-        states: Option<Vec<u8>>,
         models: Option<Vec<u8>>,
         renders: Option<Vec<u8>>,
-        external: Option<Vec<u8>>,
         items: Option<(Vec<super::super::java_models::ItemKey>, Vec<u8>)>,
         decorations: Option<(Vec<Vec<u8>>, Vec<u8>)>,
     }
 
     impl Job {
         fn run(self, host: &horizon_java_host::Host) -> Done {
-            if let Some(font) = &self.font {
-                host.request("client_font", font);
-            }
             let Some(tick) = host.request("client_tick", &self.tick) else {
                 return Done::default();
-            };
-            let (states, external) = if self.states {
-                (
-                    host.request("client_models_states", &[]),
-                    host.request("client_items_external", &[]),
-                )
-            } else {
-                (None, None)
             };
             let items = self.items.and_then(|(keys, request)| {
                 Some((keys, host.request("client_items_take", &request)?))
@@ -81,8 +186,6 @@ pub(in crate::game) mod live {
                 models: take("client_models_take", models),
                 renders: take("client_renders_take", renders),
                 tick: Some(tick),
-                states,
-                external,
                 items,
                 decorations,
             }
@@ -293,35 +396,31 @@ pub(in crate::game) mod live {
     }
 
     impl Game<'_> {
-        fn java_client_size(&self, out: &mut Out) {
+        fn java_client_window(&self) -> [i32; 3] {
             let size = self
                 .renderer
                 .as_ref()
                 .map_or([854, 480], |r| [r.config.width, r.config.height]);
             let batch = HudBatch::new(size);
-            out.int(size[0] as i32);
-            out.int(size[1] as i32);
-            out.int(batch.scale as i32);
+            [size[0] as i32, size[1] as i32, batch.scale as i32]
+        }
+
+        fn java_client_size(&self, out: &mut Out) {
+            for value in self.java_client_window() {
+                out.int(value);
+            }
         }
 
         fn java_client_status(&mut self, reply: &mut In) -> Option<()> {
             let open = reply.bool()?;
             let _opened = reply.int()?;
             let _pause = reply.bool()?;
-            for _ in 0..reply.int()? {
-                let id = reply.text()?;
-                let (volume, pitch) = (reply.float()?, reply.float()?);
-                let event = id.strip_prefix("minecraft:").unwrap_or(id);
-                self.audio.play(event, None, volume, pitch);
-            }
+            self.java_client_sounds(reply)?;
             let shapes = reply.int()?;
-            let models = reply.int()?;
-            let renders = reply.int()?;
             CLIENT.with_borrow_mut(|c| {
                 c.shapes = shapes;
-                c.models = models + renders;
+                c.open = open;
             });
-            CLIENT.with_borrow_mut(|c| c.open = open);
             if open && self.screen != Screen::Java {
                 self.screen = Screen::Java;
                 self.capture(false);
@@ -332,136 +431,312 @@ pub(in crate::game) mod live {
             Some(())
         }
 
-        /// The next range of Horizon's font's advances, which the Java client measures text with; None once all are sent.
-        fn java_client_font(&self) -> Option<Vec<u8>> {
-            const COUNT: u32 = 0x10000;
-            let start = CLIENT.with_borrow(|c| c.font);
-            if start >= COUNT {
-                return None;
-            }
-            // About a millisecond's worth a tick, as each glyph is rasterized to be measured.
-            let began = std::time::Instant::now();
-            let mut advances = Vec::new();
-            for c in start..COUNT {
-                advances.push(
-                    char::from_u32(c).map_or(0.0, |ch| self.gui.atlas.font.glyph(ch).advance),
-                );
-                if began.elapsed() >= std::time::Duration::from_millis(1) {
-                    break;
+        /// What the Java client's sound engine did since the last call: Horizon's engine plays, changes and stops those sounds.
+        fn java_client_sounds(&mut self, reply: &mut In) -> Option<()> {
+            for _ in 0..reply.int()? {
+                let kind = reply.byte()?;
+                let handle = reply.int()?;
+                match kind {
+                    SOUND_PLAY => {
+                        let sound = horizon_client::audio::ExternalSound {
+                            event: reply.text()?.to_owned(),
+                            source: usize::try_from(reply.int()?).ok()?,
+                            volume: reply.float()?,
+                            pitch: reply.float()?,
+                            position: [reply.double()?, reply.double()?, reply.double()?],
+                            looping: reply.bool()?,
+                            delay: reply.int()?,
+                            linear: reply.bool()?,
+                            relative: reply.bool()?,
+                            can_start_silent: reply.bool()?,
+                            tickable: reply.bool()?,
+                        };
+                        let id = self.audio.play_external(&sound);
+                        CLIENT.with_borrow_mut(|c| c.sounds.insert(handle, id));
+                    }
+                    SOUND_UPDATE => {
+                        let (volume, pitch) = (reply.float()?, reply.float()?);
+                        let at = [reply.double()?, reply.double()?, reply.double()?];
+                        if let Some(id) = CLIENT.with_borrow(|c| c.sounds.get(&handle).copied()) {
+                            self.audio.update_external(id, volume, pitch, at);
+                        }
+                    }
+                    SOUND_STOP => {
+                        if let Some(id) = CLIENT.with_borrow_mut(|c| c.sounds.remove(&handle)) {
+                            self.audio.stop_and_release(id);
+                        }
+                    }
+                    _ => return None,
                 }
             }
-            let mut out = Out::default();
-            out.text(&self.settings.language);
-            out.int(start as i32);
-            out.int(advances.len() as i32);
-            for advance in &advances {
-                out.float(*advance);
-            }
-            CLIENT.with_borrow_mut(|c| c.font = start + advances.len() as u32);
-            Some(out.0)
+            Some(())
         }
 
-        /// `Minecraft.tick`'s part for the Java client: what the server sent it, then the open screen's tick.
-        pub(in crate::game) fn java_client_tick(&mut self) {
-            let profile = self.remote_profile();
-            // Before a world the window never waits for the JVM, which may still be loading.
-            if profile.is_none() && !CLIENT.with_borrow(|c| c.joined) {
+        /// The Java client's sounds Horizon's engine finished, as its channels report them stopped.
+        fn java_client_finished_sounds(&mut self, out: &mut Out) {
+            let finished: Vec<(i32, horizon_client::sound_engine::InstanceId)> = CLIENT
+                .with_borrow(|c| {
+                    c.sounds
+                        .iter()
+                        .filter(|(_, id)| !self.audio.external_playing(**id))
+                        .map(|(handle, id)| (*handle, *id))
+                        .collect()
+                });
+            out.int(finished.len() as i32);
+            for (handle, id) in finished {
+                out.int(handle);
+                self.audio.stop_and_release(id);
+                CLIENT.with_borrow_mut(|c| c.sounds.remove(&handle));
+            }
+        }
+
+        /// Whether the world has the window's input: no screen of the window's own is open over it.
+        fn java_world_has_input(&self) -> bool {
+            self.screen == Screen::Playing && self.title.is_none() && !self.screen_over_playing()
+        }
+
+        /// The window's input while no Java screen is open: the world's keys and buttons reach the Java client's callbacks at its next tick, in order; a key the window's own screen took reaches only the keyboard's state.
+        pub(in crate::game) fn java_window_input(&mut self, event: &winit::event::WindowEvent) {
+            use winit::event::WindowEvent;
+            if let WindowEvent::Focused(focused) = event {
+                CLIENT.with_borrow_mut(|c| c.focused = Some(*focused));
+                return;
+            }
+            if !CLIENT.with_borrow(|c| c.joined) || self.screen == Screen::Java {
+                return;
+            }
+            let world = self.java_world_has_input();
+            let input = match event {
+                WindowEvent::KeyboardInput { event, .. } => {
+                    let PhysicalKey::Code(code) = event.physical_key else {
+                        return;
+                    };
+                    let Some(name) = horizon_client::keybinds::key_name(code) else {
+                        return;
+                    };
+                    let pressed = event.state == ElementState::Pressed;
+                    if world {
+                        let action = match (pressed, event.repeat) {
+                            (false, _) => 0,
+                            (true, false) => 1,
+                            (true, true) => 2,
+                        };
+                        Input::Key(name, action, self.java_modifiers())
+                    } else {
+                        Input::KeyState(name, pressed)
+                    }
+                }
+                WindowEvent::MouseInput { state, button, .. } if world => Input::Button(
+                    button_number(*button),
+                    i32::from(*state == ElementState::Pressed),
+                    self.java_modifiers(),
+                ),
+                _ => return,
+            };
+            CLIENT.with_borrow_mut(|c| {
+                let mut out = Out(std::mem::take(&mut c.queue));
+                input.write(&mut out);
+                c.queue = out.0;
+                c.queued += 1;
+            });
+        }
+
+        /// The Java client runs the click first, with the window's hit, so mods hear it in vanilla's order: `Some` when one canceled it, with the hand to swing.
+        pub(in crate::game) fn java_click_canceled(
+            &mut self,
+            click: JavaClick,
+        ) -> Option<Option<Hand>> {
+            if !CLIENT.with_borrow(|c| c.joined) || self.entity_targeted() {
+                return None;
+            }
+            let host = horizon_java_host::get()?;
+            self.java_publish_client_world();
+            let mut out = Out::default();
+            out.int(click as i32);
+            let hit = self.pick();
+            out.bool(hit.is_some());
+            if let Some(hit) = hit {
+                out.long(BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]).pack());
+                out.int(face_index(hit.face));
+                for value in hit.point {
+                    out.double(value);
+                }
+            }
+            let began = std::time::Instant::now();
+            let reply = host.request("client_click", &out.0);
+            let waited = began.elapsed();
+            if waited > std::time::Duration::from_millis(5)
+                || std::env::var_os("HORIZON_JAVA_DEBUG").is_some()
+            {
+                log::info!(
+                    "Horizon: a click waited {:.2} ms on the Java client",
+                    waited.as_secs_f64() * 1000.0
+                );
+            }
+            if reply.is_none() {
+                log::warn!(
+                    "Horizon: the Java client's click failed (its stack is above); the window acts on the click alone"
+                );
+            }
+            match reply.as_deref().and_then(|r| r.first()) {
+                Some(1) => Some(None),
+                Some(2) => Some(Some(Hand::Main)),
+                Some(3) => Some(Some(Hand::Off)),
+                _ => None,
+            }
+        }
+
+        /// `handleKeybinds`' drop, hand swap and hotbar keys, as the window performs them: they reach the Java client in order with the world's other input.
+        pub(in crate::game) fn java_key_action(&mut self, action: JavaKeyAction) {
+            if !CLIENT.with_borrow(|c| c.joined) {
+                return;
+            }
+            let input = match action {
+                JavaKeyAction::Drop(all) => Input::Drop(all),
+                JavaKeyAction::SwapHands => Input::SwapHands,
+                JavaKeyAction::Hotbar(slot) => Input::Hotbar(slot as i32),
+            };
+            CLIENT.with_borrow_mut(|c| {
+                let mut out = Out(std::mem::take(&mut c.queue));
+                input.write(&mut out);
+                c.queue = out.0;
+                c.queued += 1;
+            });
+        }
+
+        /// Horizon's font's advances, which the Java client measures text with: all of them, ready for its start.
+        pub(in crate::game) fn java_client_font(&self) {
+            if std::env::var_os("HORIZON_JAVA_RUN").is_none()
+                || CLIENT.with_borrow_mut(|c| std::mem::replace(&mut c.font, true))
+            {
+                return;
+            }
+            let advances = self.gui.atlas.font.advances();
+            let mut out = Out::default();
+            out.text(&self.settings.language);
+            out.int(advances.len() as i32);
+            for advance in advances {
+                out.float(advance);
+            }
+            super::super::java_components::prepare_font(out.0);
+        }
+
+        /// `Minecraft.disconnect`, once the window has left its server: the Java client ends with no level and no screen, ready for the next join.
+        pub(in crate::game) fn java_client_left(&mut self) {
+            if !CLIENT.with_borrow(|c| c.joined) {
                 return;
             }
             let Some(host) = horizon_java_host::get() else {
                 return;
             };
-            let Some((profile, name)) = profile else {
-                self.java_client_collect(true);
-                host.request("client_leave", &[]);
-                horizon_client::dynamic_models::clear();
-                horizon_client::dynamic_renders::clear();
-                CLIENT.with_borrow_mut(|c| {
-                    c.joined = false;
-                    c.open = false;
-                    c.states = false;
-                });
+            self.java_client_collect(true);
+            host.request("client_leave", &[]);
+            self.java_creative_tabs_left();
+            horizon_client::dynamic_models::clear();
+            horizon_client::dynamic_renders::clear();
+            CLIENT.with_borrow_mut(|c| {
+                c.joined = false;
+                c.open = false;
+                c.states = false;
+                c.owed = 0;
+                c.sent = Sent::default();
+                c.queue.clear();
+                c.queued = 0;
+            });
+            for (_, id) in CLIENT.with_borrow_mut(|c| std::mem::take(&mut c.sounds)) {
+                self.audio.stop_and_release(id);
+            }
+            super::super::java_bridges::client_world::java_forget_client_world();
+        }
+
+        /// `Minecraft.runTick` for the Java client, every tick: what the server sent it, then the real `Minecraft.tick`.
+        pub(in crate::game) fn java_client_tick(&mut self) {
+            if self.remote_profile().is_none() {
+                return;
+            }
+            let Some(host) = horizon_java_host::get() else {
                 return;
             };
-            let pending = host
-                .request("client_pending", &[])
-                .and_then(|b| In(&b).int())
-                .unwrap_or(0);
             let open = CLIENT.with_borrow(|c| c.open);
             // A screen ticks in step with the window, so its tick waits for any background one first.
             self.java_client_collect(open);
-            let (joined, seen, models, states, font) =
-                CLIENT.with_borrow(|c| (c.joined, c.pending, c.models, c.states, c.font));
-            let keys = self.java_client_keys(joined);
-            let selected = CLIENT.with_borrow(|c| c.selected) != self.selected;
-            if java_client_busy()
-                || (joined
-                    && !open
-                    && pending == seen
-                    && models == 0
-                    && font >= 0x10000
-                    && keys.is_empty()
-                    && !selected
-                    && !super::super::java_models::java_items_queued())
-            {
+            // `Timer.advanceTime`: a tick the last one's length delayed still runs, up to its limit of 10.
+            CLIENT.with_borrow_mut(|c| c.owed = (c.owed + 1).min(10));
+            if java_client_busy() {
                 return;
             }
+            self.java_client_collisions();
             let mut out = Out::default();
-            out.long((profile >> 64) as i64);
-            out.long(profile as i64);
-            out.text(&name);
-            out.text(self.dim.id());
-            self.java_client_size(&mut out);
-            out.int(keys.len() as i32);
-            for (key, down) in keys {
-                out.text(key);
-                out.bool(down);
-                CLIENT.with_borrow_mut(|c| {
-                    if down {
-                        c.keys.insert(key);
-                    } else {
-                        c.keys.remove(key);
-                    }
-                });
+            out.int(CLIENT.with_borrow_mut(|c| std::mem::take(&mut c.owed)));
+            let window = self.java_client_window();
+            if CLIENT.with_borrow_mut(|c| changed(&mut out, &mut c.sent.size, window)) {
+                for value in window {
+                    out.int(value);
+                }
             }
-            // The hotbar selection is this client's own, not the server's: the Java client's follows the window's.
-            out.int(self.selected as i32);
-            CLIENT.with_borrow_mut(|c| c.selected = self.selected);
+            let open = !self.java_world_has_input() && self.screen != Screen::Java;
+            let native_screen = (open, open && self.pause);
+            self.java_publish_client_world();
+            let (left, arrived) = self.java_client_chunk_changes();
+            CLIENT.with_borrow_mut(|c| {
+                let mut events = Out(std::mem::take(&mut c.queue));
+                let mut count = std::mem::take(&mut c.queued);
+                for (x, z) in &left {
+                    Input::Chunk(*x, *z, false).write(&mut events);
+                    count += 1;
+                }
+                for (x, z) in &arrived {
+                    Input::Chunk(*x, *z, true).write(&mut events);
+                    count += 1;
+                }
+                if c.sent.native_screen != Some(native_screen) {
+                    c.sent.native_screen = Some(native_screen);
+                    Input::Screen(native_screen.0, native_screen.1).write(&mut events);
+                    count += 1;
+                }
+                // A window starts focused; an offscreen one never hears otherwise.
+                let focused = c.focused.unwrap_or(true);
+                if c.sent.focused != Some(focused) {
+                    c.sent.focused = Some(focused);
+                    Input::Focus(focused).write(&mut events);
+                    count += 1;
+                }
+                out.int(count);
+                out.0.extend_from_slice(&events.0);
+            });
+            // The window's movement code is this player's motion authority, as `LocalPlayer.aiStep` is a real client's.
+            let motion = self.player.as_ref().map(|p| Motion {
+                position: [p.position.x, p.position.y, p.position.z],
+                look: [self.yaw, self.pitch],
+                velocity: [p.velocity.x, p.velocity.y, p.velocity.z],
+                on_ground: p.ground.on_ground,
+            });
+            let moved = motion.filter(|m| CLIENT.with_borrow_mut(|c| c.sent.motion != Some(*m)));
+            out.bool(moved.is_some());
+            if let Some(m) = moved {
+                CLIENT.with_borrow_mut(|c| c.sent.motion = Some(m));
+                for value in m.position {
+                    out.double(value);
+                }
+                out.float(m.look[0]);
+                out.float(m.look[1]);
+                for value in m.velocity {
+                    out.double(value);
+                }
+                out.bool(m.on_ground);
+            }
+            self.java_client_finished_sounds(&mut out);
             let job = Job {
                 items: super::super::java_models::java_items_request(),
                 decorations: super::super::java_models::java_decorations_request(),
-                font: self.java_client_font(),
                 tick: out.0,
-                states: !states,
             };
-            CLIENT.with_borrow_mut(|c| c.pending = pending);
             if open {
                 let done = job.run(host);
                 self.java_client_apply(done);
             } else {
                 WORKER.with_borrow_mut(|w| w.get_or_insert_with(Worker::start).send(job));
             }
-        }
-
-        /// What the Java client's `KeyMapping`s haven't heard of the window's keys: presses only while the world has the keys, as `KeyboardHandler.keyPress` gives them, releases always.
-        fn java_client_keys(&self, joined: bool) -> Vec<(&'static str, bool)> {
-            if !joined {
-                return Vec::new();
-            }
-            let held: std::collections::BTreeSet<&'static str> = self
-                .keys
-                .iter()
-                .filter_map(|key| horizon_client::keybinds::key_name(*key))
-                .collect();
-            let playing = self.screen == Screen::Playing && self.title.is_none();
-            CLIENT.with_borrow(|c| {
-                let released = c.keys.difference(&held).map(|key| (*key, false));
-                let pressed = held
-                    .difference(&c.keys)
-                    .filter(|_| playing)
-                    .map(|key| (*key, true));
-                released.chain(pressed).collect()
-            })
         }
 
         /// `MouseHandler.onScroll` in the world, run by the Java client: true when a mod's `MouseScrollingEvent` listener canceled it.
@@ -492,13 +767,14 @@ pub(in crate::game) mod live {
                 return;
             };
             CLIENT.with_borrow_mut(|c| c.joined = true);
-            self.java_client_status(&mut In(&tick));
-            if let Some(states) = done.states {
-                self.java_models_states(&states);
-                CLIENT.with_borrow_mut(|c| c.states = true);
+            // A status ends with whether the login's creative tabs wait to be taken.
+            if tick.last() == Some(&1) {
+                self.java_creative_tabs_built();
             }
-            if let Some(external) = done.external {
-                super::super::java_models::java_items_external(&external);
+            self.java_client_status(&mut In(&tick));
+            if !CLIENT.with_borrow(|c| c.states) {
+                self.java_client_resources();
+                CLIENT.with_borrow_mut(|c| c.states = true);
             }
             if let Some((keys, reply)) = done.items {
                 super::super::java_models::java_items_apply(keys, &reply, self.world.game_time);
@@ -506,15 +782,11 @@ pub(in crate::game) mod live {
             if let Some((keys, reply)) = done.decorations {
                 super::super::java_models::java_decorations_apply(keys, &reply);
             }
-            let taken = done.models.is_some() || done.renders.is_some();
             if let Some(models) = done.models {
                 self.java_models_apply(&models);
             }
             if let Some(renders) = done.renders {
                 self.java_renders_apply(&renders);
-            }
-            if taken {
-                CLIENT.with_borrow_mut(|c| c.models = 0);
             }
         }
 
@@ -554,6 +826,7 @@ pub(in crate::game) mod live {
             let Some(host) = horizon_java_host::get() else {
                 return;
             };
+            self.java_publish_client_world();
             let mut out = Out::default();
             self.java_client_size(&mut out);
             out.double(f64::from(self.cursor.0));
@@ -615,65 +888,67 @@ pub(in crate::game) mod live {
                 | bit(KeyCode::SuperRight, 2048)
         }
 
-        fn java_input(&mut self, kind: i32, a: i32, b: i32, delta: (f64, f64), key: &str) {
+        /// Input while a Java screen is open goes to the Java client at once, so the screen answers before the window's next frame.
+        fn java_input(&mut self, inputs: &[Input]) {
             let Some(host) = horizon_java_host::get() else {
                 return;
             };
+            self.java_publish_client_world();
             let mut out = Out::default();
-            out.int(kind);
-            out.double(f64::from(self.cursor.0));
-            out.double(f64::from(self.cursor.1));
-            out.int(a);
-            out.int(b);
-            out.int(self.java_modifiers());
-            out.double(delta.0);
-            out.double(delta.1);
-            out.text(key);
+            self.java_client_size(&mut out);
+            out.int(inputs.len() as i32);
+            for input in inputs {
+                input.write(&mut out);
+            }
             if let Some(reply) = host.request("client_input", &out.0) {
-                let mut reply = In(&reply);
-                if reply.bool().is_some() {
-                    self.java_client_status(&mut reply);
-                }
+                self.java_client_status(&mut In(&reply));
             }
         }
 
-        /// `MouseHandler.onButton`: SDL's numbering, left 1, middle 2, right 3.
-        pub(in crate::game) fn java_screen_click(&mut self, button: MouseButton, pressed: bool) {
-            let number = match button {
-                MouseButton::Left => 1,
-                MouseButton::Middle => 2,
-                MouseButton::Right => 3,
-                MouseButton::Back => 4,
-                MouseButton::Forward => 5,
-                MouseButton::Other(n) => i32::from(n) + 1,
-            };
+        /// `MouseHandler.onMove` to where the window's cursor is, in window pixels, when the Java client hasn't heard of it.
+        fn java_cursor(&self) -> Option<Input<'static>> {
+            let scale = self.java_client_window()[2] as f32;
+            let at = (
+                f64::from(self.cursor.0 * scale),
+                f64::from(self.cursor.1 * scale),
+            );
             CLIENT.with_borrow_mut(|c| {
-                c.held = pressed.then_some(number);
-                c.last = (f64::from(self.cursor.0), f64::from(self.cursor.1));
-            });
-            self.java_input(if pressed { 0 } else { 1 }, number, 0, (0.0, 0.0), "");
+                (c.sent.cursor != Some(at)).then(|| {
+                    c.sent.cursor = Some(at);
+                    Input::Move(at.0, at.1)
+                })
+            })
         }
 
-        /// `MouseHandler.onMove`: a move, and a drag while a button is held.
+        pub(in crate::game) fn java_screen_click(&mut self, button: MouseButton, pressed: bool) {
+            let modifiers = self.java_modifiers();
+            let mut inputs: Vec<Input> = self.java_cursor().into_iter().collect();
+            inputs.push(Input::Button(
+                button_number(button),
+                i32::from(pressed),
+                modifiers,
+            ));
+            self.java_input(&inputs);
+        }
+
+        /// The screen's moves and drags follow from these at the next frame, as `handleAccumulatedMovement` makes them.
         pub(in crate::game) fn java_screen_moved(&mut self) {
-            let now = (f64::from(self.cursor.0), f64::from(self.cursor.1));
-            let (held, last) =
-                CLIENT.with_borrow_mut(|c| (c.held, std::mem::replace(&mut c.last, now)));
-            self.java_input(2, 0, 0, (0.0, 0.0), "");
-            if let Some(button) = held {
-                self.java_input(3, button, 0, (now.0 - last.0, now.1 - last.1), "");
+            if let Some(moved) = self.java_cursor() {
+                self.java_input(&[moved]);
             }
         }
 
         pub(in crate::game) fn java_screen_scroll(&mut self, x: f64, y: f64) {
-            self.java_input(4, 0, 0, (x, y), "");
+            let mut inputs: Vec<Input> = self.java_cursor().into_iter().collect();
+            inputs.push(Input::Scroll(x, y));
+            self.java_input(&inputs);
         }
 
         /// `KeyboardHandler.keyPress` and `charTyped`: the key by its vanilla name, then what it typed.
         pub(in crate::game) fn java_screen_key(&mut self, event: &winit::event::KeyEvent) {
             let pressed = event.state == ElementState::Pressed;
             if let PhysicalKey::Code(code) = event.physical_key {
-                self.java_screen_key_code(code, pressed, event.text.as_deref());
+                self.java_screen_key_code(code, pressed, event.repeat, event.text.as_deref());
             }
         }
 
@@ -681,6 +956,7 @@ pub(in crate::game) mod live {
             &mut self,
             code: KeyCode,
             pressed: bool,
+            repeat: bool,
             text: Option<&str>,
         ) {
             if pressed {
@@ -688,23 +964,64 @@ pub(in crate::game) mod live {
             } else {
                 self.keys.remove(&code);
             }
+            let modifiers = self.java_modifiers();
+            let mut inputs = Vec::new();
             if let Some(name) = horizon_client::keybinds::key_name(code) {
-                self.java_input(if pressed { 5 } else { 6 }, 0, 0, (0.0, 0.0), name);
+                let action = match (pressed, repeat) {
+                    (false, _) => 0,
+                    (true, false) => 1,
+                    (true, true) => 2,
+                };
+                inputs.push(Input::Key(name, action, modifiers));
             }
-            if pressed
-                && self.screen == Screen::Java
-                && let Some(text) = text
-            {
-                for ch in text.chars().filter(|c| !c.is_control()) {
-                    self.java_input(7, ch as i32, 0, (0.0, 0.0), "");
-                }
+            if pressed && let Some(text) = text {
+                inputs.extend(
+                    text.chars()
+                        .filter(|c| !c.is_control())
+                        .map(|c| Input::Char(c as u32)),
+                );
             }
+            self.java_input(&inputs);
         }
     }
 }
 
+/// `handleKeybinds`' key actions the Java client hears of as the window performs them.
+#[derive(Clone, Copy)]
+#[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+pub(in crate::game) enum JavaKeyAction {
+    Drop(bool),
+    SwapHands,
+    Hotbar(usize),
+}
+
+/// `Direction.get3DDataValue` of a face's normal.
+#[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+fn face_index(face: [i32; 3]) -> i32 {
+    match face {
+        [0, -1, 0] => 0,
+        [0, 1, 0] => 1,
+        [0, 0, -1] => 2,
+        [0, 0, 1] => 3,
+        [-1, 0, 0] => 4,
+        _ => 5,
+    }
+}
+
+/// A click the window is about to act on, as `handleKeybinds` would start it.
+#[derive(Clone, Copy)]
+pub(in crate::game) enum JavaClick {
+    Attack,
+    Use,
+    Pick,
+}
+
 #[cfg(not(feature = "java-mods"))]
 impl Game<'_> {
+    pub(super) fn java_click_canceled(&mut self, _click: JavaClick) -> Option<Option<Hand>> {
+        None
+    }
+    pub(super) fn java_key_action(&mut self, _action: JavaKeyAction) {}
     pub(super) fn draw_java_screen(&mut self, _batch: &mut HudBatch) {}
     pub(super) fn java_screen_click(&mut self, _button: MouseButton, _pressed: bool) {}
     pub(super) fn java_screen_moved(&mut self) {}
@@ -717,8 +1034,12 @@ impl Game<'_> {
         &mut self,
         _code: KeyCode,
         _pressed: bool,
+        _repeat: bool,
         _text: Option<&str>,
     ) {
     }
+    pub(super) fn java_window_input(&mut self, _event: &winit::event::WindowEvent) {}
     pub(super) fn java_client_tick(&mut self) {}
+    pub(super) fn java_client_left(&mut self) {}
+    pub(super) fn java_client_font(&self) {}
 }

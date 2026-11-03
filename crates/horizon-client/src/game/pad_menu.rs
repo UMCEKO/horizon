@@ -192,6 +192,9 @@ impl Game<'_> {
                     }
                 }
                 for (i, t) in self.creative_screen.tabs.iter().enumerate() {
+                    if !self.creative_screen.on_page(t) {
+                        continue;
+                    }
                     let (x, y) = Creative::tab_position(t);
                     targets.push(Target {
                         rect: [ox + x, oy + y, 26.0, 32.0],
@@ -610,6 +613,7 @@ impl Game<'_> {
             (selected + count - 1) % count
         };
         let (ox, oy) = Self::creative_origin(&batch);
+        self.creative_screen.show_page_of(tab);
         let (x, y) = Creative::tab_position(&self.creative_screen.tabs[tab]);
         let back = self.pad.menu.pos;
         self.pad_click_at(event_loop, (ox + x + 13.0, oy + y + 16.0), false);
@@ -860,7 +864,7 @@ impl Game<'_> {
         (self.screen == Screen::Chat && self.title.is_none())
             || self.sign_edit.is_some()
             || matches!(self.book, Some(super::books::BookScreen::Edit { .. }))
-            || (self.screen == Screen::Creative && self.creative_screen.tab().search)
+            || (self.screen == Screen::Creative && self.creative_screen.tab().has_search_box())
             || self.recipe_search_focused()
             || self.station_typing()
     }
@@ -924,7 +928,7 @@ impl Game<'_> {
             self.sign_input(key, text);
         } else if self.book.is_some() {
             self.book_input(key, text);
-        } else if self.screen == Screen::Creative && self.creative_screen.tab().search {
+        } else if self.screen == Screen::Creative && self.creative_screen.tab().has_search_box() {
             if backspace {
                 self.creative_search_backspace(false);
             } else if key != Some(KeyCode::Enter) {

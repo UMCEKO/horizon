@@ -27,8 +27,8 @@ struct Globals {
     // The sunrise fan's 16 triangles (gfx/sunrise_fan.rs): xyz the apex weight's normal, w the
     // triangle's volume with the camera; then each rim vertex's normal against the apex.
     sunrise_fan: array<vec4<f32>, 32>,
-    // x: Options.textureFiltering (0 none, 1 RGSS, 2 anisotropic), y: the sprite arrays' width
-    // in texels (vanilla's TextureSize).
+    // x: Options.textureFiltering (0 none, 1 RGSS, 2 anisotropic), y: the first sprite array's
+    // width in texels (`sprite_width` reads each array's own).
     filtering: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -82,6 +82,22 @@ fn sprite_level(uv: vec2<f32>, layer: u32, lod: f32) -> vec4<f32> {
         default: { return textureSampleLevel(sprites_7, sprite_sampler, uv, l, lod); }
     }
 }
+// The width in texels of the array holding the layer: each array keeps its sprites' own size.
+fn sprite_width(layer: u32) -> f32 {
+    if SPRITE_ARRAYS == 1u {
+        return f32(textureDimensions(sprites).x);
+    }
+    switch layer / SPRITE_SPLIT {
+        case 0u: { return f32(textureDimensions(sprites).x); }
+        case 1u: { return f32(textureDimensions(sprites_1).x); }
+        case 2u: { return f32(textureDimensions(sprites_2).x); }
+        case 3u: { return f32(textureDimensions(sprites_3).x); }
+        case 4u: { return f32(textureDimensions(sprites_4).x); }
+        case 5u: { return f32(textureDimensions(sprites_5).x); }
+        case 6u: { return f32(textureDimensions(sprites_6).x); }
+        default: { return f32(textureDimensions(sprites_7).x); }
+    }
+}
 // texture_sampling.glsl's sampleNearest: the sprite's texels stay square pixels, blending only
 // across the one screen pixel where two meet, so a linear (and anisotropic) sampler keeps them crisp.
 fn sample_nearest(uv: vec2<f32>, layer: u32, pixel: vec2<f32>, du: vec2<f32>, dv: vec2<f32>,
@@ -124,7 +140,7 @@ fn sprite(uv: vec2<f32>, layer: u32) -> vec4<f32> {
         // Texture Filtering Anisotropic or RGSS: terrain.fsh's two sampling paths.
         let du = dpdx(uv);
         let dv = dpdy(uv);
-        let pixel = vec2(1.0 / globals.filtering.y);
+        let pixel = vec2(1.0 / sprite_width(layer));
         let texel_screen = sqrt(du * du + dv * dv);
         if mode == 1u {
             return sample_rgss(uv, layer, pixel, du, dv, texel_screen);

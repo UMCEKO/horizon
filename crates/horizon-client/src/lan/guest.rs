@@ -233,6 +233,8 @@ pub struct Guest {
     /// The shared flags (Entity.DATA_SHARED_FLAGS_ID) the player's client was
     /// last sent about itself.
     pub sent_shared: i8,
+    /// The living flags (`LivingEntity.DATA_LIVING_ENTITY_FLAGS`) its client was last sent about itself.
+    pub sent_living: i8,
     /// Where the player last died (Player.lastDeathLocation), sent with the respawn.
     pub last_death: Option<(String, [i32; 3])>,
     /// The last action sequence to acknowledge at the next tick (-1: none).
@@ -289,6 +291,13 @@ pub struct Guest {
 }
 
 impl Guest {
+    /// The living flags to send the player about itself, once each time they change (`ServerEntity.sendDirtyEntityData`).
+    pub fn own_living_flags(&mut self) -> Option<i8> {
+        (self.living_flags != self.sent_living).then(|| {
+            self.sent_living = self.living_flags;
+            self.living_flags
+        })
+    }
     pub fn new(j: Joined, entity_id: i32, position: [f64; 3], view_distance: i32) -> Self {
         Self {
             conn: j.conn,
@@ -384,6 +393,7 @@ impl Guest {
             sent_xp: None,
             sent_air: (300, 0.0),
             sent_shared: 0,
+            sent_living: 0,
             last_death: None,
             ack_up_to: std::cell::Cell::new(-1),
             sent_selected: 0,
@@ -1121,6 +1131,21 @@ mod tests {
             position,
             10,
         )
+    }
+
+    /// A use the server starts or ends reaches the player's own client once per change, as a mod's item started only there must.
+    #[test]
+    fn own_living_flags_go_once_per_change() {
+        let mut g = guest_at([0.5, 64.0, 0.5]);
+        assert_eq!(g.own_living_flags(), None);
+        g.living_flags = 1;
+        assert_eq!(g.own_living_flags(), Some(1));
+        assert_eq!(g.own_living_flags(), None);
+        g.living_flags = 3;
+        assert_eq!(g.own_living_flags(), Some(3));
+        g.living_flags = 0;
+        assert_eq!(g.own_living_flags(), Some(0));
+        assert_eq!(g.own_living_flags(), None);
     }
 
     #[test]

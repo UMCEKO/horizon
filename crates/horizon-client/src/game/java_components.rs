@@ -88,7 +88,30 @@ impl StreamCodecs for Codecs {
     }
 }
 
+/// The font table the window prepared for the Java client, which it starts with.
+static FONT: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+
+pub(super) fn prepare_font(table: Vec<u8>) {
+    *FONT.lock().unwrap() = Some(table);
+}
+
+/// The window joined its own server: the Java client starts and runs its configuration, before any play packet.
+fn java_client_login(profile: u128, name: &str) {
+    let Some(host) = horizon_java_host::get() else {
+        return;
+    };
+    if let Some(font) = FONT.lock().unwrap().take() {
+        host.request("client_font", &font);
+    }
+    let mut out = Out::default();
+    out.long((profile >> 64) as i64);
+    out.long(profile as i64);
+    out.text(name);
+    host.request("client_connect", &out.0);
+}
+
 pub(super) fn install() {
+    horizon_client::net::on_local_login(java_client_login);
     if std::env::var_os("HORIZON_JAVA_RUN").is_some() {
         foreign::install(Box::new(Codecs::default()));
     }

@@ -438,6 +438,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_a_two_sided_quad_draws_from_behind() {
+        let facing_away = |two_sided: bool| ItemQuad {
+            pos: [
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(1.0, 1.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+            ],
+            uv: [[0.0; 2]; 4],
+            foil_uv: [[0.0; 2]; 4],
+            normal: Vec3::Z,
+            color: u32::MAX,
+            foil: Foil::None,
+            light_emission: 0,
+            cull_back: !two_sided,
+            two_sided,
+            translucent: false,
+        };
+        assert!(depth::sort(&[facing_away(false)]).is_empty());
+        assert_eq!(depth::sort(&[facing_away(true)]).len(), 1);
+    }
+    #[test]
+    fn an_unlit_quad_keeps_its_colour() {
+        let quad = ItemQuad {
+            pos: [Vec3::ZERO; 4],
+            uv: [[0.0; 2]; 4],
+            foil_uv: [[0.0; 2]; 4],
+            normal: Vec3::ZERO,
+            color: 0xFF80_4020,
+            foil: Foil::None,
+            light_emission: 0,
+            cull_back: false,
+            two_sided: false,
+            translucent: false,
+        };
+        assert_eq!(
+            lit_color(&quad, items_3d_lights()),
+            crate::hud::rgba(0x80, 0x40, 0x20, 0xFF)
+        );
+    }
+    #[test]
     fn enchanting_book_pages_turn_with_the_flip() {
         let close = |flip: f32, want: (f32, f32)| {
             let (a, b) = enchanting_book_pages(flip);

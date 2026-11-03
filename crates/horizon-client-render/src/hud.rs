@@ -207,10 +207,11 @@ fn wrap_border((name, w, h, data): &PackedImage) -> PackedImage {
     }
     (name.clone(), bw, bh, out)
 }
-/// Sprites the atlas definitions (`atlases/*.json`) add beyond the texture
+/// Sprites the atlas definitions (`atlases/**/*.json`) add beyond the texture
 /// files already packed: generated ones (`paletted_permutations` such as the
-/// armour trim sprites, `unstitch` regions) and files listed under another id,
-/// such as other namespaces' item textures; and the animated ones' names.
+/// armour trim sprites, `unstitch` regions), files listed under another id,
+/// such as other namespaces' item textures, and the files of atlases no folder
+/// here holds; and the animated ones' names.
 fn atlas_sprites(root: &Path, packed: &[PackedImage]) -> (Vec<PackedImage>, Vec<String>) {
     use crate::atlas_sources::{self, SpriteOrigin};
     let have: std::collections::HashSet<&str> = packed.iter().map(|i| i.0.as_str()).collect();
@@ -223,23 +224,19 @@ fn atlas_sprites(root: &Path, packed: &[PackedImage]) -> (Vec<PackedImage>, Vec<
     let mut slots = std::collections::HashMap::new();
     let mut order = 0;
     for (atlas, sources) in atlas_sources::atlases(root) {
-        // The other atlases' renamed files (GUI sprites, particles...) are
-        // looked up by their texture paths here.
         let item_models = atlas == "minecraft:blocks" || atlas == "minecraft:items";
         for (id, origin) in atlas_sources::list(&sources, &textures) {
-            if !item_models && matches!(origin, SpriteOrigin::File(_)) {
-                continue;
+            // Other atlases' files are drawn by their texture paths, as the
+            // walked folders' are; a mod's own atlas (Mekanism's robit skins)
+            // lists files no folder here walks.
+            let name = match &origin {
+                SpriteOrigin::File(texture) if !item_models => {
+                    texture.strip_prefix("minecraft:").unwrap_or(texture)
+                }
+                _ => id.strip_prefix("minecraft:").unwrap_or(&id),
             }
-            let name = id.strip_prefix("minecraft:").unwrap_or(&id).to_owned();
+            .to_owned();
             if have.contains(name.as_str()) {
-                continue;
-            }
-            // A vanilla file is packed under its own name already: only a
-            // renamed one is new. Other namespaces' files (content mods) are
-            // never in the walked directories.
-            if let SpriteOrigin::File(texture) = &origin
-                && texture.strip_prefix("minecraft:") == Some(name.as_str())
-            {
                 continue;
             }
             let slot = *slots.entry(name.clone()).or_insert_with(|| {
@@ -265,10 +262,10 @@ fn atlas_sprites(root: &Path, packed: &[PackedImage]) -> (Vec<PackedImage>, Vec<
                     decode(&file).ok().map(|image| {
                         // Animated strips keep their first frame and animate,
                         // like the packed files.
-                        if path.starts_with("block/") || path.starts_with("item/") {
-                            let mcmeta = fs::read_to_string(file.with_extension("png.mcmeta")).ok();
-                            let animation = animation_of(mcmeta.as_deref());
-                            animated = animation.is_some();
+                        let mcmeta = fs::read_to_string(file.with_extension("png.mcmeta")).ok();
+                        let animation = animation_of(mcmeta.as_deref());
+                        animated = animation.is_some();
+                        if animated || path.starts_with("block/") || path.starts_with("item/") {
                             first_frame(image, animation.as_ref())
                         } else {
                             image
@@ -567,6 +564,16 @@ impl HudAtlas {
             edition.3 = pixels;
         }
         images.push(("horizon/white".into(), 4, 4, vec![255; 64]));
+        // Every stitched atlas holds `MissingTextureAtlasSprite`; items whose own quads name it draw it.
+        if !images.iter().any(|i| i.0 == "missingno") {
+            let size = crate::sprites::SPRITE_SIZE;
+            images.push((
+                "missingno".into(),
+                size,
+                size,
+                crate::sprites::missing_image(),
+            ));
+        }
         if full {
             Self::slots(&mut images, crate::trims::slot_size(root));
         }
@@ -2057,6 +2064,47 @@ mod tests {
         assert_eq!(texel_at(&atlas, rect, 0, 0), [200, 0, 0, 255]);
         // Only equipment: the mods' other textures reach the atlas through atlas definitions.
         assert!(!atlas.sprites.contains_key("gems:item/ruby"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+    #[test]
+    fn a_mods_own_atlas_packs_its_files_by_texture_path() {
+        let root = std::env::temp_dir().join(format!("horizon-atlas-own-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let skins = root.join("assets/gems/textures/entity/golem");
+        fs::create_dir_all(&skins).unwrap();
+        write_strip(&skins.join("ruby.png"), 32, 32, &[[0, 0, 200, 255]], None);
+        let atlases = root.join("assets/gems/atlases/entity");
+        fs::create_dir_all(&atlases).unwrap();
+        fs::write(
+            atlases.join("golem.json"),
+            br#"{"sources": [{"type": "directory", "source": "entity/golem", "prefix": "entity/golem/"}]}"#,
+        )
+        .unwrap();
+        let atlas = HudAtlas::build(&root).unwrap();
+        let rect = atlas.sprites["gems:entity/golem/ruby"];
+        assert_eq!(texel_at(&atlas, rect, 0, 0), [0, 0, 200, 255]);
+        fs::remove_dir_all(&root).unwrap();
+    }
+    #[test]
+    fn a_listed_animated_strip_too_tall_to_walk_packs_its_first_frame() {
+        let root = std::env::temp_dir().join(format!("horizon-atlas-tall-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let conduit = root.join("assets/minecraft/textures/entity/conduit");
+        fs::create_dir_all(&conduit).unwrap();
+        let frames = vec![[0, 200, 0, 255]; 32];
+        let meta = r#"{"animation": {"frametime": 3, "height": 32}}"#;
+        write_strip(&conduit.join("wind.png"), 64, 1024, &frames, Some(meta));
+        let atlases = root.join("assets/minecraft/atlases");
+        fs::create_dir_all(&atlases).unwrap();
+        fs::write(
+            atlases.join("blocks.json"),
+            br#"{"sources": [{"type": "directory", "source": "entity/conduit", "prefix": "entity/conduit/"}]}"#,
+        )
+        .unwrap();
+        let atlas = HudAtlas::build(&root).unwrap();
+        let rect = atlas.sprites["entity/conduit/wind"];
+        assert_eq!(rect.texels((atlas.width, atlas.height)), (64, 64));
+        assert_eq!(texel_at(&atlas, rect, 0, 0), [0, 200, 0, 255]);
         fs::remove_dir_all(&root).unwrap();
     }
     #[test]

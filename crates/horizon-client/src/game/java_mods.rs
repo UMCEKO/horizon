@@ -51,20 +51,84 @@ impl Game<'_> {
         let Some(host) = horizon_java_host::get() else {
             return;
         };
-        if !host.owns_item(&stack.item) {
-            // A vanilla item's use is Horizon's, but mods hear it first and may cancel it.
+        if !host.item_code_runs(&stack.item, hit.is_some()) {
+            // Vanilla code's use is Horizon's, from the item's components, but mods hear it first and may cancel it.
             if hit.is_none() {
                 self.java_call_use(&stack.item, "event_use_item", Vec::new(), claimed);
             }
             return;
         }
-        match hit {
+        let using = match hit {
             Some(hit) => self.java_use_on(&stack.item, hit, "use_item_on", claimed),
             None => self.java_call_use(&stack.item, "use_item", Vec::new(), claimed),
+        };
+        // `startUsingItem` in Java: Horizon's player holds the use, and each tick goes on with it there.
+        if let Some(ticks) = using {
+            self.using = Some((self.held_slot(), ticks));
         }
     }
 
-    fn java_use_on(&mut self, what: &str, hit: &Hit, op: &str, claimed: &mut bool) {
+    /// `LivingEntity.updatingUsingItem` for an item whose use is its mod's code; false leaves the tick to Horizon.
+    pub(super) fn java_tick_using(&mut self, slot: usize, ticks: u32, stack: &ItemStack) -> bool {
+        if !horizon_java_host::get().is_some_and(|h| h.item_code_runs(&stack.item, false)) {
+            return false;
+        }
+        let using = self.java_call_using(stack, ticks, "use_tick");
+        self.using = using.map(|ticks| (slot, ticks));
+        true
+    }
+
+    /// `releaseUsingItem` (or `stopUsingItem` when the hand changed) for such an item; false leaves it to Horizon.
+    pub(super) fn java_release_using(
+        &mut self,
+        stack: &ItemStack,
+        ticks: u32,
+        hand_changed: bool,
+    ) -> bool {
+        if !horizon_java_host::get().is_some_and(|h| h.item_code_runs(&stack.item, false)) {
+            return false;
+        }
+        let op = if hand_changed {
+            "stop_using"
+        } else {
+            "release_using"
+        };
+        self.java_call_using(stack, ticks, op);
+        true
+    }
+
+    fn java_call_using(&mut self, stack: &ItemStack, ticks: u32, op: &str) -> Option<u32> {
+        let mut out = Out::default();
+        out.int(ticks as i32);
+        let mut claimed = false;
+        self.java_call_use(&stack.item, op, out.0, &mut claimed)
+    }
+
+    /// `ItemStack.interactLivingEntity` of an item whose own code answers it, once the mob aimed at passed (`Player.interactOn`).
+    pub(super) fn java_interact_living(&mut self) -> bool {
+        let Some(host) = horizon_java_host::get() else {
+            return false;
+        };
+        let Some(stack) = self.held().cloned() else {
+            return false;
+        };
+        if !host.item_entity_code(&stack.item) {
+            return false;
+        }
+        let Some((index, _)) = self.mob_hit() else {
+            return false;
+        };
+        let mut out = Out::default();
+        out.int(self.mobs[index].id as i32);
+        let mut claimed = false;
+        self.java_call_use(&stack.item, "interact_entity", out.0, &mut claimed);
+        if claimed {
+            self.swing_arm();
+        }
+        claimed
+    }
+
+    fn java_use_on(&mut self, what: &str, hit: &Hit, op: &str, claimed: &mut bool) -> Option<u32> {
         let mut out = Out::default();
         out.long(BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]).pack());
         out.int(match hit.face {
@@ -78,26 +142,28 @@ impl Game<'_> {
         out.double(hit.point[0]);
         out.double(hit.point[1]);
         out.double(hit.point[2]);
-        self.java_call_use(what, op, out.0, claimed);
+        self.java_call_use(what, op, out.0, claimed)
     }
 
-    fn java_call_use(&mut self, what: &str, op: &str, tail: Vec<u8>, claimed: &mut bool) {
-        let Some(host) = horizon_java_host::get() else {
-            return;
-        };
+    /// One use call; the ticks the player has been using an item when the call leaves it using one.
+    fn java_call_use(
+        &mut self,
+        what: &str,
+        op: &str,
+        tail: Vec<u8>,
+        claimed: &mut bool,
+    ) -> Option<u32> {
+        let host = horizon_java_host::get()?;
         self.java_bind_states();
-        let Some(mut request) = self.java_use_request() else {
-            return;
-        };
+        let mut request = self.java_use_request()?;
         request.extend(tail);
-        let reply = horizon_java_host::bridge::with_active(self, || host.request(op, &request));
-        let Some(reply) = reply else {
-            return;
-        };
-        if self.java_apply_use(&reply, claimed).is_none() {
+        let reply = horizon_java_host::bridge::with_active(self, || host.request(op, &request))?;
+        let using = self.java_apply_use(&reply, claimed);
+        if using.is_none() {
             log::warn!("Horizon: a Java mod's use of {what} answered in pieces");
         }
         self.java_drain_block_events();
+        using.flatten()
     }
 
     /// Fills the acting player's view again, for a bridge that changed something its getters read.
@@ -146,15 +212,15 @@ impl Game<'_> {
                     properties.push((listed.text()?.to_string(), listed.text()?.to_string()));
                 }
                 let entity = listed.bool()?;
-                Some((java, name, properties, entity))
+                let owned = listed.bool()?;
+                Some((java, name, properties, entity, owned))
             })();
-            let Some((java, name, properties, entity)) = read else {
+            let Some((java, name, properties, entity, owned)) = read else {
                 log::error!(
                     "Horizon: Java's block state list ended early; Java mods' blocks are unbound"
                 );
                 return;
             };
-            let owned = !name.starts_with("minecraft:");
             let state = horizon_world::chunk::BlockState {
                 name,
                 properties: properties.into_iter().collect(),
@@ -237,6 +303,17 @@ impl Game<'_> {
         out.float(player.health.health());
         out.int(player.health.food.food);
         out.float(player.health.food.saturation);
+        out.float(player.health.food.exhaustion);
+        out.float(player.health.absorption());
+        let effects = &self.potions.effects.list;
+        out.int(effects.len() as i32);
+        for effect in effects {
+            out.text(&format!("minecraft:{}", effect.id));
+            out.int(effect.duration);
+            out.int(effect.amplifier);
+            out.bool(effect.ambient);
+            out.bool(effect.visible);
+        }
         out.double(player.velocity.x);
         out.double(player.velocity.y);
         out.double(player.velocity.z);
@@ -256,9 +333,11 @@ impl Game<'_> {
         Some(out.0)
     }
 
-    fn java_apply_use(&mut self, reply: &[u8], claimed: &mut bool) -> Option<()> {
+    fn java_apply_use(&mut self, reply: &[u8], claimed: &mut bool) -> Option<Option<u32>> {
         let mut reply = In(reply);
         *claimed = reply.bool()?;
+        let using = reply.bool()?;
+        let ticks = reply.int()?;
         self.experience = horizon_client::entities::Experience {
             level: reply.int()?,
             progress: reply.float()?,
@@ -279,11 +358,12 @@ impl Game<'_> {
                 slot
             });
         }
-        self.java_apply_effects(&mut reply)
+        self.java_apply_effects(&mut reply)?;
+        Some(using.then_some(ticks.max(0) as u32))
     }
 
     /// What Java did to the world on a call: sounds, entities, vanilla block entities it changed.
-    fn java_apply_effects(&mut self, reply: &mut In<'_>) -> Option<()> {
+    pub(super) fn java_apply_effects(&mut self, reply: &mut In<'_>) -> Option<()> {
         for _ in 0..reply.int()? {
             let sound = reply.text()?;
             let at = [reply.double()?, reply.double()?, reply.double()?];
@@ -578,6 +658,8 @@ impl Game<'_> {
         } else {
             loaded.iter().copied().collect()
         };
+        self.java_chunks_leaving(unloaded);
+        self.java_chunks_read(&joined);
         let mut entities: Vec<(BlockPos, Vec<u8>)> = Vec::new();
         if !joined.is_empty() {
             for (&key, entity) in self.world.block_entities.iter() {
@@ -628,6 +710,13 @@ impl Game<'_> {
         }
         self.java_apply_effects(&mut reply);
         self.java_drain_block_events();
+        self.java_chunks_full(&joined);
+    }
+
+    /// Whether this level's chunks are the Java server's: it started, and the level caught up on its chunks.
+    pub(super) fn java_level_running(&self) -> bool {
+        self.remote.is_none()
+            && JAVA_SERVER.with_borrow(|s| s.started && s.levels.contains(self.dim.id()))
     }
 
     /// What changed in the players' chunks and pairings, for the `ChunkMap` in Java.

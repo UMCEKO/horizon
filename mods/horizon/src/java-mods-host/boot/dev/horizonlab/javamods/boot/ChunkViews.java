@@ -20,9 +20,9 @@ public final class ChunkViews {
 
     private static final Map<Level, Long2ObjectOpenHashMap<LevelChunk>> VIEWS = new IdentityHashMap<>();
 
-    /** The window's level reads only what its player's screens need, so every chunk counts as there. */
+    /** The server's chunks are those Horizon's server has loaded; the client's are those its chunk cache was told of, as `ClientChunkCache` holds only what it received. */
     public static boolean loaded(Level level, int x, int z) {
-        return !(level instanceof ServerLevel server) || server.isLoaded(new BlockPos(x << 4, level.getMinY(), z << 4));
+        return level instanceof ServerLevel server ? server.isLoaded(new BlockPos(x << 4, level.getMinY(), z << 4)) : ClientBridge.hasChunk(x, z);
     }
 
     public static LevelChunk get(Level level, int x, int z) {
@@ -38,6 +38,18 @@ public final class ChunkViews {
     /** Bridged: Horizon's streaming loads this chunk of the level in place before returning. */
     private static boolean load(int x, int z) {
         throw new IllegalStateException("not bridged");
+    }
+
+    /** The view a column already has, without making one. */
+    static LevelChunk peek(Level level, int x, int z) {
+        var views = VIEWS.get(level);
+        return views == null ? null : views.get(ChunkPos.pack(x, z));
+    }
+
+    /** The column's view whether or not the level still has it, as a chunk being unloaded is still a `LevelChunk`. */
+    static LevelChunk existing(Level level, int x, int z) {
+        var view = peek(level, x, z);
+        return view != null ? view : view(level, x, z);
     }
 
     static void forget(Level level) {
@@ -58,6 +70,7 @@ public final class ChunkViews {
             ServerView.set(ChunkAccess.class, chunk, "chunkPos", new ChunkPos(x, z));
             ServerView.set(ChunkAccess.class, chunk, "levelHeightAccessor", level);
             ServerView.set(ChunkAccess.class, chunk, "blockEntities", new HashMap<>());
+            ServerView.set(LevelChunk.class, chunk, "tickersInLevel", new HashMap<>());
             ServerView.set(ChunkAccess.class, chunk, "sections", new LevelChunkSection[0]);
             ServerView.set(ChunkAccess.class, chunk, "attachmentHolder", new AttachmentHolder.AsField(chunk));
             Inits.run(chunk, level, new ChunkPos(x, z));

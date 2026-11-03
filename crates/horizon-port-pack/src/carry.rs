@@ -988,6 +988,9 @@ pub fn carry(
             let Some(b) = full.strip_prefix(&prefix) else {
                 break;
             };
+            if !facts.owns_block(full) {
+                continue;
+            }
             let Some(choice) = facts.template(full, allowed) else {
                 let props: Vec<&str> = block.properties.keys().map(String::as_str).collect();
                 let why = format!(
@@ -1019,10 +1022,33 @@ pub fn carry(
                     .push(format!("its item is {}", block.item));
             } else {
                 declared.insert(full.clone());
-                let drop = (!block_loot.contains(b))
+                let template_item = facts.blocks.get(&choice.template).map(|t| t.item.as_str());
+                if let Some(item) = template_item.and_then(|t| facts.block_item(full, t)) {
+                    let fields = item.fields();
+                    if !fields.is_empty() {
+                        v["item_properties"] = Value::Object(fields);
+                    }
+                    if !item.differences.is_empty() {
+                        report
+                            .differences
+                            .entry(b.to_owned())
+                            .or_default()
+                            .extend(item.differences);
+                    }
+                }
+                let own_table = block.loot_table_id.as_deref() == Some(&format!("{id}:blocks/{b}"));
+                let code_table = block
+                    .loot_table
+                    .as_ref()
+                    .filter(|_| own_table && !block_loot.contains(b));
+                let drop = (!block_loot.contains(b) && code_table.is_none())
                     .then(|| block.drops_itself(full))
                     .flatten();
-                if let Some(drop) = drop {
+                if let Some(table) = code_table {
+                    let file = inside.join(format!("data/{id}/loot_table/blocks/{b}.json"));
+                    write(&file, &serde_json::to_vec_pretty(table).unwrap_or_default())?;
+                    report.loot_tables_added += 1;
+                } else if let Some(drop) = drop {
                     let mut entry = json!({"type": "minecraft:item", "name": full});
                     if let crate::oracle::SelfDrop::When(property, value) = drop {
                         entry["condition"] = json!({
@@ -1062,7 +1088,7 @@ pub fn carry(
             let Some(name) = full.strip_prefix(&prefix) else {
                 break;
             };
-            if declared.contains(full) {
+            if declared.contains(full) || !facts.owns_item(full) {
                 continue;
             }
             if item

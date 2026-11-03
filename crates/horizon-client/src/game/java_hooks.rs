@@ -2,6 +2,7 @@
 use super::Game;
 use super::native_lifecycle::{ServerTickPhase, WorldPhase};
 use horizon_client::containers::ModBlockEntity;
+use horizon_client::items::ItemStack;
 
 impl Game<'_> {
     pub(super) fn java_hook_world(&mut self, phase: &WorldPhase) {
@@ -83,6 +84,46 @@ impl Game<'_> {
         #[cfg(feature = "java-mods")]
         self.java_break_event(pos, canceled);
         let _ = (pos, canceled);
+    }
+
+    /// A held use's tick for an item whose use is its mod's code; false leaves it to Horizon.
+    pub(super) fn java_hook_tick_using(
+        &mut self,
+        slot: usize,
+        ticks: u32,
+        stack: &ItemStack,
+    ) -> bool {
+        #[cfg(feature = "java-mods")]
+        return self.java_tick_using(slot, ticks, stack);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (slot, ticks, stack);
+            false
+        }
+    }
+
+    /// The end of such a held use; false leaves it to Horizon.
+    pub(super) fn java_hook_release_using(
+        &mut self,
+        stack: &ItemStack,
+        ticks: u32,
+        hand_changed: bool,
+    ) -> bool {
+        #[cfg(feature = "java-mods")]
+        return self.java_release_using(stack, ticks, hand_changed);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (stack, ticks, hand_changed);
+            false
+        }
+    }
+
+    /// An item's own `interactLivingEntity`, once the mob aimed at passed.
+    pub(super) fn java_hook_interact_living(&mut self) -> bool {
+        #[cfg(feature = "java-mods")]
+        return self.java_interact_living();
+        #[cfg(not(feature = "java-mods"))]
+        false
     }
 
     pub(super) fn java_hook_attack(&mut self, entity: i32, canceled: &mut bool) {

@@ -79,45 +79,9 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     "net/minecraft/server/level/ServerPlayer".hurtServer
     "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/damagesource/DamageSource;F)Z" =>
     fn player_hurt(game, _level: Skip, source: Text, amount: f32) -> bool {
-        !game.spectator() && game.hurt_player_from(amount, None, &source.0, Some(None))
-    }
-
-    "net/minecraft/world/entity/LivingEntity".heal
-    "(F)V" if "net/minecraft/server/level/ServerPlayer" =>
-    fn player_heal(game, amount: f32) -> () {
-        if let Some(player) = game.player.as_mut() {
-            let health = player.health.health();
-            if health > 0.0 {
-                let _ = player.set_health(health + amount, false);
-            }
-        }
-    }
-
-    "net/minecraft/world/entity/LivingEntity".addEffect
-    "(Lnet/minecraft/world/effect/MobEffectInstance;Lnet/minecraft/world/entity/Entity;)Z" if "net/minecraft/server/level/ServerPlayer" =>
-    fn player_add_effect(game, effect: Text, _source: Skip) -> bool {
-        parse_effect(&effect.0).is_some_and(|effect| game.add_player_effect(effect))
-    }
-
-    "net/minecraft/world/entity/LivingEntity".removeEffect
-    "(Lnet/minecraft/core/Holder;)Z" if "net/minecraft/server/level/ServerPlayer" =>
-    fn player_remove_effect(game, effect: Text) -> bool {
-        let Some(definition) = horizon_client::brewing::effect(&effect.0) else {
-            return false;
-        };
-        let before = game.potions.effects.list.len();
-        game.potions.effects.list.retain(|e| e.id != definition.id);
-        game.apply_effect_status();
-        game.potions.effects.list.len() != before
-    }
-
-    "net/minecraft/world/entity/LivingEntity".removeAllEffects
-    "()Z" if "net/minecraft/server/level/ServerPlayer" =>
-    fn player_remove_all_effects(game) -> bool {
-        let any = !game.potions.effects.list.is_empty();
-        game.potions.effects.clear();
-        game.apply_effect_status();
-        any
+        let hurt = !game.spectator() && game.hurt_player_from(amount, None, &source.0, Some(None));
+        game.java_refresh_player();
+        hurt
     }
 
     "net/minecraft/world/entity/LivingEntity".swing
@@ -170,43 +134,50 @@ horizon_java_host::java_bridges! { table for Game<'static> {
         }
     }
 
-    "net/minecraft/world/food/FoodData".eat
-    "(IF)V" =>
-    fn food_eat(game, nutrition: i32, saturation_modifier: f32) -> () {
+    "dev/horizonlab/javamods/boot/PlayerSync".food
+    "(IFF)V" =>
+    fn sync_food(game, food: i32, saturation: f32, exhaustion: f32) -> () {
         if let Some(player) = game.player.as_mut() {
-            player.health.food.eat(nutrition, saturation_modifier);
-        }
-    }
-
-    "net/minecraft/world/food/FoodData".eat
-    "(Lnet/minecraft/world/food/FoodProperties;)V" =>
-    fn food_eat_properties(game, food: Point) -> () {
-        if let Some(player) = game.player.as_mut() {
-            player.health.food.eat_properties(food.0[0] as i32, food.0[1] as f32);
-        }
-    }
-
-    "net/minecraft/world/food/FoodData".setFoodLevel
-    "(I)V" =>
-    fn food_set_level(game, level: i32) -> () {
-        if let Some(player) = game.player.as_mut() {
-            player.health.food.food = level;
-        }
-    }
-
-    "net/minecraft/world/food/FoodData".setSaturation
-    "(F)V" =>
-    fn food_set_saturation(game, saturation: f32) -> () {
-        if let Some(player) = game.player.as_mut() {
+            player.health.food.food = food;
             player.health.food.saturation = saturation;
+            player.health.food.exhaustion = exhaustion;
         }
     }
 
-    "net/minecraft/world/food/FoodData".addExhaustion
+    "dev/horizonlab/javamods/boot/PlayerSync".health
     "(F)V" =>
-    fn food_add_exhaustion(game, exhaustion: f32) -> () {
+    fn sync_health(game, health: f32) -> () {
         if let Some(player) = game.player.as_mut() {
-            player.health.food.add_exhaustion(exhaustion);
+            let _ = player.set_health(health.max(0.0), false);
+        }
+    }
+
+    "dev/horizonlab/javamods/boot/PlayerSync".absorption
+    "(F)V" =>
+    fn sync_absorption(game, amount: f32) -> () {
+        if let Some(player) = game.player.as_mut() {
+            let _ = player.set_health(amount.max(0.0), true);
+        }
+    }
+
+    "dev/horizonlab/javamods/boot/PlayerSync".effect
+    "(Lnet/minecraft/world/effect/MobEffectInstance;)V" =>
+    fn sync_effect(game, effect: Text) -> () {
+        match parse_effect(&effect.0) {
+            Some(effect) => {
+                game.potions.effects.list.retain(|e| e.id != effect.id);
+                game.add_player_effect(effect);
+            }
+            None => log::warn!("Horizon: a Java mod gave the player {}, an effect Horizon doesn't have", effect.0),
+        }
+    }
+
+    "dev/horizonlab/javamods/boot/PlayerSync".effectRemoved
+    "(Lnet/minecraft/core/Holder;)V" =>
+    fn sync_effect_removed(game, effect: Text) -> () {
+        if let Some(definition) = horizon_client::brewing::effect(&effect.0) {
+            game.potions.effects.list.retain(|e| e.id != definition.id);
+            game.apply_effect_status();
         }
     }
 }}

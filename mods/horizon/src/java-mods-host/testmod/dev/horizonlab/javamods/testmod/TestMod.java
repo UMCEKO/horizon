@@ -23,8 +23,12 @@ public final class TestMod {
     public TestMod(IEventBus bus) {
         ITEMS.registerItem("wand", Wand::new);
         ITEMS.registerItem("probe", Probe::new);
+        ITEMS.registerItem("tonic", Tonic::new);
+        // A plain food, so the boot's facts carry a food item.
+        ITEMS.registerSimpleItem("snack", p -> p.food(new net.minecraft.world.food.FoodProperties.Builder().nutrition(5).saturationModifier(0.7f).build()).stacksTo(16));
         ITEMS.register(bus);
         Battery.register(bus, ITEMS);
+        ChunkData.register(bus);
     }
 
     /** The second look, after the world has run: what a machine's ticks did. */
@@ -35,7 +39,20 @@ public final class TestMod {
 
         @Override
         public InteractionResult useOn(UseOnContext context) {
-            ChecksBlockEntities.later(context);
+            if (!context.getLevel().isClientSide()) ChecksBlockEntities.later(context);
+            return InteractionResult.SUCCESS;
+        }
+    }
+
+    /** In the air: gives the player speed from mod code, so the effect's write-through shows in the player's state. */
+    public static final class Tonic extends Item {
+        public Tonic(Properties properties) {
+            super(properties);
+        }
+
+        @Override
+        public InteractionResult use(Level level, net.minecraft.world.entity.player.Player player, net.minecraft.world.InteractionHand hand) {
+            player.addEffect(new net.minecraft.world.effect.MobEffectInstance(net.minecraft.world.effect.MobEffects.SPEED, 600, 1));
             return InteractionResult.SUCCESS;
         }
     }
@@ -76,7 +93,7 @@ public final class TestMod {
             level.gameEvent(context.getPlayer(), GameEvent.BLOCK_PLACE, at);
             context.getPlayer().awardStat(Stats.ITEM_USED.get(this));
             context.getPlayer().sendSystemMessage(Component.literal("wand ok"));
-            Checks.runAll(context);
+            if (!level.isClientSide()) Checks.runAll(context);
             return InteractionResult.SUCCESS;
         }
     }

@@ -1,6 +1,7 @@
 package dev.horizonlab.javamods.boot.mixin;
 
 import dev.horizonlab.javamods.boot.BlockEntities;
+import dev.horizonlab.javamods.boot.Clients;
 import java.util.Map;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -17,8 +18,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 /** Every chunk in Java is a view (`ChunkViews`): its blocks and block entities are the level's. */
 @Mixin(LevelChunk.class)
 abstract class LevelChunkMixin {
-    private ServerLevel horizon$level() {
-        return (ServerLevel) ((LevelChunk) (Object) this).getLevel();
+    private net.minecraft.world.level.Level horizon$level() {
+        return ((LevelChunk) (Object) this).getLevel();
     }
 
     @Inject(method = "getBlockState(Lnet/minecraft/core/BlockPos;)Lnet/minecraft/world/level/block/state/BlockState;", at = @At("HEAD"), cancellable = true)
@@ -54,18 +55,19 @@ abstract class LevelChunkMixin {
 
     @Inject(method = "setBlockEntity", at = @At("HEAD"), cancellable = true)
     private void horizon$setEntity(BlockEntity entity, CallbackInfo info) {
-        BlockEntities.set(horizon$level(), entity);
+        if (horizon$level() instanceof ServerLevel level) BlockEntities.set(level, entity);
         info.cancel();
     }
 
     @Inject(method = "removeBlockEntity", at = @At("HEAD"), cancellable = true)
     private void horizon$removeEntity(BlockPos pos, CallbackInfo info) {
-        BlockEntities.remove(horizon$level(), pos);
+        if (horizon$level() instanceof ServerLevel level) BlockEntities.remove(level, pos);
         info.cancel();
     }
 
     @Inject(method = "getBlockEntities", at = @At("HEAD"), cancellable = true)
     private void horizon$entities(CallbackInfoReturnable<Map<BlockPos, BlockEntity>> result) {
-        result.setReturnValue(BlockEntities.inChunk(horizon$level(), ((LevelChunk) (Object) this).getPos()));
+        var chunk = ((LevelChunk) (Object) this).getPos();
+        result.setReturnValue(horizon$level() instanceof ServerLevel level ? BlockEntities.inChunk(level, chunk) : Clients.clientEntities.apply(chunk));
     }
 }

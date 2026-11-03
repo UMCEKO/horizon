@@ -69,6 +69,7 @@ final class ServerView {
 
     static void setMotion(ServerPlayer player, net.minecraft.world.phys.Vec3 motion, boolean onGround) throws ReflectiveOperationException {
         set(net.minecraft.world.entity.Entity.class, player, "deltaMovement", motion);
+        player.setKnownMovement(motion);
         set(net.minecraft.world.entity.Entity.class, player, "onGround", onGround);
     }
 
@@ -172,6 +173,8 @@ final class ServerView {
         set(MinecraftServer.class, server, "savedDataStorage", new SavedDataStorage(overworld, folder.resolve("data"), fixer, registries));
         set(MinecraftServer.class, server, "worldGenSettings", new WorldGenSettings(new WorldOptions(seed, true, false), dimensions));
         for (ServerLevel level : levels) {
+            // `MinecraftServer.createLevels`: every level zooms biomes with the world seed's hash.
+            set(Level.class, level, "biomeManager", new net.minecraft.world.level.biome.BiomeManager(level, net.minecraft.world.level.biome.BiomeManager.obfuscateSeed(seed)));
             var id = level.dimension().identifier();
             var dataFolder = folder.resolve("dimensions").resolve(id.getNamespace()).resolve(id.getPath()).resolve("data");
             set(ServerChunkCache.class, level.getChunkSource(), "savedDataStorage", new SavedDataStorage(level, dataFolder, fixer, registries));
@@ -232,6 +235,7 @@ final class ServerView {
         player.setServerLevel(to);
         ((List<ServerPlayer>) get(ServerLevel.class, to, "players")).add(player);
         ((net.minecraft.server.level.PlayerMap) get(ChunkMap.class, to.getChunkSource().chunkMap, "playerMap")).addPlayer(player, false);
+        Menus.changedLevel(player, to);
     }
 
     /** The instance of `outer`'s anonymous class implementing `type`, as its field initializer makes it. */

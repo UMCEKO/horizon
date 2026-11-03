@@ -29,7 +29,7 @@ pub fn main() -> horizon_client::Result<()> {
             json!({
                 "id": t.id,
                 "title": t.title,
-                "icon": t.icon,
+                "icon": t.icon.item.as_ref(),
                 "row": if t.top { "TOP" } else { "BOTTOM" },
                 "column": t.column,
                 "items": t.items.iter().map(|s| canon_stack(Some(s))).collect::<Vec<_>>(),

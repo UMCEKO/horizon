@@ -54,15 +54,80 @@ fn read_ids(input: &mut In) -> std::collections::HashSet<String> {
         .collect()
 }
 
-/// Takes the lists of item ids the Java client draws, and of those a mod's decorators draw over.
-pub(in crate::game) fn java_items_external(reply: &[u8]) {
+/// One atlas the Java client's resource reload stitched: its texture, size and sprites by the names the window draws them by.
+struct JavaAtlas {
+    texture: String,
+    size: (i32, i32),
+    sprites: Vec<String>,
+}
+
+/// What the Java client's first resource reload made for the window (`ClientResources.take`), taken as its boot ended.
+struct ClientResources {
+    /// Java state ids whose geometry the Java client bakes from block entity data.
+    states: Vec<i32>,
+    external: std::collections::HashSet<String>,
+    decorated: std::collections::HashSet<String>,
+    atlases: Vec<JavaAtlas>,
+}
+
+fn parse_resources(reply: &[u8]) -> Option<ClientResources> {
     let mut input = In(reply);
+    let count = input.int()?;
+    let states = (0..count).map(|_| input.int()).collect::<Option<_>>()?;
     let external = read_ids(&mut input);
     let decorated = read_ids(&mut input);
-    ITEMS.with_borrow_mut(|items| {
-        items.external = external;
-        items.decorated = decorated;
-    });
+    let mut atlases = Vec::new();
+    for _ in 0..input.int()? {
+        input.text()?;
+        let texture = input.text()?.to_owned();
+        let size = (input.int()?, input.int()?);
+        let count = input.int()?;
+        let sprites = (0..count)
+            .map(|_| input.text().map(str::to_owned))
+            .collect::<Option<_>>()?;
+        atlases.push(JavaAtlas {
+            texture,
+            size,
+            sprites,
+        });
+    }
+    Some(ClientResources {
+        states,
+        external,
+        decorated,
+        atlases,
+    })
+}
+
+/// The boot's export, parsed once; None without a Java client.
+fn client_resources() -> Option<&'static ClientResources> {
+    static PARSED: std::sync::OnceLock<Option<ClientResources>> = std::sync::OnceLock::new();
+    PARSED
+        .get_or_init(|| {
+            let reply = horizon_java_host::get()?.client_resources();
+            if reply.is_empty() {
+                return None;
+            }
+            let parsed = parse_resources(reply);
+            if parsed.is_none() {
+                log::warn!("Horizon: the Java client's resource export was malformed");
+            }
+            parsed
+        })
+        .as_ref()
+}
+
+/// Sprites of the Java client's atlases the window's atlas lacks, which Rust can't draw where Java names them.
+fn missing_sprites(
+    atlases: &[JavaAtlas],
+    have: &HashMap<String, horizon_client::hud::Rect>,
+) -> Vec<String> {
+    atlases
+        .iter()
+        .flat_map(|atlas| &atlas.sprites)
+        .filter(|name| !have.contains_key(horizon_client::item_render::sprite_name(name)))
+        .cloned()
+        .collect()
 }
 
 /// The queued stacks to record, as the request and its encoded form; None when there are none.
@@ -167,7 +232,9 @@ fn parse_recording(input: &mut In, since: i64) -> Option<Option<ItemRecording>> 
     Some(Some(ItemRecording {
         uses_block_light,
         oversized_in_gui,
-        animated: list.iter().any(|p: &ItemPiece| p.motion.ops.iter().any(moves)),
+        animated: list
+            .iter()
+            .any(|p: &ItemPiece| p.motion.ops.iter().any(moves)),
         pieces: list,
         since,
     }))
@@ -267,11 +334,6 @@ pub(in crate::game) fn java_decorations(stack: &ItemStack) -> Option<Arc<[u8]>> 
     })
 }
 
-/// Whether item recordings are waiting to be asked for.
-pub(in crate::game) fn java_items_queued() -> bool {
-    ITEMS.with_borrow(|items| !items.queued.is_empty() || !items.decorations_queued.is_empty())
-}
-
 struct Entry {
     pos: [i32; 3],
     key: i32,
@@ -344,16 +406,11 @@ fn parse_models(reply: &[u8]) -> Option<Vec<Entry>> {
     Some(entries)
 }
 
-/// The states reply as Horizon's ids; Java ids with no Horizon state are skipped.
-fn parse_states(reply: &[u8], to_horizon: &[Option<BlockStateId>]) -> Option<Vec<BlockStateId>> {
-    let mut input = In(reply);
-    let count = input.int()?;
-    let mut states = Vec::new();
-    for _ in 0..count {
-        let java = usize::try_from(input.int()?).ok()?;
-        states.extend(to_horizon.get(java).copied().flatten());
-    }
-    Some(states)
+/// Java state ids as Horizon's; those with no Horizon state are skipped.
+fn horizon_states(java: &[i32], to_horizon: &[Option<BlockStateId>]) -> Vec<BlockStateId> {
+    java.iter()
+        .filter_map(|&id| to_horizon.get(usize::try_from(id).ok()?).copied().flatten())
+        .collect()
 }
 
 fn param(input: &mut In) -> Option<dynamic_renders::Param> {
@@ -556,15 +613,40 @@ impl Game<'_> {
         }
     }
 
-    /// Takes the list of block states whose geometry the Java client bakes (Java state ids).
-    pub(in crate::game) fn java_models_states(&mut self, reply: &[u8]) {
-        let Some(map) = horizon_java_host::bridge::STATES.get() else {
+    /// As the Java client joins: the block states whose geometry it bakes and the items it draws, from what its boot's resource reload exported.
+    pub(in crate::game) fn java_client_resources(&mut self) {
+        let Some(resources) = client_resources() else {
             return;
         };
-        match parse_states(reply, &map.to_horizon) {
-            Some(states) => dynamic_models::set_dynamic_states(states),
-            None => log::warn!("Horizon: a malformed Java dynamic states reply was dropped"),
+        if let Some(map) = horizon_java_host::bridge::STATES.get() {
+            dynamic_models::set_dynamic_states(horizon_states(&resources.states, &map.to_horizon));
         }
+        ITEMS.with_borrow_mut(|items| {
+            items.external = resources.external.clone();
+            items.decorated = resources.decorated.clone();
+        });
+        static CHECKED: std::sync::Once = std::sync::Once::new();
+        CHECKED.call_once(|| {
+            let sprites: usize = resources.atlases.iter().map(|a| a.sprites.len()).sum();
+            let missing = missing_sprites(&resources.atlases, &self.gui.atlas.sprites);
+            log::info!(
+                "Horizon: the Java client stitched {} atlases ({sprites} sprites): {}",
+                resources.atlases.len(),
+                resources
+                    .atlases
+                    .iter()
+                    .map(|a| format!("{} {}x{} {}", a.texture, a.size.0, a.size.1, a.sprites.len()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            if !missing.is_empty() {
+                log::warn!(
+                    "Horizon: {} sprites of the Java client's atlases aren't in the window's atlas, so what Java draws with them is left out: {}",
+                    missing.len(),
+                    missing.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
+                );
+            }
+        });
     }
 }
 
@@ -627,14 +709,92 @@ mod tests {
     }
 
     #[test]
-    fn states_map_to_horizon_ids_and_skip_unmapped_ones() {
+    fn a_recording_keeps_its_lighting_foil_and_motion() {
         let mut out = Out::default();
-        out.int(3);
-        for java in [1, 2, 9] {
-            out.int(java);
+        out.int(1);
+        out.bool(true);
+        out.bool(false);
+        out.int(1);
+        out.0.push(b'R');
+        for v in [0.0, 0.0, 1.0] {
+            out.float(v);
         }
+        for v in [1.0, 0.5, 0.25] {
+            out.float(v);
+        }
+        out.0.push(1);
+        out.int(1);
+        out.text("t:a");
+        for corner in 0..4 {
+            for v in 0..5 {
+                out.float((corner * v) as f32);
+            }
+            out.int(-1);
+        }
+        for v in [0.0, 1.0, 0.0] {
+            out.float(v);
+        }
+        out.bool(false);
+        out.bool(true);
+
+        let recording = parse_recording(&mut In(&out.0), 7).unwrap().unwrap();
+        assert!(recording.uses_block_light && !recording.oversized_in_gui && recording.animated);
+        assert_eq!(recording.since, 7);
+        let piece = &recording.pieces[0];
+        assert_eq!(piece.foil, FoilType::Standard);
+        assert_eq!(piece.quads[0].normal, [0.0, 1.0, 0.0]);
+        assert_eq!(piece.extents.len(), 4);
+        let turned = piece.motion.matrix(2.0).transform_vector3(glam::Vec3::X);
+        assert!((turned - glam::Vec3::new(1f32.cos(), 1f32.sin(), 0.0)).length() < 1e-5);
+
+        let mut failed = Out::default();
+        failed.int(-1);
+        assert!(parse_recording(&mut In(&failed.0), 0).unwrap().is_none());
+        assert!(parse_recording(&mut In(&out.0[..out.0.len() - 1]), 0).is_none());
+    }
+
+    #[test]
+    fn states_map_to_horizon_ids_and_skip_unmapped_ones() {
         let map = [None, Some(BlockStateId(40)), None];
-        assert_eq!(parse_states(&out.0, &map), Some(vec![BlockStateId(40)]));
-        assert_eq!(parse_states(&out.0[..6], &map), None);
+        assert_eq!(horizon_states(&[1, 2, 9, -1], &map), vec![BlockStateId(40)]);
+    }
+
+    #[test]
+    fn the_boot_export_reads_back_and_names_the_sprites_the_window_lacks() {
+        let mut out = Out::default();
+        out.int(2);
+        out.int(7);
+        out.int(8);
+        out.int(1);
+        out.text("mekanism:robit");
+        out.int(1);
+        out.text("mekanism:energy_cube");
+        out.int(1);
+        out.text("mekanism:entity/robit");
+        out.text("mekanism:textures/atlas/robit.png");
+        out.int(512);
+        out.int(256);
+        out.int(2);
+        out.text("mekanism:entity/robit/robit");
+        out.text("minecraft:block/stone");
+        let parsed = parse_resources(&out.0).unwrap();
+        assert_eq!(parsed.states, vec![7, 8]);
+        assert!(parsed.external.contains("mekanism:robit"));
+        assert!(parsed.decorated.contains("mekanism:energy_cube"));
+        assert_eq!(parsed.atlases[0].size, (512, 256));
+        let rect = horizon_client::hud::Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 16,
+            h: 16,
+        };
+        let have = HashMap::from([("block/stone".to_owned(), rect)]);
+        assert_eq!(
+            missing_sprites(&parsed.atlases, &have),
+            vec!["mekanism:entity/robit/robit".to_owned()]
+        );
+        assert!(parse_resources(&out.0[..out.0.len() - 3]).is_none());
     }
 }

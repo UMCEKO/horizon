@@ -39,10 +39,11 @@ struct State {
 }
 /// Prepared face geometry and a bounded cache shared across state pairs. Geometry
 /// is deduplicated by the imported immutable shape, not copied for every state.
+/// A clone shares the tables and copies only the cache: each mesh worker has one.
 #[derive(Clone)]
 pub struct FaceVisibility {
-    states: Vec<State>,
-    faces: Vec<VoxelShape>,
+    states: std::sync::Arc<[State]>,
+    faces: std::sync::Arc<[VoxelShape]>,
     cache: HashMap<(u32, u32), bool>,
 }
 impl FaceVisibility {
@@ -127,8 +128,8 @@ impl FaceVisibility {
             });
         }
         Ok(Self {
-            states,
-            faces,
+            states: states.into(),
+            faces: faces.into(),
             cache: HashMap::new(),
         })
     }

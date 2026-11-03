@@ -454,6 +454,9 @@ impl Game<'_> {
             |a| (a.name.clone(), a.uuid),
         );
         self.server_packs_connect(local.is_none().then_some(address), user);
+        if local.is_some() {
+            self.java_client_font();
+        }
         let session = match local {
             Some(pipe) => {
                 Session::connect_local(pipe, name, info.clone(), lang.clone(), root.clone())
@@ -686,6 +689,7 @@ impl Game<'_> {
             }
             None => false,
         };
+        self.java_client_left();
         horizon_client::crash::clear_detail("Server");
         self.clock = Default::default();
         self.adv = Default::default();
@@ -5749,6 +5753,12 @@ impl Game<'_> {
             return;
         }
         self.use_delay = 4;
+        if let Some(swing) = self.java_click_canceled(super::java_screens::JavaClick::Use) {
+            if let Some(hand) = swing {
+                self.swing_hand(hand, SwingAnimation::DEFAULT);
+            }
+            return;
+        }
         // Resolve the crosshair once. A passing entity interaction keeps
         // that target and may only fall back to using the item itself.
         let entity = self.entity_targeted();
@@ -6610,8 +6620,13 @@ impl Game<'_> {
             .as_ref()
             .and_then(|s| self.items().get(&s.item))
             .and_then(|i| i.consumable.clone());
-        let (Some(stack), Some(consumable)) = (stack, consumable) else {
+        let Some(stack) = stack else {
             self.using = None;
+            return;
+        };
+        let Some(consumable) = consumable else {
+            // LivingEntity.updateUsingItem never ends a use on a client: letting go, the hand or the server's flags do.
+            self.using = in_hand.then_some((slot, ticks + 1));
             return;
         };
         // Button release belongs to the next handleKeybinds phase, which
@@ -6781,6 +6796,12 @@ impl Game<'_> {
             let target = self.spectator_click_target();
             self.send(S::SpectatorAction(play::SpectatorAction { target }));
             return true;
+        }
+        if let Some(swing) = self.java_click_canceled(super::java_screens::JavaClick::Attack) {
+            if let Some(hand) = swing {
+                self.swing_hand(hand, SwingAnimation::DEFAULT);
+            }
+            return false;
         }
         // A spear jabs (`MultiPlayerGameMode.piercingAttack`): the server
         // stabs, this client swings, plays the sound and starts its charge
@@ -8165,6 +8186,13 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
         self.0.remote_use();
     }
     fn pick(&mut self) {
+        if self
+            .0
+            .java_click_canceled(super::java_screens::JavaClick::Pick)
+            .is_some()
+        {
+            return;
+        }
         // Minecraft.pickBlockOrEntity: an entity before the block is asked
         // for (`handlePickItemFromEntity`), else the block.
         if let Some(entity) = self.0.pick_entity_hit() {

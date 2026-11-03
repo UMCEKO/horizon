@@ -11,9 +11,14 @@ impl Game<'_> {
     fn java_permission(&self, player: &str) -> i32 {
         let uuid = Self::java_player_uuid(player);
         if horizon_client::lan::playerdata::uuid_ints(uuid) == self.acting_uuid() {
-            return i32::from(self.lan_acting_permission.unwrap_or(self.ui.registries.permission));
+            return i32::from(
+                self.lan_acting_permission
+                    .unwrap_or(self.ui.registries.permission),
+            );
         }
-        self.lan.as_ref().map_or(0, |host| i32::from(host.hub.permission_of(uuid)))
+        self.lan
+            .as_ref()
+            .map_or(0, |host| i32::from(host.hub.permission_of(uuid)))
     }
 
     /// `PlayerList.isOp`: the operators' list, and the single-player owner with commands allowed.

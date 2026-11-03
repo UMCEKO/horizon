@@ -2256,6 +2256,15 @@ impl Hub {
                 values: vec![(0, serializer::BYTE, Value::Byte(shared))],
             }));
         }
+        // ServerEntity.sendDirtyEntityData: the item in use goes to the player too, whose
+        // LocalPlayer.onSyncedDataUpdated starts or stops a use only the server began or ended.
+        let g = &mut self.guests[i];
+        if let Some(flags) = g.own_living_flags() {
+            g.send(&C::SetEntityData(play::SetEntityData {
+                id: g.entity_id,
+                values: vec![(8, serializer::BYTE, Value::Byte(flags))],
+            }));
+        }
         // Sent when the health or the food level changes, or the saturation
         // reaches or leaves zero; a dead player's health of 0 too.
         let g = &mut self.guests[i];
@@ -3191,6 +3200,7 @@ impl Hub {
         g.sent_xp = None;
         g.sent_air = (300, 0.0);
         g.sent_shared = 0;
+        g.sent_living = 0;
         let (cx, cz) = g.chunk();
         g.send(&C::SetChunkCacheCenter(play::SetChunkCacheCenter {
             x: cx,

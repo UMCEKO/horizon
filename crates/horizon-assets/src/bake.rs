@@ -21,6 +21,8 @@ pub struct ModelQuad {
     pub light_emission: u8,
     /// False for a loader quad that takes no directional shading.
     pub shade: bool,
+    /// `BakedQuad.bakedColors` as ARGB, multiplied with the tint: an obj material's `Kd`.
+    pub color: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -299,6 +301,7 @@ fn baked_quad(quad: &BakedQuadData, transform: BlockModelTransform) -> ModelQuad
         shade_direction_override: None,
         light_emission: quad.emission,
         shade: quad.shade,
+        color: u32::MAX,
     }
 }
 /// Obj faces are unculled quads in block units; the blockstate transform moves them whole.
@@ -312,6 +315,10 @@ fn bake_obj(
     output: &mut Vec<ModelQuad>,
 ) -> Result<()> {
     for face in obj.faces.iter().filter(|f| !hidden.contains(&f.object)) {
+        let color = obj.diffuse.get(&face.material).map_or(u32::MAX, |kd| {
+            let channel = |v: f32| (v.clamp(0.0, 1.0) * 255.0) as u32;
+            0xFF00_0000 | channel(kd[0]) << 16 | channel(kd[1]) << 8 | channel(kd[2])
+        });
         let slot = match obj.materials.get(&face.material) {
             Some(MtlTexture::Sprite(sprite)) => {
                 output.push(obj_quad(
@@ -322,6 +329,7 @@ fn bake_obj(
                     },
                     flip_v,
                     shade,
+                    color,
                     transform,
                 ));
                 continue;
@@ -338,7 +346,7 @@ fn bake_obj(
             sprite: "minecraft:missingno".to_owned(),
             force_translucent: false,
         });
-        output.push(obj_quad(face, material, flip_v, shade, transform));
+        output.push(obj_quad(face, material, flip_v, shade, color, transform));
     }
     Ok(())
 }
@@ -347,6 +355,7 @@ fn obj_quad(
     material: Material,
     flip_v: bool,
     shade: bool,
+    color: u32,
     transform: BlockModelTransform,
 ) -> ModelQuad {
     let positions = face.vertices.map(|v| transform.position(v.position));
@@ -362,6 +371,7 @@ fn obj_quad(
         shade_direction_override: None,
         light_emission: 0,
         shade,
+        color,
     }
 }
 /// `FaceBakery.bakeQuad` for a quad with explicit corners and unit-atlas UVs
@@ -464,6 +474,7 @@ fn bake_face(
         shade_direction_override: element.shade_direction_override,
         light_emission: element.light_emission,
         shade: true,
+        color: u32::MAX,
     })
 }
 
@@ -563,6 +574,22 @@ mod loader_tests {
     const OBJ_MODEL: &str = r#"{"loader":"neoforge:obj","model":"t:models/x.obj","flip_v":true,
         "textures":{"lid":"block/lid","wall":"block/wall"}}"#;
 
+    #[test]
+    fn obj_diffuse_colours_its_quads() {
+        let model = r#"{"loader":"neoforge:obj","model":"t:models/x.obj",
+            "mtl_override":"t:models/o.mtl","textures":{"s":"block/s"}}"#;
+        let files = [
+            ("t:models/x.obj", OBJ),
+            (
+                "t:models/o.mtl",
+                "newmtl top\nKd 0.8 0.8 0.8\nmap_Kd #s\nnewmtl side\nmap_Kd #s\n",
+            ),
+        ];
+        let library = library(&[("t:o", model)], &files);
+        let quads = bake(&library, "t:o");
+        assert_eq!(quads[0].color, 0xFFCC_CCCC);
+        assert_eq!(quads[1].color, u32::MAX);
+    }
     #[test]
     fn obj_faces_become_quads_with_materials_and_flipped_v() {
         let flat = OBJ_MODEL.replace(r#""flip_v":true,"#, "");

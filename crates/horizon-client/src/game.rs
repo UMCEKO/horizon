@@ -127,7 +127,11 @@ mod item_particles;
 #[cfg(feature = "java-mods")]
 mod java_bridges;
 #[cfg(feature = "java-mods")]
+mod java_chunks;
+#[cfg(feature = "java-mods")]
 mod java_components;
+#[cfg(feature = "java-mods")]
+mod java_content;
 mod java_hooks;
 #[cfg(feature = "java-mods")]
 mod java_models;
@@ -136,6 +140,8 @@ mod java_mods;
 mod java_screens;
 #[cfg(feature = "java-mods")]
 mod java_shapes;
+#[cfg(feature = "java-mods")]
+mod java_tabs;
 mod jigsaw_blocks;
 mod jigsaw_edit;
 mod jukebox;
@@ -4983,6 +4989,7 @@ impl Game<'_> {
             || self.interact_boat()
             || self.interact_cart()
             || self.interact_mob()?
+            || self.java_hook_interact_living()
             || self.interact_knot())
     }
     /// `ItemStack.applyAfterUseComponentSideEffects`: a used stack with a
@@ -5598,11 +5605,14 @@ impl Game<'_> {
         let hand_changed = slot != self.selected && slot != shield::OFFHAND_SLOT;
         if !self.right || hand_changed || self.screen != Screen::Playing {
             self.using = None;
-            self.release_used_item(&stack, ticks, hand_changed);
+            self.release_using(&stack, ticks, hand_changed);
             return;
         }
         // ServerPlayer.updateUsingItem: USING_ITEM every tick of the use.
         self.trigger_using_item(&stack);
+        if self.java_hook_tick_using(slot, ticks, &stack) {
+            return;
+        }
         let Some(info) = self.items().get(&stack.item).cloned() else {
             self.using = None;
             return;
@@ -5732,6 +5742,12 @@ impl Game<'_> {
             pitch,
         );
         self.stats.add("used", &item, 1);
+    }
+    /// The end of a held use, by whichever code the item's use is: its mod's, or Horizon's.
+    pub(super) fn release_using(&mut self, stack: &ItemStack, ticks: u32, hand_changed: bool) {
+        if !self.java_hook_release_using(stack, ticks, hand_changed) {
+            self.release_used_item(stack, ticks, hand_changed);
+        }
     }
     /// `LivingEntity.releaseUsingItem` (`Item.releaseUsing`) for `stack`,
     /// used for `ticks`, its hand acting: a bow or a trident lets go (not
@@ -6054,7 +6070,7 @@ impl Game<'_> {
         }
         self.java_client_tick();
         #[cfg(feature = "java-mods")]
-        self.java_client_collisions();
+        self.java_creative_tabs_take();
         if self.remote.is_some() {
             return self.tick_remote();
         }
@@ -7826,7 +7842,7 @@ impl Game<'_> {
         input: horizon_client::menu::Input,
     ) {
         use horizon_client::creative::{DisplayClick, click_display};
-        if self.creative_screen.tab().search {
+        if self.creative_screen.tab().has_search_box() {
             // CreativeModeInventoryScreen.slotClicked: moveCursorToEnd, then
             // setHighlightPos(0), so typing replaces the whole query.
             let search = &mut self.creative_screen.search;
@@ -9626,7 +9642,7 @@ impl Game<'_> {
                 .res
                 .end_environment()
                 .sample(self.world.day_time, None, None);
-            return (15.0 - 15.0 * sky.sky_light_level).round() as i32;
+            return (15.0 - 15.0 * sky.sky_light_level) as i32;
         }
         let (rain, thunder) = self.world.weather.levels(1.0);
         // Sampled once per (time, weather): every mob asks each tick.
@@ -10201,6 +10217,31 @@ impl Game<'_> {
         creative: bool,
         create: Option<&horizon_client::title::WorldOptions>,
     ) -> Result<()> {
+        #[cfg(feature = "java-mods")]
+        if let Err(reason) = horizon_java_host::ready() {
+            log::error!(
+                "Horizon: Java mods failed to start, so no world opens without them: {reason}"
+            );
+            let message: Vec<&str> = reason
+                .lines()
+                .take_while(|l| !l.trim_start().starts_with("at "))
+                .take(6)
+                .collect();
+            let reason = format!(
+                "Java mods failed to start, so no world opens without them.\n{}",
+                message.join("\n")
+            );
+            let Some(title) = self.title.as_mut() else {
+                return Err(reason.into());
+            };
+            title.mode = horizon_client::title::Mode::Multiplayer(
+                horizon_client::multiplayer::Screen::Disconnected {
+                    reason,
+                    retry: None,
+                },
+            );
+            return Ok(());
+        }
         // openWorldLoadLevelData: an existing world whose level data does not read opens
         // RecoverWorldDataScreen instead.
         if create.is_none()
@@ -10260,6 +10301,10 @@ impl Game<'_> {
     /// Load authoritative world state synchronously, without client entry or
     /// integrated-server selection. Server startup must use this entry point.
     fn load_world(&mut self, request: world_loading::WorldRequest) -> Result<()> {
+        #[cfg(feature = "java-mods")]
+        horizon_java_host::ready().map_err(|e| {
+            format!("Java mods failed to start, so no world opens without them: {e}")
+        })?;
         self.join_world_rest()?;
         self.perf.world_opening();
         let prepared = request.prepare(
@@ -12491,6 +12536,9 @@ impl Game<'_> {
     }
     /// A creative tab's title: `itemGroup.*`, else the export's English title.
     fn creative_tab_title(&self, tab: &horizon_client::creative::Tab) -> String {
+        if let Some(title) = Creative::java_title(tab) {
+            return title;
+        }
         horizon_client::creative::item_group_key(&tab.id)
             .map_or_else(|| tab.title.clone(), |key| self.translate(key, &tab.title))
     }
@@ -12560,7 +12608,7 @@ impl Game<'_> {
         );
         // Unselected tabs behind the panel, then the panel, then the selected tab.
         for (i, t) in tabs.iter().enumerate() {
-            if i != selected {
+            if i != selected && self.creative_screen.on_page(t) {
                 let (tx, ty) = Creative::tab_position(t);
                 batch.sprite(&self.gui.atlas, &tab_sprite(t, false), ox + tx, oy + ty);
                 let mouse = (self.cursor.0 - ox, self.cursor.1 - oy);
@@ -12571,53 +12619,37 @@ impl Game<'_> {
                 }
             }
         }
-        let background = if tab.search {
-            "gui/container/creative_inventory/tab_item_search"
-        } else if tab.inventory {
-            "gui/container/creative_inventory/tab_inventory"
-        } else {
-            "gui/container/creative_inventory/tab_items"
-        };
-        if let Some(mut r) = self.gui.atlas.sprites.get(background).copied() {
+        if let Some(mut r) = self.gui.atlas.sprites.get(&tab.background).copied() {
             r.u1 = r.u0 + (r.u1 - r.u0) * Creative::WIDTH / r.w as f32;
             r.v1 = r.v0 + (r.v1 - r.v0) * Creative::HEIGHT / r.h as f32;
             batch.rect_uv(ox, oy, Creative::WIDTH, Creative::HEIGHT, r, u32::MAX);
         }
-        let (tx, ty) = Creative::tab_position(tab);
-        batch.sprite(&self.gui.atlas, &tab_sprite(tab, true), ox + tx, oy + ty);
-        for t in &tabs {
+        // A selected tab on another page isn't drawn, its panel stays (the real screen's pages).
+        if self.creative_screen.on_page(tab) {
+            let (tx, ty) = Creative::tab_position(tab);
+            batch.sprite(&self.gui.atlas, &tab_sprite(tab, true), ox + tx, oy + ty);
+        }
+        for t in tabs.iter().filter(|t| self.creative_screen.on_page(t)) {
             let (tx, ty) = Creative::tab_position(t);
-            let stack = ItemStack {
-                item: Arc::from(t.icon.as_str()),
-                count: 1,
-                damage: 0,
-                extra: None,
-            };
             self.draw_item(
                 batch,
-                &stack,
+                &t.icon,
                 ox + tx + 5.0,
                 oy + ty + if t.top { 9.0 } else { 7.0 },
             );
         }
         let atlas = &self.gui.atlas;
-        if !tab.inventory {
+        if tab.show_title {
             let title = self.creative_tab_title(tab);
-            batch.text(
-                atlas,
-                &title,
-                ox + 8.0,
-                oy + 6.0,
-                rgba(64, 64, 64, 255),
-                false,
-            );
+            let [a, r, g, b] = tab.label_color.to_be_bytes();
+            batch.text(atlas, &title, ox + 8.0, oy + 6.0, rgba(r, g, b, a), false);
         }
-        if tab.search {
+        if let Some((x, width)) = tab.search_bar {
             // CreativeModeInventoryScreen: an unbordered EditBox of 50 at (82, 6).
             let search = &mut self.creative_screen.search;
-            search.x = ox + 82.0;
+            search.x = ox + x;
             search.y = oy + 6.0;
-            search.width = 80.0;
+            search.width = width;
             search.bordered = false;
             search.focused = true;
             search.text_color = u32::MAX;
@@ -12694,18 +12726,38 @@ impl Game<'_> {
             }
             let scrollable = self.creative_screen.rows(&self.pack.names) > 5;
             let scroller = if scrollable {
-                "gui/sprites/container/creative_inventory/scroller"
+                tab.scroller.as_str()
             } else {
                 "gui/sprites/container/creative_inventory/scroller_disabled"
             };
-            batch.sprite(
-                &self.gui.atlas,
-                scroller,
-                ox + Creative::SCROLL_X,
-                oy + Creative::SCROLL_Y + self.creative_screen.scroller_offset(),
-            );
+            if tab.scroll_bar {
+                batch.sprite(
+                    &self.gui.atlas,
+                    scroller,
+                    ox + Creative::SCROLL_X,
+                    oy + Creative::SCROLL_Y + self.creative_screen.scroller_offset(),
+                );
+            }
         }
-        for t in &tabs {
+        // The real screen's `<`, `>` and page label, when the tabs fill more than one page.
+        let pages = self.creative_screen.pages();
+        if pages > 1 {
+            let atlas = &self.gui.atlas;
+            let size = Creative::PAGE_BUTTON_SIZE;
+            for ((x, y), label) in Creative::PAGE_BUTTONS.into_iter().zip(["<", ">"]) {
+                let (x, y) = (ox + x, oy + y);
+                let hover = horizon_client::ui::hovered(self.cursor, x, y, size, size);
+                let label = horizon_client::text::Text::literal(label);
+                horizon_client::ui::button(batch, atlas, x, y, size, size, &label, true, hover);
+            }
+            let page = format!("{} / {}", self.creative_screen.page() + 1, pages);
+            let width = atlas
+                .font
+                .width_text(&horizon_client::text::Text::literal(page.as_str()));
+            let x = ox + (Creative::WIDTH / 2.0).floor() - (width / 2.0).floor();
+            batch.text(atlas, &page, x, oy + Creative::PAGE_LABEL_Y, u32::MAX, true);
+        }
+        for t in tabs.iter().filter(|t| self.creative_screen.on_page(t)) {
             let (tx, ty) = Creative::tab_position(t);
             if self.cursor.0 >= ox + tx
                 && self.cursor.0 < ox + tx + 26.0
@@ -12769,10 +12821,28 @@ impl Game<'_> {
         let batch = HudBatch::new(size);
         let (ox, oy) = Self::creative_origin(&batch);
         let (cx, cy) = self.cursor;
-        let tabs = self.creative_screen.tabs.clone();
+        if !right && self.creative_screen.pages() > 1 {
+            let size = Creative::PAGE_BUTTON_SIZE;
+            for (i, (x, y)) in Creative::PAGE_BUTTONS.into_iter().enumerate() {
+                if horizon_client::ui::hovered(self.cursor, ox + x, oy + y, size, size) {
+                    self.creative_screen.turn_page(i == 1);
+                    self.audio
+                        .play("minecraft:ui.button.click", None, 0.25, 1.0);
+                    // Above the panel, so its release must not drop a carried stack.
+                    self.inv_clicks.skip_release();
+                    return;
+                }
+            }
+        }
+        let tabs = self.creative_screen.tab_headers();
         for (i, t) in tabs.iter().enumerate() {
             let (tx, ty) = Creative::tab_position(t);
-            if cx >= ox + tx && cx < ox + tx + 26.0 && cy >= oy + ty && cy < oy + ty + 32.0 {
+            if self.creative_screen.on_page(t)
+                && cx >= ox + tx
+                && cx < ox + tx + 26.0
+                && cy >= oy + ty
+                && cy < oy + ty + 32.0
+            {
                 select_creative_tab(&mut self.creative_screen, &mut self.inv_clicks, i);
                 self.refresh_saved_hotbars();
                 self.inv_drag = None;
@@ -12817,10 +12887,10 @@ impl Game<'_> {
     }
     /// A click on the search tab's box (`EditBox.onClick`).
     fn creative_search_click(&mut self, ox: f32, oy: f32) -> bool {
-        if !self.creative_screen.tab().search {
+        let Some((x, w)) = self.creative_screen.tab().search_bar else {
             return false;
-        }
-        let (x, y, w, h) = (ox + 82.0, oy + 6.0, 80.0, 9.0);
+        };
+        let (x, y, h) = (ox + x, oy + 6.0, 9.0);
         let (mx, my) = self.cursor;
         if mx < x || my < y || mx >= x + w || my >= y + h {
             return false;
@@ -12965,13 +13035,25 @@ impl Game<'_> {
         self.java_flush_block_entities();
         self.save.save_forced_chunks(&self.streaming.forced)?;
         self.streaming.save(&mut self.world, wait);
+        #[cfg(feature = "java-mods")]
+        self.java_chunks_unsaved();
         let keys: Vec<_> = self.world.modified.drain().collect();
         let chunks = self.with_entities(keys.iter().filter_map(|k| self.world.chunks.get(k)));
-        self.save
-            .save_later(&chunks, self.pack.assets.registry, self.res.biomes())?;
+        #[cfg(feature = "java-mods")]
+        let written = self.java_chunks_saving(&chunks);
+        #[cfg(not(feature = "java-mods"))]
+        let written = Vec::new();
+        self.save.save_later_as(
+            &chunks,
+            self.pack.assets.registry,
+            self.res.biomes(),
+            written,
+        )?;
         // Prepare entities while the chunk writer runs, then use one barrier.
         self.save_entities(false)?;
         self.save_raids();
+        #[cfg(feature = "java-mods")]
+        self.java_level_saved();
         if wait {
             self.save.flush()?;
         }
@@ -13746,12 +13828,13 @@ impl Game<'_> {
             | KeyCode::KeyF
             | KeyCode::KeyQ
                 if (self.screen == Screen::Inventory
-                    || (self.screen == Screen::Creative && !self.creative_screen.tab().search))
+                    || (self.screen == Screen::Creative
+                        && !self.creative_screen.tab().has_search_box()))
                     && self.inventory_hotkey(key) => {}
             // The search tab's number keys (scripted presses; the window's
             // keys reach search_tab_hotbar_key before the search box).
             _ if self.screen == Screen::Creative
-                && self.creative_screen.tab().search
+                && self.creative_screen.tab().has_search_box()
                 && self.search_tab_hotbar_key(key) => {}
             KeyCode::KeyT if self.screen == Screen::Inventory => self.recipe_focus_search(),
             KeyCode::KeyT if self.screen == Screen::Playing => self.open_chat_method(""),
@@ -13764,7 +13847,8 @@ impl Game<'_> {
             KeyCode::F11 => self.toggle_fullscreen(),
             KeyCode::F5 if self.screen == Screen::Playing => self.cycle_camera(),
             KeyCode::KeyE
-                if self.screen == Screen::Creative && self.creative_screen.tab().search => {}
+                if self.screen == Screen::Creative
+                    && self.creative_screen.tab().has_search_box() => {}
             KeyCode::KeyE => match self.screen {
                 Screen::Playing if self.spectator() => {}
                 Screen::Playing => {
@@ -13801,6 +13885,7 @@ impl Game<'_> {
             // key.swapOffhand: on a server, ServerboundPlayerActionPacket SWAP_ITEM_WITH_OFFHAND
             // (the server swaps the hands and sends both slots back; spectators can't).
             KeyCode::KeyF if self.screen == Screen::Playing && self.remote.is_some() => {
+                self.java_key_action(java_screens::JavaKeyAction::SwapHands);
                 if !self.spectator()
                     && let Some(r) = self.remote.as_mut()
                 {
@@ -13820,6 +13905,7 @@ impl Game<'_> {
             }
             KeyCode::KeyQ if self.screen == Screen::Playing => {
                 let all = drop_whole_stack(&self.physical_keys);
+                self.java_key_action(java_screens::JavaKeyAction::Drop(all));
                 self.drop_held(all);
             }
             KeyCode::Digit1
@@ -13857,6 +13943,7 @@ impl Game<'_> {
                     self.hotbar_load_or_save(slot, load);
                 } else {
                     self.selected = slot;
+                    self.java_key_action(java_screens::JavaKeyAction::Hotbar(slot));
                 }
             }
             _ => {}
@@ -14060,6 +14147,10 @@ impl Game<'_> {
             .cloned()
             .collect();
         let modified = horizon_client::spans::time("with_entities", || self.with_entities(&dirty));
+        #[cfg(feature = "java-mods")]
+        let written = self.java_chunks_saving(&modified);
+        #[cfg(not(feature = "java-mods"))]
+        let written = Vec::new();
         horizon_client::spans::time("unload_entities", || self.unload_entities(&unloaded));
         if !unloaded.is_empty() {
             let gone: horizon_client::fast_hash::FxHashSet<(i32, i32)> =
@@ -14073,8 +14164,12 @@ impl Game<'_> {
         }
         if !modified.is_empty()
             && let Err(e) = horizon_client::spans::time("save_chunks", || {
-                self.save
-                    .save_later(&modified, self.pack.assets.registry, self.res.biomes())
+                self.save.save_later_as(
+                    &modified,
+                    self.pack.assets.registry,
+                    self.res.biomes(),
+                    written,
+                )
             })
         {
             log::warn!("Horizon: failed to save unloaded chunks: {e}");
@@ -14392,6 +14487,7 @@ impl ApplicationHandler for Game<'_> {
         {
             return;
         }
+        self.java_window_input(&event);
         if self.pending_save.is_some() {
             match event {
                 WindowEvent::CloseRequested => {
@@ -14899,7 +14995,7 @@ impl ApplicationHandler for Game<'_> {
                 }
                 WindowEvent::KeyboardInput { event, .. }
                     if self.screen == Screen::Creative
-                        && self.creative_screen.tab().search
+                        && self.creative_screen.tab().has_search_box()
                         && event.state == ElementState::Pressed
                         && !matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
                 {
@@ -16224,6 +16320,10 @@ impl Progress {
         self.value.load(Ordering::Relaxed) as f32 / (self.lines.len() - 1) as f32
     }
     fn line(&self) -> &'static str {
+        #[cfg(feature = "java-mods")]
+        if let Some(note) = java_content::note() {
+            return note;
+        }
         self.lines[(self.value.load(Ordering::Relaxed) as usize).min(self.lines.len() - 1)]
     }
 }
@@ -16582,8 +16682,7 @@ fn prepare_renderer_textures(pack: &PackResources) -> horizon_client::gfx::Prepa
     let assets = &pack.render;
     horizon_client::gfx::PreparedTextures::new(
         &assets.pixels,
-        assets.sprite_size,
-        assets.texture_layers,
+        &assets.sprite_arrays,
         &assets.sprite_mips,
         (&pack.forcefield.2, pack.forcefield.0),
     )
@@ -16613,8 +16712,7 @@ fn build_renderer(
         window,
         offscreen,
         &assets.pixels,
-        assets.sprite_size,
-        assets.sprite_minimum_size,
+        &assets.sprite_arrays,
         assets.texture_layers,
         &assets.sprite_mips,
         &assets.animations,
@@ -16676,8 +16774,7 @@ fn loading_renderer(
         window,
         offscreen,
         &[255, 255, 255, 255],
-        1,
-        1,
+        &[horizon_client::sprites::SpriteArray { size: 1, layers: 1 }],
         1,
         &[],
         &[],
@@ -17364,7 +17461,7 @@ pub fn run() -> Result<()> {
     };
     #[cfg(feature = "java-mods")]
     {
-        horizon_java_host::start(java_bridges::bridges());
+        java_content::start(java_bridges::bridges());
         java_components::install();
     }
     if options.execution_role == execution_role::ExecutionRole::DedicatedServer

@@ -496,6 +496,15 @@ fn patch_components(
     Ok(())
 }
 
+fn json_patch(
+    components: &BTreeMap<String, serde_json::Value>,
+) -> std::result::Result<Vec<(String, J)>, serde_json::Error> {
+    components
+        .iter()
+        .map(|(k, v)| Ok((k.clone(), serde_json::from_value(v.clone())?)))
+        .collect()
+}
+
 fn read_json(path: &Path) -> Result<J> {
     Ok(serde_json::from_slice(&fs::read(path)?).map_err(|e| format!("{}: {e}", path.display()))?)
 }
@@ -760,11 +769,13 @@ impl<'a> Plan<'a> {
                 let item = b.item.as_deref().ok_or_else(|| {
                     format!("{}: template {} has no item", b.decl.id, b.decl.template)
                 })?;
+                let p = &b.decl.item_properties;
                 items.push(NewItem {
                     rename: Rename::new(item, &b.decl.id),
-                    max_stack_size: None,
-                    rarity: None,
-                    components: Vec::new(),
+                    max_stack_size: p.max_stack_size,
+                    rarity: p.rarity,
+                    components: json_patch(&p.components)
+                        .map_err(|e| format!("{}: {e}", b.decl.id))?,
                 });
             }
         }
@@ -774,12 +785,7 @@ impl<'a> Plan<'a> {
                     rename: Rename::new(&i.template, &i.id),
                     max_stack_size: i.max_stack_size,
                     rarity: i.rarity,
-                    components: i
-                        .components
-                        .iter()
-                        .map(|(k, v)| Ok((k.clone(), serde_json::from_value(v.clone())?)))
-                        .collect::<std::result::Result<_, serde_json::Error>>()
-                        .map_err(|e| format!("{}: {e}", i.id))?,
+                    components: json_patch(&i.components).map_err(|e| format!("{}: {e}", i.id))?,
                 });
             }
         }

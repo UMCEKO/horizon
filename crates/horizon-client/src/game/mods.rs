@@ -28,7 +28,13 @@ pub(super) fn content_root(
     use horizon_client::mod_content::{self, ContentMod};
     use horizon_mods::{Capability, Content, Package};
     let here = std::env::current_dir().unwrap_or_default();
-    let mut paths = horizon_mods::find(&here.join(mod_list::DIR));
+    #[cfg(feature = "java-mods")]
+    let java = super::java_content::carried(root);
+    #[cfg(not(feature = "java-mods"))]
+    let java: Vec<PathBuf> = Vec::new();
+    // The Java mods' own content comes first, so a by-hand carry of the same mod steps aside.
+    let mut paths = java.clone();
+    paths.extend(horizon_mods::find(&here.join(mod_list::DIR)));
     paths.retain(|p| !dev.contains(p));
     paths.extend(dev.iter().cloned());
     let mut mods: Vec<ContentMod> = Vec::new();
@@ -37,11 +43,16 @@ pub(super) fn content_root(
             continue;
         };
         let m = &package.manifest;
-        let on = enabled.contains(&m.id) || dev.contains(path);
-        if !on
-            || !m.capabilities.contains(&Capability::Registries)
-            || mods.iter().any(|c| c.id == m.id)
-        {
+        let on = enabled.contains(&m.id) || dev.contains(path) || java.contains(path);
+        if !on || !m.capabilities.contains(&Capability::Registries) {
+            continue;
+        }
+        if mods.iter().any(|c| c.id == m.id) {
+            log::info!(
+                "Horizon: {} is loaded already: {} left out",
+                m.id,
+                path.display()
+            );
             continue;
         }
         let content = Content::read(path, m).and_then(|content| {

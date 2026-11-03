@@ -393,8 +393,8 @@ pub fn apply_weather(sky: &mut Sky, rain: f32, thunder: f32) {
 pub fn sky_darken(environment: &Environment, day_time: i64, rain: f32, thunder: f32) -> i32 {
     let mut sky = environment.sample(day_time, None, None);
     apply_weather(&mut sky, rain, thunder);
-    // Level.updateSkyBrightness: darkening from the sky light level.
-    (15.0 - 15.0 * sky.sky_light_level).round() as i32
+    // Level.updateSkyBrightness casts to int: 3.9 is still bright outside.
+    (15.0 - 15.0 * sky.sky_light_level) as i32
 }
 
 #[cfg(test)]
@@ -419,6 +419,9 @@ mod tests {
         assert!(!dark(6000, 1.0, 0.0), "rainy noon");
         assert!(dark(6000, 1.0, 1.0), "thunderstorm at noon");
         assert!(dark(18000, 0.0, 0.0), "clear midnight");
+        assert_eq!(sky_darken(&env, 12500, 0.0, 0.0), 3, "dusk, level 11.14");
+        assert_eq!(sky_darken(&env, 23500, 0.0, 0.0), 3, "dawn, level 11.14");
+        assert_eq!(sky_darken(&env, 18000, 0.0, 0.0), 11, "night, level 4");
         assert!(!dark(1000, 0.0, 0.0), "clear morning");
     }
 }

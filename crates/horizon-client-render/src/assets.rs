@@ -83,6 +83,8 @@ pub struct Assets {
 /// an existing block registry: everything the mesher and renderer need.
 pub struct RenderAssets {
     pub sprite_size: u32,
+    /// Each block sprite array's layer edge and layer count.
+    pub sprite_arrays: Vec<crate::sprites::SpriteArray>,
     pub sprite_minimum_size: u32,
     pub pixels: Vec<u8>,
     pub texture_layers: u32,
@@ -259,6 +261,7 @@ impl RenderAssets {
         sprites.pixels.shrink_to_fit();
         Ok(Self {
             sprite_size: sprites.size,
+            sprite_arrays: sprites.arrays.clone(),
             sprite_minimum_size: sprites.minimum_size,
             texture_layers: u32::try_from(sprites.count())?,
             pixels: sprites.pixels,

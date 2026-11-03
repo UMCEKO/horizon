@@ -61,6 +61,12 @@ public final class Host extends Entrypoint {
         if (thread.getContextClassLoader() == null) thread.setContextClassLoader(gameLoader);
     }
 
+    public static String trace(Throwable t) {
+        var out = new java.io.StringWriter();
+        t.printStackTrace(new java.io.PrintWriter(out));
+        return out.toString();
+    }
+
     public static String call(String op, String arg) {
         useGameLoader();
         if (op.equals("marks")) return marks();

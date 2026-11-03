@@ -34,6 +34,7 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
+import org.joml.Matrix3f;
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
@@ -81,43 +82,18 @@ public final class BlockRenders {
     private static Map<BlockEntityType<?>, BlockEntityRenderer<?, ?>> renderers;
     private static final Map<Block, Boolean> HAS = new HashMap<>();
 
-    /** Mods' renderers, made as the client's resource reload makes them; one that fails to build is left out. */
+    /** Mods' renderers, as the client's resource reload made them. */
     @SuppressWarnings("unchecked")
     static synchronized Map<BlockEntityType<?>, BlockEntityRenderer<?, ?>> renderers() {
         if (renderers != null) return renderers;
         renderers = new HashMap<>();
         try {
-            // Renderers fetch the standalone models the bake makes, some once when they're built.
-            try {
-                ClientModels.baked();
-            } catch (Exception e) {
-                System.err.println("Horizon: the code-built models didn't bake: " + e);
-            }
-            var minecraft = Minecraft.getInstance();
-            var models = net.minecraft.client.model.geom.EntityModelSet.vanilla();
-            var dispatcher = new BlockEntityRenderDispatcher(minecraft.font, () -> models,
-                    new net.minecraft.client.renderer.block.BlockModelResolver(minecraft.getModelManager()),
-                    new net.minecraft.client.renderer.item.ItemModelResolver(minecraft.getModelManager()), null, minecraft.getAtlasManager(), null);
-            var field = Minecraft.class.getDeclaredField("blockEntityRenderDispatcher");
-            field.setAccessible(true);
-            field.set(minecraft, dispatcher);
-            var context = new BlockEntityRendererProvider.Context(dispatcher, new net.minecraft.client.renderer.block.BlockModelResolver(minecraft.getModelManager()),
-                    new net.minecraft.client.renderer.item.ItemModelResolver(minecraft.getModelManager()), null, models, minecraft.font, minecraft.getAtlasManager(), null);
-            var providers = net.minecraft.client.renderer.blockentity.BlockEntityRenderers.class.getDeclaredField("PROVIDERS");
-            providers.setAccessible(true);
-            for (var entry : ((Map<BlockEntityType<?>, BlockEntityRendererProvider<?, ?>>) providers.get(null)).entrySet()) {
-                var id = BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(entry.getKey());
-                if (id == null || id.getNamespace().equals("minecraft")) continue;
-                try {
-                    renderers.put(entry.getKey(), entry.getValue().create(context));
-                } catch (Throwable t) {
-                    System.err.println("Horizon: the block entity renderer of " + id + " didn't build: " + t);
-                }
-            }
-            var all = new HashMap<>(renderers);
             var map = BlockEntityRenderDispatcher.class.getDeclaredField("renderers");
             map.setAccessible(true);
-            map.set(dispatcher, all);
+            var all = (Map<BlockEntityType<?>, BlockEntityRenderer<?, ?>>) map.get(Minecraft.getInstance().getBlockEntityRenderDispatcher());
+            all.forEach((type, renderer) -> {
+                if (BootFacts.ownsBlockEntityType(type)) renderers.put(type, renderer);
+            });
         } catch (ReflectiveOperationException e) {
             throw new IllegalStateException(e);
         }
@@ -168,9 +144,13 @@ public final class BlockRenders {
         final List<Quad> quads = new ArrayList<>();
         /** An item drawn here by Rust: its stack, `ItemDisplayContext` ordinal and seed. */
         Object[] item;
+        /** The transpose of the pose's rotation, which takes a normal the pose moved back into the piece's frame. */
+        Matrix3f normals;
+        /** `ItemStackRenderState.FoilType` ordinal, for a recorded item. */
+        int foil;
     }
 
-    record Quad(String texture, float[] xyzuv, int[] color, int[] light) {}
+    record Quad(String texture, float[] xyzuv, int[] color, int[] light, float[] normal, boolean blended) {}
 
     /** Collects vertices into the current piece, in its pose's frame. */
     private static final class Geometry implements VertexConsumer {
@@ -181,6 +161,8 @@ public final class BlockRenders {
         final float[] xyzuv = new float[20];
         final int[] color = new int[4];
         final int[] light = new int[4];
+        final float[] normal = new float[3];
+        boolean hasNormal;
         int n = -1;
 
         void begin(Draw d) {
@@ -211,24 +193,32 @@ public final class BlockRenders {
             }
         }
 
+        private static String file(Identifier texture) {
+            return texture.withPath(p -> p.replaceFirst("^textures/", "").replaceFirst("\\.png$", "")).toString();
+        }
+
         private void emit() {
             String name;
-            float shift = 0;
-            if (texture != null && texture.getPath().startsWith("textures/atlas/")) {
-                var sprite = Sprites.indexed((xyzuv[3] + xyzuv[8] + xyzuv[13] + xyzuv[18]) / 4);
-                if (sprite == null) return;
-                name = sprite.contents().name().toString();
-                shift = sprite.getU0();
+            var spot = texture == null ? null : Sprites.locate(texture, (xyzuv[3] + xyzuv[8] + xyzuv[13] + xyzuv[18]) / 4, (xyzuv[4] + xyzuv[9] + xyzuv[14] + xyzuv[19]) / 4);
+            if (spot != null) {
+                var sprite = spot.sprite();
+                name = file(Identifier.parse(spot.file()));
+                for (int k = 0; k < 4; k++) {
+                    xyzuv[k * 5 + 3] = (xyzuv[k * 5 + 3] - sprite.getU0()) / (sprite.getU1() - sprite.getU0());
+                    xyzuv[k * 5 + 4] = (xyzuv[k * 5 + 4] - sprite.getV0()) / (sprite.getV1() - sprite.getV0());
+                }
+            } else if (texture != null && texture.getPath().startsWith("textures/atlas/")) {
+                return;
             } else if (texture != null) {
-                name = texture.withPath(p -> p.replaceFirst("^textures/", "").replaceFirst("\\.png$", "")).toString();
+                name = file(texture);
             } else {
                 // Untextured geometry (lights, beams) takes its colour alone, from the atlas's white texel.
                 name = "horizon/white";
                 for (int k = 0; k < 4; k++) xyzuv[k * 5 + 3] = xyzuv[k * 5 + 4] = 0.5f;
             }
             var copy = xyzuv.clone();
-            for (int k = 0; k < 4; k++) copy[k * 5 + 3] -= shift;
-            draw.quads.add(new Quad(name, copy, color.clone(), light.clone()));
+            draw.quads.add(new Quad(name, copy, color.clone(), light.clone(), hasNormal ? normal.clone() : null, draw.type != null && draw.type.hasBlending()));
+            hasNormal = false;
         }
 
         @Override
@@ -293,6 +283,13 @@ public final class BlockRenders {
 
         @Override
         public VertexConsumer setNormal(float x, float y, float z) {
+            if (n == 0 && draw != null) {
+                var local = draw.normals.transform(new Vector3f(x, y, z)).normalize();
+                normal[0] = local.x;
+                normal[1] = local.y;
+                normal[2] = local.z;
+                hasNormal = true;
+            }
             return this;
         }
 
@@ -322,6 +319,8 @@ public final class BlockRenders {
     /** The collector a renderer submits to: each submission becomes pieces of geometry under the pose's operations. */
     private static final class Capture implements SubmitNodeCollector {
         final Geometry geometry = new Geometry();
+        /** What a recorded item's special model draws with: its renderer is only told whether the stack has foil. */
+        int foil;
 
         Draw start(PoseStack.Pose pose, RenderType type) {
             geometry.flush();
@@ -330,6 +329,8 @@ public final class BlockRenders {
             d.ops = ops == null ? null : List.copyOf(ops);
             d.matrix = new Matrix4f(pose.pose());
             d.local = new Matrix4f(d.matrix).invert();
+            d.normals = new Matrix3f(d.matrix).transpose();
+            d.foil = foil;
             d.type = type;
             geometry.begin(d);
             return d;
@@ -358,6 +359,7 @@ public final class BlockRenders {
         public void submitCustomGeometry(PoseStack poseStack, RenderType renderType, CustomGeometryRenderer renderer) {
             var d = start(poseStack.last(), renderType);
             d.local = new Matrix4f();
+            d.normals = new Matrix3f();
             renderer.render(new PoseStack().last(), geometry);
             geometry.flush();
         }
@@ -376,6 +378,7 @@ public final class BlockRenders {
         public void submitItem(PoseStack poseStack, net.minecraft.world.item.ItemDisplayContext context, int light, int overlay, int outline, int[] tints,
                 net.minecraft.client.resources.model.geometry.ItemQuads quads, net.minecraft.client.renderer.item.ItemStackRenderState.FoilType foil) {
             var d = start(poseStack.last(), null);
+            d.foil = foil.ordinal();
             geometry.finish();
             for (var quad : quads.all()) quad(d, quad, tints, light);
         }
@@ -396,10 +399,13 @@ public final class BlockRenders {
                 xyzuv[i * 5 + 2] = p.z();
                 xyzuv[i * 5 + 3] = (net.minecraft.client.model.geom.builders.UVPair.unpackU(uv) - sprite.getU0()) / (sprite.getU1() - sprite.getU0());
                 xyzuv[i * 5 + 4] = (net.minecraft.client.model.geom.builders.UVPair.unpackV(uv) - sprite.getV0()) / (sprite.getV1() - sprite.getV0());
-                color[i] = tint;
+                color[i] = net.minecraft.util.ARGB.multiply(tint, quad.bakedColors().color(i));
                 lights[i] = emission > 0 ? emission << 4 | emission << 20 : light;
             }
-            d.quads.add(new Quad(sprite.contents().name().toString(), xyzuv, color, lights));
+            var facing = quad.direction().getUnitVec3f();
+            // Named as `emit` names a located sprite: by its texture file, which a mod's own atlas needn't share with the sprite's id.
+            d.quads.add(new Quad(Sprites.file(sprite.atlasLocation(), sprite.contents().name()).toString(), xyzuv, color, lights, new float[] {facing.x(), facing.y(), facing.z()},
+                    quad.materialInfo().layer() == net.minecraft.client.renderer.chunk.ChunkSectionLayer.TRANSLUCENT));
         }
 
         @Override
@@ -507,19 +513,49 @@ public final class BlockRenders {
         if (ticker != null) ticker.tick(level, entity.getBlockPos(), state, entity);
     }
 
-    /** Each piece of the block entity's drawing at successive ticks, with the client's ticker run between them. */
+    /** A tick's time wherever a renderer reads it: the level's, and the frame's `LevelRenderer.extractLevel` copies from it. */
+    private static void sampleTime(ClientLevel level, long time) {
+        ((ClientLevel.ClientLevelData) level.getLevelData()).setGameTime(time);
+        Minecraft.getInstance().gameRenderer.gameRenderState().levelRenderState.gameTime = time;
+    }
+
+    /** Each field of a block entity with its value now, for a recording to put back: the level's own ticks advance it, not this. */
+    private static List<Runnable> fields(BlockEntity entity) {
+        var restore = new ArrayList<Runnable>();
+        for (Class<?> c = entity.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            for (var field : c.getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) continue;
+                try {
+                    field.setAccessible(true);
+                    Object value = field.get(entity);
+                    restore.add(() -> {
+                        try {
+                            field.set(entity, value);
+                        } catch (IllegalAccessException e) {
+                            throw new IllegalStateException(e);
+                        }
+                    });
+                } catch (IllegalAccessException | RuntimeException e) {
+                    // A field its module keeps closed stays as the recording left it.
+                }
+            }
+        }
+        return restore;
+    }
+
+    /** Each piece of the block entity's drawing at successive ticks, with the client's ticker run between them on the state it puts back after. */
     private static List<List<Draw>> samples(ClientLevel level, BlockEntity entity, BlockEntityRenderer<?, ?> renderer) {
         var camera = new CameraRenderState();
         camera.pos = Vec3.atCenterOf(entity.getBlockPos()).add(0, 1, 4);
         camera.blockPos = BlockPos.containing(camera.pos);
         camera.initialized = true;
-        var data = (ClientLevel.ClientLevelData) level.getLevelData();
-        long base = data.getGameTime();
+        long base = level.getGameTime();
         var samples = new ArrayList<List<Draw>>();
+        var restore = fields(entity);
         sampling = true;
         try {
             for (int s = 0; s < SAMPLES; s++) {
-                data.setGameTime(base + s);
+                sampleTime(level, base + s);
                 if (s > 0) {
                     try {
                         tick(level, entity);
@@ -532,7 +568,8 @@ public final class BlockRenders {
         } finally {
             ITEMS.clear();
             sampling = false;
-            data.setGameTime(base);
+            sampleTime(level, base);
+            restore.forEach(Runnable::run);
         }
         return samples;
     }
@@ -740,62 +777,135 @@ public final class BlockRenders {
 
     private static final java.util.Set<String> FAILED = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
-    /** Each requested stack's model in one display context, as its item model submits it, in item space: count -1 when it fails. */
+    private static void failedOnce(String what, Throwable t) {
+        if (FAILED.add(String.valueOf(t))) {
+            System.err.println("Horizon: " + what + " didn't draw in Java:");
+            t.printStackTrace();
+        }
+    }
+
+    /** `ItemStackRenderState.submit` of the stack as it is now: its pieces, each in its pose's frame. */
+    private static List<Draw> submitItem(net.minecraft.client.renderer.item.ItemStackRenderState state, net.minecraft.world.item.ItemStack stack) {
+        var stackPose = new PoseStack();
+        OPS.clear();
+        OPS.put(stackPose.last(), new ArrayList<>());
+        var capture = new Capture();
+        capture.foil = stack.hasFoil() ? net.minecraft.client.renderer.item.ItemStackRenderState.FoilType.STANDARD.ordinal() : 0;
+        ACTIVE = capture;
+        tracking = true;
+        try {
+            state.submit(stackPose, capture, 0xF000F0, net.minecraft.client.renderer.texture.OverlayTexture.NO_OVERLAY, 0);
+            capture.geometry.flush();
+        } finally {
+            tracking = false;
+            CURRENT = null;
+            ACTIVE = null;
+            OPS.clear();
+        }
+        capture.geometry.draws.removeIf(d -> d.quads.isEmpty());
+        return capture.geometry.draws;
+    }
+
+    /** Whether the pipeline applies `minecraft_mix_light`: what doesn't is drawn at its full colour, in a GUI as anywhere. */
+    private static boolean cardinalLit(RenderType type) {
+        if (type == null) return true;
+        var pipeline = type.pipeline();
+        var vertex = pipeline.getShaders().get(com.mojang.renderpearl.api.pipeline.ShaderType.VERTEX);
+        return LIT_SHADERS.contains(String.valueOf(vertex)) && !pipeline.getShaderDefines().flags().contains("NO_CARDINAL_LIGHTING");
+    }
+
+    private static final java.util.Set<String> LIT_SHADERS = java.util.Set.of("minecraft:core/entity", "minecraft:core/item");
+
+    /** Each requested stack's model in one display context, as vanilla's `ItemStackRenderState` draws it: count -1 when it fails. It is sampled over ticks, as a block entity's renderer is, so Rust moves what moves. */
     static byte[] items(java.io.DataInputStream in) throws IOException {
         var bytes = new ByteArrayOutputStream();
         var out = new DataOutputStream(bytes);
         int n = in.readInt();
         out.writeInt(n);
-        var resolver = new net.minecraft.client.renderer.item.ItemModelResolver(Minecraft.getInstance().getModelManager());
+        var minecraft = Minecraft.getInstance();
+        var resolver = new net.minecraft.client.renderer.item.ItemModelResolver(minecraft.getModelManager());
         for (int i = 0; i < n; i++) {
             byte[] nbt = in.readNBytes(in.readInt());
             int context = in.readByte();
-            List<Draw> draws;
+            var samples = new ArrayList<List<Draw>>();
+            var state = new net.minecraft.client.renderer.item.ItemStackRenderState();
             try {
                 var stack = GameBridge.decode(nbt);
-                var state = new net.minecraft.client.renderer.item.ItemStackRenderState();
-                resolver.updateForTopItem(state, stack, net.minecraft.world.item.ItemDisplayContext.values()[context], Minecraft.getInstance().level, null, 0);
-                var stackPose = new PoseStack();
-                var capture = new Capture();
-                ACTIVE = capture;
-                tracking = true;
-                try {
-                    state.submit(stackPose, capture, 0xF000F0, net.minecraft.client.renderer.texture.OverlayTexture.NO_OVERLAY, 0);
-                    capture.geometry.flush();
-                } finally {
-                    tracking = false;
-                    CURRENT = null;
-                    ACTIVE = null;
+                var display = net.minecraft.world.item.ItemDisplayContext.values()[context];
+                var level = minecraft.level;
+                resolver.updateForTopItem(state, stack, display, level, minecraft.player, 0);
+                samples.add(submitItem(state, stack));
+                // Not only `isAnimated`: a special model's motion comes from its argument, which isn't flagged.
+                if (level != null) {
+                    long base = level.getGameTime();
+                    try {
+                        for (int s = 1; s < SAMPLES; s++) {
+                            sampleTime(level, base + s);
+                            var later = new net.minecraft.client.renderer.item.ItemStackRenderState();
+                            resolver.updateForTopItem(later, stack, display, level, minecraft.player, 0);
+                            samples.add(submitItem(later, stack));
+                        }
+                    } finally {
+                        sampleTime(level, base);
+                    }
                 }
-                draws = capture.geometry.draws;
             } catch (Throwable t) {
-                if (FAILED.add(String.valueOf(t))) {
-                    System.err.println("Horizon: an item's model didn't draw in Java:");
-                    t.printStackTrace();
-                }
+                failedOnce("an item's model", t);
                 out.writeInt(-1);
                 continue;
             }
-            int quads = 0;
-            for (var d : draws) quads += d.quads.size();
-            out.writeInt(quads);
-            for (var d : draws) {
-                var position = new Vector3f();
+            var first = samples.get(0);
+            boolean aligned = true;
+            for (var sample : samples) aligned &= sample.size() == first.size();
+            out.writeInt(first.size());
+            out.writeBoolean(state.usesBlockLight());
+            out.writeBoolean(state.isOversizedInGui());
+            for (int p = 0; p < first.size(); p++) {
+                var d = first.get(p);
+                var across = new ArrayList<Draw>();
+                if (aligned) for (var sample : samples) across.add(sample.get(p));
+                else across.add(d);
+                writeMotion(out, across);
+                out.writeByte(d.foil);
+                boolean lit = cardinalLit(d.type);
+                boolean cull = d.type == null || d.type.pipeline().isCull();
+                out.writeInt(d.quads.size());
                 for (var q : d.quads) {
                     byte[] name = q.texture().getBytes(java.nio.charset.StandardCharsets.UTF_8);
                     out.writeInt(name.length);
                     out.write(name);
                     for (int k = 0; k < 4; k++) {
-                        d.matrix.transformPosition(q.xyzuv()[k * 5], q.xyzuv()[k * 5 + 1], q.xyzuv()[k * 5 + 2], position);
-                        out.writeFloat(position.x);
-                        out.writeFloat(position.y);
-                        out.writeFloat(position.z);
-                        out.writeFloat(q.xyzuv()[k * 5 + 3]);
-                        out.writeFloat(q.xyzuv()[k * 5 + 4]);
+                        for (int c = 0; c < 5; c++) out.writeFloat(q.xyzuv()[k * 5 + c]);
                         out.writeInt(q.color()[k]);
                     }
-                    out.writeBoolean(d.type != null && d.type.hasBlending());
+                    for (int c = 0; c < 3; c++) out.writeFloat(lit && q.normal() != null ? q.normal()[c] : 0);
+                    out.writeBoolean(q.blended());
+                    out.writeBoolean(cull);
                 }
+            }
+        }
+        return bytes.toByteArray();
+    }
+
+    /** What NeoForge's item decorators draw over each requested stack in a slot at the origin, as a screen's frame: length -1 when one fails. */
+    static byte[] decorations(java.io.DataInputStream in) throws IOException {
+        var bytes = new ByteArrayOutputStream();
+        var out = new DataOutputStream(bytes);
+        int n = in.readInt();
+        out.writeInt(n);
+        var minecraft = Minecraft.getInstance();
+        for (int i = 0; i < n; i++) {
+            byte[] nbt = in.readNBytes(in.readInt());
+            try {
+                var stack = GameBridge.decode(nbt);
+                var recorder = new Recorder();
+                net.neoforged.neoforge.client.ItemDecoratorHandler.of(stack).render(new net.minecraft.client.gui.GuiGraphicsExtractor(minecraft, recorder, 0, 0), minecraft.font, stack, 0, 0);
+                byte[] frame = recorder.bytes();
+                out.writeInt(frame.length);
+                out.write(frame);
+            } catch (Throwable t) {
+                failedOnce("an item's decorator", t);
+                out.writeInt(-1);
             }
         }
         return bytes.toByteArray();

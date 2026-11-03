@@ -94,6 +94,10 @@ public final class GameBridge {
     }
 
     private static MinecraftServer server;
+
+    static MinecraftServer server() {
+        return server;
+    }
     private static WorldDimensions dimensions;
     private static int nextEntityId = -1;
     private static int depth;
@@ -104,7 +108,6 @@ public final class GameBridge {
 
     /** One call at a time, as the window's thread and the server's both call in; the views between them are shared. */
     public static byte[] call(String op, byte[] input) {
-        if (op.equals("client_pending")) return java.nio.ByteBuffer.allocate(4).putInt(Clients.pending()).array();
         // Codecs touch no view, and a window's network thread must not wait out a server tick for one.
         if (op.equals("component_read")) return StackComponents.read(input);
         if (op.equals("component_write")) return StackComponents.write(input);
@@ -127,6 +130,7 @@ public final class GameBridge {
                 case "block_entity_load" -> blockEntityLoad(input);
                 case "block_entities_save" -> blockEntitiesSave(input);
                 case "chunks_changed" -> chunksChanged(input);
+                case "chunk_events" -> chunkEvents(input);
                 case "tracking" -> tracking(input);
                 case "block_entity_data" -> blockEntityData(input);
                 case "block_entity_set" -> blockEntitySet(input);
@@ -145,6 +149,10 @@ public final class GameBridge {
                 case "level_tick" -> levelTick(input);
                 case "use_item" -> use(input, 0);
                 case "use_item_on" -> use(input, 1);
+                case "use_tick" -> use(input, 8);
+                case "release_using" -> use(input, 9);
+                case "stop_using" -> use(input, 10);
+                case "interact_entity" -> use(input, 11);
                 default -> throw new IllegalArgumentException(op);
             };
         } catch (Throwable t) {
@@ -152,11 +160,13 @@ public final class GameBridge {
             if (depth == 1) abandonCall();
             return new byte[0];
         } finally {
-            depth--;
+            if (--depth == 0) PlayerSync.acting(null);
         }
     }
 
-    private static byte[] prepare() throws Exception {
+    private static ReloadableServerResources resources;
+
+    static byte[] prepare() throws Exception {
         if (registries != null) return new byte[] {1};
         var repository = ServerPacksSource.createVanillaTrustedRepository();
         ResourcePackLoader.populatePackRepository(repository, PackType.SERVER_DATA, true);
@@ -175,16 +185,25 @@ public final class GameBridge {
                 Util.backgroundExecutor(),
                 executor)).get();
         registries = loaded.layers.compositeAccess();
+        resources = loaded.resources;
         server = ServerView.create(loaded.manager, loaded.resources, loaded.layers);
+        var view = server;
+        if (net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) Clients.configuration(new Clients.Configuration(() -> Menus.startConfiguration(view), known -> Menus.knownPacks(view, known)));
         return new byte[] {1};
     }
 
     private static byte[] items() throws IOException {
         var bytes = new ByteArrayOutputStream();
         var out = new DataOutputStream(bytes);
-        var ids = BuiltInRegistries.ITEM.keySet().stream().filter(id -> !id.getNamespace().equals("minecraft")).map(Identifier::toString).toList();
+        var ids = BuiltInRegistries.ITEM.keySet().stream().filter(id -> BootFacts.owns(BuiltInRegistries.ITEM, id)).map(Identifier::toString).sorted().toList();
         out.writeInt(ids.size());
-        for (String id : ids) text(out, id);
+        for (String id : ids) {
+            text(out, id);
+            var item = BuiltInRegistries.ITEM.getValue(Identifier.parse(id));
+            out.writeBoolean(ItemCode.use(item.getClass()));
+            out.writeBoolean(ItemCode.useOn(item));
+            out.writeBoolean(ItemCode.entity(item.getClass()));
+        }
         return bytes.toByteArray();
     }
 
@@ -204,6 +223,7 @@ public final class GameBridge {
                 text(out, valueName(state, property));
             }
             out.writeBoolean(state.hasBlockEntity());
+            out.writeBoolean(BootFacts.ownsBlock(state.getBlock()));
         }
         return bytes.toByteArray();
     }
@@ -308,7 +328,7 @@ public final class GameBridge {
         return text(in);
     }
 
-    private static String text(DataInputStream in) throws IOException {
+    static String text(DataInputStream in) throws IOException {
         return new String(in.readNBytes(in.readInt()), java.nio.charset.StandardCharsets.UTF_8);
     }
 
@@ -343,8 +363,7 @@ public final class GameBridge {
         int experienceLevel = in.readInt();
         float experienceProgress = in.readFloat();
         int totalExperience = in.readInt();
-        ServerView.setHealth(player, in.readFloat());
-        ServerView.setFood(player, in.readInt(), in.readFloat());
+        PlayerSync.fill(player, in);
         ServerView.setMotion(player, new Vec3(in.readDouble(), in.readDouble(), in.readDouble()), in.readBoolean());
         var before = new ItemStack[SLOTS];
         java.util.Arrays.fill(before, ItemStack.EMPTY);
@@ -361,6 +380,9 @@ public final class GameBridge {
                 inventory.setItem(slot, stack);
             }
         }
+        PlayerSync.acting(player);
+        // `PlayerList.placeNewPlayer`: a connected client gets its login once the player is in place.
+        if (Clients.joining(player.getUUID())) safely("the client's login", () -> Menus.login(player));
         if (joined) {
             safely("PlayerLoggedIn", () -> EventHooks.firePlayerLoggedIn(player));
             safely("chunks sent before the player's view", () -> Tracking.joined(player, level));
@@ -382,9 +404,26 @@ public final class GameBridge {
         var before = call.before;
         var inventory = player.getInventory();
         InteractionResult result = InteractionResult.PASS;
+        // A view keeps no use between calls: Horizon's player holds it, and a call that continues one restores it.
+        Using.clear(player);
         ItemStack held = player.getItemInHand(hand);
         switch (kind) {
             case 0 -> result = player.gameMode.useItem(player, level, held, hand);
+            case 8 -> {
+                Using.resume(player, hand, in.readInt());
+                Using.tick(player);
+            }
+            case 9 -> {
+                Using.resume(player, hand, in.readInt());
+                player.releaseUsingItem();
+            }
+            case 10 -> {
+                Using.resume(player, hand, in.readInt());
+                player.stopUsingItem();
+            }
+            case 11 -> {
+                if (level.getEntity(in.readInt()) instanceof net.minecraft.world.entity.LivingEntity target) result = held.interactLivingEntity(player, target, hand);
+            }
             case 1, 2, 3 -> {
                 var pos = BlockPos.of(in.readLong());
                 var face = Direction.from3DDataValue(in.readInt());
@@ -410,17 +449,19 @@ public final class GameBridge {
                 EventHooks.firePlayerTickPre(player);
                 for (int slot = 0; slot < Inventory.INVENTORY_SIZE; slot++) {
                     ItemStack stack = inventory.getItem(slot);
-                    if (!stack.isEmpty() && !BuiltInRegistries.ITEM.getKey(stack.getItem()).getNamespace().equals("minecraft")) {
+                    if (!stack.isEmpty() && BootFacts.ownsItem(stack.getItem())) {
                         stack.inventoryTick(level, player, slot == inventory.getSelectedSlot() ? EquipmentSlot.MAINHAND : null);
                     }
                 }
                 EventHooks.firePlayerTickPost(player);
             }
         }
-        if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: use kind=" + kind + " result=" + result + " held=" + player.getItemInHand(hand));
+        if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: use kind=" + kind + " result=" + result + " held=" + player.getItemInHand(hand) + " ticks=" + player.getTicksUsingItem() + " ammo=" + player.getProjectile(player.getItemInHand(hand)) + " spawned=" + SPAWNED.size());
         var bytes = new ByteArrayOutputStream();
         var out = new DataOutputStream(bytes);
         out.writeBoolean(result != InteractionResult.PASS && result != InteractionResult.TRY_WITH_EMPTY_HAND);
+        out.writeBoolean(player.isUsingItem());
+        out.writeInt(player.isUsingItem() ? player.getTicksUsingItem() : 0);
         out.writeInt(player.experienceLevel);
         out.writeFloat(player.experienceProgress);
         out.writeInt(player.totalExperience);
@@ -518,7 +559,10 @@ public final class GameBridge {
             ServerView.openWorld(server, LEVELS.values(), worldFolder, here.getSeed(), dimensions);
             safely("ServerAboutToStart", () -> ServerLifecycleHooks.handleServerAboutToStart(server));
             safely("ServerStarting", () -> ServerLifecycleHooks.handleServerStarting(server));
-            for (ServerLevel level : LEVELS.values()) safely("LevelEvent.Load", () -> NeoForge.EVENT_BUS.post(new LevelEvent.Load(level)));
+            for (ServerLevel level : LEVELS.values()) {
+                ChunkEvents.customSpawners(level);
+                safely("LevelEvent.Load", () -> NeoForge.EVENT_BUS.post(new LevelEvent.Load(level)));
+            }
             safely("ServerStarted", () -> ServerLifecycleHooks.handleServerStarted(server));
         } else if (!start && serverStarted) {
             serverStarted = false;
@@ -532,11 +576,13 @@ public final class GameBridge {
 
     private static byte[] serverTick(byte[] input) throws Exception {
         var in = new DataInputStream(new ByteArrayInputStream(input));
-        levelOf(in);
+        var here = levelOf(in);
         if (in.readBoolean()) {
             safely("ServerTickEvent.Post", () -> EventHooks.fireServerTickPost(() -> true, server));
         } else {
             ServerView.tick(server);
+            // `MinecraftServer.tickServer`: clients hear the time once a second.
+            if (server.getTickCount() % 20 == 0) server.getPlayerList().broadcastAll(new net.minecraft.network.protocol.game.ClientboundSetTimePacket(here.getGameTime(), Map.of()));
             safely("ServerTickEvent.Pre", () -> EventHooks.fireServerTickPre(() -> true, server));
         }
         return effects();
@@ -654,6 +700,17 @@ public final class GameBridge {
         var out = new DataOutputStream(bytes);
         out.writeInt(saved.size());
         for (CompoundTag tag : saved) writeTag(out, tag);
+        writeEffects(out);
+        return bytes.toByteArray();
+    }
+
+    /** A chunk event of `ChunkEvents` for this level, with the effects of mods' listeners. */
+    private static byte[] chunkEvents(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        var level = levelOf(in);
+        var bytes = new ByteArrayOutputStream();
+        var out = new DataOutputStream(bytes);
+        ChunkEvents.run(level, in, out);
         writeEffects(out);
         return bytes.toByteArray();
     }

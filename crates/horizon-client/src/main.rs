@@ -4,8 +4,12 @@ mod game;
 
 use horizon_client::{crash, logging};
 
+#[cfg(not(feature = "alloc-report"))]
 #[global_allocator]
 static ALLOCATOR: horizon_threads::Allocator = horizon_threads::Allocator;
+#[cfg(feature = "alloc-report")]
+#[global_allocator]
+static ALLOCATOR: horizon_threads::alloc_report::Counting = horizon_threads::alloc_report::Counting;
 
 /// The mod API level this game serves, kept in the program for the launcher
 /// to read without running it (`horizon_mods::api_level::MARK`). `main`
@@ -14,6 +18,8 @@ static MOD_API_LEVEL: [u8; 27] = horizon_mods::api_level::MARK;
 
 fn main() {
     horizon_threads::configure_allocator();
+    #[cfg(feature = "alloc-report")]
+    horizon_threads::alloc_report::start();
     std::hint::black_box(&MOD_API_LEVEL);
     horizon_client::telemetry::mark_start();
     let args: Vec<String> = std::env::args().skip(1).collect();

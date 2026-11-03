@@ -43,6 +43,9 @@ pub enum Attenuation {
 pub enum Ticking {
     /// Not tickable.
     No,
+    /// A `TickableSoundInstance` of another client in this process, which
+    /// ticks it there and sets its volume, pitch and position here.
+    Remote,
     /// `BiomeAmbientSoundsHandler.LoopSoundInstance`.
     BiomeLoop { fade: i32, direction: i32 },
     /// `UnderLiquidAmbientSoundInstance`.
@@ -519,7 +522,7 @@ impl SoundInstance {
     /// `TickableSoundInstance.tick`.
     pub fn tick(&mut self, ctx: &TickContext) {
         match &mut self.ticking {
-            Ticking::No => {}
+            Ticking::No | Ticking::Remote => {}
             Ticking::BiomeLoop { fade, direction } => {
                 let stop = *fade < 0;
                 *fade += *direction;
@@ -1163,6 +1166,12 @@ impl SoundEngine {
         } else {
             self.queued.push((id, at));
         }
+    }
+    /// `isActive`, or still waiting for its delay or its first tick.
+    pub fn is_playing_or_queued(&self, id: InstanceId) -> bool {
+        self.is_active(id)
+            || self.queued.iter().any(|(i, _)| *i == id)
+            || self.queued_tickable.contains(&id)
     }
     /// `isActive`.
     pub fn is_active(&self, id: InstanceId) -> bool {

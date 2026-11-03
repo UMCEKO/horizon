@@ -52,7 +52,7 @@ public final class BlockEntities {
     }
 
     static boolean ours(BlockState state) {
-        return !BuiltInRegistries.BLOCK.getKey(state.getBlock()).getNamespace().equals("minecraft");
+        return BootFacts.ownsBlock(state.getBlock());
     }
 
     /** `LevelChunk.setBlockEntity`'s steps: the entity joins the level and replaces whichever held its place. */
