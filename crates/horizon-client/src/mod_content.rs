@@ -466,6 +466,8 @@ struct NewItem {
 struct Plan<'a> {
     blocks: Vec<NewBlock<'a>>,
     items: Vec<NewItem>,
+    /// The mods' data component types, sorted by id.
+    component_types: Vec<&'a horizon_mods::content::DataComponentType>,
     /// Vanilla's state count (the tables' length before).
     states: usize,
     /// Each vanilla block's default state.
@@ -784,9 +786,15 @@ impl<'a> Plan<'a> {
         // Block items and standalone items share the same registry. Sort
         // them together by mod ID and entry name before assigning IDs.
         items.sort_by(|a, b| a.rename.to.cmp(&b.rename.to));
+        let mut component_types: Vec<_> = mods
+            .iter()
+            .flat_map(|m| &m.content.data_component_types)
+            .collect();
+        component_types.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(Plan {
             blocks,
             items,
+            component_types,
             states: names.len(),
             defaults,
             sounds,
@@ -1017,10 +1025,15 @@ impl<'a> Plan<'a> {
                 // this report, so new ones get the ids after vanilla's, in plan order.
                 let new_items = self.items.iter().map(|i| i.rename.to.clone());
                 let new_blocks = self.blocks.iter().map(|b| b.decl.id.clone());
+                let new_components = self.component_types.iter().map(|c| c.id.clone());
                 for (registry, names) in [
                     ("minecraft:item", new_items.collect::<Vec<_>>()),
                     ("minecraft:block", new_blocks.collect()),
+                    ("minecraft:data_component_type", new_components.collect()),
                 ] {
+                    if names.is_empty() {
+                        continue;
+                    }
                     let Some(J::Obj(entries)) =
                         doc.get_mut(registry).and_then(|r| r.get_mut("entries"))
                     else {
@@ -1071,6 +1084,14 @@ impl<'a> Plan<'a> {
                 }
                 if let Some(J::Arr(ids)) = doc.at("by_registry/minecraft:block/ids") {
                     ids.extend(new_blocks());
+                }
+                let components = || self.component_types.iter();
+                if let Some(J::Arr(ids)) = doc.at("by_registry/minecraft:data_component_type/ids") {
+                    ids.extend(components().map(|c| J::Str(c.id.clone())));
+                }
+                if let Some(J::Arr(ids)) = doc.at("persistent_components") {
+                    let persistent = components().filter(|c| c.persistent);
+                    ids.extend(persistent.map(|c| J::Str(c.id.clone())));
                 }
             }
             "mob-data.json" => states(doc, "states", false, false)?,

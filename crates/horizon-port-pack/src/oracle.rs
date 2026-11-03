@@ -15,6 +15,9 @@ use std::{
 pub struct Facts {
     pub blocks: BTreeMap<String, Block>,
     pub items: BTreeMap<String, Item>,
+    /// The mods' entries of `minecraft:data_component_type`; empty in facts from before they were exported.
+    #[serde(default)]
+    pub data_component_types: BTreeMap<String, DataComponentType>,
     #[serde(default)]
     pub tags: Tags,
     /// The game's items' default components (`items.json`), so item ports leave out what their template has.
@@ -181,6 +184,12 @@ pub struct Item {
     pub repair_items: Option<Vec<String>>,
     #[serde(default)]
     pub armor: Option<Armor>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DataComponentType {
+    /// `!DataComponentType.isTransient()`: it has a codec, so stacks save it and commands name it.
+    pub persistent: bool,
 }
 
 #[derive(Debug, Deserialize)]

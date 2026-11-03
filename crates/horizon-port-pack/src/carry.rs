@@ -59,6 +59,8 @@ pub struct Report {
     pub items: usize,
     /// Items left out, and why (oracle only).
     pub items_unknown: BTreeMap<String, String>,
+    /// Declared data component types (oracle only).
+    pub data_component_types: usize,
     /// Convention (`c:`) tags the recipes use, filled in from the oracle.
     pub convention_tags: usize,
     /// Structure, placement and pool element types rewritten as vanilla's,
@@ -1087,6 +1089,17 @@ pub fn carry(
                 }
             }
         }
+        for (full, kind) in facts.data_component_types.range(prefix.clone()..) {
+            let Some(name) = full.strip_prefix(&prefix) else {
+                break;
+            };
+            write_decl(
+                "data_component_type",
+                name,
+                &json!({"persistent": kind.persistent}),
+            )?;
+            report.data_component_types += 1;
+        }
         // Convention tags are NeoForge's and the pack's: the recipes get the
         // members the oracle saw, those of vanilla and of this mod.
         for tag in &convention {
@@ -1961,6 +1974,62 @@ mod tests {
         assert!(state.contains("gem:horizon_baked/pipe/1") && !state.contains("old"));
         let text = fs::read_to_string(out.join("carry-report.json")).unwrap();
         assert!(text.contains("\"baked_blocks\": 1"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn carry_declares_the_mods_data_component_types() {
+        let dir = std::env::temp_dir().join(format!("horizon-port-pack-dc-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let jar = dir.join("gem-1.0.jar");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&jar).unwrap());
+        zip.start_file(
+            "META-INF/neoforge.mods.toml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"license = \"MIT\"\n[[mods]]\nmodId = \"gem\"\nversion = \"1.0\"\n")
+            .unwrap();
+        zip.finish().unwrap();
+        let info = crate::jar::read(&jar).unwrap();
+        let facts: Facts = serde_json::from_value(json!({
+            "blocks": {},
+            "items": {},
+            "data_component_types": {
+                "gem:mode": {"persistent": true},
+                "gem:cache": {"persistent": false},
+                "gemstones:other": {"persistent": true}
+            }
+        }))
+        .unwrap();
+        let out = dir.join("work/mods/gem");
+        let pack = Pack {
+            loaded: &|_| true,
+            mods: &|_| false,
+        };
+        let report = carry(
+            &jar,
+            &info,
+            &out,
+            Some(&facts),
+            None,
+            &|_| true,
+            &pack,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(report.data_component_types, 2);
+        let decl = |name: &str| -> Value {
+            let path = format!("carry/data/gem/horizon/data_component_type/{name}.json");
+            serde_json::from_slice(&fs::read(out.join(path)).unwrap()).unwrap()
+        };
+        assert_eq!(decl("mode"), json!({"persistent": true}));
+        assert_eq!(decl("cache"), json!({"persistent": false}));
+        assert!(
+            !out.join("carry/data/gem/horizon/data_component_type/other.json")
+                .exists()
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 }

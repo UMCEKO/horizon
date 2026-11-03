@@ -266,6 +266,12 @@ implements and the harnesses already check. Items work the same way (`"template"
 "minecraft:diamond"`, overriding `max_stack_size`, `rarity` and any data component in
 `components`).
 
+A Java mod's data component types are declared as `data/<mod>/horizon/data_component_type/<name>.json`, holding
+`{"persistent": true}` when the type has a codec (`carry` writes them from the oracle's `data_component_types`). They join
+`minecraft:data_component_type` in `registries.json` after vanilla's, and the persistent ones join the types commands
+accept. Item definitions decode `has_component` and the `component` select against that registry, as vanilla's
+`byNameCodec` does, so a mod's `items/*.json` naming its own component loads and an unknown id is still refused.
+
 How the game loads them, without touching vanilla's path:
 
 - Horizon reads everything from one resource root. Resource packs already work as an

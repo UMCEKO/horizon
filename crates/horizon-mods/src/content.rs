@@ -1,6 +1,7 @@
 //! A content mod's `assets/` and `data/` (API 0.2, docs/modpacks.md): the
 //! files it adds to the game's resource tree, and the blocks and items it
-//! declares in `data/<id>/horizon/block/` and `data/<id>/horizon/item/`.
+//! declares in `data/<id>/horizon/block/` and `data/<id>/horizon/item/`, and
+//! the data component types it registers (`data/<id>/horizon/data_component_type/`).
 //!
 //! Content is data, not code: nothing here runs in the sandbox. What a mod
 //! may add is fenced instead. Its own namespaces (its id and the ones its
@@ -174,6 +175,20 @@ pub struct Item {
     pub components: BTreeMap<String, serde_json::Value>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DataComponentTypeFile {
+    persistent: bool,
+}
+
+/// A data component type the mod's code registers: only its id and whether stacks save it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DataComponentType {
+    pub id: String,
+    /// It has a codec (`!DataComponentType.isTransient()`).
+    pub persistent: bool,
+}
+
 #[derive(Debug)]
 enum Source {
     Dir(PathBuf),
@@ -188,6 +203,7 @@ pub struct Content {
     pub files: Vec<String>,
     pub blocks: Vec<Block>,
     pub items: Vec<Item>,
+    pub data_component_types: Vec<DataComponentType>,
     /// The namespaces it owns: the mod id, then the manifest's `namespaces`.
     pub namespaces: Vec<String>,
 }
@@ -274,6 +290,7 @@ impl Content {
             files,
             blocks: Vec::new(),
             items: Vec::new(),
+            data_component_types: Vec::new(),
             namespaces: manifest.owned_namespaces().map(str::to_owned).collect(),
         };
         content.check(manifest)?;
@@ -316,6 +333,7 @@ impl Content {
         }
         let mut blocks = Vec::new();
         let mut items = Vec::new();
+        let mut component_types = Vec::new();
         for name in &self.files {
             let mut parts = name.splitn(3, '/');
             let (top, namespace, rest) = (
@@ -357,9 +375,11 @@ impl Content {
                 blocks.push((block, name.clone()));
             } else if let Some(item) = parse("item") {
                 items.push((item, name.clone()));
+            } else if let Some(kind) = parse("data_component_type") {
+                component_types.push((kind, name.clone()));
             } else {
                 return Err(format!(
-                    "{name}: data/{id}/horizon/ holds block/*.json and item/*.json only"
+                    "{name}: data/{id}/horizon/ holds block/, item/ and data_component_type/ *.json only"
                 ));
             }
         }
@@ -404,6 +424,14 @@ impl Content {
                 max_stack_size: file.max_stack_size,
                 rarity: file.rarity,
                 components: file.components,
+            });
+        }
+        for (kind, name) in component_types {
+            let file: DataComponentTypeFile =
+                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+            self.data_component_types.push(DataComponentType {
+                id: kind,
+                persistent: file.persistent,
             });
         }
         Ok(())
@@ -645,6 +673,36 @@ capabilities = ["registries"]
             ]
         );
         assert_eq!(components["minecraft:max_damage"], 900);
+    }
+
+    #[test]
+    fn data_component_types_are_declared_by_id() {
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/horizon/data_component_type/mode.json",
+                br#"{"persistent": true}"#,
+            ),
+            (
+                "data/ruby/horizon/data_component_type/cache.json",
+                br#"{"persistent": false}"#,
+            ),
+        ];
+        let content = hmod("component-types", MANIFEST_TEXT, files).unwrap();
+        assert_eq!(
+            content.data_component_types,
+            [
+                DataComponentType {
+                    id: "ruby:cache".into(),
+                    persistent: false
+                },
+                DataComponentType {
+                    id: "ruby:mode".into(),
+                    persistent: true
+                }
+            ]
+        );
+        let files: &[(&str, &[u8])] = &[("data/ruby/horizon/data_component_type/mode.json", b"{}")];
+        assert!(hmod("component-types-bad", MANIFEST_TEXT, files).is_err());
     }
 
     #[test]

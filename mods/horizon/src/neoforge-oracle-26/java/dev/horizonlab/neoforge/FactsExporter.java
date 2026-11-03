@@ -55,7 +55,7 @@ import net.neoforged.neoforge.event.server.ServerStartedEvent;
 
 /**
  * Dev-only oracle for Horizon's mod ports (docs/modpacks.md): once the server has started,
- * writes every block, item, recipe and tag of the namespaces named in {@code
+ * writes every block, item, data component type, recipe and tag of the namespaces named in {@code
  * horizon.oracle.namespaces} (plus the vanilla blocks, so templates can be compared) to {@code
  * horizon.oracle.out}, then stops the server. Never shipped to players.
  */
@@ -141,6 +141,7 @@ public final class FactsExporter {
             }
             json.endArray();
             items();
+            dataComponentTypes();
             recipes();
             tags();
             json.endObject();
@@ -375,6 +376,20 @@ public final class FactsExporter {
             }
             json.endObject();
 
+        }
+
+        void dataComponentTypes() throws IOException {
+            json.name("data_component_types");
+            json.beginObject();
+            for (var type : BuiltInRegistries.DATA_COMPONENT_TYPE) {
+                Identifier id = BuiltInRegistries.DATA_COMPONENT_TYPE.getKey(type);
+                if (!ours(id)) continue;
+                json.name(id.toString());
+                json.beginObject();
+                json.name("persistent").value(!type.isTransient());
+                json.endObject();
+            }
+            json.endObject();
         }
 
         void raw(String name, DataResult<JsonElement> encoded) throws IOException {

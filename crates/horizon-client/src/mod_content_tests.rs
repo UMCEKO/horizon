@@ -129,7 +129,8 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
         r#"{"minecraft:item":{"entries":{"minecraft:stone":{"protocol_id":4},
             "minecraft:iron_block":{"protocol_id":9}}},
             "minecraft:block":{"entries":{"minecraft:stone":{"protocol_id":7},
-            "minecraft:iron_block":{"protocol_id":11}}}}"#,
+            "minecraft:iron_block":{"protocol_id":11}}},
+            "minecraft:data_component_type":{"entries":{"minecraft:damage":{"protocol_id":3}}}}"#,
     )
     .unwrap();
     fs::create_dir_all(base.join("assets/minecraft/blockstates")).unwrap();
@@ -151,6 +152,10 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
                 "data/ruby/horizon/item/aitem.json",
                 r#"{"template":"minecraft:stone"}"#,
             ),
+            (
+                "data/ruby/horizon/data_component_type/mode.json",
+                r#"{"persistent":true}"#,
+            ),
         ],
     );
     let alpha = folder_mod(
@@ -164,6 +169,10 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
             (
                 "data/alpha/horizon/item/aitem.json",
                 r#"{"template":"minecraft:stone"}"#,
+            ),
+            (
+                "data/alpha/horizon/data_component_type/cache.json",
+                r#"{"persistent":false}"#,
             ),
         ],
     );
@@ -197,7 +206,8 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
             r#"{"minecraft:item":{"entries":{"minecraft:stone":{"protocol_id":4},
                 "minecraft:iron_block":{"protocol_id":9}}},
                 "minecraft:block":{"entries":{"minecraft:stone":{"protocol_id":7},
-                "minecraft:iron_block":{"protocol_id":11}}}}"#,
+                "minecraft:iron_block":{"protocol_id":11}}},
+                "minecraft:data_component_type":{"entries":{"minecraft:damage":{"protocol_id":3}}}}"#,
         )
         .unwrap();
         plan.json("registries.json", &mut registry).unwrap();
@@ -218,6 +228,26 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
         assert_eq!(id("minecraft:block", "minecraft:iron_block"), 11);
         assert_eq!(id("minecraft:block", "alpha:zblock"), 12);
         assert_eq!(id("minecraft:block", "ruby:zblock"), 13);
+        assert_eq!(id("minecraft:data_component_type", "minecraft:damage"), 3);
+        assert_eq!(id("minecraft:data_component_type", "alpha:cache"), 4);
+        assert_eq!(id("minecraft:data_component_type", "ruby:mode"), 5);
+        // Commands name persistent types only, as `DataComponentType.PERSISTENT_CODEC` does.
+        let mut commands: J = serde_json::from_str(
+            r#"{"blocks":{},"items":[],"persistent_components":["minecraft:damage"],
+                "by_registry":{"minecraft:data_component_type":{"ids":["minecraft:damage"]}}}"#,
+        )
+        .unwrap();
+        plan.json("command-registries.json", &mut commands).unwrap();
+        let commands: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&commands).unwrap()).unwrap();
+        assert_eq!(
+            commands["persistent_components"],
+            serde_json::json!(["minecraft:damage", "ruby:mode"])
+        );
+        assert_eq!(
+            commands["by_registry"]["minecraft:data_component_type"]["ids"],
+            serde_json::json!(["minecraft:damage", "alpha:cache", "ruby:mode"])
+        );
         drop(plan);
 
         let output = scratch.join(format!("output-{index}"));

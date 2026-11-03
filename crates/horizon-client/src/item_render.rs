@@ -19,8 +19,8 @@ use horizon_assets::{
     animation::AnimationMetadata,
     item_bake::{BakedItemModel, SpriteLookup, SpriteMask, bake_item_model},
     item_model::{
-        ClientItem, Components, Context, DisplayContext, FoilType, ItemEnv, ItemModels,
-        LayerContent, LevelState, OwnerState, SpecialModel, StackView,
+        ClientItem, ComponentTypes, Components, Context, DisplayContext, FoilType, ItemEnv,
+        ItemModels, LayerContent, LevelState, OwnerState, SpecialModel, StackView,
     },
     model::Direction,
     palette::PalettedPermutations,
@@ -535,8 +535,14 @@ pub struct ItemRenderer {
 }
 
 /// Every `items/**/*.json` client item definition, by identifier.
-fn load_definitions(root: &Path) -> BTreeMap<String, ClientItem> {
-    fn walk(dir: &Path, rel: &str, namespace: &str, out: &mut BTreeMap<String, ClientItem>) {
+fn load_definitions(root: &Path, types: &ComponentTypes) -> BTreeMap<String, ClientItem> {
+    fn walk(
+        dir: &Path,
+        rel: &str,
+        namespace: &str,
+        types: &ComponentTypes,
+        out: &mut BTreeMap<String, ClientItem>,
+    ) {
         let Ok(entries) = fs::read_dir(dir) else {
             return;
         };
@@ -551,11 +557,11 @@ fn load_definitions(root: &Path) -> BTreeMap<String, ClientItem> {
                 format!("{rel}/{name}")
             };
             if path.is_dir() {
-                walk(&path, &rel, namespace, out);
+                walk(&path, &rel, namespace, types, out);
             } else if let Some(id) = rel.strip_suffix(".json")
                 && let Ok(text) = fs::read_to_string(&path)
             {
-                match ClientItem::from_json(&text) {
+                match ClientItem::from_json_in(&text, types) {
                     Ok(item) => {
                         out.insert(format!("{namespace}:{id}"), item);
                     }
@@ -572,7 +578,7 @@ fn load_definitions(root: &Path) -> BTreeMap<String, ClientItem> {
     };
     for ns in namespaces.flatten() {
         let namespace = ns.file_name().to_string_lossy().into_owned();
-        walk(&ns.path().join("items"), "", &namespace, &mut out);
+        walk(&ns.path().join("items"), "", &namespace, types, &mut out);
     }
     out
 }
@@ -594,8 +600,21 @@ impl ItemRenderer {
     ) -> crate::Result<Self> {
         let prototypes: BTreeMap<String, Components> =
             serde_json::from_slice(&fs::read(root.join("items.json"))?)?;
+        let registries = horizon_protocol::registry::Builtin::find(root)
+            .and_then(|p| horizon_protocol::registry::Builtin::load(&p).ok());
+        let names = |registry: &str| -> Option<Vec<String>> {
+            let ids = registries.as_ref()?.get(registry)?;
+            Some(
+                (0..)
+                    .map_while(|i| ids.name(i).map(str::to_owned))
+                    .collect(),
+            )
+        };
+        let types = names("minecraft:data_component_type")
+            .map(ComponentTypes::new)
+            .unwrap_or_else(|| ComponentTypes::vanilla().clone());
         let models = ItemModels {
-            definitions: load_definitions(root),
+            definitions: load_definitions(root, &types),
             prototypes,
         };
         let library = library?;
@@ -607,17 +626,8 @@ impl ItemRenderer {
         let grass = crate::hud::decode(&root.join("assets/minecraft/textures/colormap/grass.png"))
             .map(|(_, _, rgba)| argb_pixels(&rgba).into_iter().map(|p| p as i32).collect())
             .unwrap_or_default();
-        let item_ids = horizon_protocol::registry::Builtin::find(root)
-            .and_then(|p| horizon_protocol::registry::Builtin::load(&p).ok())
-            .and_then(|b| {
-                let ids = b.get("minecraft:item")?;
-                let mut out = HashMap::new();
-                for i in 0.. {
-                    let Some(name) = ids.name(i) else { break };
-                    out.insert(name.to_owned(), i);
-                }
-                Some(out)
-            })
+        let item_ids = names("minecraft:item")
+            .map(|names| names.into_iter().zip(0..).collect())
             .unwrap_or_default();
         Ok(Self {
             item_ids,
@@ -1022,10 +1032,38 @@ mod tests {
         let empty = r#"{"model":{"type":"minecraft:empty"}}"#;
         fs::write(definitions.join("top.json"), empty)?;
         fs::write(definitions.join("postman/head.json"), empty)?;
-        let loaded = load_definitions(&root);
+        let loaded = load_definitions(&root, ComponentTypes::vanilla());
         let _ = fs::remove_dir_all(&root);
         assert!(loaded.contains_key("horizon:top"));
         assert!(loaded.contains_key("horizon:postman/head"));
+        Ok(())
+    }
+
+    /// A definition naming a mod's component type loads once the registry holds that type.
+    #[test]
+    fn item_definitions_name_the_loaded_component_types() -> crate::Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "horizon-item-definitions-components-{}",
+            std::process::id()
+        ));
+        let definitions = root.join("assets/gem/items");
+        fs::create_dir_all(&definitions)?;
+        let leaf = r#"{"type":"minecraft:model","model":"gem:item/tool"}"#;
+        fs::write(
+            definitions.join("tool.json"),
+            format!(
+                r#"{{"model":{{"type":"minecraft:select","property":"minecraft:component",
+                "component":"gem:mode","cases":[{{"when":"rotate","model":{leaf}}}],"fallback":{leaf}}}}}"#
+            ),
+        )?;
+        let vanilla = load_definitions(&root, ComponentTypes::vanilla());
+        let vanilla_ids = horizon_assets::item_model::DATA_COMPONENT_TYPES;
+        let mut ids: Vec<String> = vanilla_ids.iter().map(|s| (*s).into()).collect();
+        ids.push("gem:mode".into());
+        let with_mod = load_definitions(&root, &ComponentTypes::new(ids));
+        let _ = fs::remove_dir_all(&root);
+        assert!(!vanilla.contains_key("gem:tool"));
+        assert!(with_mod.contains_key("gem:tool"));
         Ok(())
     }
 
