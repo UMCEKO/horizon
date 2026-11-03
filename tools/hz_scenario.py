@@ -70,6 +70,10 @@ def ctl_commands(kind, arg):
         if arg.startswith('key.') and arg not in KEYS:
             raise ValueError(f'unknown key {arg}')
         return [['key', KEYS.get(arg, arg), 'tap']]
+    if kind in ('press', 'release'):
+        if arg.startswith('key.') and arg not in KEYS:
+            raise ValueError(f'unknown key {arg}')
+        return [['key', KEYS.get(arg, arg), 'down' if kind == 'press' else 'up']]
     if kind == 'close':
         return [['close']]
     if kind == 'tp':

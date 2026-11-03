@@ -1091,6 +1091,12 @@ def main():
     x = sub.add_parser('mixins', help='the static list of every mixin handler of an install\'s mods (see mod_parity.py)')
     x.add_argument('--install', required=True)
     x.add_argument('--out', required=True)
+    rp = sub.add_parser('replaces', help='the vanilla behaviours an install\'s mods change, read from the jars (see mod_replaces.py)')
+    try:
+        from . import mod_replaces
+    except ImportError:
+        import mod_replaces
+    mod_replaces.add_arguments(rp)
     n = sub.add_parser('launch', allow_abbrev=False, help='starts the game from an install; other arguments go to the game (--dedicated starts the server)')
     n.add_argument('--install', required=True)
     n.add_argument('--game', help='the horizon-client built with --features java-mods')
@@ -1107,6 +1113,8 @@ def main():
         except ImportError:
             import mod_parity
         return mod_parity.scan_install(args.install, args.out)
+    if args.command == 'replaces':
+        return mod_replaces.run(args)
     LOCAL.mkdir(parents=True, exist_ok=True)
     JARS.mkdir(parents=True, exist_ok=True)
     # Several agents build and check at once, and a build replaces the class folders.

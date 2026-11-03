@@ -27,9 +27,12 @@ final class ItemText {
             byte[] nbt = in.readNBytes(in.readInt());
             boolean advanced = in.readBoolean();
             boolean creative = in.readBoolean();
+            var level = minecraft.level;
+            if (level == null) {
+                out.writeByte(2);
+                continue;
+            }
             try {
-                var level = minecraft.level;
-                if (level == null) throw new IllegalStateException("no client level");
                 var stack = GameBridge.decode(nbt);
                 var flag = advanced ? TooltipFlag.Default.ADVANCED : TooltipFlag.Default.NORMAL;
                 if (creative) flag = flag.asCreative();

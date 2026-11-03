@@ -371,9 +371,12 @@ public final class GameBridge {
         boolean joined = !PLAYERS.containsKey(id);
         var player = player(id, name, level);
         player.setPose(net.minecraft.world.entity.Pose.valueOf(text(in)));
-        player.setPosRaw(in.readDouble(), in.readDouble(), in.readDouble());
-        player.setYRot(in.readFloat());
-        player.setXRot(in.readFloat());
+        double x = in.readDouble(), y = in.readDouble(), z = in.readDouble();
+        float yRot = in.readFloat(), xRot = in.readFloat();
+        // absSnapTo sets the previous tick's position, rotation and the box too: rays from pick(range, partialTick) start here
+        player.absSnapTo(x, y, z, yRot, xRot);
+        player.setYHeadRot(yRot);
+        player.yHeadRotO = yRot;
         player.setShiftKeyDown(in.readBoolean());
         var type = GameType.byId(in.readInt());
         boolean modeChanged = player.gameMode.getGameModeForPlayer() != type;

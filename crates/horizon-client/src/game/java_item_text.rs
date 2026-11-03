@@ -96,16 +96,24 @@ fn component(json: &str) -> Option<Text> {
     }))
 }
 
-fn parse(input: &mut In) -> Option<Answer> {
-    if !input.bool()? {
-        return Some(None);
+enum Reply {
+    Answer(Answer),
+    // The Java client has no level yet, so the stack is asked again later.
+    Later,
+}
+
+fn parse(input: &mut In) -> Option<Reply> {
+    match input.byte()? {
+        0 => return Some(Reply::Answer(None)),
+        2 => return Some(Reply::Later),
+        _ => {}
     }
     let name = component(input.text()?)?;
     let mut lines = Vec::new();
     for _ in 0..input.int()? {
         lines.push(component(input.text()?)?);
     }
-    Some(Some(Arc::new(JavaItemText { name, lines })))
+    Some(Reply::Answer(Some(Arc::new(JavaItemText { name, lines }))))
 }
 
 /// Stores the answers to `keys`; a malformed reply is dropped and its stacks stay on the components' text.
@@ -119,8 +127,13 @@ pub(in crate::game) fn apply(keys: Vec<TextKey>, reply: &[u8]) {
     })();
     TEXTS.with_borrow_mut(|texts| match parsed {
         Some(answers) => {
-            for (key, answer) in keys.into_iter().zip(answers) {
-                texts.store(key, answer);
+            for (key, reply) in keys.into_iter().zip(answers) {
+                match reply {
+                    Reply::Answer(answer) => texts.store(key, answer),
+                    Reply::Later => {
+                        texts.asked.remove(&key);
+                    }
+                }
             }
         }
         None => {
@@ -233,6 +246,22 @@ mod tests {
             assert_eq!(t.get(&first).unwrap().lines.len(), 1);
             assert!(t.get(&second).is_none());
             assert!(t.queued.is_empty());
+        });
+    }
+
+    #[test]
+    fn a_stack_asked_before_the_java_client_has_a_level_is_asked_again() {
+        let early = key(&stack("m:early"), false, false).unwrap();
+        TEXTS.with_borrow_mut(|t| assert!(t.get(&early).is_none()));
+        let (keys, _) = request().unwrap();
+        let mut out = Out::default();
+        out.int(1);
+        out.0.push(2);
+        apply(keys, &out.0);
+        TEXTS.with_borrow_mut(|t| {
+            assert!(!t.entries.contains_key(&early));
+            assert!(t.get(&early).is_none());
+            assert_eq!(t.queued, vec![early.clone()]);
         });
     }
 }

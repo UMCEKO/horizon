@@ -30,6 +30,17 @@ final class ChecksPlayer {
         float yaw = player.getYRot();
         float pitch = player.getXRot();
 
+        Checks.check("a call's view looks where Horizon's player looks", () -> {
+            var early = player.pick(5.0, 0.0F, false);
+            var late = player.pick(5.0, 1.0F, false);
+            return player.xo == x && player.yo == y && player.zo == z
+                && player.getViewYRot(0.5F) == yaw && player.getViewXRot(0.5F) == pitch
+                && player.yHeadRotO == player.getYHeadRot() && player.getYHeadRot() == yaw
+                && Math.abs(player.getBoundingBox().getCenter().x - x) < 1e-9
+                && Math.abs(player.getBoundingBox().getCenter().z - z) < 1e-9
+                && early.getType() == late.getType() && early.getLocation().equals(late.getLocation());
+        });
+
         Checks.check("getDestroyProgress runs the held item's speed and BreakSpeed", () -> {
             var inventory = player.getInventory();
             int slot = inventory.getSelectedSlot();
