@@ -69,9 +69,53 @@ public final class Clients {
 
     private static final java.util.Map<net.minecraft.server.level.ServerLevel, it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet> CHANGED = new java.util.IdentityHashMap<>();
 
+    private static final java.util.Map<net.minecraft.server.level.ServerLevel, it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet> RESHAPED = new java.util.IdentityHashMap<>();
+
     /** `ChunkHolder.blockChanged`: the position is sent at the level's next `broadcastChanges`. */
     public static synchronized void blockChanged(net.minecraft.server.level.ServerLevel level, net.minecraft.core.BlockPos pos) {
         CHANGED.computeIfAbsent(level, l -> new it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet()).add(pos.asLong());
+        reshaped(level, pos);
+    }
+
+    /** The block's collision shape may have changed with its block entity: Horizon gets it again at the level's next tick. */
+    static synchronized void reshaped(net.minecraft.server.level.ServerLevel level, net.minecraft.core.BlockPos pos) {
+        RESHAPED.computeIfAbsent(level, l -> new it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet()).add(pos.asLong());
+    }
+
+    /** Horizon's collisions take a mod's block's `getCollisionShape(level, pos)` where its code may read the block entity. */
+    static void sendShapes(net.minecraft.server.level.ServerLevel level) {
+        it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet reshaped;
+        synchronized (Clients.class) {
+            reshaped = RESHAPED.remove(level);
+        }
+        if (reshaped == null) return;
+        for (long at : reshaped) {
+            var pos = net.minecraft.core.BlockPos.of(at);
+            var state = level.getBlockState(pos);
+            if (!state.hasBlockEntity() || !BlockEntities.ours(state)) continue;
+            collisionShape(at, state, boxes(state.getCollisionShape(level, pos, net.minecraft.world.phys.shapes.CollisionContext.empty())));
+        }
+    }
+
+    /** `VoxelShape.toAabbs`, six doubles a box. */
+    static double[] boxes(net.minecraft.world.phys.shapes.VoxelShape shape) {
+        var boxes = shape.toAabbs();
+        var out = new double[boxes.size() * 6];
+        int i = 0;
+        for (var box : boxes) {
+            out[i++] = box.minX;
+            out[i++] = box.minY;
+            out[i++] = box.minZ;
+            out[i++] = box.maxX;
+            out[i++] = box.maxY;
+            out[i++] = box.maxZ;
+        }
+        return out;
+    }
+
+    /** Bridged: the collision shape Horizon's server gives this block while it keeps this state. */
+    private static void collisionShape(long pos, net.minecraft.world.level.block.state.BlockState state, double[] boxes) {
+        throw new IllegalStateException("not bridged");
     }
 
     /** `ChunkHolder.broadcastChanges`, as the level's chunk source ticks: each changed block's state, then its block entity's update packet. */
@@ -84,23 +128,33 @@ public final class Clients {
         for (long at : changed) {
             var pos = net.minecraft.core.BlockPos.of(at);
             var state = level.getBlockState(pos);
-            send(level, new net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket(pos, state));
+            send(level, pos, new net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket(pos, state));
             if (!state.hasBlockEntity()) continue;
             var entity = level.getBlockEntity(pos);
             var packet = entity == null ? null : entity.getUpdatePacket();
-            if (packet != null) send(level, packet);
+            if (packet != null) send(level, pos, packet);
         }
     }
 
     /** A block entity joined the level: its block and its update tag, as a chunk's arrival carries them (`ClientboundLevelChunkPacketData`). */
     static void joined(net.minecraft.server.level.ServerLevel level, net.minecraft.world.level.block.entity.BlockEntity entity) {
+        reshaped(level, entity.getBlockPos());
         if (level.players().isEmpty()) return;
-        send(level, new net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket(entity.getBlockPos(), entity.getBlockState()));
-        send(level, net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket.create(entity, net.minecraft.world.level.block.entity.BlockEntity::getUpdateTag));
+        send(level, entity.getBlockPos(), new net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket(entity.getBlockPos(), entity.getBlockState()));
+        send(level, entity.getBlockPos(), net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket.create(entity, net.minecraft.world.level.block.entity.BlockEntity::getUpdateTag));
     }
 
-    private static void send(net.minecraft.server.level.ServerLevel level, Packet<?> packet) {
-        for (var player : level.players()) toClient(player.getUUID(), packet);
+    /** A chunk reached this player: what `ClientboundLevelChunkPacketData` carries of its block entities. */
+    static void chunkArrived(net.minecraft.server.level.ServerLevel level, net.minecraft.server.level.ServerPlayer player, net.minecraft.world.level.chunk.LevelChunk chunk) {
+        for (var entity : BlockEntities.inChunk(level, chunk.getPos()).values()) {
+            toClient(player.getUUID(), new net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket(entity.getBlockPos(), entity.getBlockState()));
+            toClient(player.getUUID(), net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket.create(entity, net.minecraft.world.level.block.entity.BlockEntity::getUpdateTag));
+        }
+    }
+
+    /** `ChunkHolder.broadcast` to `ChunkMap.getPlayers(pos, false)`. */
+    private static void send(net.minecraft.server.level.ServerLevel level, net.minecraft.core.BlockPos pos, Packet<?> packet) {
+        for (var player : level.getChunkSource().chunkMap.getPlayers(net.minecraft.world.level.ChunkPos.containing(pos), false)) toClient(player.getUUID(), packet);
     }
 
     /** Counts packets sent to clients and geometry marked to record, so a window knows without the lock when it has work. */

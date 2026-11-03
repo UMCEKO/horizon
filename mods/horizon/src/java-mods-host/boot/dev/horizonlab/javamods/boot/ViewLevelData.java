@@ -11,7 +11,8 @@ final class ViewLevelData implements WritableLevelData {
     @Override public RespawnData getRespawnData() { return respawn; }
     @Override public void setSpawn(RespawnData respawnData) { respawn = respawnData; }
     @Override public long getGameTime() { return gameTime; }
-    @Override public boolean isHardcore() { return false; }
-    @Override public Difficulty getDifficulty() { return Difficulty.NORMAL; }
-    @Override public boolean isDifficultyLocked() { return false; }
+    // Bridged: Horizon's level data answers.
+    @Override public boolean isHardcore() { throw new IllegalStateException("not bridged"); }
+    @Override public Difficulty getDifficulty() { throw new IllegalStateException("not bridged"); }
+    @Override public boolean isDifficultyLocked() { throw new IllegalStateException("not bridged"); }
 }

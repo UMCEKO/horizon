@@ -172,7 +172,12 @@ final class ClientLoader {
         set(minecraft, "launchedVersion", "26.3");
         User user = new User("Player", new UUID(0, 0), "", Optional.empty(), Optional.empty());
         set(minecraft, "user", user);
-        set(minecraft, "window", GameBridge.construct(Window.class, object));
+        Window window = GameBridge.construct(Window.class, object);
+        Field handle = Window.class.getDeclaredField("handle");
+        handle.setAccessible(true);
+        // Horizon's window is the one window, so the input handlers' `handle == window.handle()` holds for what it hands them.
+        handle.setLong(window, 1L);
+        set(minecraft, "window", window);
         set(minecraft, "modelManager", GameBridge.construct(ModelManager.class, object));
         set(minecraft, "languageManager", new net.minecraft.client.resources.language.LanguageManager(minecraft, "en_us", language -> {}));
         set(minecraft, "deltaTracker", new net.minecraft.client.DeltaTracker.Timer(20.0F, 0L, target -> target));
@@ -189,6 +194,8 @@ final class ClientLoader {
         set(minecraft, "resourceManager", resources);
         packs(resources, folder);
         set(minecraft, "options", new Options(minecraft, folder));
+        set(minecraft, "framerateLimitTracker", new com.mojang.blaze3d.platform.FramerateLimitTracker(minecraft.options, minecraft));
+        set(minecraft, "mouseHandler", new net.minecraft.client.MouseHandler(minecraft));
         Gui gui = GameBridge.construct(Gui.class, object);
         Field hud = Gui.class.getDeclaredField("hud");
         hud.setAccessible(true);

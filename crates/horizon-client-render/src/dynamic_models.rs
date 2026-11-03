@@ -16,6 +16,8 @@ use std::{
 /// One interned geometry and its quads converted for the mesher, per the sprite table they were made for.
 struct Geometry {
     quads: Arc<[BakedQuadData]>,
+    /// Each quad's tint as the block's code resolved it (ARGB, -1 for none); empty when none was resolved.
+    colors: Arc<[i32]>,
     faces: Mutex<Option<(SpriteTable, Arc<[BakedFace]>)>>,
 }
 /// Identifies a `RenderAssets` generation: its address and sprite count.
@@ -59,12 +61,12 @@ pub fn is_dynamic(state: BlockStateId) -> bool {
             .unwrap_or(false)
 }
 /// Stores geometry under `key`; true when it replaced different quads (positions using the key change).
-pub fn put_geometry(key: i32, quads: Arc<[BakedQuadData]>) -> bool {
+pub fn put_geometry(key: i32, quads: Arc<[BakedQuadData]>, colors: Arc<[i32]>) -> bool {
     let mut registry = REGISTRY.write().unwrap();
     if registry
         .geometry
         .get(&key)
-        .is_some_and(|old| *old.quads == *quads)
+        .is_some_and(|old| *old.quads == *quads && *old.colors == *colors)
     {
         return false;
     }
@@ -73,6 +75,7 @@ pub fn put_geometry(key: i32, quads: Arc<[BakedQuadData]>) -> bool {
         key,
         Arc::new(Geometry {
             quads,
+            colors,
             faces: Mutex::new(None),
         }),
     );
@@ -128,7 +131,16 @@ pub fn faces_at(pos: [i32; 3], render: &RenderAssets) -> Option<Arc<[BakedFace]>
     let faces: Arc<[BakedFace]> = geometry
         .quads
         .iter()
-        .map(|quad| to_face(quad, &render.sprite_layers, &render.translucent_layers))
+        .enumerate()
+        .map(|(i, quad)| {
+            let mut face = to_face(quad, &render.sprite_layers, &render.translucent_layers);
+            face.tint = geometry
+                .colors
+                .get(i)
+                .filter(|c| **c != -1)
+                .map(|c| *c as u32 & 0xFF_FFFF);
+            face
+        })
         .collect();
     *cached = Some((table, faces.clone()));
     Some(faces)
@@ -166,6 +178,7 @@ fn to_face(
         opaque: quad.layer == BakedLayer::Solid,
         quad: model,
         layer,
+        tint: None,
     }
 }
 
@@ -198,16 +211,17 @@ mod tests {
         clear();
         let quads: Arc<[BakedQuadData]> =
             Arc::from(vec![quad("ae2:block/cable", BakedLayer::Solid)]);
-        assert!(!put_geometry(7, quads.clone()));
+        assert!(!put_geometry(7, quads.clone(), Arc::from([])));
         assert!(at([1, 2, 3]).is_none());
         assert!(place([1, 2, 3], Some(7)));
         assert!(!place([1, 2, 3], Some(7)));
         assert!(place([-4, 70, 9], Some(7)));
         assert_eq!(at([1, 2, 3]).as_deref(), Some(&*quads));
-        assert!(!put_geometry(7, quads.clone()));
+        assert!(!put_geometry(7, quads.clone(), Arc::from([])));
         let other: Arc<[BakedQuadData]> =
             Arc::from(vec![quad("ae2:block/other", BakedLayer::Cutout)]);
-        assert!(put_geometry(7, other.clone()));
+        assert!(put_geometry(7, other.clone(), Arc::from([])));
+        assert!(put_geometry(7, other.clone(), Arc::from([0x123456])));
         assert_eq!(at([-4, 70, 9]).as_deref(), Some(&*other));
         let mut users = positions_of(7);
         users.sort();

@@ -183,6 +183,18 @@ public final class Flat {
         return net.minecraft.world.Difficulty.byId(id);
     }
 
+    public static net.minecraft.world.level.GameType toGameType(int id) {
+        return net.minecraft.world.level.GameType.byId(id);
+    }
+
+    public static net.minecraft.server.permissions.LevelBasedPermissionSet toLevelBasedPermissionSet(int level) {
+        return net.minecraft.server.permissions.LevelBasedPermissionSet.forLevel(net.minecraft.server.permissions.PermissionLevel.byId(level));
+    }
+
+    public static String raw(net.minecraft.server.players.NameAndId player) {
+        return player.id().toString();
+    }
+
     public static net.minecraft.world.DifficultyInstance toDifficultyInstance(double[] numbers) {
         return LevelApi.difficultyInstance(numbers);
     }

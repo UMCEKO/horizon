@@ -408,6 +408,7 @@ impl Component {
             Self::PaintingVariant(i) => entry(names, "minecraft:painting_variant", *i)?,
             Self::Profile(p) => raw::profile(p),
             Self::Raw(bytes) => raw::code(id, bytes, names)?,
+            Self::Foreign { .. } => return None,
         })
     }
 

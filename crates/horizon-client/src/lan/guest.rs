@@ -876,6 +876,7 @@ fn network_stack(
                 horizon_protocol::item::Component::Stacks(contents),
             ));
         }
+        stack.added.extend(foreign_components(d, synced_id));
         // The books a lectern shows and a guest reads.
         if !d.writable_pages.is_empty() {
             stack.added.push((
@@ -922,6 +923,43 @@ fn network_stack(
     Some(stack)
 }
 
+/// A mod's components by their own stream codecs, each behind its type's id in the registry the client shares.
+fn foreign_components(
+    d: &crate::item_data::StackData,
+    synced_id: &dyn Fn(&str, &str) -> Option<i32>,
+) -> Vec<(i32, horizon_protocol::item::Component)> {
+    use horizon_protocol::item::{Component, foreign};
+    let owned: Vec<(i32, &str, &horizon_world::nbt::Tag)> = d
+        .other
+        .iter()
+        .filter_map(|(name, value)| {
+            let kind = synced_id("minecraft:data_component_type", name)?;
+            foreign::owns(kind).then_some((kind, name.as_str(), value))
+        })
+        .collect();
+    if owned.is_empty() {
+        return Vec::new();
+    }
+    let values: Vec<_> = owned
+        .iter()
+        .map(|(_, name, value)| (*name, *value))
+        .collect();
+    let bytes = foreign::write(&values);
+    owned
+        .into_iter()
+        .zip(bytes)
+        .filter_map(|((kind, _, value), bytes)| {
+            Some((
+                kind,
+                Component::Foreign {
+                    bytes: bytes?.to_vec(),
+                    value: Some(value.clone()),
+                },
+            ))
+        })
+        .collect()
+}
+
 /// `Player.isWithinBlockInteractionRange`: `eye` closer than `range` to the
 /// box of the block at `pos` (`AABB.distanceToSqr`).
 pub fn within_block_range(eye: [f64; 3], range: f64, pos: [i32; 3]) -> bool {
@@ -961,6 +999,48 @@ mod tests {
         assert_eq!(
             received.component(component::CUSTOM_NAME),
             Some(&Component::Text(name))
+        );
+    }
+
+    #[test]
+    fn a_mods_component_goes_by_its_codec_behind_its_id() {
+        use horizon_protocol::item::foreign;
+        struct Fake;
+        impl foreign::StreamCodecs for Fake {
+            fn read(&self, _: &str, _: &[u8]) -> Option<(usize, Option<Tag>)> {
+                None
+            }
+            fn write(&self, values: &[(&str, &Tag)]) -> Vec<Option<std::sync::Arc<[u8]>>> {
+                let answer =
+                    |(name, _): &(&str, &Tag)| (*name == "test:mode").then(|| [7u8].into());
+                values.iter().map(answer).collect()
+            }
+        }
+        foreign::install(Box::new(Fake));
+        let kind = component::VANILLA_TYPES + 3;
+        let synced_id = |registry: &str, name: &str| match (registry, name) {
+            ("minecraft:data_component_type", "test:mode") => Some(kind),
+            ("minecraft:data_component_type", "test:refused") => Some(kind + 1),
+            ("minecraft:data_component_type", "minecraft:lore") => Some(component::LORE),
+            _ => None,
+        };
+        let mode = Tag::String("rotate".into());
+        let mut item = ItemStack::new("test:item", 1);
+        item.data_mut().other = vec![
+            ("test:mode".into(), mode.clone()),
+            ("test:refused".into(), Tag::Int(1)),
+            ("minecraft:lore".into(), Tag::List(Vec::new())),
+        ];
+        let stack = stack_to_network(|_| 7, synced_id, &Some(item)).unwrap();
+        assert_eq!(
+            stack.added,
+            vec![(
+                kind,
+                Component::Foreign {
+                    bytes: vec![7],
+                    value: Some(mode)
+                }
+            )]
         );
     }
 

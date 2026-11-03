@@ -223,6 +223,8 @@ def bridges(args):
             send(f'command fill {at} {y - 1} {z - 6} {at + 14} {y - 1} {z + 4} minecraft:stone')
         send('wait 2')
         send('command kill @e[type=item]')
+        # Outside the checked stretches: an entity the player's client tracks.
+        send(f'command summon minecraft:armor_stand {base[0] + 40} {y} {z - 12} {{NoGravity:1b}}')
         send(f'command setblock {base[0]} {base[1]} {base[2]} minecraft:stone')
         send(f'command setblock {base[0]} {base[1]} {base[2] + 2} minecraft:stone')
         machine = base[0] + 32
@@ -275,8 +277,13 @@ def bridges(args):
 
     def again(send):
         x, y, z, base = positions[0]
+        # Far enough for the machine's chunk to unload, then back for it to load again.
+        send('command gamemode spectator')
+        send(f'command tp @s {x + 4000} {y + 60} {z}')
+        send('wait 60')
         send(f'command tp @s {x} {y} {z}')
-        send('wait 20')
+        send('command gamemode survival')
+        send('wait 60')
         send('select horizon_java_test:probe')
         send(f'look-at-block {base[0]} {base[1]} {base[2] + 2} up')
         send('wait 5')

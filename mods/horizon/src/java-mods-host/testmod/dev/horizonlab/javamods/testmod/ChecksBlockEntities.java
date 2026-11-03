@@ -69,6 +69,7 @@ final class ChecksBlockEntities {
         Level level = context.getLevel();
         BlockPos at = areaOf(context);
         boolean reloaded = area == null;
+        ChecksChunks.later(reloaded);
         BlockPos entities = context.getClickedPos().offset(8 + 5 * 4, 0, -2);
         if (reloaded) ChecksEntities.afterChange(context, entities);
         ChecksEntities.later(context, entities);

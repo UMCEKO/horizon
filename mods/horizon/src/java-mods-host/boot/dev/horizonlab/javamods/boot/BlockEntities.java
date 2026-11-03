@@ -1,6 +1,7 @@
 package dev.horizonlab.javamods.boot;
 
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -9,6 +10,9 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.block.BaseRailBlock;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.EntityBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityTicker;
@@ -25,6 +29,8 @@ public final class BlockEntities {
     private static final List<BlockEntity> COPIES = new ArrayList<>();
     private static final List<BlockEntity> FRESH = new ArrayList<>();
     private static final List<BlockEntity> CHANGED_COPIES = new ArrayList<>();
+    /** `ChunkAccess.markUnsaved` by level: chunks whose block entities Java changed since Horizon last took their saved forms. */
+    private static final Map<ServerLevel, LongOpenHashSet> UNSAVED = new IdentityHashMap<>();
 
     /** Bridged: sends what Horizon holds at this position to `load`. */
     private static void fetch(long pos) {
@@ -45,7 +51,7 @@ public final class BlockEntities {
         return HELD.computeIfAbsent(level, l -> new Long2ObjectOpenHashMap<>());
     }
 
-    private static boolean ours(BlockState state) {
+    static boolean ours(BlockState state) {
         return !BuiltInRegistries.BLOCK.getKey(state.getBlock()).getNamespace().equals("minecraft");
     }
 
@@ -124,7 +130,12 @@ public final class BlockEntities {
             adopt(key, BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(entity.getType()).toString());
             FRESH.add(entity);
         }
-        if (!ours(entity.getBlockState())) CHANGED_COPIES.add(entity);
+        if (ours(entity.getBlockState())) markUnsaved(level, entity.getBlockPos());
+        else CHANGED_COPIES.add(entity);
+    }
+
+    private static void markUnsaved(ServerLevel level, BlockPos pos) {
+        UNSAVED.computeIfAbsent(level, l -> new LongOpenHashSet()).add(ChunkPos.pack(pos));
     }
 
     public static void remove(ServerLevel level, BlockPos pos) {
@@ -138,7 +149,9 @@ public final class BlockEntities {
     /** `Level.blockEntityChanged`: a mod's saves when the world does, a vanilla copy goes back after this call. */
     public static void changed(ServerLevel level, BlockPos pos) {
         BlockEntity entity = held(level).get(pos.asLong());
-        if (entity != null && COPIES.contains(entity) && !CHANGED_COPIES.contains(entity)) CHANGED_COPIES.add(entity);
+        if (entity == null) return;
+        if (!COPIES.contains(entity)) markUnsaved(level, pos);
+        else if (!CHANGED_COPIES.contains(entity)) CHANGED_COPIES.add(entity);
     }
 
     /** The vanilla copies this call changed, as their saved form, and every copy dropped. */
@@ -157,7 +170,35 @@ public final class BlockEntities {
         COPIES.clear();
     }
 
+    /** `ChunkMap.save` of the chunk's unsaved block entities, then `ServerLevel.unload`'s `clearAllBlockEntities`; the chunk's own record of them goes with Horizon's unload. */
+    static void unload(ServerLevel level, int x, int z, List<CompoundTag> saved) {
+        long chunk = ChunkPos.pack(x, z);
+        var held = held(level);
+        var here = new ArrayList<BlockEntity>();
+        for (BlockEntity entity : held.values()) {
+            if (ChunkPos.pack(entity.getBlockPos()) == chunk) here.add(entity);
+        }
+        var unsaved = UNSAVED.get(level);
+        if (unsaved != null && unsaved.remove(chunk)) {
+            for (BlockEntity entity : here) {
+                if (!entity.isRemoved()) saved.add(entity.saveWithFullMetadata(level.registryAccess()));
+            }
+        }
+        for (BlockEntity entity : here) {
+            try {
+                entity.onChunkUnloaded();
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+        }
+        for (BlockEntity entity : here) {
+            entity.setRemoved();
+            held.remove(entity.getBlockPos().asLong());
+        }
+    }
+
     static List<CompoundTag> saveAll(ServerLevel level) {
+        UNSAVED.remove(level);
         var saved = new ArrayList<CompoundTag>();
         for (BlockEntity entity : held(level).values()) saved.add(entity.saveWithFullMetadata(level.registryAccess()));
         return saved;
@@ -204,22 +245,56 @@ public final class BlockEntities {
         if (ticker != null) ticker.tick(level, entity.getBlockPos(), state, entity);
     }
 
-    /** `LevelChunk.setBlockState`'s steps after the storage write, in its order, for a mod's block. */
-    static void blockChanged(ServerLevel level, BlockPos pos, BlockState old, BlockState now) {
-        Clients.blockChanged(level, pos);
-        if (old.getBlock() != now.getBlock()) {
-            BlockEntity entity = held(level).get(pos.asLong());
-            if (entity != null) {
-                entity.preRemoveSideEffects(pos, old);
-                remove(level, pos);
-            }
-            if (ours(old)) old.affectNeighborsAfterRemoval(level, pos, false);
+    /** `LevelChunk.getBlockEntity(pos, CHECK)`: the one held, or the saved form Horizon keeps for it, never a new one. */
+    private static BlockEntity check(ServerLevel level, BlockPos pos) {
+        long key = pos.asLong();
+        BlockEntity entity = held(level).get(key);
+        if (entity == null) {
+            fetch(key);
+            entity = held(level).get(key);
         }
-        if (ours(now)) {
-            now.onPlace(level, pos, old, false);
-            if (now.hasBlockEntity()) {
-                BlockEntity entity = get(level, pos);
-                if (entity != null) entity.setBlockState(now);
+        if (entity != null && entity.isRemoved()) {
+            held(level).remove(key);
+            return null;
+        }
+        return entity;
+    }
+
+    /** `LevelChunk.setBlockState` after the storage write, in its order, with the flags of the `setBlock` that made it; Horizon ran the steps of vanilla's own blocks. */
+    static void blockChanged(ServerLevel level, BlockPos pos, BlockState old, BlockState now, int flags) {
+        if ((flags & 2) != 0) Clients.blockChanged(level, pos);
+        Block newBlock = now.getBlock();
+        boolean blockChanged = !old.is(newBlock);
+        boolean movedByPiston = (flags & 64) != 0;
+        boolean sideEffects = (flags & 256) == 0;
+        if (blockChanged && old.hasBlockEntity()) {
+            if (!now.shouldChangedStateKeepBlockEntity(old)) {
+                BlockEntity entity = held(level).get(pos.asLong());
+                if (entity != null && !entity.isRemoved() && sideEffects) entity.preRemoveSideEffects(pos, old);
+                remove(level, pos);
+            } else {
+                // Horizon's chunk let its record go with the old block, which only vanilla's kept-entity blocks keep.
+                BlockEntity entity = held(level).get(pos.asLong());
+                if (entity != null && !entity.isRemoved()) adopt(pos.asLong(), BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(entity.getType()).toString());
+            }
+        }
+        if ((blockChanged || newBlock instanceof BaseRailBlock) && ((flags & 1) != 0 || movedByPiston) && ours(old)) {
+            old.affectNeighborsAfterRemoval(level, pos, movedByPiston);
+        }
+        if (!level.getBlockState(pos).is(newBlock) || !ours(now)) return;
+        if ((flags & 512) == 0) now.onPlace(level, pos, old, movedByPiston);
+        if (now.hasBlockEntity() && level.getBlockState(pos).is(newBlock)) {
+            BlockEntity entity = check(level, pos);
+            if (entity != null && !entity.isValidBlockState(now)) {
+                LOGGER.warn("Found mismatched block entity @ {}: type = {}, state = {}", pos, entity.typeHolder().getRegisteredName(), now);
+                remove(level, pos);
+                entity = null;
+            }
+            if (entity == null) {
+                entity = ((EntityBlock) newBlock).newBlockEntity(pos, now);
+                if (entity != null) set(level, entity);
+            } else {
+                entity.setBlockState(now);
             }
         }
     }

@@ -266,6 +266,18 @@ impl Arg for Bounds {
 
 /// A result of plain numbers a `Flat.to` method builds an object from; empty when there is no answer.
 pub struct Doubles(pub Vec<f64>);
+impl Arg for Doubles {
+    type Raw = jdoubleArray;
+    const RAW: &'static str = "[D";
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    fn from_raw(env: &mut JNIEnv, raw: jdoubleArray) -> Doubles {
+        // SAFETY: the JVM passed this reference to the native running now.
+        let values = unsafe { JDoubleArray::from_raw(raw) };
+        let mut out = vec![0.0; env.get_array_length(&values).unwrap_or(0).max(0) as usize];
+        let _ = env.get_double_array_region(&values, 0, &mut out);
+        Doubles(out)
+    }
+}
 impl Ret for Doubles {
     type Raw = jdoubleArray;
     const RAW: &'static str = "[D";
@@ -375,19 +387,26 @@ impl Arg for State {
         )
     }
 }
+/// `StateMap::to_java` of a Horizon state Java has none for.
+pub const UNMAPPED: i32 = -1;
+
 impl Ret for BlockStateId {
     type Raw = jint;
     const RAW: &'static str = "I";
     fn into_raw(self) -> jint {
-        STATES
-            .get()
-            .map(|m| {
-                m.to_java
-                    .get(self.0 as usize)
-                    .copied()
-                    .unwrap_or(m.java_air)
-            })
-            .unwrap_or_default()
+        STATES.get().map_or(UNMAPPED, |m| {
+            m.to_java.get(self.0 as usize).copied().unwrap_or(UNMAPPED)
+        })
+    }
+    fn into_raw_in(self, env: &mut JNIEnv) -> jint {
+        let java = self.into_raw();
+        if java == UNMAPPED {
+            let _ = env.throw_new(
+                "java/lang/IllegalStateException",
+                format!("Horizon: block state {} has no Java state", self.0),
+            );
+        }
+        java
     }
 }
 

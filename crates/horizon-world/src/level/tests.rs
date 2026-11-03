@@ -229,7 +229,7 @@ fn block_observation_follows_successful_commits_only() {
 
     #[derive(Debug, PartialEq)]
     enum Observation {
-        Block(BlockPos, BlockStateId, BlockStateId),
+        Block(BlockPos, BlockStateId, BlockStateId, i32),
         Neighbor,
     }
     struct Observer {
@@ -253,11 +253,17 @@ fn block_observation_follows_successful_commits_only() {
         fn game_time(&self) -> i64 {
             self.inner.game_time()
         }
-        fn observe_block_changed(&self, pos: BlockPos, old: BlockStateId, new: BlockStateId) {
+        fn observe_block_changed(
+            &self,
+            pos: BlockPos,
+            old: BlockStateId,
+            new: BlockStateId,
+            flags: i32,
+        ) {
             assert_eq!(self.block_state(pos), new);
             self.seen
                 .borrow_mut()
-                .push(Observation::Block(pos, old, new));
+                .push(Observation::Block(pos, old, new, flags));
         }
         fn observe_neighbor_changed(&self, _: BlockPos, _: BlockStateId, _: BlockId, _: bool) {
             self.seen.borrow_mut().push(Observation::Neighbor);
@@ -275,7 +281,10 @@ fn block_observation_follows_successful_commits_only() {
     let stone = f.registry.default_state("minecraft:stone").unwrap();
     assert!(b.set_block(&mut level, &mut ticks, pos, stone, flags::UPDATE_ALL));
     let seen = level.seen.borrow();
-    assert_eq!(seen[0], Observation::Block(pos, b.air(), stone));
+    assert_eq!(
+        seen[0],
+        Observation::Block(pos, b.air(), stone, flags::UPDATE_ALL)
+    );
     assert!(seen[1..].contains(&Observation::Neighbor));
     drop(seen);
     level.seen.borrow_mut().clear();
@@ -291,10 +300,11 @@ fn block_observation_follows_successful_commits_only() {
         flags::UPDATE_ALL
     ));
     assert!(level.seen.borrow().is_empty());
-    assert!(b.set_block(&mut level, &mut ticks, pos, b.air(), flags::UPDATE_ALL));
+    let quiet = flags::UPDATE_CLIENTS | flags::UPDATE_SKIP_ON_PLACE;
+    assert!(b.set_block(&mut level, &mut ticks, pos, b.air(), quiet));
     assert_eq!(
         level.seen.borrow()[0],
-        Observation::Block(pos, stone, b.air())
+        Observation::Block(pos, stone, b.air(), quiet)
     );
 }
 

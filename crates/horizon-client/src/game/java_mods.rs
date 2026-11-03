@@ -7,6 +7,7 @@ use horizon_java_host::wire::{In, Out};
 use horizon_world::nbt::{self, Limits, NamedTag, Tag};
 
 const INVENTORY: usize = 36;
+const UNMAPPED: i32 = horizon_java_host::bridge::UNMAPPED;
 const ARMOR: [usize; 4] = [3, 2, 1, 0];
 const OFFHAND: usize = 40;
 
@@ -132,6 +133,10 @@ impl Game<'_> {
         };
         map.java_air = air;
         map.to_horizon.resize(count as usize, None);
+        map.to_java.resize(registry.len(), UNMAPPED);
+        map.owned.resize(registry.len(), false);
+        map.entity.resize(registry.len(), false);
+        let mut missing: std::collections::BTreeMap<String, usize> = Default::default();
         for _ in 0..count {
             let read = (|| {
                 let java = listed.int()?;
@@ -144,6 +149,9 @@ impl Game<'_> {
                 Some((java, name, properties, entity))
             })();
             let Some((java, name, properties, entity)) = read else {
+                log::error!(
+                    "Horizon: Java's block state list ended early; Java mods' blocks are unbound"
+                );
                 return;
             };
             let owned = !name.starts_with("minecraft:");
@@ -151,9 +159,8 @@ impl Game<'_> {
                 name,
                 properties: properties.into_iter().collect(),
             };
-            let exact = registry.resolve(&state).ok();
-            // A block whose properties didn't reach Horizon: Java's other states read as its one state here.
-            let Some(id) = exact.or_else(|| registry.default_state(&state.name)) else {
+            let Ok(id) = registry.resolve(&state) else {
+                *missing.entry(state.name).or_default() += 1;
                 continue;
             };
             if let Some(cell) = map.to_horizon.get_mut(java as usize) {
@@ -161,15 +168,40 @@ impl Game<'_> {
             }
             let at = id.0 as usize;
             if map.to_java.len() <= at {
-                map.to_java.resize(at + 1, air);
+                map.to_java.resize(at + 1, UNMAPPED);
                 map.owned.resize(at + 1, false);
                 map.entity.resize(at + 1, false);
             }
-            if exact.is_some() || map.to_java[at] == air {
-                map.to_java[at] = java;
-            }
+            map.to_java[at] = java;
             map.owned[at] = owned;
             map.entity[at] = entity;
+        }
+        if !missing.is_empty() {
+            let blocks: Vec<String> = missing.iter().map(|(b, n)| format!("{b} ({n})")).collect();
+            log::error!(
+                "Horizon: {} Java block states have no state in Horizon's registry, so they never cross between the two; carry their mods with oracle facts: {}",
+                missing.values().sum::<usize>(),
+                blocks.join(", ")
+            );
+        }
+        let mut unmatched: std::collections::BTreeMap<&str, usize> = Default::default();
+        for (i, java) in map.to_java.iter().enumerate() {
+            if *java == UNMAPPED
+                && let Some(state) = registry.state(BlockStateId(i as u32))
+            {
+                *unmatched.entry(state.name.as_str()).or_default() += 1;
+            }
+        }
+        if !unmatched.is_empty() {
+            let blocks: Vec<String> = unmatched
+                .iter()
+                .map(|(b, n)| format!("{b} ({n})"))
+                .collect();
+            log::error!(
+                "Horizon: {} of Horizon's block states have no Java state; a Java mod reading one fails: {}",
+                unmatched.values().sum::<usize>(),
+                blocks.join(", ")
+            );
         }
         let _ = STATES.set(map);
     }
@@ -180,9 +212,15 @@ impl Game<'_> {
         let mut out = Out::default();
         out.long(((a as i64) << 32) | (b as u32 as i64));
         out.long(((c as i64) << 32) | (d as u32 as i64));
-        out.text(&self.options.player_name());
+        out.text(
+            &self
+                .lan_acting_name
+                .clone()
+                .unwrap_or_else(|| self.options.player_name()),
+        );
         out.text(self.dim.id());
         out.long(self.world.game_time);
+        out.text(self.player.as_ref()?.pose.name());
         out.double(position.x);
         out.double(position.y);
         out.double(position.z);
@@ -313,6 +351,7 @@ impl Game<'_> {
                 out.long(event.pos.pack());
                 out.int(event.a);
                 out.int(event.b);
+                out.int(event.c);
             }
         });
     }
@@ -496,32 +535,192 @@ impl Game<'_> {
             .insert((pos.x, pos.y, pos.z), entity);
     }
 
-    /// `BlockEntityTicker.tick` of a block entity Java holds; it's out of the world during its tick, so its saved form comes along when Java asks.
+    /// `BlockEntityTicker.tick` of a block entity Java holds, which it took when its chunk loaded.
     pub(super) fn java_block_entity_tick(
         &mut self,
         pos: [i32; 3],
-        entity: &horizon_client::containers::ModBlockEntity,
+        _entity: &horizon_client::containers::ModBlockEntity,
     ) {
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         if !self.java_tick_once(at) {
-            let key = (pos[0], pos[1], pos[2]);
-            let name = self
-                .res
-                .facts()
-                .get(self.world.block(pos[0], pos[1], pos[2]))
-                .name
-                .clone();
-            let whole = BlockEntity::Mod(Box::new(entity.clone()));
-            let tag = horizon_client::save::encode_block_entity(key, &whole, &name);
-            if let Some(bytes) = write_tag(tag) {
-                self.java_level_call("block_entity_load", |out| {
-                    out.long(at.pack());
-                    out.bytes(&bytes);
-                });
-                self.java_tick_once(at);
+            thread_local! {
+                static WARNED: std::cell::RefCell<std::collections::HashSet<BlockPos>> = Default::default();
+            }
+            if WARNED.with_borrow_mut(|w| w.insert(at)) {
+                log::warn!(
+                    "Horizon: no Java block entity at {pos:?} for Horizon's record of one, so it doesn't tick"
+                );
             }
         }
         self.java_drain_block_events();
+    }
+
+    /// Columns that joined and left this level: Java takes the joined ones' block entities as `LevelChunk.postProcessGeneration` promotes them, and lets the others' go as `ServerLevel.unload` does, handing back what they hadn't saved.
+    pub(super) fn java_chunks_changed(
+        &mut self,
+        loaded: &[(i32, i32)],
+        unloaded: &[Arc<horizon_client::chunk::Chunk>],
+    ) {
+        // Servers' configs load with `ServerLifecycleHooks`, so vanilla's chunks only load after it; this level's earlier ones catch up here.
+        if self.remote.is_some() || !JAVA_SERVER.with_borrow(|s| s.started) {
+            return;
+        }
+        let behind = JAVA_SERVER.with_borrow_mut(|s| s.levels.insert(self.dim.id().to_owned()));
+        if loaded.is_empty() && unloaded.is_empty() && !behind {
+            return;
+        }
+        let Some(host) = horizon_java_host::get() else {
+            return;
+        };
+        self.java_bind_states();
+        let joined: horizon_client::fast_hash::FxHashSet<(i32, i32)> = if behind {
+            self.world.chunks.keys().copied().collect()
+        } else {
+            loaded.iter().copied().collect()
+        };
+        let mut entities: Vec<(BlockPos, Vec<u8>)> = Vec::new();
+        if !joined.is_empty() {
+            for (&key, entity) in self.world.block_entities.iter() {
+                let BlockEntity::Mod(m) = entity else {
+                    continue;
+                };
+                let state = self.world.block(key.0, key.1, key.2);
+                if m.id.is_empty()
+                    || !joined.contains(&(key.0 >> 4, key.2 >> 4))
+                    || !horizon_java_host::bridge::java_block(state)
+                {
+                    continue;
+                }
+                let name = &self.res.facts().get(state).name;
+                let tag = horizon_client::save::encode_block_entity(key, entity, name);
+                if let Some(bytes) = write_tag(tag) {
+                    entities.push((BlockPos::new(key.0, key.1, key.2), bytes));
+                }
+            }
+        }
+        let mut out = Out::default();
+        out.text(self.dim.id());
+        out.long(self.world.game_time);
+        out.int(entities.len() as i32);
+        for (pos, bytes) in &entities {
+            out.long(pos.pack());
+            out.bytes(bytes);
+        }
+        out.int(unloaded.len() as i32);
+        for chunk in unloaded {
+            out.int(chunk.x);
+            out.int(chunk.z);
+        }
+        let reply =
+            horizon_java_host::bridge::with_active(self, || host.request("chunks_changed", &out.0));
+        let Some(reply) = reply else {
+            return;
+        };
+        let mut reply = In(&reply);
+        for _ in 0..reply.int().unwrap_or(0) {
+            let Some(tag) = reply.bytes().and_then(read_tag) else {
+                return;
+            };
+            if let Some((key, entity)) = horizon_client::save::decode_block_entity(&tag) {
+                self.world.modified.insert((key.0 >> 4, key.2 >> 4));
+                self.world.block_entities.insert(key, entity);
+            }
+        }
+        self.java_apply_effects(&mut reply);
+        self.java_drain_block_events();
+    }
+
+    /// What changed in the players' chunks and pairings, for the `ChunkMap` in Java.
+    pub(super) fn java_tracking(&mut self, events: Vec<horizon_client::lan::hub::Tracking>) {
+        use horizon_client::lan::hub::Tracking;
+        if events.is_empty() {
+            return;
+        }
+        let head = |out: &mut Out, kind: i32, uuid: u128| {
+            out.int(kind);
+            out.long((uuid >> 64) as i64);
+            out.long(uuid as i64);
+        };
+        self.java_level_call("tracking", |out| {
+            out.int(events.len() as i32);
+            for event in &events {
+                match event {
+                    Tracking::View {
+                        uuid,
+                        entity_id,
+                        dimension,
+                        center,
+                        radius,
+                    } => {
+                        head(out, 0, *uuid);
+                        out.int(*entity_id);
+                        out.text(dimension);
+                        out.int(center.0);
+                        out.int(center.1);
+                        out.int(*radius);
+                    }
+                    Tracking::Watch { uuid, chunk } | Tracking::Unwatch { uuid, chunk } => {
+                        head(
+                            out,
+                            if matches!(event, Tracking::Watch { .. }) {
+                                1
+                            } else {
+                                2
+                            },
+                            *uuid,
+                        );
+                        out.int(chunk.0);
+                        out.int(chunk.1);
+                    }
+                    Tracking::Reset { uuid } => head(out, 3, *uuid),
+                    Tracking::Pairing {
+                        uuid,
+                        entity,
+                        paired,
+                    } => {
+                        head(out, 4, *uuid);
+                        out.int(*entity);
+                        out.bool(*paired);
+                    }
+                    Tracking::Left { uuid } => head(out, 5, *uuid),
+                }
+            }
+        });
+    }
+
+    /// `ServerChunkCache.getChunk` with `load`: a ticket on the chunk and the server thread waiting for it, as `managedBlock` does; streaming's unloads wait for the next `update_world`.
+    pub(in crate::game) fn java_load_chunk(&mut self, x: i32, z: i32) -> bool {
+        let key = (x, z);
+        if self.world.chunks.contains_key(&key) {
+            return true;
+        }
+        if self.streaming.paused {
+            log::error!(
+                "Horizon: a Java mod asked for chunk ({x}, {z}) while chunk streaming is paused"
+            );
+            return false;
+        }
+        let areas = self.streaming.extra.len();
+        self.streaming.extra.push((key, 0));
+        let began = std::time::Instant::now();
+        while !self.world.chunks.contains_key(&key) && began.elapsed().as_secs() < 60 {
+            let (uploads, unloaded) = self.streaming.update(&mut self.world);
+            self.streaming.free(uploads);
+            PUMPED_UNLOADS.with_borrow_mut(|pumped| pumped.extend(unloaded));
+            if !self.world.chunks.contains_key(&key) {
+                self.streaming.wait(std::time::Duration::from_millis(5));
+            }
+        }
+        self.streaming.extra.truncate(areas);
+        // Vanilla's ticket lasts a tick; the next update keeps it too.
+        self.spawn_wait.push(key);
+        let loaded = self.world.chunks.contains_key(&key);
+        if !loaded {
+            log::error!(
+                "Horizon: a Java mod's getChunk({x}, {z}) gave up after a minute of waiting for it"
+            );
+        }
+        loaded
     }
 
     /// False when Java doesn't hold this block entity yet.
@@ -587,6 +786,10 @@ impl Game<'_> {
             .into_owned();
         self.java_level_call(if open { "server_start" } else { "server_stop" }, |out| {
             out.text(&world);
+        });
+        JAVA_SERVER.with_borrow_mut(|s| {
+            s.started = open;
+            s.levels.clear();
         });
     }
 
@@ -656,55 +859,58 @@ pub(super) struct BlockEvent {
     pos: BlockPos,
     a: i32,
     b: i32,
+    c: i32,
+}
+
+/// Whether Java's server started, and the levels whose loaded chunks Java has taken since.
+#[derive(Default)]
+struct JavaServer {
+    started: bool,
+    levels: std::collections::HashSet<String>,
 }
 
 thread_local! {
+    static JAVA_SERVER: std::cell::RefCell<JavaServer> = Default::default();
     static BLOCK_EVENTS: std::cell::RefCell<Vec<BlockEvent>> = const { std::cell::RefCell::new(Vec::new()) };
+    static PUMPED_UNLOADS: std::cell::RefCell<Vec<Arc<horizon_client::chunk::Chunk>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Columns a Java mod's `getChunk` unloaded while it waited, for `update_world` to save and drop.
+pub(super) fn take_pumped_unloads() -> Vec<Arc<horizon_client::chunk::Chunk>> {
+    PUMPED_UNLOADS.take()
 }
 
 fn java_id(state: BlockStateId) -> i32 {
-    use horizon_java_host::bridge::{Ret, STATES};
-    let _ = STATES.get();
+    use horizon_java_host::bridge::Ret;
     state.into_raw()
 }
 
-/// A level's hook, inside `with_level`: Java can't run yet, as it would reenter the level.
-pub(super) fn note_block_changed(pos: BlockPos, old: BlockStateId, new: BlockStateId) {
+fn push_event(kind: u8, pos: BlockPos, a: i32, b: i32, c: i32) {
+    BLOCK_EVENTS.with_borrow_mut(|e| e.push(BlockEvent { kind, pos, a, b, c }));
+}
+
+/// A level's hook, inside `with_level`: `GameLevel` holds the world, so Java's calls back into it would alias it.
+pub(super) fn note_block_changed(pos: BlockPos, old: BlockStateId, new: BlockStateId, flags: i32) {
     use horizon_java_host::bridge::java_block;
     if java_block(old) || java_block(new) {
-        BLOCK_EVENTS.with_borrow_mut(|e| {
-            e.push(BlockEvent {
-                kind: 0,
-                pos,
-                a: java_id(old),
-                b: java_id(new),
-            });
-        });
+        push_event(0, pos, java_id(old), java_id(new), flags);
     }
 }
 
-pub(super) fn note_neighbor_changed(pos: BlockPos, state: BlockStateId, moved: bool) {
+/// `changed`: the default state of the block that changed beside, as Java's `neighborChanged` takes its block.
+pub(super) fn note_neighbor_changed(
+    pos: BlockPos,
+    state: BlockStateId,
+    changed: BlockStateId,
+    moved: bool,
+) {
     if horizon_java_host::bridge::java_block(state) {
-        BLOCK_EVENTS.with_borrow_mut(|e| {
-            e.push(BlockEvent {
-                kind: 1,
-                pos,
-                a: java_id(state),
-                b: moved as i32,
-            });
-        });
+        push_event(1, pos, java_id(state), moved as i32, java_id(changed));
     }
 }
 
 pub(super) fn note_block_tick(pos: BlockPos, state: BlockStateId, random: bool) {
     if horizon_java_host::bridge::java_block(state) {
-        BLOCK_EVENTS.with_borrow_mut(|e| {
-            e.push(BlockEvent {
-                kind: if random { 3 } else { 2 },
-                pos,
-                a: java_id(state),
-                b: 0,
-            });
-        });
+        push_event(if random { 3 } else { 2 }, pos, java_id(state), 0, 0);
     }
 }

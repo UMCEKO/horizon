@@ -299,9 +299,7 @@ impl Game<'_> {
         );
         // A mod item whose model only its code knows draws what the Java client recorded of it.
         #[cfg(feature = "java-mods")]
-        if let Some(layer) = self.java_item_layer(stack, display, state.uses_block_light()) {
-            state.layers = vec![layer];
-        }
+        self.java_item_state(stack, display, &mut state);
         state
     }
     /// `GuiGraphics.renderItem(player, level, stack, x, y, 0)`.

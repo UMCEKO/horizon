@@ -94,42 +94,76 @@ public final class ClientModels {
         return ITEM_PROPERTIES.getOrDefault(id, net.minecraft.client.renderer.item.ClientItem.Properties.DEFAULT);
     }
 
-    /** The item ids whose models are baked here, as text. */
+    /** The item ids whose models are baked here, then those a mod's item decorators draw over, as text. */
     static byte[] foreignItemIds() throws Exception {
         baked();
         var bytes = new java.io.ByteArrayOutputStream();
         var out = new java.io.DataOutputStream(bytes);
         out.writeInt(ITEM_MODELS.size());
-        for (var id : ITEM_MODELS.keySet()) {
-            byte[] text = id.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            out.writeInt(text.length);
-            out.write(text);
+        for (var id : ITEM_MODELS.keySet()) writeId(out, id);
+        var undecorated = net.neoforged.neoforge.client.ItemDecoratorHandler.of(net.minecraft.world.item.ItemStack.EMPTY);
+        var decorated = new java.util.ArrayList<Identifier>();
+        for (var item : BuiltInRegistries.ITEM) {
+            if (net.neoforged.neoforge.client.ItemDecoratorHandler.of(new net.minecraft.world.item.ItemStack(item)) != undecorated) decorated.add(BuiltInRegistries.ITEM.getKey(item));
         }
+        out.writeInt(decorated.size());
+        for (var id : decorated) writeId(out, id);
         return bytes.toByteArray();
     }
 
-    /** Items whose definition names a type outside vanilla's, anywhere in its tree: only the mod's code can draw them. */
-    private static Map<Identifier, net.minecraft.client.renderer.item.ClientItem> foreignItems(net.minecraft.server.packs.resources.ResourceManager manager, Map<Identifier, net.minecraft.client.renderer.item.ClientItem> all) {
-        var pattern = java.util.regex.Pattern.compile("\"type\"\\s*:\\s*\"([a-z0-9_.-]+):");
+    private static void writeId(java.io.DataOutputStream out, Identifier id) throws java.io.IOException {
+        byte[] text = id.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        out.writeInt(text.length);
+        out.write(text);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static boolean vanillaId(Class<?> holder, Object value) {
+        try {
+            var mapper = holder.getDeclaredField("ID_MAPPER");
+            mapper.setAccessible(true);
+            var ids = net.minecraft.util.ExtraCodecs.LateBoundIdMapper.class.getDeclaredField("idToValue");
+            ids.setAccessible(true);
+            var id = (Identifier) ((com.google.common.collect.BiMap<Object, Object>) ids.get(mapper.get(null))).inverse().get(value);
+            return id != null && id.getNamespace().equals(Identifier.DEFAULT_NAMESPACE);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** Whether vanilla's mappers name every type, property and tint in the decoded tree: Horizon's own item models read only those. */
+    private static boolean vanillaModel(net.minecraft.client.renderer.item.ItemModel.Unbaked model) {
+        if (!vanillaId(net.minecraft.client.renderer.item.ItemModels.class, model.type())) return false;
+        return switch (model) {
+            case net.minecraft.client.renderer.item.CuboidItemModelWrapper.Unbaked m ->
+                m.tints().stream().allMatch(tint -> vanillaId(net.minecraft.client.color.item.ItemTintSources.class, tint.type()));
+            case net.minecraft.client.renderer.item.SpecialModelWrapper.Unbaked m ->
+                vanillaId(net.minecraft.client.renderer.special.SpecialModelRenderers.class, m.specialModel().type());
+            case net.minecraft.client.renderer.item.CompositeModel.Unbaked m -> m.models().stream().allMatch(ClientModels::vanillaModel);
+            case net.minecraft.client.renderer.item.ConditionalItemModel.Unbaked m ->
+                vanillaId(net.minecraft.client.renderer.item.properties.conditional.ConditionalItemModelProperties.class, m.property().type())
+                        && vanillaModel(m.onTrue()) && vanillaModel(m.onFalse());
+            case net.minecraft.client.renderer.item.SelectItemModel.Unbaked m ->
+                vanillaId(net.minecraft.client.renderer.item.properties.select.SelectItemModelProperties.class, m.unbakedSwitch().property().type())
+                        && m.unbakedSwitch().cases().stream().allMatch(c -> vanillaModel(c.model()))
+                        && m.fallback().map(ClientModels::vanillaModel).orElse(true);
+            case net.minecraft.client.renderer.item.RangeSelectItemModel.Unbaked m ->
+                vanillaId(net.minecraft.client.renderer.item.properties.numeric.RangeSelectItemModelProperties.class, m.property().type())
+                        && m.entries().stream().allMatch(e -> vanillaModel(e.model()))
+                        && m.fallback().map(ClientModels::vanillaModel).orElse(true);
+            default -> true;
+        };
+    }
+
+    /** Items whose decoded definition names anything outside vanilla's mappers, anywhere in its tree: only the mod's code can draw them. */
+    private static Map<Identifier, net.minecraft.client.renderer.item.ClientItem> foreignItems(Map<Identifier, net.minecraft.client.renderer.item.ClientItem> all) {
         var out = new HashMap<Identifier, net.minecraft.client.renderer.item.ClientItem>();
         all.forEach((id, item) -> {
-            if (id.getNamespace().equals("minecraft")) return;
-            var resource = manager.getResource(id.withPath(path -> "items/" + path + ".json"));
-            if (resource.isEmpty()) return;
-            try (var reader = resource.get().openAsReader()) {
-                var matcher = pattern.matcher(reader.lines().collect(java.util.stream.Collectors.joining()));
-                while (matcher.find()) {
-                    if (!matcher.group(1).equals("minecraft")) {
-                        out.put(id, item);
-                        break;
-                    }
-                }
-            } catch (java.io.IOException e) {
-                // An unreadable definition keeps Horizon's own reading.
-            }
+            if (!vanillaModel(item.model())) out.put(id, item);
         });
         return out;
     }
+
     private static final Map<java.nio.ByteBuffer, Integer> CONTENT = new HashMap<>();
     private static final it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet DIRTY = new it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet();
     private static int nextKey;
@@ -193,7 +227,10 @@ public final class ClientModels {
             level.getModelDataManager().requestRefresh(entity);
             long seed = state.getSeed(pos);
             random.setSeed(seed);
-            Object geometry = model.createGeometryKey(level, pos, state, random);
+            var tints = tints(level, state, pos);
+            Object made = model.createGeometryKey(level, pos, state, random);
+            // Vanilla tints after the geometry, so a mod's key needn't tell two tints apart.
+            Object geometry = made == null ? null : java.util.List.of(made, java.util.Arrays.asList(tints));
             Integer key = geometry == null ? null : KEYS.get(geometry);
             if (key != null) {
                 out.writeInt(key);
@@ -211,7 +248,7 @@ public final class ClientModels {
             var encoded = new java.io.ByteArrayOutputStream();
             var data = new java.io.DataOutputStream(encoded);
             data.writeInt(quads.size());
-            for (Object[] pair : quads) quad(data, (net.minecraft.client.resources.model.geometry.BakedQuad) pair[0], (net.minecraft.core.Direction) pair[1]);
+            for (Object[] pair : quads) quad(data, (net.minecraft.client.resources.model.geometry.BakedQuad) pair[0], (net.minecraft.core.Direction) pair[1], tints);
             // Mods without a geometry key still repeat shapes: equal quads share one key, as a block state's model is shared.
             var content = java.nio.ByteBuffer.wrap(encoded.toByteArray());
             key = CONTENT.get(content);
@@ -228,7 +265,15 @@ public final class ClientModels {
         return bytes.toByteArray();
     }
 
-    private static void quad(java.io.DataOutputStream out, net.minecraft.client.resources.model.geometry.BakedQuad quad, net.minecraft.core.Direction cull) throws java.io.IOException {
+    /** `ModelBlockRenderer.computeTintColor`: each tint index's color, from the block's tint sources. */
+    private static Integer[] tints(net.minecraft.client.multiplayer.ClientLevel level, BlockState state, BlockPos pos) {
+        var sources = Minecraft.getInstance().getBlockColors().getTintSources(state);
+        var colors = new Integer[sources.size()];
+        for (int i = 0; i < colors.length; i++) colors[i] = sources.get(i).colorInWorld(state, level, pos);
+        return colors;
+    }
+
+    private static void quad(java.io.DataOutputStream out, net.minecraft.client.resources.model.geometry.BakedQuad quad, net.minecraft.core.Direction cull, Integer[] tints) throws java.io.IOException {
         var info = quad.materialInfo();
         var sprite = info.sprite();
         float u0 = sprite.getU0(), u1 = sprite.getU1(), v0 = sprite.getV0(), v1 = sprite.getV1();
@@ -247,6 +292,7 @@ public final class ClientModels {
         out.writeByte(quad.direction().get3DDataValue());
         out.writeByte(cull == null ? 6 : cull.get3DDataValue());
         out.writeInt(info.tintIndex());
+        out.writeInt(info.tintIndex() >= 0 && info.tintIndex() < tints.length ? tints[info.tintIndex()] : -1);
         out.writeBoolean(info.shadeDirectionOverride() == null);
         out.writeByte(info.lightEmission());
         out.writeByte(switch (info.layer()) {
@@ -254,6 +300,17 @@ public final class ClientModels {
             case CUTOUT -> 1;
             case TRANSLUCENT -> 3;
         });
+    }
+
+    /** `Minecraft`'s block colors, made as its constructor makes them when the window-less view has none. */
+    private static net.minecraft.client.color.block.BlockColors blockColors() throws ReflectiveOperationException {
+        var minecraft = Minecraft.getInstance();
+        if (minecraft.getBlockColors() != null) return minecraft.getBlockColors();
+        var colors = net.minecraft.client.color.block.BlockColors.createDefault();
+        var field = Minecraft.class.getDeclaredField("blockColors");
+        field.setAccessible(true);
+        field.set(minecraft, colors);
+        return colors;
     }
 
     /** Bakes once, on first use, only the block states whose unbaked model isn't one of vanilla's own types. */
@@ -282,7 +339,7 @@ public final class ClientModels {
         Method discover = null;
         for (Method m : ModelManager.class.getDeclaredMethods()) if (m.getName().equals("discoverModelDependencies") && m.getParameterCount() == 4) discover = m;
         discover.setAccessible(true);
-        var clientItems = foreignItems(manager, ClientItemInfoLoader.scheduleLoad(manager, executor).join().contents());
+        var clientItems = foreignItems(ClientItemInfoLoader.scheduleLoad(manager, executor).join().contents());
         Object resolved = discover.invoke(null, models, new BlockStateModelLoader.LoadedModels(mine), new ClientItemInfoLoader.LoadedClientInfos(clientItems), standalone);
         var missing = resolved.getClass().getDeclaredMethod("missing");
         var all = resolved.getClass().getDeclaredMethod("models");
@@ -317,7 +374,7 @@ public final class ClientModels {
         stateModels.set(Minecraft.getInstance().getModelManager(), stateModelSet);
         var blockModels = ModelManager.class.getDeclaredField("blockModelSet");
         blockModels.setAccessible(true);
-        blockModels.set(Minecraft.getInstance().getModelManager(), new net.minecraft.client.renderer.block.BlockModelSet(stateModelSet, Map.of(), net.minecraft.client.color.block.BlockColors.createDefault()));
+        blockModels.set(Minecraft.getInstance().getModelManager(), new net.minecraft.client.renderer.block.BlockModelSet(stateModelSet, Map.of(), blockColors()));
         clientRendering();
         baked = new HashMap<>();
         result.blockStateModels().forEach((state, model) -> {

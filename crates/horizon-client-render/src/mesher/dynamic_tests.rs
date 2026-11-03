@@ -68,7 +68,7 @@ fn a_dynamic_block_meshes_the_registry_quads_instead_of_its_model() {
         emission: 0,
         layer: BakedLayer::Solid,
     };
-    dynamic_models::put_geometry(1, Arc::from(vec![quad]));
+    dynamic_models::put_geometry(1, Arc::from(vec![quad]), Arc::from([]));
     dynamic_models::place([5, 64, 9], Some(1));
     let dynamic = mesh();
     assert_eq!(dynamic.solid.len() + dynamic.translucent.len(), 4);
@@ -80,6 +80,18 @@ fn a_dynamic_block_meshes_the_registry_quads_instead_of_its_model() {
         .find(|v| v.pos == [5.0, local_y + 0.5, 9.0])
         .expect("the quad's first corner");
     assert_eq!(corner.layer, stone as u16 | OPAQUE_LAYER);
+
+    assert_ne!(corner.color & 0xFF_FF00, 0);
+    let tinted = dynamic_models::at([5, 64, 9]).unwrap();
+    dynamic_models::put_geometry(1, tinted, Arc::from([-65536]));
+    let red = mesh();
+    let corner = red
+        .solid
+        .iter()
+        .chain(&red.translucent)
+        .find(|v| v.pos == [5.0, local_y + 0.5, 9.0])
+        .expect("the quad's first corner");
+    assert_eq!(corner.color & 0xFF_FF00, 0);
 
     dynamic_models::place([5, 64, 9], None);
     let back = mesh();
@@ -192,7 +204,7 @@ fn dynamic_geometry_meshes_as_fast_as_native_models() {
             [[1., 1., 1.], [1., 0., 1.], [1., 0., 0.], [1., 1., 0.]],
         ),
     ];
-    dynamic_models::put_geometry(1, Arc::from(cube));
+    dynamic_models::put_geometry(1, Arc::from(cube), Arc::from([]));
     for pos in &placed {
         dynamic_models::place(*pos, Some(1));
     }

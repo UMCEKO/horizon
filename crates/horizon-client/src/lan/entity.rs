@@ -588,6 +588,8 @@ impl ServerEntity {
 #[derive(Default)]
 pub struct Tracker {
     seen: crate::fast_hash::FxHashSet<i32>,
+    /// Pairings since the hub last took them (`ServerEntity.addPairing`, `removePairing`).
+    changes: Vec<(i32, bool)>,
 }
 
 impl Tracker {
@@ -598,12 +600,19 @@ impl Tracker {
         self.seen.iter().copied().collect()
     }
     pub fn clear(&mut self) {
-        self.seen.clear();
+        self.changes.extend(self.seen.drain().map(|id| (id, false)));
     }
     /// Stop tracking `id` without a packet: the caller removes it from the
     /// client, and the next tick pairs it again if it is still in range.
     pub fn forget(&mut self, id: i32) -> bool {
-        self.seen.remove(&id)
+        let forgotten = self.seen.remove(&id);
+        if forgotten {
+            self.changes.push((id, false));
+        }
+        forgotten
+    }
+    pub(super) fn take_changes(&mut self) -> Vec<(i32, bool)> {
+        std::mem::take(&mut self.changes)
     }
     pub fn len(&self) -> usize {
         self.seen.len()
@@ -892,6 +901,9 @@ impl Entities {
                 });
             }
             if !removed.is_empty() {
+                v.tracker
+                    .changes
+                    .extend(removed.iter().map(|&id| (id, false)));
                 v.out.push(
                     play::Clientbound::RemoveEntities(play::RemoveEntities { ids: removed })
                         .encode(),
@@ -934,6 +946,7 @@ impl Entities {
                     });
                     v.out.extend(bodies.iter().cloned());
                     v.tracker.seen.insert(e.id);
+                    v.tracker.changes.push((e.id, true));
                 }
             }
         }
@@ -967,6 +980,19 @@ mod tests {
             spectator: false,
             watching: false,
         }
+    }
+
+    #[test]
+    fn tracker_reports_its_pairings_once() {
+        let mut tracker = Tracker::default();
+        tracker.seen.insert(1);
+        tracker.changes.push((1, true));
+        assert!(tracker.forget(1));
+        assert!(!tracker.forget(1));
+        tracker.seen.insert(2);
+        tracker.clear();
+        assert_eq!(tracker.take_changes(), [(1, true), (1, false), (2, false)]);
+        assert!(tracker.take_changes().is_empty());
     }
 
     #[test]

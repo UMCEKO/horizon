@@ -33,6 +33,8 @@ pub struct BakedFace {
     pub opaque: bool,
     /// Fractional alpha: drawn in the sorted translucent pass.
     pub translucent: bool,
+    /// The color a mod's code resolved for this quad (`BlockTintSource.colorInWorld`); None: the state's tint rules.
+    pub tint: Option<u32>,
 }
 pub struct BakedModel {
     pub ambient_occlusion: bool,
@@ -238,6 +240,7 @@ impl StateModels {
                             opaque: sprites.region_opaque(layer, &quad.uv),
                             quad,
                             layer,
+                            tint: None,
                         })
                     })
                     .collect::<Result<_>>()?;

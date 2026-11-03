@@ -139,6 +139,7 @@ final class ServerView {
         set(ServerLevel.class, level, "chunkSource", chunks);
         set(ChunkMap.class, chunks.chunkMap, "entityMap", new it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<>());
         set(ChunkMap.class, chunks.chunkMap, "playerMap", new net.minecraft.server.level.PlayerMap());
+        set(ChunkMap.class, chunks.chunkMap, "level", level);
         Inits.run(chunks.chunkMap, level);
         Inits.run(chunks, level);
         set(ServerLevel.class, level, "environmentAttributes", EnvironmentAttributeSystem.builder().addDefaultLayers(level).build());
@@ -220,6 +221,17 @@ final class ServerView {
         PlayerList list = server.getPlayerList();
         ((List<ServerPlayer>) get(PlayerList.class, list, "players")).remove(player);
         ((Map<UUID, ServerPlayer>) get(PlayerList.class, list, "playersByUUID")).remove(player.getUUID());
+    }
+
+    /** `ChunkMap.updatePlayerStatus` on both levels of a player's change of level. */
+    @SuppressWarnings("unchecked")
+    static void moved(ServerPlayer player, ServerLevel to) throws ReflectiveOperationException {
+        var from = player.level();
+        ((List<ServerPlayer>) get(ServerLevel.class, from, "players")).remove(player);
+        ((net.minecraft.server.level.PlayerMap) get(ChunkMap.class, from.getChunkSource().chunkMap, "playerMap")).removePlayer(player);
+        player.setServerLevel(to);
+        ((List<ServerPlayer>) get(ServerLevel.class, to, "players")).add(player);
+        ((net.minecraft.server.level.PlayerMap) get(ChunkMap.class, to.getChunkSource().chunkMap, "playerMap")).addPlayer(player, false);
     }
 
     /** The instance of `outer`'s anonymous class implementing `type`, as its field initializer makes it. */

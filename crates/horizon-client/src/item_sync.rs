@@ -77,6 +77,11 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
             }
             // Read past, not decoded: the item keeps its prototype's value.
             Component::Raw(_) => continue,
+            Component::Foreign { value, .. } => match value {
+                Some(value) => value.clone(),
+                // No saved form: the stack's `wire` patch keeps its bytes for the way back.
+                None => continue,
+            },
             // Trim materials and patterns are synced registries, as enchantments are.
             Component::Trim { material, pattern } => {
                 let (Some(material), Some(pattern)) = (
@@ -451,6 +456,45 @@ mod tests {
 
     /// A bundle's contents cross the wire, so a server's client can draw
     /// its tooltip (BundleContents' stream codec: a list of templates).
+    #[test]
+    fn a_mods_component_lands_in_its_saved_form() {
+        let builtin = Builtin {
+            registries: [
+                (
+                    "minecraft:item".to_string(),
+                    horizon_protocol::registry::Ids::from_names(vec!["test:tool".into()]),
+                ),
+                (
+                    "minecraft:data_component_type".to_string(),
+                    horizon_protocol::registry::Ids::from_names(vec![
+                        "test:mode".into(),
+                        "test:gone".into(),
+                    ]),
+                ),
+            ]
+            .into(),
+        };
+        let mut stack = Stack::new(0, 1);
+        stack.added.push((
+            0,
+            Component::Foreign {
+                bytes: vec![1],
+                value: Some(Tag::String("rotate".into())),
+            },
+        ));
+        stack.added.push((
+            1,
+            Component::Foreign {
+                bytes: vec![2],
+                value: None,
+            },
+        ));
+        let item = from_network(&stack, &builtin, &Dynamic::default());
+        let data = item.data().unwrap();
+        assert_eq!(data.other("test:mode"), Some(&Tag::String("rotate".into())));
+        assert_eq!(data.other("test:gone"), None);
+    }
+
     #[test]
     fn a_bundle_keeps_its_contents_across_the_wire() {
         let mut components = vec![String::new(); 60];

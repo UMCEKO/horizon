@@ -1868,6 +1868,11 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the menu events");
         }
+        let tracking = host.hub.take_tracking();
+        #[cfg(feature = "java-mods")]
+        self.java_tracking(tracking);
+        #[cfg(not(feature = "java-mods"))]
+        let _ = tracking;
         self.lan_flush_effects(&mut host);
         if !paused {
             self.tick_guests(&mut host);

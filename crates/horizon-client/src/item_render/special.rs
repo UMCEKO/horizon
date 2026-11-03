@@ -71,6 +71,7 @@ impl ItemSink for CullBack<'_> {
     fn quad(&mut self, quad: ItemQuad) {
         self.0.quad(ItemQuad {
             cull_back: true,
+            two_sided: false,
             ..quad
         });
     }
@@ -132,6 +133,7 @@ fn draw(
             foil,
             light_emission: 0,
             cull_back: false,
+            two_sided: false,
             translucent: false,
         });
     }

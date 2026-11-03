@@ -393,6 +393,10 @@ impl VanillaTerrain {
         let worker = worker.get_or_insert_with(|| self.generator.worker());
         worker.find_closest_biome(search)
     }
+    /// `ChunkGenerator.getSeaLevel` of the noise settings.
+    pub fn sea_level(&self) -> i32 {
+        self.generator.sea_level()
+    }
     /// `BiomeSource.getNoiseBiome` at quart positions, for places that may not
     /// be generated yet (`MapItem.renderBiomePreviewMap`).
     pub fn noise_biomes(&self, quarts: &[[i32; 3]]) -> Vec<Option<String>> {

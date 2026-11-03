@@ -1,6 +1,7 @@
 //! Block entities and mods' blocks: Java holds the objects, Horizon their saved form and their turn to tick.
 
 use super::*;
+use horizon_java_host::bridge::Doubles;
 
 horizon_java_host::java_bridges! { table for Game<'static> {
     "dev/horizonlab/javamods/boot/BlockEntities".fetch
@@ -19,5 +20,11 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     "(J)V" =>
     fn block_entity_forget(game, pos: Pos) -> () {
         game.world.block_entities.remove(&(pos.0.x, pos.0.y, pos.0.z));
+    }
+
+    "dev/horizonlab/javamods/boot/Clients".collisionShape
+    "(JLnet/minecraft/world/level/block/state/BlockState;[D)V" =>
+    fn block_collision_shape(game, pos: Pos, state: State, boxes: Doubles) -> () {
+        game.java_collision_shape([pos.0.x, pos.0.y, pos.0.z], state.0, &boxes.0);
     }
 }}

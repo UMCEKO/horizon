@@ -51,6 +51,8 @@ pub struct ItemQuad {
     pub light_emission: u8,
     /// The render type culls back faces (`entitySolid`): world drawing discards them.
     pub cull_back: bool,
+    /// Drawn from both sides in a GUI too: the render type doesn't cull (a mod's own render type; vanilla's items all cull there).
+    pub two_sided: bool,
     /// The quad's sprite has translucent pixels (`MaterialInfo.itemRenderType`
     /// is a translucent sheet): drawn with the translucent entities.
     pub translucent: bool,
@@ -168,13 +170,17 @@ impl SpecialHost for NoHost {
     }
 }
 
-/// A quad a mod's item model drew in Java, in item space: its texture, corners (position and UV within the texture), ARGB colour and blending.
+/// A quad a mod's item model drew in Java, in its piece's frame: its texture, corners (position and UV within the texture), ARGB colour, normal, blending and culling.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecordedQuad {
     pub texture: String,
     pub corners: [[f32; 5]; 4],
     pub color: u32,
+    /// The vertex normal the renderer gave; zero when its pipeline has no `minecraft_mix_light`.
+    pub normal: [f32; 3],
     pub translucent: bool,
+    /// The render type's pipeline culls back faces.
+    pub cull: bool,
 }
 
 /// The geometry of one layer.
@@ -311,11 +317,7 @@ fn submit_recorded(
         let pos = q
             .corners
             .map(|c| m.transform_point3(Vec3::new(c[0], c[1], c[2])));
-        let normal = (pos[1] - pos[0]).cross(pos[2] - pos[0]).normalize_or(
-            (pos[2] - pos[1])
-                .cross(pos[3] - pos[1])
-                .normalize_or(Vec3::Y),
-        );
+        let normal = transform_normal(m, Vec3::from(q.normal));
         let local = q.corners.map(|c| [c[3], c[4]]);
         sink.quad(ItemQuad {
             pos,
@@ -325,7 +327,8 @@ fn submit_recorded(
             color: q.color,
             foil,
             light_emission: 0,
-            cull_back: false,
+            cull_back: q.cull,
+            two_sided: !q.cull,
             translucent: q.translucent,
         });
     }
@@ -391,6 +394,7 @@ fn submit_quads(
             foil,
             light_emission: q.light_emission,
             cull_back: false,
+            two_sided: false,
             translucent: translucent || q.material.force_translucent,
         });
     }
@@ -871,7 +875,10 @@ pub struct WorldSink<'a> {
 }
 impl ItemSink for WorldSink<'_> {
     fn quad(&mut self, q: ItemQuad) {
-        let brightness = self.lights.map_or(1.0, |l| diffuse(q.normal, l));
+        let brightness = self
+            .lights
+            .filter(|_| q.normal != Vec3::ZERO)
+            .map_or(1.0, |l| diffuse(q.normal, l));
         let [a, r, g, b] = q.color.to_be_bytes();
         let c = |v: u8| (f32::from(v) * brightness) as u32;
         let color = u32::from(a) << 24 | c(b) << 16 | c(g) << 8 | c(r);

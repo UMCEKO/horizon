@@ -105,6 +105,9 @@ public final class GameBridge {
     /** One call at a time, as the window's thread and the server's both call in; the views between them are shared. */
     public static byte[] call(String op, byte[] input) {
         if (op.equals("client_pending")) return java.nio.ByteBuffer.allocate(4).putInt(Clients.pending()).array();
+        // Codecs touch no view, and a window's network thread must not wait out a server tick for one.
+        if (op.equals("component_read")) return StackComponents.read(input);
+        if (op.equals("component_write")) return StackComponents.write(input);
         synchronized (LOCK) {
             if (op.startsWith("client_")) return client == null ? new byte[0] : client.apply(op, input);
             return callLocked(op, input);
@@ -123,6 +126,8 @@ public final class GameBridge {
                 case "block_entity_tick" -> blockEntityTick(input);
                 case "block_entity_load" -> blockEntityLoad(input);
                 case "block_entities_save" -> blockEntitiesSave(input);
+                case "chunks_changed" -> chunksChanged(input);
+                case "tracking" -> tracking(input);
                 case "block_entity_data" -> blockEntityData(input);
                 case "block_entity_set" -> blockEntitySet(input);
                 case "hopper_transfer" -> hopperTransfer(input);
@@ -242,9 +247,10 @@ public final class GameBridge {
             ServerView.attach(server, player);
             Inits.run(player, server, level, player.getGameProfile());
             Inits.run(player.connection, server, player);
+            Tracking.attach(player);
             PLAYERS.put(id, player);
         } else if (player.level() != level) {
-            player.setServerLevel(level);
+            ServerView.moved(player, level);
         }
         return player;
     }
@@ -298,6 +304,10 @@ public final class GameBridge {
         out.write(bytes);
     }
 
+    static String readText(DataInputStream in) throws IOException {
+        return text(in);
+    }
+
     private static String text(DataInputStream in) throws IOException {
         return new String(in.readNBytes(in.readInt()), java.nio.charset.StandardCharsets.UTF_8);
     }
@@ -317,12 +327,15 @@ public final class GameBridge {
         ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
         boolean joined = !PLAYERS.containsKey(id);
         var player = player(id, name, level);
+        player.setPose(net.minecraft.world.entity.Pose.valueOf(text(in)));
         player.setPosRaw(in.readDouble(), in.readDouble(), in.readDouble());
         player.setYRot(in.readFloat());
         player.setXRot(in.readFloat());
         player.setShiftKeyDown(in.readBoolean());
         var type = GameType.byId(in.readInt());
+        boolean modeChanged = player.gameMode.getGameModeForPlayer() != type;
         ((GameModeAccessor) player.gameMode).horizon$type(type);
+        if (modeChanged) Menus.gameModeChanged(player, type);
         type.updatePlayerAbilities(player.getAbilities());
         var hand = in.readInt() == 0 ? InteractionHand.MAIN_HAND : InteractionHand.OFF_HAND;
         Inventory inventory = player.getInventory();
@@ -348,7 +361,10 @@ public final class GameBridge {
                 inventory.setItem(slot, stack);
             }
         }
-        if (joined) safely("PlayerLoggedIn", () -> EventHooks.firePlayerLoggedIn(player));
+        if (joined) {
+            safely("PlayerLoggedIn", () -> EventHooks.firePlayerLoggedIn(player));
+            safely("chunks sent before the player's view", () -> Tracking.joined(player, level));
+        }
         return new Call(in, level, player, hand, before);
     }
 
@@ -534,6 +550,7 @@ public final class GameBridge {
             safely("LevelTickEvent.Pre", () -> EventHooks.fireLevelTickPre(level, () -> true));
             BlockEntities.loadFresh();
             safely("broadcasting block changes", () -> Clients.broadcastChanges(level));
+            safely("sending block entities' shapes", () -> Clients.sendShapes(level));
         }
         return effects();
     }
@@ -565,14 +582,21 @@ public final class GameBridge {
             var pos = BlockPos.of(in.readLong());
             int a = in.readInt();
             int b = in.readInt();
-            BlockState state = Block.BLOCK_STATE_REGISTRY.byId(a);
+            int c = in.readInt();
             try {
+                BlockState state = stateOrThrow(a);
+                // Horizon ran its own cascade first, so the update reads the block as it is now, as vanilla's reads it when it runs.
+                BlockState now = kind == 0 ? state : level.getBlockState(pos);
                 switch (kind) {
-                    case 0 -> BlockEntities.blockChanged(level, pos, state, Block.BLOCK_STATE_REGISTRY.byId(b));
-                    case 1 -> state.handleNeighborChanged(level, pos, state.getBlock(), null, b != 0);
-                    case 2 -> state.tick(level, pos, level.getRandom());
+                    case 0 -> BlockEntities.blockChanged(level, pos, state, stateOrThrow(b), c);
+                    case 1 -> {
+                        if (BlockEntities.ours(now)) now.handleNeighborChanged(level, pos, stateOrThrow(c).getBlock(), null, b != 0);
+                    }
+                    case 2 -> {
+                        if (now.is(state.getBlock())) now.tick(level, pos, level.getRandom());
+                    }
                     default -> {
-                        if (state.isRandomlyTicking()) state.randomTick(level, pos, level.getRandom());
+                        if (now.is(state.getBlock()) && now.isRandomlyTicking()) now.randomTick(level, pos, level.getRandom());
                     }
                 }
             } catch (Throwable t) {
@@ -582,6 +606,12 @@ public final class GameBridge {
         return effects();
     }
 
+    private static BlockState stateOrThrow(int id) {
+        BlockState state = Block.BLOCK_STATE_REGISTRY.byId(id);
+        if (state == null) throw new IllegalStateException("Horizon: block state " + id + " has no Java state");
+        return state;
+    }
+
     private static byte[] blockEntityTick(byte[] input) throws Exception {
         var in = new DataInputStream(new ByteArrayInputStream(input));
         var level = levelOf(in);
@@ -589,6 +619,41 @@ public final class GameBridge {
         var bytes = new ByteArrayOutputStream();
         var out = new DataOutputStream(bytes);
         out.writeBoolean(held);
+        writeEffects(out);
+        return bytes.toByteArray();
+    }
+
+    private static byte[] tracking(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        Tracking.apply(levelOf(in), in);
+        return effects();
+    }
+
+    /** The chunks that joined and left this level, in one call: the first's block entities, then the second's going. */
+    private static byte[] chunksChanged(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        var level = levelOf(in);
+        for (int n = in.readInt(); n > 0; n--) {
+            var pos = BlockPos.of(in.readLong());
+            var tag = NbtIo.read(new DataInputStream(new ByteArrayInputStream(in.readNBytes(in.readInt()))), NbtAccounter.unlimitedHeap());
+            try {
+                // A mod's getChunk may have promoted this one already, as `LevelChunk.getBlockEntity` promotes a pending tag.
+                if (BlockEntities.held(level).get(pos.asLong()) == null) BlockEntities.load(level, pos, tag);
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+        }
+        var saved = new ArrayList<CompoundTag>();
+        for (int n = in.readInt(); n > 0; n--) {
+            int x = in.readInt();
+            int z = in.readInt();
+            ChunkViews.forget(level, x, z);
+            BlockEntities.unload(level, x, z, saved);
+        }
+        var bytes = new ByteArrayOutputStream();
+        var out = new DataOutputStream(bytes);
+        out.writeInt(saved.size());
+        for (CompoundTag tag : saved) writeTag(out, tag);
         writeEffects(out);
         return bytes.toByteArray();
     }

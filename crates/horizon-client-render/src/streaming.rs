@@ -357,6 +357,8 @@ pub struct Streaming {
     /// Edit sequence at each in-flight light job's snapshot.
     light_snapshots: FxHashMap<(i32, i32), u64>,
     pub generated_total: u64,
+    /// Columns that joined the world since the game last took them (`LevelChunk.setLoaded`).
+    pub loaded: Vec<(i32, i32)>,
     pub meshed_total: u64,
     /// Chunks come from a server (`insert_remote`/`forget`): nothing is
     /// generated and columns are only unloaded when the server says so.
@@ -715,6 +717,7 @@ impl Streaming {
             light_edit_sequence: 0,
             light_snapshots: Default::default(),
             generated_total: 0,
+            loaded: Vec::new(),
             meshed_total: 0,
             remote: false,
             extra: Vec::new(),
@@ -913,6 +916,7 @@ impl Streaming {
         // neighbours still light themselves from it.
         let loaded = chunk.light_loaded;
         world.chunks.insert(key, Arc::new(chunk));
+        self.loaded.push(key);
         if loaded {
             self.lit.insert(key);
             for sy in 0..world.layout().sections() as i32 {

@@ -177,9 +177,45 @@ pub enum HostEvent {
     Error(String),
 }
 
+/// What `ChunkMap` knows of a player's chunks and entities, as it changes, for the Java side's copy of it.
+pub enum Tracking {
+    /// `ChunkMap.updateChunkTracking`: the player's `ChunkTrackingView`.
+    View {
+        uuid: u128,
+        entity_id: i32,
+        dimension: String,
+        center: (i32, i32),
+        radius: i32,
+    },
+    /// `PlayerChunkSender.sendChunk`: the chunk reached the player.
+    Watch {
+        uuid: u128,
+        chunk: (i32, i32),
+    },
+    /// `PlayerChunkSender.dropChunk`.
+    Unwatch {
+        uuid: u128,
+        chunk: (i32, i32),
+    },
+    /// Every chunk dropped at once: a death, a respawn, a change of level.
+    Reset {
+        uuid: u128,
+    },
+    /// `TrackedEntity.seenBy` gained or lost this player.
+    Pairing {
+        uuid: u128,
+        entity: i32,
+        paired: bool,
+    },
+    Left {
+        uuid: u128,
+    },
+}
+
 pub struct Hub {
     /// Clicks on and closings of native mods' menus, for the game.
     pub native_menu_events: Vec<super::menu::NativeMenuEvent>,
+    tracking: Vec<Tracking>,
     pub lan: Lan,
     pub config: HubConfig,
     pub encoder: ChunkEncoder,
@@ -423,8 +459,27 @@ impl Hub {
             entity_out: Vec::new(),
             mod_commands: (serde_json::Value::Null, None),
             native_menu_events: Vec::new(),
+            tracking: Vec::new(),
             teams: Vec::new(),
         }
+    }
+
+    /// What changed in the players' chunks and pairings since the last call.
+    pub fn take_tracking(&mut self) -> Vec<Tracking> {
+        for g in &mut self.guests {
+            let uuid = g.uuid;
+            self.tracking.extend(
+                g.tracker
+                    .take_changes()
+                    .into_iter()
+                    .map(|(entity, paired)| Tracking::Pairing {
+                        uuid,
+                        entity,
+                        paired,
+                    }),
+            );
+        }
+        std::mem::take(&mut self.tracking)
     }
 
     pub fn guest(&self, conn: u32) -> Option<&Guest> {
@@ -755,6 +810,19 @@ impl Hub {
         } else {
             0
         }
+    }
+
+    /// `MinecraftServer.getProfilePermissions`: a player's command level, joined or not.
+    pub fn permission_of(&self, uuid: u128) -> u8 {
+        match self.guests.iter().find(|g| g.uuid == uuid) {
+            Some(guest) => guest.permission,
+            None => self.default_permission(uuid),
+        }
+    }
+
+    /// `PlayerList.isOp`: on the operators' list, or the single-player owner with commands allowed.
+    pub fn is_op(&self, uuid: u128) -> bool {
+        self.ops.get(&uuid).is_some_and(|level| *level > 0)
     }
 
     /// The levels of a server, in MinecraftServer.levelKeys order.
@@ -1393,6 +1461,7 @@ impl Hub {
 
     fn remove_guest(&mut self, i: usize, reason: &str) -> Guest {
         let mut g = self.guests.remove(i);
+        self.tracking.push(Tracking::Left { uuid: g.uuid });
         if let Some(m) = g
             .menu
             .as_ref()
@@ -1570,6 +1639,10 @@ impl Hub {
             for idx in taken.into_iter().rev() {
                 let key = g.chunk_queue.remove(idx);
                 g.sent_chunks.insert(key);
+                self.tracking.push(Tracking::Watch {
+                    uuid: g.uuid,
+                    chunk: key,
+                });
             }
         }
     }
@@ -1584,6 +1657,13 @@ impl Hub {
             return;
         }
         g.center = Some((cx, cz));
+        self.tracking.push(Tracking::View {
+            uuid: g.uuid,
+            entity_id: g.entity_id,
+            dimension: g.dimension.clone(),
+            center: (cx, cz),
+            radius: r,
+        });
         if g.center_sent.take() != Some((cx, cz)) {
             g.send(&C::SetChunkCacheCenter(play::SetChunkCacheCenter {
                 x: cx,
@@ -1600,6 +1680,10 @@ impl Hub {
         for (x, z) in forget {
             g.sent_chunks.remove(&(x, z));
             g.send(&C::ForgetLevelChunk(play::ForgetLevelChunk { pos: [x, z] }));
+            self.tracking.push(Tracking::Unwatch {
+                uuid: g.uuid,
+                chunk: (x, z),
+            });
         }
         requeue(&mut g.chunk_queue, &g.sent_chunks, (cx, cz), r);
     }
@@ -2939,6 +3023,7 @@ impl Hub {
         }
         g.tracker.clear();
         g.sent_chunks.clear();
+        self.tracking.push(Tracking::Reset { uuid: g.uuid });
         g.chunk_queue.clear();
         let id = g.entity_id;
         self.respawned(id);
@@ -2964,6 +3049,7 @@ impl Hub {
         g.sent_effects.clear();
         g.center = None;
         g.sent_chunks.clear();
+        self.tracking.push(Tracking::Reset { uuid: g.uuid });
         g.chunk_queue.clear();
         g.tracker.clear();
         self.resend_teleport(i, None);
@@ -3052,6 +3138,7 @@ impl Hub {
         g.dimension = self.config.dimension.clone();
         g.tracker.clear();
         g.sent_chunks.clear();
+        self.tracking.push(Tracking::Reset { uuid: g.uuid });
         g.chunk_queue.clear();
         g.center = None;
         g.yaw = yaw;

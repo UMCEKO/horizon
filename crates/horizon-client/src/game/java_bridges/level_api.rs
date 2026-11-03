@@ -10,16 +10,26 @@ use horizon_world::fluid::FluidKind;
 use horizon_world::level::BlockEventData;
 
 impl Game<'_> {
-    /// The biome of the block column as `Flat.toHolder` reads it; plains where nothing is loaded.
+    /// `LevelReader.getNoiseBiome`: the loaded chunk's, else the generator's biome source's.
     fn java_biome(&self, x: i32, y: i32, z: i32) -> Text {
-        let name = self
-            .world
-            .chunks
-            .get(&(x >> 4, z >> 4))
-            .map_or("minecraft:plains", |chunk| {
-                self.res.biomes().get(chunk.biome(x, y, z)).name.as_str()
-            });
+        let name = match self.world.chunks.get(&(x >> 4, z >> 4)) {
+            Some(chunk) => self.res.biomes().get(chunk.biome(x, y, z)).name.clone(),
+            None => self
+                .end
+                .locator()
+                .and_then(|terrain| terrain.noise_biomes(&[[x >> 2, y >> 2, z >> 2]]).pop().flatten())
+                .unwrap_or_else(|| "minecraft:plains".to_owned()),
+        };
         Text(format!("worldgen/biome\t{name}"))
+    }
+
+    /// `ChunkGenerator.getSeaLevel`: the noise settings', `FlatLevelSource`'s and `DebugLevelSource`'s.
+    fn java_sea_level(&self) -> i32 {
+        match self.end.locator() {
+            Some(terrain) => terrain.sea_level(),
+            None if self.world_flat => -63,
+            None => 63,
+        }
     }
 
     fn java_moon_brightness(&self) -> f32 {
@@ -44,7 +54,30 @@ impl Game<'_> {
     }
 }
 
+/// `DimensionType.hasFixedTime` of vanilla's three dimension types.
+fn has_fixed_time(dim: Dim) -> bool {
+    matches!(dim, Dim::Nether | Dim::End)
+}
+
 horizon_java_host::java_bridges! { table for Game<'static> {
+    "dev/horizonlab/javamods/boot/ViewLevelData".isHardcore
+    "()Z" =>
+    fn level_data_hardcore(game) -> bool {
+        game.level.hardcore
+    }
+
+    "dev/horizonlab/javamods/boot/ViewLevelData".getDifficulty
+    "()Lnet/minecraft/world/Difficulty;" =>
+    fn level_data_difficulty(game) -> i32 {
+        i32::from(game.level.difficulty_id())
+    }
+
+    "dev/horizonlab/javamods/boot/ViewLevelData".isDifficultyLocked
+    "()Z" =>
+    fn level_data_difficulty_locked(game) -> bool {
+        game.level.difficulty_locked
+    }
+
     "net/minecraft/world/level/LevelAccessor".hasChunk
     "(II)Z" if "net/minecraft/server/level/ServerLevel" =>
     fn level_has_chunk(game, x: i32, z: i32) -> bool {
@@ -80,11 +113,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     "net/minecraft/server/level/ServerLevel".getSeaLevel
     "()I" =>
     fn level_sea_level(game) -> i32 {
-        match game.dim {
-            Dim::Overworld => 63,
-            Dim::Nether => 32,
-            Dim::End => 0,
-        }
+        game.java_sea_level()
     }
 
     "net/minecraft/server/level/ServerLevel".getSeed
@@ -108,7 +137,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     "net/minecraft/world/level/Level".isBrightOutside
     "()Z" if "net/minecraft/server/level/ServerLevel" =>
     fn level_bright_outside(game) -> bool {
-        game.dim == Dim::Overworld && game.sky_darken() < 4
+        !has_fixed_time(game.dim) && game.sky_darken() < 4
     }
 
     "net/minecraft/world/level/Level".getOverworldClockTime

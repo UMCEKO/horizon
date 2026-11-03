@@ -368,7 +368,7 @@ pub const COMMANDS: &[Cmd] = &[
         ["horizon-ctl click-at 200 120"], &[p("x", Ty::Num, "GUI x"), p("y", Ty::Num, "GUI y"), opt("right", Ty::Bool, "right-click")], mcp: true, local: false),
     cmd!("drag-at", Screens, "drag-at [right] X Y X Y...", "press at the first GUI point, move through the others, release at the last", "",
         ["horizon-ctl drag-at 130 100 148 100 166 100", "horizon-ctl drag-at right 130 100 148 100"], &[p("points", Ty::Rest, "right, then GUI x y pairs")], mcp: true, local: false),
-    cmd!("scroll-at", Screens, "scroll-at X Y STEPS", "turn the mouse wheel at GUI pixel X Y (positive scrolls up)", "",
+    cmd!("scroll-at", Screens, "scroll-at X Y STEPS", "turn the mouse wheel at GUI pixel X Y (positive scrolls up); with no screen open it is the world's wheel: the hotbar, unless a mod's scroll listener cancels it", "",
         ["horizon-ctl scroll-at 130 100 -1"], &[p("x", Ty::Num, "GUI x"), p("y", Ty::Num, "GUI y"), p("steps", Ty::Num, "wheel steps")], mcp: true, local: false),
     cmd!("type", Screens, "type [--field name|seed] [--replace] TEXT", "type into the focused text field (chat box, world name, anvil, sign...)",
         "On the title's create-world screen, --field name|seed picks the field and --replace clears it first; type \\b deletes one character.",

@@ -97,7 +97,11 @@ fn clip_triangle(tri: [Point; 3], rect: [f32; 4]) -> Vec<Point> {
 
 /// RGBA vertex colour of a lit quad: `minecraft_mix_light` on the tint.
 pub fn lit_color(q: &ItemQuad, lights: (Vec3, Vec3)) -> u32 {
-    let light = crate::block_entity_render::diffuse(q.normal, lights);
+    let light = if q.normal == Vec3::ZERO {
+        1.0
+    } else {
+        crate::block_entity_render::diffuse(q.normal, lights)
+    };
     let [a, r, g, b] = q.color.to_be_bytes();
     let c = |v: u8| (f32::from(v) * light) as u8;
     crate::hud::rgba(c(r), c(g), c(b), a)
@@ -473,6 +477,7 @@ mod tests {
             foil: Foil::None,
             light_emission: 0,
             cull_back: false,
+            two_sided: false,
             translucent: false,
         }
     }

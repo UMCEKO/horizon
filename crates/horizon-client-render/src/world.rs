@@ -109,6 +109,9 @@ pub struct World {
     /// The moving-piston block entities of the level, by position, copied
     /// from the block ticks after each tick: collision and rendering read them.
     pub moving_pistons: Vec<([i32; 3], horizon_world::piston_shape::MovingPistonState)>,
+    /// Mods' `getCollisionShape(level, pos)` answers that read the block entity, each for the state it was made for.
+    pub block_entity_shapes:
+        FxHashMap<[i32; 3], (BlockStateId, horizon_core::geometry::VoxelShape)>,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Weather {
@@ -203,6 +206,7 @@ impl World {
             light_log: None,
             moving_piston_fallback: Vec::new(),
             moving_pistons: Vec::new(),
+            block_entity_shapes: FxHashMap::default(),
             pois: Default::default(),
         }
     }

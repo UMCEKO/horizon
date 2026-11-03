@@ -9,6 +9,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -68,20 +69,49 @@ public final class ClientBridge {
     private static final Set<Integer> KEYS_DOWN = new HashSet<>();
     private static int opened;
     private static int shapes;
+    private static final it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet RESHAPED = new it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet();
     private static int guiWidth = 427, guiHeight = 240, guiScale = 2, windowWidth = 854, windowHeight = 480;
 
+    /** `Minecraft.gameThread`: every call of the client runs on it, whichever of the window's threads asks, as a real client's render thread runs it all. */
+    private static Thread renderThread;
+    private static java.util.concurrent.ExecutorService render;
+
     static void install() {
+        // In the loader's group, not that of the server thread whose call starts it, so `EffectiveSide` says client.
+        ThreadGroup group = Thread.currentThread().getThreadGroup();
+        render = java.util.concurrent.Executors.newSingleThreadExecutor(task -> {
+            renderThread = new Thread(group, task, "Render thread");
+            renderThread.setDaemon(true);
+            return renderThread;
+        });
         GameBridge.client = ClientBridge::call;
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.LOWEST, true,
+                net.neoforged.neoforge.client.event.InputEvent.MouseScrollingEvent.class, event -> scrollCanceled = event.isCanceled());
         Clients.dynamic = state -> ClientModels.dynamic(state) || BlockRenders.has(state);
     }
 
     private static byte[] call(String op, byte[] input) {
+        if (Thread.currentThread() == renderThread) return run(op, input);
+        try {
+            return render.submit(() -> run(op, input)).get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new byte[0];
+        } catch (java.util.concurrent.ExecutionException e) {
+            System.err.println("Horizon: the Java client's " + op + " failed");
+            e.getCause().printStackTrace();
+            return new byte[0];
+        }
+    }
+
+    private static byte[] run(String op, byte[] input) {
         try {
             var in = new DataInputStream(new ByteArrayInputStream(input));
             return switch (op) {
                 case "client_tick" -> tick(in);
                 case "client_frame" -> frame(in);
                 case "client_input" -> input(in);
+                case "client_scroll" -> scroll(in);
                 case "client_font" -> font(in);
                 case "client_leave" -> leave();
                 case "client_models_probe" -> modelsProbe();
@@ -89,8 +119,10 @@ public final class ClientBridge {
                 case "client_models_take" -> Minecraft.getInstance().level == null ? new byte[0] : ClientModels.take(Minecraft.getInstance().level);
                 case "client_items_external" -> ClientModels.foreignItemIds();
                 case "client_items_take" -> BlockRenders.items(in);
+                case "client_items_decorations" -> BlockRenders.decorations(in);
                 case "client_renders_take" -> Minecraft.getInstance().level == null ? new byte[0] : BlockRenders.take(Minecraft.getInstance().level);
                 case "client_shape" -> shape(in);
+                case "client_collisions_take" -> collisions();
                 default -> throw new IllegalArgumentException(op);
             };
         } catch (Throwable t) {
@@ -154,6 +186,12 @@ public final class ClientBridge {
             set(Minecraft.class, minecraft, "gameThread", Thread.currentThread());
             set(Minecraft.class, minecraft, "lastInputType", InputType.NONE);
             set(Minecraft.class, minecraft, "tutorial", new Tutorial(minecraft, minecraft.options));
+            var social = GameBridge.construct(net.minecraft.client.gui.screens.social.PlayerSocialManager.class, Object.class.getDeclaredConstructor());
+            set(social.getClass(), social, "minecraft", minecraft);
+            set(social.getClass(), social, "discoveredNamesToUUID", new HashMap<>());
+            set(Minecraft.class, minecraft, "playerSocialManager", social);
+            // No signed chat here: no keys, so `enforcesSecureChat` is false as an offline server's.
+            set(Minecraft.class, minecraft, "services", new net.minecraft.server.Services(null, com.mojang.authlib.services.ServicesKeySet.EMPTY, null, null, null));
             listener = GameBridge.construct(ClientPacketListener.class, Object.class.getDeclaredConstructor());
             var network = new Connection(PacketFlow.CLIENTBOUND);
             set(Connection.class, network, "channel", new EmbeddedChannel());
@@ -169,6 +207,8 @@ public final class ClientBridge {
             set(ClientPacketListener.class, listener, "registryAccess", registries);
             set(ClientPacketListener.class, listener, "enabledFeatures", FeatureFlags.DEFAULT_FLAGS);
             set(ClientPacketListener.class, listener, "commands", new com.mojang.brigadier.CommandDispatcher<>());
+            set(ClientPacketListener.class, listener, "playerInfoMap", new HashMap<>());
+            set(ClientPacketListener.class, listener, "listedPlayers", new HashSet<>());
             var hashOps = registries.createSerializationContext(net.minecraft.util.HashOps.CRC32C_INSTANCE);
             net.minecraft.network.HashedPatchMap.HashGenerator hashes = component -> component.encodeValue(hashOps).getOrThrow().asInt();
             set(ClientPacketListener.class, listener, "decoratedHashOpsGenerator", hashes);
@@ -189,8 +229,9 @@ public final class ClientBridge {
             set(LocalPlayer.class, local, "stats", new net.minecraft.stats.StatsCounter());
             set(LocalPlayer.class, local, "recipeBook", new net.minecraft.client.ClientRecipeBook());
             Inits.run(local, minecraft, level, listener);
+            set(LocalPlayer.class, local, "permissions", net.minecraft.server.permissions.PermissionSet.NO_PERMISSIONS);
+            local.input = new net.minecraft.client.player.KeyboardInput(minecraft.options);
             local.setId(server.getId());
-            set(LocalPlayer.class, local, "permissions", server.permissions());
             set(Minecraft.class, minecraft, "level", level);
             set(Minecraft.class, minecraft, "player", local);
             level.addEntity(local);
@@ -238,6 +279,7 @@ public final class ClientBridge {
         copy.clearRemoved();
         BLOCK_ENTITIES.put(at, copy);
         shapes++;
+        RESHAPED.add(at);
         if (ClientModels.dynamic(state)) ClientModels.dirty(pos);
         if (BlockRenders.has(state)) BlockRenders.dirty(pos);
         copy.onLoad();
@@ -259,6 +301,7 @@ public final class ClientBridge {
             }
         }
         shapes++;
+        RESHAPED.add(at);
         ClientModels.dirty(pos);
         BlockRenders.dirty(pos);
     }
@@ -276,14 +319,11 @@ public final class ClientBridge {
 
     @SuppressWarnings("unchecked")
     private static void receive() throws ReflectiveOperationException {
+        var updated = new ArrayList<BlockPos>();
         for (Packet<?> packet : Clients.takeForClient(player)) {
+            if (packet instanceof net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket update) updated.add(update.getPos());
             try {
                 ((Packet<PacketListener>) packet).handle(listener);
-                if (packet instanceof net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket update) {
-                    shapes++;
-                    ClientModels.dirty(update.getPos());
-                    BlockRenders.dirty(update.getPos());
-                }
             } catch (RunningOnDifferentThreadException e) {
                 // Queued on the client's loop; its tasks run below.
             } catch (Throwable t) {
@@ -291,9 +331,17 @@ public final class ClientBridge {
                 t.printStackTrace();
             }
         }
+        // `Minecraft.tick`: packets that came in off the client's thread wait on its packet processor, then queued tasks run.
+        Minecraft.getInstance().packetProcessor().processQueuedPackets();
         var tasks = BlockableEventLoop.class.getDeclaredMethod("runAllTasks");
         tasks.setAccessible(true);
         tasks.invoke(Minecraft.getInstance());
+        for (BlockPos pos : updated) {
+            shapes++;
+            RESHAPED.add(pos.asLong());
+            ClientModels.dirty(pos);
+            BlockRenders.dirty(pos);
+        }
     }
 
     /** Once a client tick: packets from the server, then the open screen's tick. Answers whether a Java screen is open and how many have opened. */
@@ -305,10 +353,40 @@ public final class ClientBridge {
         join(id, name, dim);
         // An empty answer: not joined yet, so the window asks again next tick.
         if (player == null) return new byte[0];
+        keys(in);
         receive();
         Screen screen = Minecraft.getInstance().gui.screen();
         if (screen != null) screen.tick();
         return status();
+    }
+
+    /** `KeyboardHandler.keyPress`'s part for the keys the window's world took since the last tick, then `LocalPlayer.aiStep`'s read of them. */
+    private static void keys(DataInputStream in) throws IOException {
+        for (int n = in.readInt(); n > 0; n--) {
+            var key = com.mojang.blaze3d.platform.InputConstants.getKey(text(in));
+            boolean down = in.readBoolean();
+            if (down) KEYS_DOWN.add(key.getValue());
+            else KEYS_DOWN.remove(key.getValue());
+            net.minecraft.client.KeyMapping.set(key, down);
+            if (down) net.minecraft.client.KeyMapping.click(key);
+        }
+        LocalPlayer local = Minecraft.getInstance().player;
+        if (local != null) local.input.tick();
+        int selected = in.readInt();
+        if (local != null) local.getInventory().setSelectedSlot(selected);
+    }
+
+    private static boolean scrollCanceled;
+
+    /** The wheel in the world, through the real `MouseHandler.onScroll`; answers whether a mod's listener canceled the hotbar's turn. */
+    private static byte[] scroll(DataInputStream in) throws Exception {
+        double dx = in.readDouble();
+        double dy = in.readDouble();
+        Minecraft minecraft = Minecraft.getInstance();
+        scrollCanceled = false;
+        // Horizon has already applied its wheel options; Java's are the defaults, which leave these as they are.
+        if (player != null && minecraft.gui.screen() == null) minecraft.mouseHandler.onScroll(minecraft.getWindow().handle(), dx, dy);
+        return new byte[] {(byte) (scrollCanceled ? 1 : 0)};
     }
 
     private record Sound(String id, float volume, float pitch) {}
@@ -483,6 +561,29 @@ public final class ClientBridge {
             out.writeDouble(box.maxX);
             out.writeDouble(box.maxY);
             out.writeDouble(box.maxZ);
+        }
+        return bytes.toByteArray();
+    }
+
+    /** `getCollisionShape(level, pos)` of each block whose client copy changed since the last take, as the window's collisions use it. */
+    private static byte[] collisions() throws IOException {
+        var level = Minecraft.getInstance().level;
+        var bytes = new ByteArrayOutputStream();
+        var out = new DataOutputStream(bytes);
+        var shaped = new java.util.ArrayList<BlockPos>();
+        for (long at : RESHAPED) {
+            var state = blockState(level, BlockPos.of(at));
+            if (level != null && state.hasBlockEntity() && BlockEntities.ours(state)) shaped.add(BlockPos.of(at));
+        }
+        RESHAPED.clear();
+        out.writeInt(shaped.size());
+        for (BlockPos pos : shaped) {
+            var state = blockState(level, pos);
+            var boxes = Clients.boxes(state.getCollisionShape(level, pos, net.minecraft.world.phys.shapes.CollisionContext.empty()));
+            out.writeLong(pos.asLong());
+            out.writeInt(Flat.raw(state));
+            out.writeInt(boxes.length / 6);
+            for (double v : boxes) out.writeDouble(v);
         }
         return bytes.toByteArray();
     }

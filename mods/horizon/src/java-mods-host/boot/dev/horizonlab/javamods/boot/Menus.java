@@ -24,7 +24,6 @@ final class Menus {
         }
         // `MinecraftServer.tickServer`: what payload handlers queued for the server thread runs now.
         player.level().getServer().packetProcessor().processQueuedPackets();
-        if (player.containerMenu == player.inventoryMenu) return;
         player.containerMenu.broadcastChanges();
         if (!player.containerMenu.stillValid(player)) {
             player.closeContainer();
@@ -41,6 +40,26 @@ final class Menus {
         player.connection.send(net.neoforged.neoforge.network.payload.RecipeContentPayload.create(sync.getRecipeTypesToSend(), recipes.recipeMap()));
         var level = (net.minecraft.server.level.ServerLevel) player.level();
         for (var entity : new java.util.ArrayList<>(BlockEntities.held(level).values())) Clients.joined(level, entity);
+        player.connection.send(new net.minecraft.network.protocol.game.ClientboundSetHeldSlotPacket(player.getInventory().getSelectedSlot()));
+        server.getPlayerList().sendPlayerPermissionLevel(player);
+        // Chat is Horizon's, so no chat session (INITIALIZE_CHAT) goes with the player's entry.
+        player.connection.send(new net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket(java.util.EnumSet.of(
+                net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket.Action.ADD_PLAYER,
+                net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket.Action.UPDATE_GAME_MODE,
+                net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LISTED,
+                net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LATENCY,
+                net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket.Action.UPDATE_DISPLAY_NAME,
+                net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket.Action.UPDATE_HAT,
+                net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LIST_ORDER), java.util.List.of(player)));
+        player.initInventoryMenu();
+    }
+
+    /** `ServerPlayer.setGameMode`'s packets, for a mode Horizon changed. */
+    static void gameModeChanged(ServerPlayer player, net.minecraft.world.level.GameType type) {
+        player.connection.send(new net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket(
+                net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket.Action.UPDATE_GAME_MODE, player));
+        player.connection.send(new net.minecraft.network.protocol.game.ClientboundGameEventPacket(
+                net.minecraft.network.protocol.game.ClientboundGameEventPacket.CHANGE_GAME_MODE, type.getId()));
     }
 
     /** The player left: Java's menu closes as a disconnect closes it. */

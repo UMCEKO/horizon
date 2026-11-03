@@ -83,12 +83,6 @@ abstract class ServerLevelMixin extends Level {
         Clients.blockChanged((ServerLevel) (Object) this, pos);
     }
 
-    /** Horizon decides which chunks tick; a chunk it has loaded counts, as no distance manager exists here. */
-    @Inject(method = "shouldTickBlocksAt(J)Z", at = @At("HEAD"), cancellable = true)
-    private void horizon$ticking(long chunk, CallbackInfoReturnable<Boolean> result) {
-        result.setReturnValue(dev.horizonlab.javamods.boot.ChunkViews.loaded((ServerLevel) (Object) this, net.minecraft.world.level.ChunkPos.getX(chunk), net.minecraft.world.level.ChunkPos.getZ(chunk)));
-    }
-
     @Inject(method = "broadcastEntityEvent", at = @At("HEAD"), cancellable = true)
     private void horizon$entityEvent(Entity entity, byte event, CallbackInfo info) {
         info.cancel();

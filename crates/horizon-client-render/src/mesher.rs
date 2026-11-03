@@ -1026,7 +1026,9 @@ impl Mesher<'_> {
             };
             ([lighting::gray(directional); 4], [coords; 4])
         };
-        let tint = Self::tint(state, q.tint_index, tints, pos);
+        let tint = face
+            .tint
+            .or_else(|| Self::tint(state, q.tint_index, tints, pos));
         let target = if face.translucent {
             &mut out.translucent
         } else {

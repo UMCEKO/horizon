@@ -58,9 +58,24 @@ public final class Battery extends BaseEntityBlock {
         return createTickerHelper(type, TYPE.get(), Entity::tick);
     }
 
+    static int places;
+    static int removals;
+    static int preRemoves;
+    static int loads;
+    static int unloads;
+    static boolean removedByPiston;
+    static Block neighbor;
+
     @Override
     protected void onPlace(BlockState state, Level level, BlockPos pos, BlockState old, boolean moved) {
+        places++;
         level.scheduleTick(pos, this, 2);
+    }
+
+    @Override
+    protected void affectNeighborsAfterRemoval(BlockState state, ServerLevel level, BlockPos pos, boolean moved) {
+        removals++;
+        removedByPiston = moved;
     }
 
     @Override
@@ -70,6 +85,7 @@ public final class Battery extends BaseEntityBlock {
 
     @Override
     protected void neighborChanged(BlockState state, Level level, BlockPos pos, Block block, @Nullable Orientation orientation, boolean moved) {
+        neighbor = block;
         if (level.getBlockState(pos.below()).is(Blocks.DIRT)) level.setBlock(pos.north(), Blocks.LAPIS_BLOCK.defaultBlockState(), 3);
     }
 
@@ -90,6 +106,22 @@ public final class Battery extends BaseEntityBlock {
 
         public Entity(BlockPos pos, BlockState state) {
             super(TYPE.get(), pos, state);
+        }
+
+        @Override
+        public void preRemoveSideEffects(BlockPos pos, BlockState state) {
+            preRemoves++;
+        }
+
+        @Override
+        public void onLoad() {
+            super.onLoad();
+            loads++;
+        }
+
+        @Override
+        public void onChunkUnloaded() {
+            unloads++;
         }
 
         static void tick(Level level, BlockPos pos, BlockState state, Entity entity) {

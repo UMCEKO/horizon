@@ -24,6 +24,8 @@ pub(in crate::game) mod live {
         models: i32,
         states: bool,
         last: (f64, f64),
+        keys: std::collections::BTreeSet<&'static str>,
+        selected: usize,
     }
 
     thread_local! {
@@ -37,6 +39,7 @@ pub(in crate::game) mod live {
         tick: Vec<u8>,
         states: bool,
         items: Option<(Vec<super::super::java_models::ItemKey>, Vec<u8>)>,
+        decorations: Option<(Vec<Vec<u8>>, Vec<u8>)>,
     }
 
     #[derive(Default)]
@@ -47,6 +50,7 @@ pub(in crate::game) mod live {
         renders: Option<Vec<u8>>,
         external: Option<Vec<u8>>,
         items: Option<(Vec<super::super::java_models::ItemKey>, Vec<u8>)>,
+        decorations: Option<(Vec<Vec<u8>>, Vec<u8>)>,
     }
 
     impl Job {
@@ -68,6 +72,9 @@ pub(in crate::game) mod live {
             let items = self.items.and_then(|(keys, request)| {
                 Some((keys, host.request("client_items_take", &request)?))
             });
+            let decorations = self.decorations.and_then(|(keys, request)| {
+                Some((keys, host.request("client_items_decorations", &request)?))
+            });
             let (models, renders) = status_pending(&tick).unwrap_or((0, 0));
             let take = |op, pending: i32| (pending > 0).then(|| host.request(op, &[])).flatten();
             Done {
@@ -77,6 +84,7 @@ pub(in crate::game) mod live {
                 states,
                 external,
                 items,
+                decorations,
             }
         }
     }
@@ -384,12 +392,16 @@ pub(in crate::game) mod live {
             self.java_client_collect(open);
             let (joined, seen, models, states, font) =
                 CLIENT.with_borrow(|c| (c.joined, c.pending, c.models, c.states, c.font));
+            let keys = self.java_client_keys(joined);
+            let selected = CLIENT.with_borrow(|c| c.selected) != self.selected;
             if java_client_busy()
                 || (joined
                     && !open
                     && pending == seen
                     && models == 0
                     && font >= 0x10000
+                    && keys.is_empty()
+                    && !selected
                     && !super::super::java_models::java_items_queued())
             {
                 return;
@@ -400,8 +412,24 @@ pub(in crate::game) mod live {
             out.text(&name);
             out.text(self.dim.id());
             self.java_client_size(&mut out);
+            out.int(keys.len() as i32);
+            for (key, down) in keys {
+                out.text(key);
+                out.bool(down);
+                CLIENT.with_borrow_mut(|c| {
+                    if down {
+                        c.keys.insert(key);
+                    } else {
+                        c.keys.remove(key);
+                    }
+                });
+            }
+            // The hotbar selection is this client's own, not the server's: the Java client's follows the window's.
+            out.int(self.selected as i32);
+            CLIENT.with_borrow_mut(|c| c.selected = self.selected);
             let job = Job {
                 items: super::super::java_models::java_items_request(),
+                decorations: super::super::java_models::java_decorations_request(),
                 font: self.java_client_font(),
                 tick: out.0,
                 states: !states,
@@ -413,6 +441,42 @@ pub(in crate::game) mod live {
             } else {
                 WORKER.with_borrow_mut(|w| w.get_or_insert_with(Worker::start).send(job));
             }
+        }
+
+        /// What the Java client's `KeyMapping`s haven't heard of the window's keys: presses only while the world has the keys, as `KeyboardHandler.keyPress` gives them, releases always.
+        fn java_client_keys(&self, joined: bool) -> Vec<(&'static str, bool)> {
+            if !joined {
+                return Vec::new();
+            }
+            let held: std::collections::BTreeSet<&'static str> = self
+                .keys
+                .iter()
+                .filter_map(|key| horizon_client::keybinds::key_name(*key))
+                .collect();
+            let playing = self.screen == Screen::Playing && self.title.is_none();
+            CLIENT.with_borrow(|c| {
+                let released = c.keys.difference(&held).map(|key| (*key, false));
+                let pressed = held
+                    .difference(&c.keys)
+                    .filter(|_| playing)
+                    .map(|key| (*key, true));
+                released.chain(pressed).collect()
+            })
+        }
+
+        /// `MouseHandler.onScroll` in the world, run by the Java client: true when a mod's `MouseScrollingEvent` listener canceled it.
+        pub(in crate::game) fn java_world_scroll(&self, x: f64, y: f64) -> bool {
+            if !CLIENT.with_borrow(|c| c.joined) {
+                return false;
+            }
+            let Some(host) = horizon_java_host::get() else {
+                return false;
+            };
+            let mut out = Out::default();
+            out.double(x);
+            out.double(y);
+            host.request("client_scroll", &out.0)
+                .is_some_and(|reply| reply.first() == Some(&1))
         }
 
         /// The background tick's results, once it finished; `wait` blocks until it has.
@@ -437,7 +501,10 @@ pub(in crate::game) mod live {
                 super::super::java_models::java_items_external(&external);
             }
             if let Some((keys, reply)) = done.items {
-                super::super::java_models::java_items_apply(keys, &reply);
+                super::super::java_models::java_items_apply(keys, &reply, self.world.game_time);
+            }
+            if let Some((keys, reply)) = done.decorations {
+                super::super::java_models::java_decorations_apply(keys, &reply);
             }
             let taken = done.models.is_some() || done.renders.is_some();
             if let Some(models) = done.models {
@@ -448,6 +515,37 @@ pub(in crate::game) mod live {
             }
             if taken {
                 CLIENT.with_borrow_mut(|c| c.models = 0);
+            }
+        }
+
+        /// What a mod's item decorators recorded over this stack, in the slot at `(x, y)`.
+        pub(in crate::game) fn draw_java_item_decorations(
+            &self,
+            batch: &mut HudBatch,
+            stack: &ItemStack,
+            x: f32,
+            y: f32,
+        ) {
+            let Some(frame) = super::super::java_models::java_decorations(stack) else {
+                return;
+            };
+            let start = batch.vertices.len();
+            let mut reply = In(&frame);
+            for _ in 0..reply.int().unwrap_or(0) {
+                let ok = match reply.byte() {
+                    Some(QUAD) => quad(batch, &self.gui.atlas, &mut reply),
+                    Some(TEXT) => text(batch, &self.gui.atlas, &mut reply),
+                    Some(ITEM) => self.java_screen_item(batch, &mut reply),
+                    _ => None,
+                };
+                if ok.is_none() {
+                    log::warn!("Horizon: an item decorator's frame ended in pieces");
+                    break;
+                }
+            }
+            for vertex in &mut batch.vertices[start..] {
+                vertex.pos[0] += x;
+                vertex.pos[1] += y;
             }
         }
 
@@ -480,7 +578,7 @@ pub(in crate::game) mod live {
             }
         }
 
-        fn java_screen_item(&mut self, batch: &mut HudBatch, reply: &mut In) -> Option<()> {
+        fn java_screen_item(&self, batch: &mut HudBatch, reply: &mut In) -> Option<()> {
             let (x, y, sx, sy) = (
                 reply.float()?,
                 reply.float()?,
@@ -611,6 +709,9 @@ impl Game<'_> {
     pub(super) fn java_screen_click(&mut self, _button: MouseButton, _pressed: bool) {}
     pub(super) fn java_screen_moved(&mut self) {}
     pub(super) fn java_screen_scroll(&mut self, _x: f64, _y: f64) {}
+    pub(super) fn java_world_scroll(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
     pub(super) fn java_screen_key(&mut self, _event: &winit::event::KeyEvent) {}
     pub(super) fn java_screen_key_code(
         &mut self,

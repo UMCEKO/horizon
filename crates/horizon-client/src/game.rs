@@ -126,6 +126,8 @@ mod item_draw;
 mod item_particles;
 #[cfg(feature = "java-mods")]
 mod java_bridges;
+#[cfg(feature = "java-mods")]
+mod java_components;
 mod java_hooks;
 #[cfg(feature = "java-mods")]
 mod java_models;
@@ -1004,10 +1006,17 @@ impl LevelAccess for GameLevel<'_> {
             java_mods::note_block_tick(pos, state, random);
         }
     }
-    fn observe_block_changed(&self, pos: BlockPos, old: BlockStateId, new: BlockStateId) {
+    fn observe_block_changed(
+        &self,
+        pos: BlockPos,
+        old: BlockStateId,
+        new: BlockStateId,
+        flags: i32,
+    ) {
         if self.native_authoritative {
             #[cfg(feature = "java-mods")]
-            java_mods::note_block_changed(pos, old, new);
+            java_mods::note_block_changed(pos, old, new, flags);
+            let _ = flags;
             self.native_block_changed(self.dimension, pos, old, new);
         }
     }
@@ -1020,7 +1029,12 @@ impl LevelAccess for GameLevel<'_> {
     ) {
         if self.native_authoritative {
             #[cfg(feature = "java-mods")]
-            java_mods::note_neighbor_changed(pos, state, moved);
+            java_mods::note_neighbor_changed(
+                pos,
+                state,
+                self.behaviours.table.default_state(changed),
+                moved,
+            );
             self.native_neighbor_changed(self.dimension, pos, state, changed, moved);
         }
     }
@@ -6039,6 +6053,8 @@ impl Game<'_> {
             self.refresh_creative_tabs();
         }
         self.java_client_tick();
+        #[cfg(feature = "java-mods")]
+        self.java_client_collisions();
         if self.remote.is_some() {
             return self.tick_remote();
         }
@@ -6971,6 +6987,8 @@ impl Game<'_> {
         ));
         draws.push(hud_layout::GuiDraw::Pop);
         hud_layout::paint(batch, &self.gui.atlas, &draws);
+        #[cfg(feature = "java-mods")]
+        self.draw_java_item_decorations(batch, stack, x, y);
     }
     fn hud(&mut self, size: [u32; 2]) -> HudBatch {
         // The pack prompt replaces the connecting screen (setScreen), but
@@ -14002,8 +14020,11 @@ impl Game<'_> {
         self.streaming
             .extra
             .extend(waiting.into_iter().map(|chunk| (chunk, 0)));
-        let (uploads, unloaded) =
+        #[cfg_attr(not(feature = "java-mods"), allow(unused_mut))]
+        let (uploads, mut unloaded) =
             horizon_client::spans::time("streaming", || self.streaming.update(&mut self.world));
+        #[cfg(feature = "java-mods")]
+        unloaded.extend(java_mods::take_pumped_unloads());
         self.streaming.extra.truncate(areas);
         self.spawn_fresh_chunks();
         if let Some(lod) = &mut self.lod {
@@ -14029,6 +14050,10 @@ impl Game<'_> {
                 }
             });
         }
+        let loaded = std::mem::take(&mut self.streaming.loaded);
+        #[cfg(feature = "java-mods")]
+        self.java_chunks_changed(&loaded, &unloaded);
+        let _ = loaded;
         let dirty: Vec<_> = unloaded
             .iter()
             .filter(|c| self.world.modified.remove(&(c.x, c.z)))
@@ -14518,6 +14543,7 @@ impl ApplicationHandler for Game<'_> {
                         && self.sleeping.is_none()
                         && self.player.is_some()
                         && !self.native_wheel_event(d)
+                        && !self.java_world_scroll(scaled(raw_x), scaled(raw_y))
                         && let Some((wheel, (_, vertical_steps))) =
                             self.mouse
                                 .on_scroll(raw_x, raw_y, discrete, wheel_sensitivity)
@@ -17337,7 +17363,10 @@ pub fn run() -> Result<()> {
         return Ok(());
     };
     #[cfg(feature = "java-mods")]
-    horizon_java_host::start(java_bridges::bridges());
+    {
+        horizon_java_host::start(java_bridges::bridges());
+        java_components::install();
+    }
     if options.execution_role == execution_role::ExecutionRole::DedicatedServer
         && !dedicated::preflight(&mut options)?
     {

@@ -2,8 +2,9 @@
 //! replies are parsed here into `dynamic_models`, which the mesher draws from, and the sections remesh.
 
 use super::*;
+use horizon_assets::item_model::FoilType;
 use horizon_assets::model::{BakedLayer, BakedQuadData, Direction};
-use horizon_client::item_render::{LayerGeometry, LayerRender, RecordedQuad};
+use horizon_client::item_render::{ItemRenderState, LayerGeometry, LayerRender, RecordedQuad};
 use horizon_client::{dynamic_models, dynamic_renders};
 use horizon_java_host::wire::In;
 use std::cell::RefCell;
@@ -11,26 +12,57 @@ use std::cell::RefCell;
 /// A stack (its saved form) and an `ItemDisplayContext` ordinal.
 pub(in crate::game) type ItemKey = (Vec<u8>, u8);
 
+/// One piece of a recorded item: its quads in the frame of a pose, and how that pose moves.
+struct ItemPiece {
+    motion: dynamic_renders::Draw,
+    foil: FoilType,
+    quads: Arc<[RecordedQuad]>,
+    extents: Arc<Vec<glam::Vec3>>,
+}
+
+/// `ItemStackRenderState` as the Java client filled it for a stack.
+struct ItemRecording {
+    uses_block_light: bool,
+    oversized_in_gui: bool,
+    animated: bool,
+    pieces: Vec<ItemPiece>,
+    /// Game time the recording arrived.
+    since: i64,
+}
+
 /// Mod items only their own code can draw: which they are, what the Java client recorded of them, and what to ask it next.
 #[derive(Default)]
 struct ItemRecordings {
     external: std::collections::HashSet<String>,
-    cache: HashMap<ItemKey, Option<Arc<[RecordedQuad]>>>,
+    cache: HashMap<ItemKey, Option<Arc<ItemRecording>>>,
+    /// Each item's last recording per context: a stack whose data just changed keeps drawing it until its own arrives.
+    latest: HashMap<(String, u8), Arc<ItemRecording>>,
     queued: Vec<ItemKey>,
+    decorated: std::collections::HashSet<String>,
+    decorations: HashMap<Vec<u8>, Option<Arc<[u8]>>>,
+    decorations_queued: Vec<Vec<u8>>,
 }
 
 thread_local! {
     static ITEMS: RefCell<ItemRecordings> = RefCell::default();
 }
 
-/// Takes the list of item ids the Java client draws.
+fn read_ids(input: &mut In) -> std::collections::HashSet<String> {
+    let count = input.int().unwrap_or(0);
+    (0..count)
+        .map_while(|_| input.text().map(str::to_owned))
+        .collect()
+}
+
+/// Takes the lists of item ids the Java client draws, and of those a mod's decorators draw over.
 pub(in crate::game) fn java_items_external(reply: &[u8]) {
     let mut input = In(reply);
-    let count = input.int().unwrap_or(0);
-    let ids: std::collections::HashSet<String> = (0..count)
-        .map_while(|_| input.text().map(str::to_owned))
-        .collect();
-    ITEMS.with_borrow_mut(|items| items.external = ids);
+    let external = read_ids(&mut input);
+    let decorated = read_ids(&mut input);
+    ITEMS.with_borrow_mut(|items| {
+        items.external = external;
+        items.decorated = decorated;
+    });
 }
 
 /// The queued stacks to record, as the request and its encoded form; None when there are none.
@@ -48,69 +80,206 @@ pub(in crate::game) fn java_items_request() -> Option<(Vec<ItemKey>, Vec<u8>)> {
     Some((keys, out.0))
 }
 
-/// Stores the recordings answering `keys`; one that failed keeps Horizon's own reading of the item.
-pub(in crate::game) fn java_items_apply(keys: Vec<ItemKey>, reply: &[u8]) {
-    let mut input = In(reply);
-    let Some(count) = input.int() else {
-        return;
-    };
-    let mut answers = Vec::new();
-    for _ in 0..count {
-        let Some(quads) = input.int() else {
-            return;
+/// The queued stacks whose decorations to record, as the request and its encoded form.
+pub(in crate::game) fn java_decorations_request() -> Option<(Vec<Vec<u8>>, Vec<u8>)> {
+    let keys = ITEMS.with_borrow_mut(|items| std::mem::take(&mut items.decorations_queued));
+    if keys.is_empty() {
+        return None;
+    }
+    let mut out = horizon_java_host::wire::Out::default();
+    out.int(keys.len() as i32);
+    for nbt in &keys {
+        out.bytes(nbt);
+    }
+    Some((keys, out.0))
+}
+
+fn recorded_quad(input: &mut In) -> Option<RecordedQuad> {
+    let texture = input.text()?.to_owned();
+    let mut corners = [[0.0; 5]; 4];
+    let mut color = 0;
+    for corner in &mut corners {
+        for value in corner.iter_mut() {
+            *value = input.float()?;
+        }
+        color = input.int()? as u32;
+    }
+    let normal = [input.float()?, input.float()?, input.float()?];
+    let translucent = input.bool()?;
+    let cull = input.bool()?;
+    Some(RecordedQuad {
+        texture,
+        corners,
+        color,
+        normal,
+        translucent,
+        cull,
+    })
+}
+
+fn moves(op: &dynamic_renders::Op) -> bool {
+    use dynamic_renders::{Op, Param};
+    let varies = |p: &Param| !matches!(p, Param::Const(_));
+    match op {
+        Op::Translate(p) | Op::Scale(p) => p.iter().any(varies),
+        Op::Rotate(_, p) => varies(p),
+        Op::Quat(_) | Op::Matrix(_) => false,
+    }
+}
+
+/// One stack's recording; `Some(None)` when its model failed in Java, None when the reply is cut short.
+fn parse_recording(input: &mut In, since: i64) -> Option<Option<ItemRecording>> {
+    let pieces = input.int()?;
+    if pieces < 0 {
+        return Some(None);
+    }
+    let uses_block_light = input.bool()?;
+    let oversized_in_gui = input.bool()?;
+    let mut list = Vec::new();
+    for _ in 0..pieces {
+        let ops = (0..input.int()?)
+            .map(|_| op(input))
+            .collect::<Option<Vec<_>>>()?;
+        let foil = match input.byte()? {
+            0 => FoilType::None,
+            1 => FoilType::Standard,
+            _ => FoilType::Special,
         };
-        if quads < 0 {
-            answers.push(None);
-            continue;
-        }
-        let mut list = Vec::new();
-        for _ in 0..quads {
-            let Some(quad) = (|| {
-                let texture = input.text()?.to_owned();
-                let mut corners = [[0.0; 5]; 4];
-                let mut color = 0;
-                for corner in &mut corners {
-                    for value in corner.iter_mut() {
-                        *value = input.float()?;
-                    }
-                    color = input.int()? as u32;
-                }
-                let translucent = input.bool()?;
-                Some(RecordedQuad {
-                    texture,
-                    corners,
-                    color,
-                    translucent,
-                })
-            })() else {
+        let quads = (0..input.int()?)
+            .map(|_| recorded_quad(input))
+            .collect::<Option<Vec<_>>>()?;
+        let extents = quads
+            .iter()
+            .flat_map(|q| q.corners.map(|c| glam::Vec3::new(c[0], c[1], c[2])))
+            .collect();
+        list.push(ItemPiece {
+            motion: dynamic_renders::Draw {
+                translucent: false,
+                ops,
+                quads: Vec::new(),
+                item: None,
+            },
+            foil,
+            quads: quads.into(),
+            extents: Arc::new(extents),
+        });
+    }
+    Some(Some(ItemRecording {
+        uses_block_light,
+        oversized_in_gui,
+        animated: list.iter().any(|p: &ItemPiece| p.motion.ops.iter().any(moves)),
+        pieces: list,
+        since,
+    }))
+}
+
+/// Stores the recordings answering `keys`.
+pub(in crate::game) fn java_items_apply(keys: Vec<ItemKey>, reply: &[u8], now: i64) {
+    let mut input = In(reply);
+    if input.int().is_none() {
+        return;
+    }
+    let mut answers = Vec::new();
+    for _ in 0..keys.len() {
+        match parse_recording(&mut input, now) {
+            Some(answer) => answers.push(answer.map(Arc::new)),
+            None => {
+                log::warn!("Horizon: a malformed Java items reply was dropped");
                 return;
-            };
-            list.push(quad);
+            }
         }
-        answers.push(Some(Arc::from(list)));
     }
     ITEMS.with_borrow_mut(|items| {
         if items.cache.len() > 4096 {
             items.cache.clear();
         }
-        for (key, answer) in keys.into_iter().zip(answers) {
-            items.cache.insert(key, answer);
+        for ((nbt, context), answer) in keys.into_iter().zip(answers) {
+            if let Some(recording) = &answer
+                && let Some(id) = item_id(&nbt)
+            {
+                items.latest.insert((id, context), Arc::clone(recording));
+            }
+            items.cache.insert((nbt, context), answer);
         }
     });
 }
 
+/// The item id of a stack's saved form.
+fn item_id(nbt: &[u8]) -> Option<String> {
+    let tag = super::java_mods::read_tag(nbt)?;
+    horizon_client::save::item_from_nbt(&tag).map(|stack| stack.item.to_string())
+}
+
+/// Stores the decorations answering `keys`.
+pub(in crate::game) fn java_decorations_apply(keys: Vec<Vec<u8>>, reply: &[u8]) {
+    let mut input = In(reply);
+    if input.int().is_none() {
+        return;
+    }
+    let mut answers = Vec::new();
+    for _ in 0..keys.len() {
+        let Some(length) = input.int() else {
+            log::warn!("Horizon: a malformed Java decorations reply was dropped");
+            return;
+        };
+        let Ok(length) = usize::try_from(length) else {
+            answers.push(None);
+            continue;
+        };
+        if input.0.len() < length {
+            log::warn!("Horizon: a malformed Java decorations reply was dropped");
+            return;
+        }
+        let (frame, rest) = input.0.split_at(length);
+        input.0 = rest;
+        answers.push(Some(Arc::<[u8]>::from(frame)));
+    }
+    ITEMS.with_borrow_mut(|items| {
+        if items.decorations.len() > 4096 {
+            items.decorations.clear();
+        }
+        items.decorations.extend(keys.into_iter().zip(answers));
+    });
+}
+
+/// A stack's saved form with its count taken away: what its drawing can depend on besides the count.
+fn stack_key(stack: &ItemStack) -> Option<Vec<u8>> {
+    let mut one = stack.clone();
+    one.count = 1;
+    super::java_mods::write_tag(horizon_items::item_nbt::item_to_nbt(&one))
+}
+
+/// What a mod's decorators recorded over this stack, once the Java client answered; asks for it otherwise.
+pub(in crate::game) fn java_decorations(stack: &ItemStack) -> Option<Arc<[u8]>> {
+    if !ITEMS.with_borrow(|items| items.decorated.contains(&*stack.item)) {
+        return None;
+    }
+    // A decorator sees the whole stack, count included.
+    let key = super::java_mods::write_tag(horizon_items::item_nbt::item_to_nbt(stack))?;
+    ITEMS.with_borrow_mut(|items| match items.decorations.get(&key) {
+        Some(answer) => answer.clone(),
+        None => {
+            if !items.decorations_queued.contains(&key) {
+                items.decorations_queued.push(key);
+            }
+            None
+        }
+    })
+}
+
 /// Whether item recordings are waiting to be asked for.
 pub(in crate::game) fn java_items_queued() -> bool {
-    ITEMS.with_borrow(|items| !items.queued.is_empty())
+    ITEMS.with_borrow(|items| !items.queued.is_empty() || !items.decorations_queued.is_empty())
 }
 
 struct Entry {
     pos: [i32; 3],
     key: i32,
-    quads: Option<Vec<BakedQuadData>>,
+    quads: Option<(Vec<BakedQuadData>, Vec<i32>)>,
 }
 
-fn quad(input: &mut In) -> Option<BakedQuadData> {
+/// One quad and the tint color the block's code resolved for it (-1 for none).
+fn quad(input: &mut In) -> Option<(BakedQuadData, i32)> {
     let mut vertices = [[0.0; 5]; 4];
     for value in vertices.iter_mut().flatten() {
         *value = input.float()?;
@@ -119,6 +288,7 @@ fn quad(input: &mut In) -> Option<BakedQuadData> {
     let face = *Direction::ALL.get(usize::from(input.byte()?))?;
     let cull = Direction::ALL.get(usize::from(input.byte()?)).copied();
     let tint = input.int()?;
+    let color = input.int()?;
     let shade = input.bool()?;
     let emission = input.byte()?.min(15);
     let layer = match input.byte()? {
@@ -129,16 +299,19 @@ fn quad(input: &mut In) -> Option<BakedQuadData> {
         4 => BakedLayer::Tripwire,
         _ => return None,
     };
-    Some(BakedQuadData {
-        vertices,
-        sprite,
-        face,
-        cull,
-        tint,
-        shade,
-        emission,
-        layer,
-    })
+    Some((
+        BakedQuadData {
+            vertices,
+            sprite,
+            face,
+            cull,
+            tint,
+            shade,
+            emission,
+            layer,
+        },
+        color,
+    ))
 }
 
 /// The models reply: entries, or None when it is cut short or malformed.
@@ -152,10 +325,13 @@ fn parse_models(reply: &[u8]) -> Option<Vec<Entry>> {
         let quads = if input.bool()? {
             let quads = usize::try_from(input.int()?).ok()?;
             let mut list = Vec::with_capacity(quads.min(4096));
+            let mut colors = Vec::with_capacity(quads.min(4096));
             for _ in 0..quads {
-                list.push(quad(&mut input)?);
+                let (quad, color) = quad(&mut input)?;
+                list.push(quad);
+                colors.push(color);
             }
-            Some(list)
+            Some((list, colors))
         } else {
             None
         };
@@ -283,45 +459,59 @@ fn parse_renders(reply: &[u8]) -> Option<Vec<([i32; 3], Option<Vec<dynamic_rende
 }
 
 impl Game<'_> {
-    /// The layer a mod's own item model code drew for this stack in this context, once the Java client recorded it.
-    pub(in crate::game) fn java_item_layer(
+    /// `ItemModelResolver.updateForTopItem` of a mod's item that only its code can draw: what the Java client recorded, with the pieces where they are now; nothing until a first recording arrives.
+    pub(in crate::game) fn java_item_state(
         &self,
         stack: &ItemStack,
         display: horizon_assets::item_model::DisplayContext,
-        uses_block_light: bool,
-    ) -> Option<LayerRender> {
+        state: &mut ItemRenderState,
+    ) {
         if !ITEMS.with_borrow(|items| items.external.contains(&*stack.item)) {
-            return None;
+            return;
         }
-        let mut one = stack.clone();
-        one.count = 1;
-        let nbt = super::java_mods::write_tag(horizon_items::item_nbt::item_to_nbt(&one))?;
-        let context = horizon_assets::item_model::DisplayContext::ALL
+        state.layers.clear();
+        let Some(nbt) = stack_key(stack) else {
+            return;
+        };
+        let Some(context) = horizon_assets::item_model::DisplayContext::ALL
             .iter()
-            .position(|c| *c == display)? as u8;
+            .position(|c| *c == display)
+            .map(|c| c as u8)
+        else {
+            return;
+        };
         let key = (nbt, context);
-        let quads = ITEMS.with_borrow_mut(|items| match items.cache.get(&key) {
+        let recording = ITEMS.with_borrow_mut(|items| match items.cache.get(&key) {
             Some(answer) => answer.clone(),
             None => {
                 if !items.queued.contains(&key) {
                     items.queued.push(key);
                 }
-                None
+                items
+                    .latest
+                    .get(&(stack.item.to_string(), context))
+                    .cloned()
             }
-        })?;
-        let extents = quads
+        });
+        let Some(recording) = recording else {
+            return;
+        };
+        let ticks = (self.world.game_time - recording.since) as f32 + self.clock.fraction() as f32;
+        state.oversized_in_gui = recording.oversized_in_gui;
+        state.animated = recording.animated;
+        state.layers = recording
+            .pieces
             .iter()
-            .flat_map(|q| q.corners.map(|c| glam::Vec3::new(c[0], c[1], c[2])))
+            .map(|piece| LayerRender {
+                geometry: LayerGeometry::Recorded(Arc::clone(&piece.quads)),
+                tints: Vec::new(),
+                foil: piece.foil,
+                matrix: piece.motion.matrix(ticks),
+                particle: String::new(),
+                uses_block_light: recording.uses_block_light,
+                extents: Arc::clone(&piece.extents),
+            })
             .collect();
-        Some(LayerRender {
-            geometry: LayerGeometry::Recorded(quads),
-            tints: Vec::new(),
-            foil: horizon_assets::item_model::FoilType::None,
-            matrix: glam::Mat4::IDENTITY,
-            particle: String::new(),
-            uses_block_light,
-            extents: Arc::new(extents),
-        })
     }
 
     /// Takes a renders reply: what mods' block entity renderers draw at each changed position.
@@ -352,8 +542,8 @@ impl Game<'_> {
                 }
                 continue;
             }
-            if let Some(quads) = quads
-                && dynamic_models::put_geometry(key, quads.into())
+            if let Some((quads, colors)) = quads
+                && dynamic_models::put_geometry(key, quads.into(), colors.into())
             {
                 changed.extend(dynamic_models::positions_of(key));
             }
@@ -390,6 +580,7 @@ mod tests {
         out.text(sprite);
         out.0.extend([1, cull]);
         out.int(0x00ff_00ff);
+        out.int(0x7f12_3456);
         out.bool(false);
         out.0.extend([7, 3]);
     }
@@ -417,8 +608,9 @@ mod tests {
         assert_eq!((entries[0].key, entries[1].key, entries[2].key), (5, 5, -1));
         assert_eq!(entries[1].pos, [100, -2, -50]);
         assert!(entries[1].quads.is_none() && entries[2].quads.is_none());
-        let quads = entries[0].quads.as_ref().unwrap();
+        let (quads, colors) = entries[0].quads.as_ref().unwrap();
         assert_eq!(quads.len(), 2);
+        assert_eq!(colors, &[0x7f12_3456; 2]);
         assert_eq!(quads[0].vertices[3][4], 19.0 / 4.0);
         assert_eq!(quads[0].sprite, "ae2:block/cable");
         assert_eq!((quads[0].face, quads[0].cull), (Direction::Up, None));

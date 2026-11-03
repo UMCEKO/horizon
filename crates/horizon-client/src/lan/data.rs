@@ -152,6 +152,9 @@ impl SyncData {
         let builtin = Builtin::find(resources)
             .and_then(|p| Builtin::load(&p).ok())
             .ok_or("registries.json not found next to the resources")?;
+        if let Some(ids) = builtin.get("minecraft:data_component_type") {
+            horizon_protocol::item::foreign::set_ids(ids);
+        }
         let root: PathBuf = resources.join("data/minecraft");
         let mut registries = Vec::new();
         let mut dynamic = Dynamic::default();
