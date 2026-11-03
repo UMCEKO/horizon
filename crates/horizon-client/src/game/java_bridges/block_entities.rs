@@ -19,7 +19,15 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     "dev/horizonlab/javamods/boot/BlockEntities".forget
     "(J)V" =>
     fn block_entity_forget(game, pos: Pos) -> () {
-        game.world.block_entities.remove(&(pos.0.x, pos.0.y, pos.0.z));
+        let key = (pos.0.x, pos.0.y, pos.0.z);
+        game.world.block_entities.release_for_java(&key);
+        game.world.block_entities.remove(&key);
+    }
+
+    "dev/horizonlab/javamods/boot/BlockEntities".store
+    "(J[B)V" =>
+    fn block_entity_store(game, pos: Pos, tag: Bytes) -> () {
+        game.java_store_block_entity(pos.0, &tag.0);
     }
 
     "dev/horizonlab/javamods/boot/Clients".collisionShape

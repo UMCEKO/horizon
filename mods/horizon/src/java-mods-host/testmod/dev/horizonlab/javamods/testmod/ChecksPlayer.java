@@ -30,6 +30,40 @@ final class ChecksPlayer {
         float yaw = player.getYRot();
         float pitch = player.getXRot();
 
+        Checks.check("getDestroyProgress runs the held item's speed and BreakSpeed", () -> {
+            var inventory = player.getInventory();
+            int slot = inventory.getSelectedSlot();
+            ItemStack kept = inventory.getItem(slot);
+            try {
+                var dirt = Blocks.DIRT.defaultBlockState();
+                inventory.setItem(slot, ItemStack.EMPTY);
+                float bare = dirt.getDestroyProgress(player, level, area);
+                inventory.setItem(slot, new ItemStack(net.minecraft.core.registries.BuiltInRegistries.ITEM.getValue(Identifier.parse("horizon_java_test:digger"))));
+                float fast = dirt.getDestroyProgress(player, level, area);
+                float halved = Blocks.GRAVEL.defaultBlockState().getDestroyProgress(player, level, area);
+                float air = player.onGround() ? 1.0f : 0.2f;
+                System.out.println("CHECK destroy progress bare=" + bare + " fast=" + fast + " halved=" + halved + " air=" + air);
+                return Math.abs(bare - air / 0.5f / 30) < 1e-4 && Math.abs(fast - 100 * air / 0.5f / 30) < 1e-3 && Math.abs(halved - 50 * air / 0.6f / 30) < 1e-3;
+            } finally {
+                inventory.setItem(slot, kept);
+            }
+        });
+        Checks.check("destroyBlock runs BreakEvent and its extra break; a canceled event keeps the block", () -> {
+            level.setBlock(area, Blocks.IRON_BLOCK.defaultBlockState(), 3);
+            level.setBlock(area.above(), Blocks.DIRT.defaultBlockState(), 3);
+            boolean broke = player.gameMode.destroyBlock(area);
+            boolean both = level.getBlockState(area).isAir() && level.getBlockState(area.above()).isAir();
+            level.setBlock(area, Blocks.GILDED_BLACKSTONE.defaultBlockState(), 3);
+            boolean canceled = !player.gameMode.destroyBlock(area) && level.getBlockState(area).is(Blocks.GILDED_BLACKSTONE);
+            level.setBlock(area, Blocks.AIR.defaultBlockState(), 3);
+            return broke && both && canceled;
+        });
+        Checks.check("ItemStack.mineBlock runs the item's own code", () -> {
+            var stack = new ItemStack(net.minecraft.core.registries.BuiltInRegistries.ITEM.getValue(Identifier.parse("horizon_java_test:miner")));
+            int before = TestMod.Miner.mined;
+            stack.mineBlock(level, Blocks.STONE.defaultBlockState(), area, player);
+            return TestMod.Miner.mined == before + 1;
+        });
         Checks.check("teleportTo", () -> {
             player.teleportTo(x + 1, y, z);
             boolean moved = player.getX() == x + 1;

@@ -24,11 +24,26 @@ public final class TestMod {
         ITEMS.registerItem("wand", Wand::new);
         ITEMS.registerItem("probe", Probe::new);
         ITEMS.registerItem("tonic", Tonic::new);
+        ITEMS.registerItem("labelled", Labelled::new);
+        ITEMS.registerItem("digger", Digger::new);
+        ITEMS.registerItem("miner", Miner::new);
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.entity.player.PlayerEvent.HarvestCheck event) -> {
+            if (event.getTargetBlock().is(Blocks.STONE) && event.getEntity().getMainHandItem().getItem() instanceof Digger) event.setCanHarvest(true);
+        });
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.level.block.BreakBlockEvent event) -> {
+            if (event.getState().is(Blocks.GILDED_BLACKSTONE)) event.setCanceled(true);
+            else if (event.getState().is(Blocks.IRON_BLOCK) && event.getLevel() instanceof Level level) level.destroyBlock(event.getPos().above(), false);
+        });
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.entity.player.PlayerEvent.BreakSpeed event) -> {
+            if (event.getState().is(Blocks.GRAVEL)) event.setNewSpeed(event.getNewSpeed() * 0.5f);
+        });
         // A plain food, so the boot's facts carry a food item.
         ITEMS.registerSimpleItem("snack", p -> p.food(new net.minecraft.world.food.FoodProperties.Builder().nutrition(5).saturationModifier(0.7f).build()).stacksTo(16));
         ITEMS.register(bus);
         Battery.register(bus, ITEMS);
+        Breakables.register(bus, ITEMS);
         ChunkData.register(bus);
+        if (net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) ClientKeys.register(bus);
     }
 
     /** The second look, after the world has run: what a machine's ticks did. */
@@ -41,6 +56,50 @@ public final class TestMod {
         public InteractionResult useOn(UseOnContext context) {
             if (!context.getLevel().isClientSide()) ChecksBlockEntities.later(context);
             return InteractionResult.SUCCESS;
+        }
+    }
+
+    /** Counts the blocks broken with it, as a tool spending its energy in `mineBlock` does. */
+    public static final class Miner extends Item {
+        public static int mined;
+
+        public Miner(Properties properties) {
+            super(properties);
+        }
+
+        @Override
+        public boolean mineBlock(net.minecraft.world.item.ItemStack stack, Level level, net.minecraft.world.level.block.state.BlockState state, BlockPos pos, net.minecraft.world.entity.LivingEntity owner) {
+            mined++;
+            return true;
+        }
+    }
+
+    /** Mines everything at 100, as a tool whose speed its code computes does. */
+    public static final class Digger extends Item {
+        public Digger(Properties properties) {
+            super(properties);
+        }
+
+        @Override
+        public float getDestroySpeed(net.minecraft.world.item.ItemStack stack, net.minecraft.world.level.block.state.BlockState state) {
+            return 100.0f;
+        }
+    }
+
+    /** A name and a tooltip line only its code computes, as Mekanism's upgrades have. */
+    public static final class Labelled extends Item {
+        public Labelled(Properties properties) {
+            super(properties);
+        }
+
+        @Override
+        public Component getName(net.minecraft.world.item.ItemStack stack) {
+            return Component.literal("Labelled by code");
+        }
+
+        @Override
+        public void appendHoverText(net.minecraft.world.item.ItemStack stack, TooltipContext context, net.minecraft.world.item.component.TooltipDisplay display, java.util.function.Consumer<Component> lines, net.minecraft.world.item.TooltipFlag flag) {
+            lines.accept(Component.literal("Tooltip line from code"));
         }
     }
 

@@ -191,6 +191,7 @@ struct Items {
     use_in_air: HashSet<String>,
     use_on: HashSet<String>,
     entity: HashSet<String>,
+    mine: HashSet<String>,
 }
 
 impl Items {
@@ -207,6 +208,9 @@ impl Items {
             }
             if list.bool()? {
                 items.entity.insert(id.clone());
+            }
+            if list.bool()? {
+                items.mine.insert(id.clone());
             }
             items.owned.insert(id);
         }
@@ -412,6 +416,11 @@ impl Host {
         self.items.entity.contains(id)
     }
 
+    /// Whether the item's `mineBlock` is its mod's own code.
+    pub fn item_mine_code(&self, id: &str) -> bool {
+        self.items.mine.contains(id)
+    }
+
     /// Attaches this thread as FML's real server group, as `EffectiveSide` asks every thread's group which side it's on.
     fn attach(&self) {
         thread_local! {
@@ -497,7 +506,9 @@ mod tests {
         out.bool(false);
         out.bool(false);
         out.bool(false);
+        out.bool(false);
         out.text("m:wrench");
+        out.bool(true);
         out.bool(true);
         out.bool(true);
         out.bool(true);
@@ -506,7 +517,7 @@ mod tests {
         assert!(!items.use_in_air.contains("m:snack") && !items.use_on.contains("m:snack"));
         assert!(!items.entity.contains("m:snack"));
         assert!(items.use_in_air.contains("m:wrench") && items.use_on.contains("m:wrench"));
-        assert!(items.entity.contains("m:wrench"));
+        assert!(items.entity.contains("m:wrench") && items.mine.contains("m:wrench"));
         assert!(
             Items::read(&out.0[..out.0.len() - 1]).is_none(),
             "a short list fails"

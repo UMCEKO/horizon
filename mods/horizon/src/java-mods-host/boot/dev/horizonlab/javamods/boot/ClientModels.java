@@ -136,6 +136,7 @@ public final class ClientModels {
             out.writeLong(at);
             var entity = ClientBridge.blockEntity(level, pos);
             BlockState state = entity == null ? null : entity.getBlockState();
+            out.writeInt(state == null ? -1 : net.minecraft.world.level.block.Block.BLOCK_STATE_REGISTRY.getId(state));
             BlockStateModel model = state == null || !codeBuilt.contains(state) ? null : models.get(state);
             if (model == null) {
                 out.writeInt(-1);

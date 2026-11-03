@@ -140,6 +140,7 @@ public final class GameBridge {
                 case "block_events" -> blockEvents(input);
                 case "block_entity_tick" -> blockEntityTick(input);
                 case "block_entity_load" -> blockEntityLoad(input);
+                case "block_entity_drop" -> blockEntityDrop(input);
                 case "block_entities_save" -> blockEntitiesSave(input);
                 case "chunks_changed" -> chunksChanged(input);
                 case "chunk_events" -> chunkEvents(input);
@@ -152,6 +153,10 @@ public final class GameBridge {
                 case "event_click_block" -> use(input, 3);
                 case "event_use_item" -> use(input, 4);
                 case "event_break" -> use(input, 5);
+                case "destroy_progress" -> destroyProgress(input);
+                case "correct_tool" -> correctTool(input);
+                case "mine_block" -> use(input, 12);
+                case "destroy_block" -> use(input, 13);
                 case "event_attack" -> use(input, 6);
                 case "player_tick" -> use(input, 7);
                 case "player_left" -> playerLeft(input);
@@ -220,6 +225,7 @@ public final class GameBridge {
             out.writeBoolean(ItemCode.use(item.getClass()));
             out.writeBoolean(ItemCode.useOn(item));
             out.writeBoolean(ItemCode.entity(item.getClass()));
+            out.writeBoolean(ItemCode.mine(item.getClass()));
         }
         return bytes.toByteArray();
     }
@@ -438,6 +444,26 @@ public final class GameBridge {
                 Using.resume(player, hand, in.readInt());
                 player.stopUsingItem();
             }
+            case 13 -> {
+                // `ServerPlayerGameMode.destroyBlock` after its break event, in NeoForge's order.
+                var pos = BlockPos.of(in.readLong());
+                boolean ownMine = in.readBoolean();
+                var state = level.getBlockState(pos);
+                var block = state.getBlock();
+                var entity = level.getBlockEntity(pos);
+                var tool = player.getMainHandItem();
+                var fluid = level.getFluidState(pos);
+                var adjusted = block.playerWillDestroy(level, pos, state, player);
+                boolean harvest = player.hasCorrectToolForDrops(adjusted, level, pos);
+                var used = tool.copy();
+                boolean drops = !player.preventsBlockDrops();
+                if (drops && ownMine) tool.mineBlock(level, adjusted, pos, player);
+                boolean removed = adjusted.onDestroyedByPlayer(level, pos, player, tool, harvest, fluid);
+                if (removed) block.destroy(level, pos, adjusted);
+                if (drops && removed && harvest) block.playerDestroy(level, player, pos, adjusted, entity, used);
+                result = removed ? InteractionResult.SUCCESS : InteractionResult.FAIL;
+            }
+            case 12 -> player.getMainHandItem().mineBlock(level, Block.BLOCK_STATE_REGISTRY.byId(in.readInt()), BlockPos.of(in.readLong()), player);
             case 11 -> {
                 if (level.getEntity(in.readInt()) instanceof net.minecraft.world.entity.LivingEntity target) result = held.interactLivingEntity(player, target, hand);
             }
@@ -462,6 +488,7 @@ public final class GameBridge {
                 if (target != null && !CommonHooks.onPlayerAttackTarget(player, target)) result = InteractionResult.FAIL;
             }
             default -> {
+                PlayerSync.sendAttributes(player);
                 Menus.serverTick(player);
                 EventHooks.firePlayerTickPre(player);
                 for (int slot = 0; slot < Inventory.INVENTORY_SIZE; slot++) {
@@ -498,11 +525,28 @@ public final class GameBridge {
         return bytes.toByteArray();
     }
 
-    /** A call that threw has no reply to carry its effects, and the next must not read its copies. */
+    /** `BlockState.getDestroyProgress` for the acting player: its tool's `getDestroySpeed`, NeoForge's break speed and harvest events, effects and attributes. */
+    private static byte[] destroyProgress(byte[] input) throws Exception {
+        var call = fill(input, false);
+        var pos = BlockPos.of(call.in.readLong());
+        PlayerSync.settle(call.player);
+        var bytes = new ByteArrayOutputStream();
+        new DataOutputStream(bytes).writeFloat(call.level.getBlockState(pos).getDestroyProgress(call.player, call.level, pos));
+        return bytes.toByteArray();
+    }
+
+    /** `Player.hasCorrectToolForDrops(state, level, pos)` for the acting player, with NeoForge's harvest check. */
+    private static byte[] correctTool(byte[] input) throws Exception {
+        var call = fill(input, false);
+        var pos = BlockPos.of(call.in.readLong());
+        PlayerSync.settle(call.player);
+        return new byte[] {(byte) (call.player.hasCorrectToolForDrops(call.level.getBlockState(pos), call.level, pos) ? 1 : 0)};
+    }
+
+    /** A call that threw has no reply to carry its effects. */
     private static void abandonCall() {
         SOUNDS.clear();
         SPAWNED.clear();
-        BlockEntities.abandonCopies();
         EntityViews.abandon();
     }
 
@@ -510,7 +554,6 @@ public final class GameBridge {
     private static void writeEffects(DataOutputStream out) throws IOException {
         var sounds = new ArrayList<>(SOUNDS);
         var spawned = new ArrayList<CompoundTag>();
-        var copies = depth == 1 ? BlockEntities.takeChangedCopies() : List.<CompoundTag>of();
         SOUNDS.clear();
         if (depth == 1) {
             for (Entity entity : SPAWNED) {
@@ -530,8 +573,6 @@ public final class GameBridge {
         }
         out.writeInt(spawned.size());
         for (CompoundTag tag : spawned) writeTag(out, tag);
-        out.writeInt(copies.size());
-        for (CompoundTag tag : copies) writeTag(out, tag);
         if (depth == 1) {
             EntityViews.writeChanges(out);
         } else {
@@ -812,6 +853,14 @@ public final class GameBridge {
         var pos = BlockPos.of(in.readLong());
         var tag = NbtIo.read(new DataInputStream(new ByteArrayInputStream(in.readNBytes(in.readInt()))), NbtAccounter.unlimitedHeap());
         BlockEntities.load(level, pos, tag);
+        return effects();
+    }
+
+    /** A block entity Horizon lost on its own: the object Java held goes, as `LevelChunk.removeBlockEntity` would. */
+    private static byte[] blockEntityDrop(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        var level = levelOf(in);
+        BlockEntities.drop(level, BlockPos.of(in.readLong()));
         return effects();
     }
 

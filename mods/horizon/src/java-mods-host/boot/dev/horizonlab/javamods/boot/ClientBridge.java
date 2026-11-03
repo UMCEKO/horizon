@@ -176,6 +176,8 @@ public final class ClientBridge {
                 case "client_items_decorations" -> BlockRenders.decorations(in);
                 case "client_renders_take" -> Minecraft.getInstance().level == null ? new byte[0] : BlockRenders.take(Minecraft.getInstance().level);
                 case "client_shape" -> shape(in);
+                case "client_destroy_progress" -> destroyProgress(in);
+                case "client_item_text" -> ItemText.take(in);
                 case "client_collisions_take" -> collisions();
                 case "client_creative_tabs" -> CreativeTabs.take();
                 default -> throw new IllegalArgumentException(op);
@@ -467,6 +469,7 @@ public final class ClientBridge {
     /** `Minecraft.runTick`: the window's input since the last tick, what the server sent, then `Minecraft.tick` for each tick the window owes. Answers whether a Java screen is open and how many have opened; empty with no connection. */
     private static byte[] tick(DataInputStream in) throws Exception {
         int ticks = in.readInt();
+        float partial = in.readFloat();
         if (in.readBoolean()) size(in);
         Minecraft minecraft = Minecraft.getInstance();
         events(in);
@@ -477,8 +480,12 @@ public final class ClientBridge {
         receive();
         chunkEvents();
         cameraAndPick(minecraft);
+        // `runTick`: the game time advances, then the window's own count of ticks and its progress into the next replace the timer's.
+        advance(minecraft, partial);
         for (int n = 0; n < ticks; n++) minecraft.tick();
         windowTicks++;
+        timer(minecraft).updatePauseState(minecraft.isPaused());
+        timer(minecraft).updateFrozenState(!((dev.horizonlab.javamods.boot.mixin.MinecraftActions) minecraft).horizon$runningNormally());
         if (minecraft.level != null) BlockRenders.probe(minecraft.level, BLOCK_ENTITIES.values());
         cameraAndPick(minecraft);
         return status(hud());
@@ -498,7 +505,18 @@ public final class ClientBridge {
     private static final boolean HUD_DEBUG = System.getenv("HORIZON_JAVA_DEBUG") != null;
     private static String lastHudDebug;
 
-    /** The recording of the mods' HUD layers with a frame's own timing; `tick` is `ONE`. */
+    private static net.minecraft.client.DeltaTracker.Timer timer(Minecraft minecraft) {
+        return (net.minecraft.client.DeltaTracker.Timer) minecraft.getDeltaTracker();
+    }
+
+    /** `advanceGameTime` for the window's own tick count, then the window's progress into the next tick as the residual `getGameTimeDeltaPartialTick` reports. */
+    private static void advance(Minecraft minecraft, float partial) {
+        var timer = timer(minecraft);
+        timer.advanceGameTime(net.minecraft.util.Util.getMillis());
+        ((dev.horizonlab.javamods.boot.mixin.DeltaTrackerAccess) timer).horizon$residual(partial);
+    }
+
+    /** The recording of the mods' HUD layers with the timer's frame timing. */
     private static byte[] record(Minecraft minecraft, net.minecraft.client.DeltaTracker delta) throws IOException {
         var recorder = new Recorder();
         if (minecraft.player != null && minecraft.level != null) {
@@ -519,35 +537,21 @@ public final class ClientBridge {
     /** A recording of either source: differing from the one before it means the HUD is changing, two alike end it. */
     private static void noted(byte[] bytes) {
         boolean was = animating;
-        animating = !java.util.Arrays.equals(bytes, lastRecorded);
+        boolean identical = java.util.Arrays.equals(bytes, lastRecorded);
+        if (!identical) animating = true;
+        else if (HudAnimation.ends(true, timer(Minecraft.getInstance()).getRealtimeDeltaTicks())) animating = false;
         lastRecorded = bytes;
         if (animating && !was) ticksSinceFrame = 0;
-    }
-
-    private record FrameTime(float partial, float delta) implements net.minecraft.client.DeltaTracker {
-        @Override
-        public float getGameTimeDeltaTicks() {
-            return delta;
-        }
-
-        @Override
-        public float getGameTimeDeltaPartialTick(boolean ignoreFrozenGame) {
-            return partial;
-        }
-
-        @Override
-        public float getRealtimeDeltaTicks() {
-            return delta;
-        }
     }
 
     /** `Hud.extractRenderState` for one window frame while the HUD animates: Jade's box size follows the frame's delta, so the window records it as vanilla would draw it. Answers whether it still animates, then the recording if it differs from the last. */
     private static byte[] hudFrame(DataInputStream in) throws Exception {
         size(in);
         float partial = in.readFloat();
-        float delta = in.readFloat();
         Minecraft minecraft = Minecraft.getInstance();
-        byte[] bytes = record(minecraft, new FrameTime(partial, delta));
+        advance(minecraft, partial);
+        timer(minecraft).advanceRealTime(net.minecraft.util.Util.getMillis());
+        byte[] bytes = record(minecraft, timer(minecraft));
         ticksSinceFrame = 0;
         noted(bytes);
         boolean changed = !java.util.Arrays.equals(bytes, lastHud);
@@ -567,7 +571,8 @@ public final class ClientBridge {
     private static byte[] hud() {
         Minecraft minecraft = Minecraft.getInstance();
         try {
-            byte[] bytes = record(minecraft, net.minecraft.client.DeltaTracker.ONE);
+            timer(minecraft).advanceRealTime(net.minecraft.util.Util.getMillis());
+            byte[] bytes = record(minecraft, timer(minecraft));
             if (HUD_DEBUG) {
                 String seen = String.valueOf(minecraft.hitResult == null ? null : minecraft.hitResult.getType()) + " " + bytes.length;
                 if (!seen.equals(lastHudDebug)) System.err.println("Horizon: HUD target " + seen + (minecraft.hitResult instanceof net.minecraft.world.phys.BlockHitResult b ? " " + b.getBlockPos() : ""));
@@ -765,15 +770,39 @@ public final class ClientBridge {
         else KEYS_DOWN.remove(key);
     }
 
+    /** What the Java client holds while one of the window's own screens is open: `Minecraft.screen` is not null, so vanilla's routing keeps `KeyMapping`s quiet as it does under chat. */
+    private static final class NativeScreen extends Screen {
+        private final boolean pauses;
+
+        NativeScreen(boolean pauses) {
+            super(net.minecraft.network.chat.Component.empty());
+            this.pauses = pauses;
+        }
+
+        @Override
+        public boolean isPauseScreen() {
+            return pauses;
+        }
+
+        @Override
+        public boolean shouldCloseOnEsc() {
+            return false;
+        }
+    }
+
+    /** The screen a Java mod could see: the window's own are stand-ins, not its screens. */
+    private static Screen javaScreen() {
+        Screen screen = Minecraft.getInstance().gui.screen();
+        return screen instanceof NativeScreen ? null : screen;
+    }
+
     /** A screen of the window's own opened over the world or closed, as `Gui.setScreen` does for one of vanilla's. */
     private static void nativeScreen(boolean open, boolean pauses) throws ReflectiveOperationException {
         Minecraft minecraft = Minecraft.getInstance();
         if (open) {
-            minecraft.mouseHandler.releaseMouse();
-            net.minecraft.client.KeyMapping.releaseAll();
-        } else {
-            if (minecraft.level != null) net.minecraft.client.KeyMapping.restoreToggleStatesOnScreenClosed();
-            minecraft.mouseHandler.grabMouse();
+            minecraft.gui.setScreen(new NativeScreen(pauses));
+        } else if (minecraft.gui.screen() instanceof NativeScreen) {
+            minecraft.gui.setScreen(null);
         }
         // `runTick` sets it from the open screen: the window's pause screen pauses this client.
         set(Minecraft.class, minecraft, "pause", open && pauses);
@@ -846,7 +875,7 @@ public final class ClientBridge {
     }
 
     private static byte[] status(byte[] hud) throws IOException {
-        Screen screen = Minecraft.getInstance().gui.screen();
+        Screen screen = javaScreen();
         if (screen != null && screen != lastScreen) opened++;
         lastScreen = screen;
         var bytes = new ByteArrayOutputStream();
@@ -885,7 +914,7 @@ public final class ClientBridge {
         Minecraft minecraft = Minecraft.getInstance();
         // `runTick`, each frame: the mouse's moves since the last reach the open screen, with its drags.
         minecraft.mouseHandler.handleAccumulatedMovement();
-        Screen screen = minecraft.gui.screen();
+        Screen screen = javaScreen();
         if (screen == null) return new byte[0];
         if (screen.width != guiWidth || screen.height != guiHeight) screen.resize(guiWidth, guiHeight);
         var recorder = new Recorder();
@@ -950,6 +979,18 @@ public final class ClientBridge {
         ClientSounds.forget();
         Clients.registries = null;
         return new byte[] {1};
+    }
+
+    /** `MultiPlayerGameMode`'s `getDestroyProgress` on the client's player, for the window's break animation and prediction; empty before the player exists. */
+    private static byte[] destroyProgress(DataInputStream in) throws IOException {
+        var minecraft = Minecraft.getInstance();
+        var level = minecraft.level;
+        var player = minecraft.player;
+        if (level == null || player == null) return new byte[0];
+        var pos = BlockPos.of(in.readLong());
+        var bytes = new ByteArrayOutputStream();
+        new DataOutputStream(bytes).writeFloat(blockState(level, pos).getDestroyProgress(player, level, pos));
+        return bytes.toByteArray();
     }
 
     /** The outline of a block with a block entity, as its client copy shapes it; empty when there is no copy. */

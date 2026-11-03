@@ -281,6 +281,9 @@ impl Game<'_> {
     }
     /// `BlockBehaviour.getDestroyProgress` with `Player.getDestroySpeed`.
     pub(super) fn destroy_progress(&mut self, pos: [i32; 3]) -> f32 {
+        if let Some(progress) = self.java_hook_destroy_progress(pos) {
+            return progress;
+        }
         let block_break_speed = self.block_break_speed();
         let state = self.world.block(pos[0], pos[1], pos[2]);
         let facts = self.res.facts().get(state);

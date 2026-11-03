@@ -38,6 +38,9 @@ public final class ItemCode {
     /** The method a right click on a living entity runs once the entity passed. */
     public static final List<Method> ENTITY = methods("interactLivingEntity", List.of(ItemStack.class, Player.class, LivingEntity.class, InteractionHand.class));
 
+    /** The method that runs after a player's break removed a block, where a tool spends itself and may break more. */
+    public static final List<Method> MINE = methods("mineBlock", List.of(ItemStack.class, Level.class, net.minecraft.world.level.block.state.BlockState.class, net.minecraft.core.BlockPos.class, LivingEntity.class));
+
     private static List<Method> methods(Object... pairs) {
         var out = new java.util.ArrayList<Method>();
         for (int i = 0; i < pairs.length; i += 2) {
@@ -78,6 +81,10 @@ public final class ItemCode {
     /** `BlockItem.place` runs its block's code (`getStateForPlacement`, `setPlacedBy`, its block entity's `applyComponentsFromItemStack`), a mod's for a block a mod owns. */
     static boolean useOn(Item item) {
         return useOn(item.getClass()) || item instanceof net.minecraft.world.item.BlockItem placing && BootFacts.ownsBlock(placing.getBlock());
+    }
+
+    public static boolean mine(Class<?> type) {
+        return ownCode(type, MINE);
     }
 
     public static boolean entity(Class<?> type) {

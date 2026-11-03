@@ -32,7 +32,8 @@ pub(in crate::game) mod live {
         hud: Vec<u8>,
         /// The Java client says the HUD is changing: each frame is recorded with its own timing until two alike.
         hud_animating: bool,
-        hud_frame_at: Option<std::time::Instant>,
+        /// A tick's status was applied this frame: its recording is this frame's, so no frame recording follows.
+        recorded: bool,
         hud_frames: (u32, u128),
         states: bool,
         /// Input the world took since the last tick, in order, as `events` reads it.
@@ -184,7 +185,7 @@ pub(in crate::game) mod live {
         tick: Vec<u8>,
         items: Option<(Vec<super::super::java_models::ItemKey>, Vec<u8>)>,
         decorations: Option<(Vec<Vec<u8>>, Vec<u8>)>,
-        hud_frame: Option<Vec<u8>>,
+        item_text: Option<(Vec<super::super::java_item_text::TextKey>, Vec<u8>)>,
     }
 
     #[derive(Default)]
@@ -195,7 +196,7 @@ pub(in crate::game) mod live {
         renders: Option<Vec<u8>>,
         items: Option<(Vec<super::super::java_models::ItemKey>, Vec<u8>)>,
         decorations: Option<(Vec<Vec<u8>>, Vec<u8>)>,
-        hud_frame: Option<(Vec<u8>, u128)>,
+        item_text: Option<(Vec<super::super::java_item_text::TextKey>, Vec<u8>)>,
     }
 
     impl Job {
@@ -209,17 +210,13 @@ pub(in crate::game) mod live {
             let decorations = self.decorations.and_then(|(keys, request)| {
                 Some((keys, host.request("client_items_decorations", &request)?))
             });
+            let item_text = self.item_text.and_then(|(keys, request)| {
+                Some((keys, host.request("client_item_text", &request)?))
+            });
             let wire = self
                 .remote
                 .then(|| host.request("client_wire_take", &[]))
                 .flatten();
-            let hud_frame = self.hud_frame.and_then(|request| {
-                let started = std::time::Instant::now();
-                Some((
-                    host.request("client_hud_frame", &request)?,
-                    started.elapsed().as_micros(),
-                ))
-            });
             let (models, renders) = status_pending(&tick).unwrap_or((0, 0));
             let take = |op, pending: i32| (pending > 0).then(|| host.request(op, &[])).flatten();
             Done {
@@ -229,7 +226,7 @@ pub(in crate::game) mod live {
                 tick: Some(tick),
                 items,
                 decorations,
-                hud_frame,
+                item_text,
             }
         }
     }
@@ -462,6 +459,11 @@ pub(in crate::game) mod live {
         true
     }
 
+    /// Whether this frame records the HUD: only while it animates, and not on the frame that took a tick's status or while a tick runs.
+    fn hud_frame_wanted(animating: bool, recorded: bool, busy: bool) -> bool {
+        animating && !recorded && !busy
+    }
+
     /// A frame recording's reply: whether the HUD still animates, and the recording if it differs from the last.
     fn java_hud_frame_apply(reply: &[u8], spent: u128) {
         let mut reply = In(reply);
@@ -523,10 +525,8 @@ pub(in crate::game) mod live {
                 .map(<[u8]>::to_vec);
             let animating = reply.bool()?;
             CLIENT.with_borrow_mut(|c| {
-                if animating && !c.hud_animating {
-                    c.hud_frame_at = None;
-                }
                 c.hud_animating = animating;
+                c.recorded = true;
                 c.shapes = shapes;
                 c.open = open;
                 if let Some(hud) = hud {
@@ -724,6 +724,22 @@ pub(in crate::game) mod live {
             }
         }
 
+        /// `getDestroyProgress` on the Java client's player; None before it joined.
+        pub(in crate::game) fn java_client_destroy_progress(
+            &mut self,
+            pos: [i32; 3],
+        ) -> Option<f32> {
+            if !CLIENT.with_borrow(|c| c.joined) {
+                return None;
+            }
+            let host = horizon_java_host::get()?;
+            self.java_publish_client_world();
+            let mut out = Out::default();
+            out.long(BlockPos::new(pos[0], pos[1], pos[2]).pack());
+            host.request("client_destroy_progress", &out.0)
+                .and_then(|reply| In(&reply).float())
+        }
+
         /// The Java client's own `useItemOn` result for the click just run, when the block at `pos` is a mod's: it decides whether the click ends there, as the block's code does in vanilla.
         pub(in crate::game) fn java_block_prediction(
             &mut self,
@@ -843,6 +859,7 @@ pub(in crate::game) mod live {
             self.java_client_collisions();
             let mut out = Out::default();
             out.int(CLIENT.with_borrow_mut(|c| std::mem::take(&mut c.owed)));
+            out.float(self.clock.fraction() as f32);
             let window = self.java_client_window();
             if CLIENT.with_borrow_mut(|c| changed(&mut out, &mut c.sent.size, window)) {
                 for value in window {
@@ -913,7 +930,7 @@ pub(in crate::game) mod live {
             let job = Job {
                 items: super::super::java_models::java_items_request(),
                 decorations: super::super::java_models::java_decorations_request(),
-                hud_frame: self.java_hud_frame_request(),
+                item_text: super::super::java_item_text::request(),
                 remote: CLIENT.with_borrow(|c| c.remote),
                 tick: out.0,
             };
@@ -963,6 +980,7 @@ pub(in crate::game) mod live {
             let Some(tick) = done.tick else {
                 // The Java client failed: no answer is coming for the columns waiting on it.
                 horizon_client::dynamic_models::set_answering(false);
+                super::super::java_item_text::forget_pending();
                 CLIENT.with_borrow_mut(|c| c.armed = false);
                 return;
             };
@@ -987,8 +1005,8 @@ pub(in crate::game) mod live {
             if let Some((keys, reply)) = done.decorations {
                 super::super::java_models::java_decorations_apply(keys, &reply);
             }
-            if let Some((reply, spent)) = &done.hud_frame {
-                java_hud_frame_apply(reply, *spent);
+            if let Some((keys, reply)) = done.item_text {
+                super::super::java_item_text::apply(keys, &reply);
             }
             if let Some(models) = done.models {
                 self.java_models_apply(&models);
@@ -1031,39 +1049,35 @@ pub(in crate::game) mod live {
             }
         }
 
-        /// This frame's HUD recording request while the HUD animates: its partial tick and the ticks since the last request.
-        fn java_hud_frame_request(&mut self) -> Option<Vec<u8>> {
-            if !CLIENT.with_borrow(|c| c.hud_animating) {
-                return None;
-            }
-            let now = std::time::Instant::now();
-            let delta = CLIENT
-                .with_borrow_mut(|c| c.hud_frame_at.replace(now))
-                .map_or(0.0, |at| (now - at).as_secs_f32() * 20.0)
-                .min(10.0);
+        /// This frame's HUD recording request: the window's size and its progress into the next tick.
+        fn java_hud_frame_request(&mut self) -> Vec<u8> {
             let mut out = Out::default();
             self.java_client_size(&mut out);
             out.float(self.clock.fraction() as f32);
-            out.float(delta);
-            Some(out.0)
+            out.0
         }
 
-        /// While the HUD animates, one recording per frame; while a tick runs, the request rides that background job instead, so the window never waits on Java.
+        /// While the HUD animates, one recording per window frame, as vanilla's frame records it; a frame that took a tick's status, or a tick still running, has none, so the window never waits on Java.
         fn java_hud_frame(&mut self) {
-            if java_client_busy() {
+            let (animating, recorded) =
+                CLIENT.with_borrow_mut(|c| (c.hud_animating, std::mem::take(&mut c.recorded)));
+            if !hud_frame_wanted(animating, recorded, java_client_busy()) {
                 return;
             }
-            let Some(request) = self.java_hud_frame_request() else {
-                return;
-            };
             let Some(host) = horizon_java_host::get() else {
                 return;
             };
+            let request = self.java_hud_frame_request();
             let started = std::time::Instant::now();
             let Some(reply) = host.request("client_hud_frame", &request) else {
                 return;
             };
             java_hud_frame_apply(&reply, started.elapsed().as_micros());
+        }
+
+        /// A window frame's collection of the Java client's finished tick, without waiting for it.
+        pub(in crate::game) fn java_client_frame(&mut self) {
+            self.java_client_collect(false);
         }
 
         /// The mods' HUD layers and `RenderGuiEvent`s as the Java client recorded them after its last tick.
@@ -1256,6 +1270,14 @@ pub(in crate::game) mod live {
         }
 
         #[test]
+        fn a_frame_that_took_a_tick_status_records_nothing_and_the_next_does() {
+            assert!(!hud_frame_wanted(true, true, false));
+            assert!(hud_frame_wanted(true, false, false));
+            assert!(!hud_frame_wanted(true, false, true));
+            assert!(!hud_frame_wanted(false, false, false));
+        }
+
+        #[test]
         fn a_recorded_hud_paints_in_call_order_and_stops_at_a_broken_entry() {
             let atlas = atlas();
             let mut out = Out::default();
@@ -1351,6 +1373,7 @@ impl Game<'_> {
     pub(super) fn java_window_input(&mut self, _event: &winit::event::WindowEvent) {}
     pub(super) fn java_key_input(&mut self, _code: KeyCode, _pressed: bool, _repeat: bool) {}
     pub(super) fn java_client_tick(&mut self) {}
+    pub(super) fn java_client_frame(&mut self) {}
     pub(super) fn java_client_left(&mut self) {}
     pub(super) fn java_client_font(&self) {}
     pub(super) fn java_remote_joined(&mut self) {}

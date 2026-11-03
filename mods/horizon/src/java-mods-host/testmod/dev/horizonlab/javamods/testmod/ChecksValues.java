@@ -13,6 +13,13 @@ final class ChecksValues {
     private ChecksValues() {}
 
     static void run(UseOnContext context, BlockPos area) {
+        Checks.check("ItemStack.getHoverName follows Item.getName", () -> {
+            var stack = new net.minecraft.world.item.ItemStack(net.minecraft.core.registries.BuiltInRegistries.ITEM.getValue(net.minecraft.resources.Identifier.parse("horizon_java_test:labelled")));
+            var lines = stack.getTooltipLines(net.minecraft.world.item.Item.TooltipContext.EMPTY, null, net.minecraft.world.item.TooltipFlag.Default.NORMAL);
+            stack.set(net.minecraft.core.component.DataComponents.CUSTOM_NAME, net.minecraft.network.chat.Component.literal("Renamed"));
+            return stack.getHoverName().getString().equals("Renamed") && lines.get(0).getString().equals("Labelled by code")
+                && lines.get(1).getString().equals("Tooltip line from code") && new net.minecraft.world.item.ItemStack(stack.getItem()).getHoverName().getString().equals("Labelled by code");
+        });
         Checks.check("VoxelShape.clip", () -> {
             Vec3 at = Vec3.atLowerCornerOf(area);
             BlockHitResult side = Shapes.block().clip(at.add(-1, 0.5, 0.5), at.add(2, 0.5, 0.5), area);

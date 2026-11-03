@@ -336,6 +336,8 @@ pub(in crate::game) fn java_decorations(stack: &ItemStack) -> Option<Arc<[u8]>> 
 
 struct Entry {
     pos: [i32; 3],
+    /// The Java block state the geometry was baked for, -1 when none.
+    state: i32,
     key: i32,
     quads: Option<(Vec<BakedQuadData>, Vec<i32>)>,
 }
@@ -383,6 +385,7 @@ fn parse_models(reply: &[u8]) -> Option<Vec<Entry>> {
     let mut entries = Vec::with_capacity(count.min(4096));
     for _ in 0..count {
         let pos = BlockPos::unpack(input.long()?);
+        let state = input.int()?;
         let key = input.int()?;
         let quads = if input.bool()? {
             let quads = usize::try_from(input.int()?).ok()?;
@@ -399,11 +402,23 @@ fn parse_models(reply: &[u8]) -> Option<Vec<Entry>> {
         };
         entries.push(Entry {
             pos: [pos.x, pos.y, pos.z],
+            state,
             key,
             quads,
         });
     }
     Some(entries)
+}
+
+/// Whether Java state `state` is the block the window holds now; a state with no Horizon one can't be told apart, and -1 names none.
+fn recorded_for(state: i32, native: BlockStateId, to_horizon: &[Option<BlockStateId>]) -> bool {
+    match usize::try_from(state)
+        .ok()
+        .and_then(|id| to_horizon.get(id))
+    {
+        Some(Some(recorded)) => *recorded == native,
+        _ => true,
+    }
 }
 
 /// Java state ids as Horizon's; those with no Horizon state are skipped.
@@ -453,16 +468,19 @@ fn op(input: &mut In) -> Option<dynamic_renders::Op> {
 }
 
 /// The renders reply: each position's pieces, or None there when nothing draws now.
-fn parse_renders(reply: &[u8]) -> Option<Vec<([i32; 3], Option<Vec<dynamic_renders::Draw>>)>> {
+type Recorded = ([i32; 3], i32, Option<Vec<dynamic_renders::Draw>>);
+
+fn parse_renders(reply: &[u8]) -> Option<Vec<Recorded>> {
     let mut input = In(reply);
     let count = usize::try_from(input.int()?).ok()?;
     let mut entries = Vec::with_capacity(count.min(4096));
     for _ in 0..count {
         let pos = BlockPos::unpack(input.long()?);
         let pos = [pos.x, pos.y, pos.z];
+        let state = input.int()?;
         let draws = input.int()?;
         if draws < 0 {
-            entries.push((pos, None));
+            entries.push((pos, state, None));
             continue;
         }
         let mut list = Vec::new();
@@ -510,7 +528,7 @@ fn parse_renders(reply: &[u8]) -> Option<Vec<([i32; 3], Option<Vec<dynamic_rende
                 item,
             });
         }
-        entries.push((pos, Some(list)));
+        entries.push((pos, state, Some(list)));
     }
     Some(entries)
 }
@@ -577,12 +595,23 @@ impl Game<'_> {
             log::warn!("Horizon: a malformed Java renders reply was dropped");
             return;
         };
-        for (pos, draws) in entries {
+        for (pos, state, draws) in entries {
+            if !self.recorded_for_here(pos, state) {
+                continue;
+            }
             match draws {
                 Some(draws) => dynamic_renders::set(pos, draws, self.world.game_time),
                 None => dynamic_renders::remove(pos),
             }
         }
+    }
+
+    /// Whether output the Java client recorded for `state` still belongs to the block this window holds at `pos`: its copy hears of a break only from the server's update, after the window's own prediction removed the block.
+    fn recorded_for_here(&self, pos: [i32; 3], state: i32) -> bool {
+        let native = self.world.block(pos[0], pos[1], pos[2]);
+        horizon_java_host::bridge::STATES
+            .get()
+            .is_none_or(|map| recorded_for(state, native, &map.to_horizon))
     }
 
     /// Takes a models reply: stores the geometry and remeshes the sections whose blocks changed.
@@ -592,7 +621,13 @@ impl Game<'_> {
             return;
         };
         let mut changed = Vec::new();
-        for Entry { pos, key, quads } in entries {
+        for Entry {
+            pos,
+            state,
+            key,
+            quads,
+        } in entries
+        {
             if key < 0 {
                 if dynamic_models::place(pos, None) {
                     changed.push(pos);
@@ -604,7 +639,7 @@ impl Game<'_> {
             {
                 changed.extend(dynamic_models::positions_of(key));
             }
-            if dynamic_models::place(pos, Some(key)) {
+            if self.recorded_for_here(pos, state) && dynamic_models::place(pos, Some(key)) {
                 changed.push(pos);
             }
         }
@@ -677,19 +712,33 @@ mod tests {
     }
 
     #[test]
+    fn output_recorded_for_a_state_the_window_no_longer_holds_is_ignored() {
+        let (tank, air) = (BlockStateId(40), BlockStateId(0));
+        let map = [Some(air), None, Some(tank)];
+        assert!(recorded_for(2, tank, &map));
+        assert!(!recorded_for(2, air, &map));
+        assert!(recorded_for(1, air, &map));
+        assert!(recorded_for(-1, air, &map));
+        assert!(recorded_for(9, air, &map));
+    }
+
+    #[test]
     fn two_entries_share_one_key_and_one_quad_list() {
         let mut out = Out::default();
         out.int(3);
         out.long(BlockPos::new(-3, 64, 9).pack());
+        out.int(7);
         out.int(5);
         out.bool(true);
         out.int(2);
         write_quad(&mut out, "ae2:block/cable", 6);
         write_quad(&mut out, "ae2:block/cable_glass", 4);
         out.long(BlockPos::new(100, -2, -50).pack());
+        out.int(7);
         out.int(5);
         out.bool(false);
         out.long(BlockPos::new(1, 2, 3).pack());
+        out.int(-1);
         out.int(-1);
         out.bool(false);
 

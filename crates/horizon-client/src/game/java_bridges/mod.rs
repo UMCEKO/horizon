@@ -17,6 +17,7 @@ mod world;
 
 /// Every family's table, for the class processor.
 pub(super) fn bridges() -> Vec<horizon_java_host::bridge::Bridge> {
+    horizon_java_host::bridge::after_native::<Game<'static>>(Game::java_push_stale);
     [
         block_entities::table(),
         client_world::table(),

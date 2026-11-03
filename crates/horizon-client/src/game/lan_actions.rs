@@ -1227,6 +1227,16 @@ impl Game<'_> {
                                 progress: 0.0,
                                 ticks: 0,
                             });
+                            // handleBlockBreakAction: START breaks at once when the progress is complete.
+                            let state = g.world.block(pos[0], pos[1], pos[2]);
+                            if !g.res.facts().is_air(state)
+                                && (g.res.facts().get(state).hardness == 0.0
+                                    || g.destroy_progress(pos) >= 1.0)
+                            {
+                                g.mining = None;
+                                let _ = g.break_block(pos);
+                                return true;
+                            }
                         }
                         false
                     });

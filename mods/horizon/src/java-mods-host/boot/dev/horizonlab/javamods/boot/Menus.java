@@ -155,6 +155,7 @@ final class Menus {
         connection.send(ClientboundPlayerInfoUpdatePacket.createPlayerInitializing(players.getPlayers()));
         levelInfo(player, level);
         for (var effect : player.getActiveEffects()) connection.send(new ClientboundUpdateMobEffectPacket(player.getId(), effect, false));
+        PlayerSync.sendAllAttributes(player);
         player.initInventoryMenu();
         for (var entity : new ArrayList<>(BlockEntities.held(level).values())) Clients.joined(level, entity);
     }
@@ -187,6 +188,7 @@ final class Menus {
         connection.send(new ClientboundPlayerAbilitiesPacket(player.getAbilities()));
         connection.send(new ClientboundSetHeldSlotPacket(player.getInventory().getSelectedSlot()));
         for (var effect : player.getActiveEffects()) connection.send(new ClientboundUpdateMobEffectPacket(player.getId(), effect, false));
+        PlayerSync.sendAllAttributes(player);
         for (var entity : new ArrayList<>(BlockEntities.held(to).values())) Clients.joined(to, entity);
     }
 

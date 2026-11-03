@@ -1008,6 +1008,7 @@ public final class BlockRenders {
     private static void entry(ClientLevel level, long at, DataOutputStream out) throws IOException {
         out.writeLong(at);
         var entity = ClientBridge.blockEntity(level, BlockPos.of(at));
+        out.writeInt(entity == null ? -1 : Block.BLOCK_STATE_REGISTRY.getId(entity.getBlockState()));
         var renderer = entity == null ? null : renderers().get(entity.getType());
         List<List<Draw>> samples = null;
         if (renderer != null) {

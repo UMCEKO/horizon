@@ -54,14 +54,12 @@ impl Game<'_> {
         body: impl FnOnce(&mut Out),
         read: impl FnOnce(&mut In) -> Option<T>,
     ) -> Option<T> {
-        let host = horizon_java_host::get()?;
         let mut out = Out::default();
         out.text(self.dim.id());
         out.long(self.world.game_time);
         out.int(kind);
         body(&mut out);
-        let reply =
-            horizon_java_host::bridge::with_active(self, || host.request("chunk_events", &out.0))?;
+        let reply = self.java_request("chunk_events", &out.0)?;
         let mut reply = In(&reply);
         let answer = read(&mut reply);
         self.java_apply_effects(&mut reply);

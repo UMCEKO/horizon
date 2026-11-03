@@ -67,6 +67,8 @@ public final class ClientSounds {
         // `PlaySoundEvent` is where mods swap, wrap or drop a sound and learn which ones to stop later.
         instance = net.neoforged.neoforge.client.ClientHooks.playSound(engine, instance);
         if (instance == null) return SoundEngine.PlayResult.NOT_STARTED;
+        // A vanilla HUD layer's sounds are native's: the window plays them itself.
+        if (HudLayers.discarded()) return SoundEngine.PlayResult.NOT_STARTED;
         // A click's prediction repeats the window's own: the window already plays that placement's block sound.
         if (ClientBridge.clicking() && instance.getSource() == SoundSource.BLOCKS) return SoundEngine.PlayResult.NOT_STARTED;
         stop(instance);

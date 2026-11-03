@@ -2045,6 +2045,9 @@ impl Game<'_> {
         nested: bool,
         creative: bool,
     ) -> Vec<(horizon_client::text::Text, u32)> {
+        if !nested && let Some(text) = self.java_hook_item_text(stack, creative) {
+            return text.lines.iter().map(|l| (l.clone(), u32::MAX)).collect();
+        }
         let e: &Enchantments = &self.stations().enchantments;
         let color = self.rarity_color(stack);
         let advanced = !nested && self.options_advanced_tooltips();
@@ -2456,7 +2459,7 @@ impl Game<'_> {
         })
     }
     /// Options.advancedItemTooltips (F3+H).
-    fn options_advanced_tooltips(&self) -> bool {
+    pub(super) fn options_advanced_tooltips(&self) -> bool {
         self.settings.file.bool("advancedItemTooltips")
     }
     /// `TooltipRenderUtil`: dark box with the purple border, first line spaced.

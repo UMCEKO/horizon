@@ -266,6 +266,8 @@ pub fn draw(frame: &Frame, out: &mut Vec<Vertex>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The registry is process-wide: tests that fill it take turns.
+    static REGISTRY_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn params_and_operations_rebuild_the_motion() {
@@ -291,6 +293,7 @@ mod tests {
 
     #[test]
     fn a_recording_moving_alike_keeps_the_running_one() {
+        let _registry = REGISTRY_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         clear();
         let spin = |phase: f32| Draw {
             translucent: false,
@@ -315,6 +318,7 @@ mod tests {
 
     #[test]
     fn a_recording_from_another_camera_replaces_the_positions_quads() {
+        let _registry = REGISTRY_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         clear();
         let face = |texture: &str| Quad {
             texture: texture.to_owned(),
@@ -343,6 +347,7 @@ mod tests {
 
     #[test]
     fn a_block_change_to_air_drops_the_recorded_output() {
+        let _registry = REGISTRY_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         clear();
         let draw = Draw {
             translucent: false,
@@ -357,7 +362,7 @@ mod tests {
         if stale("a:tank", "minecraft:air", false) {
             remove([7, 8, 9]);
         }
-        assert!(is_empty());
+        assert!(!REGISTRY.read().unwrap().contains_key(&[7, 8, 9]));
     }
 
     #[test]

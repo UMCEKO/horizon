@@ -3,9 +3,11 @@ package dev.horizonlab.javamods.boot;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
@@ -20,15 +22,15 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.storage.TagValueInput;
 import net.minecraft.util.ProblemReporter;
 
-/** Real block entities on the views. A mod's lives here, with its saved form in Horizon's chunk; a vanilla one is a copy for one call, written back if changed. */
+/** Real block entities on the views, one object per position from load or placement until removal or chunk unload. A mod's saved form lives in Horizon's chunk; a vanilla one is written through to it as it changes. */
 public final class BlockEntities {
     private BlockEntities() {}
 
     private static final org.slf4j.Logger LOGGER = com.mojang.logging.LogUtils.getLogger();
     private static final Map<ServerLevel, Long2ObjectOpenHashMap<BlockEntity>> HELD = new IdentityHashMap<>();
-    private static final List<BlockEntity> COPIES = new ArrayList<>();
+    private static final Set<BlockEntity> VANILLA = Collections.newSetFromMap(new IdentityHashMap<>());
     private static final List<BlockEntity> FRESH = new ArrayList<>();
-    private static final List<BlockEntity> CHANGED_COPIES = new ArrayList<>();
+    private static boolean refreshing;
     /** `ChunkAccess.markUnsaved` by level: chunks whose block entities Java changed since Horizon last took their saved forms. */
     private static final Map<ServerLevel, LongOpenHashSet> UNSAVED = new IdentityHashMap<>();
 
@@ -39,6 +41,11 @@ public final class BlockEntities {
 
     /** Bridged: Horizon keeps a place for a new block entity Java made. */
     private static void adopt(long pos, String id) {
+        throw new IllegalStateException("not bridged");
+    }
+
+    /** Bridged: Horizon's record of a vanilla block entity becomes this saved form. */
+    private static void store(long pos, byte[] tag) {
         throw new IllegalStateException("not bridged");
     }
 
@@ -53,9 +60,8 @@ public final class BlockEntities {
 
     static void reset() {
         HELD.clear();
-        COPIES.clear();
+        VANILLA.clear();
         FRESH.clear();
-        CHANGED_COPIES.clear();
         UNSAVED.clear();
     }
 
@@ -68,7 +74,11 @@ public final class BlockEntities {
         entity.setLevel(level);
         entity.clearRemoved();
         BlockEntity previous = held(level).put(entity.getBlockPos().asLong(), entity);
-        if (previous != null && previous != entity) previous.setRemoved();
+        if (previous != null && previous != entity) {
+            previous.setRemoved();
+            VANILLA.remove(previous);
+        }
+        if (previous != entity) level.invalidateCapabilities(entity.getBlockPos());
         Clients.joined(level, entity);
     }
 
@@ -88,7 +98,7 @@ public final class BlockEntities {
                 if (ours(state)) {
                     adopt(key, BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(entity.getType()).toString());
                     FRESH.add(entity);
-                } else COPIES.add(entity);
+                } else VANILLA.add(entity);
             }
         }
         return entity;
@@ -97,11 +107,27 @@ public final class BlockEntities {
     public static void load(ServerLevel level, BlockPos pos, CompoundTag tag) {
         if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: loading a block entity: " + tag);
         BlockState state = level.getBlockState(pos);
+        BlockEntity held = held(level).get(pos.asLong());
+        if (held != null && !held.isRemoved() && BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(held.getType()).toString().equals(tag.getStringOr("id", ""))) {
+            refresh(level, held, tag);
+            return;
+        }
         BlockEntity entity = BlockEntity.loadStatic(pos.immutable(), state, tag, level.registryAccess());
         if (entity == null) return;
         join(level, entity);
-        if (!ours(state)) COPIES.add(entity);
+        if (!ours(state)) VANILLA.add(entity);
         else FRESH.add(entity);
+    }
+
+    /** The saved form Horizon holds is newer than the object: it reads it in place, so what points at the object stays right. */
+    private static void refresh(ServerLevel level, BlockEntity entity, CompoundTag tag) {
+        boolean before = refreshing;
+        refreshing = true;
+        try (var reporter = new ProblemReporter.ScopedCollector(entity.problemPath(), LOGGER)) {
+            entity.loadWithComponents(TagValueInput.create(reporter, level.registryAccess(), tag));
+        } finally {
+            refreshing = before;
+        }
     }
 
     /** `LevelChunk.getBlockEntities` of a chunk view: the block entities Java holds in it. */
@@ -122,11 +148,9 @@ public final class BlockEntities {
         BlockEntity entity = held(level).get(pos.asLong());
         if (entity == null || entity.isRemoved()) return false;
         BlockState state = level.getBlockState(pos);
-        try (var reporter = new ProblemReporter.ScopedCollector(entity.problemPath(), LOGGER)) {
-            entity.loadWithComponents(TagValueInput.create(reporter, level.registryAccess(), tag));
-            entity.setChanged();
-            level.sendBlockUpdated(pos, state, state, 3);
-        }
+        refresh(level, entity, tag);
+        entity.setChanged();
+        level.sendBlockUpdated(pos, state, state, 3);
         return true;
     }
 
@@ -139,7 +163,21 @@ public final class BlockEntities {
             FRESH.add(entity);
         }
         if (ours(entity.getBlockState())) markUnsaved(level, entity.getBlockPos());
-        else CHANGED_COPIES.add(entity);
+        else {
+            VANILLA.add(entity);
+            write(level, entity);
+        }
+    }
+
+    /** Write-through: Horizon's record of a vanilla block entity takes its saved form now. */
+    private static void write(ServerLevel level, BlockEntity entity) {
+        var bytes = new java.io.ByteArrayOutputStream();
+        try {
+            net.minecraft.nbt.NbtIo.write(entity.saveWithFullMetadata(level.registryAccess()), new java.io.DataOutputStream(bytes));
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+        store(entity.getBlockPos().asLong(), bytes.toByteArray());
     }
 
     private static void markUnsaved(ServerLevel level, BlockPos pos) {
@@ -147,35 +185,25 @@ public final class BlockEntities {
     }
 
     public static void remove(ServerLevel level, BlockPos pos) {
-        BlockEntity entity = held(level).remove(pos.asLong());
-        if (entity != null) {
-            entity.setRemoved();
-            forget(pos.asLong());
-        }
+        if (drop(level, pos)) forget(pos.asLong());
     }
 
-    /** `Level.blockEntityChanged`: a mod's saves when the world does, a vanilla copy goes back after this call. */
+    /** `LevelChunk.removeBlockEntity` without telling Horizon, for a block entity it already lost. */
+    static boolean drop(ServerLevel level, BlockPos pos) {
+        BlockEntity entity = held(level).remove(pos.asLong());
+        if (entity == null) return false;
+        entity.setRemoved();
+        VANILLA.remove(entity);
+        level.invalidateCapabilities(pos);
+        return true;
+    }
+
+    /** `Level.blockEntityChanged`: a mod's saves when the world does, a vanilla one goes to Horizon's record at once. */
     public static void changed(ServerLevel level, BlockPos pos) {
         BlockEntity entity = held(level).get(pos.asLong());
         if (entity == null) return;
-        if (!COPIES.contains(entity)) markUnsaved(level, pos);
-        else if (!CHANGED_COPIES.contains(entity)) CHANGED_COPIES.add(entity);
-    }
-
-    /** The vanilla copies this call changed, as their saved form, and every copy dropped. */
-    static List<CompoundTag> takeChangedCopies() {
-        var saved = new ArrayList<CompoundTag>();
-        for (BlockEntity entity : CHANGED_COPIES) saved.add(entity.saveWithFullMetadata(entity.getLevel().registryAccess()));
-        CHANGED_COPIES.clear();
-        for (BlockEntity entity : COPIES) held((ServerLevel) entity.getLevel()).remove(entity.getBlockPos().asLong());
-        COPIES.clear();
-        return saved;
-    }
-
-    static void abandonCopies() {
-        CHANGED_COPIES.clear();
-        for (BlockEntity entity : COPIES) held((ServerLevel) entity.getLevel()).remove(entity.getBlockPos().asLong());
-        COPIES.clear();
+        if (!VANILLA.contains(entity)) markUnsaved(level, pos);
+        else if (!refreshing) write(level, entity);
     }
 
     /** `ChunkMap.save` of the chunk's unsaved block entities, then `ServerLevel.unload`'s `clearAllBlockEntities`; the chunk's own record of them goes with Horizon's unload. */
@@ -189,7 +217,7 @@ public final class BlockEntities {
         var unsaved = UNSAVED.get(level);
         if (unsaved != null && unsaved.remove(chunk)) {
             for (BlockEntity entity : here) {
-                if (!entity.isRemoved()) saved.add(entity.saveWithFullMetadata(level.registryAccess()));
+                if (!entity.isRemoved() && !VANILLA.contains(entity)) saved.add(entity.saveWithFullMetadata(level.registryAccess()));
             }
         }
         for (BlockEntity entity : here) {
@@ -201,6 +229,7 @@ public final class BlockEntities {
         }
         for (BlockEntity entity : here) {
             entity.setRemoved();
+            VANILLA.remove(entity);
             held.remove(entity.getBlockPos().asLong());
         }
     }
@@ -208,7 +237,9 @@ public final class BlockEntities {
     static List<CompoundTag> saveAll(ServerLevel level) {
         UNSAVED.remove(level);
         var saved = new ArrayList<CompoundTag>();
-        for (BlockEntity entity : held(level).values()) saved.add(entity.saveWithFullMetadata(level.registryAccess()));
+        for (BlockEntity entity : held(level).values()) {
+            if (!VANILLA.contains(entity)) saved.add(entity.saveWithFullMetadata(level.registryAccess()));
+        }
         return saved;
     }
 

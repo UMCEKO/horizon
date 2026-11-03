@@ -31,6 +31,16 @@ public final class Recorder extends GuiRenderState {
     private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
     private final DataOutputStream out = new DataOutputStream(bytes);
     private int count;
+    private final boolean discard;
+
+    public Recorder() {
+        this(false);
+    }
+
+    /** A recorder that keeps nothing: for drawing whose layout side effects matter but whose pixels are native. */
+    public Recorder(boolean discard) {
+        this.discard = discard;
+    }
 
     private static Field field(String name) {
         try {
@@ -128,6 +138,7 @@ public final class Recorder extends GuiRenderState {
 
     @Override
     public void addGuiElement(GuiElementRenderState element) {
+        if (discard) return;
         try {
             var corners = new Corners();
             element.buildVertices(corners);
@@ -160,11 +171,13 @@ public final class Recorder extends GuiRenderState {
 
     @Override
     public void addBlitToCurrentLayer(BlitRenderState blit) {
+        if (discard) return;
         addGuiElement(blit);
     }
 
     @Override
     public void addGlyphToCurrentLayer(GuiElementRenderState glyph) {
+        if (discard) return;
         addGuiElement(glyph);
     }
 
@@ -177,6 +190,7 @@ public final class Recorder extends GuiRenderState {
 
     @Override
     public void addText(GuiTextRenderState state) {
+        if (discard) return;
         try {
             var sequence = (FormattedCharSequence) TEXT_TEXT.get(state);
             out.writeByte(TEXT);
@@ -214,7 +228,7 @@ public final class Recorder extends GuiRenderState {
 
     /** `GuiGraphicsExtractor.item`, before it asks for a model Java doesn't have. */
     public void item(Matrix3x2fc pose, ItemStack stack, int x, int y, ScreenRectangle scissor) {
-        if (stack.isEmpty()) return;
+        if (discard || stack.isEmpty()) return;
         try {
             var tag = (CompoundTag) ItemStack.CODEC.encodeStart(Clients.registries.createSerializationContext(NbtOps.INSTANCE), stack).getOrThrow();
             out.writeByte(ITEM);

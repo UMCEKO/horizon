@@ -95,8 +95,21 @@ pub fn with_active<G, R>(game: &mut G, f: impl FnOnce() -> R) -> R {
     out
 }
 
+/// What the game runs on the thread of a native that just returned to Java, with the game it acted on; it may call back into Java.
+static AFTER_NATIVE: OnceLock<After> = OnceLock::new();
+type After = (std::any::TypeId, Box<dyn Fn(*mut ()) + Send + Sync>);
+
+/// Registers what runs after each native acting on a `G`, once.
+pub fn after_native<G: 'static>(hook: fn(&mut G)) {
+    let run = move |game: *mut ()| {
+        // SAFETY: `enter` passes the `G` its native acted on, which no one else uses until it returns.
+        hook(unsafe { &mut *game.cast::<G>() });
+    };
+    let _ = AFTER_NATIVE.set((std::any::TypeId::of::<G>(), Box::new(run)));
+}
+
 /// The body of a native: a Rust panic, or a call with no game behind it, becomes a Java exception.
-pub fn enter<G, R: Ret>(
+pub fn enter<G: 'static, R: Ret>(
     mut env: JNIEnv,
     name: &str,
     f: impl FnOnce(&mut JNIEnv, &mut G) -> R,
@@ -111,6 +124,11 @@ pub fn enter<G, R: Ret>(
         // SAFETY: `with_active` holds the only `&mut G` for this call, and no one uses it until the call returns.
         (!game.is_null()).then(|| {
             let out = f(&mut env, unsafe { &mut *game });
+            if let Some((kind, after)) = AFTER_NATIVE.get()
+                && *kind == std::any::TypeId::of::<G>()
+            {
+                after(game.cast());
+            }
             out.into_raw_in(&mut env)
         })
     }));

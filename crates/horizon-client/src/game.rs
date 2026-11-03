@@ -134,6 +134,8 @@ mod java_components;
 mod java_content;
 mod java_hooks;
 #[cfg(feature = "java-mods")]
+mod java_item_text;
+#[cfg(feature = "java-mods")]
 mod java_models;
 #[cfg(feature = "java-mods")]
 mod java_mods;
@@ -4773,6 +4775,11 @@ impl Game<'_> {
             return Ok(());
         }
         self.pad_rumble(horizon_client::gamepad::Rumble::BlockBroken);
+        if self.java_hook_destroy_block(pos, state) {
+            self.pending.clear(pos);
+            self.process_level_events()?;
+            return Ok(());
+        }
         let broken = state;
         let facts = self.res.facts().get(state).clone();
         let state = self.crack_mined_pot(pos, state);
@@ -4818,8 +4825,9 @@ impl Game<'_> {
             let at = pos.map(f64::from);
             self.spawn_item(stack, at, dispenser::new_item_motion(), 10);
         }
-        let correct_tool =
-            !facts.requires_tool || self.res.items().correct_for_drops(self.held(), &facts.name);
+        let correct_tool = self.java_hook_correct_tool(pos).unwrap_or_else(|| {
+            !facts.requires_tool || self.res.items().correct_for_drops(self.held(), &facts.name)
+        });
         let removed = self.with_level(|b, level, ticks| {
             b.player_destroy_block(
                 level,
@@ -4831,12 +4839,10 @@ impl Game<'_> {
         });
         if removed && !creative {
             let held = self.held().cloned();
-            self.mine_block_with_held(&facts.name, facts.hardness);
-            let harvest = !facts.requires_tool
-                || self
-                    .res
-                    .items()
-                    .correct_for_drops(held.as_ref(), &facts.name);
+            if !self.java_hook_mine_block(pos, state) {
+                self.mine_block_with_held(&facts.name, facts.hardness);
+            }
+            let harvest = correct_tool;
             if harvest {
                 // Block.playerDestroy: the mined statistic, the exhaustion and the drops.
                 self.stats.add("mined", &facts.name, 1);
@@ -5813,10 +5819,9 @@ impl Game<'_> {
                 ticks: 0,
             });
         }
-        let block_break_speed = self.block_break_speed();
         let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
-        let facts = self.res.facts().get(state);
-        if facts.hardness < 0.0 {
+        let hardness = self.res.facts().get(state).hardness;
+        if hardness < 0.0 {
             // The server still counts its destroy ticks on an unbreakable block.
             let m = self.mining.as_mut().ok_or("mining")?;
             m.ticks += 1;
@@ -5824,34 +5829,10 @@ impl Game<'_> {
             self.destroy_progress_event(pos, hit.face, ticks);
             return Ok(());
         }
-        // Player.getDestroySpeed / BlockBehaviour.getDestroyProgress.
-        let held = self.held();
-        let mut speed = self.items().mining_speed(held, &facts.name);
-        speed = self.modify_destroy_speed(speed);
-        speed *= block_break_speed;
-        let player = self.player.as_ref().ok_or("no player")?;
-        if !player.ground.on_ground {
-            speed /= 5.0;
-        }
-        let eye = self.eye_position().unwrap_or_default();
-        if self
-            .res
-            .facts()
-            .get(self.world.block(
-                eye[0].floor() as i32,
-                eye[1].floor() as i32,
-                eye[2].floor() as i32,
-            ))
-            .fluid
-            == Fluid::Water
-        {
-            speed *= self.submerged_mining_speed();
-        }
-        let harvest = !facts.requires_tool || self.items().correct_for_drops(held, &facts.name);
-        let progress = if facts.hardness == 0.0 {
+        let progress = if hardness == 0.0 {
             1.0
         } else {
-            speed / facts.hardness / if harvest { 30.0 } else { 100.0 }
+            self.destroy_progress(hit.pos)
         };
         self.swing_arm();
         let m = self.mining.as_mut().ok_or("mining")?;
@@ -5868,7 +5849,7 @@ impl Game<'_> {
         // (`guest_stop_digging`), never breaking it on its own count. Breaking it here would
         // take the block from under the player's crack before the player's client predicts the
         // break, so it gets neither particles nor sound.
-        if m.progress >= 1.0 && (self.lan_acting.is_none() || m.ticks == 1) {
+        if m.progress >= 1.0 && self.lan_acting.is_none() {
             let pos = m.pos;
             self.mining = None;
             self.break_block(pos)?;
@@ -15265,6 +15246,7 @@ impl ApplicationHandler for Game<'_> {
                     self.pad_look(elapsed.as_secs_f32());
                     self.advance_flight();
                     self.tick_world_icon();
+                    self.java_client_frame();
                     let ticked = Instant::now();
                     let rendered = self.render()?;
                     self.apply_cursor_icon();

@@ -153,11 +153,10 @@ impl Game<'_> {
         tail: Vec<u8>,
         claimed: &mut bool,
     ) -> Option<u32> {
-        let host = horizon_java_host::get()?;
         self.java_bind_states();
         let mut request = self.java_use_request()?;
         request.extend(tail);
-        let reply = horizon_java_host::bridge::with_active(self, || host.request(op, &request))?;
+        let reply = self.java_request(op, &request)?;
         let using = self.java_apply_use(&reply, claimed);
         if using.is_none() {
             log::warn!("Horizon: a Java mod's use of {what} answered in pieces");
@@ -381,12 +380,6 @@ impl Game<'_> {
             }
         }
         for _ in 0..reply.int()? {
-            let tag = read_tag(reply.bytes()?)?;
-            if let Some((key, entity)) = horizon_client::save::decode_block_entity(&tag) {
-                self.world.block_entities.insert(key, entity);
-            }
-        }
-        for _ in 0..reply.int()? {
             let id = reply.int()? as u32;
             let tag = read_tag(reply.bytes()?)?;
             if let Some(target) = self.java_target(id) {
@@ -404,17 +397,38 @@ impl Game<'_> {
 
     /// Calls `GameBridge`'s `op` for this level, with what it does to the world applied after.
     fn java_level_call(&mut self, op: &str, body: impl FnOnce(&mut Out)) {
-        let Some(host) = horizon_java_host::get() else {
+        if horizon_java_host::get().is_none() {
             return;
-        };
+        }
         self.java_bind_states();
         let mut out = Out::default();
         out.text(self.dim.id());
         out.long(self.world.game_time);
         body(&mut out);
-        let reply = horizon_java_host::bridge::with_active(self, || host.request(op, &out.0));
-        if let Some(reply) = reply {
+        if let Some(reply) = self.java_request(op, &out.0) {
             self.java_apply_effects(&mut In(&reply));
+        }
+    }
+
+    /// One request into Java's server side, after the block entities Horizon changed since Java last heard reached it.
+    pub(super) fn java_request(&mut self, op: &str, input: &[u8]) -> Option<Vec<u8>> {
+        let host = horizon_java_host::get()?;
+        self.java_push_stale();
+        horizon_java_host::bridge::with_active(self, || host.request(op, input))
+    }
+
+    /// What Java holds of a block entity Horizon changed on its own: the new saved form, or its removal.
+    pub(in crate::game) fn java_push_stale(&mut self) {
+        for key in self.world.block_entities.take_java_stale() {
+            let pos = BlockPos::new(key.0, key.1, key.2);
+            match self.world.block_entities.get(&key) {
+                Some(BlockEntity::Mod(_)) => self.world.block_entities.release_for_java(&key),
+                Some(_) => self.java_send_block_entity(pos),
+                None => {
+                    self.world.block_entities.release_for_java(&key);
+                    self.java_level_call("block_entity_drop", |out| out.long(pos.pack()));
+                }
+            }
         }
     }
 
@@ -529,25 +543,33 @@ impl Game<'_> {
         let Some(bytes) = write_tag(tag) else {
             return;
         };
+        self.world.block_entities.hold_for_java(key);
         self.java_level_call("block_entity_load", |out| {
             out.long(pos.pack());
             out.bytes(&bytes);
         });
     }
 
-    /// `data get block` of a block entity Java holds: its live saved form replaces the chunk's copy first.
-    pub(in crate::game) fn java_refresh_block_entity(&mut self, pos: BlockPos) {
-        let Some(host) = horizon_java_host::get() else {
+    /// `BlockEntities.store`: a vanilla block entity Java changed, written through to Horizon's chunk.
+    pub(in crate::game) fn java_store_block_entity(&mut self, pos: BlockPos, tag: &[u8]) {
+        let Some((key, entity)) =
+            read_tag(tag).and_then(|t| horizon_client::save::decode_block_entity(&t))
+        else {
+            log::warn!("Horizon: a Java mod's block entity at {pos:?} didn't decode");
             return;
         };
+        self.world.block_entities.insert_from_java(key, entity);
+        self.world.modified.insert((key.0 >> 4, key.2 >> 4));
+    }
+
+    /// `data get block` of a block entity Java holds: its live saved form replaces the chunk's copy first.
+    pub(in crate::game) fn java_refresh_block_entity(&mut self, pos: BlockPos) {
         self.java_bind_states();
         let mut out = Out::default();
         out.text(self.dim.id());
         out.long(self.world.game_time);
         out.long(pos.pack());
-        let reply = horizon_java_host::bridge::with_active(self, || {
-            host.request("block_entity_data", &out.0)
-        });
+        let reply = self.java_request("block_entity_data", &out.0);
         let Some(tag) = reply
             .filter(|r| !r.is_empty())
             .and_then(|r| In(&r).bytes().and_then(read_tag))
@@ -582,7 +604,7 @@ impl Game<'_> {
         side: horizon_core::geometry::Direction,
         insert: bool,
     ) -> Option<bool> {
-        let host = horizon_java_host::get()?;
+        horizon_java_host::get()?;
         self.java_bind_states();
         if !horizon_java_host::bridge::java_block(self.world.block(target.0, target.1, target.2)) {
             return None;
@@ -595,9 +617,7 @@ impl Game<'_> {
         out.long(pos(target));
         out.int(side as i32);
         out.bool(insert);
-        let reply = horizon_java_host::bridge::with_active(self, || {
-            host.request("hopper_transfer", &out.0)
-        })?;
+        let reply = self.java_request("hopper_transfer", &out.0)?;
         let mut reply = In(&reply);
         let (found, moved) = (reply.bool()?, reply.bool()?);
         self.java_apply_effects(&mut reply);
@@ -610,9 +630,9 @@ impl Game<'_> {
             id,
             ..Default::default()
         }));
-        self.world
-            .block_entities
-            .insert((pos.x, pos.y, pos.z), entity);
+        let key = (pos.x, pos.y, pos.z);
+        self.world.block_entities.release_for_java(&key);
+        self.world.block_entities.insert(key, entity);
     }
 
     /// `BlockEntityTicker.tick` of a block entity Java holds, which it took when its chunk loaded.
@@ -642,6 +662,9 @@ impl Game<'_> {
         unloaded: &[Arc<horizon_client::chunk::Chunk>],
     ) {
         // Servers' configs load with `ServerLifecycleHooks`, so vanilla's chunks only load after it; this level's earlier ones catch up here.
+        let gone: horizon_client::fast_hash::FxHashSet<(i32, i32)> =
+            unloaded.iter().map(|c| (c.x, c.z)).collect();
+        self.world.block_entities.release_columns_for_java(&gone);
         if self.remote.is_some() || !JAVA_SERVER.with_borrow(|s| s.started) {
             return;
         }
@@ -649,9 +672,9 @@ impl Game<'_> {
         if loaded.is_empty() && unloaded.is_empty() && !behind {
             return;
         }
-        let Some(host) = horizon_java_host::get() else {
+        if horizon_java_host::get().is_none() {
             return;
-        };
+        }
         self.java_bind_states();
         let joined: horizon_client::fast_hash::FxHashSet<(i32, i32)> = if behind {
             self.world.chunks.keys().copied().collect()
@@ -693,8 +716,7 @@ impl Game<'_> {
             out.int(chunk.x);
             out.int(chunk.z);
         }
-        let reply =
-            horizon_java_host::bridge::with_active(self, || host.request("chunks_changed", &out.0));
+        let reply = self.java_request("chunks_changed", &out.0);
         let Some(reply) = reply else {
             return;
         };
@@ -838,16 +860,14 @@ impl Game<'_> {
 
     /// False when Java doesn't hold this block entity yet.
     fn java_tick_once(&mut self, at: BlockPos) -> bool {
-        let Some(host) = horizon_java_host::get() else {
+        if horizon_java_host::get().is_none() {
             return true;
-        };
+        }
         let mut out = Out::default();
         out.text(self.dim.id());
         out.long(self.world.game_time);
         out.long(at.pack());
-        let reply = horizon_java_host::bridge::with_active(self, || {
-            host.request("block_entity_tick", &out.0)
-        });
+        let reply = self.java_request("block_entity_tick", &out.0);
         let Some(reply) = reply else {
             return true;
         };
@@ -877,6 +897,82 @@ impl Game<'_> {
             out.long(BlockPos::new(pos[0], pos[1], pos[2]).pack());
             self.java_call_use("a break", "event_break", out.0, canceled);
         }
+    }
+
+    /// `BlockState.getDestroyProgress` on the player's view, so its tool's and mods' break speeds run; the window asks its Java client.
+    pub(super) fn java_destroy_progress(&mut self, pos: [i32; 3]) -> Option<f32> {
+        if self.remote.is_some() {
+            return self.java_client_destroy_progress(pos);
+        }
+        horizon_java_host::get()?;
+        self.java_bind_states();
+        let mut request = self.java_use_request()?;
+        let mut out = Out(std::mem::take(&mut request));
+        out.long(BlockPos::new(pos[0], pos[1], pos[2]).pack());
+        let reply = self.java_request("destroy_progress", &out.0)?;
+        In(&reply).float()
+    }
+
+    /// `Player.hasCorrectToolForDrops(state, level, pos)` on the player's view, with NeoForge's harvest check.
+    pub(super) fn java_correct_tool(&mut self, pos: [i32; 3]) -> Option<bool> {
+        if self.remote.is_some() {
+            return None;
+        }
+        horizon_java_host::get()?;
+        self.java_bind_states();
+        let mut out = Out(self.java_use_request()?);
+        out.long(BlockPos::new(pos[0], pos[1], pos[2]).pack());
+        let reply = self.java_request("correct_tool", &out.0)?;
+        In(&reply).byte().map(|b| b != 0)
+    }
+
+    /// `ServerPlayerGameMode.destroyBlock` after the break event, for a mod's block: Java removes it, spends the tool and drops; false leaves it to Horizon.
+    pub(super) fn java_destroy_block(&mut self, pos: [i32; 3], state: BlockStateId) -> bool {
+        let Some(host) = horizon_java_host::get() else {
+            return false;
+        };
+        if !horizon_java_host::bridge::java_block(state) {
+            return false;
+        }
+        let own_mine = self
+            .held()
+            .is_some_and(|stack| host.item_mine_code(&stack.item));
+        let mut out = Out::default();
+        out.long(BlockPos::new(pos[0], pos[1], pos[2]).pack());
+        out.bool(own_mine);
+        let mut claimed = false;
+        self.java_call_use("a broken block", "destroy_block", out.0, &mut claimed);
+        if !own_mine && !self.creative && self.world.block(pos[0], pos[1], pos[2]) != state {
+            let facts = self.res.facts().get(state).clone();
+            self.mine_block_with_held(&facts.name, facts.hardness);
+        }
+        true
+    }
+
+    /// `ItemStack.mineBlock` for a held item whose class has its own, after the block was removed; false leaves it to Horizon.
+    pub(super) fn java_mine_block(&mut self, pos: [i32; 3], state: BlockStateId) -> bool {
+        let Some(host) = horizon_java_host::get() else {
+            return false;
+        };
+        let Some(stack) = self.held().cloned() else {
+            return false;
+        };
+        if !host.item_mine_code(&stack.item) {
+            return false;
+        }
+        self.java_bind_states();
+        let Some(java) = horizon_java_host::bridge::STATES
+            .get()
+            .and_then(|map| map.to_java.get(state.0 as usize).copied())
+        else {
+            return false;
+        };
+        let mut out = Out::default();
+        out.int(java);
+        out.long(BlockPos::new(pos[0], pos[1], pos[2]).pack());
+        let mut claimed = false;
+        self.java_call_use(&stack.item, "mine_block", out.0, &mut claimed);
+        true
     }
 
     /// `AttackEntityEvent`, where a player's attack starts.
@@ -922,15 +1018,13 @@ impl Game<'_> {
 
     /// `PlayerLoggedOutEvent`, and that player's view gone.
     pub(super) fn java_player_left(&mut self, uuid: u128) {
-        let Some(host) = horizon_java_host::get() else {
+        if horizon_java_host::get().is_none() {
             return;
-        };
+        }
         let mut out = Out::default();
         out.long((uuid >> 64) as i64);
         out.long(uuid as i64);
-        let reply =
-            horizon_java_host::bridge::with_active(self, || host.request("player_left", &out.0));
-        if let Some(reply) = reply {
+        if let Some(reply) = self.java_request("player_left", &out.0) {
             self.java_apply_effects(&mut In(&reply));
         }
     }
@@ -945,14 +1039,12 @@ impl Game<'_> {
 
     /// Before a save: what each block entity Java holds would write, into the chunk's own record of it.
     pub(super) fn java_flush_block_entities(&mut self) {
-        let Some(host) = horizon_java_host::get() else {
+        if horizon_java_host::get().is_none() {
             return;
-        };
+        }
         let mut out = Out::default();
         out.text(self.dim.id());
-        let reply = horizon_java_host::bridge::with_active(self, || {
-            host.request("block_entities_save", &out.0)
-        });
+        let reply = self.java_request("block_entities_save", &out.0);
         let Some(reply) = reply else {
             return;
         };

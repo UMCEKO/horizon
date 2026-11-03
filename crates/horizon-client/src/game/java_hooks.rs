@@ -4,7 +4,28 @@ use super::native_lifecycle::{ServerTickPhase, WorldPhase};
 use horizon_client::containers::ModBlockEntity;
 use horizon_client::items::ItemStack;
 
+/// A mod item's name (`getHoverName`) and tooltip lines (`getTooltipLines`) as its code computes them.
+pub(super) struct JavaItemText {
+    pub name: horizon_client::text::Text,
+    pub lines: Vec<horizon_client::text::Text>,
+}
+
 impl Game<'_> {
+    /// The Java client's text for a mod item's stack; None for any other item and until it has answered.
+    pub(super) fn java_hook_item_text(
+        &self,
+        stack: &ItemStack,
+        creative: bool,
+    ) -> Option<std::sync::Arc<JavaItemText>> {
+        #[cfg(feature = "java-mods")]
+        return self.java_item_text(stack, creative);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (stack, creative);
+            None
+        }
+    }
+
     pub(super) fn java_hook_world(&mut self, phase: &WorldPhase) {
         #[cfg(feature = "java-mods")]
         self.java_world_phase(matches!(phase, WorldPhase::WorldOpenReady));
@@ -84,6 +105,58 @@ impl Game<'_> {
         #[cfg(feature = "java-mods")]
         self.java_break_event(pos, canceled);
         let _ = (pos, canceled);
+    }
+
+    /// The progress of a break from Java's `getDestroyProgress`; None leaves it to Horizon.
+    pub(super) fn java_hook_destroy_progress(&mut self, pos: [i32; 3]) -> Option<f32> {
+        #[cfg(feature = "java-mods")]
+        return self.java_destroy_progress(pos);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = pos;
+            None
+        }
+    }
+
+    /// Whether the held item harvests the block, from Java's `hasCorrectToolForDrops`; None leaves it to Horizon.
+    pub(super) fn java_hook_correct_tool(&mut self, pos: [i32; 3]) -> Option<bool> {
+        #[cfg(feature = "java-mods")]
+        return self.java_correct_tool(pos);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = pos;
+            None
+        }
+    }
+
+    /// Java's `destroyBlock` sequence for a mod's block; false leaves the break to Horizon.
+    pub(super) fn java_hook_destroy_block(
+        &mut self,
+        pos: [i32; 3],
+        state: horizon_world::registry::BlockStateId,
+    ) -> bool {
+        #[cfg(feature = "java-mods")]
+        return self.java_destroy_block(pos, state);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (pos, state);
+            false
+        }
+    }
+
+    /// The held item's own `mineBlock`; false leaves the wear to Horizon.
+    pub(super) fn java_hook_mine_block(
+        &mut self,
+        pos: [i32; 3],
+        state: horizon_world::registry::BlockStateId,
+    ) -> bool {
+        #[cfg(feature = "java-mods")]
+        return self.java_mine_block(pos, state);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (pos, state);
+            false
+        }
     }
 
     /// A held use's tick for an item whose use is its mod's code; false leaves it to Horizon.

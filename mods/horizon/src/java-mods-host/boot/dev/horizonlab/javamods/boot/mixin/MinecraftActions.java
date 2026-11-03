@@ -16,6 +16,9 @@ public interface MinecraftActions {
     @Invoker("pick")
     void horizon$pick(float partialTicks);
 
+    @Invoker("isLevelRunningNormally")
+    boolean horizon$runningNormally();
+
     @Invoker("pickBlockOrEntity")
     void horizon$pickBlockOrEntity();
 }

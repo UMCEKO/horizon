@@ -73,6 +73,11 @@ pub struct BlockEntities {
     /// The containers of mod blocks' block entities, by block state id;
     /// built with `states`.
     mod_containers: FxHashMap<u32, Arc<ModContainer>>,
+    /// Positions whose block entity Java holds as a live object.
+    java_held: FxHashSet<Pos>,
+    /// Held positions changed natively since Java last heard of them, each once, in order.
+    java_stale: Vec<Pos>,
+    java_stale_set: FxHashSet<Pos>,
 }
 
 impl std::ops::Deref for BlockEntities {
@@ -180,18 +185,57 @@ impl BlockEntities {
         self.pending.remove(pos);
     }
 
+    /// Logs a native change at a position Java holds.
+    fn stale(&mut self, pos: Pos) {
+        if self.java_held.contains(&pos) && self.java_stale_set.insert(pos) {
+            self.java_stale.push(pos);
+        }
+    }
+    /// Java made a live object for the block entity at `pos`: native changes there are logged from now on.
+    pub fn hold_for_java(&mut self, pos: Pos) {
+        self.java_held.insert(pos);
+    }
+    /// Java lets go of `pos`: its changes and any logged ones no longer matter.
+    pub fn release_for_java(&mut self, pos: &Pos) {
+        self.java_held.remove(pos);
+        if self.java_stale_set.remove(pos) {
+            self.java_stale.retain(|p| p != pos);
+        }
+    }
+    /// Java lets go of every position in the columns `gone` names.
+    pub fn release_columns_for_java(&mut self, gone: &FxHashSet<(i32, i32)>) {
+        let here: Vec<Pos> = self
+            .java_held
+            .iter()
+            .filter(|p| gone.contains(&(p.0 >> 4, p.2 >> 4)))
+            .copied()
+            .collect();
+        for pos in here {
+            self.release_for_java(&pos);
+        }
+    }
+    /// The positions changed natively since the last call, each once.
+    pub fn take_java_stale(&mut self) -> Vec<Pos> {
+        self.java_stale_set.clear();
+        std::mem::take(&mut self.java_stale)
+    }
+    /// A block entity Java wrote through: it replaces the record without a log entry, and Java holds it.
+    pub fn insert_from_java(&mut self, pos: Pos, entity: BlockEntity) -> Option<BlockEntity> {
+        let old = self.map.insert(pos, entity);
+        if old.is_none() {
+            self.add(pos);
+        }
+        self.java_held.insert(pos);
+        old
+    }
     pub fn get_mut(&mut self, pos: &Pos) -> Option<&mut BlockEntity> {
+        self.stale(*pos);
         self.map.get_mut(pos)
-    }
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&Pos, &mut BlockEntity)> {
-        self.map.iter_mut()
-    }
-    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut BlockEntity> {
-        self.map.values_mut()
     }
     /// `LevelChunk.setBlockEntity` (+ `addAndRegisterBlockEntity`): a new
     /// block entity may get a slot; one replacing another keeps its slot.
     pub fn insert(&mut self, pos: Pos, entity: BlockEntity) -> Option<BlockEntity> {
+        self.stale(pos);
         let old = self.map.insert(pos, entity);
         if old.is_none() {
             self.add(pos);
@@ -204,6 +248,7 @@ impl BlockEntities {
         pos: Pos,
         make: impl FnOnce() -> BlockEntity,
     ) -> &mut BlockEntity {
+        self.stale(pos);
         if !self.map.contains_key(&pos) {
             self.add(pos);
         }
@@ -211,6 +256,7 @@ impl BlockEntities {
     }
     /// `LevelChunk.removeBlockEntity`: the block entity and its slot.
     pub fn remove(&mut self, pos: &Pos) -> Option<BlockEntity> {
+        self.stale(*pos);
         self.cancel(pos);
         self.map.remove(pos)
     }
@@ -225,6 +271,7 @@ impl BlockEntities {
     }
     /// Brings back what `take` took, in its slot.
     pub fn put(&mut self, pos: Pos, entity: BlockEntity) {
+        self.stale(pos);
         self.out.remove(&pos);
         if self.map.insert(pos, entity).is_none()
             && !self.live.contains_key(&pos)
@@ -237,16 +284,27 @@ impl BlockEntities {
     /// (`clearAllBlockEntities` of unloaded chunks).
     pub fn retain(&mut self, mut keep: impl FnMut(&Pos, &mut BlockEntity) -> bool) {
         let (live, pending, freed) = (&mut self.live, &mut self.pending, &mut self.freed);
+        let (held, stale, stale_set) = (
+            &self.java_held,
+            &mut self.java_stale,
+            &mut self.java_stale_set,
+        );
         self.map.retain(|p, e| {
             let kept = keep(p, e);
             if !kept {
                 *freed |= live.remove(p).is_some();
                 pending.remove(p);
+                if held.contains(p) && stale_set.insert(*p) {
+                    stale.push(*p);
+                }
             }
             kept
         });
     }
     pub fn clear(&mut self) {
+        for pos in self.java_held.iter().copied().collect::<Vec<_>>() {
+            self.stale(pos);
+        }
         self.map.clear();
         self.tickers = Arc::default();
         self.live.clear();
@@ -264,6 +322,7 @@ impl BlockEntities {
     pub fn load_chunk(&mut self, entities: Vec<(Pos, BlockEntity)>) {
         let order = chunk_map_order(entities.iter().map(|(p, _)| *p));
         for (p, e) in entities {
+            self.stale(p);
             if self.map.insert(p, e).is_some() {
                 self.replaced.insert(p);
             }
@@ -442,5 +501,61 @@ mod tests {
         s.insert(p, 1);
         b.state_changed(p, 2, 1);
         assert_eq!(order(&mut b, &s), [q, p]);
+    }
+
+    #[test]
+    fn natively_changed_positions_of_java_are_logged_once() {
+        let (held, other) = ((0, 0, 0), (1, 0, 0));
+        let mut b = level();
+        b.insert(held, hopper());
+        b.insert(other, hopper());
+        b.hold_for_java(held);
+        assert!(b.take_java_stale().is_empty());
+        b.get_mut(&held);
+        b.get_mut(&held);
+        b.get_mut(&other);
+        b.insert(other, hopper());
+        assert_eq!(b.take_java_stale(), [held]);
+        assert!(b.take_java_stale().is_empty());
+        b.get_mut(&held);
+        assert_eq!(b.take_java_stale(), [held]);
+    }
+
+    #[test]
+    fn insert_from_java_is_not_logged() {
+        let mut b = level();
+        b.hold_for_java((0, 0, 0));
+        b.insert_from_java((0, 0, 0), hopper());
+        b.insert_from_java((0, 0, 0), BlockEntity::Chest(vec![None; 27]));
+        assert!(b.take_java_stale().is_empty());
+        assert!(matches!(b.get(&(0, 0, 0)), Some(BlockEntity::Chest(items)) if items.len() == 27));
+        b.get_mut(&(0, 0, 0));
+        assert_eq!(b.take_java_stale(), [(0, 0, 0)]);
+    }
+
+    #[test]
+    fn removing_a_held_position_is_logged() {
+        let mut b = level();
+        b.insert((0, 0, 0), hopper());
+        b.hold_for_java((0, 0, 0));
+        b.remove(&(0, 0, 0));
+        assert_eq!(b.take_java_stale(), [(0, 0, 0)]);
+        b.insert((1, 0, 0), hopper());
+        b.hold_for_java((1, 0, 0));
+        b.retain(|_, _| false);
+        assert_eq!(b.take_java_stale(), [(1, 0, 0)]);
+    }
+
+    #[test]
+    fn releasing_a_position_stops_its_log() {
+        let mut b = level();
+        b.insert((0, 0, 0), hopper());
+        b.hold_for_java((0, 0, 0));
+        b.get_mut(&(0, 0, 0));
+        b.release_for_java(&(0, 0, 0));
+        assert!(b.take_java_stale().is_empty());
+        b.get_mut(&(0, 0, 0));
+        b.remove(&(0, 0, 0));
+        assert!(b.take_java_stale().is_empty());
     }
 }
