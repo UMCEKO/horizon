@@ -76,6 +76,8 @@ struct Class {
 #[derive(Debug, Default)]
 struct TypeFacts {
     reads: u32,
+    living: bool,
+    item: bool,
     routes: HashMap<MethodId, Route>,
     server: Vec<u64>,
     client: Vec<u64>,
@@ -275,6 +277,12 @@ impl EntityFacts {
     fn type_facts(&self, id: &str, chain: &[String]) -> TypeFacts {
         let mut facts = TypeFacts {
             reads: IDENTITY,
+            living: chain
+                .iter()
+                .any(|c| c == "net/minecraft/world/entity/LivingEntity"),
+            item: chain
+                .iter()
+                .any(|c| c == "net/minecraft/world/entity/item/ItemEntity"),
             ..TypeFacts::default()
         };
         for class in chain {
@@ -336,6 +344,22 @@ impl EntityFacts {
             .get()
             .and_then(|t| t.get(type_id))
             .map_or(IDENTITY, |t| t.reads)
+    }
+
+    /// Whether the type is a `LivingEntity` in Java, so its views have health, effects and equipment.
+    pub fn living(&self, type_id: &str) -> bool {
+        self.types
+            .get()
+            .and_then(|t| t.get(type_id))
+            .is_some_and(|t| t.living)
+    }
+
+    /// Whether the type is an `ItemEntity` in Java, so its views have the item group.
+    pub fn item(&self, type_id: &str) -> bool {
+        self.types
+            .get()
+            .and_then(|t| t.get(type_id))
+            .is_some_and(|t| t.item)
     }
 
     /// The capabilities mods register for an entity type: the analysis's, and once the types are loaded NeoForge's own providers.
@@ -481,6 +505,8 @@ mod tests {
         assert_eq!(facts.reads("minecraft:item"), 1 | 2 | 4 | 1024);
         assert_eq!(facts.reads("minecraft:zombie"), 1 | 2 | 4 | 8);
         assert_eq!(facts.reads("minecraft:nothing"), 1);
+        assert!(facts.living("minecraft:zombie") && !facts.living("minecraft:item"));
+        assert!(facts.item("minecraft:item") && !facts.item("minecraft:zombie"));
         assert_eq!(facts.caps("minecraft:zombie"), ["b/Cap.Y"]);
         let route = facts.route("minecraft:item", MethodId(0)).unwrap();
         assert_eq!(

@@ -942,6 +942,7 @@ impl Game<'_> {
         keys: &HashSet<(i32, i32)>,
         remove: bool,
     ) -> Vec<((i32, i32), Vec<Tag>)> {
+        self.java_hook_entities_save(keys);
         let mut out: HashMap<(i32, i32), Vec<Tag>> =
             keys.iter().map(|k| (*k, Vec::new())).collect();
         let player_uuid = self.level.player_uuid;

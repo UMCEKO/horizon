@@ -31,6 +31,7 @@ final class BridgeProcessor implements ClassProcessor {
     private record Entry(String owner, String method, String desc, String guard, String nativeName, String[] args, String ret) {
         /** Where the native is declared: interfaces can't hold natives, so a guarded method's goes on the guard's class. */
         String holder() {
+            if (guard.startsWith("@")) return guard.substring(1, guard.lastIndexOf('.'));
             return guard.isEmpty() ? owner : guard;
         }
 
@@ -95,7 +96,10 @@ final class BridgeProcessor implements ClassProcessor {
         Type result = Type.getReturnType(method.desc);
         InsnList head = new InsnList();
         LabelNode body = new LabelNode();
-        if (!isStatic && !entry.guard.isEmpty()) {
+        if (!isStatic && entry.guard.startsWith("@")) {
+            head.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, entry.holder(), entry.guard.substring(entry.guard.lastIndexOf('.') + 1), "(Ljava/lang/Object;)Z", false));
+        } else if (!isStatic && !entry.guard.isEmpty()) {
             head.add(new VarInsnNode(Opcodes.ALOAD, 0));
             head.add(new TypeInsnNode(Opcodes.INSTANCEOF, entry.guard));
         } else {
@@ -106,7 +110,7 @@ final class BridgeProcessor implements ClassProcessor {
         int arg = 0;
         if (entry.args.length == params.length + 1) {
             head.add(new VarInsnNode(Opcodes.ALOAD, 0));
-            flatten(head, Type.getObjectType(node.name), entry.args[arg++]);
+            flatten(head, Type.getObjectType(entry.guard.startsWith("@") ? "net/minecraft/world/entity/Entity" : node.name), entry.args[arg++]);
         }
         for (Type param : params) {
             String raw = entry.args[arg++];

@@ -137,6 +137,8 @@ mod java_chunks;
 mod java_components;
 #[cfg(feature = "java-mods")]
 mod java_content;
+#[cfg(feature = "java-mods")]
+mod java_entities;
 mod java_hooks;
 #[cfg(feature = "java-mods")]
 mod java_item_text;

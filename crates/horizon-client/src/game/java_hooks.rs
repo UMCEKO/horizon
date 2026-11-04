@@ -259,10 +259,7 @@ impl Game<'_> {
             }
         }
         #[cfg(feature = "java-mods")]
-        {
-            let _ = (e, origin, saved);
-            true
-        }
+        return self.java_entity_joining(e, origin, saved);
         #[cfg(not(feature = "java-mods"))]
         {
             let _ = (e, origin, saved);
@@ -283,9 +280,16 @@ impl Game<'_> {
             self.test_life = Some(hook);
         }
         #[cfg(feature = "java-mods")]
-        let _ = (kind, id, why);
+        self.java_entity_left(kind, id, why);
         #[cfg(not(feature = "java-mods"))]
         let _ = (kind, id, why);
+    }
+
+    /// Before native encodes the entities of these chunks: Java's own keys of each reach what native remembers of it.
+    pub(super) fn java_hook_entities_save(&mut self, keys: &std::collections::HashSet<(i32, i32)>) {
+        #[cfg(feature = "java-mods")]
+        self.java_entities_save(keys);
+        let _ = keys;
     }
 }
 

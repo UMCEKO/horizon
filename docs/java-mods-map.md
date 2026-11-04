@@ -90,13 +90,13 @@ One process: the game, with the JVM inside it (JNI). No second process, except a
 | Player view fill | `GameBridge.fill(input, refresh)` | Reads pose, position, mode, hand, slot, xp, `PlayerSync.fill`, motion, inventory; fires `PlayerLoggedIn` on first sight; `refresh` leaves xp and stacks alone |
 | Player state | `B/PlayerSync.java`, `B/mixin/FoodSyncMixin`, `PlayerSyncMixin`, `G/java_bridges/player.rs` | `acting`, `fill`, `settle`, `sendAttributes`; setters write through to Horizon's player |
 | Held use | `B/Using.java` | A view keeps no use between calls: `clear`, `resume`, `tick` |
-| Entities | `B/EntityViews.java`, `G/java_bridges/entities.rs`, `G/java_mods.rs` `java_write_entity` | Real entities from saved form for one call; `writeChanges` |
+| Entities | `B/EntityViews.java`, `B/Backed.java`, `B/mixin/EntityBackedMixin.java` and the `*Access` mixins, `G/java_entities.rs`, `G/java_bridges/entities.rs` | One live view per native entity from `level_add` to `level_remove` (`entity_view`, `entity_left`), refreshed raw by group bytes (`write_groups` / `EntityViews.apply`), written through by the bridges (guard `@...EntityViews.backed`, receiver `Ent`); Java-owned keys asked at native saves (`entities_save`); Java spawns reach native at once (`EntityViews.spawn`) |
 | Block entities | `B/BlockEntities.java`, `G/java_bridges/block_entities.rs`, `G/java_mods.rs` | `ours`, `join`, `loadFresh`, `blockChanged`, `drop`, `markUnsaved`; Rust: `java_block_entity_tick`, `java_send_block_entity`, `java_push_stale`, `java_flush_block_entities` |
 | Chunks | `B/ChunkViews.java`, `B/ChunkEvents.java`, `G/java_chunks.rs` | Event kinds `DATA_LOAD`..`UNLOADED` (0 to 6); `java_chunks_read`, `java_chunks_full`, `java_chunks_leaving`, `java_chunks_saving`, `java_level_saved` |
 | Tracking | `B/Tracking.java`, `G/java_mods.rs` `java_tracking`, `lan/hub.rs` | Who sees which chunk and entity; fires `ChunkWatchEvent`s |
 | Menus | `B/Menus.java` | The player's real server menu, `serverTick`, `login` |
 | Level API | `B/LevelApi.java`, `G/java_bridges/level_api.rs` | Results of level bridges |
-| Effects | `B/Effects.java`, `GameBridge.writeEffects`, `G/java_mods.rs` `java_apply_effects` | Sounds, spawns and entity changes a call made, in every reply |
+| Effects | `B/Effects.java`, `GameBridge.writeEffects`, `G/java_mods.rs` `java_apply_effects` | The sounds a call made, in every reply |
 
 ### Bridged natives
 
@@ -237,7 +237,7 @@ payload. `tag` = NBT written by `GameBridge.writeTag`, read by `java_mods.rs` `r
 | State table (`states`) | `GameBridge.states` | `G/java_mods.rs` `java_bind_states` | `int count`, `int airId`, `bool wholeLoop`; count x (`int id`, `text block`, `int n`, n x (`text name`, `text value`), `bool hasBlockEntity`, `bool owned`, `byte animate`) |
 | Use request (`use_item` and the other kinds) | `Game::java_use_request` + tail | `GameBridge.fill`, `use` | uuid (2 `long`), `text name`, `text dim`, `long gameTime`, `text pose`, 3 `double` pos, 2 `float` look, `bool sneak`, `int mode`, `int hand`, `int slot`, xp (`int`, `float`, `int`), `PlayerSync.fill` block, 3 `double` motion, `bool onGround`, `int n` x (`int slot`, `bytes tag`), then the kind's tail |
 | Use reply | `GameBridge.use` end | `java_apply_use` | `bool handled`, `bool using`, `int ticks`, xp (`int`, `float`, `int`), `int n` x (`int slot`, tag or 0), effects |
-| Effects | `GameBridge.writeEffects` | `java_apply_effects` | `int n` x (`text sound`, 3 `double`, 2 `float`), `int n` x tag (spawned), `EntityViews.writeChanges` |
+| Effects | `GameBridge.writeEffects` | `java_apply_effects` | `int n` x (`text sound`, 3 `double`, 2 `float`) |
 | Block events (`block_events`) | `java_drain_block_events` | `GameBridge.blockEvents` | `text dim`, `long time`, `int n` x (`int kind`, `long pos`, `int a`, `int b`, `int c`); kind 0 changed (old, new, flags), 1 neighbour (state, moved, changed), 2 tick, 3 random tick |
 | Chunk events (`chunk_events`) | `java_chunks.rs` `java_chunk_events` | `GameBridge.chunkEvents`, `B/ChunkEvents.java` | Event kind (`DATA_LOAD`..`UNLOADED`) and the chunk's full tag; layouts in `java_chunks.rs` and its test `the_full_chunk_tag_survives_the_wire` |
 | Client tick (`client_tick`) | `java_screens.rs` `java_client_tick_send` | `ClientBridge.tick` | `int ticks`, `float partial`, `bool` size changed (+3 `int`), `int n` + `Input` entries (kind 14 `Animate`: `int n` x 3 `int` picked positions, one per window tick owed; 15 `Particles`: `int` option), `bool moved` (+ pos, look, velocity, `bool onGround`), `int n` x `int soundHandle` finished |

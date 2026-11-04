@@ -30,6 +30,54 @@ public final class Flat {
         Host.link(target);
     }
 
+    /** An entity by its id: the view's identity in Horizon's level. */
+    public static int raw(net.minecraft.world.entity.Entity entity) {
+        return entity.getId();
+    }
+
+    public static int raw(net.minecraft.world.entity.Entity.RemovalReason reason) {
+        return reason.ordinal();
+    }
+
+    public static int raw(net.minecraft.world.entity.EquipmentSlot slot) {
+        return slot.ordinal();
+    }
+
+    public static int raw(net.minecraft.world.item.DyeColor color) {
+        return color.getId();
+    }
+
+    /** A UUID as text, empty for none. */
+    public static String raw(java.util.UUID id) {
+        return id == null ? "" : id.toString();
+    }
+
+    /** A teleport's target: position, rotation, motion, then the level's name. */
+    public static byte[] raw(net.minecraft.world.level.portal.TeleportTransition transition) {
+        try {
+            var bytes = new ByteArrayOutputStream();
+            var out = new DataOutputStream(bytes);
+            out.writeDouble(transition.position().x);
+            out.writeDouble(transition.position().y);
+            out.writeDouble(transition.position().z);
+            out.writeFloat(transition.yRot());
+            out.writeFloat(transition.xRot());
+            out.writeDouble(transition.deltaMovement().x);
+            out.writeDouble(transition.deltaMovement().y);
+            out.writeDouble(transition.deltaMovement().z);
+            byte[] dim = transition.newLevel().dimension().identifier().toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            out.writeInt(dim.length);
+            out.write(dim);
+            return bytes.toByteArray();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    public static net.minecraft.world.entity.Entity toEntity(int id) {
+        return EntityViews.byId(id);
+    }
+
     public static long raw(BlockPos pos) {
         return pos.asLong();
     }
@@ -69,6 +117,7 @@ public final class Flat {
     }
 
     public static byte[] raw(Component message) {
+        if (message == null) return new byte[0];
         try {
             var tag = new CompoundTag();
             tag.put("text", ComponentSerialization.CODEC.encodeStart(NbtOps.INSTANCE, message).getOrThrow());

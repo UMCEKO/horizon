@@ -15,7 +15,7 @@ pub struct Bridge {
     pub class: &'static str,
     pub method: &'static str,
     pub desc: &'static str,
-    /// The method runs in Java when the receiver isn't this class.
+    /// The method runs in Java when the receiver isn't this class; `@owner.method` is a static `(Object)Z` that must hold instead.
     pub guard: &'static str,
     pub native: &'static str,
     pub args: Vec<&'static str>,
@@ -42,7 +42,11 @@ impl Bridge {
     }
     /// Where the native is declared: interfaces can't hold natives, so a guarded method's goes on the guard's class.
     fn holder(&self) -> &'static str {
-        if self.guard.is_empty() {
+        if let Some(predicate) = self.guard.strip_prefix('@') {
+            predicate
+                .rsplit_once('.')
+                .map_or(predicate, |(owner, _)| owner)
+        } else if self.guard.is_empty() {
             self.class
         } else {
             self.guard
@@ -351,6 +355,17 @@ impl Arg for Shape {
     }
 }
 
+/// An entity, by `Entity.getId`, which is Horizon's id for a backed view.
+#[derive(Clone, Copy)]
+pub struct Ent(pub u32);
+impl Arg for Ent {
+    type Raw = jint;
+    const RAW: &'static str = "I";
+    fn from_raw(_: &mut JNIEnv, raw: jint) -> Ent {
+        Ent(raw as u32)
+    }
+}
+
 /// `BlockPos`, by `BlockPos.asLong`.
 pub struct Pos(pub BlockPos);
 impl Arg for Pos {
@@ -486,4 +501,39 @@ macro_rules! java_bridges {
             }),*]
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(guard: &'static str) -> Bridge {
+        Bridge {
+            class: "net/minecraft/world/entity/Entity",
+            method: "discard",
+            desc: "()V",
+            guard,
+            native: "entity_discard",
+            args: vec![Ent::RAW],
+            ret: <() as Ret>::RAW,
+            pointer: std::ptr::null_mut(),
+        }
+    }
+
+    #[test]
+    fn a_predicate_guard_puts_the_native_on_its_owner_and_the_receiver_is_an_id() {
+        let bridge = entry("@dev/horizonlab/javamods/boot/EntityViews.backed");
+        assert_eq!(bridge.holder(), "dev/horizonlab/javamods/boot/EntityViews");
+        assert_eq!(
+            bridge.line(),
+            "net/minecraft/world/entity/Entity\tdiscard\t()V\t@dev/horizonlab/javamods/boot/EntityViews.backed\thorizon$bridge$entity_discard\tI\tV"
+        );
+        assert_eq!(bridge.signature(), "(I)V");
+    }
+
+    #[test]
+    fn a_class_guard_and_no_guard_keep_their_holders() {
+        assert_eq!(entry("").holder(), "net/minecraft/world/entity/Entity");
+        assert_eq!(entry("a/B").holder(), "a/B");
+    }
 }

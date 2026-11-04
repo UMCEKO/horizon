@@ -400,36 +400,13 @@ impl Game<'_> {
         Some(using.then_some(ticks.max(0) as u32))
     }
 
-    /// What Java did to the world on a call: sounds, entities, vanilla block entities it changed.
+    /// What Java did to the world on a call: the sounds it played.
     pub(super) fn java_apply_effects(&mut self, reply: &mut In<'_>) -> Option<()> {
         for _ in 0..reply.int()? {
             let sound = reply.text()?;
             let at = [reply.double()?, reply.double()?, reply.double()?];
             let (volume, pitch) = (reply.float()?, reply.float()?);
             self.audio.play(sound, Some(at), volume, pitch);
-        }
-        for _ in 0..reply.int()? {
-            let tag = read_tag(reply.bytes()?)?;
-            let kind = tag.get("id").and_then(|id| match id {
-                Tag::String(id) => Some(id.to_string_lossy()),
-                _ => None,
-            });
-            if self.spawn_entity_from_nbt(tag).is_none() {
-                log::warn!("Horizon: no entity from a Java mod's {kind:?}");
-            }
-        }
-        for _ in 0..reply.int()? {
-            let id = reply.int()? as u32;
-            let tag = read_tag(reply.bytes()?)?;
-            if let Some(target) = self.java_target(id) {
-                let _ = self.apply_entity_nbt(target, tag);
-            }
-        }
-        for _ in 0..reply.int()? {
-            let id = reply.int()? as u32;
-            if let Some(target) = self.java_target(id) {
-                self.kill_target(target);
-            }
         }
         Some(())
     }
@@ -450,8 +427,8 @@ impl Game<'_> {
                     out.long(time);
                     body(out);
                 },
-                // Nothing changed is the common reply: four empty counts.
-                |reply| Some((reply.0 != [0u8; 16]).then(|| reply.0.to_vec())),
+                // Nothing changed is the common reply: no sounds.
+                |reply| Some((reply.0 != [0u8; 4]).then(|| reply.0.to_vec())),
             )
         });
         if let Some(Some(reply)) = effects {
@@ -518,59 +495,10 @@ impl Game<'_> {
         }
     }
 
-    fn java_target(&mut self, id: u32) -> Option<Target> {
+    pub(in crate::game) fn java_target(&mut self, id: u32) -> Option<Target> {
         self.level_candidates()
             .into_iter()
             .find(|t| Self::java_target_id(*t) == Some(id))
-    }
-
-    fn java_write_entity(&mut self, target: Target, out: &mut Out) -> bool {
-        let Some(id) = Self::java_target_id(target) else {
-            return false;
-        };
-        let kind = self.target_type(target);
-        let Some(mut tag) = self.entity_nbt(target) else {
-            return false;
-        };
-        if let Tag::Compound(map) = &mut tag {
-            map.insert("id".into(), Tag::String(kind.as_str().into()));
-        }
-        let Some(bytes) = write_tag(tag) else {
-            return false;
-        };
-        out.int(id as i32);
-        out.bytes(&bytes);
-        true
-    }
-
-    /// `EntityViews.query`: the entities with positions in the box, in their saved form.
-    pub(in crate::game) fn java_entities_in(&mut self, low: [f64; 3], high: [f64; 3]) -> Vec<u8> {
-        let mut out = Out::default();
-        let mut count = 0;
-        for target in self.level_candidates() {
-            let inside = self
-                .target_position(target)
-                .is_some_and(|p| (0..3).all(|axis| p[axis] >= low[axis] && p[axis] <= high[axis]));
-            if inside && self.java_write_entity(target, &mut out) {
-                count += 1;
-            }
-        }
-        let mut all = Out::default();
-        all.int(count);
-        all.0.extend(out.0);
-        all.0
-    }
-
-    /// `EntityViews.queryId`: one entity the same way.
-    pub(in crate::game) fn java_entity_by_id(&mut self, id: u32) -> Vec<u8> {
-        let mut out = Out::default();
-        let found = self
-            .java_target(id)
-            .is_some_and(|t| self.java_write_entity(t, &mut out));
-        let mut all = Out::default();
-        all.int(found as i32);
-        all.0.extend(out.0);
-        all.0
     }
 
     /// `level.getBlockEntity` found nothing in Java: the saved form Horizon holds, if any, goes there now.
@@ -1049,6 +977,7 @@ impl Game<'_> {
             s.started = open;
             s.levels.clear();
         });
+        super::java_entities::reset_views();
         if open {
             super::java_content::entity_types();
         }

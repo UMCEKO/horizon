@@ -500,11 +500,14 @@ def java_args(desc):
     return args, desc[i + 1:]
 
 
-def unbridged_writers(analysis):
-    """The entity writers of an install's entity-facts.json with no bridged native and no `java-owned` line in tools/java_mods_skips: [(key, mods)]."""
+def unbridged_writers(analysis, extends=None):
+    """The entity writers of an install's entity-facts.json with no bridged native and no `java-owned` line in tools/java_mods_skips: [(key, mods)].
+
+    A bridge on a subclass covers its parent's method (an abstract `hurtServer` has no body to bridge)."""
     facts = json.loads(Path(analysis).read_text())
     tables = (oracle.ROOT / 'crates' / 'horizon-client' / 'src' / 'game' / 'java_bridges').glob('*.rs')
-    covered = {f'{owner}#{name}' for path in tables for owner, name in re.findall(r'"([\w/$]+)"\.(\w+)\s+"\(', path.read_text())}
+    bridged = [(owner, name) for path in tables for owner, name in re.findall(r'"([\w/$]+)"\.(\w+)\s+"\(', path.read_text())]
+    covered = {f'{owner}#{name}' for owner, name in bridged}
     for path in (oracle.ROOT / 'tools' / 'java_mods_skips').glob('*.tsv'):
         for line in path.read_text().splitlines():
             key, _, rest = line.partition('\t')
@@ -512,7 +515,9 @@ def unbridged_writers(analysis):
                 covered.add(key)
     missing = collections.defaultdict(set)
     for w in facts['writes']:
-        if w['group'] != 'java' and w['key'].split('(')[0] not in covered:
+        owner, _, name = w['key'].split('(')[0].partition('#')
+        below = extends is not None and any(n == name and extends(o, owner) for o, n in bridged)
+        if w['group'] != 'java' and w['key'].split('(')[0] not in covered and not below:
             missing[w['key']].update(w['mods'])
     return [(key, sorted(mods)) for key, mods in sorted(missing.items())]
 
@@ -521,6 +526,7 @@ def check_bridges(args=None):
     """Every bridge against the real jars, without starting anything: its method exists, its arguments line up, Flat can carry them.
 
     With --analysis (an install's entity-facts.json) every entity writer mod code calls must also be bridged or `java-owned`."""
+    analysis = getattr(args, 'analysis', None)
     home = oracle.install()
     classes = {}
     for jar in sorted((home / 'libraries' / 'net' / 'neoforged').rglob('*.jar')):
@@ -538,7 +544,7 @@ def check_bridges(args=None):
     bridge_rs = (oracle.ROOT / 'crates' / 'horizon-java-host' / 'src' / 'bridge.rs').read_text()
     for kind, ty, raw in re.findall(r'impl (Arg|Ret) for (\w+) \{.*?const RAW: &\'static str = "([^"]+)"', bridge_rs, re.S):
         raws[ty] = raw
-    entry = re.compile(r'"([\w/$]+)"\.(\S+)\s+"(\([^"]*)"(?:\s+if\s+"([\w/$]+)")?\s*=>\s*fn\s+(\w+)\(\s*\w+\s*((?:,\s*\w+:\s*\w+\s*)*),?\s*\)\s*->\s*([\w()]+)')
+    entry = re.compile(r'"([\w/$]+)"\.(\S+)\s+"(\([^"]*)"(?:\s+if\s+"(@?[\w/$.]+)")?\s*=>\s*fn\s+(\w+)\(\s*\w+\s*((?:,\s*\w+:\s*\w+\s*)*),?\s*\)\s*->\s*([\w()]+)')
 
     def extends(name, target):
         seen, queue = set(), [name]
@@ -562,7 +568,7 @@ def check_bridges(args=None):
             if owner not in classes or (method, desc) not in classes[owner][2]:
                 errors.append(f'{where}: no {owner}.{method}{desc}')
                 continue
-            if guard and not extends(guard, owner):
+            if guard and not guard.startswith('@') and not extends(guard, owner):
                 errors.append(f'{where}: {guard} is not a {owner}')
             args, ret = java_args(desc)
             types = [t.split(':')[1].strip() for t in params.split(',') if t.strip()]
@@ -574,7 +580,7 @@ def check_bridges(args=None):
             if len(mine) != len(args) and not this:
                 errors.append(f'{where}: {len(mine)} arguments for {desc}')
                 continue
-            lined = ([f'L{owner};'] if this else []) + args
+            lined = ([f'L{"net/minecraft/world/entity/Entity" if guard.startswith("@") else owner};'] if this else []) + args
             for java, raw in zip(lined, mine):
                 if raw == '-':
                     continue
@@ -596,8 +602,8 @@ def check_bridges(args=None):
                     errors.append(f'{where}: Flat has no to{simple}({mine_ret}) -> {ret}')
             elif ret != mine_ret:
                 errors.append(f'{where}: returns {ret} against {mine_ret}')
-    if getattr(args, 'analysis', None):
-        errors += [f'no bridge for {key} ({", ".join(mods)})' for key, mods in unbridged_writers(args.analysis)]
+    if analysis:
+        errors += [f'no bridge for {key} ({", ".join(mods)})' for key, mods in unbridged_writers(analysis, extends)]
     for error in errors:
         print(error)
     print(f'{total} bridges, {len(errors)} problems')

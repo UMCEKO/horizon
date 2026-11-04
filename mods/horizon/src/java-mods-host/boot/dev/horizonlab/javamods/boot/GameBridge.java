@@ -86,7 +86,6 @@ public final class GameBridge {
     private static final Map<String, ServerLevel> LEVELS = new HashMap<>();
     private static final Map<UUID, ServerPlayer> PLAYERS = new HashMap<>();
     private static final List<Sound> SOUNDS = new ArrayList<>();
-    private static final List<Entity> SPAWNED = new ArrayList<>();
     private static RegistryAccess.Frozen registries;
 
     static RegistryAccess.Frozen registries() {
@@ -132,6 +131,10 @@ public final class GameBridge {
         Crossing.game("block_entity_tick", GameBridge::blockEntityTick);
         Crossing.game("block_entity_load", GameBridge::blockEntityLoad);
         Crossing.game("block_entity_drop", GameBridge::blockEntityDrop);
+        Crossing.game("entity_view", GameBridge::entityView);
+        Crossing.game("entity_left", GameBridge::entityLeft);
+        Crossing.game("entity_refresh", GameBridge::entityRefresh);
+        Crossing.game("entities_save", GameBridge::entitiesSave);
         Crossing.game("block_entities_save", GameBridge::blockEntitiesSave);
         Crossing.game("chunks_changed", GameBridge::chunksChanged);
         Crossing.game("chunk_events", GameBridge::chunkEvents);
@@ -336,21 +339,9 @@ public final class GameBridge {
         SOUNDS.add(new Sound(sound.location().toString(), x, y, z, volume, pitch));
     }
 
-    /** Spawned for the rest of the call as vanilla's are, and handed to Horizon as it ends, with what the call did to it since. */
+    /** `ServerLevel.addFreshEntity` from mod code: native adds it at once and the object becomes its live view. */
     public static boolean spawn(Entity entity) {
-        SPAWNED.add(entity);
-        return true;
-    }
-
-    static List<Entity> spawned(ServerLevel level) {
-        var here = new ArrayList<Entity>();
-        for (Entity entity : SPAWNED) if (entity.level() == level && !entity.isRemoved()) here.add(entity);
-        return here;
-    }
-
-    private static CompoundTag saved(Entity entity) {
-        var output = TagValueOutput.createWithContext(ProblemReporter.DISCARDING, entity.level().registryAccess());
-        return entity.save(output) ? output.buildResult() : null;
+        return EntityViews.spawn(entity);
     }
 
     static ItemStack decode(byte[] nbt) throws IOException {
@@ -574,8 +565,6 @@ public final class GameBridge {
     /** A call that threw has no reply to carry its effects. */
     private static void abandonCall() {
         SOUNDS.clear();
-        SPAWNED.clear();
-        EntityViews.abandon();
     }
 
     private static final Sound[] NO_SOUNDS = new Sound[0];
@@ -583,15 +572,7 @@ public final class GameBridge {
     /** What Java did to the world since the last reply. */
     private static void writeEffects(DataOutputStream out) throws IOException {
         Sound[] sounds = SOUNDS.isEmpty() ? NO_SOUNDS : SOUNDS.toArray(NO_SOUNDS);
-        var spawned = SPAWNED.isEmpty() ? List.<CompoundTag>of() : new ArrayList<CompoundTag>();
         SOUNDS.clear();
-        if (depth == 1 && !SPAWNED.isEmpty()) {
-            for (Entity entity : SPAWNED) {
-                CompoundTag tag = entity.isRemoved() ? null : saved(entity);
-                if (tag != null) spawned.add(tag);
-            }
-            SPAWNED.clear();
-        }
         out.writeInt(sounds.length);
         for (Sound s : sounds) {
             text(out, s.id);
@@ -600,14 +581,6 @@ public final class GameBridge {
             out.writeDouble(s.z);
             out.writeFloat(s.volume);
             out.writeFloat(s.pitch);
-        }
-        out.writeInt(spawned.size());
-        for (CompoundTag tag : spawned) writeTag(out, tag);
-        if (depth == 1) {
-            EntityViews.writeChanges(out);
-        } else {
-            out.writeInt(0);
-            out.writeInt(0);
         }
     }
 
@@ -690,7 +663,6 @@ public final class GameBridge {
         LEVELS.clear();
         PLAYERS.clear();
         SOUNDS.clear();
-        SPAWNED.clear();
         nextEntityId = -1;
         ServerView.closeWorld(server);
         BlockEntities.reset();
@@ -698,7 +670,7 @@ public final class GameBridge {
         ChunkEvents.reset();
         Clients.reset();
         Tracking.reset();
-        EntityViews.abandon();
+        EntityViews.reset();
     }
 
     private static void serverTick(Crossing.In in, Crossing.Out out) throws Exception {
@@ -884,6 +856,48 @@ public final class GameBridge {
         var tag = NbtIo.read(new DataInputStream(new ByteArrayInputStream(in.readNBytes(in.readInt()))), NbtAccounter.unlimitedHeap());
         BlockEntities.load(level, pos, tag);
         return effects();
+    }
+
+    /** A native entity joined: its live view exists from here; the reply is the join's verdict, then the call's effects. */
+    private static byte[] entityView(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        var level = levelOf(in);
+        int id = in.readInt();
+        in.readBoolean();
+        byte[] tag = in.readNBytes(in.readInt());
+        EntityViews.join(level, id, tag);
+        var bytes = new ByteArrayOutputStream();
+        var out = new DataOutputStream(bytes);
+        out.writeBoolean(true);
+        writeEffects(out);
+        return bytes.toByteArray();
+    }
+
+    /** A native entity left, for the reason (`Entity.RemovalReason` ordinal). */
+    private static byte[] entityLeft(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        var level = levelOf(in);
+        int id = in.readInt();
+        EntityViews.left(level, id, in.readByte());
+        return effects();
+    }
+
+    /** A bridge changed a native entity: the group bytes of what it wrote reach its view. */
+    private static byte[] entityRefresh(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        var level = levelOf(in);
+        int id = in.readInt();
+        EntityViews.refresh(level, id, in.readInt(), in);
+        return effects();
+    }
+
+    /** The Java-owned keys of the listed entities' views, at native's save of them. */
+    private static byte[] entitiesSave(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        var level = level(text(in));
+        var bytes = new ByteArrayOutputStream();
+        EntityViews.save(level, in, new DataOutputStream(bytes));
+        return bytes.toByteArray();
     }
 
     /** A block entity Horizon lost on its own: the object Java held goes, as `LevelChunk.removeBlockEntity` would. */
