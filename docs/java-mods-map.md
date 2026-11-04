@@ -20,7 +20,7 @@ One process: the game, with the JVM inside it (JNI). No second process, except a
 | `Java mods` | Rust, `H/lib.rs` `start` (16 MB stack) | The boot: `create_vm`, `register_natives`, `try_run_fml` (`Host.run` then `Boot.main`), then `prepare`, `boot_facts`, the lists the host keeps |
 | `Server thread` | Rust, the integrated or dedicated server's `Game` | Every server-side call: `Host::request` attaches it to FML's server `ThreadGroup` (`Host::attach`) so `EffectiveSide` says server |
 | Window thread | Rust, the render loop | `client_*` calls that must be answered now (clicks, frames of an open screen, input) |
-| `Java client` | Rust, `G/java_screens.rs` `Worker::start` | One client tick's calls as a `Job` (`client_tick`, then the geometry, items and text the status asks for); the window never waits on it |
+| `Java client` | Rust, `G/java_screens.rs` `Worker::start` | One client tick's calls as a `Job` (`client_tick`, then the geometry, items and text the status asks for); the window never waits on it; per-frame HUD and world recordings (`client_hud_frame`, `client_world_frame`) go to the same worker as one `FrameJob`, one in flight, none while a tick runs, dropped when older than an applied tick (`Sequence`) |
 | `Render thread` | Java, `B/ClientBridge.java` `install` (single-thread executor) | Every `client_*` op, whichever Rust thread asked: `ClientBridge.call` submits to it. It is `Minecraft.gameThread` |
 | `Java mods' facts` | Rust, `G/java_content.rs` `content` | After a cached launch, compares the live boot's facts with the cache (`verify`) |
 

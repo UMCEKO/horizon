@@ -34,7 +34,7 @@ pub(super) fn java_world_status(blob: Option<&[u8]>, animating: bool) {
 }
 
 /// A frame recording's reply: whether the world still animates, and the recording if it differs from the last.
-fn java_world_frame_apply(reply: &[u8], spent: u128) {
+pub(super) fn java_world_frame_apply(reply: &[u8], spent: u128) {
     let mut reply = In(reply);
     let (Some(animating), Some(changed)) = (reply.bool(), reply.bool()) else {
         return;
@@ -79,17 +79,14 @@ impl Game<'_> {
         }
     }
 
-    /// While the world animates, one recording per window frame, as the level's frame would extract it; a frame that took a tick's status, or a tick still running, has none, so the window never waits on Java.
-    pub(super) fn java_world_frame(&mut self, busy: bool) {
+    /// While the world animates, this frame's recording request as the level's frame would extract it; none on the frame that took a tick's status or while a tick runs.
+    pub(super) fn java_world_frame_request(&mut self, busy: bool) -> Option<Vec<u8>> {
         let (animating, recorded) =
             WORLD.with_borrow_mut(|w| (w.animating, std::mem::take(&mut w.recorded)));
         if !world_frame_wanted(animating, recorded, busy) {
-            return;
+            return None;
         }
-        let (Some(host), Some((at, view))) = (horizon_java_host::get(), self.java_world_camera())
-        else {
-            return;
-        };
+        let (at, view) = self.java_world_camera()?;
         let mut out = Out::default();
         for value in self.java_client_window() {
             out.int(value);
@@ -97,11 +94,7 @@ impl Game<'_> {
         out.float(self.clock.fraction() as f32);
         at.iter().for_each(|v| out.double(*v));
         view.iter().for_each(|v| out.float(*v));
-        let started = std::time::Instant::now();
-        let Some(reply) = host.request("client_world_frame", &out.0) else {
-            return;
-        };
-        java_world_frame_apply(&reply, started.elapsed().as_micros());
+        Some(out.0)
     }
 }
 

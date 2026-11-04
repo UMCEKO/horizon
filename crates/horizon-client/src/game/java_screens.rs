@@ -224,7 +224,7 @@ pub(in crate::game) mod live {
         changed
     }
 
-    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static RUNNING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
     thread_local! {
         pub(in crate::game) static CLIENT: RefCell<Client> = RefCell::default();
@@ -344,16 +344,106 @@ pub(in crate::game) mod live {
         Some((status.int()?, status.int()?))
     }
 
-    /// Runs the Java client's ticks off the window's thread while no Java screen is open, as chunk meshing runs off it.
+    /// The per-frame recordings one frame asks for, in one request to the worker.
+    struct FrameJob {
+        hud: Option<Vec<u8>>,
+        world: Option<Vec<u8>>,
+    }
+
+    /// A frame request's replies, each with what the request took.
+    #[derive(Default)]
+    struct FrameDone {
+        hud: Option<(Vec<u8>, u128)>,
+        world: Option<(Vec<u8>, u128)>,
+    }
+
+    impl FrameJob {
+        fn run(self, host: &horizon_java_host::Host) -> FrameDone {
+            let record = |op, request: Option<Vec<u8>>| {
+                let request = request?;
+                let started = std::time::Instant::now();
+                let reply = host.request(op, &request)?;
+                Some((reply, started.elapsed().as_micros()))
+            };
+            FrameDone {
+                hud: record("client_hud_frame", self.hud),
+                world: record("client_world_frame", self.world),
+            }
+        }
+    }
+
+    enum Work {
+        Tick(Job),
+        Frame(FrameJob),
+    }
+
+    enum Finished {
+        Tick(Done),
+        Frame(FrameDone),
+    }
+
+    /// Orders the worker's jobs: one frame request in flight, none while a tick runs, and a recording older than an applied tick is dropped.
+    #[derive(Default)]
+    struct Sequence {
+        next: u64,
+        tick: Option<u64>,
+        applied: u64,
+        frame: Option<u64>,
+    }
+
+    impl Sequence {
+        fn start_tick(&mut self) -> u64 {
+            self.next += 1;
+            self.tick = Some(self.next);
+            self.next
+        }
+
+        /// The sequence number of a frame request, when none is in flight and no tick runs.
+        fn start_frame(&mut self) -> Option<u64> {
+            if self.tick.is_some() || self.frame.is_some() {
+                return None;
+            }
+            self.next += 1;
+            self.frame = Some(self.next);
+            self.frame
+        }
+
+        fn finish_tick(&mut self, seq: u64) {
+            self.tick = None;
+            self.applied = self.applied.max(seq);
+        }
+
+        fn finish_frame(&mut self) {
+            self.frame = None;
+        }
+
+        /// Whether a frame request's recording is newer than every applied tick's.
+        fn fresh(&self, seq: u64) -> bool {
+            seq > self.applied
+        }
+
+        fn in_flight(&self) -> bool {
+            self.tick.is_some() || self.frame.is_some()
+        }
+    }
+
+    /// What `Worker::collect` found finished: the tick, and the newest frame recording if no applied tick is newer.
+    #[derive(Default)]
+    struct Collected {
+        tick: Option<Done>,
+        frame: Option<FrameDone>,
+    }
+
+    /// Runs the Java client's ticks and frame recordings off the window's thread while no Java screen is open, as chunk meshing runs off it.
     struct Worker {
-        jobs: std::sync::mpsc::Sender<Job>,
-        done: std::sync::mpsc::Receiver<Done>,
-        busy: bool,
+        jobs: std::sync::mpsc::Sender<(u64, Work)>,
+        done: std::sync::mpsc::Receiver<(u64, Finished)>,
+        sequence: Sequence,
     }
 
     impl Worker {
         fn start() -> Self {
-            let (jobs, queue) = std::sync::mpsc::channel::<Job>();
+            let (jobs, queue) = std::sync::mpsc::channel::<(u64, Work)>();
             let (finished, done) = std::sync::mpsc::channel();
             let _ = std::thread::Builder::new()
                 .name("Java client".into())
@@ -361,10 +451,13 @@ pub(in crate::game) mod live {
                     let Some(host) = horizon_java_host::get() else {
                         return;
                     };
-                    for job in queue {
-                        let done = job.run(host);
-                        RUNNING.store(false, std::sync::atomic::Ordering::Release);
-                        if finished.send(done).is_err() {
+                    for (seq, work) in queue {
+                        let done = match work {
+                            Work::Tick(job) => Finished::Tick(job.run(host)),
+                            Work::Frame(job) => Finished::Frame(job.run(host)),
+                        };
+                        RUNNING.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                        if finished.send((seq, done)).is_err() {
                             return;
                         }
                     }
@@ -372,37 +465,76 @@ pub(in crate::game) mod live {
             Self {
                 jobs,
                 done,
-                busy: false,
+                sequence: Sequence::default(),
             }
+        }
+
+        fn submit(&self, seq: u64, work: Work) -> bool {
+            RUNNING.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            let sent = self.jobs.send((seq, work)).is_ok();
+            if !sent {
+                RUNNING.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            }
+            sent
         }
 
         fn send(&mut self, job: Job) {
-            RUNNING.store(true, std::sync::atomic::Ordering::Release);
-            self.busy = self.jobs.send(job).is_ok();
+            let seq = self.sequence.start_tick();
+            if !self.submit(seq, Work::Tick(job)) {
+                self.sequence.tick = None;
+            }
         }
 
-        fn collect(&mut self, wait: bool) -> Option<Done> {
-            if !self.busy {
-                return None;
+        /// Sends one frame request unless one is in flight or a tick runs.
+        fn send_frame(&mut self, job: FrameJob) {
+            if let Some(seq) = self.sequence.start_frame()
+                && !self.submit(seq, Work::Frame(job))
+            {
+                self.sequence.finish_frame();
             }
-            let done = if wait {
-                self.done.recv().map_err(|_| TryRecvError::Disconnected)
-            } else {
-                self.done.try_recv()
-            };
-            self.busy = matches!(done, Err(TryRecvError::Empty));
-            done.ok()
+        }
+
+        /// What finished, without waiting; `wait` blocks until nothing is in flight.
+        fn collect(&mut self, wait: bool) -> Collected {
+            let mut found = Collected::default();
+            let mut frame = None;
+            while self.sequence.in_flight() {
+                let message = if wait {
+                    self.done.recv().map_err(|_| TryRecvError::Disconnected)
+                } else {
+                    self.done.try_recv()
+                };
+                match message {
+                    Ok((seq, Finished::Tick(done))) => {
+                        self.sequence.finish_tick(seq);
+                        found.tick = Some(done);
+                    }
+                    Ok((seq, Finished::Frame(done))) => {
+                        self.sequence.finish_frame();
+                        frame = Some((seq, done));
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        self.sequence.tick = None;
+                        self.sequence.frame = None;
+                    }
+                }
+            }
+            found.frame = frame
+                .filter(|(seq, _)| self.sequence.fresh(*seq))
+                .map(|(_, done)| done);
+            found
         }
     }
 
     /// Whether a background client tick is running, during which the window doesn't wait on Java.
     pub(in crate::game) fn java_client_running() -> bool {
-        RUNNING.load(std::sync::atomic::Ordering::Acquire)
+        RUNNING.load(std::sync::atomic::Ordering::Acquire) > 0
     }
 
     /// A background tick was sent and its results not yet collected.
     pub(in crate::game) fn java_client_busy() -> bool {
-        WORKER.with_borrow(|w| w.as_ref().is_some_and(|w| w.busy))
+        WORKER.with_borrow(|w| w.as_ref().is_some_and(|w| w.sequence.tick.is_some()))
     }
 
     /// Changes whenever a block entity's client copy was made, dropped or updated, so cached shapes may be stale.
@@ -1272,6 +1404,7 @@ pub(in crate::game) mod live {
                 tick: out.0,
             };
             if open {
+                self.java_client_collect(true);
                 let done = job.run(host);
                 self.java_client_apply(done);
             } else {
@@ -1296,9 +1429,20 @@ pub(in crate::game) mod live {
 
         /// The background tick's results, once it finished; `wait` blocks until it has.
         fn java_client_collect(&mut self, wait: bool) {
-            let done = WORKER.with_borrow_mut(|w| w.as_mut().and_then(|w| w.collect(wait)));
-            if let Some(done) = done {
+            let found = WORKER.with_borrow_mut(|w| w.as_mut().map(|w| w.collect(wait)));
+            let Some(found) = found else {
+                return;
+            };
+            if let Some(done) = found.tick {
                 self.java_client_apply(done);
+            }
+            if let Some(frame) = found.frame {
+                if let Some((reply, spent)) = frame.hud {
+                    java_hud_frame_apply(&reply, spent);
+                }
+                if let Some((reply, spent)) = frame.world {
+                    super::super::java_world_renders::java_world_frame_apply(&reply, spent);
+                }
             }
         }
 
@@ -1392,37 +1536,29 @@ pub(in crate::game) mod live {
             out.0
         }
 
-        /// While the HUD animates, one recording per window frame, as vanilla's frame records it; a frame that took a tick's status, or a tick still running, has none, so the window never waits on Java.
-        fn java_hud_frame(&mut self) {
-            let (animating, recorded) =
-                CLIENT.with_borrow_mut(|c| (c.hud_animating, std::mem::take(&mut c.recorded)));
-            if !hud_frame_wanted(animating, recorded, java_client_busy()) {
-                return;
-            }
-            let Some(host) = horizon_java_host::get() else {
-                return;
-            };
-            let request = self.java_hud_frame_request();
-            let started = std::time::Instant::now();
-            let Some(reply) = host.request("client_hud_frame", &request) else {
-                return;
-            };
-            java_hud_frame_apply(&reply, started.elapsed().as_micros());
-        }
-
-        /// A window frame's collection of the Java client's finished tick, without waiting for it.
+        /// A window frame's collection of the Java client's finished work, without waiting for it, and the next frame recording's request while the HUD or the world animates; a frame that took a tick's status, or a tick still running, asks for none, so the window never waits on Java.
         pub(in crate::game) fn java_client_frame(&mut self) {
             if CLIENT.with_borrow_mut(|c| std::mem::take(&mut c.shell.opening)) {
                 self.java_client_collect(true);
             } else {
                 self.java_client_collect(false);
             }
-            self.java_world_frame(java_client_busy());
+            let busy = java_client_busy();
+            let (animating, recorded) =
+                CLIENT.with_borrow_mut(|c| (c.hud_animating, std::mem::take(&mut c.recorded)));
+            let hud =
+                hud_frame_wanted(animating, recorded, busy).then(|| self.java_hud_frame_request());
+            let world = self.java_world_frame_request(busy);
+            if (hud.is_some() || world.is_some()) && horizon_java_host::get().is_some() {
+                WORKER.with_borrow_mut(|w| {
+                    w.get_or_insert_with(Worker::start)
+                        .send_frame(FrameJob { hud, world });
+                });
+            }
         }
 
         /// The mods' HUD layers and `RenderGuiEvent`s as the Java client recorded them after its last tick.
         pub(in crate::game) fn draw_java_hud(&mut self, batch: &mut HudBatch) {
-            self.java_hud_frame();
             let hud = CLIENT.with_borrow(|c| c.hud.clone());
             if hud.is_empty() {
                 return;
@@ -1950,6 +2086,43 @@ pub(in crate::game) mod live {
                 out.int(0x80ff_ffffu32 as i32);
             }
             out.bool(false);
+        }
+
+        #[test]
+        fn one_frame_request_is_in_flight_and_none_while_a_tick_runs() {
+            let mut q = Sequence::default();
+            let first = q.start_frame().unwrap();
+            assert!(q.start_frame().is_none());
+            q.finish_frame();
+            let second = q.start_frame().unwrap();
+            assert!(second > first);
+            q.finish_frame();
+            q.start_tick();
+            assert!(q.start_frame().is_none());
+        }
+
+        #[test]
+        fn a_frame_older_than_an_applied_tick_is_dropped_and_a_newer_one_kept() {
+            let mut q = Sequence::default();
+            let old = q.start_frame().unwrap();
+            q.finish_frame();
+            let tick = q.start_tick();
+            q.finish_tick(tick);
+            assert!(!q.fresh(old));
+            let new = q.start_frame().unwrap();
+            assert!(q.fresh(new));
+        }
+
+        #[test]
+        fn sequence_numbers_follow_the_order_of_sending() {
+            let mut q = Sequence::default();
+            let frame = q.start_frame().unwrap();
+            q.finish_frame();
+            let tick = q.start_tick();
+            assert!(frame < tick);
+            assert!(q.in_flight());
+            q.finish_tick(tick);
+            assert!(!q.in_flight());
         }
 
         #[test]
