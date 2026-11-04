@@ -1031,7 +1031,13 @@ impl LevelAccess for GameLevel<'_> {
     ) {
         if self.native_authoritative {
             #[cfg(feature = "java-mods")]
-            java_mods::note_block_changed(pos, old, new, flags);
+            java_mods::note_block_changed(
+                pos,
+                old,
+                new,
+                flags,
+                self.behaviours.table.block(old) != self.behaviours.table.block(new),
+            );
             let _ = flags;
             self.native_block_changed(self.dimension, pos, old, new);
         }
@@ -1052,6 +1058,20 @@ impl LevelAccess for GameLevel<'_> {
                 moved,
             );
             self.native_neighbor_changed(self.dimension, pos, state, changed, moved);
+        }
+    }
+    fn observe_shape_update(
+        &self,
+        pos: BlockPos,
+        state: BlockStateId,
+        direction: horizon_core::geometry::Direction,
+        _neighbour_pos: BlockPos,
+        neighbour: BlockStateId,
+    ) {
+        if self.native_authoritative {
+            #[cfg(feature = "java-mods")]
+            java_mods::note_shape_update(pos, state, direction, neighbour);
+            let _ = (pos, state, direction, neighbour);
         }
     }
     fn allow_spread(

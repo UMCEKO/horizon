@@ -8,6 +8,8 @@ import net.minecraft.util.RandomSource;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LevelReader;
+import net.minecraft.world.level.ScheduledTickAccess;
 import net.minecraft.world.level.block.BaseEntityBlock;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -65,6 +67,8 @@ public final class Battery extends BaseEntityBlock {
     static int unloads;
     static boolean removedByPiston;
     static Block neighbor;
+    static Direction shapeDirection;
+    static Block shapeNeighbor;
 
     @Override
     protected void onPlace(BlockState state, Level level, BlockPos pos, BlockState old, boolean moved) {
@@ -87,6 +91,13 @@ public final class Battery extends BaseEntityBlock {
     protected void neighborChanged(BlockState state, Level level, BlockPos pos, Block block, @Nullable Orientation orientation, boolean moved) {
         neighbor = block;
         if (level.getBlockState(pos.below()).is(Blocks.DIRT)) level.setBlock(pos.north(), Blocks.LAPIS_BLOCK.defaultBlockState(), 3);
+    }
+
+    @Override
+    protected BlockState updateShape(BlockState state, LevelReader level, ScheduledTickAccess ticks, BlockPos pos, Direction direction, BlockPos neighbourPos, BlockState neighbourState, RandomSource random) {
+        shapeDirection = direction;
+        shapeNeighbor = neighbourState.getBlock();
+        return state;
     }
 
     @Override

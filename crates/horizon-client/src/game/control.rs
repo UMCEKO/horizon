@@ -296,10 +296,10 @@ impl Game<'_> {
                 if self.screen == Screen::Java {
                     let action = arg(2)?;
                     if action != "up" {
-                        self.java_screen_key_code(key, true, false, None);
+                        self.java_screen_key_code(key, true, false, None, None);
                     }
                     if action != "down" && self.screen == Screen::Java {
-                        self.java_screen_key_code(key, false, false, None);
+                        self.java_screen_key_code(key, false, false, None, None);
                     }
                     return ok();
                 }

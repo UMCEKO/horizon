@@ -353,6 +353,16 @@ pub trait LevelAccess {
         _moved: bool,
     ) {
     }
+    /// Observe `BlockState.updateShape` before the block's class chain answers; the default does nothing.
+    fn observe_shape_update(
+        &self,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        _direction: Direction,
+        _neighbour_pos: BlockPos,
+        _neighbour: BlockStateId,
+    ) {
+    }
     /// `Level.isClientSide`: this level is a client's copy (false on a
     /// server, a host or the test harness).
     fn is_client_side(&self) -> bool {

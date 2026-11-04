@@ -804,6 +804,13 @@ public final class GameBridge {
                     case 1 -> {
                         if (BlockEntities.ours(now)) now.handleNeighborChanged(level, pos, stateOrThrow(c).getBlock(), null, b != 0);
                     }
+                    case 4 -> {
+                        var dir = net.minecraft.core.Direction.from3DDataValue(b);
+                        if (now.is(state.getBlock())) {
+                            var result = now.updateShape(level, level, pos, dir, pos.relative(dir), stateOrThrow(c), level.getRandom());
+                            if (result != now) Block.updateOrDestroy(now, result, level, pos, 3 & ~32);
+                        }
+                    }
                     case 2 -> {
                         if (now.is(state.getBlock())) now.tick(level, pos, level.getRandom());
                     }

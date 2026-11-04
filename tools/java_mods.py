@@ -339,6 +339,8 @@ def bridges(args):
         send('command setblock ' + f'{machine - 1} {y + 1} {z} minecraft:stone')
         # A native change to the chest the Java side holds, between the two clicks.
         send(f'command item replace block {machine} {y + 4} {z} container.0 with minecraft:cobblestone 20')
+        send(f'command setblock {machine} {y + 8} {z} minecraft:chest')
+        send(f'command setblock {machine} {y + 10} {z} minecraft:air')
         send(f'command tp @s {x} {y} {z}')
         send('give horizon_java_test:probe')
         send('wait 40')

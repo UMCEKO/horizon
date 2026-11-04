@@ -78,8 +78,8 @@ pub(in crate::game) mod live {
 
     /// The window's input as the callbacks of its library would hand it to a real client.
     enum Input<'a> {
-        /// `KeyboardHandler.keyPress`: the key's name, the action (release 0, press 1, repeat 2), the modifiers.
-        Key(&'a str, i32, i32),
+        /// `KeyboardHandler.keyPress`: the key's name, the action (release 0, press 1, repeat 2), the modifiers, SDL's keycode.
+        Key(&'a str, i32, i32, i32),
         /// A key the window's own screen took: only the keyboard's state hears of it.
         KeyState(&'a str, bool),
         Char(u32),
@@ -132,10 +132,11 @@ pub(in crate::game) mod live {
             };
             out.0.push(kind);
             match *self {
-                Input::Key(name, action, modifiers) => {
+                Input::Key(name, action, modifiers, keycode) => {
                     out.text(name);
                     out.int(action);
                     out.int(modifiers);
+                    out.int(keycode);
                 }
                 Input::KeyState(name, down) => {
                     out.text(name);
@@ -182,6 +183,12 @@ pub(in crate::game) mod live {
     const SOUND_PLAY: u8 = 0;
     const SOUND_UPDATE: u8 = 1;
     const SOUND_STOP: u8 = 2;
+
+    /// SDL's keycode of a key by its vanilla name, with the layout's character when winit gave one.
+    fn sdl_keycode_of(name: &str, layout: Option<char>) -> i32 {
+        let scancode = horizon_client::key_names::scancode_of(name).unwrap_or(0);
+        horizon_client::key_names::sdl_keycode(scancode, layout)
+    }
 
     /// SDL's numbering, left 1, middle 2, right 3.
     fn button_number(button: MouseButton) -> i32 {
@@ -1054,7 +1061,12 @@ pub(in crate::game) mod live {
                     (true, false) => 1,
                     (true, true) => 2,
                 };
-                Input::Key(name, action, self.java_modifiers())
+                Input::Key(
+                    name,
+                    action,
+                    self.java_modifiers(),
+                    sdl_keycode_of(name, None),
+                )
             } else {
                 Input::KeyState(name, pressed)
             };
@@ -1802,8 +1814,16 @@ pub(in crate::game) mod live {
                 (true, true) => 2,
             };
             let handles = pressed && self.native_inventory_key(code);
-            let owner =
-                self.java_shell_input(&[Input::Key(name, action, modifiers)], false, handles);
+            let owner = self.java_shell_input(
+                &[Input::Key(
+                    name,
+                    action,
+                    modifiers,
+                    sdl_keycode_of(name, horizon_client::keybinds::layout_char(event)),
+                )],
+                false,
+                handles,
+            );
             if !pressed || owner == ShellOwner::Native {
                 return true;
             }
@@ -1895,7 +1915,14 @@ pub(in crate::game) mod live {
         pub(in crate::game) fn java_screen_key(&mut self, event: &winit::event::KeyEvent) {
             let pressed = event.state == ElementState::Pressed;
             if let PhysicalKey::Code(code) = event.physical_key {
-                self.java_screen_key_code(code, pressed, event.repeat, event.text.as_deref());
+                let layout = horizon_client::keybinds::layout_char(event);
+                self.java_screen_key_code(
+                    code,
+                    pressed,
+                    event.repeat,
+                    event.text.as_deref(),
+                    layout,
+                );
             }
         }
 
@@ -1905,6 +1932,7 @@ pub(in crate::game) mod live {
             pressed: bool,
             repeat: bool,
             text: Option<&str>,
+            layout: Option<char>,
         ) {
             if pressed {
                 self.keys.insert(code);
@@ -1919,7 +1947,12 @@ pub(in crate::game) mod live {
                     (true, false) => 1,
                     (true, true) => 2,
                 };
-                inputs.push(Input::Key(name, action, modifiers));
+                inputs.push(Input::Key(
+                    name,
+                    action,
+                    modifiers,
+                    sdl_keycode_of(name, layout),
+                ));
             }
             if pressed && let Some(text) = text {
                 inputs.extend(
@@ -1934,6 +1967,25 @@ pub(in crate::game) mod live {
 
     #[cfg(test)]
     mod tests {
+        #[test]
+        fn a_key_input_lays_out_name_action_modifiers_keycode() {
+            let mut out = Out::default();
+            Input::Key(
+                "key.keyboard.e",
+                1,
+                64,
+                sdl_keycode_of("key.keyboard.e", None),
+            )
+            .write(&mut out);
+            let mut read = In(&out.0[1..]);
+            assert_eq!(out.0[0], 0);
+            assert_eq!(read.text(), Some("key.keyboard.e"));
+            assert_eq!(
+                (read.int(), read.int(), read.int()),
+                (Some(1), Some(64), Some(101))
+            );
+        }
+
         #[test]
         fn a_status_with_a_shell_reads_its_kind_and_segments_back() {
             let mut out = Out::default();
@@ -2320,6 +2372,7 @@ impl Game<'_> {
         _pressed: bool,
         _repeat: bool,
         _text: Option<&str>,
+        _layout: Option<char>,
     ) {
     }
     pub(super) fn java_window_input(&mut self, _event: &winit::event::WindowEvent) {}

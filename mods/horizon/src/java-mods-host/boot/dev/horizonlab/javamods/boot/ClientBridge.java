@@ -708,6 +708,11 @@ public final class ClientBridge {
     private static double cursorX, cursorY;
     private static BlockPos cameraBlock;
 
+    /** `SDLEventHandler`'s `KeyEvent`: the scancode, then the SDL keycode that `shortcutKey` reads. */
+    static KeyEvent keyEvent(String name, int modifiers, int keycode) {
+        return new KeyEvent(com.mojang.blaze3d.platform.InputConstants.getKey(name).getValue(), keycode, modifiers);
+    }
+
     /** The window's input in its order, each through the callback the window's library gives a real client: `KeyboardHandler.keyPress` and `charTyped`, `MouseHandler.onButton`, `onMove` and `onScroll`. */
     private static void events(DataInputStream in) throws Exception {
         Minecraft minecraft = Minecraft.getInstance();
@@ -715,11 +720,12 @@ public final class ClientBridge {
         for (int n = in.readInt(); n > 0; n--) {
             switch (in.readByte()) {
                 case KEY -> {
-                    var key = com.mojang.blaze3d.platform.InputConstants.getKey(text(in));
+                    String name = text(in);
                     int action = in.readInt();
                     int modifiers = in.readInt();
-                    held(key.getValue(), action != 0);
-                    minecraft.keyboardHandler.keyPress(window, action, new KeyEvent(key.getValue(), key.getValue(), modifiers));
+                    KeyEvent event = keyEvent(name, modifiers, in.readInt());
+                    held(event.key(), action != 0);
+                    minecraft.keyboardHandler.keyPress(window, action, event);
                 }
                 case KEY_STATE -> held(com.mojang.blaze3d.platform.InputConstants.getKey(text(in)).getValue(), in.readBoolean());
                 case CHAR -> minecraft.keyboardHandler.charTyped(window, new CharacterEvent(in.readInt()));

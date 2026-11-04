@@ -32,6 +32,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         neighbour_pos: BlockPos,
         neighbour: BlockStateId,
     ) -> BlockStateId {
+        self.level
+            .observe_shape_update(pos, state, direction, neighbour_pos, neighbour);
         self.update_shape_at(0, state, pos, direction, neighbour_pos, neighbour)
     }
 

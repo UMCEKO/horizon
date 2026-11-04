@@ -418,6 +418,14 @@ pub fn java_block(state: BlockStateId) -> bool {
         .is_some_and(|m| m.owned.get(state.0 as usize).copied().unwrap_or(false))
 }
 
+/// Whether this state has a block entity.
+#[inline]
+pub fn java_has_block_entity(state: BlockStateId) -> bool {
+    STATES
+        .get()
+        .is_some_and(|m| m.entity.get(state.0 as usize).copied().unwrap_or(false))
+}
+
 /// `BlockState`; None for a Java state with no Horizon block, as when a mod's blocks weren't carried over.
 pub struct State(pub Option<BlockStateId>);
 impl Arg for State {

@@ -23,6 +23,8 @@ final class ChecksBlockEntities {
     private static BlockPos area;
     private static ChestBlockEntity chest;
     private static BlockCapabilityCache<ResourceHandler<ItemResource>, Direction> cache;
+    private static BlockCapabilityCache<ResourceHandler<ItemResource>, Direction> placedCache;
+    private static BlockCapabilityCache<ResourceHandler<ItemResource>, Direction> brokenCache;
 
     private static int cobblestone(ResourceHandler<ItemResource> handler) {
         ItemResource cobblestone = ItemResource.of(Items.COBBLESTONE);
@@ -97,6 +99,10 @@ final class ChecksBlockEntities {
             move(cache.getCapability(), false, 4, true);
             return cobblestone(cache.getCapability()) == 6 && chest.getItem(0).getCount() == 6;
         });
+        level.setBlock(at.above(10), Blocks.CHEST.defaultBlockState(), 3);
+        placedCache = BlockCapabilityCache.create(Capabilities.Item.BLOCK, (ServerLevel) level, at.above(8), Direction.UP);
+        brokenCache = BlockCapabilityCache.create(Capabilities.Item.BLOCK, (ServerLevel) level, at.above(10), Direction.UP);
+        Checks.check("native_chest_caches_made", () -> placedCache.getCapability() == null && brokenCache.getCapability() != null);
         level.setBlock(at.below(), Blocks.DIRT.defaultBlockState(), 3);
         Checks.check("server_view", () -> level.getServer() != null && level.getServer().overworld() != null && level.getServer().getRecipeManager() != null);
         Checks.check("connection_view", () -> {
@@ -123,6 +129,8 @@ final class ChecksBlockEntities {
                 move(cache.getCapability(), true, 3, true);
                 return cobblestone(cache.getCapability()) == 18 && chest.getItem(0).getCount() == 18;
             });
+            Checks.check("cache_sees_chest_placed_natively", () -> placedCache.getCapability() != null);
+            Checks.check("cache_sees_chest_broken_natively", () -> brokenCache.getCapability() == null);
             return;
         }
         Checks.check("chest_persisted", () -> level.getBlockEntity(chestAt) instanceof ChestBlockEntity found && found.getItem(0).is(Items.COBBLESTONE) && found.getItem(0).getCount() == 18);

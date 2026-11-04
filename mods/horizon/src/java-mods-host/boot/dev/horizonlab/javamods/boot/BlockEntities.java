@@ -313,6 +313,7 @@ public final class BlockEntities {
             if (!now.shouldChangedStateKeepBlockEntity(old)) {
                 BlockEntity entity = held(level).get(pos.asLong());
                 if (entity != null && !entity.isRemoved() && sideEffects) entity.preRemoveSideEffects(pos, old);
+                if (!held(level).containsKey(pos.asLong())) level.invalidateCapabilities(pos);
                 remove(level, pos);
             } else {
                 // Horizon's chunk let its record go with the old block, which only vanilla's kept-entity blocks keep.
@@ -323,7 +324,11 @@ public final class BlockEntities {
         if ((blockChanged || newBlock instanceof BaseRailBlock) && ((flags & 1) != 0 || movedByPiston) && ours(old)) {
             old.affectNeighborsAfterRemoval(level, pos, movedByPiston);
         }
-        if (!level.getBlockState(pos).is(newBlock) || !ours(now)) return;
+        if (!level.getBlockState(pos).is(newBlock)) return;
+        if (!ours(now)) {
+            if (blockChanged && now.hasBlockEntity()) get(level, pos);
+            return;
+        }
         if ((flags & 512) == 0) now.onPlace(level, pos, old, movedByPiston);
         if (now.hasBlockEntity() && level.getBlockState(pos).is(newBlock)) {
             BlockEntity entity = check(level, pos);
