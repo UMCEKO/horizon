@@ -522,6 +522,24 @@ def unbridged_writers(analysis, extends=None):
     return [(key, sorted(mods)) for key, mods in sorted(missing.items())]
 
 
+def return_problem(ret, mine_ret, flat):
+    """Why a bridge's native return type can't stand for the method's, or None: equal descriptors need no converter, an object needs `Flat.to<Name>`."""
+    if ret[0] in 'L[' and ret == mine_ret:
+        return None
+    if ret[0] == 'L':
+        simple = ret[1:-1].replace('$', '/').split('/')[-1]
+        if (f'to{simple}', f'({mine_ret}){ret}') not in flat:
+            return f'Flat has no to{simple}({mine_ret}) -> {ret}'
+        return None
+    return f'returns {ret} against {mine_ret}' if ret != mine_ret else None
+
+
+def add_missing_classes(classes, infos):
+    """Adds the classes `classes` lacks; the ones it has stay as they are."""
+    for info in infos:
+        classes.setdefault(info[0], info)
+
+
 def check_bridges(args=None):
     """Every bridge against the real jars, without starting anything: its method exists, its arguments line up, Flat can carry them.
 
@@ -536,6 +554,10 @@ def check_bridges(args=None):
                     if name.endswith('.class'):
                         info = class_methods(z.read(name))
                         classes[info[0]] = info
+    # IntegratedServer and the other client classes: only what the server jars lack.
+    for jar in sorted((oracle.client()[0] / 'libraries' / 'net' / 'neoforged' / 'minecraft-client-patched').rglob('*.jar')):
+        with zipfile.ZipFile(jar) as z:
+            add_missing_classes(classes, (class_methods(z.read(name)) for name in z.namelist() if name.endswith('.class')))
     for path in (JARS / 'classes' / 'boot').rglob('*.class'):
         info = class_methods(path.read_bytes())
         classes[info[0]] = info
@@ -596,12 +618,8 @@ def check_bridges(args=None):
             mine_ret = raws.get(result)
             if mine_ret is None:
                 errors.append(f'{where}: no Ret for {result}')
-            elif ret[0] == 'L':
-                simple = ret[1:-1].replace('$', '/').split('/')[-1]
-                if (f'to{simple}', f'({mine_ret}){ret}') not in flat:
-                    errors.append(f'{where}: Flat has no to{simple}({mine_ret}) -> {ret}')
-            elif ret != mine_ret:
-                errors.append(f'{where}: returns {ret} against {mine_ret}')
+            elif problem := return_problem(ret, mine_ret, flat):
+                errors.append(f'{where}: {problem}')
     if analysis:
         errors += [f'no bridge for {key} ({", ".join(mods)})' for key, mods in unbridged_writers(analysis, extends)]
     for error in errors:

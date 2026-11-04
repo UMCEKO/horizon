@@ -6,7 +6,9 @@ import dev.horizonlab.javamods.boot.mixin.EntityDataAccess;
 import dev.horizonlab.javamods.boot.mixin.ItemAccess;
 import dev.horizonlab.javamods.boot.mixin.ItemDataAccess;
 import dev.horizonlab.javamods.boot.mixin.LivingAccess;
+import dev.horizonlab.javamods.boot.mixin.LightningBoltAccess;
 import dev.horizonlab.javamods.boot.mixin.LivingDataAccess;
+import dev.horizonlab.javamods.boot.mixin.PrimedTntAccess;
 import dev.horizonlab.javamods.boot.mixin.SheepDataAccess;
 import dev.horizonlab.javamods.boot.mixin.SynchedAccess;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
@@ -43,7 +45,9 @@ import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntitySpawnRequest;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.LightningBolt;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.item.PrimedTnt;
 import net.minecraft.world.entity.animal.sheep.Sheep;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
@@ -56,7 +60,7 @@ import net.minecraft.world.phys.Vec3;
 
 /** One live Java object per native entity from its join to its leave: refreshed raw where native says, and written through by bridges. */
 public final class EntityViews implements LevelEntityGetter<Entity> {
-    private static final int POSITION = 2, MOTION = 4, HEALTH = 8, EFFECTS = 16, EQUIPMENT = 32, FIRE = 64, AIR = 128, FLAGS = 256, NAME = 512, ITEM = 1024, RIDING = 2048, REMOVAL = 4096;
+    private static final int POSITION = 2, MOTION = 4, HEALTH = 8, EFFECTS = 16, EQUIPMENT = 32, FIRE = 64, AIR = 128, FLAGS = 256, NAME = 512, ITEM = 1024, RIDING = 2048, REMOVAL = 4096, SPECIES = 8192;
     private static final Map<ServerLevel, Int2ObjectOpenHashMap<Entity>> LIVE = new IdentityHashMap<>();
     private static Entity spawning;
     private static boolean unknownLogged;
@@ -77,8 +81,8 @@ public final class EntityViews implements LevelEntityGetter<Entity> {
         throw new IllegalStateException("not bridged");
     }
 
-    /** Bridged: a saved entity into the level; its id, 0 when refused. */
-    private static int spawn(byte[] saved) {
+    /** Bridged: a saved entity into the level, with the species group its saved form lacks; its id, 0 when refused. */
+    private static int spawn(byte[] saved, byte[] species) {
         throw new IllegalStateException("not bridged");
     }
 
@@ -145,16 +149,24 @@ public final class EntityViews implements LevelEntityGetter<Entity> {
     /** `Entity.save` of a view the spawning mod built, for native to take as a new entity. */
     static boolean spawn(Entity entity) {
         var output = TagValueOutput.createWithContext(ProblemReporter.DISCARDING, entity.level().registryAccess());
-        if (!entity.save(output)) return false;
+        // `Entity.save` refuses types that don't serialize (a lightning bolt); a spawn carries them anyway.
+        output.putString("id", EntityType.getKey(entity.getType()).toString());
+        entity.saveWithoutId(output);
         var bytes = new ByteArrayOutputStream();
         try {
             NbtIo.write(output.buildResult(), new DataOutputStream(bytes));
         } catch (IOException e) {
             throw new java.io.UncheckedIOException(e);
         }
+        var species = new ByteArrayOutputStream();
+        try {
+            write(entity, SPECIES, new DataOutputStream(species));
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
         spawning = entity;
         try {
-            return spawn(bytes.toByteArray()) != 0;
+            return spawn(bytes.toByteArray(), species.toByteArray()) != 0;
         } finally {
             spawning = null;
         }
@@ -302,6 +314,41 @@ public final class EntityViews implements LevelEntityGetter<Entity> {
         if ((mask & REMOVAL) != 0) {
             int reason = in.readByte();
             access.horizon$removal(reason == 0 ? null : Entity.RemovalReason.values()[reason - 1]);
+        }
+        if ((mask & SPECIES) != 0) {
+            if (entity instanceof PrimedTnt tnt) {
+                int fuse = in.readInt(), state = in.readInt();
+                float power = in.readFloat();
+                UUID owner = in.readBoolean() ? new UUID(in.readLong(), in.readLong()) : null;
+                data(entity, PrimedTntAccess.horizon$fuse(), fuse);
+                data(entity, PrimedTntAccess.horizon$state(), Flat.toBlockState(state));
+                var tnts = (PrimedTntAccess) tnt;
+                tnts.horizon$power(power);
+                tnts.horizon$owner(owner == null ? null : EntityReference.<LivingEntity>of(owner));
+            } else if (entity instanceof LightningBolt bolt) {
+                float damage = in.readFloat();
+                boolean visualOnly = in.readBoolean();
+                int life = in.readInt(), flashes = in.readInt();
+                long seed = in.readLong();
+                var bolts = (LightningBoltAccess) bolt;
+                bolts.horizon$damage(damage);
+                bolts.horizon$visualOnly(visualOnly);
+                bolts.horizon$life(life);
+                bolts.horizon$flashes(flashes);
+                bolt.seed = seed;
+            }
+        }
+    }
+
+    /** The mirror of `apply` for the species group, as a spawned object carries what its saved form lacks. */
+    static void write(Entity entity, int mask, DataOutputStream out) throws IOException {
+        if ((mask & SPECIES) != 0 && entity instanceof LightningBolt bolt) {
+            var bolts = (LightningBoltAccess) bolt;
+            out.writeFloat(bolts.horizon$damage());
+            out.writeBoolean(bolts.horizon$visualOnly());
+            out.writeInt(bolts.horizon$life());
+            out.writeInt(bolts.horizon$flashes());
+            out.writeLong(bolt.seed);
         }
     }
 

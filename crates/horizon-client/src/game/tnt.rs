@@ -2,6 +2,7 @@
 //! power 4, `TntRenderer` swell and white flash, and `TntBlock.useItemOn`
 //! (flint and steel / fire charge).
 use super::Game;
+use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use horizon_client::{Result, collisions::SceneCollisions, items::ItemStack, mesher::Vertex};
 use horizon_core::{
     geometry::{Aabb, Vec3},
@@ -9,6 +10,7 @@ use horizon_core::{
     random::RandomSource,
 };
 use horizon_world::level::flags as level_flags;
+use horizon_world::registry::BlockStateId;
 
 #[derive(Clone, Debug)]
 pub(super) struct PrimedTnt {
@@ -19,9 +21,38 @@ pub(super) struct PrimedTnt {
     pub velocity: Vec3,
     pub fuse: i32,
     pub on_ground: bool,
+    /// `PrimedTnt.DATA_BLOCK_STATE_ID`.
+    pub block_state: BlockStateId,
+    /// `PrimedTnt.explosionPower`: 4 unless a save or a mod says otherwise.
+    pub explosion_power: f32,
+    /// `PrimedTnt.owner`, a UUID.
+    pub owner: Option<[i32; 4]>,
+    /// `Entity.isUsedPortal`, not saved.
+    #[allow(dead_code)] // Read once a mod type travels through portals.
+    pub used_portal: bool,
 }
 impl PrimedTnt {
     const SIZE: f64 = 0.98;
+    pub(super) fn new(
+        id: u32,
+        position: Vec3,
+        velocity: Vec3,
+        fuse: i32,
+        block_state: BlockStateId,
+    ) -> Self {
+        Self {
+            id,
+            position,
+            previous: position,
+            velocity,
+            fuse,
+            on_ground: false,
+            block_state,
+            explosion_power: 4.0,
+            owner: None,
+            used_portal: false,
+        }
+    }
     pub(super) fn bounds(&self) -> Aabb {
         let h = Self::SIZE / 2.0;
         Aabb::new(
@@ -135,33 +166,44 @@ impl Game<'_> {
         self.add_primed_tnt(pos, rot, fuse);
     }
     /// Adds primed TNT at the block's bottom centre, pushed along `rot`.
-    pub(super) fn add_primed_tnt(&mut self, pos: BlockPos, rot: f64, fuse: i32) {
+    pub(super) fn add_primed_tnt(&mut self, pos: BlockPos, rot: f64, fuse: i32) -> Option<u32> {
         let position = Vec3::new(
             f64::from(pos.x) + 0.5,
             f64::from(pos.y),
             f64::from(pos.z) + 0.5,
         );
-        self.tnts.push(PrimedTnt {
-            id: 0,
+        self.next_entity += 1;
+        let tnt = PrimedTnt::new(
+            self.next_entity,
             position,
-            previous: position,
-            velocity: Vec3::new(-rot.sin() * 0.02, f64::from(0.2f32), -rot.cos() * 0.02),
+            Vec3::new(-rot.sin() * 0.02, f64::from(0.2f32), -rot.cos() * 0.02),
             fuse,
-            on_ground: false,
-        });
+            self.tnt_default_state(),
+        );
+        self.level_add(NewEntity::Tnt(tnt), Origin::Fresh, None)
+    }
+    /// `minecraft:tnt`'s default state, the one a fresh primed TNT shows.
+    pub(super) fn tnt_default_state(&self) -> BlockStateId {
+        self.pack
+            .assets
+            .registry
+            .default_state("minecraft:tnt")
+            .unwrap_or(BlockStateId(0))
     }
     /// `PrimedTnt.tick` for every primed TNT, in order; an expired fuse
     /// explodes immediately (later TNT in the list feel its knockback this
     /// tick). TNT primed by an explosion starts ticking next tick.
     pub(super) fn tick_tnt(&mut self) -> Result<()> {
-        let mut count = self.tnts.len();
-        let mut i = 0;
+        // `EntityTickList`: what joins during the pass doesn't tick, what left is skipped.
+        let ids: Vec<u32> = self.tnts.iter().map(|t| t.id).collect();
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
-        while i < count {
+        for id in ids {
+            let Some(i) = self.tnts.iter().position(|t| t.id == id) else {
+                continue;
+            };
             let t = &mut self.tnts[i];
             if !ticking(t.position.x.floor() as i32, t.position.z.floor() as i32) {
-                i += 1;
                 continue;
             }
             t.tick(
@@ -176,15 +218,14 @@ impl Game<'_> {
                     t.position.y + PrimedTnt::SIZE * 0.0625,
                     t.position.z,
                 ];
-                self.tnts.remove(i);
-                count -= 1;
+                let power = t.explosion_power;
+                // PrimedTnt.tick: `discard()`, then `explode()`.
+                self.level_remove(Kind::Tnt, id, Removal::Discarded);
                 // ExplosionInteraction.TNT: the tnt_explosion_drop_decay rule.
                 let interaction = self.destroy_type("tnt_explosion_drop_decay");
                 self.with_hive_emptying_blast(|g| {
-                    g.server_explode(center, 4.0, interaction, false)
+                    g.server_explode(center, power, interaction, false)
                 })?;
-            } else {
-                i += 1;
             }
         }
         Ok(())
@@ -223,42 +264,47 @@ impl Game<'_> {
         if self.tnts.is_empty() {
             return;
         }
-        let Some(state) = self.pack.assets.registry.default_state("minecraft:tnt") else {
-            return;
-        };
         // Face sprites from the block model: up, down, north, south, west, east.
-        let Ok(models) = self
-            .pack
-            .render
-            .model_catalog
-            .collect(state, BlockPos::new(0, 0, 0))
-        else {
-            return;
-        };
-        let mut sprites = [None; 6];
-        for face in models.iter().flat_map(|(_, m)| m.faces.iter()) {
-            use horizon_assets::model::Direction as D;
-            let index = match face.quad.facing {
-                D::Up => 0,
-                D::Down => 1,
-                D::North => 2,
-                D::South => 3,
-                D::West => 4,
-                D::East => 5,
-            };
-            if sprites[index].is_none() {
-                sprites[index] = self
-                    .pack
-                    .layer_names
-                    .get(&face.layer)
-                    .and_then(|name| self.gui.atlas.sprites.get(name).copied());
+        let sprites_of = |state: BlockStateId| {
+            let models = self
+                .pack
+                .render
+                .model_catalog
+                .collect(state, BlockPos::new(0, 0, 0))
+                .ok()?;
+            let mut sprites = [None; 6];
+            for face in models.iter().flat_map(|(_, m)| m.faces.iter()) {
+                use horizon_assets::model::Direction as D;
+                let index = match face.quad.facing {
+                    D::Up => 0,
+                    D::Down => 1,
+                    D::North => 2,
+                    D::South => 3,
+                    D::West => 4,
+                    D::East => 5,
+                };
+                if sprites[index].is_none() {
+                    sprites[index] = self
+                        .pack
+                        .layer_names
+                        .get(&face.layer)
+                        .and_then(|name| self.gui.atlas.sprites.get(name).copied());
+                }
             }
-        }
+            Some(sprites)
+        };
+        let mut cache: std::collections::HashMap<BlockStateId, Option<[_; 6]>> = Default::default();
         let range = super::entity_culling::default_range(
             glam::DVec3::splat(PrimedTnt::SIZE),
             self.view_scale(),
         );
         for t in &self.tnts {
+            let Some(sprites) = *cache
+                .entry(t.block_state)
+                .or_insert_with(|| sprites_of(t.block_state))
+            else {
+                continue;
+            };
             // EntityRenderer.shouldRender.
             if !self.standing_entity_in_view(
                 camera,
@@ -516,14 +562,7 @@ mod tests {
         world.set(20, 4, 20, water).unwrap();
         world.set(21, 4, 20, flowing).unwrap();
         let at = Vec3::new(20.5, 4.0, 20.5);
-        let mut tnt = PrimedTnt {
-            id: 0,
-            position: at,
-            previous: at,
-            velocity: Vec3::ZERO,
-            fuse: 80,
-            on_ground: false,
-        };
+        let mut tnt = PrimedTnt::new(0, at, Vec3::ZERO, 80, BlockStateId(0));
         tnt.tick(&world, &collision, &assets, &facts).unwrap();
         assert_eq!(
             tnt.position.x, at.x,

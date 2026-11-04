@@ -62,6 +62,10 @@ pub(super) enum Target {
     Crystal(u32),
     /// The Ender Dragon, by its entity id (`minecraft:ender_dragon`).
     Dragon(u32),
+    /// Primed TNT, by its entity id.
+    Tnt(u32),
+    /// A lightning bolt, by its entity id.
+    Bolt(u32),
 }
 /// An entity of a type Horizon does not simulate: its compound lives in the
 /// entity memory (`persist.raw`), its position and rotation here.
@@ -129,7 +133,9 @@ fn non_player_entity_id(t: Target) -> Option<i32> {
     | Target::Cart(id)
     | Target::Other(id)
     | Target::Crystal(id)
-    | Target::Dragon(id)) = t
+    | Target::Dragon(id)
+    | Target::Tnt(id)
+    | Target::Bolt(id)) = t
     else {
         return None;
     };
@@ -468,6 +474,12 @@ impl Game<'_> {
                 .iter()
                 .find(|c| c.id == id)
                 .map(|c| [c.position.x, c.position.y, c.position.z]),
+            Target::Tnt(id) => self
+                .tnts
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| [t.position.x, t.position.y, t.position.z]),
+            Target::Bolt(id) => self.bolts.iter().find(|b| b.id == id).map(|b| b.at),
             Target::Dragon(id) => self
                 .dragon
                 .as_ref()
@@ -518,6 +530,8 @@ impl Game<'_> {
                 .find(|o| o.id == id)
                 .map_or_else(String::new, |o| o.kind.clone()),
             Target::Crystal(_) => "minecraft:end_crystal".into(),
+            Target::Tnt(_) => "minecraft:tnt".into(),
+            Target::Bolt(_) => "minecraft:lightning_bolt".into(),
             Target::Dragon(_) => "minecraft:ender_dragon".into(),
         }
     }
@@ -792,6 +806,8 @@ impl Game<'_> {
         // The End crystals and the dragon (EndCrystal and EnderDragon
         // are entities of their own).
         candidates.extend(self.crystals.iter().map(|c| Target::Crystal(c.id)));
+        candidates.extend(self.tnts.iter().map(|t| Target::Tnt(t.id)));
+        candidates.extend(self.bolts.iter().map(|b| Target::Bolt(b.id)));
         if let Some(d) = &self.dragon {
             candidates.push(Target::Dragon(d.id));
         }
@@ -826,6 +842,8 @@ impl Game<'_> {
             Target::Other(id),
             Target::Crystal(id),
             Target::Dragon(id),
+            Target::Tnt(id),
+            Target::Bolt(id),
         ]
         .into_iter()
         .find(|t| self.level_holds(*t))
@@ -847,6 +865,8 @@ impl Game<'_> {
             Target::Other(id) => self.others.iter().any(|o| o.id == id),
             Target::Crystal(id) => self.crystals.iter().any(|c| c.id == id),
             Target::Dragon(id) => self.dragon.as_ref().is_some_and(|d| d.id == id),
+            Target::Tnt(id) => self.tnts.iter().any(|t| t.id == id),
+            Target::Bolt(id) => self.bolts.iter().any(|b| b.id == id),
         }
     }
     /// Run `f` with the level that holds the entity a target names in place
@@ -1463,6 +1483,17 @@ impl Game<'_> {
                     c.position = v;
                 }
             }
+            Target::Tnt(id) => {
+                if let Some(t) = self.tnts.iter_mut().find(|t| t.id == id) {
+                    t.position = v;
+                    t.previous = v;
+                }
+            }
+            Target::Bolt(id) => {
+                if let Some(b) = self.bolts.iter_mut().find(|b| b.id == id) {
+                    b.at = [v.x, v.y, v.z];
+                }
+            }
             Target::Dragon(id) => {
                 if let Some(d) = self.dragon.as_mut().filter(|d| d.id == id) {
                     d.position = v;
@@ -1964,6 +1995,12 @@ impl Game<'_> {
                 self.level_remove(Kind::Other, id, Removal::Killed);
             }
             Target::Crystal(id) => self.kill_crystal(id),
+            Target::Tnt(id) => {
+                self.level_remove(Kind::Tnt, id, Removal::Killed);
+            }
+            Target::Bolt(id) => {
+                self.level_remove(Kind::Bolt, id, Removal::Killed);
+            }
             Target::Dragon(id) => self.kill_dragon(id),
         }
         // The orbs marked for removal are gone (Entity.kill removes them).

@@ -1373,6 +1373,67 @@ mod tests {
     }
 
     #[test]
+    fn a_tnt_joins_and_leaves_with_its_reason() {
+        let Some(mut game) = flat_game() else { return };
+        let log = watch(&mut game);
+        let id = game
+            .add_primed_tnt(horizon_core::position::BlockPos::new(2, 61, 2), 0.0, 1)
+            .unwrap();
+        assert!(game.tnts.iter().any(|t| t.id == id));
+        assert!(log.borrow().iter().any(
+            |(e, present, _)| matches!(e, LifeEvent::Join(Kind::Tnt, i, _) if *i == id) && !present
+        ));
+        game.tick_tnt().unwrap();
+        assert!(game.tnts.is_empty());
+        assert_eq!(leaves(&log), vec![(Kind::Tnt, Removal::Discarded)]);
+    }
+
+    #[test]
+    fn primed_tnt_is_saved_and_loaded_with_its_fuse() {
+        let Some(mut game) = flat_game() else { return };
+        let id = game
+            .add_primed_tnt(horizon_core::position::BlockPos::new(2, 61, 2), 0.0, 77)
+            .unwrap();
+        let keys: std::collections::HashSet<(i32, i32)> = [(0, 0)].into_iter().collect();
+        let saved = game.entity_chunks(&keys, true);
+        let tag = saved
+            .iter()
+            .flat_map(|(_, tags)| tags)
+            .find(|t| matches!(t.get("id"), Some(horizon_world::nbt::Tag::String(s)) if s.to_string_lossy() == "minecraft:tnt"))
+            .expect("the tnt was saved");
+        assert_eq!(
+            horizon_client::save::number(tag.get("fuse")),
+            Some(77),
+            "{id}"
+        );
+        game.level_remove_all(Kind::Tnt, Removal::UnloadedToChunk);
+        game.world.loaded_entities.push(((0, 0), vec![tag.clone()]));
+        game.spawn_loaded_entities(Origin::FromDisk);
+        assert_eq!(game.tnts.len(), 1);
+        assert_eq!(game.tnts[0].fuse, 77);
+    }
+
+    #[test]
+    fn a_bolt_leaves_when_its_flashes_end() {
+        let Some(mut game) = flat_game() else { return };
+        let log = watch(&mut game);
+        let id = game.spawn_bolt([2.5, 61.0, 2.5], true).unwrap();
+        for _ in 0..200 {
+            game.tick_bolts();
+            if game.bolts.is_empty() {
+                break;
+            }
+        }
+        assert!(game.bolts.is_empty());
+        assert_eq!(leaves(&log), vec![(Kind::Bolt, Removal::Discarded)]);
+        assert!(
+            log.borrow()
+                .iter()
+                .any(|(e, _, _)| matches!(e, LifeEvent::Join(Kind::Bolt, i, _) if *i == id))
+        );
+    }
+
+    #[test]
     fn a_refused_join_never_reaches_the_level() {
         let Some(mut game) = flat_game() else { return };
         let refuse = Rc::new(Cell::new(true));
@@ -1458,6 +1519,7 @@ mod tests {
             bob_offset: 0.0,
             ticks: 0,
             removed: false,
+            invulnerable: false,
         });
         id
     }

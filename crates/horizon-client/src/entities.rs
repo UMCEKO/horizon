@@ -77,6 +77,8 @@ pub struct ItemEntity {
     pub ticks: u32,
     /// Removed during a crossing of a loop that lent its vector: skipped, then dropped.
     pub removed: bool,
+    /// `Entity.invulnerable`, saved as `Invulnerable`.
+    pub invulnerable: bool,
 }
 /// Environment results needed by the entity owner, including lethal lava damage.
 #[derive(Debug)]
@@ -1136,6 +1138,7 @@ mod fire_environment_tests {
             .unwrap();
         let make = |id: &str| ItemEntity {
             removed: false,
+            invulnerable: false,
             id: 1,
             thrower: None,
             target: None,
@@ -1234,6 +1237,7 @@ mod merge_tests {
         let at = Vec3::new(x, 64.0, 0.5);
         ItemEntity {
             removed: false,
+            invulnerable: false,
             id: 0,
             thrower: None,
             target: None,
@@ -1413,6 +1417,7 @@ mod honey_slide_tests {
         let at = Vec3::new(x, y, z);
         ItemEntity {
             removed: false,
+            invulnerable: false,
             id: 1,
             thrower: None,
             target: None,
@@ -1541,6 +1546,7 @@ mod slime_bounce_tests {
         let at = Vec3::new(0.5, 2.0, 0.5);
         ItemEntity {
             removed: false,
+            invulnerable: false,
             id: 1,
             thrower: None,
             target: None,

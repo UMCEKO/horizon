@@ -422,6 +422,6 @@ impl Game<'_> {
         self.level_remove(Kind::Cushion, id, Removal::Discarded);
         self.level_remove(Kind::Frame, id, Removal::Discarded);
         self.level_remove(Kind::Painting, id, Removal::Discarded);
-        self.bolts.retain(|b| b.id != id);
+        self.level_remove(Kind::Bolt, id, Removal::Discarded);
     }
 }

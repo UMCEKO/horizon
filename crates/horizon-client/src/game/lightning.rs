@@ -4,22 +4,26 @@
 //! `thunderHit` (damage and burning, charged creepers, zombified piglins,
 //! witches, mooshroom colours, turtles, burnt items), lightning rods, the sky
 //! flash, the sounds and the branching additive bolt.
-use super::entity_life::{Kind, Removal};
+use super::crossing::Lent;
+use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use super::{Game, commands::Target};
 use horizon_client::advancements::EntityView;
 use horizon_client::mobs::{Damage, DamageKind, MobEvent, SpawnSetup, Species};
 use horizon_core::{position::BlockPos, random::RandomSource};
 
 pub(super) struct Bolt {
-    /// The entity id a server's players know it by (0 until it has one).
+    /// The entity id a server's players know it by.
     pub id: u32,
     pub at: [f64; 3],
-    life: i32,
-    flashes: i32,
-    seed: i64,
-    visual_only: bool,
-    /// Mooshrooms and copper golems change once per bolt.
-    converted: Vec<u32>,
+    pub life: i32,
+    pub flashes: i32,
+    pub seed: i64,
+    pub visual_only: bool,
+    /// `LightningBolt.damage`, NeoForge's: what `thunderHit` hurts with.
+    pub damage: f32,
+    pub uuid: [i32; 4],
+    /// Removed during a crossing of a loop that lent its vector.
+    pub removed: bool,
     /// The mobs it has struck (`hitEntities`).
     hit: Vec<u32>,
     /// The dropped items in the strike box (`hitEntities` holds every entity).
@@ -32,6 +36,40 @@ pub(super) struct Bolt {
     /// The player who channelled it (`LightningBolt.cause`): `Some(None)` for
     /// the host, `Some(Some(conn))` for a guest.
     pub cause: Option<Option<u32>>,
+}
+impl Bolt {
+    pub(super) fn new(
+        id: u32,
+        at: [f64; 3],
+        flashes: i32,
+        seed: i64,
+        visual_only: bool,
+        uuid: [i32; 4],
+    ) -> Self {
+        Self {
+            id,
+            at,
+            life: 2,
+            flashes,
+            seed,
+            visual_only,
+            damage: 5.0,
+            uuid,
+            removed: false,
+            hit: Vec::new(),
+            hit_items: Vec::new(),
+            spared: Vec::new(),
+            fires: 0,
+            cause: None,
+        }
+    }
+}
+/// What one `thunderHit` carries: the bolt's damage and identity, and where it struck.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct BoltHit {
+    pub damage: f32,
+    pub uuid: [i32; 4],
+    pub at: [f64; 3],
 }
 /// The box `LightningBolt.tick` collects the `LightningStrikeTrigger` bystanders from: 15 blocks
 /// around the bolt, 15 down and `6 + 15` up.
@@ -215,8 +253,17 @@ impl Game<'_> {
         }
         Some([x, top.y, z])
     }
-    pub(super) fn spawn_bolt(&mut self, at: [f64; 3], visual_only: bool) {
-        if !visual_only {
+    pub(super) fn spawn_bolt(&mut self, at: [f64; 3], visual_only: bool) -> Option<u32> {
+        self.spawn_bolt_at(at, visual_only, !visual_only)
+    }
+    /// `new LightningBolt` added to the level; `strike_event` posts the `lightning_strike` game event.
+    pub(super) fn spawn_bolt_at(
+        &mut self,
+        at: [f64; 3],
+        visual_only: bool,
+        strike_event: bool,
+    ) -> Option<u32> {
+        if strike_event {
             let ctx = horizon_client::sculk::Context::default();
             self.post_game_event("minecraft:lightning_strike", at, ctx);
         }
@@ -224,43 +271,23 @@ impl Game<'_> {
         let seed = r.next_long();
         let flashes = r.next_int_bound(3).unwrap_or(0) + 1;
         self.lightning_seen[0] += 1;
-        self.bolts.push(Bolt {
-            id: 0,
-            at,
-            life: 2,
-            flashes,
-            seed,
-            visual_only,
-            converted: Vec::new(),
-            hit: Vec::new(),
-            hit_items: Vec::new(),
-            spared: Vec::new(),
-            fires: 0,
-            cause: None,
-        });
+        self.next_entity += 1;
+        let id = self.next_entity;
+        let uuid = self.uuid_for(id);
+        let bolt = Bolt::new(id, at, flashes, seed, visual_only, uuid);
+        self.level_add(NewEntity::Bolt(bolt), Origin::Fresh, None)
     }
     /// `ClientLevel.addEntity` for a server's lightning bolt: on a client it
     /// only flashes, sounds and draws (`LightningBolt.tick` off the server).
     pub(super) fn spawn_remote_bolt(&mut self, id: u32, at: [f64; 3]) {
-        self.bolts.retain(|b| b.id != id);
+        self.level_remove(Kind::Bolt, id, Removal::Discarded);
         let r = &mut self.world.random;
         let seed = r.next_long();
         let flashes = r.next_int_bound(3).unwrap_or(0) + 1;
         self.lightning_seen[0] += 1;
-        self.bolts.push(Bolt {
-            id,
-            at,
-            life: 2,
-            flashes,
-            seed,
-            visual_only: true,
-            converted: Vec::new(),
-            hit: Vec::new(),
-            hit_items: Vec::new(),
-            spared: Vec::new(),
-            fires: 0,
-            cause: None,
-        });
+        let uuid = self.uuid_for(id);
+        let bolt = Bolt::new(id, at, flashes, seed, true, uuid);
+        self.level_add(NewEntity::Bolt(bolt), Origin::Fresh, None);
     }
     /// `spawnFire`: fire at the strike point and `extra` random neighbours,
     /// wherever `BaseFireBlock.getState` fire can survive. Returns how many
@@ -296,72 +323,93 @@ impl Game<'_> {
         }
         set
     }
-    /// `LightningBolt.tick` for every bolt.
+    /// `LightningBolt.tick` for every bolt, in order; what joins meanwhile ticks next time.
     pub(super) fn tick_bolts(&mut self) {
         let mut bolts = std::mem::take(&mut self.bolts);
-        bolts.retain_mut(|b| {
-            if b.life == 2 {
-                let pitch = 0.8 + self.world.random.next_float() * 0.2;
-                self.audio.play(
-                    "minecraft:entity.lightning_bolt.thunder",
-                    Some(b.at),
-                    10000.0,
-                    pitch,
+        for i in 0..bolts.len() {
+            if bolts[i].removed {
+                continue;
+            }
+            // Out of the vector while it ticks, so a crossing sees the others lent.
+            let mut b = bolts.remove(i);
+            let keep = self.tick_bolt(&mut b, &mut bolts);
+            b.removed = !keep;
+            let id = b.id;
+            bolts.insert(i, b);
+            if !keep {
+                self.left_in_loop(
+                    &mut [Lent::Bolts(&mut bolts)],
+                    Kind::Bolt,
+                    id,
+                    Removal::Discarded,
                 );
-                let pitch = 0.5 + self.world.random.next_float() * 0.2;
-                self.audio.play(
-                    "minecraft:entity.lightning_bolt.impact",
-                    Some(b.at),
-                    2.0,
-                    pitch,
-                );
-                if !b.visual_only {
-                    // Only Normal and Hard start fires with the strike itself.
-                    if self.ui.difficulty >= 2 {
-                        b.fires += self.bolt_fire(b.at, 4);
-                    }
-                    self.strike_rod(b.at);
-                }
-                // LightningBolt.tick runs clearCopperOnLightningStrike for
-                // every server bolt, a skeleton trap's visual one included;
-                // a client's copy of a server bolt (spawn_remote_bolt) only
-                // flashes.
-                if self.remote.is_none() {
-                    self.bolt_clear_copper(b.at);
-                }
             }
-            b.life -= 1;
-            if b.life < 0 {
-                if b.flashes == 0 {
-                    self.lightning_strike_triggers(b);
-                    return false;
-                }
-                if b.life < -self.world.random.next_int_bound(10).unwrap_or(0) {
-                    b.flashes -= 1;
-                    b.life = 1;
-                    b.seed = self.world.random.next_long();
-                    if !b.visual_only {
-                        b.fires += self.bolt_fire(b.at, 0);
-                    }
-                }
-            }
-            if b.life >= 0 {
-                if self.flash == 0 {
-                    self.lightning_seen[1] += 1;
-                }
-                self.flash = 2;
-                if !b.visual_only {
-                    let struck = self.thunder_hit(b);
-                    if let Some(cause) = b.cause {
-                        let who = cause.map_or(Target::Player, Target::Guest);
-                        self.for_player(who, |g| g.trigger_channeled_lightning(&struck));
-                    }
-                }
-            }
-            true
-        });
+        }
+        bolts.retain(|b| !b.removed);
         bolts.append(&mut self.bolts);
         self.bolts = bolts;
+    }
+    /// One bolt's tick; false when its flashes are spent (vanilla `discard()`).
+    fn tick_bolt(&mut self, b: &mut Bolt, bolts: &mut Vec<Bolt>) -> bool {
+        if b.life == 2 {
+            let pitch = 0.8 + self.world.random.next_float() * 0.2;
+            self.audio.play(
+                "minecraft:entity.lightning_bolt.thunder",
+                Some(b.at),
+                10000.0,
+                pitch,
+            );
+            let pitch = 0.5 + self.world.random.next_float() * 0.2;
+            self.audio.play(
+                "minecraft:entity.lightning_bolt.impact",
+                Some(b.at),
+                2.0,
+                pitch,
+            );
+            if !b.visual_only {
+                // Only Normal and Hard start fires with the strike itself.
+                if self.ui.difficulty >= 2 {
+                    b.fires += self.bolt_fire(b.at, 4);
+                }
+                self.strike_rod(b.at);
+            }
+            // LightningBolt.tick runs clearCopperOnLightningStrike for
+            // every server bolt, a skeleton trap's visual one included;
+            // a client's copy of a server bolt (spawn_remote_bolt) only
+            // flashes.
+            if self.remote.is_none() {
+                self.bolt_clear_copper(b.at);
+            }
+        }
+        b.life -= 1;
+        if b.life < 0 {
+            if b.flashes == 0 {
+                self.lightning_strike_triggers(b);
+                return false;
+            }
+            if b.life < -self.world.random.next_int_bound(10).unwrap_or(0) {
+                b.flashes -= 1;
+                b.life = 1;
+                b.seed = self.world.random.next_long();
+                if !b.visual_only {
+                    b.fires += self.bolt_fire(b.at, 0);
+                }
+            }
+        }
+        if b.life >= 0 {
+            if self.flash == 0 {
+                self.lightning_seen[1] += 1;
+            }
+            self.flash = 2;
+            if !b.visual_only {
+                let struck = self.lend(&mut [Lent::Bolts(bolts)], |g| g.thunder_hit(b));
+                if let Some(cause) = b.cause {
+                    let who = cause.map_or(Target::Player, Target::Guest);
+                    self.for_player(who, |g| g.trigger_channeled_lightning(&struck));
+                }
+            }
+        }
+        true
     }
     /// `LightningRodBlock.onLightningStrike`: powered for 8 ticks.
     fn strike_rod(&mut self, at: [f64; 3]) {
@@ -463,6 +511,11 @@ impl Game<'_> {
                 && p[1] >= at[1] - 3.0
                 && p[1] <= at[1] + 9.0
         };
+        let hit = BoltHit {
+            damage: b.damage,
+            uuid: b.uuid,
+            at,
+        };
         let struck: Vec<(u32, EntityView)> = self
             .mobs
             .iter()
@@ -470,76 +523,9 @@ impl Game<'_> {
             .map(|m| (m.id, self.mob_entity(m)))
             .collect();
         b.hit.extend(struck.iter().map(|(id, _)| *id));
-        let damage = Damage {
-            kind: DamageKind::Generic,
-            attacker: None,
-            from: Some(b.at),
-        };
         let mut events = Vec::new();
-        let peaceful = self.ui.difficulty == 0;
-        for m in self.mobs.iter_mut().filter(|m| m.alive()) {
-            if !inside([m.position.x, m.position.y, m.position.z]) {
-                continue;
-            }
-            let setup = |m: &horizon_client::mobs::Mob| SpawnSetup {
-                yaw: m.yaw,
-                persistent: true,
-                ..Default::default()
-            };
-            let at = [m.position.x, m.position.y, m.position.z];
-            match m.species() {
-                Species::Pig if !peaceful => {
-                    m.removed = true;
-                    events.push(MobEvent::SpawnKind {
-                        kind: "minecraft:zombified_piglin".into(),
-                        at,
-                        setup: setup(m),
-                    });
-                    continue;
-                }
-                Species::Villager if !peaceful => {
-                    m.removed = true;
-                    events.push(MobEvent::SpawnKind {
-                        kind: "minecraft:witch".into(),
-                        at,
-                        setup: setup(m),
-                    });
-                    continue;
-                }
-                Species::Mooshroom => {
-                    if !b.converted.contains(&m.id) {
-                        b.converted.push(m.id);
-                        m.extra.variant = 1 - m.extra.variant.min(1);
-                        self.audio
-                            .play("minecraft:entity.mooshroom.convert", Some(at), 2.0, 1.0);
-                    }
-                    continue;
-                }
-                Species::Turtle => {
-                    m.damage(f32::MAX, damage);
-                    continue;
-                }
-                Species::Creeper => m.extra.charged = true,
-                // CopperGolem.thunderHit (after Entity.thunderHit's fire and
-                // damage): once per bolt, an oxidized golem goes back one step
-                // and its weathering timer (or wax, -2) is reset to -1.
-                Species::CopperGolem if !b.converted.contains(&m.id) => {
-                    b.converted.push(m.id);
-                    if m.extra.variant > 0 {
-                        m.extra.vector[0] = -1.0;
-                        m.extra.variant =
-                            horizon_client::mobs::copper_golem::weather_previous(m.extra.variant);
-                    }
-                }
-                _ => {}
-            }
-            // Entity.thunderHit: burning (8 seconds) and 5 lightning damage.
-            m.fire_ticks += 1;
-            if m.fire_ticks == 0 {
-                m.ignite_for_ticks(160);
-            }
-
-            m.damage(5.0, damage);
+        for (id, _) in &struck {
+            self.thunder_hit_entity(Target::Mob(*id), &hit, &mut events);
         }
         if !events.is_empty() {
             let _ = self.handle_mob_events(events);
@@ -560,15 +546,7 @@ impl Game<'_> {
             if let Some(p) = g.player.as_ref().map(|p| p.position)
                 && inside([p.x, p.y, p.z])
             {
-                if let Some(p) = g.player.as_mut() {
-                    p.fire_ticks += 1;
-                    if p.fire_ticks == 0
-                        && let Err(error) = p.ignite_for_ticks(160)
-                    {
-                        g.error = Some(error);
-                    }
-                }
-                g.hurt_player_by("minecraft:lightning_bolt", 5.0);
+                g.thunder_hit_entity(Target::Player, &hit, &mut Vec::new());
             }
         };
         strike(self);
@@ -579,19 +557,161 @@ impl Game<'_> {
                 .filter(|e| inside([e.position.x, e.position.y, e.position.z]))
                 .map(|e| e.id),
         );
-        // Dropped items burn up (ItemEntity health 5), save fire-resistant ones.
-        let burnt: Vec<u32> = self
+        // Dropped items burn up (ItemEntity health 5), save the ones whose stack resists lightning.
+        let items: Vec<u32> = self
             .dropped
             .iter()
             .filter(|e| {
                 inside([e.position.x, e.position.y, e.position.z])
-                    && !e.stack.item.contains("netherite")
                     && !(e.age < 20 && b.spared.contains(&e.id))
             })
             .map(|e| e.id)
             .collect();
-        self.level_remove_ids(Kind::Item, &burnt, Removal::Discarded);
+        for id in items {
+            self.thunder_hit_entity(Target::Item(id), &hit, &mut Vec::new());
+        }
+        let boats: Vec<u32> = self
+            .boats
+            .iter()
+            .filter(|e| inside([e.position.x, e.position.y, e.position.z]))
+            .map(|e| e.id)
+            .collect();
+        for id in boats {
+            self.thunder_hit_entity(Target::Boat(id), &hit, &mut Vec::new());
+        }
+        let carts: Vec<u32> = self
+            .carts
+            .iter()
+            .filter(|e| inside([e.position.x, e.position.y, e.position.z]))
+            .map(|e| e.id)
+            .collect();
+        for id in carts {
+            self.thunder_hit_entity(Target::Cart(id), &hit, &mut Vec::new());
+        }
         struck.into_iter().map(|(_, view)| view).collect()
+    }
+    /// `Entity.thunderHit` of one entity, with the override its class has; true when it changed.
+    pub(super) fn thunder_hit_entity(
+        &mut self,
+        t: Target,
+        hit: &BoltHit,
+        events: &mut Vec<MobEvent>,
+    ) -> bool {
+        let source = Damage {
+            kind: DamageKind::LightningBolt,
+            attacker: None,
+            from: Some(hit.at),
+        };
+        let peaceful = self.ui.difficulty == 0;
+        match t {
+            Target::Mob(id) => {
+                let Some(m) = self.mobs.iter_mut().find(|m| m.id == id && m.alive()) else {
+                    return false;
+                };
+                let setup = SpawnSetup {
+                    yaw: m.yaw,
+                    persistent: true,
+                    ..Default::default()
+                };
+                let at = [m.position.x, m.position.y, m.position.z];
+                let base = |m: &mut horizon_client::mobs::Mob| {
+                    // Entity.thunderHit: burning (8 seconds) and the bolt's damage.
+                    m.fire_ticks += 1;
+                    if m.fire_ticks == 0 {
+                        m.ignite_for_ticks(160);
+                    }
+                    m.damage(hit.damage, source);
+                };
+                match m.species() {
+                    Species::Pig if !peaceful => {
+                        m.removed = true;
+                        events.push(MobEvent::SpawnKind {
+                            kind: "minecraft:zombified_piglin".into(),
+                            at,
+                            setup,
+                        });
+                    }
+                    Species::Villager if !peaceful => {
+                        m.removed = true;
+                        events.push(MobEvent::SpawnKind {
+                            kind: "minecraft:witch".into(),
+                            at,
+                            setup,
+                        });
+                    }
+                    Species::Mooshroom => {
+                        // MushroomCow.thunderHit: once per bolt, with no `super` call.
+                        if m.extra.last_bolt != Some(hit.uuid) {
+                            m.extra.last_bolt = Some(hit.uuid);
+                            m.extra.variant = 1 - m.extra.variant.min(1);
+                            self.audio.play(
+                                "minecraft:entity.mooshroom.convert",
+                                Some(at),
+                                2.0,
+                                1.0,
+                            );
+                        }
+                    }
+                    Species::Turtle => {
+                        m.damage(f32::MAX, source);
+                    }
+                    Species::Creeper => {
+                        m.extra.charged = true;
+                        base(m);
+                    }
+                    // CopperGolem.thunderHit: `super` first; once per bolt an oxidized golem
+                    // goes back one step and its weathering timer (or wax, -2) resets to -1.
+                    Species::CopperGolem => {
+                        base(m);
+                        if m.extra.last_bolt != Some(hit.uuid) {
+                            m.extra.last_bolt = Some(hit.uuid);
+                            if m.extra.variant > 0 {
+                                m.extra.vector[0] = -1.0;
+                                m.extra.variant =
+                                    horizon_client::mobs::copper_golem::weather_previous(
+                                        m.extra.variant,
+                                    );
+                            }
+                        }
+                    }
+                    _ => base(m),
+                }
+                true
+            }
+            Target::Player | Target::Guest(_) => {
+                if let Some(p) = self.player.as_mut() {
+                    p.fire_ticks += 1;
+                    if p.fire_ticks == 0
+                        && let Err(error) = p.ignite_for_ticks(160)
+                    {
+                        self.error = Some(error);
+                    }
+                }
+                self.hurt_player_by("minecraft:lightning_bolt", hit.damage);
+                true
+            }
+            Target::Item(id) => {
+                let Some(item) = self.dropped.iter_mut().find(|e| e.id == id) else {
+                    return false;
+                };
+                item.fire_ticks += 1;
+                if item.fire_ticks == 0 {
+                    item.fire_ticks = 160;
+                }
+                self.hurt_item_entity(id, &super::explosion::HurtSource::lightning(), hit.damage)
+            }
+            Target::Boat(id) => self
+                .boats
+                .iter()
+                .position(|b| b.id == id)
+                .is_some_and(|i| self.hurt_boat(i, hit.damage, false)),
+            Target::Cart(id) => self.carts.iter().position(|c| c.id == id).is_some_and(|i| {
+                self.hurt_cart(i, hit.damage, false, false);
+                true
+            }),
+            // BlockAttachedEntity and the armor stand override it with nothing; the rest don't burn.
+            _ => false,
+        }
     }
     /// `LightningBolt.shouldRenderAtSqrDistance`: a bolt is drawn within 64
     /// blocks times the view scale of the camera, and past that only its sky

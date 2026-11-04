@@ -123,7 +123,7 @@ impl Game<'_> {
             Some(Target::Stand(s)) => self.armor_stands.iter().any(|a| a.id == s && !a.marker),
             // BlockAttachedEntity, minecarts, boats, end crystals.
             Some(Target::Frame(_) | Target::Painting(_) | Target::Boat(_) | Target::Cart(_))
-            | Some(Target::Crystal(_)) => true,
+            | Some(Target::Crystal(_) | Target::Tnt(_) | Target::Bolt(_)) => true,
             // Interaction.
             Some(t @ Target::Other(_)) => self.target_type(t) == "minecraft:interaction",
             _ => false,

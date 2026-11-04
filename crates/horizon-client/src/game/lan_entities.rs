@@ -448,7 +448,6 @@ impl Game<'_> {
                 *id = *next;
             }
         };
-        self.tnts.iter_mut().for_each(|t| give(&mut t.id));
         self.falling.iter_mut().for_each(|f| give(&mut f.id));
         self.creatures
             .projectiles
@@ -457,7 +456,6 @@ impl Game<'_> {
         self.tridents.iter_mut().for_each(|t| give(&mut t.id));
         self.rockets.iter_mut().for_each(|r| give(&mut r.id));
         self.crystals.iter_mut().for_each(|c| give(&mut c.id));
-        self.bolts.iter_mut().for_each(|b| give(&mut b.id));
         self.ominous_spawners
             .iter_mut()
             .for_each(|o| give(&mut o.id));
@@ -482,16 +480,24 @@ impl Game<'_> {
             out.push(state(f.id, "minecraft:evoker_fangs", f.pos, f.yaw, false));
         }
         // LightningBolt: each client draws and flashes its own.
-        for b in self.bolts.iter().filter(|b| b.id != 0) {
+        for b in &self.bolts {
             out.push(state(b.id, "minecraft:lightning_bolt", b.at, 0.0, false));
         }
-        for t in self.tnts.iter().filter(|t| t.id != 0) {
+        let default_state = self.tnt_default_state();
+        for t in &self.tnts {
             let mut e = state(t.id, "minecraft:tnt", at(t.position), 0.0, t.on_ground);
             e.velocity = at(t.velocity);
             // PrimedTnt.DATA_FUSE_ID, 80 by default; requiresPrecisePosition
             // while it touches a block.
             if t.fuse != 80 {
                 e.meta.push((8, serializer::INT, Value::Int(t.fuse)));
+            }
+            if t.block_state != default_state {
+                e.meta.push((
+                    9,
+                    serializer::BLOCK_STATE,
+                    Value::Id(t.block_state.0 as i32),
+                ));
             }
             e.precise = t.on_ground;
             out.push(e);

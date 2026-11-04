@@ -162,9 +162,48 @@ public final class Flat {
         return type.ordinal();
     }
 
-    /** The damage type's name, empty for no source. */
-    public static String raw(net.minecraft.world.damagesource.DamageSource source) {
-        return Effects.damageType(source);
+    /** A damage source: its type, the entities it names, whether a creative player caused it, and where it came from. */
+    public static byte[] raw(net.minecraft.world.damagesource.DamageSource source) {
+        try {
+            var bytes = new ByteArrayOutputStream();
+            var out = new DataOutputStream(bytes);
+            byte[] type = Effects.damageType(source).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            out.writeInt(type.length);
+            out.write(type);
+            out.writeInt(source == null || source.getEntity() == null ? 0 : source.getEntity().getId());
+            out.writeInt(source == null || source.getDirectEntity() == null ? 0 : source.getDirectEntity().getId());
+            out.writeBoolean(source != null && source.isCreativePlayer());
+            var at = source == null ? null : source.getSourcePosition();
+            out.writeBoolean(at != null);
+            if (at != null) {
+                out.writeDouble(at.x);
+                out.writeDouble(at.y);
+                out.writeDouble(at.z);
+            }
+            return bytes.toByteArray();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** A lightning bolt as `thunderHit` sees it: whether it is Horizon's, its id, damage, flag, UUID and place. */
+    public static byte[] raw(net.minecraft.world.entity.LightningBolt bolt) {
+        try {
+            var bytes = new ByteArrayOutputStream();
+            var out = new DataOutputStream(bytes);
+            out.writeBoolean(EntityViews.backed(bolt));
+            out.writeInt(EntityViews.backed(bolt) ? bolt.getId() : 0);
+            out.writeFloat(((dev.horizonlab.javamods.boot.mixin.LightningBoltAccess) bolt).horizon$damage());
+            out.writeBoolean(((dev.horizonlab.javamods.boot.mixin.LightningBoltAccess) bolt).horizon$visualOnly());
+            out.writeLong(bolt.getUUID().getMostSignificantBits());
+            out.writeLong(bolt.getUUID().getLeastSignificantBits());
+            out.writeDouble(bolt.getX());
+            out.writeDouble(bolt.getY());
+            out.writeDouble(bolt.getZ());
+            return bytes.toByteArray();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     public static java.util.List<net.minecraft.world.item.ItemStack> toList(byte[] stacks) {

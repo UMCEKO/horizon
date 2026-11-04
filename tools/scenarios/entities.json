@@ -26,6 +26,7 @@
   {"command": "/data get entity @e[type=chicken,tag=w1c,limit=1] Health"},
   {"check": {"output": "No entity", "present": true}},
   {"name": "clean log"},
+  {"check": {"log": "entity types of the Java mods are not loaded", "present": false, "since": "start"}},
   {"check": {"no_exceptions": true, "since": "start", "ignore": "flite|Narrator"}},
   {"quit": true}
 ]

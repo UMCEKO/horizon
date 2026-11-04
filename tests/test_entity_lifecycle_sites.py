@@ -9,7 +9,7 @@ GAME = ROOT / "crates" / "horizon-client" / "src"
 
 VECTORS = (
     r"(?:mobs|dropped|orbs|creatures\.projectiles|armor_stands|item_frames|paintings"
-    r"|boats|carts|others|crystals|cushions)"
+    r"|boats|carts|others|crystals|cushions|tnts|bolts)"
 )
 MUTATION = re.compile(
     rf"self\.(?:game\.)?{VECTORS}\.(?:push|insert|extend|append|remove|swap_remove|retain"

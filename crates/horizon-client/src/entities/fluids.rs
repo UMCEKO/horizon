@@ -180,6 +180,7 @@ mod tests {
         let at = Vec3::new(20.5, 4.0, 20.5);
         let item = ItemEntity {
             removed: false,
+            invulnerable: false,
             id: 1,
             health: 5,
             fire_ticks: 0,

@@ -21,6 +21,7 @@ pub(super) const NAME: u32 = 512;
 pub(super) const ITEM: u32 = 1024;
 pub(super) const RIDING: u32 = 2048;
 pub(super) const REMOVAL: u32 = 4096;
+pub(super) const SPECIES: u32 = 8192;
 
 /// The keys of an entity's saved form that live in Java: attachments and persistent data.
 const JAVA_KEYS: [&str; 2] = ["neoforge:attachments", "NeoForgeData"];
@@ -28,7 +29,9 @@ const SLOTS: [&str; 8] = [
     "mainhand", "offhand", "feet", "legs", "chest", "head", "body", "saddle",
 ];
 
-const ALL_KINDS: [Kind; 13] = [
+const ALL_KINDS: [Kind; 15] = [
+    Kind::Tnt,
+    Kind::Bolt,
     Kind::Mob,
     Kind::Item,
     Kind::Orb,
@@ -52,9 +55,30 @@ pub(super) fn reset_views() {
     VIEWED.with_borrow_mut(|v| v.clear());
 }
 
+/// The species group of a view whose Java class keeps state the saved form lacks.
+#[derive(Default)]
+enum SpeciesData {
+    #[default]
+    None,
+    Tnt {
+        fuse: i32,
+        java_state: i32,
+        power: f32,
+        owner: Option<[i32; 4]>,
+    },
+    Bolt {
+        damage: f32,
+        visual_only: bool,
+        life: i32,
+        flashes: i32,
+        seed: i64,
+    },
+}
+
 /// What the live structs know that the saved form does not.
 #[derive(Default)]
 struct Overlay {
+    species: SpeciesData,
     head: Option<f32>,
     body: Option<f32>,
     hurt: Option<i32>,
@@ -245,6 +269,40 @@ fn write_groups(out: &mut Out, tag: &Tag, over: &Overlay, shape: Shape, mask: u3
     if mask & REMOVAL != 0 {
         out.0.push(0);
     }
+    if mask & SPECIES != 0 {
+        match &over.species {
+            SpeciesData::None => {}
+            SpeciesData::Tnt {
+                fuse,
+                java_state,
+                power,
+                owner,
+            } => {
+                out.int(*fuse);
+                out.int(*java_state);
+                out.float(*power);
+                let uuid = owner.and_then(|o| uuid_longs(Some(&Tag::IntArray(o.to_vec()))));
+                out.bool(uuid.is_some());
+                if let Some((hi, lo)) = uuid {
+                    out.long(hi);
+                    out.long(lo);
+                }
+            }
+            SpeciesData::Bolt {
+                damage,
+                visual_only,
+                life,
+                flashes,
+                seed,
+            } => {
+                out.float(*damage);
+                out.bool(*visual_only);
+                out.int(*life);
+                out.int(*flashes);
+                out.long(*seed);
+            }
+        }
+    }
 }
 
 fn kind_of(t: Target) -> Option<(Kind, u32)> {
@@ -261,6 +319,8 @@ fn kind_of(t: Target) -> Option<(Kind, u32)> {
         Target::Other(id) => (Kind::Other, id),
         Target::Crystal(id) => (Kind::Crystal, id),
         Target::Dragon(id) => (Kind::Dragon, id),
+        Target::Tnt(id) => (Kind::Tnt, id),
+        Target::Bolt(id) => (Kind::Bolt, id),
         Target::Player | Target::Guest(_) => return None,
     })
 }
@@ -286,7 +346,7 @@ impl Game<'_> {
             living: matches!(kind, Some(Kind::Mob | Kind::Stand | Kind::Dragon)),
             item: kind == Some(Kind::Item),
         };
-        match Self::java_facts() {
+        let mut shape = match Self::java_facts() {
             Some(f) => (
                 f.reads(type_id),
                 Shape {
@@ -295,10 +355,56 @@ impl Game<'_> {
                 },
             ),
             None => (1, known),
+        };
+        // The bridges of the species group refresh it, whatever the mods read.
+        if matches!(kind, Some(Kind::Tnt | Kind::Bolt)) {
+            shape.0 |= SPECIES;
         }
+        shape
     }
 
     fn java_overlay(&self, t: Target) -> Overlay {
+        match t {
+            Target::Tnt(id) => {
+                return Overlay {
+                    species: self
+                        .tnts
+                        .iter()
+                        .find(|t| t.id == id)
+                        .map_or(SpeciesData::None, |t| SpeciesData::Tnt {
+                            fuse: t.fuse,
+                            java_state: horizon_java_host::bridge::STATES.get().map_or(
+                                horizon_java_host::bridge::UNMAPPED,
+                                |m| {
+                                    m.to_java
+                                        .get(t.block_state.0 as usize)
+                                        .copied()
+                                        .unwrap_or(horizon_java_host::bridge::UNMAPPED)
+                                },
+                            ),
+                            power: t.explosion_power,
+                            owner: t.owner,
+                        }),
+                    ..Overlay::default()
+                };
+            }
+            Target::Bolt(id) => {
+                return Overlay {
+                    species: self.bolts.iter().find(|b| b.id == id).map_or(
+                        SpeciesData::None,
+                        |b| SpeciesData::Bolt {
+                            damage: b.damage,
+                            visual_only: b.visual_only,
+                            life: b.life,
+                            flashes: b.flashes,
+                            seed: b.seed,
+                        },
+                    ),
+                    ..Overlay::default()
+                };
+            }
+            _ => {}
+        }
         let Target::Mob(id) = t else {
             return Overlay::default();
         };
@@ -306,6 +412,7 @@ impl Game<'_> {
             return Overlay::default();
         };
         Overlay {
+            species: SpeciesData::None,
             head: Some(m.head_yaw),
             body: Some(m.body_yaw),
             hurt: Some(m.hurt_time),
@@ -484,6 +591,37 @@ impl Game<'_> {
                     String::new(),
                 )
             }
+            NewEntity::Tnt(t) => {
+                let uuid = self.uuid_for(t.id);
+                let state = self.state_to_nbt(t.block_state);
+                (
+                    entity_nbt::tnt_to_nbt(
+                        &entity_nbt::TntNbt {
+                            position: t.position,
+                            velocity: t.velocity,
+                            on_ground: t.on_ground,
+                            fuse: t.fuse,
+                            state: Some(state),
+                            power: t.explosion_power,
+                            owner: t.owner,
+                        },
+                        uuid,
+                        raw(self, t.id).as_ref(),
+                    ),
+                    "minecraft:tnt".into(),
+                )
+            }
+            NewEntity::Bolt(b) => (
+                Tag::compound([
+                    ("id", Tag::String("minecraft:lightning_bolt".into())),
+                    ("UUID", Tag::IntArray(b.uuid.to_vec())),
+                    (
+                        "Pos",
+                        Tag::List(b.at.iter().map(|v| Tag::Double(v.to_bits())).collect()),
+                    ),
+                ]),
+                "minecraft:lightning_bolt".into(),
+            ),
             NewEntity::Dragon(d) => {
                 let (uuid, raw) = self.persist_anon("minecraft:ender_dragon", d.position);
                 (
@@ -641,8 +779,11 @@ impl Game<'_> {
     }
 
     /// `EntityViews.spawn`: a mod's new entity into the level, the way `/summon` adds one; its id, 0 when refused.
-    pub(super) fn java_spawn_entity(&mut self, saved: &[u8]) -> u32 {
+    pub(super) fn java_spawn_entity(&mut self, saved: &[u8], species: &[u8]) -> u32 {
         let Some(tag) = read_tag(saved) else { return 0 };
+        if text(tag.get("id")).as_deref() == Some("minecraft:lightning_bolt") {
+            return self.java_spawn_bolt(&tag, species);
+        }
         let before = self.next_entity;
         let _ = self.spawn_entity_from_nbt(tag);
         // The root of a spawned stack takes the first id.
@@ -818,16 +959,32 @@ impl Game<'_> {
     }
 
     /// The damage `/damage` does to one entity: a mob's `damage`, a boat's or cart's `hurt`, an item's health.
-    pub(super) fn java_hurt_target(&mut self, id: u32, source: &str, amount: f32) -> bool {
+    pub(super) fn java_hurt_target(
+        &mut self,
+        id: u32,
+        source: &horizon_java_host::bridge::Source,
+        amount: f32,
+    ) -> bool {
+        let causing = (source.causing > 0).then_some(source.causing as u32);
+        let from = source.at;
         let Some(t) = self.java_target(id) else {
             return false;
         };
         match t {
             Target::Mob(mid) => {
+                let attacker = causing.and_then(|c| {
+                    if self.mobs.iter().any(|m| m.id == c) {
+                        Some(horizon_client::mobs::Who::Mob(c))
+                    } else if self.network_entity_id(Target::Player) == Some(c as i32) {
+                        Some(horizon_client::mobs::Who::Player)
+                    } else {
+                        None
+                    }
+                });
                 let damage = horizon_client::mobs::Damage {
-                    kind: Self::damage_kind(source),
-                    attacker: None,
-                    from: None,
+                    kind: Self::damage_kind(&source.kind),
+                    attacker,
+                    from,
                 };
                 let hurt = self
                     .mobs
@@ -849,18 +1006,16 @@ impl Game<'_> {
                 .iter()
                 .position(|c| c.id == cid)
                 .is_some_and(|i| {
-                    self.hurt_cart(i, amount, false, source.ends_with("on_fire"));
+                    self.hurt_cart(i, amount, false, source.kind.ends_with("on_fire"));
                     true
                 }),
             Target::Item(iid) => {
-                let Some(item) = self.dropped.iter_mut().find(|i| i.id == iid) else {
-                    return false;
+                let source = super::explosion::HurtSource {
+                    kind: source.kind.clone(),
+                    causing_mob: causing.filter(|c| self.mobs.iter().any(|m| m.id == *c)),
+                    creative: source.creative,
                 };
-                item.health -= amount as i32;
-                if item.health <= 0 {
-                    self.level_remove(Kind::Item, iid, Removal::Discarded);
-                }
-                true
+                self.hurt_item_entity(iid, &source, amount)
             }
             _ => false,
         }
@@ -910,6 +1065,42 @@ impl Game<'_> {
             }
         }
         true
+    }
+
+    /// A mod's lightning bolt: placed where its saved form says, with the damage, visual flag and flashes it carried.
+    fn java_spawn_bolt(&mut self, tag: &Tag, species: &[u8]) -> u32 {
+        let [x, y, z] = doubles::<3>(tag.get("Pos"));
+        let mut r = In(species);
+        let (Some(damage), Some(visual_only), Some(life), Some(flashes), Some(seed)) =
+            (r.float(), r.bool(), r.int(), r.int(), r.long())
+        else {
+            return 0;
+        };
+        self.next_entity += 1;
+        let id = self.next_entity;
+        let uuid = self.uuid_for(id);
+        let mut bolt = super::lightning::Bolt::new(id, [x, y, z], flashes, seed, visual_only, uuid);
+        bolt.damage = damage;
+        bolt.life = life;
+        self.lightning_seen[0] += 1;
+        self.level_add(NewEntity::Bolt(bolt), Origin::Fresh, None)
+            .unwrap_or(0)
+    }
+
+    /// The bolt a Java `thunderHit` carries.
+    pub(super) fn java_bolt_hit(bytes: &[u8]) -> Option<super::lightning::BoltHit> {
+        let mut r = In(bytes);
+        r.bool()?;
+        r.int()?;
+        let damage = r.float()?;
+        r.bool()?;
+        let (hi, lo) = (r.long()?, r.long()?);
+        let at = [r.double()?, r.double()?, r.double()?];
+        Some(super::lightning::BoltHit {
+            damage,
+            uuid: [(hi >> 32) as i32, hi as i32, (lo >> 32) as i32, lo as i32],
+            at,
+        })
     }
 
     pub(super) fn java_set_head(&mut self, id: u32, head: Option<f32>, body: Option<f32>) -> bool {
@@ -1209,6 +1400,85 @@ mod tests {
         }
         assert!(remembered.get("neoforge:attachments").is_none());
         assert!(remembered.get("NeoForgeData").is_some() && remembered.get("Custom").is_some());
+    }
+
+    #[test]
+    fn the_species_group_of_a_tnt_and_a_bolt_reads_back() {
+        let tag = compound(vec![]);
+        let tnt = Overlay {
+            species: SpeciesData::Tnt {
+                fuse: 150,
+                java_state: 9,
+                power: 4.0,
+                owner: Some([0, 1, 0, 2]),
+            },
+            ..Overlay::default()
+        };
+        let mut out = Out::default();
+        write_groups(&mut out, &tag, &tnt, Shape::default(), SPECIES);
+        let mut r = In(&out.0);
+        assert_eq!(
+            (r.int(), r.int(), r.float()),
+            (Some(150), Some(9), Some(4.0))
+        );
+        assert_eq!(
+            (r.bool(), r.long(), r.long()),
+            (Some(true), Some(1), Some(2))
+        );
+        assert!(r.0.is_empty());
+        let bolt = Overlay {
+            species: SpeciesData::Bolt {
+                damage: 2.0,
+                visual_only: true,
+                life: 1,
+                flashes: 3,
+                seed: -7,
+            },
+            ..Overlay::default()
+        };
+        let mut out = Out::default();
+        write_groups(&mut out, &tag, &bolt, Shape::default(), SPECIES);
+        let mut r = In(&out.0);
+        assert_eq!((r.float(), r.bool()), (Some(2.0), Some(true)));
+        assert_eq!((r.int(), r.int(), r.long()), (Some(1), Some(3), Some(-7)));
+        assert!(r.0.is_empty());
+    }
+
+    #[test]
+    fn a_tnt_saves_and_loads_what_vanilla_does() {
+        let t = entity_nbt::TntNbt {
+            position: horizon_core::geometry::Vec3::new(1.0, 2.0, 3.0),
+            velocity: horizon_core::geometry::Vec3::ZERO,
+            on_ground: true,
+            fuse: 33,
+            state: Some(compound(vec![(
+                "Name",
+                Tag::String("minecraft:obsidian".into()),
+            )])),
+            power: 6.5,
+            owner: Some([1, 2, 3, 4]),
+        };
+        let tag = entity_nbt::tnt_to_nbt(&t, [9, 9, 9, 9], None);
+        assert_eq!(number(tag.get("fuse")), Some(33));
+        let back = entity_nbt::tnt_from_nbt(&tag).unwrap();
+        assert_eq!(
+            (back.fuse, back.power, back.owner),
+            (33, 6.5, Some([1, 2, 3, 4]))
+        );
+        assert!(back.state.is_some() && back.on_ground);
+        let plain = entity_nbt::TntNbt {
+            power: 4.0,
+            owner: None,
+            ..t
+        };
+        let tag = entity_nbt::tnt_to_nbt(&plain, [9, 9, 9, 9], None);
+        assert!(tag.get("explosion_power").is_none() && tag.get("owner").is_none());
+        let clamped = compound(vec![
+            ("Pos", doubles_tag(&[0.0, 0.0, 0.0])),
+            ("explosion_power", Tag::Float(500.0f32.to_bits())),
+        ]);
+        let loaded = entity_nbt::tnt_from_nbt(&clamped).unwrap();
+        assert_eq!((loaded.fuse, loaded.power), (80, 128.0));
     }
 
     #[test]

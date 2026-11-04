@@ -10,6 +10,7 @@ use horizon_core::{
     position::BlockPos,
     random::{LegacyRandom, RandomSource},
 };
+use horizon_world::damage_immunity::{DamageRule, ImmunityTag, ImmunityWorld};
 use horizon_world::{
     collision_context::{CollisionContext, CollisionEntity, CollisionItem},
     entity_obstruction::EntityIdentity,
@@ -990,5 +991,189 @@ mod tests {
         add_or_append_stack(&mut stacks, pick(0), [0, 0, 0], &max);
         add_or_append_stack(&mut stacks, pick(5), [0, 0, 0], &max);
         assert_eq!(stacks.len(), 2);
+    }
+}
+
+/// A `DamageSource` as an item entity's hurt sees it.
+#[derive(Clone, Debug, Default)]
+pub(super) struct HurtSource {
+    /// The damage type, `minecraft:lightning_bolt`.
+    pub kind: String,
+    /// The causing mob, when it is one.
+    pub causing_mob: Option<u32>,
+    /// A creative player caused it.
+    pub creative: bool,
+}
+impl HurtSource {
+    pub(super) fn lightning() -> Self {
+        Self {
+            kind: "minecraft:lightning_bolt".into(),
+            causing_mob: None,
+            creative: false,
+        }
+    }
+    /// The damage-type tags of the vanilla data that item immunity reads.
+    fn in_tag(&self, tag: &str) -> bool {
+        let name = self.kind.trim_start_matches("minecraft:");
+        match tag.trim_start_matches("minecraft:") {
+            "is_fire" => matches!(
+                name,
+                "in_fire"
+                    | "campfire"
+                    | "lava"
+                    | "on_fire"
+                    | "hot_floor"
+                    | "fireball"
+                    | "unattributed_fireball"
+            ),
+            "is_fall" => matches!(
+                name,
+                "fall" | "ender_pearl" | "fly_into_wall" | "stalagmite"
+            ),
+            "bypasses_invulnerability" => matches!(name, "out_of_world" | "generic_kill"),
+            _ => false,
+        }
+    }
+}
+
+type Check = std::result::Result<bool, std::convert::Infallible>;
+
+/// `ItemEntity.isInvulnerableToBase`'s inputs.
+struct ItemImmunity<'a> {
+    source: &'a HurtSource,
+    removed: bool,
+    invulnerable: bool,
+    fire_immune: bool,
+    fall_immune: bool,
+}
+impl ImmunityWorld for ItemImmunity<'_> {
+    type Error = std::convert::Infallible;
+    fn removed(&self) -> bool {
+        self.removed
+    }
+    fn permanently_invulnerable(&mut self) -> Check {
+        Ok(self.invulnerable)
+    }
+    fn temporarily_invulnerable(&mut self) -> Check {
+        Ok(false)
+    }
+    fn tag(&mut self, tag: ImmunityTag) -> Check {
+        Ok(self.source.in_tag(match tag {
+            ImmunityTag::BypassesInvulnerability => "bypasses_invulnerability",
+            ImmunityTag::Fire => "is_fire",
+            ImmunityTag::Fall => "is_fall",
+            ImmunityTag::Drowning => "is_drowning",
+            ImmunityTag::Freezing => "is_freezing",
+        }))
+    }
+    fn creative_source(&mut self) -> Check {
+        Ok(self.source.creative)
+    }
+    fn fire_immune(&mut self) -> Check {
+        Ok(self.fire_immune)
+    }
+    fn fall_immune(&mut self) -> Check {
+        Ok(self.fall_immune)
+    }
+    fn enchantment_immunity(&mut self) -> Check {
+        Ok(false)
+    }
+    fn damage_rule(&mut self, _: DamageRule) -> Check {
+        Ok(true)
+    }
+    fn changing_dimension(&mut self) -> Check {
+        Ok(false)
+    }
+    fn ender_pearl(&mut self) -> Check {
+        Ok(false)
+    }
+    fn client_loaded(&mut self) -> Check {
+        Ok(true)
+    }
+}
+
+impl Game<'_> {
+    /// `ItemEntity.hurtServer`, line by line: true when the item was hurt.
+    pub(super) fn hurt_item_entity(&mut self, id: u32, source: &HurtSource, amount: f32) -> bool {
+        let Some(item) = self.dropped.iter().find(|e| e.id == id) else {
+            return false;
+        };
+        let tags: Vec<&str> = ["minecraft:is_fire", "minecraft:is_fall"]
+            .into_iter()
+            .filter(|t| source.in_tag(t))
+            .collect();
+        let items = world_items!(self);
+        let mut immunity = ItemImmunity {
+            source,
+            removed: item.removed,
+            invulnerable: item.invulnerable,
+            fire_immune: !items.can_be_hurt_by(
+                &item.stack,
+                "minecraft:in_fire",
+                &["minecraft:is_fire"],
+            ),
+            // `EntityTypeTags.FALL_DAMAGE_IMMUNE` holds no item entity.
+            fall_immune: false,
+        };
+        // 1. isInvulnerableToBase.
+        if let Ok(true) = horizon_world::damage_immunity::base_immunity(&mut immunity) {
+            return false;
+        }
+        // 2. Mob griefing off protects items from a mob's damage.
+        if !self.ui.rules.bool("mob_griefing") && source.causing_mob.is_some() {
+            return false;
+        }
+        // 3. The stack's own damage resistance.
+        if !items.can_be_hurt_by(&item.stack, &source.kind, &tags) {
+            return false;
+        }
+        // 5. health = (int)(health - damage): the subtraction is in float.
+        let at = item.position;
+        let Some(item) = self.dropped.iter_mut().find(|e| e.id == id) else {
+            return false;
+        };
+        item.health = (item.health as f32 - amount) as i32;
+        let destroyed = item.health <= 0;
+        // 6. The damage game event, at the item.
+        let ctx = horizon_client::sculk::Context::default();
+        self.post_game_event("minecraft:entity_damage", [at.x, at.y, at.z], ctx);
+        // 7. Item.onDestroyed, then discard.
+        if destroyed {
+            self.item_destroyed(id);
+            self.level_remove(Kind::Item, id, Removal::Discarded);
+        }
+        true
+    }
+    /// `Item.onDestroyed`: a shulker box or bundle spills what it holds (`ItemUtils.onContainerDestroyed`).
+    fn item_destroyed(&mut self, id: u32) {
+        let Some(item) = self.dropped.iter().find(|e| e.id == id) else {
+            return;
+        };
+        let at = item.position;
+        let Some(data) = item.stack.data() else {
+            return;
+        };
+        let find = |key: &str| {
+            data.other
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+        };
+        let mut spilled: Vec<horizon_world::nbt::Tag> = Vec::new();
+        if item.stack.item.ends_with("shulker_box")
+            && let Some(horizon_world::nbt::Tag::List(slots)) = find("minecraft:container")
+        {
+            spilled.extend(slots.iter().filter_map(|s| s.get("item").cloned()));
+        }
+        if item.stack.item.ends_with("bundle")
+            && let Some(horizon_world::nbt::Tag::List(stacks)) = find("minecraft:bundle_contents")
+        {
+            spilled.extend(stacks);
+        }
+        for tag in spilled {
+            if let Some(stack) = horizon_client::save::item_from_nbt(&tag) {
+                self.spawn_item(stack, [at.x, at.y, at.z], [0.0; 3], 10);
+            }
+        }
     }
 }

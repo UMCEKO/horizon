@@ -3085,6 +3085,7 @@ impl Game<'_> {
             pickup_delay,
             bob_offset: bob,
             ticks: 0,
+            invulnerable: false,
         };
         self.level_add(NewEntity::Item(item), Origin::Fresh, None)
     }
@@ -4313,7 +4314,9 @@ impl Game<'_> {
                     }
                     PlayerEffect::InteractLoot(_) => {}
                 },
-                LevelEvent::PrimeTnt { pos, rot } => self.add_primed_tnt(pos, rot, 80),
+                LevelEvent::PrimeTnt { pos, rot } => {
+                    self.add_primed_tnt(pos, rot, 80);
+                }
                 LevelEvent::BlockEvent {
                     pos,
                     state,
@@ -10631,7 +10634,7 @@ impl Game<'_> {
         self.tick_chunks.clear();
         self.falling.clear();
         self.transient_blocks.clear();
-        self.tnts.clear();
+        self.level_remove_all(Kind::Tnt, Removal::UnloadedToChunk);
         self.level_remove_all(Kind::Mob, Removal::UnloadedToChunk);
         self.level_remove_all(Kind::Projectile, Removal::UnloadedToChunk);
         self.level_remove_all(Kind::Item, Removal::UnloadedToChunk);
@@ -10884,8 +10887,9 @@ impl Game<'_> {
         self.level_remove_all(Kind::Projectile, Removal::UnloadedToChunk);
         self.falling.clear();
         self.transient_blocks.clear();
-        self.tnts.clear();
         for kind in [
+            Kind::Tnt,
+            Kind::Bolt,
             Kind::Stand,
             Kind::Frame,
             Kind::Painting,
@@ -10902,7 +10906,6 @@ impl Game<'_> {
         self.breath_clouds.clear();
         self.tridents.clear();
         self.rockets.clear();
-        self.bolts.clear();
         self.particles.clear();
         self.pickups.clear();
         self.riding = None;

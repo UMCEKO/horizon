@@ -1,7 +1,7 @@
 //! Vanilla methods Java mods reach, served by Horizon's own ports (`docs/java-mods.md`).
 
 use super::*;
-pub(super) use horizon_java_host::bridge::{Bytes, Dir, Point, Pos, Skip, State, Text};
+pub(super) use horizon_java_host::bridge::{Bytes, Dir, Point, Pos, Skip, Source, State, Text};
 pub(super) use horizon_world::registry::BlockStateId;
 
 mod block_entities;

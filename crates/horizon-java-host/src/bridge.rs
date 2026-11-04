@@ -355,6 +355,48 @@ impl Arg for Shape {
     }
 }
 
+/// A `DamageSource`: its type, the entities it names by id (0 for none), whether a creative player caused it, and where it came from.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Source {
+    pub kind: String,
+    pub causing: i32,
+    pub direct: i32,
+    pub creative: bool,
+    pub at: Option<[f64; 3]>,
+}
+impl Source {
+    /// The bytes `Flat.raw(DamageSource)` writes.
+    pub fn read(bytes: &[u8]) -> Option<Self> {
+        let mut r = crate::wire::In(bytes);
+        let kind = r.text()?.to_owned();
+        let (causing, direct) = (r.int()?, r.int()?);
+        let creative = r.bool()?;
+        let at = if r.bool()? {
+            Some([r.double()?, r.double()?, r.double()?])
+        } else {
+            None
+        };
+        Some(Self {
+            kind,
+            causing,
+            direct,
+            creative,
+            at,
+        })
+    }
+}
+impl Arg for Source {
+    type Raw = jbyteArray;
+    const RAW: &'static str = "[B";
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    fn from_raw(env: &mut JNIEnv, raw: jbyteArray) -> Source {
+        // SAFETY: the JVM passed this reference to the native running now.
+        let bytes = unsafe { JByteArray::from_raw(raw) };
+        let bytes = env.convert_byte_array(bytes).unwrap_or_default();
+        Source::read(&bytes).unwrap_or_default()
+    }
+}
+
 /// An entity, by `Entity.getId`, which is Horizon's id for a backed view.
 #[derive(Clone, Copy)]
 pub struct Ent(pub u32);
@@ -529,6 +571,27 @@ mod tests {
             "net/minecraft/world/entity/Entity\tdiscard\t()V\t@dev/horizonlab/javamods/boot/EntityViews.backed\thorizon$bridge$entity_discard\tI\tV"
         );
         assert_eq!(bridge.signature(), "(I)V");
+    }
+
+    #[test]
+    fn a_source_reads_what_flat_writes() {
+        let mut out = crate::wire::Out::default();
+        out.text("minecraft:lightning_bolt");
+        out.int(0);
+        out.int(7);
+        out.bool(true);
+        out.bool(true);
+        for v in [1.0, 2.0, 3.0] {
+            out.double(v);
+        }
+        let source = Source::read(&out.0).unwrap();
+        assert_eq!(source.kind, "minecraft:lightning_bolt");
+        assert_eq!(
+            (source.causing, source.direct, source.creative),
+            (0, 7, true)
+        );
+        assert_eq!(source.at, Some([1.0, 2.0, 3.0]));
+        assert_eq!(Source::read(&out.0[..5]), None);
     }
 
     #[test]

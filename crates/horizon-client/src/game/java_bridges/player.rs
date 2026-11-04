@@ -78,10 +78,23 @@ horizon_java_host::java_bridges! { table for Game<'static> {
 
     "net/minecraft/server/level/ServerPlayer".hurtServer
     "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/damagesource/DamageSource;F)Z" =>
-    fn player_hurt(game, _level: Skip, source: Text, amount: f32) -> bool {
-        let hurt = !game.spectator() && game.hurt_player_from(amount, None, &source.0, Some(None));
+    fn player_hurt(game, _level: Skip, source: Source, amount: f32) -> bool {
+        let hurt = !game.spectator() && game.hurt_player_from(amount, None, &source.kind, Some(None));
         game.java_refresh_player();
         hurt
+    }
+
+    "net/minecraft/world/entity/Entity".thunderHit
+    "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/entity/LightningBolt;)V" if "net/minecraft/server/level/ServerPlayer" =>
+    fn player_thunder_hit(game, _level: Skip, bolt: Bytes) -> () {
+        if let Some(hit) = Game::java_bolt_hit(&bolt.0) {
+            game.thunder_hit_entity(
+                super::super::commands::Target::Player,
+                &hit,
+                &mut Vec::new(),
+            );
+        }
+        game.java_refresh_player();
     }
 
     "net/minecraft/world/entity/LivingEntity".swing

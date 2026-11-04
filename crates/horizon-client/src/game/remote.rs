@@ -4247,6 +4247,7 @@ impl Game<'_> {
                 pickup_delay: 0,
                 bob_offset,
                 ticks: 0,
+                invulnerable: false,
             }),
             Origin::Fresh,
             None,

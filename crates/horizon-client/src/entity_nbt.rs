@@ -1727,6 +1727,9 @@ pub fn item_entity_to_nbt(e: &ItemEntity, uuid: [i32; 4], raw: Option<&Tag>) -> 
     ] {
         put(&mut tag, key, value);
     }
+    if e.invulnerable {
+        put(&mut tag, "Invulnerable", Tag::Byte(1));
+    }
     if let Some(thrower) = e.thrower {
         put(&mut tag, "Thrower", Tag::IntArray(thrower.to_vec()));
     } else if let Tag::Compound(map) = &mut tag {
@@ -1759,6 +1762,58 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         bob_offset,
         ticks: 0,
         removed: false,
+        invulnerable: flag(tag, "Invulnerable"),
+    })
+}
+
+/// What `PrimedTnt` saves: `fuse`, `block_state`, `explosion_power` (only when not 4) and `owner`.
+pub struct TntNbt {
+    pub position: Vec3,
+    pub velocity: Vec3,
+    pub on_ground: bool,
+    pub fuse: i32,
+    /// `BlockState.CODEC`, as saved.
+    pub state: Option<Tag>,
+    pub power: f32,
+    pub owner: Option<[i32; 4]>,
+}
+pub fn tnt_to_nbt(t: &TntNbt, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
+    let base = Base {
+        id: "minecraft:tnt",
+        uuid,
+        position: t.position,
+        motion: t.velocity,
+        rotation: [0.0, 0.0],
+        on_ground: t.on_ground,
+        fall_distance: 0.0,
+    };
+    let mut tag = base.tag(raw);
+    put(&mut tag, "fuse", Tag::Short(t.fuse as i16));
+    if let Some(state) = &t.state {
+        put(&mut tag, "block_state", state.clone());
+    }
+    if let Tag::Compound(map) = &mut tag {
+        map.remove(&"explosion_power".into());
+        map.remove(&"owner".into());
+    }
+    if t.power != 4.0 {
+        put(&mut tag, "explosion_power", Tag::Float(t.power.to_bits()));
+    }
+    if let Some(owner) = t.owner {
+        put(&mut tag, "owner", Tag::IntArray(owner.to_vec()));
+    }
+    tag
+}
+/// `PrimedTnt.readAdditionalSaveData`: the fuse is 80 when absent, the power is clamped to 0 to 128.
+pub fn tnt_from_nbt(tag: &Tag) -> Option<TntNbt> {
+    Some(TntNbt {
+        position: position(tag)?,
+        velocity: motion(tag),
+        on_ground: flag(tag, "OnGround"),
+        fuse: number(tag.get("fuse")).unwrap_or(80) as i32,
+        state: tag.get("block_state").cloned(),
+        power: float(tag.get("explosion_power")).map_or(4.0, |p| (p as f32).clamp(0.0, 128.0)),
+        owner: uuid_from_tag(tag.get("owner")),
     })
 }
 
@@ -2692,6 +2747,7 @@ mod tests {
     fn item_entities_round_trip() {
         let e = ItemEntity {
             removed: false,
+            invulnerable: false,
             health: 2,
             fire_ticks: 73,
             thrower: Some([5, 6, 7, 8]),

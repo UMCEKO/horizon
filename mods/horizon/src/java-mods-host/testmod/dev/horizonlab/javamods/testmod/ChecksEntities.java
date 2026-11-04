@@ -1,7 +1,12 @@
 package dev.horizonlab.javamods.testmod;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntityTypes;
+import net.minecraft.world.entity.LightningBolt;
+import net.minecraft.world.entity.item.PrimedTnt;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.entity.animal.chicken.Chicken;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
@@ -16,6 +21,8 @@ final class ChecksEntities {
 
     private static Chicken spawned;
     private static ItemEntity doomed;
+    private static PrimedTnt fused;
+    private static Chicken bystander;
 
     static void run(UseOnContext context, BlockPos area) {
         Level level = context.getLevel();
@@ -41,6 +48,54 @@ final class ChecksEntities {
         chicken.setNoAi(true);
         Checks.check("spawn_mob", () -> level.addFreshEntity(chicken));
         spawned = chicken;
+        tntAndLightning(level, area);
+        itemHurt(level, area);
+    }
+
+    private static void tntAndLightning(Level level, BlockPos area) {
+        var sl = (ServerLevel) level;
+        var tnt = new PrimedTnt(level, area.getX() + 0.5, area.getY() + 1, area.getZ() + 5.5, null);
+        tnt.setFuse(200);
+        Checks.check("tnt_spawns_as_a_view", () -> level.addFreshEntity(tnt) && tnt.getId() > 0 && sl.getEntity(tnt.getId()) == tnt && tnt.getFuse() == 200);
+        tnt.setFuse(600);
+        Checks.check("tnt_fuse_writes_through", () -> sl.getEntity(tnt.getId()) == tnt && tnt.getFuse() == 600);
+        tnt.setBlockState(Blocks.OBSIDIAN.defaultBlockState());
+        Checks.check("tnt_block_state_writes_through", () -> sl.getEntity(tnt.getId()) == tnt && tnt.getBlockState().is(Blocks.OBSIDIAN));
+        fused = tnt;
+        bystander = EntityTypes.CHICKEN.create(level, EntitySpawnReason.COMMAND);
+        bystander.setPos(area.getX() + 0.5, area.getY() + 1, area.getZ() - 4.5);
+        bystander.setNoAi(true);
+        level.addFreshEntity(bystander);
+        var bolt = EntityTypes.LIGHTNING_BOLT.create(level, EntitySpawnReason.COMMAND);
+        bolt.setDamage(0F);
+        bolt.setVisualOnly(true);
+        bolt.snapTo(area.getX() + 0.5, area.getY() + 1, area.getZ() - 3.5, 0, 0);
+        Checks.check("bolt_spawn_keeps_damage_and_visual", () -> level.addFreshEntity(bolt) && sl.getEntity(bolt.getId()) == bolt && bolt.getDamage() == 0F);
+        bolt.setDamage(2F);
+        Checks.check("bolt_setters_write_through", () -> sl.getEntity(bolt.getId()) == bolt && bolt.getDamage() == 2F);
+        var hitter = EntityTypes.LIGHTNING_BOLT.create(level, EntitySpawnReason.COMMAND);
+        hitter.setDamage(3F);
+        var struck = EntityTypes.CHICKEN.create(level, EntitySpawnReason.COMMAND);
+        struck.setPos(area.getX() + 0.5, area.getY() + 1, area.getZ() + 8.5);
+        struck.setNoAi(true);
+        level.addFreshEntity(struck);
+        struck.thunderHit(sl, hitter);
+        Checks.check("thunder_hit_uses_bolt_damage", () -> sl.getEntity(struck.getId()) == struck && struck.getHealth() == struck.getMaxHealth() - 3F && struck.getRemainingFireTicks() > 0);
+    }
+
+    private static void itemHurt(Level level, BlockPos area) {
+        var sl = (ServerLevel) level;
+        var safe = new ItemEntity(level, area.getX() + 0.5, area.getY() + 1, area.getZ() + 3.5, new ItemStack(Items.COBBLESTONE, 1));
+        safe.setPermanentlyInvulnerable(true);
+        level.addFreshEntity(safe);
+        Checks.check("item_hurt_respects_invulnerable", () -> !safe.hurtServer(sl, level.damageSources().generic(), 10F) && sl.getEntity(safe.getId()) == safe);
+        var frail = new ItemEntity(level, area.getX() + 0.5, area.getY() + 1, area.getZ() + 4.5, new ItemStack(Items.DIRT, 1));
+        level.addFreshEntity(frail);
+        Checks.check("item_hurt_truncates_like_vanilla", () -> {
+            for (int i = 0; i < 4; i++) if (!frail.hurtServer(sl, level.damageSources().generic(), 0.5F)) return false;
+            if (sl.getEntity(frail.getId()) != frail) return false;
+            return frail.hurtServer(sl, level.damageSources().generic(), 0.5F) && sl.getEntity(frail.getId()) == null;
+        });
     }
 
     /** Nothing here runs mid-call: `later` sees what the world did with them. */
@@ -59,6 +114,8 @@ final class ChecksEntities {
         chicken.getPersistentData().putInt("horizon_java_test", 7);
         chicken.setDeltaMovement(0, 0.5, 0);
         Checks.check("delta_movement_writes_through", () -> ((net.minecraft.server.level.ServerLevel) level).getEntity(chicken.getId()) == chicken && chicken.getDeltaMovement().y == 0.5);
+        if (fused != null) Checks.check("tnt_fuse_ticks_natively", () -> ((ServerLevel) level).getEntity(fused.getId()) == fused && fused.getFuse() < 600);
+        if (bystander != null) Checks.check("visual_bolt_hurts_nobody", () -> ((ServerLevel) level).getEntity(bystander.getId()) == bystander && bystander.getHealth() == bystander.getMaxHealth());
         if (doomed != null) {
             int id = doomed.getId();
             doomed.discard();

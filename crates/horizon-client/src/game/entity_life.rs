@@ -17,6 +17,8 @@ pub(in crate::game) enum Kind {
     Crystal,
     Cushion,
     Dragon,
+    Tnt,
+    Bolt,
 }
 
 /// `addEntity`'s `loaded`: read from a chunk's saved entities, or new to the world.
@@ -51,6 +53,8 @@ pub(in crate::game) enum NewEntity {
     Crystal(dragon::Crystal),
     Cushion(horizon_client::entities::Cushion),
     Dragon(Box<dragon::Dragon>),
+    Tnt(tnt::PrimedTnt),
+    Bolt(lightning::Bolt),
 }
 
 impl NewEntity {
@@ -70,6 +74,8 @@ impl NewEntity {
             Self::Crystal(_) => Kind::Crystal,
             Self::Cushion(_) => Kind::Cushion,
             Self::Dragon(_) => Kind::Dragon,
+            Self::Tnt(_) => Kind::Tnt,
+            Self::Bolt(_) => Kind::Bolt,
         }
     }
     pub(in crate::game) fn id(&self) -> u32 {
@@ -87,6 +93,8 @@ impl NewEntity {
             Self::Crystal(e) => e.id,
             Self::Cushion(e) => e.id,
             Self::Dragon(e) => e.id,
+            Self::Tnt(e) => e.id,
+            Self::Bolt(e) => e.id,
         }
     }
 }
@@ -126,6 +134,8 @@ impl Game<'_> {
             NewEntity::Crystal(e) => self.crystals.push(e),
             NewEntity::Cushion(e) => self.cushions.push(e),
             NewEntity::Dragon(e) => self.dragon = Some(*e),
+            NewEntity::Tnt(e) => self.tnts.push(e),
+            NewEntity::Bolt(e) => self.bolts.push(e),
         }
         self.note_touched(Some(id));
         Some(id)
@@ -192,6 +202,8 @@ impl Game<'_> {
             Kind::Other => take!(self.others),
             Kind::Crystal => take!(self.crystals),
             Kind::Cushion => take!(self.cushions),
+            Kind::Tnt => take!(self.tnts),
+            Kind::Bolt => take!(self.bolts, crossing::LentKinds::BOLTS),
             Kind::Dragon => {
                 if self.dragon.as_ref().is_none_or(|d| d.id != id) {
                     return false;
@@ -228,6 +240,8 @@ impl Game<'_> {
             Kind::Crystal => self.crystals.clear(),
             Kind::Cushion => self.cushions.clear(),
             Kind::Dragon => self.dragon = None,
+            Kind::Tnt => self.tnts.clear(),
+            Kind::Bolt => self.bolts.clear(),
         }
         for id in ids {
             self.note_touched(Some(id));
@@ -251,6 +265,8 @@ impl Game<'_> {
             Kind::Crystal => self.crystals.iter().map(|e| e.id).collect(),
             Kind::Cushion => self.cushions.iter().map(|e| e.id).collect(),
             Kind::Dragon => self.dragon.iter().map(|e| e.id).collect(),
+            Kind::Tnt => self.tnts.iter().map(|e| e.id).collect(),
+            Kind::Bolt => self.bolts.iter().map(|e| e.id).collect(),
         }
     }
 

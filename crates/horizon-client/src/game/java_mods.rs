@@ -491,6 +491,8 @@ impl Game<'_> {
             | Target::Cart(id)
             | Target::Other(id)
             | Target::Crystal(id)
+            | Target::Tnt(id)
+            | Target::Bolt(id)
             | Target::Dragon(id) => Some(id),
         }
     }
@@ -978,8 +980,9 @@ impl Game<'_> {
             s.levels.clear();
         });
         super::java_entities::reset_views();
+        // Building every entity type reads the level through bridged natives (`getDifficulty`), so the game must be active.
         if open {
-            super::java_content::entity_types();
+            horizon_java_host::bridge::with_active(self, super::java_content::entity_types);
         }
     }
 

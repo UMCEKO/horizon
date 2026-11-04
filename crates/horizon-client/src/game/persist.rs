@@ -349,21 +349,38 @@ impl Game<'_> {
                             self.rockets.push(super::fireworks::Rocket::from_nbt(r));
                         }
                     }
+                    // `/summon` and Java spawns: the bolt flashes where its saved form says.
+                    "minecraft:lightning_bolt" => {
+                        if let Some(at) = entity_nbt::position(&tag) {
+                            self.spawn_bolt_at([at.x, at.y, at.z], false, false);
+                        }
+                    }
                     // PrimedTnt.readAdditionalSaveData: its fuse (80 when absent) and motion.
                     "minecraft:tnt" => {
-                        if let Some(position) = entity_nbt::position(&tag) {
-                            let fuse = match tag.get("fuse") {
-                                Some(Tag::Short(f)) => i32::from(*f),
-                                _ => 80,
-                            };
-                            self.tnts.push(super::tnt::PrimedTnt {
-                                id: 0,
-                                position,
-                                previous: position,
-                                velocity: entity_nbt::motion(&tag),
-                                fuse,
-                                on_ground: matches!(tag.get("OnGround"), Some(Tag::Byte(1))),
-                            });
+                        if let Some(t) = entity_nbt::tnt_from_nbt(&tag) {
+                            self.next_entity += 1;
+                            let state = t
+                                .state
+                                .as_ref()
+                                .and_then(|s| self.state_from_nbt(s))
+                                .unwrap_or_else(|| self.tnt_default_state());
+                            let mut tnt = super::tnt::PrimedTnt::new(
+                                self.next_entity,
+                                t.position,
+                                t.velocity,
+                                t.fuse,
+                                state,
+                            );
+                            tnt.on_ground = t.on_ground;
+                            tnt.explosion_power = t.power;
+                            tnt.owner = t.owner;
+                            let id = tnt.id;
+                            if self
+                                .level_add(NewEntity::Tnt(tnt), origin, Some(&tag))
+                                .is_some()
+                            {
+                                self.remember(id, uuid, tag);
+                            }
                         }
                     }
                     k if super::boats::any_boat_wood(k)
@@ -977,6 +994,32 @@ impl Game<'_> {
                 .or_default()
                 .push(tag);
         }
+        // Vanilla saves primed TNT; its block state needs the registry, so the tags are built first.
+        let tnts: Vec<usize> = (0..self.tnts.len())
+            .filter(|&i| keys.contains(&chunk_of(self.tnts[i].position)))
+            .collect();
+        for i in tnts {
+            let id = self.tnts[i].id;
+            let uuid = self.uuid_for(id);
+            let state = self.state_to_nbt(self.tnts[i].block_state);
+            let t = &self.tnts[i];
+            let tag = entity_nbt::tnt_to_nbt(
+                &entity_nbt::TntNbt {
+                    position: t.position,
+                    velocity: t.velocity,
+                    on_ground: t.on_ground,
+                    fuse: t.fuse,
+                    state: Some(state),
+                    power: t.explosion_power,
+                    owner: t.owner,
+                },
+                uuid,
+                self.persist.raw.get(&id),
+            );
+            out.entry(chunk_of(self.tnts[i].position))
+                .or_default()
+                .push(tag);
+        }
         let anon = |persist: &EntityMemory, kind: &str, at: Vec3| {
             persist
                 .anon
@@ -1287,6 +1330,13 @@ impl Game<'_> {
             removed.extend(&ids);
             self.level_remove_ids(Kind::Item, &ids, Removal::UnloadedToChunk);
             let ids: Vec<u32> = self
+                .tnts
+                .iter()
+                .filter(|t| gone(t.position))
+                .map(|t| t.id)
+                .collect();
+            self.level_remove_ids(Kind::Tnt, &ids, Removal::UnloadedToChunk);
+            let ids: Vec<u32> = self
                 .orbs
                 .iter()
                 .filter(|o| gone(o.position))
@@ -1341,6 +1391,7 @@ impl Game<'_> {
             .chain(self.item_frames.iter().map(|e| e.id))
             .chain(self.paintings.iter().map(|e| e.id))
             .chain(self.others.iter().map(|e| e.id))
+            .chain(self.tnts.iter().map(|e| e.id))
             .collect();
         self.persist.uuids.retain(|id, _| alive.contains(id));
         self.persist.raw.retain(|id, _| alive.contains(id));

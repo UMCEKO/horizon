@@ -154,6 +154,8 @@ impl Game<'_> {
             | Target::Cart(id)
             | Target::Crystal(id)
             | Target::Dragon(id)
+            | Target::Tnt(id)
+            | Target::Bolt(id)
             | Target::Other(id) => Some(uuid_text(self.uuid_for(id))),
             // Orbs and projectiles have no UUID here.
             Target::Orb(_) | Target::Projectile(_) => None,
@@ -207,6 +209,8 @@ impl Game<'_> {
             | Target::Orb(_)
             | Target::Projectile(_)
             | Target::Crystal(_)
+            | Target::Tnt(_)
+            | Target::Bolt(_)
             | Target::Dragon(_) => None,
         };
         match raw.and_then(|r| r.get("Tags")) {

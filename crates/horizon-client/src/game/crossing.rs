@@ -60,6 +60,7 @@ pub(in crate::game) enum Lent<'a> {
     Orbs(&'a mut Vec<ExperienceOrb>),
     Projectiles(&'a mut Vec<horizon_client::projectiles::Projectile>),
     Stands(&'a mut Vec<horizon_client::entities::ArmorStand>),
+    Bolts(&'a mut Vec<lightning::Bolt>),
 }
 
 /// The kinds of vector lent right now, one bit each.
@@ -72,6 +73,7 @@ impl LentKinds {
     pub(in crate::game) const ORBS: Self = Self(4);
     pub(in crate::game) const PROJECTILES: Self = Self(8);
     pub(in crate::game) const STANDS: Self = Self(16);
+    pub(in crate::game) const BOLTS: Self = Self(32);
     pub(in crate::game) fn has(self, kind: Self) -> bool {
         self.0 & kind.0 != 0
     }
@@ -85,6 +87,7 @@ impl Lent<'_> {
             Self::Orbs(_) => LentKinds::ORBS,
             Self::Projectiles(_) => LentKinds::PROJECTILES,
             Self::Stands(_) => LentKinds::STANDS,
+            Self::Bolts(_) => LentKinds::BOLTS,
         }
     }
 }
@@ -141,6 +144,7 @@ impl<'a> Game<'a> {
             Lent::Orbs(v) => std::mem::swap(*v, &mut self.orbs),
             Lent::Projectiles(v) => std::mem::swap(*v, &mut self.creatures.projectiles),
             Lent::Stands(v) => std::mem::swap(*v, &mut self.armor_stands),
+            Lent::Bolts(v) => std::mem::swap(*v, &mut self.bolts),
         }
     }
     /// Records that the native entity API changed `id` (or shared state) during a crossing.

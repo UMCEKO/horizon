@@ -2,7 +2,7 @@
 
 use super::super::entity_life::Removal;
 use super::super::java_entities::{
-    EQUIPMENT, FIRE, FLAGS, HEALTH, ITEM, MOTION, NAME, POSITION, REMOVAL, RIDING,
+    EQUIPMENT, FIRE, FLAGS, HEALTH, ITEM, MOTION, NAME, POSITION, REMOVAL, RIDING, SPECIES,
 };
 use super::*;
 use horizon_java_host::bridge::Ent;
@@ -31,7 +31,7 @@ fn kill(game: &mut Game<'static>, id: Ent) {
     after(game, id, HEALTH | REMOVAL);
 }
 
-fn hurt(game: &mut Game<'static>, id: Ent, source: &str, amount: f32) -> bool {
+fn hurt(game: &mut Game<'static>, id: Ent, source: &Source, amount: f32) -> bool {
     let hurt = game.java_hurt_target(id.0, source, amount);
     after(game, id, HEALTH | REMOVAL);
     hurt
@@ -116,9 +116,54 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     }
 
     "dev/horizonlab/javamods/boot/EntityViews".spawn
-    "([B)I" =>
-    fn entities_spawn(game, saved: Bytes) -> i32 {
-        game.java_spawn_entity(&saved.0) as i32
+    "([B[B)I" =>
+    fn entities_spawn(game, saved: Bytes, species: Bytes) -> i32 {
+        game.java_spawn_entity(&saved.0, &species.0) as i32
+    }
+
+    "net/minecraft/world/entity/item/PrimedTnt".setFuse
+    "(I)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
+    fn tnt_set_fuse(game, id: Ent, fuse: i32) -> () {
+        if let Some(t) = game.tnts.iter_mut().find(|t| t.id == id.0) {
+            t.fuse = fuse;
+        }
+        after(game, id, SPECIES);
+    }
+
+    "net/minecraft/world/entity/item/PrimedTnt".setBlockState
+    "(Lnet/minecraft/world/level/block/state/BlockState;)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
+    fn tnt_set_block_state(game, id: Ent, state: State) -> () {
+        if let (Some(t), Some(state)) = (game.tnts.iter_mut().find(|t| t.id == id.0), state.0) {
+            t.block_state = state;
+        }
+        after(game, id, SPECIES);
+    }
+
+    "net/minecraft/world/entity/LightningBolt".setVisualOnly
+    "(Z)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
+    fn bolt_set_visual_only(game, id: Ent, visual_only: bool) -> () {
+        if let Some(b) = game.bolts.iter_mut().find(|b| b.id == id.0) {
+            b.visual_only = visual_only;
+        }
+        after(game, id, SPECIES);
+    }
+
+    "net/minecraft/world/entity/LightningBolt".setDamage
+    "(F)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
+    fn bolt_set_damage(game, id: Ent, damage: f32) -> () {
+        if let Some(b) = game.bolts.iter_mut().find(|b| b.id == id.0) {
+            b.damage = damage;
+        }
+        after(game, id, SPECIES);
+    }
+
+    "net/minecraft/world/entity/Entity".thunderHit
+    "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/entity/LightningBolt;)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
+    fn entity_thunder_hit(game, id: Ent, _level: Skip, bolt: Bytes) -> () {
+        if let (Some(hit), Some(t)) = (Game::java_bolt_hit(&bolt.0), game.java_target(id.0)) {
+            game.thunder_hit_entity(t, &hit, &mut Vec::new());
+        }
+        after(game, id, HEALTH | FIRE | REMOVAL | FLAGS | SPECIES);
     }
 
     "net/minecraft/world/entity/Entity".discard
@@ -159,20 +204,20 @@ horizon_java_host::java_bridges! { table for Game<'static> {
 
     "net/minecraft/world/entity/Entity".hurt
     "(Lnet/minecraft/world/damagesource/DamageSource;F)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
-    fn entity_hurt(game, id: Ent, source: Text, amount: f32) -> () {
-        hurt(game, id, &source.0, amount);
+    fn entity_hurt(game, id: Ent, source: Source, amount: f32) -> () {
+        hurt(game, id, &source, amount);
     }
 
     "net/minecraft/world/entity/LivingEntity".hurtServer
     "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/damagesource/DamageSource;F)Z" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
-    fn living_hurt_server(game, id: Ent, _level: Skip, source: Text, amount: f32) -> bool {
-        hurt(game, id, &source.0, amount)
+    fn living_hurt_server(game, id: Ent, _level: Skip, source: Source, amount: f32) -> bool {
+        hurt(game, id, &source, amount)
     }
 
     "net/minecraft/world/entity/item/ItemEntity".hurtServer
     "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/damagesource/DamageSource;F)Z" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
-    fn item_hurt_server(game, id: Ent, _level: Skip, source: Text, amount: f32) -> bool {
-        hurt(game, id, &source.0, amount)
+    fn item_hurt_server(game, id: Ent, _level: Skip, source: Source, amount: f32) -> bool {
+        hurt(game, id, &source, amount)
     }
 
     "net/minecraft/world/entity/Entity".setDeltaMovement

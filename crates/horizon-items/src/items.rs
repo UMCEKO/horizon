@@ -513,6 +513,30 @@ impl Items {
         self.get(&stack.item).is_some_and(|i| i.fire_resistant)
     }
 
+    /// `ItemStack.canBeHurtBy`: false when the `damage_resistant` component (or the legacy
+    /// fire resistance, for the fire tag) covers `damage_type`, named or through one of `tags`.
+    pub fn can_be_hurt_by(&self, stack: &ItemStack, damage_type: &str, tags: &[&str]) -> bool {
+        let covers = |id: &str| {
+            id == damage_type || id.strip_prefix('#').is_some_and(|tag| tags.contains(&tag))
+        };
+        if let Some(data) = stack.data()
+            && let Some((_, v)) = data
+                .other
+                .iter()
+                .find(|(key, _)| key == "minecraft:damage_resistant")
+        {
+            return !match v.get("types") {
+                Some(horizon_world::nbt::Tag::String(id)) => id.to_string().is_ok_and(|id| covers(&id)),
+                Some(horizon_world::nbt::Tag::List(ids)) => ids.iter().any(|t| {
+                    matches!(t, horizon_world::nbt::Tag::String(id) if id.to_string().is_ok_and(|id| id == damage_type))
+                }),
+                _ => false,
+            };
+        }
+        !(tags.contains(&"minecraft:is_fire")
+            && self.get(&stack.item).is_some_and(|i| i.fire_resistant))
+    }
+
     /// `ItemStack.canBeHurtBy` for the cactus damage type: a `damage_resistant`
     /// component naming `minecraft:cactus`, or a damage type tag that holds it.
     /// (`#minecraft:is_fire`, as on netherite gear, does not.)

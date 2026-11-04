@@ -1260,6 +1260,7 @@ mod item_column_tests {
         let at = Vec3::new(x, y, z);
         ItemEntity {
             removed: false,
+            invulnerable: false,
             health: 5,
             fire_ticks: 0,
             id,

@@ -252,9 +252,9 @@ impl Game<'_> {
         if self.world.light(x, y, z) >> 4 != 15 {
             return;
         }
-        self.spawn_bolt(at, false);
+        let id = self.spawn_bolt(at, false);
         // The summon effect's owner is the thrower: LightningBolt.setCause.
-        if let Some(bolt) = self.bolts.last_mut() {
+        if let Some(bolt) = self.bolts.iter_mut().find(|b| Some(b.id) == id) {
             bolt.cause = Some(guest);
         }
         self.audio

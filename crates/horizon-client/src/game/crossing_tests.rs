@@ -212,6 +212,7 @@ fn items_in_a_crossing_are_in_place_added_ones_wait_and_removed_ones_are_skipped
             bob_offset: 0.0,
             ticks: 0,
             removed: false,
+            invulnerable: false,
         });
         game.next_entity
     };

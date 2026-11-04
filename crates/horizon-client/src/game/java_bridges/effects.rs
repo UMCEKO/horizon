@@ -222,7 +222,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
 
     "net/minecraft/server/level/ServerLevel".explode
     "(Lnet/minecraft/world/entity/Entity;Lnet/minecraft/world/damagesource/DamageSource;Lnet/minecraft/world/level/ExplosionDamageCalculator;DDDFZLnet/minecraft/world/level/Level$ExplosionInteraction;Lnet/minecraft/core/particles/ParticleOptions;Lnet/minecraft/core/particles/ParticleOptions;Lnet/minecraft/util/random/WeightedList;Lnet/minecraft/core/Holder;)V" =>
-    fn level_explode(game, _source: Skip, damage: Text, _calculator: Skip, x: f64, y: f64, z: f64, radius: f32, fire: bool, interaction: i32, _small: Skip, _large: Skip, _block_particles: Skip, _sound: Skip) -> () {
+    fn level_explode(game, _source: Skip, damage: Source, _calculator: Skip, x: f64, y: f64, z: f64, radius: f32, fire: bool, interaction: i32, _small: Skip, _large: Skip, _block_particles: Skip, _sound: Skip) -> () {
         let interaction = match interaction {
             1 => game.destroy_type("block_explosion_drop_decay"),
             2 if game.ui.rules.bool("mob_griefing") => game.destroy_type("mob_explosion_drop_decay"),
@@ -233,7 +233,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
             }
             _ => BlockInteraction::Keep,
         };
-        let damage_type = if damage.0.is_empty() { "minecraft:explosion" } else { &damage.0 };
+        let damage_type = if damage.kind.is_empty() { "minecraft:explosion" } else { &damage.kind };
         if let Err(e) = game.server_explode_as([x, y, z], radius, interaction, fire, damage_type, None) {
             log::warn!("Horizon: a Java mod's explosion: {e}");
         }

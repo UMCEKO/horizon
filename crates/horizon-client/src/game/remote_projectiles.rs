@@ -262,14 +262,11 @@ impl Game<'_> {
         self.remove_remote_projectile(id);
         match kind {
             "minecraft:evoker_fangs" => self.insert_fangs(id, position, yaw, 0, 0),
-            "minecraft:tnt" => self.tnts.push(super::tnt::PrimedTnt {
-                id,
-                position: at,
-                previous: at,
-                velocity,
-                fuse: 80,
-                on_ground: false,
-            }),
+            "minecraft:tnt" => {
+                let state = self.tnt_default_state();
+                let tnt = super::tnt::PrimedTnt::new(id, at, velocity, 80, state);
+                self.level_add(NewEntity::Tnt(tnt), Origin::Fresh, None);
+            }
             // FallingBlockEntity.recreateFromPacket: the block state is the data.
             "minecraft:falling_block" => self.falling.push(FallingBlock {
                 id,
@@ -431,8 +428,10 @@ impl Game<'_> {
         for (index, _, value) in values {
             if let Some(t) = self.tnts.iter_mut().find(|t| t.id == id) {
                 // PrimedTnt.DATA_FUSE_ID.
-                if let (8, Value::Int(fuse)) = (index, value) {
-                    t.fuse = *fuse;
+                match (index, value) {
+                    (8, Value::Int(fuse)) => t.fuse = *fuse,
+                    (9, Value::Id(state)) => t.block_state = BlockStateId(*state as u32),
+                    _ => {}
                 }
             } else if let Some(f) = self.falling.iter_mut().find(|f| f.id == id) {
                 // FallingBlockEntity.DATA_START_POS (the model's seed).
@@ -536,11 +535,15 @@ impl Game<'_> {
             &self.pack.assets,
             self.res.facts(),
         );
-        self.tnts.retain_mut(|t| {
+        let mut spent = Vec::new();
+        for t in &mut self.tnts {
             // A fluid lookup that fails leaves it where its move put it.
             let _ = t.tick(world, collision, assets, facts);
-            t.fuse > 0
-        });
+            if t.fuse <= 0 {
+                spent.push(t.id);
+            }
+        }
+        self.level_remove_ids(Kind::Tnt, &spent, Removal::Discarded);
         // FallingBlockEntity.tick runs on a client too: the block falls by
         // itself between the server's updates (every 20 ticks), then waits
         // where it lands for the server to place it and remove it.
@@ -703,7 +706,7 @@ impl Game<'_> {
 
     pub(super) fn remove_remote_projectile(&mut self, id: u32) {
         self.fangs.list.retain(|f| f.id != id);
-        self.tnts.retain(|t| t.id != id);
+        self.level_remove(Kind::Tnt, id, Removal::Discarded);
         self.falling.retain(|f| f.id != id);
         self.level_remove(Kind::Projectile, id, Removal::Discarded);
         self.tridents.retain(|t| t.id != id);
@@ -719,7 +722,7 @@ impl Game<'_> {
     /// Every one a server sent (a new connection, level or dimension).
     pub(super) fn clear_remote_projectiles(&mut self) {
         self.fangs.list.clear();
-        self.tnts.clear();
+        self.level_remove_all(Kind::Tnt, Removal::UnloadedToChunk);
         self.falling.clear();
         self.level_remove_all(Kind::Projectile, Removal::UnloadedToChunk);
         self.tridents.clear();

@@ -136,6 +136,36 @@ impl Game<'_> {
                 entity_nbt::arrow_to_nbt(p, random_uuid(), owner, in_block, None)
                     .or_else(|| entity_nbt::fireball_to_nbt(p, random_uuid(), owner, None))?
             }
+            Target::Tnt(id) => {
+                let uuid = self.uuid_for(id);
+                let t = self.tnts.iter().find(|t| t.id == id)?;
+                let state = self.state_to_nbt(t.block_state);
+                entity_nbt::tnt_to_nbt(
+                    &entity_nbt::TntNbt {
+                        position: t.position,
+                        velocity: t.velocity,
+                        on_ground: t.on_ground,
+                        fuse: t.fuse,
+                        state: Some(state),
+                        power: t.explosion_power,
+                        owner: t.owner,
+                    },
+                    uuid,
+                    self.persist.raw.get(&id),
+                )
+            }
+            Target::Bolt(id) => {
+                let uuid = self.uuid_for(id);
+                let b = self.bolts.iter().find(|b| b.id == id)?;
+                Tag::compound([
+                    ("id", Tag::String("minecraft:lightning_bolt".into())),
+                    ("UUID", Tag::IntArray(uuid.to_vec())),
+                    (
+                        "Pos",
+                        Tag::List(b.at.iter().map(|v| Tag::Double(v.to_bits())).collect()),
+                    ),
+                ])
+            }
             Target::Crystal(id) => {
                 let c = self.crystals.iter().find(|c| c.id == id)?;
                 let (uuid, raw) = self.persist_anon("minecraft:end_crystal", c.position);
