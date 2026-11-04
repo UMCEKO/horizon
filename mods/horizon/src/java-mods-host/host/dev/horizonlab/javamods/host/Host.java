@@ -1,6 +1,7 @@
 package dev.horizonlab.javamods.host;
 
 import java.lang.invoke.MethodHandle;
+import java.nio.ByteBuffer;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.BiFunction;
@@ -11,12 +12,23 @@ import net.neoforged.fml.startup.Entrypoint;
 public final class Host extends Entrypoint {
     public static final Map<String, Long> MARKS = new LinkedHashMap<>();
     public static volatile BiFunction<String, String, String> entry;
-    public static volatile BiFunction<String, byte[], byte[]> handler;
+    public static volatile Dispatcher dispatcher;
     public static volatile ClassLoader gameLoader;
     public static volatile ThreadGroup serverGroup;
     /** The methods the class processor serves from Rust, set before FML starts. */
     public static volatile String[] bridges = new String[0];
     static long t0;
+
+    /** Rust's requests, as the boot sets them: an int op and a direct buffer holding the request, which the reply replaces. */
+    public interface Dispatcher {
+        /** The reply's length, written to the buffer's start; 0 for none, -1 failed, -2 too big for the buffer (then `overflow`). */
+        int dispatch(int op, ByteBuffer arena, int length);
+
+        byte[] overflow();
+
+        /** The ops in index order. */
+        String[] ops();
+    }
 
     private Host() {}
 
@@ -26,6 +38,8 @@ public final class Host extends Entrypoint {
     public static native long shapeHandle(double[] x, double[] y, double[] z, boolean[] occupied);
     public static native void shapeFree(long handle);
     public static native void link(Class<?> target);
+    /** The crossing bench's reentrancy native, registered by the bench alone. */
+    public static native int benchBack(int tag);
 
     public static void publish(String[] table) {
         bridges = table;
@@ -50,9 +64,23 @@ public final class Host extends Entrypoint {
         mark("boot_returned");
     }
 
-    public static byte[] handle(String op, byte[] input) {
+    /** Rust's request: the op is an index into `ops()`. */
+    public static int dispatch(int op, ByteBuffer arena, int length) {
         useGameLoader();
-        return handler.apply(op, input);
+        return dispatcher.dispatch(op, arena, length);
+    }
+
+    /** A buffer the Rust thread that asked fills with requests and reads replies from; Java owns its memory. */
+    public static ByteBuffer arena(int capacity) {
+        return ByteBuffer.allocateDirect(capacity);
+    }
+
+    public static String[] ops() {
+        return dispatcher.ops();
+    }
+
+    public static byte[] overflow() {
+        return dispatcher.overflow();
     }
 
     /** A thread attached from Rust has no context class loader, and FML's bytecode lookups and mods' services read it. */

@@ -97,6 +97,9 @@ public final class ClientBridge {
             return renderThread;
         });
         GameBridge.client = ClientBridge::call;
+        for (String name : OPS.keySet()) Crossing.client(name);
+        WorldFrame.decide();
+        NativeSounds.decide();
         CreativeTabs.install();
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.LOWEST, true,
                 net.neoforged.neoforge.client.event.InputEvent.MouseScrollingEvent.class, event -> scrollCanceled = event.isCanceled());
@@ -152,38 +155,51 @@ public final class ClientBridge {
         }
     }
 
+    private interface Op {
+        byte[] run(DataInputStream in) throws Throwable;
+    }
+
+    /** Every op of the window's calls, in the order Rust reads them. */
+    private static final java.util.Map<String, Op> OPS = new java.util.LinkedHashMap<>();
+
+    static {
+        OPS.put("client_connect", in -> connect(in));
+        OPS.put("client_connect_remote", in -> RemoteClient.connect(in));
+        OPS.put("client_wire_take", in -> RemoteClient.take());
+        OPS.put("client_remote_frame", in -> RemoteClient.configure(in));
+        OPS.put("client_click", in -> click(in));
+        OPS.put("client_tick", in -> tick(in));
+        OPS.put("client_frame", in -> frame(in));
+        OPS.put("client_hud_frame", in -> hudFrame(in));
+        OPS.put("client_world_frame", in -> worldFrame(in));
+        OPS.put("client_input", in -> input(in));
+        OPS.put("client_scroll", in -> scroll(in));
+        OPS.put("client_font", in -> font(in));
+        OPS.put("client_leave", in -> leave());
+        OPS.put("client_models_probe", in -> modelsProbe());
+        OPS.put("client_resources", in -> ClientResources.export());
+        OPS.put("client_baked", in -> ClientResources.baked());
+        OPS.put("client_keys", in -> ModKeyMappings.export());
+        OPS.put("client_keys_apply", in -> ModKeyMappings.apply(in));
+        OPS.put("client_models_take", in -> Minecraft.getInstance().level == null ? new byte[0] : ClientModels.take(Minecraft.getInstance().level));
+        OPS.put("client_items_take", in -> BlockRenders.items(in));
+        OPS.put("client_items_decorations", in -> BlockRenders.decorations(in));
+        OPS.put("client_renders_take", in -> Minecraft.getInstance().level == null ? new byte[0] : BlockRenders.take(Minecraft.getInstance().level));
+        OPS.put("client_shape", in -> shape(in));
+        OPS.put("client_destroy_progress", in -> destroyProgress(in));
+        OPS.put("client_item_text", in -> ItemText.take(in));
+        OPS.put("client_collisions_take", in -> collisions());
+        OPS.put("client_creative_tabs", in -> CreativeTabs.take());
+        OPS.put("client_sound_listened", in -> NativeSounds.listenedReply());
+        OPS.put("client_play_sound", in -> NativeSounds.ask(in));
+    }
+
     private static byte[] run(String op, byte[] input) {
         try {
             var in = new DataInputStream(new ByteArrayInputStream(input));
-            return switch (op) {
-                case "client_connect" -> connect(in);
-                case "client_connect_remote" -> RemoteClient.connect(in);
-                case "client_wire_take" -> RemoteClient.take();
-                case "client_remote_frame" -> RemoteClient.configure(in);
-                case "client_click" -> click(in);
-                case "client_tick" -> tick(in);
-                case "client_frame" -> frame(in);
-                case "client_hud_frame" -> hudFrame(in);
-                case "client_input" -> input(in);
-                case "client_scroll" -> scroll(in);
-                case "client_font" -> font(in);
-                case "client_leave" -> leave();
-                case "client_models_probe" -> modelsProbe();
-                case "client_resources" -> ClientResources.export();
-                case "client_baked" -> ClientResources.baked();
-                case "client_keys" -> ModKeyMappings.export();
-                case "client_keys_apply" -> ModKeyMappings.apply(in);
-                case "client_models_take" -> Minecraft.getInstance().level == null ? new byte[0] : ClientModels.take(Minecraft.getInstance().level);
-                case "client_items_take" -> BlockRenders.items(in);
-                case "client_items_decorations" -> BlockRenders.decorations(in);
-                case "client_renders_take" -> Minecraft.getInstance().level == null ? new byte[0] : BlockRenders.take(Minecraft.getInstance().level);
-                case "client_shape" -> shape(in);
-                case "client_destroy_progress" -> destroyProgress(in);
-                case "client_item_text" -> ItemText.take(in);
-                case "client_collisions_take" -> collisions();
-                case "client_creative_tabs" -> CreativeTabs.take();
-                default -> throw new IllegalArgumentException(op);
-            };
+            Op found = OPS.get(op);
+            if (found == null) throw new IllegalArgumentException(op);
+            return found.run(in);
         } catch (Throwable t) {
             System.err.println("Horizon: the Java client's " + op + " failed");
             t.printStackTrace();
@@ -484,13 +500,16 @@ public final class ClientBridge {
         cameraAndPick(minecraft);
         // `runTick`: the game time advances, then the window's own count of ticks and its progress into the next replace the timer's.
         advance(minecraft, partial);
-        for (int n = 0; n < ticks; n++) minecraft.tick();
+        for (int n = 0; n < ticks; n++) {
+            Animate.next();
+            minecraft.tick();
+        }
         windowTicks++;
         timer(minecraft).updatePauseState(minecraft.isPaused());
         timer(minecraft).updateFrozenState(!((dev.horizonlab.javamods.boot.mixin.MinecraftActions) minecraft).horizon$runningNormally());
         if (minecraft.level != null) BlockRenders.probe(minecraft.level, BLOCK_ENTITIES.values());
         cameraAndPick(minecraft);
-        return status(hud());
+        return status(hud(), WorldFrame.take(WorldFrame.camera(), partial, timer(minecraft), windowWidth, windowHeight, false));
     }
 
     private static byte[] lastHud;
@@ -567,6 +586,34 @@ public final class ClientBridge {
             data.write(bytes);
         }
         return out.toByteArray();
+    }
+
+    /** The world's recording for one window frame while it changes, as `hudFrame` records the HUD: the window's camera and progress into the next tick. Answers whether it still animates, then the recording if it differs from the last. */
+    private static byte[] worldFrame(DataInputStream in) throws Exception {
+        size(in);
+        float partial = in.readFloat();
+        var cam = new WorldFrame.Cam(in.readDouble(), in.readDouble(), in.readDouble(), in.readFloat(), in.readFloat(), in.readFloat(), in.readFloat());
+        Minecraft minecraft = Minecraft.getInstance();
+        WorldFrame.camera(cam);
+        advance(minecraft, partial);
+        timer(minecraft).advanceRealTime(net.minecraft.util.Util.getMillis());
+        long started = System.nanoTime();
+        byte[] blob = WorldFrame.take(cam, partial, timer(minecraft), windowWidth, windowHeight, true);
+        if (HUD_DEBUG) System.err.println("Horizon: world frame " + (System.nanoTime() - started) / 1000 + " us, " + (blob == null ? "unchanged" : blob.length + " bytes") + ", animating " + WorldFrame.animating);
+        var out = new ByteArrayOutputStream();
+        var data = new DataOutputStream(out);
+        data.writeBoolean(WorldFrame.animating);
+        data.writeBoolean(blob != null);
+        if (blob != null) {
+            data.writeInt(blob.length);
+            data.write(blob);
+        }
+        return out.toByteArray();
+    }
+
+    /** The columns the window has given the Java client, for the sections a world event walks. */
+    static it.unimi.dsi.fastutil.longs.LongList columns() {
+        return new it.unimi.dsi.fastutil.longs.LongArrayList(CHUNKS);
     }
 
     /** `Hud.extractRenderState` once a tick, as the frame after it would see it: only the mods' layers draw (`HudLayersMixin`), then `RenderGuiEvent.Post`. Null when it equals what the window already has. */
@@ -648,8 +695,11 @@ public final class ClientBridge {
     private static final byte CHUNK = 11;
     private static final byte WIRE = 12;
     private static final byte CAMERA = 13;
+    private static final byte ANIMATE = 14;
+    private static final byte PARTICLES = 15;
 
     private static double cursorX, cursorY;
+    private static BlockPos cameraBlock;
 
     /** The window's input in its order, each through the callback the window's library gives a real client: `KeyboardHandler.keyPress` and `charTyped`, `MouseHandler.onButton`, `onMove` and `onScroll`. */
     private static void events(DataInputStream in) throws Exception {
@@ -691,7 +741,17 @@ public final class ClientBridge {
                     if (minecraft.player != null && !minecraft.player.isSpectator()) minecraft.getConnection().send(new net.minecraft.network.protocol.game.ServerboundPlayerActionPacket(
                             net.minecraft.network.protocol.game.ServerboundPlayerActionPacket.Action.SWAP_ITEM_WITH_OFFHAND, BlockPos.ZERO, net.minecraft.core.Direction.DOWN));
                 }
-                case CAMERA -> BlockRenders.camera(in.readDouble(), in.readDouble(), in.readDouble());
+                case ANIMATE -> Animate.group(in);
+                case PARTICLES -> minecraft.options.particles().set(net.minecraft.server.level.ParticleStatus.values()[Math.max(0, Math.min(2, in.readInt()))]);
+                case CAMERA -> {
+                    var cam = new WorldFrame.Cam(in.readDouble(), in.readDouble(), in.readDouble(), in.readFloat(), in.readFloat(), in.readFloat(), in.readFloat());
+                    WorldFrame.camera(cam);
+                    var block = BlockPos.containing(cam.x(), cam.y(), cam.z());
+                    if (!block.equals(cameraBlock)) {
+                        cameraBlock = block;
+                        BlockRenders.camera(cam.x(), cam.y(), cam.z());
+                    }
+                }
                 case WIRE -> RemoteClient.inbound(in.readNBytes(in.readInt()));
                 case CHUNK -> CHUNK_EVENTS.add(new int[] {in.readInt(), in.readInt(), in.readBoolean() ? 1 : 0});
                 case HOTBAR -> {
@@ -876,7 +936,7 @@ public final class ClientBridge {
         return new byte[] {(byte) (scrollCanceled ? 1 : 0)};
     }
 
-    private static byte[] status(byte[] hud) throws IOException {
+    private static byte[] status(byte[] hud, byte[] world) throws IOException {
         Screen screen = javaScreen();
         if (screen != null && screen != lastScreen) opened++;
         lastScreen = screen;
@@ -895,6 +955,7 @@ public final class ClientBridge {
         }
         TOLD.clear();
         ClientSounds.take(out);
+        ClientParticles.take(out);
         out.writeInt(shapes);
         out.writeBoolean(hud != null);
         if (hud != null) {
@@ -902,6 +963,12 @@ public final class ClientBridge {
             out.write(hud);
         }
         out.writeBoolean(animating);
+        out.writeBoolean(world != null);
+        if (world != null) {
+            out.writeInt(world.length);
+            out.write(world);
+        }
+        out.writeBoolean(WorldFrame.animating);
         out.writeBoolean(CreativeTabs.ready());
         return bytes.toByteArray();
     }
@@ -932,7 +999,7 @@ public final class ClientBridge {
         events(in);
         receive();
         chunkEvents();
-        return status(null);
+        return status(null, null);
     }
 
     /** Dev: how many of the code-built block models the reload baked have parts. */
@@ -970,6 +1037,8 @@ public final class ClientBridge {
         minecraft.gui.setScreen(null);
         ClientModels.forget();
         BlockRenders.forget();
+        WorldFrame.forget();
+        cameraBlock = null;
         if (player != null) Clients.leave(player);
         player = null;
         listener = null;
@@ -979,6 +1048,8 @@ public final class ClientBridge {
         lastRecorded = null;
         animating = false;
         ClientSounds.forget();
+        ClientParticles.forget();
+        Animate.forget();
         Clients.registries = null;
         return new byte[] {1};
     }

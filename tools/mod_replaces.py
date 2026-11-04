@@ -176,6 +176,21 @@ for _op in list(range(0x99, 0xa9)) + list(range(0xb2, 0xb9)) + [0xbb, 0xbd, 0xc0
     LENGTHS[_op] = 3
 
 
+def op_length(code, p):
+    """The length in bytes of the instruction at p."""
+    op = code[p]
+    if op == 0xaa:
+        pad = 1 + (-(p + 1) % 4)
+        low, high = struct.unpack_from('>ii', code, p + pad + 4)
+        return pad + 12 + 4 * (high - low + 1)
+    if op == 0xab:
+        pad = 1 + (-(p + 1) % 4)
+        return pad + 8 + 8 * u4(code, p + pad + 4)
+    if op == 0xc4:
+        return 6 if code[p + 1] == 0x84 else 4
+    return LENGTHS.get(op, 1)
+
+
 def scan_code(code, pool):
     """[('static', owner, name) | ('class', name) | ('call', owner, name, desc) | ('indy', bootstrap, name, desc)] in order."""
     events = []
@@ -194,17 +209,7 @@ def scan_code(code, pool):
         elif op == 0xba:
             _, bootstrap, nt = pool.e[u2(code, p + 1)]
             events.append(('indy', bootstrap, *pool.nat(nt)))
-        if op == 0xaa:
-            p += 1 + (-(p + 1) % 4)
-            low, high = struct.unpack_from('>ii', code, p + 4)
-            p += 12 + 4 * (high - low + 1)
-        elif op == 0xab:
-            p += 1 + (-(p + 1) % 4)
-            p += 8 + 8 * u4(code, p + 4)
-        elif op == 0xc4:
-            p += 6 if code[p + 1] == 0x84 else 4
-        else:
-            p += LENGTHS.get(op, 1)
+        p += op_length(code, p)
     return events
 
 
@@ -232,7 +237,8 @@ def parse_class(data, members=True, annotations=False, code=False):
             if kind == 'RuntimeVisibleAnnotations' and annotations:
                 m['annos'] = read_annotations(data, p + 6, pool)
             elif kind == 'Code' and code:
-                m['events'] = scan_code(data[p + 14:p + 14 + u4(data, p + 10)], pool)
+                m['code'] = data[p + 14:p + 14 + u4(data, p + 10)]
+                m['events'] = scan_code(m['code'], pool)
             p += 6 + size
         info['methods'].append(m)
     attrs, p = u2(data, p), p + 2
@@ -321,6 +327,7 @@ class Hierarchy:
 
     def __init__(self, libs):
         self.libs = libs
+        self.jars = []
         self.heads = {n: (e[0], e[1]) for n, e in libs.items()}
         self._ancestors = {}
 
@@ -493,8 +500,22 @@ def lambda_event(info, bootstrap):
     return None
 
 
+def lambda_impl(info, bootstrap):
+    """(class, name, descriptor, static) of the method a listener lambda or method reference runs, else None."""
+    pool = info['pool']
+    if bootstrap >= len(info['bootstraps']):
+        return None
+    args = info['bootstraps'][bootstrap][1]
+    handle = pool.e[args[1]] if len(args) > 1 else None
+    if not handle or handle[0] != 15:
+        return None
+    return (*pool.ref(handle[2]), handle[1] == 6)
+
+
 def class_listeners(info, hier):
-    """[(event, via, method, priority, receive_canceled, explicit bus)] of one parsed class; event is None when it can't be resolved."""
+    """[(event, via, method, priority, receive_canceled, explicit bus, implementation)] of one parsed class; event is None when it can't be resolved.
+
+    The implementation is (class, name, descriptor, static), or None when it isn't one method."""
     found = []
     subscriber = next((v for d, v in info['annos'].items() if d.endswith('/EventBusSubscriber;')), None)
     explicit = str(subscriber['bus']).lower() if subscriber and subscriber.get('bus') else None
@@ -502,19 +523,21 @@ def class_listeners(info, hier):
         sub = m['annos'].get(SUBSCRIBE)
         if sub is not None and params(m['desc']):
             via = 'subscriber-class' if subscriber is not None else 'subscribe'
-            found.append((params(m['desc'])[0], via, m['name'], sub.get('priority', 'NORMAL'), bool(sub.get('receiveCanceled')), explicit))
-        indy = cls = priority = None
+            found.append((params(m['desc'])[0], via, m['name'], sub.get('priority', 'NORMAL'), bool(sub.get('receiveCanceled')), explicit,
+                          (info['name'], m['name'], m['desc'], bool(m['access'] & ACC_STATIC))))
+        indy = cls = priority = impl = None
         for ev in m['events']:
             if ev[0] == 'indy' and ev[3].endswith(')Ljava/util/function/Consumer;'):
                 indy = lambda_event(info, ev[1])
+                impl = lambda_impl(info, ev[1])
             elif ev[0] == 'class':
                 cls = ev[1]
             elif ev[0] == 'static' and ev[1] == 'net/neoforged/bus/api/EventPriority':
                 priority = ev[2]
             elif ev[0] == 'call' and ev[2] in ('addListener', 'addGenericListener') and ev[1] and hier.is_a(ev[1], EVENT_BUS):
                 event = cls if 'Ljava/lang/Class;' in ev[3] and ev[2] == 'addListener' and cls else indy
-                found.append((event, 'addListener', m['name'], priority if 'EventPriority;' in ev[3] and priority else 'NORMAL', False, None))
-                indy = cls = priority = None
+                found.append((event, 'addListener', m['name'], priority if 'EventPriority;' in ev[3] and priority else 'NORMAL', False, None, impl))
+                indy = cls = priority = impl = None
     return found
 
 
@@ -565,6 +588,42 @@ def top_routing(routes):
     return min(routes, key=ROUTING_ORDER.index)
 
 
+ANIMATE_CLOSURE = ROOT / 'mods' / 'horizon' / 'src' / 'java-mods-host' / 'boot' / 'res' / 'animate_closure.tsv'
+
+
+def animate_classes(report):
+    """The mod classes that override a vanilla `animateTick`, whatever the ledger says of the method: the boot runs them in Java for the mod's own blocks and fluids."""
+    found = set()
+    for key, entry in report['methods'].items():
+        if not key.endswith('#animateTick'):
+            continue
+        for change in entry['changes']:
+            if change['mechanism'] == 'override' and not change['abstract']:
+                found.update(change['classes'])
+    return sorted(found)
+
+
+def animate_routing(report, closure_tsv=ANIMATE_CLOSURE):
+    """What the mixins in `report` make Java run of the animate code, by the boot's rule (`Animate.route`): `wholeLoop`, and the block and fluid classes patched."""
+    rows = [line.split('\t') for line in Path(closure_tsv).read_text().splitlines() if line]
+    whole, blocks, fluids = False, set(), set()
+    for key, entry in report['methods'].items():
+        owner, _, name = key.partition('#')
+        for change in entry['changes']:
+            if change['mechanism'] != 'mixin':
+                continue
+            for role, row_owner, row_name, desc, *served in rows:
+                if row_owner != owner or row_name != name or (change.get('desc') and change['desc'] != desc):
+                    continue
+                if role == 'loop':
+                    whole = True
+                elif role == 'block':
+                    blocks.update(served[0].split(','))
+                else:
+                    fluids.update(served[0].split(','))
+    return {'wholeLoop': whole, 'patchedBlocks': sorted(blocks), 'patchedFluids': sorted(fluids)}
+
+
 def host_words(lines=None):
     return set(re.findall(r'\w+', '\n'.join(text for _, _, text in (ex.host_lines() if lines is None else lines))))
 
@@ -575,6 +634,7 @@ def analyse(install, out, ledger, cache=None, entries=None, host=None, log=print
     started = time.time()
     jars = library_jars(install / 'libraries')
     hier = Hierarchy(load_library_index(jars, cache))
+    hier.jars = jars
     spis = spi_names(jars)
     log(f'libraries: {len(hier.libs)} classes, {time.time() - started:.1f}s')
     archives, classes = [], []
@@ -636,7 +696,7 @@ def analyse(install, out, ledger, cache=None, entries=None, host=None, log=print
             item = overrides[(mod, key, desc)]
             item['classes'].add(name.replace('/', '.'))
             item.update(extension=extension, abstract=abstract)
-        for event, via, method, priority, receive_canceled, explicit in class_listeners(info, hier):
+        for event, via, method, priority, receive_canceled, explicit, _ in class_listeners(info, hier):
             if event is None:
                 mods[mod]['unresolved_listeners'] += 1
                 continue
@@ -686,7 +746,12 @@ def analyse(install, out, ledger, cache=None, entries=None, host=None, log=print
         keys = row.get('keys', {})
         summary[mod] = {'jars': row['jars'], 'can_analyse_ahead': not row['opaque'], 'opaque': sorted(set(row['opaque'])), 'counts': dict(sorted(row['counts'].items())),
                         'routing': {r: len(keys.get(r, ())) for r in ROUTING_ORDER if keys.get(r)}, 'unresolved_listeners': row['unresolved_listeners']}
-    return {'format': 1, 'install': str(install), 'mods': summary, 'methods': dict(sorted(methods.items())), 'events': dict(sorted(events.items())),
+    try:
+        from . import mod_entity_facts as ef
+    except ImportError:
+        import mod_entity_facts as ef
+    entity_facts = ef.analyse(classes, archives, hier, entries, {'mods': summary, 'methods': methods})
+    return {'format': 1, 'entity_facts': entity_facts, 'install': str(install), 'mods': summary, 'methods': dict(sorted(methods.items())), 'events': dict(sorted(events.items())),
             'data': {k: dict(sorted(v.items())) for k, v in sorted(data_total.items())}, 'totals': dict(sorted(totals.items())), 'seconds': round(time.time() - started, 1)}
 
 
@@ -717,6 +782,25 @@ def markdown(result, top=40):
     return '\n'.join(lines) + '\n'
 
 
+def install_analysis(install, cache=None, log=print):
+    """INSTALL/analysis/entity-facts.json for the install's mods, redone only when the jars or this analysis changed; exits when an entity method has no state group."""
+    install = Path(install)
+    out = install / 'analysis'
+    sources = ''.join(hashlib.sha256((Path(__file__).resolve().parent / name).read_bytes()).hexdigest() for name in ('mod_replaces.py', 'mod_entity_facts.py', 'mod_parity.py'))
+    jars = [(j.name, j.stat().st_size, j.stat().st_mtime_ns) for j in sorted((install / 'mods').glob('*.jar'))]
+    stamp = hashlib.sha256(json.dumps([jars, sources]).encode()).hexdigest()
+    if (out / 'stamp').is_file() and (out / 'stamp').read_text() == stamp and (out / 'entity-facts.json').is_file():
+        return out / 'entity-facts.json'
+    out.mkdir(parents=True, exist_ok=True)
+    result = analyse(install, out, {}, cache, log=log)
+    facts = result['entity_facts']
+    if facts['unclassified']:
+        sys.exit('entity methods without a state group (add them to GROUPS in tools/mod_entity_facts.py):\n  ' + '\n  '.join(facts['unclassified']))
+    (out / 'entity-facts.json').write_text(json.dumps(facts, indent=1) + '\n')
+    (out / 'stamp').write_text(stamp)
+    return out / 'entity-facts.json'
+
+
 def run(args):
     ledger_path = Path(args.ledger)
     if not ledger_path.is_file():
@@ -726,10 +810,14 @@ def run(args):
     result = analyse(args.install, args.out, json.loads(ledger_path.read_text()), args.cache, entries)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    facts = result.pop('entity_facts')
+    (out / 'entity-facts.json').write_text(json.dumps(facts, indent=1) + '\n')
     (out / 'replaces.json').write_text(json.dumps(result, indent=1) + '\n')
     (out / 'replaces.md').write_text(markdown(result))
     print(f'{out / "replaces.json"}: {len(result["mods"])} mods, {len(result["methods"])} methods, {len(result["events"])} events in {time.time() - started:.1f}s')
     print(json.dumps(result['totals']))
+    if facts['unclassified']:
+        sys.exit('entity methods without a state group (add them to GROUPS in tools/mod_entity_facts.py):\n  ' + '\n  '.join(facts['unclassified']))
 
 
 def add_arguments(parser):

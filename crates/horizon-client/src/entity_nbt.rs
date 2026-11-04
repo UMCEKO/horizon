@@ -1758,6 +1758,7 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         pickup_delay: number(tag.get("PickupDelay")).unwrap_or(0).clamp(0, 32767) as u32,
         bob_offset,
         ticks: 0,
+        removed: false,
     })
 }
 
@@ -1836,6 +1837,7 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
         on_ground: flag(tag, "OnGround"),
         count,
         ticks: 0,
+        removed: false,
     };
     vec![orb]
 }
@@ -2689,6 +2691,7 @@ mod tests {
     #[test]
     fn item_entities_round_trip() {
         let e = ItemEntity {
+            removed: false,
             health: 2,
             fire_ticks: 73,
             thrower: Some([5, 6, 7, 8]),
@@ -2745,6 +2748,7 @@ mod tests {
     #[test]
     fn orbs_keep_their_count() {
         let o = ExperienceOrb {
+            removed: false,
             id: 0,
             position: Vec3::new(1.0, 2.0, 3.0),
             previous: Vec3::ZERO,

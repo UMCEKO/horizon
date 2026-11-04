@@ -43,6 +43,10 @@ pub(in crate::game) mod live {
         /// The Java client's playing sounds by its handle.
         sounds: std::collections::HashMap<i32, horizon_client::sound_engine::InstanceId>,
         sent: Sent,
+        /// One group of picked `animateTick` positions per window tick not yet sent, oldest first.
+        animate: std::collections::VecDeque<Vec<[i32; 3]>>,
+        /// This tick's picks, which the tick's end turns into a group.
+        picked: Vec<[i32; 3]>,
         /// The open screen's frame blurs what is behind it (`blurBeforeThisStratum`).
         blurred: bool,
     }
@@ -62,8 +66,8 @@ pub(in crate::game) mod live {
         /// One of the window's own screens opened over the world (and whether it pauses), or closed.
         Screen(bool, bool),
         Focus(bool),
-        /// The window camera's position, told when its block changes.
-        Camera([f64; 3]),
+        /// The window camera's position, yaw, pitch, field of view and far plane, told when its block or its view changes.
+        Camera([f64; 3], [f32; 4]),
         /// `handleKeybinds`' drop, with the whole stack or not.
         Drop(bool),
         SwapHands,
@@ -72,6 +76,10 @@ pub(in crate::game) mod live {
         Chunk(i32, i32, bool),
         /// A frame of the server's Java side, for the Java client's connection.
         Wire(&'a [u8]),
+        /// The positions native picked this tick that Java runs `animateTick` at.
+        Animate(&'a [[i32; 3]]),
+        /// The window's Particles option.
+        Particles(i32),
     }
 
     impl Input<'_> {
@@ -90,7 +98,9 @@ pub(in crate::game) mod live {
                 Input::Hotbar(_) => 10,
                 Input::Chunk(..) => 11,
                 Input::Wire(_) => 12,
-                Input::Camera(_) => 13,
+                Input::Camera(..) => 13,
+                Input::Animate(_) => 14,
+                Input::Particles(_) => 15,
             };
             out.0.push(kind);
             match *self {
@@ -126,7 +136,15 @@ pub(in crate::game) mod live {
                     out.bool(arrived);
                 }
                 Input::Wire(frame) => out.bytes(frame),
-                Input::Camera(at) => at.iter().for_each(|v| out.double(*v)),
+                Input::Camera(at, view) => {
+                    at.iter().for_each(|v| out.double(*v));
+                    view.iter().for_each(|v| out.float(*v));
+                }
+                Input::Animate(group) => {
+                    out.int(group.len() as i32);
+                    group.iter().flatten().for_each(|v| out.int(*v));
+                }
+                Input::Particles(level) => out.int(level),
             }
         }
     }
@@ -153,9 +171,10 @@ pub(in crate::game) mod live {
         size: Option<[i32; 3]>,
         native_screen: Option<(bool, bool)>,
         focused: Option<bool>,
-        camera: Option<[i32; 3]>,
+        camera: Option<([i32; 3], [f32; 4])>,
         cursor: Option<(f64, f64)>,
         motion: Option<Motion>,
+        particles: Option<i32>,
     }
 
     #[derive(Clone, Copy, PartialEq)]
@@ -231,6 +250,27 @@ pub(in crate::game) mod live {
                 item_text,
             }
         }
+    }
+
+    type JavaParticle = (
+        [f64; 3],
+        [f64; 3],
+        Option<horizon_protocol::entity_data::Particle>,
+    );
+
+    /// A status's particle entries: where, how fast and the particle type's codec bytes, which `None` when they don't read.
+    fn read_particles(reply: &mut In) -> Option<Vec<JavaParticle>> {
+        let mut found = Vec::new();
+        for _ in 0..reply.int()? {
+            let at = [reply.double()?, reply.double()?, reply.double()?];
+            let velocity = [reply.double()?, reply.double()?, reply.double()?];
+            let particle = horizon_protocol::entity_data::Particle::read(
+                &mut horizon_protocol::buf::Reader::new(reply.bytes()?),
+            )
+            .ok();
+            found.push((at, velocity, particle));
+        }
+        Some(found)
     }
 
     /// The pending geometry and renderer counts, which lead a status reply's variable parts.
@@ -584,7 +624,7 @@ pub(in crate::game) mod live {
     }
 
     impl Game<'_> {
-        fn java_client_window(&self) -> [i32; 3] {
+        pub(in crate::game) fn java_client_window(&self) -> [i32; 3] {
             let size = self
                 .renderer
                 .as_ref()
@@ -609,6 +649,7 @@ pub(in crate::game) mod live {
                 CLIENT.with_borrow_mut(|c| c.told.push(column));
             }
             self.java_client_sounds(reply)?;
+            self.java_client_particles(reply)?;
             let shapes = reply.int()?;
             let hud = reply
                 .bool()?
@@ -616,6 +657,13 @@ pub(in crate::game) mod live {
                 .flatten()
                 .map(<[u8]>::to_vec);
             let animating = reply.bool()?;
+            let world = reply
+                .bool()?
+                .then(|| reply.bytes())
+                .flatten()
+                .map(<[u8]>::to_vec);
+            let world_animating = reply.bool()?;
+            super::super::java_world_renders::java_world_status(world.as_deref(), world_animating);
             CLIENT.with_borrow_mut(|c| {
                 c.hud_animating = animating;
                 c.recorded = true;
@@ -672,6 +720,25 @@ pub(in crate::game) mod live {
                     }
                     _ => return None,
                 }
+            }
+            Some(())
+        }
+
+        /// The particles the Java client's `animateTick` made, which Horizon's engine draws: the limiter already ran in Java.
+        fn java_client_particles(&mut self, reply: &mut In) -> Option<()> {
+            for (at, velocity, particle) in read_particles(reply)? {
+                let Some(options) = particle
+                    .as_ref()
+                    .and_then(|particle| self.received_particle(particle, at))
+                else {
+                    let id = particle.map_or(-1, |particle| particle.id);
+                    thread_local! { static UNKNOWN: RefCell<std::collections::HashSet<i32>> = RefCell::default(); }
+                    if UNKNOWN.with_borrow_mut(|seen| seen.insert(id)) {
+                        log::info!("Horizon: Java particle {id} has no native particle yet (W3)");
+                    }
+                    continue;
+                };
+                self.particles.add_with(&options, at, velocity, true, true);
             }
             Some(())
         }
@@ -936,6 +1003,7 @@ pub(in crate::game) mod live {
             self.java_creative_tabs_left();
             horizon_client::dynamic_models::clear();
             horizon_client::dynamic_renders::clear();
+            super::super::java_world_renders::java_world_left();
             CLIENT.with_borrow_mut(|c| {
                 c.joined = false;
                 c.remote = false;
@@ -946,6 +1014,8 @@ pub(in crate::game) mod live {
                 c.hud.clear();
                 c.hud_animating = false;
                 c.owed = 0;
+                c.animate.clear();
+                c.picked.clear();
                 c.sent = Sent::default();
                 c.queue.clear();
                 c.queued = 0;
@@ -956,19 +1026,48 @@ pub(in crate::game) mod live {
             super::super::java_bridges::client_world::java_forget_client_world();
         }
 
-        /// `Minecraft.runTick` for the Java client, every tick: what the server sent it, then the real `Minecraft.tick`.
-        pub(in crate::game) fn java_client_tick(&mut self) {
+        /// The start of the window's tick: the Java client's last tick results are applied, before the window's tick reads what they changed.
+        pub(in crate::game) fn java_client_tick_begin(&mut self) {
+            if self.remote_profile().is_none() || horizon_java_host::get().is_none() {
+                return;
+            }
+            let open = CLIENT.with_borrow(|c| c.open);
+            // A screen ticks in step with the window, so its tick waits for any background one first.
+            self.java_client_collect(open);
+        }
+
+        /// The picks of this tick's `animateTick`, which the tick's end sends.
+        pub(in crate::game) fn java_set_animate_picked(&mut self, picked: Vec<[i32; 3]>) {
+            thread_local! { static SEEN: RefCell<std::collections::HashSet<String>> = RefCell::default(); }
+            for at in &picked {
+                let state = self.world.block(at[0], at[1], at[2]);
+                if let Some(state) = self.pack.assets.registry.state(state)
+                    && !SEEN.with_borrow(|seen| seen.contains(&*state.name))
+                {
+                    SEEN.with_borrow_mut(|seen| seen.insert(state.name.to_string()));
+                    log::info!("Horizon: animateTick of {} runs in Java", state.name);
+                }
+            }
+            CLIENT.with_borrow_mut(|c| c.picked = picked);
+        }
+
+        /// `Minecraft.runTick` for the Java client, once the window's tick has run: what the server sent it and the tick's picks, then the real `Minecraft.tick`.
+        pub(in crate::game) fn java_client_tick_send(&mut self) {
             if self.remote_profile().is_none() {
                 return;
             }
             let Some(host) = horizon_java_host::get() else {
                 return;
             };
-            let open = CLIENT.with_borrow(|c| c.open);
-            // A screen ticks in step with the window, so its tick waits for any background one first.
-            self.java_client_collect(open);
             // `Timer.advanceTime`: a tick the last one's length delayed still runs, up to its limit of 10.
-            CLIENT.with_borrow_mut(|c| c.owed = (c.owed + 1).min(10));
+            CLIENT.with_borrow_mut(|c| {
+                c.owed = (c.owed + 1).min(10);
+                let group = std::mem::take(&mut c.picked);
+                c.animate.push_back(group);
+                while c.animate.len() > 10 {
+                    c.animate.pop_front();
+                }
+            });
             if java_client_busy() {
                 return;
             }
@@ -984,7 +1083,7 @@ pub(in crate::game) mod live {
             }
             let open = !self.java_world_has_input() && self.screen != Screen::Java;
             let native_screen = (open, open && self.pause);
-            let camera = self.eye_position();
+            let camera = self.java_world_camera();
             self.java_publish_client_world();
             let (left, arrived) = self.java_client_chunk_changes();
             CLIENT.with_borrow_mut(|c| {
@@ -1010,12 +1109,22 @@ pub(in crate::game) mod live {
                     Input::Focus(focused).write(&mut events);
                     count += 1;
                 }
-                let block = camera.map(|p| p.map(|v| v.floor() as i32));
-                if let (Some(at), Some(block)) = (camera, block)
-                    && c.sent.camera != Some(block)
+                let particles = i32::from(self.settings.particles);
+                if c.sent.particles != Some(particles) {
+                    c.sent.particles = Some(particles);
+                    Input::Particles(particles).write(&mut events);
+                    count += 1;
+                }
+                let block = camera.map(|(p, _)| p.map(|v| v.floor() as i32));
+                if let (Some((at, view)), Some(block)) = (camera, block)
+                    && c.sent.camera != Some((block, view))
                 {
-                    c.sent.camera = Some(block);
-                    Input::Camera(at).write(&mut events);
+                    c.sent.camera = Some((block, view));
+                    Input::Camera(at, view).write(&mut events);
+                    count += 1;
+                }
+                for group in c.animate.drain(..) {
+                    Input::Animate(&group).write(&mut events);
                     count += 1;
                 }
                 out.int(count);
@@ -1196,6 +1305,7 @@ pub(in crate::game) mod live {
         /// A window frame's collection of the Java client's finished tick, without waiting for it.
         pub(in crate::game) fn java_client_frame(&mut self) {
             self.java_client_collect(false);
+            self.java_world_frame(java_client_busy());
         }
 
         /// The mods' HUD layers and `RenderGuiEvent`s as the Java client recorded them after its last tick.
@@ -1372,6 +1482,43 @@ pub(in crate::game) mod live {
 
     #[cfg(test)]
     mod tests {
+        #[test]
+        fn the_animate_picks_are_a_count_then_their_positions() {
+            let mut out = Out::default();
+            Input::Animate(&[[1, 2, 3], [-4, 5, 6]]).write(&mut out);
+            let mut read = In(&out.0);
+            assert_eq!(read.byte(), Some(14));
+            assert_eq!(read.int(), Some(2));
+            assert_eq!(
+                (0..6).map(|_| read.int().unwrap()).collect::<Vec<_>>(),
+                [1, 2, 3, -4, 5, 6]
+            );
+            assert!(read.byte().is_none());
+        }
+
+        #[test]
+        fn a_status_with_a_known_and_an_unknown_particle_reads_both_in_order() {
+            let entry = |out: &mut Out, id: u8| {
+                for v in [1.5, 2.5, 3.5, 0.0, 0.1, 0.0] {
+                    out.double(v);
+                }
+                out.bytes(&[id]);
+            };
+            let mut out = Out::default();
+            out.int(2);
+            entry(&mut out, 4);
+            entry(&mut out, 0x7f);
+            let found = read_particles(&mut In(&out.0)).unwrap();
+            assert_eq!(found.len(), 2);
+            assert_eq!(found[0].0, [1.5, 2.5, 3.5]);
+            assert_eq!(found[0].1, [0.0, 0.1, 0.0]);
+            assert_eq!(found[0].2.as_ref().map(|p| p.id), Some(4));
+            assert_eq!(found[1].2.as_ref().map(|p| p.id), Some(0x7f));
+            let mut short = Out::default();
+            short.int(1);
+            assert!(read_particles(&mut In(&short.0)).is_none());
+        }
+
         use super::*;
 
         fn atlas() -> HudAtlas {
@@ -1636,7 +1783,8 @@ impl Game<'_> {
     }
     pub(super) fn java_window_input(&mut self, _event: &winit::event::WindowEvent) {}
     pub(super) fn java_key_input(&mut self, _code: KeyCode, _pressed: bool, _repeat: bool) {}
-    pub(super) fn java_client_tick(&mut self) {}
+    pub(super) fn java_client_tick_begin(&mut self) {}
+    pub(super) fn java_client_tick_send(&mut self) {}
     pub(super) fn java_client_frame(&mut self) {}
     pub(super) fn java_client_left(&mut self) {}
     pub(super) fn java_client_font(&self) {}

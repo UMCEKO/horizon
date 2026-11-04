@@ -67,6 +67,7 @@ def build(java_only=False):
         if name == 'boot':
             sources += [str(p) for p in sorted(oracle.SHARED.rglob('*.java'))]
             sources += [str(p) for p in sorted(oracle.SHARED_CLIENT.rglob('*.java'))]
+            sources += [str(SOURCES / 'parity' / 'scan' / 'dev' / 'horizonlab' / 'javamods' / 'parity' / 'MixinScanner.java')]
         subprocess.run(['javac', '--release', '25', '-proc:none', '-nowarn', '-cp', f'{cp}:{extra}', '-d', str(classes), *sources], check=True)
         jar_args = ['jar', 'cf', str(jar), '-C', str(classes), '.']
         if name == 'plugin':
@@ -124,8 +125,8 @@ def assets_index(resources, index_id, root):
     return folder
 
 
-def args_lines(dist, libs, neoforge, client=None, server=None, assets=None):
-    """The lines of `horizon-java.args`: `client` is (NeoForge's client profile, its library jars), `server` the text of its `unix_args.txt`, `assets` (folder, index id)."""
+def args_lines(dist, libs, neoforge, client=None, server=None, assets=None, analysis=None):
+    """The lines of `horizon-java.args`: `client` is (NeoForge's client profile, its library jars), `server` the text of its `unix_args.txt`, `assets` (folder, index id), `analysis` the install's entity-facts.json."""
     lines = []
     if dist == 'client':
         neo, jars = client
@@ -157,6 +158,8 @@ def args_lines(dist, libs, neoforge, client=None, server=None, assets=None):
             i += 1
     lines += [f'prog {a}' for a in game]
     lines.append(f'mod {libs}/net/neoforged/neoforge/{neoforge}/neoforge-{neoforge}-universal.jar')
+    if analysis:
+        lines.append(f'analysis {analysis}')
     if dist == 'client':
         folder, index_id = assets
         lines += ['prog --assetsDir', f'prog {folder}', 'prog --assetIndex', f'prog {index_id}']
@@ -497,8 +500,27 @@ def java_args(desc):
     return args, desc[i + 1:]
 
 
-def check_bridges(_args=None):
-    """Every bridge against the real jars, without starting anything: its method exists, its arguments line up, Flat can carry them."""
+def unbridged_writers(analysis):
+    """The entity writers of an install's entity-facts.json with no bridged native and no `java-owned` line in tools/java_mods_skips: [(key, mods)]."""
+    facts = json.loads(Path(analysis).read_text())
+    tables = (oracle.ROOT / 'crates' / 'horizon-client' / 'src' / 'game' / 'java_bridges').glob('*.rs')
+    covered = {f'{owner}#{name}' for path in tables for owner, name in re.findall(r'"([\w/$]+)"\.(\w+)\s+"\(', path.read_text())}
+    for path in (oracle.ROOT / 'tools' / 'java_mods_skips').glob('*.tsv'):
+        for line in path.read_text().splitlines():
+            key, _, rest = line.partition('\t')
+            if rest.split('\t')[0] == 'java-owned':
+                covered.add(key)
+    missing = collections.defaultdict(set)
+    for w in facts['writes']:
+        if w['group'] != 'java' and w['key'].split('(')[0] not in covered:
+            missing[w['key']].update(w['mods'])
+    return [(key, sorted(mods)) for key, mods in sorted(missing.items())]
+
+
+def check_bridges(args=None):
+    """Every bridge against the real jars, without starting anything: its method exists, its arguments line up, Flat can carry them.
+
+    With --analysis (an install's entity-facts.json) every entity writer mod code calls must also be bridged or `java-owned`."""
     home = oracle.install()
     classes = {}
     for jar in sorted((home / 'libraries' / 'net' / 'neoforged').rglob('*.jar')):
@@ -574,6 +596,8 @@ def check_bridges(_args=None):
                     errors.append(f'{where}: Flat has no to{simple}({mine_ret}) -> {ret}')
             elif ret != mine_ret:
                 errors.append(f'{where}: returns {ret} against {mine_ret}')
+    if getattr(args, 'analysis', None):
+        errors += [f'no bridge for {key} ({", ".join(mods)})' for key, mods in unbridged_writers(args.analysis)]
     for error in errors:
         print(error)
     print(f'{total} bridges, {len(errors)} problems')
@@ -761,6 +785,26 @@ def surface(args):
     open_.sort(key=lambda k: (-len(users[k]), -methods[k].get('size', 0)))
     for key in open_[:args.top]:
         print(len(users[key]), methods[key].get('size', 0), key.removeprefix('net/minecraft/'), status(key), sorted(homes(key)))
+
+
+def crossing(args):
+    """The Rust to Java crossing's ns per request (`crates/horizon-java-host/examples/crossing_bench.rs`): a dedicated-dist boot, no mods, through the game gate."""
+    global DIST
+    DIST = 'server'
+    java = java_home()
+    env = {**os.environ, 'JAVA_HOME': java, 'CARGO_TARGET_DIR': str(TARGET), 'RUSTC_WRAPPER': ''}
+    subprocess.run(['cargo', 'build', '--profile', 'fast', '-q', '-p', 'horizon-java-host', '--example', 'crossing_bench'], check=True, env=env, cwd=oracle.ROOT)
+    jars = Path(args.jars) if args.jars else JARS / 'crossing-mods'
+    jars.mkdir(parents=True, exist_ok=True)
+    run = instance('crossing', jars, True)
+    gate = os.environ.get('HORIZON_GAME_GATE')
+    gate_env = {**os.environ, 'GATE_OWNER': os.environ.get('GATE_OWNER', 'crossing')}
+    while gate and subprocess.run(shlex.split(gate), env=gate_env).returncode != 0:
+        time.sleep(30)
+    env = {**gate_env, 'JAVA_HOME': java, 'LD_LIBRARY_PATH': f'{java}/lib/server:{java}/lib', 'HORIZON_NEOFORGE': NEOFORGE,
+           'HORIZON_JAVA_RUN': str(run), 'HORIZON_JAVA_HOST_JAR': str(HOST_JAR)}
+    command = [str(TARGET / 'fast' / 'examples' / 'crossing_bench'), '--rounds', str(args.rounds), '--n', str(args.n), '--soak', str(args.soak)]
+    sys.exit(subprocess.run(['nice', *command], env=env, cwd=run).returncode)
 
 
 def bench(args):
@@ -974,6 +1018,14 @@ def install_pack(args):
     for jar in pack:
         sync_file(jar.resolve(), mods / jar.name)
     assets = assets_index(resources, index_id, install)
+    record = {'format': INSTALL_FORMAT, 'neoforge': NEOFORGE, 'java': str(java), 'resources': str(resources),
+              'mods': [j.name for j in pack]}
+    write_if_changed(install / 'install.json', json.dumps(record, indent=2) + '\n')
+    try:
+        from . import mod_replaces
+    except ImportError:
+        import mod_replaces
+    analysis = mod_replaces.install_analysis(install, cache / 'mod-replaces')
     mod_links = [*sorted(mods.glob('*.jar')), install / 'host' / 'horizon-java-boot.jar', install / 'host' / 'horizon-java-plugin.jar']
     for dedicated in (False, True):
         run = install / run_name(dedicated)
@@ -982,15 +1034,12 @@ def install_pack(args):
         if not (run / 'libraries').is_symlink():
             (run / 'libraries').symlink_to(Path('..') / 'libraries')
         if dedicated:
-            lines = args_lines('server', libs, NEOFORGE, server=(server_home / 'libraries/net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text())
+            lines = args_lines('server', libs, NEOFORGE, server=(server_home / 'libraries/net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text(), analysis=analysis)
             if args.accept_eula:
                 write_if_changed(run / 'eula.txt', 'eula=true\n')
         else:
-            lines = args_lines('client', libs, NEOFORGE, client=(neo, [libs / j.relative_to(client_home / 'libraries') for j in client_jars]), assets=(assets, index_id))
+            lines = args_lines('client', libs, NEOFORGE, client=(neo, [libs / j.relative_to(client_home / 'libraries') for j in client_jars]), assets=(assets, index_id), analysis=analysis)
         write_if_changed(run / 'horizon-java.args', '\n'.join(lines) + '\n')
-    record = {'format': INSTALL_FORMAT, 'neoforge': NEOFORGE, 'java': str(java), 'resources': str(resources),
-              'mods': [j.name for j in pack]}
-    write_if_changed(install / 'install.json', json.dumps(record, indent=2) + '\n')
     print(f'{install}: {len(pack)} mods, NeoForge {NEOFORGE}, JDK at {java}')
     if not (install / 'server' / 'eula.txt').exists():
         print('the dedicated server needs its folder\'s eula.txt to say eula=true (or install with --accept-eula)')
@@ -1043,7 +1092,7 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('build').add_argument('--java-only', action='store_true')
     sub.add_parser('unit', help='the host\'s Java unit checks, after build')
-    sub.add_parser('check')
+    sub.add_parser('check').add_argument('--analysis', help="an install's analysis/entity-facts.json: its entity writers need a bridge")
     r = sub.add_parser('run')
     r.add_argument('--jars', required=True)
     r.add_argument('--opts', default='')
@@ -1055,6 +1104,11 @@ def main():
     b.add_argument('--rounds', type=int, default=7)
     b.add_argument('--stock', action='store_true')
     b.add_argument('--case', action='append', default=[])
+    cr = sub.add_parser('crossing', help='ns per Rust to Java request; fails above 1000 ns for an empty one')
+    cr.add_argument('--jars', help='a folder of mod jars; default none')
+    cr.add_argument('--rounds', type=int, default=5)
+    cr.add_argument('--n', type=int, default=200000)
+    cr.add_argument('--soak', type=int, default=3, help='seconds of the three-thread check')
     g = sub.add_parser('play')
     g.add_argument('--jars', help='no JVM without it')
     g.add_argument('--seed', type=int, default=1)
@@ -1146,7 +1200,9 @@ def main():
                 (folder / jar.name).symlink_to(jar.resolve())
             print(jar.name)
     elif args.command == 'check':
-        check_bridges()
+        check_bridges(args)
+    elif args.command == 'crossing':
+        crossing(args)
     else:
         bench(args)
 

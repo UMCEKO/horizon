@@ -715,7 +715,9 @@ impl OptionsFile {
             out.push('\n');
         }
         for (name, binding) in &self.mod_keys {
-            out.push_str(&format!("key_{name}:{binding}\n"));
+            if crate::keybinds::saves_mod_key(name) {
+                out.push_str(&format!("key_{name}:{binding}\n"));
+            }
         }
         if let Some(r) = &self.fullscreen_resolution {
             out.push_str("fullscreenResolution:");
@@ -958,11 +960,13 @@ mod control_tests {
                 ),
             ]
         );
-        let again = OptionsFile::parse(&f.serialize());
-        assert_eq!(again.mod_keys, f.mod_keys);
-        assert!(
-            f.serialize()
-                .contains("key_key.test_mod.mode:key.keyboard.k:SHIFT\n")
-        );
+        let registered = crate::keybinds::ModKeys::parse_export(
+            "key.test_mod.bad\t0\tkey.categories.misc\tkey.keyboard.b\tNONE\tIN_GAME\nkey.test_mod.head\t0\tkey.categories.misc\tkey.keyboard.h\tNONE\tIN_GAME\nkey.test_mod.mode\t0\tkey.categories.misc\tkey.keyboard.m\tNONE\tIN_GAME\n",
+        )
+        .unwrap();
+        let saved = crate::keybinds::with_thread_mod_keys(registered, || f.serialize());
+        assert!(saved.contains("key_key.test_mod.mode:key.keyboard.k:SHIFT\n"));
+        assert_eq!(OptionsFile::parse(&saved).mod_keys, f.mod_keys);
+        assert!(OptionsFile::parse(&f.serialize()).mod_keys.is_empty());
     }
 }

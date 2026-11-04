@@ -104,7 +104,7 @@ public final class PlayerSync {
     }
 
     /** Horizon's vitals and effects into the view as they are, setting fields so nothing writes back. */
-    static void fill(ServerPlayer player, DataInputStream in) throws IOException, ReflectiveOperationException {
+    static void fill(ServerPlayer player, Crossing.In in) throws IOException, ReflectiveOperationException {
         player.getEntityData().set(PlayerSync.<Float>accessor(LivingEntity.class, "DATA_HEALTH_ID"), in.readFloat());
         FoodData food = player.getFoodData();
         FOOD.setInt(food, in.readInt());

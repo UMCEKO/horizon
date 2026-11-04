@@ -211,7 +211,8 @@ impl Game<'_> {
                 continue;
             }
             let y = self.motion_top(x, z);
-            let w = self.mob_world_base(&[]);
+            let shared = self.mob_shared();
+            let w = self.mob_world(&shared, &[]);
             if spawning::placement_ok(Species::WanderingTrader, &w, x, y, z) {
                 return Some([x, y, z]);
             }

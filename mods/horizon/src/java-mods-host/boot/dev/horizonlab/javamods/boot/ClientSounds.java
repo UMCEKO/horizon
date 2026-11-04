@@ -38,6 +38,14 @@ public final class ClientSounds {
     private static Field volume;
     private static Field pitch;
 
+    static float volume(SoundInstance instance) {
+        return field(instance, true);
+    }
+
+    static float pitch(SoundInstance instance) {
+        return field(instance, false);
+    }
+
     /** The instance's own volume and pitch: Horizon samples its sound's, as resolving it there picks the sound. */
     private static float field(SoundInstance instance, boolean isVolume) {
         if (!(instance instanceof AbstractSoundInstance)) return isVolume ? instance.getVolume() : instance.getPitch();
@@ -64,6 +72,16 @@ public final class ClientSounds {
     public static SoundEngine.PlayResult play(SoundInstance instance, int delay) {
         // Ticks run only to record a renderer's motion make no sound.
         if (BlockRenders.sampling() || !instance.canPlaySound()) return SoundEngine.PlayResult.NOT_STARTED;
+        if (nativePlays()) return SoundEngine.PlayResult.NOT_STARTED;
+        return start(instance, delay);
+    }
+
+    /** A vanilla source native ports plays its own sound: this one is its duplicate, except where Java-run `animateTick` code made it. */
+    private static boolean nativePlays() {
+        return !Animate.forwarding() && SoundOwners.nativeOwnsCaller();
+    }
+
+    private static SoundEngine.PlayResult start(SoundInstance instance, int delay) {
         // `PlaySoundEvent` is where mods swap, wrap or drop a sound and learn which ones to stop later.
         instance = net.neoforged.neoforge.client.ClientHooks.playSound(engine, instance);
         if (instance == null) return SoundEngine.PlayResult.NOT_STARTED;
@@ -133,6 +151,7 @@ public final class ClientSounds {
     }
 
     public static void queueTicking(TickableSoundInstance instance) {
+        if (nativePlays()) return;
         QUEUED_TICKING.add(instance);
     }
 
@@ -141,7 +160,7 @@ public final class ClientSounds {
         if (paused) return;
         var queued = new ArrayList<>(QUEUED_TICKING);
         QUEUED_TICKING.clear();
-        for (var instance : queued) if (instance.canPlaySound()) play(instance, 0);
+        for (var instance : queued) if (!BlockRenders.sampling() && instance.canPlaySound()) start(instance, 0);
         for (var instance : new ArrayList<>(TICKING)) {
             if (!instance.canPlaySound()) stop(instance);
             instance.tick();

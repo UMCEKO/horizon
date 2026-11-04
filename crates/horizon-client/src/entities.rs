@@ -75,6 +75,8 @@ pub struct ItemEntity {
     /// `Entity.tickCount`: ticks since the item entered the level, which
     /// paces `ItemEntity.mergeWithNeighbours`.
     pub ticks: u32,
+    /// Removed during a crossing of a loop that lent its vector: skipped, then dropped.
+    pub removed: bool,
 }
 /// Environment results needed by the entity owner, including lethal lava damage.
 #[derive(Debug)]
@@ -383,6 +385,16 @@ impl ItemCells {
         }
         cells
     }
+    /// The items not marked in `removed`, after a crossing moved, added or removed some.
+    pub fn live(items: &[ItemEntity], removed: &[bool]) -> Self {
+        let mut cells = Self::default();
+        for (i, item) in items.iter().enumerate() {
+            if !removed[i] {
+                cells.add(i, item.position);
+            }
+        }
+        cells
+    }
     fn cell(p: Vec3) -> (i32, i32, i32) {
         (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32)
     }
@@ -507,6 +519,8 @@ pub struct ExperienceOrb {
     pub count: u32,
     /// `Entity.tickCount`, which paces `ExperienceOrb.scanForMerges`.
     pub ticks: u32,
+    /// Removed during a crossing of a loop that lent its vector: skipped, then dropped.
+    pub removed: bool,
 }
 impl ExperienceOrb {
     pub fn bounds(&self) -> Aabb {
@@ -882,6 +896,8 @@ pub struct ArmorStand {
     /// `DATA_HEAD_POSE` to `DATA_RIGHT_LEG_POSE`: head, body, left arm, right
     /// arm, left leg, right leg, in degrees (`POSE_KEYS` order).
     pub pose: [[f32; 3]; 6],
+    /// Removed during a crossing of a loop that lent its vector: skipped, then dropped.
+    pub removed: bool,
 }
 impl ArmorStand {
     pub const SLOTS: [&'static str; 6] = ["mainhand", "offhand", "feet", "legs", "chest", "head"];
@@ -916,6 +932,7 @@ impl ArmorStand {
             name_visible: false,
             last_hit: i64::MIN / 2,
             pose: Self::DEFAULT_POSE,
+            removed: false,
         }
     }
     pub fn environment_tick(
@@ -1108,6 +1125,7 @@ mod fire_environment_tests {
             )
             .unwrap();
         let make = |id: &str| ItemEntity {
+            removed: false,
             id: 1,
             thrower: None,
             target: None,
@@ -1205,6 +1223,7 @@ mod merge_tests {
     fn item(id: &str, count: u32, x: f64, age: u32) -> ItemEntity {
         let at = Vec3::new(x, 64.0, 0.5);
         ItemEntity {
+            removed: false,
             id: 0,
             thrower: None,
             target: None,
@@ -1383,6 +1402,7 @@ mod honey_slide_tests {
     fn falling_item(x: f64, y: f64, z: f64, vx: f64, vy: f64, vz: f64) -> ItemEntity {
         let at = Vec3::new(x, y, z);
         ItemEntity {
+            removed: false,
             id: 1,
             thrower: None,
             target: None,
@@ -1510,6 +1530,7 @@ mod slime_bounce_tests {
     fn grounded_item() -> ItemEntity {
         let at = Vec3::new(0.5, 2.0, 0.5);
         ItemEntity {
+            removed: false,
             id: 1,
             thrower: None,
             target: None,

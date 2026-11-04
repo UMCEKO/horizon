@@ -148,6 +148,8 @@ pub struct SoundInstance {
     pub sound: Option<Sound>,
     /// `soundEvent != null` after `getOrResolve`, and its subtitle.
     pub event: Option<Option<String>>,
+    /// Another client in this process made it, and fired its `PlaySoundEvent` there.
+    pub external: bool,
 }
 impl SoundInstance {
     #[allow(clippy::too_many_arguments)]
@@ -179,6 +181,7 @@ impl SoundInstance {
             stopped: false,
             sound: None,
             event: None,
+            external: false,
         }
     }
     /// `new SimpleSoundInstance(sound, source, volume, pitch, random, x, y, z)`.
@@ -768,8 +771,24 @@ struct Handle {
     streaming: bool,
     stopped: bool,
 }
+/// What `PlaySoundEvent`'s listeners made of a sound about to play.
+pub enum PlayVerdict {
+    Play,
+    Cancel,
+    /// `setSound` replaced it.
+    Change {
+        identifier: String,
+        volume: f32,
+        pitch: f32,
+        position: [f64; 3],
+    },
+}
+/// Asked right before a sound plays, at `SoundEngine.play`'s `ClientHooks.playSound`.
+pub type PlayHook = Box<dyn FnMut(&SoundInstance) -> PlayVerdict>;
 pub struct SoundEngine {
     pub registry: SoundRegistry,
+    /// Set while a loaded mod listens to `PlaySoundEvent`.
+    pub play_hook: Option<PlayHook>,
     /// `loaded`: the library opened.
     pub loaded: bool,
     tick_count: i32,
@@ -804,6 +823,7 @@ impl SoundEngine {
     pub fn new(registry: SoundRegistry) -> Self {
         Self {
             registry,
+            play_hook: None,
             loaded: true,
             tick_count: 0,
             instances: HashMap::new(),
@@ -1073,6 +1093,28 @@ impl SoundEngine {
     fn play_inner(&mut self, id: InstanceId, backend: &mut impl Backend) -> PlayResult {
         if !self.loaded || !self.instances.contains_key(&id) {
             return PlayResult::NotStarted;
+        }
+        if !self.instances[&id].external
+            && let Some(mut hook) = self.play_hook.take()
+        {
+            let verdict = hook(&self.instances[&id]);
+            self.play_hook = Some(hook);
+            match verdict {
+                PlayVerdict::Play => {}
+                PlayVerdict::Cancel => return PlayResult::NotStarted,
+                PlayVerdict::Change {
+                    identifier,
+                    volume,
+                    pitch,
+                    position,
+                } => {
+                    let instance = self.instances.get_mut(&id).expect("present");
+                    instance.identifier = identifier;
+                    instance.volume = volume;
+                    instance.pitch = pitch;
+                    instance.position = position;
+                }
+            }
         }
         self.resolve(id);
         let instance = &self.instances[&id];

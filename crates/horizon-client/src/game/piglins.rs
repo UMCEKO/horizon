@@ -202,7 +202,8 @@ impl Game<'_> {
             let pos = m.position;
             // NearestItemSensor: the nearest wanted item within 32 that the piglin
             // sees (eye to eye); GoToWantedItem then walks to it within 9 blocks.
-            let w = self.mob_world_base(&[]);
+            let shared = self.mob_shared();
+            let w = self.mob_world(&shared, &[]);
             let eye = Vec3::new(pos.x, m.eye_y(), pos.z);
             let best = self
                 .dropped

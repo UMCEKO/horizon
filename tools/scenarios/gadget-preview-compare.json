@@ -1,0 +1,115 @@
+{
+  "steps": [
+    {
+      "name": "setup"
+    },
+    {
+      "command": "/gamemode creative"
+    },
+    {
+      "command": "/gamerule advance_time false"
+    },
+    {
+      "command": "/gamerule advance_weather false"
+    },
+    {
+      "command": "/gamerule spawn_mobs false"
+    },
+    {
+      "command": "/forceload add 160 136 180 160"
+    },
+    {
+      "wait": 60
+    },
+    {
+      "command": "/kill @e[type=!player]"
+    },
+    {
+      "command": "/fill 160 70 136 180 85 160 air"
+    },
+    {
+      "command": "/fill 164 69 144 175 69 155 stone"
+    },
+    {
+      "command": "/fill 170 70 139 170 74 139 stone"
+    },
+    {
+      "command": "/time set night"
+    },
+    {
+      "command": "/weather rain"
+    },
+    {
+      "command": "/item replace entity @s hotbar.0 with buildinggadgets2:gadget_building[buildinggadgets2:gadget_mode=\"buildinggadgets2:surface\",buildinggadgets2:gadget_range=5]"
+    },
+    {
+      "slot": 0
+    },
+    {
+      "name": "select the block by sneak-clicking it"
+    },
+    {
+      "camera": [
+        170.5,
+        75,
+        139.5,
+        0,
+        45
+      ]
+    },
+    {
+      "lookat": [
+        170.5,
+        69.95,
+        146.5
+      ]
+    },
+    {
+      "press": "key.sneak"
+    },
+    {
+      "wait": 5
+    },
+    {
+      "use": 2
+    },
+    {
+      "release": "key.sneak"
+    },
+    {
+      "wait": 10
+    },
+    {
+      "command": "/data get entity @s SelectedItem.components"
+    },
+    {
+      "check": {
+        "output": "gadget_blockstate.*stone"
+      }
+    },
+    {
+      "name": "the preview view"
+    },
+    {
+      "camera": [
+        170.5,
+        75,
+        139.5,
+        0,
+        45
+      ]
+    },
+    {
+      "hud": false
+    },
+    {
+      "wait": 20
+    },
+    {
+      "screenshot": "preview"
+    },
+    {
+      "quit": true
+    }
+  ]
+}

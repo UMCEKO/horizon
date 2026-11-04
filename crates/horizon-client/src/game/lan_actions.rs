@@ -3601,9 +3601,14 @@ impl Game<'_> {
         .inflate(Vec3::new(1.0, 0.5, 1.0));
         let mut projectiles = std::mem::take(&mut self.creatures.projectiles);
         let mut picked = Vec::new();
-        projectiles.retain(|shot| {
+        let n = projectiles.len();
+        for i in 0..n {
+            if projectiles[i].removed {
+                continue;
+            }
+            let shot = &projectiles[i];
             let Some(a) = shot.arrow.as_ref().filter(|a| !a.removed) else {
-                return true;
+                continue;
             };
             let p = shot.position;
             let bounds = Aabb::new(
@@ -3611,7 +3616,7 @@ impl Game<'_> {
                 Vec3::new(p.x + 0.25, p.y + 0.5, p.z + 0.25),
             );
             if !bounds.intersects(reach) {
-                return true;
+                continue;
             }
             let taken = match a.player_touch(creative) {
                 Touch::Ignore => false,
@@ -3626,9 +3631,15 @@ impl Game<'_> {
             };
             if taken {
                 picked.push(shot.clone());
+                projectiles[i].removed = true;
             }
-            !taken
-        });
+            let shot_id = projectiles[i].id;
+            self.cross_point(
+                super::crossing::CrossPoint::GuestArrow(shot_id),
+                &mut [super::crossing::Lent::Projectiles(&mut projectiles)],
+            );
+        }
+        projectiles.retain(|p| !p.removed);
         self.creatures.projectiles = projectiles;
         for shot in picked {
             host.hub.take_item(shot.id as i32, id, 1, at);

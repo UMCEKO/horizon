@@ -199,6 +199,41 @@ impl Game<'_> {
         false
     }
 
+    /// Whether Java runs any part of `animateTick`: native then reports the positions it picks.
+    pub(super) fn java_animates() -> bool {
+        #[cfg(feature = "java-mods")]
+        return horizon_java_host::bridge::java_animates();
+        #[cfg(not(feature = "java-mods"))]
+        false
+    }
+
+    /// Whether a mod patches the animate loop itself, so Java's own runs and native's does not.
+    pub(super) fn java_animate_whole() -> bool {
+        #[cfg(feature = "java-mods")]
+        return horizon_java_host::bridge::java_animates_whole();
+        #[cfg(not(feature = "java-mods"))]
+        false
+    }
+
+    /// Which parts of a picked state's `animateTick` Java runs (bit 1 the block's, bit 2 the fluid's).
+    pub(super) fn java_animate_route(state: horizon_world::registry::BlockStateId) -> u8 {
+        #[cfg(feature = "java-mods")]
+        return horizon_java_host::bridge::java_animate(state);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = state;
+            0
+        }
+    }
+
+    /// This tick's picked positions Java runs `animateTick` at, which the tick's end sends.
+    pub(super) fn java_animate_picked(&mut self, picked: Vec<[i32; 3]>) {
+        #[cfg(feature = "java-mods")]
+        self.java_set_animate_picked(picked);
+        #[cfg(not(feature = "java-mods"))]
+        let _ = picked;
+    }
+
     pub(super) fn java_hook_attack(&mut self, entity: i32, canceled: &mut bool) {
         #[cfg(feature = "java-mods")]
         self.java_attack_event(entity, canceled);

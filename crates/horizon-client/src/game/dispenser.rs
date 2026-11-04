@@ -884,7 +884,8 @@ impl Game<'_> {
         let mut m = self.mobs.remove(i);
         let mut events = Vec::new();
         {
-            let w = self.mob_world_base(&[]);
+            let shared = self.mob_shared();
+            let w = self.mob_world(&shared, &[]);
             horizon_client::mobs::ai::ambient_sound(&mut m, &w, &mut events);
         }
         self.mobs.insert(i, m);

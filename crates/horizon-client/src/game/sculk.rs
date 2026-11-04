@@ -1190,7 +1190,8 @@ impl Game<'_> {
             return false;
         }
         let others: Vec<horizon_client::mobs::Seen> = Vec::new();
-        let w = self.mob_world_base(&others);
+        let shared = self.mob_shared();
+        let w = self.mob_world(&shared, &others);
         let min = bounds.min_position();
         let max = bounds.max_position();
         // Level.containsAnyLiquid: floor(min) up to ceil(max), exclusive.

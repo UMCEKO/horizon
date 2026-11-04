@@ -113,7 +113,8 @@ impl Game<'_> {
         let mut events = Vec::new();
         let mut planned: Vec<Planned> = Vec::new();
         {
-            let level = self.natural_level();
+            let shared = self.mob_shared();
+            let level = self.natural_level(&shared);
             let mut spawn = |l: &super::natural_spawning::GameLevel, r: &SpawnerSpawn| {
                 l.game.plan_spawner_mob(l, r, &mut planned)
             };

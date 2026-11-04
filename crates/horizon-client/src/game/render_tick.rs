@@ -405,6 +405,14 @@ impl Game<'_> {
         };
         // Level.isThundering: a thunder level above 0.9 where the sky is open.
         let thundering = self.dim == Dim::Overworld && world.weather.levels(1.0).1 > 0.9;
+        let picked = std::cell::RefCell::new(Vec::new());
+        let java = |state, pos| {
+            let routed = Self::java_animate_route(state);
+            if routed != 0 {
+                picked.borrow_mut().push(pos);
+            }
+            routed
+        };
         let ctx = AnimateContext {
             world,
             facts,
@@ -421,6 +429,7 @@ impl Game<'_> {
             gateway_particles: &gateway_particles,
             thundering,
             ultrawarm: self.dim == Dim::Nether,
+            java: Self::java_animates().then_some(&java as &dyn Fn(_, _) -> _),
         };
         if let Some(e) = eye {
             let block = [
@@ -428,7 +437,17 @@ impl Game<'_> {
                 e[1].floor() as i32,
                 e[2].floor() as i32,
             ];
-            animate_tick(self.res.animate(), &mut self.particles, &ctx, block);
+            // Minecraft.tick: the feet block, not the eyes'.
+            let feet = self.player.as_ref().map_or(block, |p| {
+                [
+                    p.position.x.floor() as i32,
+                    p.position.y.floor() as i32,
+                    p.position.z.floor() as i32,
+                ]
+            });
+            if !Self::java_animate_whole() {
+                animate_tick(self.res.animate(), &mut self.particles, &ctx, feet);
+            }
             // The Horizon Weather option off means no rain visuals or sounds at all.
             if rain > 0.0 && self.settings.horizon.weather {
                 // ClientLevel.tickWeatherEffects: rain splashes within the weather
@@ -543,6 +562,7 @@ impl Game<'_> {
                 .map(|p| ([p.position.x, p.position.y, p.position.z], p.velocity.y)),
         };
         self.particles.tick(&level);
+        self.java_animate_picked(picked.into_inner());
         self.tick_pickups();
         for (name, at, volume, pitch) in std::mem::take(&mut self.particles.sounds) {
             self.audio.play(name, Some(at), volume, pitch);

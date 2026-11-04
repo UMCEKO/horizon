@@ -14,12 +14,7 @@ use std::f32::consts::PI;
 /// A texture lookup into the shared atlas (name without namespace -> uv rect).
 pub type Atlas<'a> = &'a dyn Fn(&str) -> Option<[f32; 4]>;
 
-/// The overlay code of an enchanted armour layer's glint, past the ones
-/// `gfx/entity_batch.rs` gives materials (13 is the boat water mask, which
-/// draws depth only: armour with 13 vanished; 35 is text pulled toward the
-/// camera). It marks the `ARMOR_ENTITY_GLINT_TEXTURING` sample: entity.wgsl
-/// transforms the model UV and reads `enchanted_glint_armor`.
-pub const ARMOR_GLINT: u32 = 36;
+pub use crate::gfx::ARMOR_GLINT;
 
 /// `RenderTypes.breezeWind`: the texture of the breeze's wind layer scrolls
 /// by 0.02 of the texture per tick.

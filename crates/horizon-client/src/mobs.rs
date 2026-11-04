@@ -2186,7 +2186,7 @@ pub struct MobWorld<'a> {
     pub sea_level: i32,
     /// The scoreboard teams of the player and the mobs (collision rules),
     /// shared: the mob ticks build them once a tick, not once a mob.
-    pub teams: std::sync::Arc<Teams<'a>>,
+    pub teams: std::sync::Arc<Teams>,
     /// Item data (max stack sizes), when the host has it.
     pub items: Option<&'a crate::items::Items>,
     /// `ChestBlockEntity.getOpenCount`: the players with each chest open.
@@ -2194,17 +2194,39 @@ pub struct MobWorld<'a> {
 }
 /// `Entity.getTeam` of the player and of the mobs on a team.
 #[derive(Clone, Debug, Default)]
-pub struct Teams<'a> {
-    pub player: Option<&'a crate::scoreboard::Team>,
-    pub mobs: HashMap<u32, &'a crate::scoreboard::Team>,
+pub struct Teams {
+    pub player: Option<crate::scoreboard::Team>,
+    /// Each mob's index into `teams`.
+    pub mobs: HashMap<u32, u16>,
+    pub teams: Vec<crate::scoreboard::Team>,
 }
-impl<'a> Teams<'a> {
-    pub fn of(&self, who: Who) -> Option<&'a crate::scoreboard::Team> {
+impl Teams {
+    pub fn of(&self, who: Who) -> Option<&crate::scoreboard::Team> {
         match who {
-            Who::Player => self.player,
-            Who::Mob(id) => self.mobs.get(&id).copied(),
+            Who::Player => self.player.as_ref(),
+            Who::Mob(id) => self.mobs.get(&id).map(|&i| &self.teams[usize::from(i)]),
         }
     }
+}
+/// What a mob tick shares across the mobs of one pass: everything `MobWorld` copies from a scan, owned.
+#[derive(Clone)]
+pub struct MobShared {
+    pub player: Option<PlayerView>,
+    pub daylight: bool,
+    pub monsters_burn: bool,
+    pub game_time: i64,
+    pub day_time: i64,
+    pub raining: bool,
+    pub thundering: bool,
+    pub nether: bool,
+    pub mob_griefing: bool,
+    pub mob_drops: bool,
+    pub max_entity_cramming: i32,
+    pub difficulty: spawning::LocalDifficulty,
+    pub end: bool,
+    pub world_seed: i64,
+    pub sea_level: i32,
+    pub teams: std::sync::Arc<Teams>,
 }
 impl Mob {
     pub fn new(id: u32, kind: Arc<MobType>, position: Vec3, yaw: f32) -> Self {
@@ -3228,14 +3250,25 @@ mod teams_tests {
             .filter_map(|(id, u)| Some((*id, board.players_team(&uuid_text(*u))?.clone())))
             .collect()
     }
-    fn borrowed<'a>(board: &'a Scoreboard, uuids: &HashMap<u32, [i32; 4]>) -> Teams<'a> {
-        Teams {
-            player: board.players_team("Steve"),
-            mobs: uuids
-                .iter()
-                .filter_map(|(id, u)| Some((*id, board.players_team(&uuid_text(*u))?)))
-                .collect(),
+    fn borrowed(board: &Scoreboard, uuids: &HashMap<u32, [i32; 4]>) -> Teams {
+        let mut teams = Teams {
+            player: board.players_team("Steve").cloned(),
+            ..Default::default()
+        };
+        for (id, u) in uuids {
+            let Some(team) = board.players_team(&uuid_text(*u)) else {
+                continue;
+            };
+            let at = match teams.teams.iter().position(|t| t.name == team.name) {
+                Some(at) => at,
+                None => {
+                    teams.teams.push(team.clone());
+                    teams.teams.len() - 1
+                }
+            };
+            teams.mobs.insert(*id, at as u16);
         }
+        teams
     }
 
     #[test]

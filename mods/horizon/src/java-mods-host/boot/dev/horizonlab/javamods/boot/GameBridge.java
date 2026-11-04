@@ -107,18 +107,75 @@ public final class GameBridge {
     private static final Object LOCK = new Object();
 
     /** One call at a time, as the window's thread and the server's both call in; the views between them are shared. */
-    public static byte[] call(String op, byte[] input) {
-        // Codecs touch no view, and a window's network thread must not wait out a server tick for one.
-        if (op.equals("component_read")) return StackComponents.read(input);
-        if (op.equals("component_write")) return StackComponents.write(input);
-        if (op.equals("profile_take")) return Profile.take().getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        if (op.equals("profile_dump")) return profileDump(input);
+    static void locked(Crossing.Handler handler, Crossing.Frame frame) throws Throwable {
         long queued = Profile.ON ? System.nanoTime() : 0;
         synchronized (LOCK) {
-            if (Profile.ON) Profile.wait(op, System.nanoTime() - queued);
-            if (op.startsWith("client_")) return client == null ? new byte[0] : client.apply(op, input);
-            return callLocked(op, input);
+            if (Profile.ON) Profile.wait(handler.name(), System.nanoTime() - queued);
+            if (handler.kind() == Crossing.Kind.CLIENT) Crossing.run(handler, frame);
+            else game(handler, frame);
         }
+    }
+
+    /** Every op Rust may ask, in the order it reads them. */
+    static void register() {
+        // Codecs touch no view, and a window's network thread must not wait out a server tick for one.
+        Crossing.free("component_read", StackComponents::read);
+        Crossing.free("component_write", StackComponents::write);
+        Crossing.free("profile_take", input -> Profile.take().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Crossing.free("profile_dump", GameBridge::profileDump);
+        Crossing.free("bench_echo_free", input -> input);
+        Crossing.game("prepare", input -> prepare());
+        Crossing.game("items", input -> items());
+        Crossing.game("states", input -> states());
+        Crossing.game("refresh", GameBridge::refresh);
+        Crossing.game("block_events", GameBridge::blockEvents);
+        Crossing.game("block_entity_tick", GameBridge::blockEntityTick);
+        Crossing.game("block_entity_load", GameBridge::blockEntityLoad);
+        Crossing.game("block_entity_drop", GameBridge::blockEntityDrop);
+        Crossing.game("block_entities_save", GameBridge::blockEntitiesSave);
+        Crossing.game("chunks_changed", GameBridge::chunksChanged);
+        Crossing.game("chunk_events", GameBridge::chunkEvents);
+        Crossing.game("tracking", GameBridge::tracking);
+        Crossing.game("block_entity_data", GameBridge::blockEntityData);
+        Crossing.game("block_entity_set", GameBridge::blockEntitySet);
+        Crossing.game("hopper_transfer", GameBridge::hopperTransfer);
+        Crossing.game("block_ticks", GameBridge::blockTicks);
+        Crossing.game("entity_facts", input -> EntityFacts.bin());
+        Crossing.game("entity_types", input -> EntityFacts.types(level("minecraft:overworld")));
+        Crossing.game("click_block", (in, out) -> use(in, out, 2));
+        Crossing.game("event_click_block", (in, out) -> use(in, out, 3));
+        Crossing.game("event_use_item", (in, out) -> use(in, out, 4));
+        Crossing.game("event_break", (in, out) -> use(in, out, 5));
+        Crossing.game("destroy_progress", GameBridge::destroyProgress);
+        Crossing.game("correct_tool", GameBridge::correctTool);
+        Crossing.game("mine_block", (in, out) -> use(in, out, 12));
+        Crossing.game("destroy_block", (in, out) -> use(in, out, 13));
+        Crossing.game("event_attack", (in, out) -> use(in, out, 6));
+        Crossing.game("player_tick", (in, out) -> use(in, out, 7));
+        Crossing.game("player_left", GameBridge::playerLeft);
+        Crossing.game("remote_join", GameBridge::remoteJoin);
+        Crossing.game("remote_in", GameBridge::remoteIn);
+        Crossing.game("remote_config", input -> remoteConfig());
+        Crossing.game("server_start", input -> lifecycle(input, true));
+        Crossing.game("server_stop", input -> lifecycle(input, false));
+        Crossing.game("server_stopping", GameBridge::serverStopping);
+        Crossing.game("players_removed", GameBridge::playersRemoved);
+        Crossing.game("server_tick", GameBridge::serverTick);
+        Crossing.game("level_tick", GameBridge::levelTick);
+        Crossing.game("use_item", (in, out) -> use(in, out, 0));
+        Crossing.game("use_item_on", (in, out) -> use(in, out, 1));
+        Crossing.game("use_tick", (in, out) -> use(in, out, 8));
+        Crossing.game("release_using", (in, out) -> use(in, out, 9));
+        Crossing.game("stop_using", (in, out) -> use(in, out, 10));
+        Crossing.game("interact_entity", (in, out) -> use(in, out, 11));
+        Crossing.game("bench_empty", input -> new byte[] {1});
+        Crossing.game("bench_empty_direct", (in, out) -> out.writeByte(1));
+        Crossing.game("bench_echo", (in, out) -> out.write(in.rest()));
+        Crossing.game("bench_big", (in, out) -> out.write(new byte[in.readInt()]));
+        Crossing.game("bench_nested", GameBridge::benchNested);
+        Crossing.game("bench_throw", input -> {
+            throw new IllegalStateException("bench_throw");
+        });
     }
 
     private static byte[] profileDump(byte[] input) {
@@ -129,61 +186,26 @@ public final class GameBridge {
         }
     }
 
-    private static byte[] callLocked(String op, byte[] input) {
+    private static void game(Crossing.Handler handler, Crossing.Frame frame) {
         depth++;
         try {
-            return switch (op) {
-                case "prepare" -> prepare();
-                case "items" -> items();
-                case "states" -> states();
-                case "refresh" -> refresh(input);
-                case "block_events" -> blockEvents(input);
-                case "block_entity_tick" -> blockEntityTick(input);
-                case "block_entity_load" -> blockEntityLoad(input);
-                case "block_entity_drop" -> blockEntityDrop(input);
-                case "block_entities_save" -> blockEntitiesSave(input);
-                case "chunks_changed" -> chunksChanged(input);
-                case "chunk_events" -> chunkEvents(input);
-                case "tracking" -> tracking(input);
-                case "block_entity_data" -> blockEntityData(input);
-                case "block_entity_set" -> blockEntitySet(input);
-                case "hopper_transfer" -> hopperTransfer(input);
-                case "block_ticks" -> blockTicks(input);
-                case "click_block" -> use(input, 2);
-                case "event_click_block" -> use(input, 3);
-                case "event_use_item" -> use(input, 4);
-                case "event_break" -> use(input, 5);
-                case "destroy_progress" -> destroyProgress(input);
-                case "correct_tool" -> correctTool(input);
-                case "mine_block" -> use(input, 12);
-                case "destroy_block" -> use(input, 13);
-                case "event_attack" -> use(input, 6);
-                case "player_tick" -> use(input, 7);
-                case "player_left" -> playerLeft(input);
-                case "remote_join" -> remoteJoin(input);
-                case "remote_in" -> remoteIn(input);
-                case "remote_config" -> remoteConfig();
-                case "server_start" -> lifecycle(input, true);
-                case "server_stop" -> lifecycle(input, false);
-                case "server_stopping" -> serverStopping(input);
-                case "players_removed" -> playersRemoved(input);
-                case "server_tick" -> serverTick(input);
-                case "level_tick" -> levelTick(input);
-                case "use_item" -> use(input, 0);
-                case "use_item_on" -> use(input, 1);
-                case "use_tick" -> use(input, 8);
-                case "release_using" -> use(input, 9);
-                case "stop_using" -> use(input, 10);
-                case "interact_entity" -> use(input, 11);
-                default -> throw new IllegalArgumentException(op);
-            };
+            Crossing.run(handler, frame);
         } catch (Throwable t) {
             t.printStackTrace();
             if (depth == 1) abandonCall();
-            return new byte[0];
+            frame.out.reset();
         } finally {
             if (--depth == 0) PlayerSync.acting(null);
         }
+    }
+
+    /** The crossing bench's reentrancy op: a native calls back into `bench_echo`, then this reads the rest of its own input. */
+    private static void benchNested(Crossing.In in, Crossing.Out out) throws IOException {
+        int tag = in.readInt();
+        int back = dev.horizonlab.javamods.host.Host.benchBack(tag);
+        out.writeInt(tag);
+        out.writeInt(back);
+        out.writeInt(in.readInt());
     }
 
     private static ReloadableServerResources resources;
@@ -236,6 +258,7 @@ public final class GameBridge {
         var out = new DataOutputStream(bytes);
         out.writeInt(Block.BLOCK_STATE_REGISTRY.size());
         out.writeInt(Block.BLOCK_STATE_REGISTRY.getId(Blocks.AIR.defaultBlockState()));
+        out.writeBoolean(Animate.wholeLoop());
         for (BlockState state : Block.BLOCK_STATE_REGISTRY) {
             out.writeInt(Block.BLOCK_STATE_REGISTRY.getId(state));
             text(out, BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString());
@@ -247,6 +270,7 @@ public final class GameBridge {
             }
             out.writeBoolean(state.hasBlockEntity());
             out.writeBoolean(BootFacts.ownsBlock(state.getBlock()));
+            out.writeByte(Animate.route(state));
         }
         return bytes.toByteArray();
     }
@@ -351,19 +375,24 @@ public final class GameBridge {
         return text(in);
     }
 
+    static String text(Crossing.In in) {
+        return in.name();
+    }
+
     static String text(DataInputStream in) throws IOException {
         return new String(in.readNBytes(in.readInt()), java.nio.charset.StandardCharsets.UTF_8);
     }
 
     private static byte[] useItem(byte[] input) throws Exception {
-        return use(input, 0);
+        var out = new Crossing.Out();
+        use(Crossing.In.of(input), out, 0);
+        return out.toByteArray();
     }
 
-    private record Call(DataInputStream in, ServerLevel level, ServerPlayer player, InteractionHand hand, ItemStack[] before) {}
+    private record Call(Crossing.In in, ServerLevel level, ServerPlayer player, InteractionHand hand, ItemStack[] before) {}
 
     /** Fills the views from what Horizon holds now. */
-    private static Call fill(byte[] input, boolean refresh) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static Call fill(Crossing.In in, boolean refresh) throws Exception {
         var id = new UUID(in.readLong(), in.readLong());
         String name = text(in);
         var level = level(text(in));
@@ -417,13 +446,12 @@ public final class GameBridge {
     }
 
     private static byte[] refresh(byte[] input) throws Exception {
-        fill(input, true);
+        fill(Crossing.In.of(input), true);
         return new byte[] {1};
     }
 
-    private static byte[] use(byte[] input, int kind) throws Exception {
-        var call = fill(input, false);
-        var in = call.in;
+    private static void use(Crossing.In in, Crossing.Out out, int kind) throws Exception {
+        var call = fill(in, false);
         var level = call.level;
         var player = call.player;
         var hand = call.hand;
@@ -504,8 +532,6 @@ public final class GameBridge {
             }
         }
         if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: use kind=" + kind + " result=" + result + " held=" + player.getItemInHand(hand));
-        var bytes = new ByteArrayOutputStream();
-        var out = new DataOutputStream(bytes);
         out.writeBoolean(result != InteractionResult.PASS && result != InteractionResult.TRY_WITH_EMPTY_HAND);
         out.writeBoolean(player.isUsingItem());
         out.writeInt(player.isUsingItem() ? player.getTicksUsingItem() : 0);
@@ -525,12 +551,11 @@ public final class GameBridge {
             else writeTag(out, (CompoundTag) ItemStack.CODEC.encodeStart(ops, stack).getOrThrow());
         }
         writeEffects(out);
-        return bytes.toByteArray();
     }
 
     /** `BlockState.getDestroyProgress` for the acting player: its tool's `getDestroySpeed`, NeoForge's break speed and harvest events, effects and attributes. */
     private static byte[] destroyProgress(byte[] input) throws Exception {
-        var call = fill(input, false);
+        var call = fill(Crossing.In.of(input), false);
         var pos = BlockPos.of(call.in.readLong());
         PlayerSync.settle(call.player);
         var bytes = new ByteArrayOutputStream();
@@ -540,7 +565,7 @@ public final class GameBridge {
 
     /** `Player.hasCorrectToolForDrops(state, level, pos)` for the acting player, with NeoForge's harvest check. */
     private static byte[] correctTool(byte[] input) throws Exception {
-        var call = fill(input, false);
+        var call = fill(Crossing.In.of(input), false);
         var pos = BlockPos.of(call.in.readLong());
         PlayerSync.settle(call.player);
         return new byte[] {(byte) (call.player.hasCorrectToolForDrops(call.level.getBlockState(pos), call.level, pos) ? 1 : 0)};
@@ -553,19 +578,21 @@ public final class GameBridge {
         EntityViews.abandon();
     }
 
+    private static final Sound[] NO_SOUNDS = new Sound[0];
+
     /** What Java did to the world since the last reply. */
     private static void writeEffects(DataOutputStream out) throws IOException {
-        var sounds = new ArrayList<>(SOUNDS);
-        var spawned = new ArrayList<CompoundTag>();
+        Sound[] sounds = SOUNDS.isEmpty() ? NO_SOUNDS : SOUNDS.toArray(NO_SOUNDS);
+        var spawned = SPAWNED.isEmpty() ? List.<CompoundTag>of() : new ArrayList<CompoundTag>();
         SOUNDS.clear();
-        if (depth == 1) {
+        if (depth == 1 && !SPAWNED.isEmpty()) {
             for (Entity entity : SPAWNED) {
                 CompoundTag tag = entity.isRemoved() ? null : saved(entity);
                 if (tag != null) spawned.add(tag);
             }
             SPAWNED.clear();
         }
-        out.writeInt(sounds.size());
+        out.writeInt(sounds.length);
         for (Sound s : sounds) {
             text(out, s.id);
             out.writeDouble(s.x);
@@ -674,8 +701,7 @@ public final class GameBridge {
         EntityViews.abandon();
     }
 
-    private static byte[] serverTick(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static void serverTick(Crossing.In in, Crossing.Out out) throws Exception {
         var here = levelOf(in);
         if (in.readBoolean()) {
             safely("ServerTickEvent.Post", () -> EventHooks.fireServerTickPost(() -> true, server));
@@ -685,11 +711,10 @@ public final class GameBridge {
             if (server.getTickCount() % 20 == 0) server.getPlayerList().broadcastAll(new net.minecraft.network.protocol.game.ClientboundSetTimePacket(here.getGameTime(), Map.of()));
             safely("ServerTickEvent.Pre", () -> EventHooks.fireServerTickPre(() -> true, server));
         }
-        return effects();
+        writeEffects(out);
     }
 
-    private static byte[] levelTick(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static void levelTick(Crossing.In in, Crossing.Out out) throws Exception {
         var level = levelOf(in);
         if (in.readBoolean()) safely("LevelTickEvent.Post", () -> EventHooks.fireLevelTickPost(level, () -> true));
         else {
@@ -698,7 +723,7 @@ public final class GameBridge {
             safely("broadcasting block changes", () -> Clients.broadcastChanges(level));
             safely("sending block entities' shapes", () -> Clients.sendShapes(level));
         }
-        return effects();
+        writeEffects(out);
     }
 
     /** A player connected from another process with a Java client of its own: its login reaches it over its connection. */
@@ -748,6 +773,13 @@ public final class GameBridge {
     }
 
     /** The level a call acts on, with the time it arrived at. */
+    private static ServerLevel levelOf(Crossing.In in) throws Exception {
+        var level = level(in.name());
+        ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
+        level.environmentAttributes().invalidateTickCache();
+        return level;
+    }
+
     private static ServerLevel levelOf(DataInputStream in) throws Exception {
         var level = level(text(in));
         ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
@@ -755,8 +787,7 @@ public final class GameBridge {
         return level;
     }
 
-    private static byte[] blockEvents(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static void blockEvents(Crossing.In in, Crossing.Out out) throws Exception {
         var level = levelOf(in);
         for (int n = in.readInt(); n > 0; n--) {
             int kind = in.readInt();
@@ -784,7 +815,7 @@ public final class GameBridge {
                 t.printStackTrace();
             }
         }
-        return effects();
+        writeEffects(out);
     }
 
     private static BlockState stateOrThrow(int id) {
@@ -793,15 +824,11 @@ public final class GameBridge {
         return state;
     }
 
-    private static byte[] blockEntityTick(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static void blockEntityTick(Crossing.In in, Crossing.Out out) throws Exception {
         var level = levelOf(in);
         boolean held = BlockEntities.tick(level, BlockPos.of(in.readLong()));
-        var bytes = new ByteArrayOutputStream();
-        var out = new DataOutputStream(bytes);
         out.writeBoolean(held);
         writeEffects(out);
-        return bytes.toByteArray();
     }
 
     private static byte[] tracking(byte[] input) throws Exception {

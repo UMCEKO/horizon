@@ -82,7 +82,84 @@ pub(super) struct Creatures {
 }
 pub(super) struct ProjWorld<'a, 'w> {
     pub w: &'a MobWorld<'w>,
-    pub targets: Vec<(Who, Aabb)>,
+    pub targets: std::borrow::Cow<'a, [(Who, Aabb)]>,
+}
+/// The boxes projectiles can hit, built from the mobs, players and carts as they stand.
+struct ProjTargets {
+    targets: Vec<(Who, Aabb)>,
+    breezes: Vec<u32>,
+    arrow_targets: Vec<(Who, Aabb)>,
+    arrow_targets_guests: Vec<(Who, Aabb)>,
+    targets_guests: Vec<(Who, Aabb)>,
+}
+impl ProjTargets {
+    fn build(game: &Game<'_>) -> Self {
+        let mut targets: Vec<(Who, Aabb)> = game
+            .mobs
+            .iter()
+            .filter(|m| m.alive())
+            .map(|m| (Who::Mob(m.id), m.bounds()))
+            .collect();
+        if let Some(p) = game.player_view()
+            && p.alive
+        {
+            targets.push((Who::Player, p.bounds));
+        }
+        // Dragon parts and end crystals under reserved ids (game/dragon.rs).
+        targets.extend(
+            game.special_targets()
+                .into_iter()
+                .map(|(id, b)| (Who::Mob(id), b)),
+        );
+        let breezes: Vec<u32> = game
+            .mobs
+            .iter()
+            .filter(|m| m.alive() && m.species() == Species::Breeze)
+            .map(|m| m.id)
+            .collect();
+        // Arrows also hit minecarts (VehicleEntity is pickable).
+        let mut arrow_targets = targets.clone();
+        arrow_targets.extend(game.carts.iter().map(|c| (Who::Mob(c.id), c.bounds())));
+        // Mobs' projectiles also hit the guests (game/lan_mobs.rs).
+        let guests = game.lan_projectile_targets();
+        let mut arrow_targets_guests = arrow_targets.clone();
+        arrow_targets_guests.extend(guests.iter().copied());
+        let mut targets_guests = targets.clone();
+        targets_guests.extend(guests);
+        Self {
+            targets,
+            breezes,
+            arrow_targets,
+            arrow_targets_guests,
+            targets_guests,
+        }
+    }
+}
+/// The players projectiles answer to: the guests' entities and who is dead.
+struct ProjGuests {
+    guest_entities: Vec<(u32, u32)>,
+    vanish: bool,
+    host_dead: bool,
+    dead_guests: Vec<u32>,
+}
+impl ProjGuests {
+    fn build(game: &Game<'_>) -> Self {
+        Self {
+            guest_entities: game.lan_guest_entities(),
+            // ThrownEnderpearl.tick: a dead player's pearl is discarded in
+            // place of its tick while ender_pearls_vanish_on_death is on.
+            vanish: game.ui.rules.bool("ender_pearls_vanish_on_death"),
+            host_dead: game.player_view().is_some_and(|p| !p.alive),
+            dead_guests: game.lan.as_ref().map_or_else(Vec::new, |h| {
+                h.hub
+                    .guests
+                    .iter()
+                    .filter(|g| g.dead)
+                    .map(|g| g.conn)
+                    .collect()
+            }),
+        }
+    }
 }
 impl ProjectileWorld for ProjWorld<'_, '_> {
     fn clip(&self, from: Vec3, to: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
@@ -153,6 +230,7 @@ fn wind_charge_hitboxes(
         .filter(|(j, q)| {
             *j != skip
                 && alive[*j]
+                && !q.removed
                 && !q.stuck
                 && matches!(
                     q.kind,
@@ -534,26 +612,14 @@ impl Game<'_> {
         }
         self.world.bottom_y()
     }
-    pub(super) fn mob_world_base<'s>(&'s self, others: &'s [Seen]) -> MobWorld<'s> {
+    /// What `mob_world` shares across a pass: everything computed from scans, owned.
+    pub(super) fn mob_shared(&self) -> horizon_client::mobs::MobShared {
         let (rain, thunder) = self.world.weather.levels(1.0);
         // Level.canHaveWeather: only the overworld's rain and thunder levels
         // ever rise, so nothing rains or thunders in the Nether or the End.
         let weather = self.dim == Dim::Overworld;
-        let player = self.player_view();
-        MobWorld {
-            world: &self.world,
-            registry: self.pack.assets.registry,
-            facts: self.res.facts(),
-            fluid_tables: &self.motion.fluids,
-            movement: &self.motion.blocks,
-            collision: self.collision,
-            data: self.res.mob_data(),
-            nearest_player: player.as_ref().filter(|p| !p.spectator).map(|p| p.position),
-            player,
-            others,
-            leash_boats: &self.leash_boats,
-            others_grid: None,
-            others_index: None,
+        horizon_client::mobs::MobShared {
+            player: self.player_view(),
             daylight: self.dim != Dim::Nether && self.sky_darken() < 4,
             // day.json: false from tick 12542, true from 23460 (a step track).
             monsters_burn: self.dim == Dim::Overworld
@@ -563,8 +629,6 @@ impl Game<'_> {
             raining: weather && rain > 0.2,
             thundering: weather && thunder > 0.9,
             nether: self.dim == Dim::Nether,
-            block_tags: &self.items().block_tags,
-            biomes: self.res.biomes(),
             mob_griefing: self.ui.rules.bool("mob_griefing"),
             mob_drops: self.ui.rules.bool("mob_drops"),
             max_entity_cramming: self.ui.rules.int("max_entity_cramming"),
@@ -572,14 +636,57 @@ impl Game<'_> {
             world_seed: self.level.seed,
             sea_level: if self.dim == Dim::Nether { 32 } else { 63 },
             teams: std::sync::Arc::new(self.mob_teams()),
-            items: Some(self.items()),
-            lid_openers: &self.lid_openers,
             // The first player in the level: a server has no player of its own.
             difficulty: self.local_difficulty(
                 self.level_players()
                     .first()
                     .map_or([0.0; 3], |p| [p.position.x, p.position.y, p.position.z]),
             ),
+        }
+    }
+    /// The mob world from borrows of `self` and the pass's `shared`: no scan, no allocation.
+    pub(super) fn mob_world<'s>(
+        &'s self,
+        shared: &'s horizon_client::mobs::MobShared,
+        others: &'s [Seen],
+    ) -> MobWorld<'s> {
+        MobWorld {
+            world: &self.world,
+            registry: self.pack.assets.registry,
+            facts: self.res.facts(),
+            fluid_tables: &self.motion.fluids,
+            movement: &self.motion.blocks,
+            collision: self.collision,
+            data: self.res.mob_data(),
+            nearest_player: shared
+                .player
+                .as_ref()
+                .filter(|p| !p.spectator)
+                .map(|p| p.position),
+            player: shared.player.clone(),
+            others,
+            leash_boats: &self.leash_boats,
+            others_grid: None,
+            others_index: None,
+            daylight: shared.daylight,
+            monsters_burn: shared.monsters_burn,
+            game_time: shared.game_time,
+            day_time: shared.day_time,
+            raining: shared.raining,
+            thundering: shared.thundering,
+            nether: shared.nether,
+            block_tags: &self.items().block_tags,
+            biomes: self.res.biomes(),
+            mob_griefing: shared.mob_griefing,
+            mob_drops: shared.mob_drops,
+            max_entity_cramming: shared.max_entity_cramming,
+            end: shared.end,
+            world_seed: shared.world_seed,
+            sea_level: shared.sea_level,
+            teams: shared.teams.clone(),
+            items: Some(self.items()),
+            lid_openers: &self.lid_openers,
+            difficulty: shared.difficulty,
         }
     }
     /// What the generator finalizes this level's structure mobs with.
@@ -717,48 +824,99 @@ impl Game<'_> {
                 .iter()
                 .map(super::boat_leads::boat_state)
                 .collect();
-            let base = self.mob_world_base(&[]);
+            let mut shared = self.mob_shared();
             // Each mob keeps its snapshot slot all tick; the first slot of an
             // id answers, as a scan would.
             let mut index = horizon_client::fast_hash::FxHashMap::<u32, u32>::default();
             for (i, s) in snapshot.iter().enumerate() {
                 index.entry(s.id).or_insert(i as u32);
             }
-            for i in 0..mobs.len() {
-                let mut w = MobWorld {
-                    others: &snapshot,
-                    others_grid: Some(&grid),
-                    others_index: Some(&index),
-                    ..base.clone()
-                };
+            // The mobs this tick ticks are the ones present now; a crossing may add more.
+            let n = mobs.len();
+            let mut marks = super::crossing::Marks::new(&mobs);
+            // Runs `$point` between two mobs with every vector in `Game`, then refreshes what it touched.
+            macro_rules! cross {
+                ($point:expr) => {{
+                    std::mem::swap(&mut self.world.random, &mut scratch);
+                    std::mem::swap(&mut self.died, &mut died);
+                    if let Some(host) = self.lan.as_mut()
+                        && !guests.is_empty()
+                    {
+                        std::mem::swap(&mut host.mob_players, &mut bindings);
+                    }
+                    let t = self.cross_point($point, &mut [super::crossing::Lent::Mobs(&mut mobs)]);
+                    std::mem::swap(&mut self.world.random, &mut scratch);
+                    std::mem::swap(&mut self.died, &mut died);
+                    if let Some(host) = self.lan.as_mut()
+                        && !guests.is_empty()
+                    {
+                        std::mem::swap(&mut host.mob_players, &mut bindings);
+                    }
+                    if t.shared {
+                        shared = self.mob_shared();
+                    }
+                    marks.mark_touched(&t, &mobs);
+                    for id in &t.ids {
+                        if let Some(&at) = index.get(id) {
+                            let at = at as usize;
+                            snapshot[at] = seen(&mobs[at], uuid);
+                            snapshot[at].alive &= !marks.is_marked(*id);
+                            grid.update(at, snapshot[at].bounds);
+                        }
+                    }
+                    for at in snapshot.len()..mobs.len() {
+                        snapshot.push(seen(&mobs[at], uuid));
+                        grid.push(snapshot[at].bounds);
+                        index.entry(mobs[at].id).or_insert(at as u32);
+                    }
+                }};
+            }
+            for i in 0..n {
+                if marks.is_marked(mobs[i].id) {
+                    keep.push(false);
+                    continue;
+                }
+                let id = mobs[i].id;
                 let m = &mut mobs[i];
-                // getCurrentDifficultyAt(blockPosition()): the mob's own chunk,
-                // not the local player's (a server thread has no player).
-                w.difficulty = self.local_difficulty([m.position.x, m.position.y, m.position.z]);
-                w.nearest_player = super::natural_spawning::nearest_player(
-                    &players,
-                    m.position.x,
-                    m.position.y,
-                    m.position.z,
-                )
-                .map(|p| p.position);
-                let seen_guest = if guests.is_empty() {
-                    None
-                } else {
+                // The world one mob sees: getCurrentDifficultyAt(blockPosition()) is
+                // its own chunk's, not the local player's (a server thread has no player).
+                macro_rules! world {
+                    ($m:expr, $guest:expr) => {{
+                        let mut w = MobWorld {
+                            others_grid: Some(&grid),
+                            others_index: Some(&index),
+                            ..self.mob_world(&shared, &snapshot)
+                        };
+                        let at = $m.position;
+                        w.difficulty = self.local_difficulty([at.x, at.y, at.z]);
+                        w.nearest_player =
+                            super::natural_spawning::nearest_player(&players, at.x, at.y, at.z)
+                                .map(|p| p.position);
+                        if let Some(player) = $guest {
+                            w.player = player;
+                        }
+                        w
+                    }};
+                }
+                let mut seen_guest = None;
+                let mut guest_player = None;
+                if !guests.is_empty() {
                     let bound = bindings.get(&m.id).copied();
-                    let conn = super::lan_mobs::player_for(m, w.player.as_ref(), &guests, bound);
+                    let conn =
+                        super::lan_mobs::player_for(m, shared.player.as_ref(), &guests, bound);
                     match conn {
                         Some(conn) => {
                             bindings.insert(m.id, conn);
-                            w.player = guests.iter().find(|g| g.0 == conn).map(|g| g.1.clone());
+                            guest_player =
+                                Some(guests.iter().find(|g| g.0 == conn).map(|g| g.1.clone()));
                         }
                         None => {
                             bindings.remove(&m.id);
                         }
                     }
-                    conn
-                };
-                if !w
+                    seen_guest = conn;
+                }
+                if !self
                     .world
                     .loaded(m.position.x.floor() as i32, m.position.z.floor() as i32)
                 {
@@ -769,14 +927,28 @@ impl Game<'_> {
                 // only those in entity-ticking chunks (within the simulation
                 // distance) tick.
                 if !ticking(m.position.x.floor() as i32, m.position.z.floor() as i32) {
-                    let kept = horizon_client::mobs::ai::despawn_check(m, &w);
+                    let kept = {
+                        let w = world!(m, guest_player.clone());
+                        horizon_client::mobs::ai::despawn_check(m, &w)
+                    };
                     if !kept {
                         died.remove(&m.id);
                         snapshot[i].alive = false;
                     }
                     keep.push(kept);
+                    if m.removed && kept {
+                        marks.prior(id);
+                    }
+                    cross!(super::crossing::CrossPoint::MobAfter(id));
                     continue;
                 }
+                cross!(super::crossing::CrossPoint::MobBefore(id));
+                if marks.is_marked(id) {
+                    keep.push(false);
+                    continue;
+                }
+                let m = &mut mobs[i];
+                let w = world!(m, guest_player);
                 horizon_client::mobs::apply_mob_pushes(m, &mut pushes);
                 horizon_client::mobs::blocks_changed(m, &w, &path_writes);
                 let from = events.len();
@@ -823,15 +995,19 @@ impl Game<'_> {
                     died.remove(&m.id);
                 }
                 keep.push(kept);
+                if m.removed && kept {
+                    marks.prior(id);
+                }
                 // ServerLevel ticks entities one after another: the ones
                 // after this mob see it as it is now.
                 snapshot[i] = seen(m, uuid);
                 snapshot[i].alive &= kept;
                 grid.update(i, snapshot[i].bounds);
                 horizon_client::mobs::apply_brain_events(&mut mobs, &mut events, from);
+                cross!(super::crossing::CrossPoint::MobAfter(id));
             }
             let mut flags = keep.into_iter();
-            mobs.retain(|_| flags.next().unwrap_or(true));
+            mobs.retain(|m| flags.next().unwrap_or(true) && !marks.is_marked(m.id));
             for m in &mut mobs {
                 horizon_client::mobs::apply_mob_pushes(m, &mut pushes);
             }
@@ -2776,29 +2952,37 @@ impl Game<'_> {
     /// arrow (`ClientPacketListener.handleTakeItemEntity`).
     pub(super) fn touch_arrows(&mut self) {
         use horizon_client::arrows::Touch;
-        let Some(p) = self.player.as_ref() else {
+        // The player's pickup box and Player.hasInfiniteMaterials.
+        let reach_of = |g: &Self| {
+            let p = g.player.as_ref()?;
+            if p.health.dead_or_dying() || g.spectator() {
+                return None;
+            }
+            let w = f64::from(p.dimensions.width) / 2.0;
+            let reach = Aabb::new(
+                Vec3::new(p.position.x - w, p.position.y, p.position.z - w),
+                Vec3::new(
+                    p.position.x + w,
+                    p.position.y + f64::from(p.dimensions.height),
+                    p.position.z + w,
+                ),
+            )
+            .inflate(Vec3::new(1.0, 0.5, 1.0));
+            Some((reach, g.creative))
+        };
+        let Some((mut reach, mut creative)) = reach_of(self) else {
             return;
         };
-        if p.health.dead_or_dying() || self.spectator() {
-            return;
-        }
-        let w = f64::from(p.dimensions.width) / 2.0;
-        let reach = Aabb::new(
-            Vec3::new(p.position.x - w, p.position.y, p.position.z - w),
-            Vec3::new(
-                p.position.x + w,
-                p.position.y + f64::from(p.dimensions.height),
-                p.position.z + w,
-            ),
-        )
-        .inflate(Vec3::new(1.0, 0.5, 1.0));
-        // Player.hasInfiniteMaterials.
-        let creative = self.creative;
         let mut projectiles = std::mem::take(&mut self.creatures.projectiles);
         let mut picked = Vec::new();
-        projectiles.retain(|shot| {
+        let n = projectiles.len();
+        for i in 0..n {
+            if projectiles[i].removed {
+                continue;
+            }
+            let shot = &projectiles[i];
             let Some(a) = shot.arrow.as_ref().filter(|a| !a.removed) else {
-                return true;
+                continue;
             };
             let at = shot.position;
             let bounds = Aabb::new(
@@ -2806,7 +2990,7 @@ impl Game<'_> {
                 Vec3::new(at.x + 0.25, at.y + 0.5, at.z + 0.25),
             );
             if !bounds.intersects(reach) {
-                return true;
+                continue;
             }
             let taken = match a.player_touch(creative) {
                 Touch::Ignore => false,
@@ -2824,9 +3008,21 @@ impl Game<'_> {
                     pitch,
                 );
                 picked.push(shot.clone());
+                projectiles[i].removed = true;
             }
-            !taken
-        });
+            let id = projectiles[i].id;
+            let t = self.cross_point(
+                super::crossing::CrossPoint::TouchArrow(id),
+                &mut [super::crossing::Lent::Projectiles(&mut projectiles)],
+            );
+            if t.shared {
+                match reach_of(self) {
+                    Some(fresh) => (reach, creative) = fresh,
+                    None => break,
+                }
+            }
+        }
+        projectiles.retain(|p| !p.removed);
         self.creatures.projectiles = projectiles;
         for shot in picked {
             self.add_pickup(
@@ -2843,192 +3039,190 @@ impl Game<'_> {
         let mut arrow_events = Vec::new();
         let mut trails = Vec::new();
         {
-            let mut targets: Vec<(Who, Aabb)> = self
-                .mobs
-                .iter()
-                .filter(|m| m.alive())
-                .map(|m| (Who::Mob(m.id), m.bounds()))
-                .collect();
-            if let Some(p) = self.player_view()
-                && p.alive
-            {
-                targets.push((Who::Player, p.bounds));
-            }
-            // Dragon parts and end crystals under reserved ids (game/dragon.rs).
-            targets.extend(
-                self.special_targets()
-                    .into_iter()
-                    .map(|(id, b)| (Who::Mob(id), b)),
-            );
-            let breezes: Vec<u32> = self
-                .mobs
-                .iter()
-                .filter(|m| m.alive() && m.species() == Species::Breeze)
-                .map(|m| m.id)
-                .collect();
+            let targets_at_start = ProjTargets::build(self);
             // Drawn only when a breeze could deflect a projectile: an empty
             // level must not move the level random every tick.
-            let jitter = if breezes.is_empty() || projectiles.is_empty() {
+            let jitter = if targets_at_start.breezes.is_empty() || projectiles.is_empty() {
                 0.0
             } else {
                 self.world.random.next_float()
             };
-            let w = self.mob_world_base(&[]);
-            let rain = self.arrow_rain();
-            let scene = self.arrow_scene(&rain);
-            // Arrows also hit minecarts (VehicleEntity is pickable).
-            let mut arrow_targets = targets.clone();
-            arrow_targets.extend(self.carts.iter().map(|c| (Who::Mob(c.id), c.bounds())));
-            // Mobs' projectiles also hit the guests (game/lan_mobs.rs).
-            let guests = self.lan_projectile_targets();
-            let mut arrow_targets_guests = arrow_targets.clone();
-            arrow_targets_guests.extend(guests.iter().copied());
-            let mut targets_guests = targets.clone();
-            targets_guests.extend(guests);
-            let pw = ProjWorld { w: &w, targets };
-            let pw_guests = ProjWorld {
-                w: &w,
-                targets: targets_guests,
-            };
-            let guest_entities = self.lan_guest_entities();
-            // ThrownEnderpearl.tick: a dead player's pearl is discarded in
-            // place of its tick while ender_pearls_vanish_on_death is on.
-            let vanish = self.ui.rules.bool("ender_pearls_vanish_on_death");
-            let host_dead = self.player_view().is_some_and(|p| !p.alive);
-            let dead_guests: Vec<u32> = self.lan.as_ref().map_or_else(Vec::new, |h| {
-                h.hub
-                    .guests
-                    .iter()
-                    .filter(|g| g.dead)
-                    .map(|g| g.conn)
-                    .collect()
-            });
+            let mut tg = targets_at_start;
+            let mut shared = self.mob_shared();
+            let mut guest_state = ProjGuests::build(self);
             let mut keep_flags = vec![true; projectiles.len()];
-            for i in 0..projectiles.len() {
-                let winds = if matches!(projectiles[i].kind, ProjectileKind::EnderPearl) {
-                    wind_charge_hitboxes(&projectiles, &keep_flags, i)
-                } else {
-                    Vec::new()
-                };
-                let p = &mut projectiles[i];
-                if vanish
-                    && matches!(p.kind, ProjectileKind::EnderPearl)
-                    && p.owner == Some(Who::Player)
-                    && p.guest.map_or(host_dead, |c| dead_guests.contains(&c))
-                {
-                    keep_flags[i] = false;
+            // The projectiles ticking now are the ones present; a crossing may add more.
+            let n = projectiles.len();
+            for i in 0..n {
+                if projectiles[i].removed {
                     continue;
                 }
-                let mob_shot = !matches!(p.owner, Some(Who::Player));
-                // A player's arrows, snowballs and eggs meet every player; a
-                // guest's flies from that guest (Projectile.getOwner), not
-                // from the host, until it has left them.
-                let pvp = !mob_shot && super::lan_pvp::meets_players(&p.kind);
-                let shooter = p
-                    .guest
-                    .filter(|_| pvp)
-                    .and_then(|c| guest_entities.iter().find(|(g, _)| *g == c))
-                    .map(|&(_, id)| Who::Mob(id));
-                if shooter.is_some() {
-                    p.owner = shooter;
-                }
-                let (keep, hit) = match (p.arrow.is_some(), mob_shot || pvp, winds.is_empty()) {
-                    (true, false, _) => horizon_client::arrows::tick(p, &scene, &arrow_targets),
-                    (true, true, _) => {
-                        horizon_client::arrows::tick(p, &scene, &arrow_targets_guests)
+                {
+                    let w = self.mob_world(&shared, &[]);
+                    let rain = self.arrow_rain();
+                    let scene = self.arrow_scene(&rain);
+                    let pw = ProjWorld {
+                        w: &w,
+                        targets: std::borrow::Cow::Borrowed(&tg.targets),
+                    };
+                    let pw_guests = ProjWorld {
+                        w: &w,
+                        targets: std::borrow::Cow::Borrowed(&tg.targets_guests),
+                    };
+                    let arrow_targets = &tg.arrow_targets;
+                    let arrow_targets_guests = &tg.arrow_targets_guests;
+                    let breezes = &tg.breezes;
+                    let (vanish, host_dead) = (guest_state.vanish, guest_state.host_dead);
+                    let (guest_entities, dead_guests) =
+                        (&guest_state.guest_entities, &guest_state.dead_guests);
+                    let winds = if matches!(projectiles[i].kind, ProjectileKind::EnderPearl) {
+                        wind_charge_hitboxes(&projectiles, &keep_flags, i)
+                    } else {
+                        Vec::new()
+                    };
+                    'body: {
+                        let p = &mut projectiles[i];
+                        if vanish
+                            && matches!(p.kind, ProjectileKind::EnderPearl)
+                            && p.owner == Some(Who::Player)
+                            && p.guest.map_or(host_dead, |c| dead_guests.contains(&c))
+                        {
+                            keep_flags[i] = false;
+                            break 'body;
+                        }
+                        let mob_shot = !matches!(p.owner, Some(Who::Player));
+                        // A player's arrows, snowballs and eggs meet every player; a
+                        // guest's flies from that guest (Projectile.getOwner), not
+                        // from the host, until it has left them.
+                        let pvp = !mob_shot && super::lan_pvp::meets_players(&p.kind);
+                        let shooter = p
+                            .guest
+                            .filter(|_| pvp)
+                            .and_then(|c| guest_entities.iter().find(|(g, _)| *g == c))
+                            .map(|&(_, id)| Who::Mob(id));
+                        if shooter.is_some() {
+                            p.owner = shooter;
+                        }
+                        let (keep, hit) =
+                            match (p.arrow.is_some(), mob_shot || pvp, winds.is_empty()) {
+                                (true, false, _) => {
+                                    horizon_client::arrows::tick(p, &scene, arrow_targets)
+                                }
+                                (true, true, _) => {
+                                    horizon_client::arrows::tick(p, &scene, arrow_targets_guests)
+                                }
+                                (false, false, true) => p.tick(&pw),
+                                (false, true, true) => p.tick(&pw_guests),
+                                (false, pvp_shot, false) => {
+                                    let mut targets = if pvp_shot {
+                                        pw_guests.targets.to_vec()
+                                    } else {
+                                        pw.targets.to_vec()
+                                    };
+                                    targets.extend(winds);
+                                    p.tick(&ProjWorld {
+                                        w: if pvp_shot { pw_guests.w } else { pw.w },
+                                        targets: targets.into(),
+                                    })
+                                }
+                            };
+                        if shooter.is_some() {
+                            p.owner = Some(Who::Player);
+                        }
+                        // AbstractHurtingProjectile.tick ends with createParticleTrail.
+                        if super::remote_projectiles::has_smoke_trail(&p.kind) {
+                            trails.push(p.position);
+                        }
+                        // ThrownEnderpearl.onAboveBubbleColumn / onInsideBubbleColumn.
+                        if keep && hit == Hit::None && matches!(p.kind, ProjectileKind::EnderPearl)
+                        {
+                            let (at, h) = (p.position, 0.125);
+                            horizon_client::motion::bubble_column_push(
+                                w.world,
+                                w.registry,
+                                w.facts,
+                                w.collision,
+                                Aabb::new(
+                                    Vec3::new(at.x - h, at.y, at.z - h),
+                                    Vec3::new(at.x + h, at.y + 2.0 * h, at.z + h),
+                                ),
+                                &mut p.velocity,
+                            );
+                        }
+                        if let Some(a) = p.arrow.as_mut() {
+                            arrow_events.extend(a.events.drain(..).map(|e| (p.position, e)));
+                        }
+                        let wind = matches!(
+                            p.kind,
+                            ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge
+                        );
+                        // Entity.deflection: a breeze turns every projectile but wind charges away.
+                        if let Hit::Entity {
+                            who: Who::Mob(id),
+                            at,
+                        } = hit
+                            && !wind
+                            && breezes.contains(&id)
+                        {
+                            super::wind::reverse(p, jitter);
+                            if p.arrow.is_some() {
+                                horizon_client::arrows::finish_entity_hit(
+                                    p,
+                                    &scene,
+                                    EntityHit::Deflected,
+                                );
+                                let a = p.arrow.as_mut().expect("an arrow");
+                                arrow_events.extend(a.events.drain(..).map(|e| (p.position, e)));
+                            }
+                            deflections.push([at.x, at.y, at.z]);
+                            break 'body;
+                        }
+                        // AbstractWindCharge.tick: out of the world's top it bursts.
+                        if wind && keep && p.position.y > 350.0 {
+                            hits.push((
+                                p.clone(),
+                                Hit::Block {
+                                    pos: [0; 3],
+                                    at: p.position,
+                                    face: [0; 3],
+                                },
+                            ));
+                            keep_flags[i] = false;
+                            break 'body;
+                        }
+                        if hit != Hit::None {
+                            hits.push((p.clone(), hit));
+                        }
+                        keep_flags[i] = keep;
+                        // Projectile.onHit: the wind charge it hit turns before its own tick.
+                        if let Hit::Entity {
+                            who: Who::Mob(id), ..
+                        } = hit
+                            && let Some(j) = wind_charge_hit(id)
+                        {
+                            let (owner, guest) = (p.owner, p.guest);
+                            let look = self.owner_look(owner, guest);
+                            super::deflect::aim_deflect(&mut projectiles[j], look, owner, guest);
+                        }
                     }
-                    (false, false, true) => p.tick(&pw),
-                    (false, true, true) => p.tick(&pw_guests),
-                    (false, pvp_shot, false) => {
-                        let mut targets = if pvp_shot {
-                            pw_guests.targets.clone()
-                        } else {
-                            pw.targets.clone()
-                        };
-                        targets.extend(winds);
-                        p.tick(&ProjWorld {
-                            w: if pvp_shot { pw_guests.w } else { pw.w },
-                            targets,
-                        })
-                    }
-                };
-                if shooter.is_some() {
-                    p.owner = Some(Who::Player);
                 }
-                // AbstractHurtingProjectile.tick ends with createParticleTrail.
-                if super::remote_projectiles::has_smoke_trail(&p.kind) {
-                    trails.push(p.position);
-                }
-                // ThrownEnderpearl.onAboveBubbleColumn / onInsideBubbleColumn.
-                if keep && hit == Hit::None && matches!(p.kind, ProjectileKind::EnderPearl) {
-                    let (at, h) = (p.position, 0.125);
-                    horizon_client::motion::bubble_column_push(
-                        w.world,
-                        w.registry,
-                        w.facts,
-                        w.collision,
-                        Aabb::new(
-                            Vec3::new(at.x - h, at.y, at.z - h),
-                            Vec3::new(at.x + h, at.y + 2.0 * h, at.z + h),
-                        ),
-                        &mut p.velocity,
-                    );
-                }
-                if let Some(a) = p.arrow.as_mut() {
-                    arrow_events.extend(a.events.drain(..).map(|e| (p.position, e)));
-                }
-                let wind = matches!(
-                    p.kind,
-                    ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge
+                let id = projectiles[i].id;
+                let t = self.cross_point(
+                    super::crossing::CrossPoint::ProjectileAfter(id),
+                    &mut [super::crossing::Lent::Projectiles(&mut projectiles)],
                 );
-                // Entity.deflection: a breeze turns every projectile but wind charges away.
-                if let Hit::Entity {
-                    who: Who::Mob(id),
-                    at,
-                } = hit
-                    && !wind
-                    && breezes.contains(&id)
-                {
-                    super::wind::reverse(p, jitter);
-                    if p.arrow.is_some() {
-                        horizon_client::arrows::finish_entity_hit(p, &scene, EntityHit::Deflected);
-                        let a = p.arrow.as_mut().expect("an arrow");
-                        arrow_events.extend(a.events.drain(..).map(|e| (p.position, e)));
-                    }
-                    deflections.push([at.x, at.y, at.z]);
-                    continue;
+                keep_flags.resize(projectiles.len(), true);
+                if t.shared {
+                    shared = self.mob_shared();
+                    guest_state = ProjGuests::build(self);
                 }
-                // AbstractWindCharge.tick: out of the world's top it bursts.
-                if wind && keep && p.position.y > 350.0 {
-                    hits.push((
-                        p.clone(),
-                        Hit::Block {
-                            pos: [0; 3],
-                            at: p.position,
-                            face: [0; 3],
-                        },
-                    ));
-                    keep_flags[i] = false;
-                    continue;
-                }
-                if hit != Hit::None {
-                    hits.push((p.clone(), hit));
-                }
-                keep_flags[i] = keep;
-                // Projectile.onHit: the wind charge it hit turns before its own tick.
-                if let Hit::Entity {
-                    who: Who::Mob(id), ..
-                } = hit
-                    && let Some(j) = wind_charge_hit(id)
-                {
-                    let (owner, guest) = (p.owner, p.guest);
-                    let look = self.owner_look(owner, guest);
-                    super::deflect::aim_deflect(&mut projectiles[j], look, owner, guest);
+                if !t.is_empty() {
+                    tg = ProjTargets::build(self);
                 }
             }
             let mut idx = 0;
-            projectiles.retain(|_| {
-                let k = keep_flags[idx];
+            projectiles.retain(|p| {
+                let k = keep_flags[idx] && !p.removed;
                 idx += 1;
                 k
             });
@@ -5931,7 +6125,7 @@ mod pearl_tests {
         };
         let pw = ProjWorld {
             w: &w,
-            targets: Vec::new(),
+            targets: Vec::new().into(),
         };
         let pearl = |x: f64, y: f64, velocity: Vec3| {
             let mut p = Projectile::new(ProjectileKind::EnderPearl, Vec3::new(x, y, 1.5), None);

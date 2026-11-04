@@ -1,6 +1,7 @@
 //! Real NeoForge and real mod jars in a JVM embedded in this process (`docs/java-mods.md`).
 
 pub mod bridge;
+pub mod entity_facts;
 pub mod profile;
 pub mod shapes;
 pub mod values_bench;
@@ -8,11 +9,17 @@ pub mod wire;
 
 pub use jni;
 
-use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JString, JValue};
+use jni::objects::{
+    GlobalRef, JByteArray, JByteBuffer, JClass, JObject, JObjectArray, JStaticMethodID, JString,
+    JValue,
+};
+use jni::signature::ReturnType;
+use jni::sys::{jint, jvalue};
 use jni::{InitArgsBuilder, JNIEnv, JNIVersion, JavaVM, NativeMethod};
-use std::cell::Cell;
-use std::collections::HashSet;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CString, c_void};
+use std::hash::{BuildHasherDefault, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, OnceLock};
 
@@ -57,6 +64,7 @@ pub fn create_vm(run_dir: &str) -> (JavaVM, Vec<String>) {
                 b = b.option(format!("-Djava.class.path={classpath}{CP_SEP}{host_jar}"))
             }
             Some(("prog", arg)) => prog.push(arg.to_string()),
+            Some(("analysis", path)) => b = b.option(format!("-Dhorizon.java.analysis={path}")),
             _ => {}
         }
     }
@@ -176,8 +184,39 @@ pub fn try_run_fml(env: &mut JNIEnv, prog: &[String], run_dir: &str) -> Result<(
     .map_err(|e| java_error(env, e))
 }
 
+/// FNV-1a: op names are short and few, and SipHash would be a tenth of a request.
+#[derive(Default)]
+struct Fnv(u64);
+
+impl Hasher for Fnv {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        let mut hash = if self.0 == 0 {
+            0xcbf2_9ce4_8422_2325
+        } else {
+            self.0
+        };
+        for byte in bytes {
+            hash = (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+        self.0 = hash;
+    }
+}
+
+/// What a request crosses with: Host's class, its `dispatch`, `arena` and `overflow`, and the ops by their index in Java's table.
+struct Entry {
+    class: GlobalRef,
+    dispatch: JStaticMethodID,
+    arena: JStaticMethodID,
+    overflow: JStaticMethodID,
+    ops: HashMap<Box<str>, jint, BuildHasherDefault<Fnv>>,
+}
+
 pub struct Host {
     vm: JavaVM,
+    entry: Entry,
     items: Items,
     server_group: Option<GlobalRef>,
     facts: PathBuf,
@@ -226,7 +265,7 @@ enum Boot {
 }
 
 /// Detaches a thread that attached itself when it ends, so a closed world's server thread leaves nothing in the JVM.
-struct Attached(*mut jni::sys::JavaVM);
+struct Attached(*mut jni::sys::JavaVM, *mut jni::sys::JNIEnv);
 
 impl Drop for Attached {
     fn drop(&mut self) {
@@ -264,7 +303,7 @@ static RUNNING: LazyLock<Boot> = LazyLock::new(|| {
 fn boot(run_dir: &str) -> Result<Host, String> {
     let began = std::time::Instant::now();
     let (vm, prog) = create_vm(run_dir);
-    let server_group = {
+    let (server_group, entry) = {
         let mut env = vm
             .attach_current_thread_permanently()
             .map_err(|e| e.to_string())?;
@@ -274,7 +313,11 @@ fn boot(run_dir: &str) -> Result<Host, String> {
             .get_static_field(HOST, "serverGroup", "Ljava/lang/ThreadGroup;")
             .and_then(|group| group.l())
             .ok();
-        group.and_then(|group| env.new_global_ref(group).ok())
+        let entry = Entry::read(&mut env)?;
+        (
+            group.and_then(|group| env.new_global_ref(group).ok()),
+            entry,
+        )
     };
     let booted = began.elapsed().as_secs_f64();
     let facts = FACTS.get().cloned().unwrap_or_else(|| {
@@ -282,6 +325,7 @@ fn boot(run_dir: &str) -> Result<Host, String> {
     });
     let mut host = Host {
         vm,
+        entry,
         items: Items::default(),
         server_group,
         facts,
@@ -307,6 +351,14 @@ fn boot(run_dir: &str) -> Result<Host, String> {
     let keys = host.request("client_keys", &[]).unwrap_or_default();
     if !keys.is_empty() {
         std::fs::write(host.keys(), keys).map_err(|e| format!("{}: {e}", host.keys().display()))?;
+    }
+    let analysed = host.request("entity_facts", &[]).unwrap_or_default();
+    if !analysed.is_empty() {
+        entity_facts::set(
+            entity_facts::EntityFacts::read(&analysed).map_err(|e| format!("entities.bin: {e}"))?,
+        );
+        std::fs::write(host.entity_facts(), analysed)
+            .map_err(|e| format!("{}: {e}", host.entity_facts().display()))?;
     }
     println!(
         "Horizon: Java mods ready in {exported:.1}s (mods {booted:.1}s, data {:.1}s, facts {:.1}s), {} items",
@@ -353,6 +405,11 @@ pub fn ready() -> Result<(), &'static str> {
 }
 
 impl Host {
+    /// The embedded JVM.
+    pub fn vm(&self) -> &JavaVM {
+        &self.vm
+    }
+
     /// The facts file this boot wrote (`BootFacts`).
     pub fn facts(&self) -> &Path {
         &self.facts
@@ -366,6 +423,29 @@ impl Host {
     /// Where the boot writes the client's key mappings, the mods' and vanilla's conflict contexts (absent without a client).
     pub fn keys(&self) -> PathBuf {
         self.facts.with_extension("keys.tsv")
+    }
+
+    /// Where the boot writes `entities.bin`, the install's entity analysis confirmed against the booted mods (absent without an analysis).
+    pub fn entity_facts(&self) -> PathBuf {
+        self.facts.with_extension("entities.bin")
+    }
+
+    /// Loads the entity types' classes, once the first server has started: from `cached` when it exists, else built by Java on a view level and kept there.
+    pub fn entity_types(&self, cached: &Path) -> Result<(), String> {
+        let Some(facts) = entity_facts::get().filter(|f| !f.types_loaded()) else {
+            return Ok(());
+        };
+        let bytes = match std::fs::read(cached) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                let bytes = self
+                    .request("entity_types", &[])
+                    .ok_or("Java built no entity types")?;
+                std::fs::write(cached, &bytes).map_err(|e| format!("{}: {e}", cached.display()))?;
+                bytes
+            }
+        };
+        facts.load_types(&bytes)
     }
 
     /// What the Java client's first resource reload made for the window (`ClientResources`), taken as the boot ended; empty without a client.
@@ -402,8 +482,7 @@ impl Host {
 
     /// The JVM's side of the profile since the last take (`be=... lock=...`), a `profile_dump` to `path` when given.
     pub fn profile(&self, op: &str, input: &[u8]) -> Option<String> {
-        let out = self.request_untimed(op, input)?;
-        String::from_utf8(out).ok()
+        self.cross(op, input, |reply| String::from_utf8(reply.to_vec()).ok())
     }
 
     /// Whether the item is one a Java mod registered.
@@ -432,80 +511,338 @@ impl Host {
 
     /// Attaches this thread as FML's real server group, as `EffectiveSide` asks every thread's group which side it's on.
     fn attach(&self) {
-        thread_local! {
-            static ATTACHED: Cell<Option<Attached>> = const { Cell::new(None) };
-        }
-        ATTACHED.with(|attached| {
-            let already = attached.take();
-            if already.is_none()
-                && let Some(group) = &self.server_group
-            {
-                let name = std::thread::current()
-                    .name()
-                    .unwrap_or("Server thread")
-                    .to_string();
-                let name = CString::new(name).unwrap_or_default();
-                let mut args = jni::sys::JavaVMAttachArgs {
-                    version: jni::sys::JNI_VERSION_1_8,
-                    name: name.as_ptr().cast_mut(),
-                    group: group.as_raw(),
-                };
-                let vm = self.vm.get_java_vm_pointer();
-                let mut env = std::ptr::null_mut();
-                // SAFETY: the JVM outlives this process's threads, and `args` outlives the call, which copies it.
-                let status = unsafe {
-                    let attach = (**vm)
-                        .AttachCurrentThread
-                        .expect("every JVM has AttachCurrentThread");
-                    attach(vm, &mut env, std::ptr::from_mut(&mut args).cast())
-                };
-                if status == jni::sys::JNI_OK {
-                    attached.set(Some(Attached(vm)));
-                }
-            } else {
-                attached.set(already);
+        CROSSING.with_borrow_mut(|crossing| {
+            if crossing.attached.is_some() {
+                return;
+            }
+            let Some(group) = &self.server_group else {
+                return;
+            };
+            let name = std::thread::current()
+                .name()
+                .unwrap_or("Server thread")
+                .to_string();
+            let name = CString::new(name).unwrap_or_default();
+            let mut args = jni::sys::JavaVMAttachArgs {
+                version: jni::sys::JNI_VERSION_1_8,
+                name: name.as_ptr().cast_mut(),
+                group: group.as_raw(),
+            };
+            let vm = self.vm.get_java_vm_pointer();
+            let mut env = std::ptr::null_mut();
+            // SAFETY: the JVM outlives this process's threads, and `args` outlives the call, which copies it.
+            let status = unsafe {
+                let attach = (**vm)
+                    .AttachCurrentThread
+                    .expect("every JVM has AttachCurrentThread");
+                attach(vm, &mut env, std::ptr::from_mut(&mut args).cast())
+            };
+            if status == jni::sys::JNI_OK {
+                crossing.attached = Some(Attached(vm, env.cast()));
             }
         });
     }
 
     /// One call into `GameBridge`; None when it threw, which its own stack trace explains.
     pub fn request(&self, op: &str, input: &[u8]) -> Option<Vec<u8>> {
+        self.timed(op, || self.cross(op, input, |reply| Some(reply.to_vec())))
+    }
+
+    /// [`request`](Self::request) without the copies: `write` fills the request in this thread's buffer and `read` parses the reply where it lies.
+    pub fn call_with<R>(
+        &self,
+        op: &str,
+        write: impl FnOnce(&mut wire::Out),
+        read: impl FnOnce(&mut wire::In) -> Option<R>,
+    ) -> Option<R> {
+        self.timed(op, || {
+            let level = DEPTH.get();
+            let mut out = wire::Out(CROSSING.with_borrow_mut(|c| {
+                c.scratch
+                    .get_mut(level)
+                    .map(std::mem::take)
+                    .unwrap_or_default()
+            }));
+            out.0.clear();
+            write(&mut out);
+            let reply = self.cross(op, &out.0, |bytes| read(&mut wire::In(bytes)));
+            CROSSING.with_borrow_mut(|c| {
+                if c.scratch.len() <= level {
+                    c.scratch.resize_with(level + 1, Vec::new);
+                }
+                c.scratch[level] = out.0;
+            });
+            reply
+        })
+    }
+
+    fn timed<R>(&self, op: &str, f: impl FnOnce() -> R) -> R {
         let started = profile::dir().map(|_| std::time::Instant::now());
-        let out = self.request_untimed(op, input);
+        let out = f();
         if let Some(started) = started {
             profile::record_call(op, started.elapsed());
         }
         out
     }
 
-    fn request_untimed(&self, op: &str, input: &[u8]) -> Option<Vec<u8>> {
-        self.attach();
-        let mut env = self.vm.attach_current_thread_permanently().ok()?;
-        env.with_local_frame(8, |env| -> jni::errors::Result<_> {
-            let name = env.new_string(op)?;
-            let bytes = env.byte_array_from_slice(input)?;
-            let out = env
-                .call_static_method(
-                    HOST,
-                    "handle",
-                    "(Ljava/lang/String;[B)[B",
-                    &[JValue::Object(&name), JValue::Object(&bytes)],
-                )?
-                .l()?;
-            env.convert_byte_array(JByteArray::from(out))
+    /// An arena of this thread at this nesting level with room for `need` bytes: its Java buffer and address.
+    fn arena(
+        &self,
+        env: &mut JNIEnv,
+        level: usize,
+        need: usize,
+    ) -> Option<(jni::sys::jobject, *mut u8)> {
+        CROSSING.with_borrow_mut(|c| {
+            if let Some(arena) = c.arenas.get(level)
+                && arena.capacity >= need
+            {
+                return Some((arena.buffer.as_raw(), arena.address));
+            }
+            let capacity = capacity_for(need);
+            let arena = self.entry.new_arena(env, capacity)?;
+            let found = (arena.buffer.as_raw(), arena.address);
+            match c.arenas.get_mut(level) {
+                Some(slot) => *slot = arena,
+                None => c.arenas.push(arena),
+            }
+            Some(found)
         })
-        .inspect_err(|_| {
+    }
+
+    /// One request, its reply read where it lies; None when Java threw or had nothing to say.
+    fn cross<R>(&self, op: &str, input: &[u8], read: impl FnOnce(&[u8]) -> Option<R>) -> Option<R> {
+        let id = *self.entry.ops.get(op)?;
+        let level = DEPTH.get();
+        let ready = CROSSING.with_borrow(|c| {
+            let arena = c.arenas.get(level).filter(|a| a.capacity >= input.len())?;
+            Some((c.attached.as_ref()?.1, arena.buffer.as_raw(), arena.address))
+        });
+        let (mut env, buffer, address) = match ready {
+            // SAFETY: the pointer is this thread's own env, from the call that attached it.
+            Some((env, buffer, address)) => {
+                (unsafe { JNIEnv::from_raw(env) }.ok()?, buffer, address)
+            }
+            None => {
+                self.attach();
+                let mut env = self.vm.attach_current_thread_permanently().ok()?;
+                let (buffer, address) = self.arena(&mut env, level, input.len())?;
+                (env, buffer, address)
+            }
+        };
+        // SAFETY: the arena holds at least `input.len()` bytes and nothing else uses it at this level.
+        unsafe { std::ptr::copy_nonoverlapping(input.as_ptr(), address, input.len()) };
+        let _nested = Nesting::enter(level);
+        let raw = env.get_raw();
+        let args = [
+            jvalue { i: id },
+            jvalue { l: buffer },
+            jvalue {
+                i: input.len() as jint,
+            },
+        ];
+        // SAFETY: `dispatch` is `Host.dispatch(int, ByteBuffer, int)` and these are its arguments.
+        let (n, thrown) = unsafe {
+            let call = (**raw)
+                .CallStaticIntMethodA
+                .expect("every JVM has CallStaticIntMethodA");
+            let n = call(
+                raw,
+                self.entry.class.as_raw(),
+                self.entry.dispatch.into_raw(),
+                args.as_ptr(),
+            );
+            (
+                n,
+                ((**raw)
+                    .ExceptionCheck
+                    .expect("every JVM has ExceptionCheck"))(raw)
+                    != 0,
+            )
+        };
+        if thrown {
             let _ = env.exception_describe();
             let _ = env.exception_clear();
+            return None;
+        }
+        match n {
+            // SAFETY: Java wrote `n` bytes to the arena's start, and a request nested in `read` uses the next level's.
+            1.. => read(unsafe { std::slice::from_raw_parts(address, n as usize) }),
+            OVERFLOW => {
+                let reply = self.entry.overflow(&mut env)?;
+                if reply.len() <= ARENA_CAP {
+                    self.arena(&mut env, level, reply.len());
+                }
+                read(&reply)
+            }
+            _ => None,
+        }
+    }
+}
+
+impl Entry {
+    /// Host's entry points and the ops Java registered, once the boot has returned.
+    fn read(env: &mut JNIEnv) -> Result<Entry, String> {
+        let find = |env: &mut JNIEnv, class: &JClass, name: &str, sig: &str| {
+            env.get_static_method_id(class, name, sig)
+                .map_err(|e| e.to_string())
+        };
+        let class = env.find_class(HOST).map_err(|e| e.to_string())?;
+        let dispatch = find(env, &class, "dispatch", "(ILjava/nio/ByteBuffer;I)I")?;
+        let arena = find(env, &class, "arena", "(I)Ljava/nio/ByteBuffer;")?;
+        let overflow = find(env, &class, "overflow", "()[B")?;
+        let names = env
+            .call_static_method(&class, "ops", "()[Ljava/lang/String;", &[])
+            .and_then(|names| names.l())
+            .map_err(|e| java_error(env, e))?;
+        let names = JObjectArray::from(names);
+        let mut ops = HashMap::default();
+        for index in 0..env.get_array_length(&names).map_err(|e| e.to_string())? {
+            let name = env
+                .get_object_array_element(&names, index)
+                .map_err(|e| e.to_string())?;
+            ops.insert(js(env, &JString::from(name)).into_boxed_str(), index);
+        }
+        let class = env.new_global_ref(class).map_err(|e| e.to_string())?;
+        Ok(Entry {
+            class,
+            dispatch,
+            arena,
+            overflow,
+            ops,
         })
-        .ok()
-        .filter(|out| !out.is_empty())
+    }
+
+    fn new_arena(&self, env: &mut JNIEnv, capacity: usize) -> Option<Arena> {
+        // SAFETY: `arena` is `Host.arena(int)`.
+        let buffer = unsafe {
+            let class = JClass::from_raw(self.class.as_raw());
+            env.call_static_method_unchecked(
+                &class,
+                self.arena,
+                ReturnType::Object,
+                &[JValue::Int(capacity as jint).as_jni()],
+            )
+        }
+        .and_then(|buffer| buffer.l())
+        .ok()?;
+        let buffer = JByteBuffer::from(buffer);
+        let address = env.get_direct_buffer_address(&buffer).ok()?;
+        let global = env.new_global_ref(&buffer).ok()?;
+        let _ = env.delete_local_ref(buffer);
+        Some(Arena {
+            buffer: global,
+            address,
+            capacity,
+        })
+    }
+
+    /// The reply that didn't fit its arena.
+    fn overflow(&self, env: &mut JNIEnv) -> Option<Vec<u8>> {
+        // SAFETY: `overflow` is `Host.overflow()`.
+        let reply = unsafe {
+            let class = JClass::from_raw(self.class.as_raw());
+            env.call_static_method_unchecked(&class, self.overflow, ReturnType::Array, &[])
+        }
+        .and_then(|reply| reply.l())
+        .ok()?;
+        env.convert_byte_array(JByteArray::from(reply)).ok()
+    }
+}
+
+/// Where a thread's requests cross: a Java-owned buffer per nesting level, as a native called from Java may ask Java again.
+struct Arena {
+    buffer: GlobalRef,
+    address: *mut u8,
+    capacity: usize,
+}
+
+/// A thread's crossing state; fields drop in order, so the buffers go before the thread detaches.
+struct Crossing {
+    arenas: Vec<Arena>,
+    scratch: Vec<Vec<u8>>,
+    attached: Option<Attached>,
+}
+
+/// A reply longer than this takes the overflow path without growing the arena.
+const ARENA_CAP: usize = 16 << 20;
+const ARENA: usize = 64 << 10;
+const OVERFLOW: jint = -2;
+
+thread_local! {
+    static CROSSING: RefCell<Crossing> = const {
+        RefCell::new(Crossing { arenas: Vec::new(), scratch: Vec::new(), attached: None })
+    };
+    static DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// An arena's size for a request or reply of `need` bytes: a power of two, so growth is rare.
+fn capacity_for(need: usize) -> usize {
+    need.next_power_of_two().max(ARENA)
+}
+
+/// The nesting level of this thread's requests, restored when a request ends however it ends.
+struct Nesting(usize);
+
+impl Nesting {
+    fn enter(level: usize) -> Nesting {
+        DEPTH.set(level + 1);
+        Nesting(level)
+    }
+}
+
+impl Drop for Nesting {
+    fn drop(&mut self) {
+        DEPTH.set(self.0);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ops_are_found_by_name_in_java_order() {
+        let mut ops: HashMap<Box<str>, jint, BuildHasherDefault<Fnv>> = HashMap::default();
+        let names = [
+            "block_events",
+            "block_entity_tick",
+            "level_tick",
+            "bench_empty",
+            "",
+        ];
+        for (index, name) in names.iter().enumerate() {
+            ops.insert((*name).into(), index as jint);
+        }
+        for (index, name) in names.iter().enumerate() {
+            assert_eq!(ops.get(*name), Some(&(index as jint)));
+        }
+        assert_eq!(ops.get("client_tick"), None);
+    }
+
+    #[test]
+    fn arenas_grow_by_powers_of_two() {
+        assert_eq!(capacity_for(0), ARENA);
+        assert_eq!(capacity_for(ARENA), ARENA);
+        assert_eq!(capacity_for(ARENA + 1), ARENA * 2);
+        assert_eq!(capacity_for(1 << 20), 1 << 20);
+        assert_eq!(capacity_for((1 << 20) + 1), 1 << 21);
+    }
+
+    #[test]
+    fn nesting_is_restored_after_a_panic() {
+        assert_eq!(DEPTH.get(), 0);
+        let outer = Nesting::enter(0);
+        assert_eq!(DEPTH.get(), 1);
+        let panicked = std::panic::catch_unwind(|| {
+            let _inner = Nesting::enter(1);
+            assert_eq!(DEPTH.get(), 2);
+            panic!("a read that panics");
+        });
+        assert!(panicked.is_err());
+        assert_eq!(DEPTH.get(), 1);
+        drop(outer);
+        assert_eq!(DEPTH.get(), 0);
+    }
 
     #[test]
     fn items_keep_which_clicks_run_their_code() {

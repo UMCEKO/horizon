@@ -277,7 +277,8 @@ impl Game<'_> {
     fn spawn_camel_husk_jockey(&mut self, id: u32, at: [f64; 3]) {
         let (bx, by, bz) = (at[0].floor(), at[1].floor(), at[2].floor());
         let room = {
-            let w = self.mob_world_base(&[]);
+            let shared = self.mob_shared();
+            let w = self.mob_world(&shared, &[]);
             w.no_collision(horizon_core::geometry::Aabb::new(
                 Vec3::new(bx + 0.5 - 0.85, by, bz + 0.5 - 0.85),
                 Vec3::new(bx + 0.5 + 0.85, by + 2.375, bz + 0.5 + 0.85),

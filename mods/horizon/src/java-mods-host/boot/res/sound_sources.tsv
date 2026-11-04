@@ -1,0 +1,95 @@
+net/minecraft/client/resources/sounds/BiomeAmbientSoundsHandler	*	native	ambience.rs: biome loop, mood, additions
+net/minecraft/client/resources/sounds/UnderwaterAmbientSoundHandler	*	native	ambience.rs: underwater loop and additions
+net/minecraft/client/resources/sounds/BubbleColumnAmbientSoundHandler	*	native	ambience.rs: bubble column
+net/minecraft/client/player/LocalPlayer	updateIsUnderwater	native	ambience.rs: enter and exit underwater, UnderLiquidAmbientSoundInstance
+net/minecraft/client/player/LocalPlayer	handlePortalTransitionEffect	native	game/nether_portal.rs: portal trigger
+net/minecraft/client/player/LocalPlayer	onSyncedDataUpdated	native	elytra sound start
+net/minecraft/client/player/LocalPlayer	startRiding	native	minecart riding loop
+net/minecraft/client/multiplayer/ClientLevel	tickWeatherEffects	native	render_tick.rs: rain, rain above
+net/minecraft/client/multiplayer/ClientLevel	tick	native	game/end.rs: End flash
+net/minecraft/client/multiplayer/ClientLevel	addBreakingBlockEffects	native	block break effects
+net/minecraft/world/entity/Entity	doWaterSplashEffect	native	splash
+net/minecraft/world/entity/Entity	playEntityOnFireExtinguishedSound	native	extinguish
+net/minecraft/world/item/component/Consumable	emitParticlesAndSounds	native	eat and drink while using
+net/minecraft/world/entity/Leashable	tickLeash	native	leash break
+net/minecraft/world/item/component/KineticWeapon	makeLocalHitSound	native	spear local hit
+net/minecraft/world/level/block/entity/trialspawner/TrialSpawner	tickClient	native	idle sounds, if the Java client holds this block entity
+net/minecraft/world/level/block/entity/vault/VaultBlockEntity$Client	playIdleSounds	native	idle sounds, if the Java client holds this block entity
+net/minecraft/client/particle/DripParticle$DripstoneFallAndLandParticle	postMoveUpdate	native	Java makes no particles
+net/minecraft/client/particle/DripParticle$HoneyFallAndLandParticle	postMoveUpdate	native	Java makes no particles
+net/minecraft/client/particle/FireworkParticles$Starter	tick	native	Java makes no particles
+net/minecraft/client/resources/sounds/BeeSoundInstance	tick	native	bee loops
+net/minecraft/client/multiplayer/ClientLevel	playBreakingSound	native	block break effects
+net/minecraft/world/entity/Entity	lavaHurt	native	movement and fluid effects are native's: LocalPlayerMoveMixin cancels the Java move
+net/minecraft/world/entity/Entity	playMuffledStepSound	native	movement is native's: LocalPlayerMoveMixin cancels the Java move
+net/minecraft/world/entity/Entity	playSwimSound	native	movement is native's: LocalPlayerMoveMixin cancels the Java move
+net/minecraft/world/entity/LivingEntity	causeFallDamage	native	fall damage is native's: LocalPlayerMoveMixin cancels the Java move
+net/minecraft/world/entity/LivingEntity	playBlockFallSound	native	fall damage is native's: LocalPlayerMoveMixin cancels the Java move
+net/minecraft/world/level/block/HoneyBlock	fallOn	native	fall damage is native's: LocalPlayerMoveMixin cancels the Java move
+net/minecraft/world/level/block/HoneyBlock	maybeDoSlideEffects	java	the port ledger only mentions it
+net/minecraft/world/entity/LivingEntity	handleFallFlyingCollisions	java	the port ledger only mentions it
+net/minecraft/client/multiplayer/ClientPacketListener	*	java	handlers of packets only the Java side's server sends
+net/minecraft/client/renderer/LevelEventHandler	*	java	level events only the Java side's server sends
+net/minecraft/client/gui/components/AbstractWidget	playButtonClickSound	java	UI clicks in mods' Java screens
+net/minecraft/client/gui/components/tabs/TabManager	setCurrentTab	java	UI clicks in mods' Java screens
+net/minecraft/client/gui/screens/inventory/LoomScreen	mouseClicked	java	UI clicks in mods' Java screens
+net/minecraft/client/gui/screens/inventory/StonecutterScreen	mouseClicked	java	UI clicks in mods' Java screens
+net/minecraft/world/effect/InfestedMobEffect	spawnSilverfish	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/effect/MobEffect	onEffectAdded	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/entity/ai/behavior/LongJumpMidJump	stop	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/entity/ai/goal/UseItemGoal	stop	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/entity/animal/sniffer/Sniffer	onScentingStart	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/entity/animal/sniffer/Sniffer	transitionTo	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/entity/decoration/ItemFrame	setItem	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/entity/monster/Enderman	playStareSound	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/entity/monster/Shulker	setRawPeekAmount	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/entity/monster/breeze/Breeze	playAmbientSound	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/entity/monster/warden/Warden	finalizeSpawn	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/entity/monster/warden/Warden	playListeningSound	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/entity/monster/warden/Warden$VibrationUser	onReceiveVibration	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/entity/player/Player	deflectProjectile	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/entity/player/Player	playSound	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/food/FoodProperties	onConsume	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/inventory/EnchantmentMenu	clickMenuButton	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/item/BowItem	releaseUsing	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/item/BundleItem	playDropContentsSound	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/item/BundleItem	playInsertSound	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/item/BundleItem	playRemoveOneSound	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/item/CrossbowItem	onUseTick	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/item/CrossbowItem	shootProjectile	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/item/MaceItem	hurtEnemy	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/item/TridentItem	releaseUsing	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/item/component/BlocksAttacks	onBlocked	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/item/consume_effects/PlaySoundConsumeEffect	apply	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/item/consume_effects/TeleportRandomlyConsumeEffect	apply	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/item/enchantment/effects/PlaySoundEffect	apply	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/AbstractCandleBlock	extinguish	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/CampfireBlock	placeLiquid	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/ComposterBlock	handleFill	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/DriedGhastBlock	placeLiquid	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/NoteBlock	triggerEvent	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/PotentSulfurBlock	onPlace	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/PowderSnowBlock	fallOn	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/SculkBlock	attemptUseCharge	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/SculkSensorBlock	activate	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/SculkSensorBlock	tryResonateVibration	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/SculkSpreader$ChargeCursor	update	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/SculkVeinBlock	attemptPlaceSculk	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/ShelfMushroomBlock	bounceOn	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/StrawBedBlock	destroyBed	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/TurtleEggBlock	decreaseEggs	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/WetSpongeBlock	onPlace	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/entity/BeehiveBlockEntity	releaseOccupant	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/entity/BeehiveBlockEntity	serverTick	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/entity/BellBlockEntity	tick	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/entity/ChestBlockEntity	playSound	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/entity/ConduitBlockEntity	serverTick	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/entity/ConduitBlockEntity	updateAndAttackTarget	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/entity/CreakingHeartBlockEntity	serverTick	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/entity/SculkShriekerBlockEntity	playWardenReplySound	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/entity/ShulkerBoxBlockEntity	stopOpen	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/entity/trialspawner/TrialSpawnerState	spawnOminousOminousItemSpawner	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/entity/vault/VaultState	ejectResultItem	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/level/block/piston/PistonBaseBlock	triggerEvent	java	server-side or mob code: the Java level holds only the player
+net/minecraft/world/entity/LivingEntity	onEquipItem	java	guarded by !isClientSide: never plays on the client
+net/minecraft/world/entity/LivingEntity	playSecondaryHurtSound	java	server-side or mob code: the Java level holds only the player

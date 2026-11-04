@@ -2046,6 +2046,7 @@ impl Game<'_> {
                 "experience_orb" => {
                     self.next_entity += 1;
                     self.orbs.push(horizon_client::entities::ExperienceOrb {
+                        removed: false,
                         id: self.next_entity,
                         position: Vec3::new(pos[0], pos[1], pos[2]),
                         previous: Vec3::new(pos[0], pos[1], pos[2]),

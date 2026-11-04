@@ -23,12 +23,12 @@ impl HiveHost for GameHive<'_, '_> {
         &mut self.game.world.random
     }
     fn bees_stay_in_hive(&self, _at: [i32; 3]) -> bool {
-        bee::bees_stay_in_hive(&self.game.mob_world_base(&[]))
+        bee::bees_stay_in_hive(&self.game.mob_world(&self.game.mob_shared(), &[]))
     }
     fn blocked(&self, at: [i32; 3]) -> bool {
         !self
             .game
-            .mob_world_base(&[])
+            .mob_world(&self.game.mob_shared(), &[])
             .block_collision_boxes(at[0], at[1], at[2])
             .is_empty()
     }
@@ -182,7 +182,7 @@ impl Game<'_> {
             Release::Emergency,
             &mut GameHive { game: self },
         );
-        let sedated = beehive::smokey(&self.mob_world_base(&[]), at);
+        let sedated = beehive::smokey(&self.mob_world(&self.mob_shared(), &[]), at);
         if let Some(p) = self.player_view().map(|p| p.position) {
             for m in self.mobs.iter_mut().filter(|m| released.contains(&m.id)) {
                 if m.distance_sqr(p) <= 16.0 {
@@ -263,7 +263,7 @@ impl Game<'_> {
             self.post_block_game_event("minecraft:fluid_pickup", pos, self.sculk_actor(), None);
         }
         self.stats.add("used", &held.item, 1);
-        let smokey = beehive::smokey(&self.mob_world_base(&[]), pos);
+        let smokey = beehive::smokey(&self.mob_world(&self.mob_shared(), &[]), pos);
         let key = (pos[0], pos[1], pos[2]);
         if !smokey
             && matches!(self.world.block_entities.get(&key), Some(BlockEntity::Beehive(h)) if !h.bees.is_empty())

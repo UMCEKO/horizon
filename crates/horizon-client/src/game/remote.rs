@@ -1767,6 +1767,7 @@ impl Game<'_> {
             // Its value (ExperienceOrb.DATA_VALUE) follows in SetEntityData.
             self.orbs.retain(|o| o.id != id as u32);
             self.orbs.push(ExperienceOrb {
+                removed: false,
                 id: id as u32,
                 position: at,
                 previous: at,
@@ -4225,6 +4226,7 @@ impl Game<'_> {
         let at = Vec3::new(p[0], p[1], p[2]);
         let bob_offset = self.world.random.next_float() * std::f32::consts::PI * 2.0;
         self.dropped.push(ItemEntity {
+            removed: false,
             health: 5,
             fire_ticks: 0,
             thrower: None,
@@ -5002,7 +5004,8 @@ impl Game<'_> {
         // A frozen level ticks only the players, as below.
         // Entity.isInRain for the wolves, which dry off by their own `Wolf.tick`.
         let (fluids, rain, thundering): (Vec<_>, Vec<_>, bool) = {
-            let w = self.mob_world_base(&[]);
+            let shared = self.mob_shared();
+            let w = self.mob_world(&shared, &[]);
             let players = self.remote.as_ref().map(|r| &r.level_players);
             let fluids = self
                 .mobs

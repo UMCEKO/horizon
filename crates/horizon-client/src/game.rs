@@ -84,6 +84,9 @@ mod creaking;
 mod creative_hotbar;
 mod creatures;
 mod crossbow;
+mod crossing;
+#[cfg(test)]
+mod crossing_tests;
 pub(crate) mod cushions;
 mod debug_keys;
 mod debug_stick;
@@ -144,6 +147,8 @@ mod java_screens;
 mod java_shapes;
 #[cfg(feature = "java-mods")]
 mod java_tabs;
+#[cfg(feature = "java-mods")]
+mod java_world_renders;
 mod jigsaw_blocks;
 mod jigsaw_edit;
 mod jukebox;
@@ -1900,6 +1905,8 @@ struct Game<'a> {
     luminance: Option<horizon_client::dynamic_light::Luminance>,
     /// Name tags drawn over everything (`RenderPipelines.TEXT_SEE_THROUGH`).
     see_through_vertices: Vec<Vertex>,
+    /// What mods' world recordings draw in the passes the entity geometry doesn't hold.
+    world_outputs: horizon_client::world_renders::Outputs,
     /// Runs of `entity_vertices` by entity, for a shader pack's per-entity draws; recorded only
     /// while `pack_ids` is set (game/shader_packs.rs).
     entity_spans: std::cell::RefCell<Vec<horizon_client::gfx::pack_draw::EntitySpan>>,
@@ -1958,6 +1965,10 @@ struct Game<'a> {
     guardian_sounds: HashSet<u32>,
     dropped: Vec<ItemEntity>,
     next_entity: u32,
+    touched: crossing::Touched,
+    lent: crossing::LentKinds,
+    #[cfg(test)]
+    test_cross: Option<Box<dyn for<'g> FnMut(&mut Game<'g>, crossing::CrossPoint)>>,
     particles: horizon_client::particles::ParticleEngine,
     /// `ItemPickupParticle`s: taken items, orbs and arrows flying to their collector.
     pickups: pickups::Pickups,
@@ -3053,6 +3064,7 @@ impl Game<'_> {
         // ItemEntity.bobOffs comes from the entity's own random, not the level's.
         let bob = self.particles.random().next_float() * std::f32::consts::PI * 2.0;
         self.dropped.push(ItemEntity {
+            removed: false,
             health: 5,
             fire_ticks: 0,
             thrower: None,
@@ -3169,15 +3181,15 @@ impl Game<'_> {
         let ticking = self.entity_ticking_area();
         let mut removed = vec![false; items.len()];
         let mut cells = horizon_client::entities::ItemCells::new(&items);
-        let catalog = world_items!(self);
-        let max_stack =
-            |stack: &ItemStack| catalog.get(&stack.item).map_or(64, |i| i.max_stack).max(1);
         // A LAN or server guest only shows the host's items.
         let merging = self.remote.is_none();
-        for i in 0..items.len() {
-            if removed[i] {
+        // The items ticking now are the ones present; a crossing may add more.
+        let n = items.len();
+        for i in 0..n {
+            if removed[i] || items[i].removed {
                 continue;
             }
+            let id = items[i].id;
             let item = &mut items[i];
             if !ticking(
                 item.position.x.floor() as i32,
@@ -3185,79 +3197,96 @@ impl Game<'_> {
             ) {
                 continue;
             }
-            // ItemEntity.tick's noPhysics (servers only): out of a block
-            // placed on it, towards the closest open side (#1252).
-            let no_physics = merging && item.inside_block(&self.world, self.collision);
-            if no_physics {
-                let speed = self.world.random.next_float() * 0.2 + 0.1;
-                item.move_towards_closest_space(&self.world, self.res.facts(), speed);
-            }
-            let alive = item.tick(
-                &self.world,
-                self.res.facts(),
-                self.collision,
-                no_physics,
-                &self.res.motion().fluids,
-            );
-            // Entity.applyEffectsFromBlocks: bubble columns lift or drag the item.
-            horizon_client::motion::bubble_column_push(
-                &self.world,
-                self.pack.assets.registry,
-                self.res.facts(),
-                self.collision,
-                item.bounds(),
-                &mut item.velocity,
-            );
-            cells.moved(i, item.previous, item.position);
-            // ItemEntity.tick: merge every 2 ticks while moving between
-            // blocks, every 40 otherwise, before the lifetime check.
-            let block = |v: Vec3| (v.x.floor(), v.y.floor(), v.z.floor());
-            let rate = if block(item.previous) == block(item.position) {
-                40
-            } else {
-                2
-            };
-            if merging
-                && (alive || item.age == 6000 && item.position.y > -128.0)
-                && item.ticks.is_multiple_of(rate)
-            {
-                horizon_client::entities::merge_with_neighbours(
-                    &mut items,
-                    &mut removed,
-                    &mut cells,
-                    i,
-                    &max_stack,
+            'tick: {
+                // ItemEntity.tick's noPhysics (servers only): out of a block
+                // placed on it, towards the closest open side (#1252).
+                let no_physics = merging && item.inside_block(&self.world, self.collision);
+                if no_physics {
+                    let speed = self.world.random.next_float() * 0.2 + 0.1;
+                    item.move_towards_closest_space(&self.world, self.res.facts(), speed);
+                }
+                let alive = item.tick(
+                    &self.world,
+                    self.res.facts(),
+                    self.collision,
+                    no_physics,
+                    &self.res.motion().fluids,
                 );
-            }
-            let item = &mut items[i];
-            if !alive || removed[i] {
-                removed[i] = true;
-                cells.remove(i, item.position);
-                continue;
-            }
-            let environment = item.environment_tick(
-                &self.world,
-                self.res.facts(),
-                self.pack.assets.registry,
-                world_items!(self),
-            );
-            // shortcut: age is the fresh-drop clock; use entity ticks for saved/frozen-age phase parity.
-            if environment.should_play_lava_hurt_sound(item.age) {
-                let pitch = 2.0 + self.world.random.next_float() * 0.4;
-                self.audio.play(
-                    "minecraft:entity.generic.burn",
-                    Some([item.position.x, item.position.y, item.position.z]),
-                    0.4,
-                    pitch,
+                // Entity.applyEffectsFromBlocks: bubble columns lift or drag the item.
+                horizon_client::motion::bubble_column_push(
+                    &self.world,
+                    self.pack.assets.registry,
+                    self.res.facts(),
+                    self.collision,
+                    item.bounds(),
+                    &mut item.velocity,
                 );
+                cells.moved(i, item.previous, item.position);
+                // ItemEntity.tick: merge every 2 ticks while moving between
+                // blocks, every 40 otherwise, before the lifetime check.
+                let block = |v: Vec3| (v.x.floor(), v.y.floor(), v.z.floor());
+                let rate = if block(item.previous) == block(item.position) {
+                    40
+                } else {
+                    2
+                };
+                if merging
+                    && (alive || item.age == 6000 && item.position.y > -128.0)
+                    && item.ticks.is_multiple_of(rate)
+                {
+                    let catalog = world_items!(self);
+                    let max_stack = |stack: &ItemStack| {
+                        catalog.get(&stack.item).map_or(64, |i| i.max_stack).max(1)
+                    };
+                    horizon_client::entities::merge_with_neighbours(
+                        &mut items,
+                        &mut removed,
+                        &mut cells,
+                        i,
+                        &max_stack,
+                    );
+                }
+                let item = &mut items[i];
+                if !alive || removed[i] {
+                    removed[i] = true;
+                    cells.remove(i, item.position);
+                    break 'tick;
+                }
+                let environment = item.environment_tick(
+                    &self.world,
+                    self.res.facts(),
+                    self.pack.assets.registry,
+                    world_items!(self),
+                );
+                // shortcut: age is the fresh-drop clock; use entity ticks for saved/frozen-age phase parity.
+                if environment.should_play_lava_hurt_sound(item.age) {
+                    let pitch = 2.0 + self.world.random.next_float() * 0.4;
+                    self.audio.play(
+                        "minecraft:entity.generic.burn",
+                        Some([item.position.x, item.position.y, item.position.z]),
+                        0.4,
+                        pitch,
+                    );
+                }
+                if !environment.alive {
+                    removed[i] = true;
+                    cells.remove(i, item.position);
+                }
             }
-            if !environment.alive {
-                removed[i] = true;
-                cells.remove(i, item.position);
+            let t = self.cross_point(
+                crossing::CrossPoint::ItemAfter(id),
+                &mut [crossing::Lent::Items(&mut items)],
+            );
+            if !t.is_empty() || items.len() != removed.len() {
+                removed.resize(items.len(), false);
+                for (flag, item) in removed.iter_mut().zip(&items) {
+                    *flag |= item.removed;
+                }
+                cells = horizon_client::entities::ItemCells::live(&items, &removed);
             }
         }
         let mut removed = removed.into_iter();
-        items.retain(|_| !removed.next().unwrap_or(false));
+        items.retain(|item| !removed.next().unwrap_or(false) && !item.removed);
         let Some(p) = self.player.as_ref() else {
             self.dropped = items;
             return;
@@ -6050,11 +6079,13 @@ impl Game<'_> {
         if self.screen == Screen::Creative {
             self.refresh_creative_tabs();
         }
-        self.java_client_tick();
+        self.java_client_tick_begin();
         #[cfg(feature = "java-mods")]
         self.java_creative_tabs_take();
         if self.remote.is_some() {
-            return self.tick_remote();
+            let result = self.tick_remote();
+            self.java_client_tick_send();
+            return result;
         }
         // LevelLoadingScreen.tick.
         self.loading_progress = match self.loading_reason() {
@@ -9275,6 +9306,7 @@ impl Game<'_> {
                 );
             }
         }
+        let mut world = std::mem::take(&mut self.world_outputs);
         // Block entities (BlockEntityRenderers): chests, shulker boxes, banners, skulls...
         if let Some(r) = &self.renderer {
             let lid = |p: [i32; 3]| self.chest_lid(p, alpha as f32);
@@ -9367,6 +9399,10 @@ impl Game<'_> {
                 },
             };
             horizon_client::dynamic_renders::draw(&recorded, &mut out);
+            // What mods draw in the level's frame, recorded by the Java client.
+            world.clear();
+            horizon_client::world_renders::draw(&recorded, &mut world);
+            out.append(&mut world.entities);
             for (pose, item, pos) in horizon_client::dynamic_renders::items(&recorded) {
                 let context = horizon_assets::item_model::DisplayContext::ALL
                     .get(usize::from(item.context))
@@ -9386,6 +9422,8 @@ impl Game<'_> {
                     .render_breaking(&scene, pos, state.0, stage, &mut out);
             }
         }
+        self.see_through_vertices.append(&mut world.see_through);
+        self.world_outputs = world;
         // Experience orbs (ExperienceOrbRenderer): pulsing billboards from a 4x4 icon sheet.
         self.mark_entity(out.len(), "minecraft:experience_orb");
         if let Some(r) = self
@@ -11588,6 +11626,7 @@ impl Game<'_> {
         let p = Vec3::new(at[0], at[1], at[2]);
         self.next_entity += 1;
         self.orbs.push(ExperienceOrb {
+            removed: false,
             id: self.next_entity,
             position: p,
             previous: p,
@@ -11645,10 +11684,8 @@ impl Game<'_> {
         }
         (min + self.world.random.next_int_bound(max - min + 1).unwrap_or(0)) as u32
     }
-    fn tick_experience(&mut self) {
-        if self.xp_delay > 0 {
-            self.xp_delay -= 1;
-        }
+    /// The players orbs go for (feet and half-eye) and the box one picks up from.
+    fn orb_followers(&self) -> (Vec<([f64; 3], [f64; 3])>, Option<([f64; 3], [f64; 3])>) {
         let spectator = self.spectator();
         let player = self
             .player
@@ -11693,6 +11730,13 @@ impl Game<'_> {
                 ],
             )
         });
+        (followed, bounds)
+    }
+    fn tick_experience(&mut self) {
+        if self.xp_delay > 0 {
+            self.xp_delay -= 1;
+        }
+        let (mut followed, mut bounds) = self.orb_followers();
         let mut orbs = std::mem::take(&mut self.orbs);
         // An orb has no random of its own here: lava draws from one made on
         // first use, apart from the level stream.
@@ -11702,7 +11746,13 @@ impl Game<'_> {
                 .get_or_insert_with(dispenser::entity_random)
                 .next_float()
         };
-        orbs.retain_mut(|o| {
+        // The orbs ticking now are the ones present; a crossing may add more.
+        let n = orbs.len();
+        for i in 0..n {
+            if orbs[i].removed {
+                continue;
+            }
+            let o = &mut orbs[i];
             let distance = |feet: &[f64; 3]| -> f64 {
                 (feet[0] - o.position.x).powi(2)
                     + (feet[1] - o.position.y).powi(2)
@@ -11713,14 +11763,24 @@ impl Game<'_> {
                 .filter(|(feet, _)| distance(feet) < 64.0)
                 .min_by(|a, b| distance(&a.0).total_cmp(&distance(&b.0)))
                 .map(|(_, target)| *target);
-            o.tick(
+            let alive = o.tick(
                 &self.world,
                 self.res.facts(),
                 self.collision,
                 target,
                 &mut next_float,
-            )
-        });
+            );
+            o.removed = !alive;
+            let id = o.id;
+            let t = self.cross_point(
+                crossing::CrossPoint::OrbAfter(id),
+                &mut [crossing::Lent::Orbs(&mut orbs)],
+            );
+            if t.shared {
+                (followed, bounds) = self.orb_followers();
+            }
+        }
+        orbs.retain(|o| !o.removed);
         // ExperienceOrb.scanForMerges runs on the server only.
         if self.remote.is_none() {
             horizon_client::entities::merge_orbs(&mut orbs);
@@ -13303,8 +13363,8 @@ impl Game<'_> {
             let scale = HudBatch::new(size).scale;
             crosshair.debug_crosshair(at, view_pitch, view_yaw, scale);
         }
-        let debug_lines = horizon_client::gizmos::camera_relative(&lines, at, view);
-        let debug_lines_on_top = horizon_client::gizmos::camera_relative(&on_top, at, view);
+        let mut debug_lines = horizon_client::gizmos::camera_relative(&lines, at, view);
+        let mut debug_lines_on_top = horizon_client::gizmos::camera_relative(&on_top, at, view);
         let debug_crosshair = horizon_client::gizmos::camera_relative(&crosshair.on_top, at, view);
         // LevelExtractor.extractBlockOutline: model translucency controls draw order.
         let mut outline_after_terrain = false;
@@ -13423,6 +13483,30 @@ impl Game<'_> {
             self.bolt_instances(camera)
         };
         let mut additive = Vec::new();
+        {
+            let mut world = std::mem::take(&mut self.world_outputs);
+            if title {
+                world.clear();
+            }
+            additive.append(&mut world.additive);
+            let lines = |lines: &[horizon_client::world_renders::WorldLine]| {
+                let lines: Vec<_> = lines
+                    .iter()
+                    .map(|l| horizon_client::gizmos::Line {
+                        start: l.start,
+                        end: l.end,
+                        color: l.color,
+                        width: l.width,
+                    })
+                    .collect();
+                horizon_client::gizmos::camera_relative(&lines, at, view)
+            };
+            debug_lines.extend(lines(&world.lines));
+            debug_lines_on_top.extend(lines(&world.on_top));
+            world.lines.clear();
+            world.on_top.clear();
+            self.world_outputs = world;
+        }
         if !title && self.dim == Dim::End {
             let mut dragon = Vec::new();
             self.dragon_geometry(camera, alpha, &mut dragon, &mut additive);
@@ -15626,6 +15710,7 @@ impl<'a> Game<'a> {
             dynamic_lights: Vec::new(),
             luminance: None,
             see_through_vertices: Vec::new(),
+            world_outputs: Default::default(),
             entity_spans: Default::default(),
             glowing_vertices: Default::default(),
             pack_ids: None,
@@ -15667,6 +15752,10 @@ impl<'a> Game<'a> {
             guardian_sounds: HashSet::new(),
             dropped: Vec::new(),
             next_entity: 0,
+            touched: Default::default(),
+            lent: Default::default(),
+            #[cfg(test)]
+            test_cross: None,
             particles,
             pickups: Default::default(),
             sign_edit: None,

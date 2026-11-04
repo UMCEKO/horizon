@@ -95,6 +95,7 @@ pub mod vault;
 pub mod weather;
 pub mod widgets;
 pub mod world;
+pub mod world_renders;
 pub mod worldborder;
 pub mod zip;
 pub use horizon_client_core::Result;

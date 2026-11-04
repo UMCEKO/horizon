@@ -154,7 +154,8 @@ impl Game<'_> {
         let mut uuids: Vec<(u32, Uuid)> = Vec::new();
         let mut ejected: Vec<(ItemStack, [f64; 3])> = Vec::new();
         let next = {
-            let level = self.natural_level();
+            let shared = self.mob_shared();
+            let level = self.natural_level(&shared);
             let loot = horizon_client::structure_blocks::loot_data(
                 &self.options.resources,
                 &self.pack_files(),

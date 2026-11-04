@@ -412,7 +412,8 @@ impl Game<'_> {
             // server thread), each swapped in as the player.
             self.each_guest_hit_except(boosted, |g| g.rocket_blast_player(from, damage));
             let hits: Vec<(u32, f32)> = {
-                let world = self.mob_world_base(&[]);
+                let shared = self.mob_shared();
+                let world = self.mob_world(&shared, &[]);
                 self.mobs
                     .iter()
                     .filter(|m| m.alive())
@@ -523,10 +524,11 @@ impl Game<'_> {
     ) -> Option<RocketHit> {
         let from = r.position;
         let mut to = from.add_vector(motion);
-        let w = self.mob_world_base(&[]);
+        let shared = self.mob_shared();
+        let w = self.mob_world(&shared, &[]);
         let block = (super::creatures::ProjWorld {
             w: &w,
-            targets: Vec::new(),
+            targets: Vec::new().into(),
         })
         .clip(from, to);
         if let Some((at, ..)) = block {
@@ -570,7 +572,8 @@ impl Game<'_> {
         }
         let height = f64::from(p.dimensions.height);
         let sees = {
-            let world = self.mob_world_base(&[]);
+            let shared = self.mob_shared();
+            let world = self.mob_world(&shared, &[]);
             (0..2).any(|step| {
                 let to = Vec3::new(feet.x, feet.y + height * 0.5 * f64::from(step), feet.z);
                 world.clear_between(from, to, false)

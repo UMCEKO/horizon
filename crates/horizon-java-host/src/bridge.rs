@@ -381,8 +381,34 @@ pub struct StateMap {
     pub owned: Vec<bool>,
     /// By Horizon's id: the state has a block entity, which may shape it.
     pub entity: Vec<bool>,
+    /// By Horizon's id: bit 1 the block's `animateTick` runs in Java, bit 2 the fluid's.
+    pub animate: Vec<u8>,
+    /// A mod patches the animate loop itself, so Java runs the whole of it.
+    pub animate_whole: bool,
+    /// Any state or the whole loop runs in Java.
+    pub animate_any: bool,
 }
 pub static STATES: OnceLock<StateMap> = OnceLock::new();
+
+/// Whether Java runs any `animateTick`, of a picked state or the whole loop.
+#[inline]
+pub fn java_animates() -> bool {
+    STATES.get().is_some_and(|m| m.animate_any)
+}
+
+/// Whether Java runs the whole `ClientLevel.animateTick` loop, which native's then skips.
+#[inline]
+pub fn java_animates_whole() -> bool {
+    STATES.get().is_some_and(|m| m.animate_whole)
+}
+
+/// Which parts of this state's `animateTick` Java runs; see `StateMap::animate`.
+#[inline]
+pub fn java_animate(state: BlockStateId) -> u8 {
+    STATES
+        .get()
+        .map_or(0, |m| m.animate.get(state.0 as usize).copied().unwrap_or(0))
+}
 
 /// Whether this state's behaviour runs in Java.
 #[inline]

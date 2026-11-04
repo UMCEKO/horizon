@@ -31,6 +31,20 @@ class Args(unittest.TestCase):
         self.assertFalse(any('assetsDir' in line for line in lines))
 
 
+    def test_the_analysis_line_names_the_entity_facts_before_the_assets(self):
+        lines = java_mods.args_lines('server', Path('/i/libraries'), '9.9', server=SERVER, analysis=Path('/i/analysis/entity-facts.json'))
+        self.assertEqual(lines[-1], 'analysis /i/analysis/entity-facts.json')
+
+    def test_writers_need_a_bridge_unless_java_owned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            facts = Path(tmp) / 'entity-facts.json'
+            facts.write_text(json.dumps({'writes': [
+                {'key': 'net/minecraft/world/entity/Entity#frobnicate(I)V', 'receiver': 'x', 'group': 'position', 'mods': ['a']},
+                {'key': 'net/minecraft/world/entity/Entity#frobnicate(I)V', 'receiver': 'y', 'group': 'position', 'mods': ['b']},
+                {'key': 'net/minecraft/world/entity/Entity#setData(Ljava/lang/Object;)V', 'receiver': 'x', 'group': 'java', 'mods': ['a']}]}))
+            self.assertEqual(java_mods.unbridged_writers(facts), [('net/minecraft/world/entity/Entity#frobnicate(I)V', ['a', 'b'])])
+
+
 class Jdk(unittest.TestCase):
     def test_platform_names(self):
         self.assertEqual(java_mods.jdk_platform('linux', 'x86_64'), ('linux', 'x64'))

@@ -61,7 +61,7 @@ impl Game<'_> {
         }
         let ok = spawn_rules::is_spawn_position_ok(
             Species::Cat,
-            &self.mob_world_base(&[]),
+            &self.mob_world(&self.mob_shared(), &[]),
             pos[0],
             pos[1],
             pos[2],

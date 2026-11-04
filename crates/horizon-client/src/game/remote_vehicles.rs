@@ -334,7 +334,8 @@ impl Game<'_> {
         let mut random = self.world.random.clone();
         let mut events = Vec::new();
         {
-            let world = self.mob_world_base(&[]);
+            let shared = self.mob_shared();
+            let world = self.mob_world(&shared, &[]);
             mob.tick(&world, &mut random, &mut events);
         }
         // Only the server's packets take the mount away.

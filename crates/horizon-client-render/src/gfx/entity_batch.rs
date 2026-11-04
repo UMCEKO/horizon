@@ -8,8 +8,9 @@ use super::Vertex;
 /// energy swirls (34, `RenderPipelines.ENERGY_SWIRL`), entity shadows (14,
 /// `RenderPipelines.ENTITY_SHADOW`), translucent-layer particles (15, drawn
 /// after translucent terrain: `SubmitNodeCollection.submitQuadParticleGroup`)
-/// and translucent item quads (32, drawn without depth writes).
-const MATERIALS: usize = 9;
+/// translucent item quads (32, drawn without depth writes) and quads mods draw after
+/// translucent terrain (37), and those that also write depth (38).
+const MATERIALS: usize = 11;
 /// The overlay of depth-only quads that hide water (`RenderTypes.waterMask`).
 pub const WATER_MASK_OVERLAY: u32 = 13;
 /// The overlay of energy swirl quads (`RenderTypes.energySwirl`: the charged creeper's and the
@@ -28,6 +29,13 @@ pub const TRANSLUCENT_GLINT_ITEM_OVERLAY: u32 = 33;
 /// The overlay of text in `Font.DisplayMode.POLYGON_OFFSET` (text displays):
 /// drawn like an ordinary entity, pulled toward the camera.
 pub const TEXT_POLYGON_OFFSET_OVERLAY: u32 = 35;
+/// The overlay of quads a mod draws once translucent terrain is down (blended, in its own
+/// `RenderLevelStageEvent.AfterTranslucentBlocks` or later): depth tested, drawn like translucent items.
+pub const MOD_AFTER_TRANSLUCENT_OVERLAY: u32 = 37;
+/// The same for a pipeline that writes depth (`DepthStencilState.writeDepth`): drawn with the entity pipeline.
+pub const MOD_AFTER_TRANSLUCENT_DEPTH_OVERLAY: u32 = 38;
+/// The overlay of an enchanted armour layer's glint (`ARMOR_ENTITY_GLINT_TEXTURING`, read in entity.wgsl).
+pub const ARMOR_GLINT: u32 = 36;
 
 /// The material of a quad by its overlay (`MATERIALS` order).
 fn material(layer: u32) -> usize {
@@ -40,6 +48,8 @@ fn material(layer: u32) -> usize {
         SHADOW_OVERLAY => 6,
         TRANSLUCENT_PARTICLE_OVERLAY => 7,
         TRANSLUCENT_ITEM_OVERLAY | TRANSLUCENT_GLINT_ITEM_OVERLAY => 8,
+        MOD_AFTER_TRANSLUCENT_OVERLAY => 9,
+        MOD_AFTER_TRANSLUCENT_DEPTH_OVERLAY => 10,
         _ => 0,
     }
 }
@@ -107,7 +117,10 @@ mod tests {
     ) -> (Vec<Vertex>, [u32; MATERIALS]) {
         let mut combined = Vec::with_capacity(entities.len() + additive.len() + hand.len());
         let mut counts = [0; MATERIALS];
-        for (i, layer) in [0, 35, 11, 12, 13, 34, 14, 15].into_iter().enumerate() {
+        for (i, layer) in [0, 35, 11, 12, 13, 34, 14, 15, 32, 37, 38]
+            .into_iter()
+            .enumerate()
+        {
             for quad in entities.as_chunks::<4>().0 {
                 let material = match quad[0].layer {
                     35 => 35,
@@ -117,6 +130,9 @@ mod tests {
                     34 => 34,
                     14 => 14,
                     15 => 15,
+                    32 | 33 => 32,
+                    37 => 37,
+                    38 => 38,
                     _ => 0,
                 };
                 if material == layer {
@@ -136,7 +152,7 @@ mod tests {
                 pos: [index as f32, 2.0, 3.0],
                 uv: [index as f32, 5.0],
                 layer: if mixed {
-                    [7, 11, 14, 35, 12, 4, 13, 15, 0][index / 4 % 9]
+                    [7, 11, 14, 35, 12, 4, 13, 15, 0, 32, 33, 37, 38, 36][index / 4 % 14]
                 } else {
                     0
                 },
@@ -161,6 +177,38 @@ mod tests {
             bytemuck::cast_slice::<_, u8>(&batch.combined),
             bytemuck::cast_slice::<_, u8>(&expected)
         );
+    }
+
+    #[test]
+    fn overlay_codes_are_distinct() {
+        let codes = [
+            11,
+            12,
+            WATER_MASK_OVERLAY,
+            SHADOW_OVERLAY,
+            TRANSLUCENT_PARTICLE_OVERLAY,
+            TRANSLUCENT_ITEM_OVERLAY,
+            TRANSLUCENT_GLINT_ITEM_OVERLAY,
+            ENERGY_SWIRL_OVERLAY,
+            TEXT_POLYGON_OFFSET_OVERLAY,
+            ARMOR_GLINT,
+            MOD_AFTER_TRANSLUCENT_OVERLAY,
+            MOD_AFTER_TRANSLUCENT_DEPTH_OVERLAY,
+        ];
+        let unique: std::collections::HashSet<_> = codes.iter().collect();
+        assert_eq!(unique.len(), codes.len());
+        assert!(codes.iter().all(|c| !(16..32).contains(c)));
+        assert_eq!(
+            (
+                ARMOR_GLINT,
+                MOD_AFTER_TRANSLUCENT_OVERLAY,
+                MOD_AFTER_TRANSLUCENT_DEPTH_OVERLAY
+            ),
+            (36, 37, 38)
+        );
+        assert_eq!(material(ARMOR_GLINT), 0);
+        assert_eq!(material(MOD_AFTER_TRANSLUCENT_OVERLAY), 9);
+        assert_eq!(material(MOD_AFTER_TRANSLUCENT_DEPTH_OVERLAY), 10);
     }
 
     #[test]

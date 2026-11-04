@@ -73,11 +73,15 @@ public final class Boot {
             throw new IllegalStateException(errors.toString());
         }
         BootFacts.seal();
+        if (FMLEnvironment.getDist().isClient()) Animate.route();
+        SoundOwners.load();
+        EntityFacts.confirm();
         Runtime.getRuntime().addShutdownHook(new Thread(Boot::exiting, "Horizon exit report"));
         Host.gameLoader = Boot.class.getClassLoader();
         Host.serverGroup = net.neoforged.fml.util.thread.SidedThreadGroups.SERVER;
         Host.entry = Boot::op;
-        Host.handler = GameBridge::call;
+        GameBridge.register();
+        Host.dispatcher = Crossing.DISPATCHER;
     }
 
     static RegistryAccess access() {
@@ -103,7 +107,7 @@ public final class Boot {
                 case "nmt" -> nmt();
                 case "values_bench" -> ValuesBench.op(arg);
                 case "world" -> GameBridge.worldProbe();
-                case "models" -> new String(GameBridge.call("client_models_probe", new byte[0]), java.nio.charset.StandardCharsets.UTF_8);
+                case "models" -> new String(Crossing.call("client_models_probe", new byte[0]), java.nio.charset.StandardCharsets.UTF_8);
                 case "use_probe" -> GameBridge.probe(arg, false);
                 case "use_probe_sneaking" -> GameBridge.probe(arg, true);
                 case "exit" -> { System.exit(0); yield ""; }

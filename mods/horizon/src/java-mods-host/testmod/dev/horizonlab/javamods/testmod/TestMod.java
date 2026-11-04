@@ -43,7 +43,10 @@ public final class TestMod {
         Battery.register(bus, ITEMS);
         Breakables.register(bus, ITEMS);
         ChunkData.register(bus);
-        if (net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) ClientKeys.register(bus);
+        if (net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) {
+            ClientKeys.register(bus);
+            ClientWorldBox.register();
+        }
     }
 
     /** The second look, after the world has run: what a machine's ticks did. */

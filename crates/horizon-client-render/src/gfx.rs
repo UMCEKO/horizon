@@ -40,7 +40,8 @@ mod entity_outline;
 mod weather;
 use entity_batch::EntityBatch;
 pub use entity_batch::{
-    ENERGY_SWIRL_OVERLAY, SHADOW_OVERLAY, TEXT_POLYGON_OFFSET_OVERLAY,
+    ARMOR_GLINT, ENERGY_SWIRL_OVERLAY, MOD_AFTER_TRANSLUCENT_DEPTH_OVERLAY,
+    MOD_AFTER_TRANSLUCENT_OVERLAY, SHADOW_OVERLAY, TEXT_POLYGON_OFFSET_OVERLAY,
     TRANSLUCENT_GLINT_ITEM_OVERLAY, TRANSLUCENT_ITEM_OVERLAY, TRANSLUCENT_PARTICLE_OVERLAY,
     WATER_MASK_OVERLAY,
 };
@@ -4779,6 +4780,8 @@ impl Renderer {
             shadow_quads,
             translucent_particle_quads,
             translucent_item_quads,
+            mod_after_translucent_quads,
+            mod_after_translucent_depth_quads,
         ] = self
             .entity_batch
             .update(entities, frame.additive, frame.hand, frame.see_through);
@@ -4791,7 +4794,9 @@ impl Renderer {
             + swirl_quads
             + shadow_quads
             + translucent_particle_quads
-            + translucent_item_quads;
+            + translucent_item_quads
+            + mod_after_translucent_quads
+            + mod_after_translucent_depth_quads;
         let cloud_quads = if let Some(input) = &frame.clouds {
             let (rebuilt, uniform) =
                 crate::spans::time("clouds", || self.cloud_mesh.prepare(input));
@@ -5344,7 +5349,11 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(
                     0..translucent_item_quads * 6,
-                    ((world_quads - translucent_item_quads) * 4) as i32,
+                    ((world_quads
+                        - translucent_item_quads
+                        - mod_after_translucent_quads
+                        - mod_after_translucent_depth_quads)
+                        * 4) as i32,
                     0..1,
                 );
                 pass.set_bind_group(0, &self.group, &[]);
@@ -5371,6 +5380,8 @@ impl Renderer {
                 pass.draw_indexed(
                     0..shadow_quads * 6,
                     ((world_quads
+                        - mod_after_translucent_depth_quads
+                        - mod_after_translucent_quads
                         - translucent_item_quads
                         - translucent_particle_quads
                         - shadow_quads)
@@ -5470,8 +5481,41 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(
                     0..translucent_particle_quads * 6,
-                    ((world_quads - translucent_item_quads - translucent_particle_quads) * 4)
-                        as i32,
+                    ((world_quads
+                        - mod_after_translucent_depth_quads
+                        - mod_after_translucent_quads
+                        - translucent_item_quads
+                        - translucent_particle_quads)
+                        * 4) as i32,
+                    0..1,
+                );
+                pass.set_bind_group(0, &self.group, &[]);
+            }
+            // A mod's own draws once translucent terrain is down
+            // (RenderLevelStageEvent.AfterTranslucentBlocks and later).
+            if mod_after_translucent_quads > 0 {
+                pass.set_pipeline(&self.translucent_item_pipeline);
+                pass.set_bind_group(0, &self.entity_group, &[]);
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                pass.draw_indexed(
+                    0..mod_after_translucent_quads * 6,
+                    ((world_quads
+                        - mod_after_translucent_quads
+                        - mod_after_translucent_depth_quads)
+                        * 4) as i32,
+                    0..1,
+                );
+                pass.set_bind_group(0, &self.group, &[]);
+            }
+            if mod_after_translucent_depth_quads > 0 {
+                pass.set_pipeline(&self.entity_pipeline);
+                pass.set_bind_group(0, &self.entity_group, &[]);
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                pass.draw_indexed(
+                    0..mod_after_translucent_depth_quads * 6,
+                    ((world_quads - mod_after_translucent_depth_quads) * 4) as i32,
                     0..1,
                 );
                 pass.set_bind_group(0, &self.group, &[]);
@@ -6296,7 +6340,7 @@ mod tests {
         let mut batch = super::EntityBatch::default();
         let counts = batch.update(&entities, &quad(3, 5), &quad(0, 6), &quad(0, 8));
         let vertices = &batch.combined;
-        assert_eq!(counts, [4, 1, 1, 1, 0, 0, 1, 1, 0]);
+        assert_eq!(counts, [4, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0]);
         assert_eq!(
             vertices
                 .as_chunks::<4>()

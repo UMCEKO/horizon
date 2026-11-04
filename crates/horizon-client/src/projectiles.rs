@@ -133,6 +133,8 @@ pub struct Projectile {
     /// `updateFluidInteraction` found around the box after the move, read by
     /// the next tick's inertia (false until the first tick has moved it).
     pub touching_water: bool,
+    /// Removed during a crossing of a loop that lent its vector: skipped, then dropped.
+    pub removed: bool,
 }
 /// What a projectile struck this tick.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -219,6 +221,7 @@ impl Projectile {
             acceleration,
             needs_sync: false,
             touching_water: false,
+            removed: false,
             arrow: kind_is_arrow.then(|| {
                 // Entity.random: seeded unpredictably, the position stands in.
                 Box::new(crate::arrows::ArrowState::new(

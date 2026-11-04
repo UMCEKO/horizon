@@ -388,7 +388,10 @@ impl horizon_client::mobs::spawner::SpawnerLevel for GameLevel<'_, '_> {
     }
 }
 impl<'a> Game<'a> {
-    pub(super) fn natural_level(&self) -> GameLevel<'_, 'a> {
+    pub(super) fn natural_level<'g>(
+        &'g self,
+        shared: &'g horizon_client::mobs::MobShared,
+    ) -> GameLevel<'g, 'a> {
         let players = self.level_players();
         let nearest = players
             .iter()
@@ -397,7 +400,7 @@ impl<'a> Game<'a> {
             .collect();
         GameLevel {
             game: self,
-            w: self.mob_world_base(&[]),
+            w: self.mob_world(shared, &[]),
             players,
             nearest,
             pending: Default::default(),
@@ -534,7 +537,8 @@ impl<'a> Game<'a> {
         let mut random = std::mem::replace(&mut self.world.random, LegacyRandom::new(0));
         let mut pending = Vec::new();
         {
-            let level = self.natural_level();
+            let shared = self.mob_shared();
+            let level = self.natural_level(&shared);
             let counted: Vec<Counted> = self
                 .mobs
                 .iter()
@@ -632,7 +636,8 @@ impl<'a> Game<'a> {
         random.set_decoration_seed(self.level.seed, cx * 16, cz * 16);
         let mut added = Vec::new();
         let mut group = None;
-        let level = self.natural_level();
+        let shared = self.mob_shared();
+        let level = self.natural_level(&shared);
         let source = [cx * 16, level.max_y(), cz * 16];
         let mut spawn = |l: &GameLevel, r: &SpawnRequest, region: &mut Q| {
             // Each pack starts without group data.

@@ -24,9 +24,12 @@ One process: the game, with the JVM inside it (JNI). No second process, except a
 | `Render thread` | Java, `B/ClientBridge.java` `install` (single-thread executor) | Every `client_*` op, whichever Rust thread asked: `ClientBridge.call` submits to it. It is `Minecraft.gameThread` |
 | `Java mods' facts` | Rust, `G/java_content.rs` `content` | After a cached launch, compares the live boot's facts with the cache (`verify`) |
 
-- One lock: `GameBridge.call` takes `LOCK`, so the server's calls and the window's `client_*` calls run one at a time.
+- One lock: `GameBridge.locked` takes `LOCK`, so the server's calls and the window's `client_*` calls run one at a time.
   Exempt: `component_read`, `component_write`, `profile_take`, `profile_dump` (a network thread must not wait out a tick).
-- Rust enters Java through `Host::request(op, bytes)` → `Host.handle` → `GameBridge.call(op, bytes)`; the boot's own
+- Rust enters Java through `Host::request(op, bytes)` or `Host::call_with(op, write, read)` → `Host.dispatch(int op, ByteBuffer arena, int length)`
+  → `Crossing.dispatch` (`B/Crossing.java`): the op is an index into the table `Host.ops()` returns at the boot's end, and
+  the request and reply travel in a Java-owned direct buffer, one per thread and nesting level (`H/lib.rs` `Arena`,
+  `Crossing`, `Nesting`). About 100 ns for an empty request, from 1,100 ns by name (`java_mods.py crossing`). The boot's own
   string ops go `Host::call` → `Host.call` → `Boot.op`. Java enters Rust through bridged natives (section 3) and
   `Host.onEvent`, `shapeFlags`, `shapeHandle`, `shapeFree`, `link` (`H/lib.rs` `register_natives`).
 - Server side: real `ServerLevel`, `ServerPlayer`, `MinecraftServer` built without a world (`GameBridge.prepare`,
@@ -37,7 +40,7 @@ One process: the game, with the JVM inside it (JNI). No second process, except a
 
 | Phase | Where | What happens |
 |---|---|---|
-| Install | `T/java_mods.py` `install_pack` | JDK 25, NeoForge libraries, the three host jars, mods, asset index; writes `horizon-java.args` (`jvm`, `cp`, `prog`, `dist`, `mod` lines) |
+| Install | `T/java_mods.py` `install_pack` | JDK 25, NeoForge libraries, the three host jars, mods, asset index; writes `horizon-java.args` (`jvm`, `cp`, `prog`, `dist`, `mod`, `analysis` lines) and `analysis/entity-facts.json` (`T/mod_replaces.py` `install_analysis`, redone only when the jars or the analysis tools change) |
 | Launch | `java_mods.py` `launch`, `launch_env` | Sets `HORIZON_JAVA_RUN` (the run folder), `HORIZON_JAVA_HOST_JAR`, `JAVA_HOME`, scratch homes |
 | Boot | `G/game.rs` `run` → `java_content::start(java_bridges::bridges())` | JVM starts behind the title screen; section 2 |
 | Content | `G/mods.rs` → `java_content::carried` | The first launch waits ("Loading Java mods", `java_content::note`); cached launches don't |
@@ -52,16 +55,20 @@ One process: the game, with the JVM inside it (JNI). No second process, except a
 | Registry snapshot, owned set | `B/BootFacts.java` `snapshot`, `seal`, `owns`, `ownsBlock`, `ownsItem`, `ownsBlockEntityType`; `B/mixin/MapperBootstrapMixin.java` (client mappers) | `H/lib.rs` `Items`, `Host::owns_item` | "Is this a mod's?" in Java and Rust. Never a namespace |
 | Facts JSON (`schema` 3) | `BootFacts.export` over `mods/horizon/src/facts-shared/java/dev/horizonlab/facts/FactsWriter.java` | `horizon_port_pack::pipeline::carry_boot` (`oracle::Facts::read`) | Blocks, items, components, loot, tags as content mods |
 | Item clicks that run mod code | `B/ItemCode.java` `use`, `useOn`, `entity`, `mine`; op `items` (`GameBridge.items`) | `Host::item_code_runs`, `item_entity_code`, `item_mine_code` | Java runs a click only for code the mod overrides |
-| Block state table | `GameBridge.states` | `G/java_mods.rs` `java_bind_states` → `bridge::STATES` (`StateMap`: `to_horizon`, `to_java`, `owned`, `entity`) | Every `State` argument, `java_block` |
+| Block state table | `GameBridge.states` | `G/java_mods.rs` `java_bind_states` → `bridge::STATES` (`StateMap`: `to_horizon`, `to_java`, `owned`, `entity`, `animate`, `animate_whole`) | Every `State` argument, `java_block`, `java_animate` |
+| Which `animateTick` Java runs | `B/Animate.java` `route`, `ownBlockCode`, `matches`; `T/animate_closure.py` → `J/boot/res/animate_closure.tsv` (loop, block, fluid rows read from the vanilla jar); `B/mixin/AnimateTickMixin.java` | `G/render_tick.rs` `tick_particles` (`AnimateContext.java`), `G/java_hooks.rs` `java_animates`, `java_animate_route`, `java_animate_picked`, `java_animate_whole` | Native picks the positions and skips the routed parts; Java runs a mod's own override (bit 1 block, bit 2 fluid), a vanilla class a mod's mixin patches, or vanilla's whole loop when a mixin patches the loop (`wholeLoop`). `T/mod_replaces.py` `animate_classes`, `animate_routing` give the same answer from a report. Fluid drips stay native |
+| Which Java sounds are native's | `B/SoundOwners.java` (first non-plumbing stack frame against `J/boot/res/sound_sources.tsv` and the closure's block/fluid rows), `ClientSounds.play`, `queueTicking` | `T/java_sound_sources.py` (call graph of the vanilla jar joined with the port ledger; `tests/test_sound_sources.py`) | The Java client's copy of a sound native plays is dropped before `PlaySoundEvent`; mod frames and unlisted vanilla frames play; `Animate.forwarding()` plays |
+| `PlaySoundEvent` for native sounds | `B/NativeSounds.java` (`decide` reads the bus's listener list at install; ops `client_sound_listened`, `client_play_sound`) | `G/java_mods.rs` `java_ask_play_sound_listeners` sets `Audio::set_play_hook`; `R/sound_engine.rs` `play_inner` asks right before it plays (`PlayVerdict` cancel or change); `external` sounds are not asked again | Synchronous, window thread, only when a loaded mod listens; static view of who listens is `mod_replaces` `events` |
 | Baked models of code-built blocks | `B/ClientResources.java` `take`, `baked`; `mods/horizon/src/facts-shared-client/java/dev/horizonlab/facts/BakedWriter.java` | `Host::baked` file → `carry_boot` (`horizon:baked` models) | These blocks draw from the first frame |
 | Client resources | `ClientResources.export` (states, code-drawn items, decorated items, atlases and their sprites) | `G/java_models.rs` `parse_resources`, `client_resources` | The GUI atlas gets mods' sprites; `java_client_resources` |
 | Key mappings | `B/ModKeyMappings.java` `export`; `B/mixin/KeyMappingsMixin.java` | `Host::keys` file → `java_content::load_keys` → `horizon-client-input/src/keybinds.rs` `ModKeys::parse_export`, `set_mod_keys` | Controls screen lists mods' keys before any world |
 | Creative tabs | `B/CreativeTabs.java` (at the client's login, not boot) | `G/java_tabs.rs` | Native creative screen |
+| Entity facts (`entities.bin`, `entity-types.bin`) | `B/EntityFacts.java` `confirm` (in `Boot.main` after `seal`; ops `entity_facts`, `entity_types`) reads the file the `analysis` line names (system property `horizon.java.analysis`) and checks it against the bus and the merged classes | `H/entity_facts.rs` `EntityFacts` (`method`, `event`, `route`, `admits`, `reads`, `caps`), set by `boot()`; `Host::entity_facts` file; `Host::entity_types` at the first server start (`G/java_content.rs` `entity_types`, from `java_mods.rs` `java_world_phase`) | Which entity methods route to Java, which events fire for which entity types, and which state groups views carry. A pack with a coremod or class transformer is refused: the boot throws and names the mod |
 
 - The cache: `G/java_content.rs`. `fingerprint_of` hashes every mod jar (name, size, sha256), `horizon-java.args`, each
   file under `config/`, the game's tables (`items.json`, `facts.json`, `block-behaviours.json`,
   `gameplay-facts.json`) and `GENERATION` (bump it when carry writes something else from the same facts). Folder:
-  `.horizon-cache/java-mods/<fingerprint>/` (`done`, `facts.sha256`, `keys.tsv`, `mods/`). Older folders are deleted.
+  `.horizon-cache/java-mods/<fingerprint>/` (`done`, `facts.sha256`, `keys.tsv`, `entities.bin`, `entity-types.bin`, `mods/`). Older folders are deleted. The fingerprint also hashes the `analysis` file named in `horizon-java.args`.
 - A cache hit loads at once and `verify` runs behind it; a different facts hash warns loudly and writes `<key>.next`
   for the next launch (`content`). A failed boot refuses to open a world (`game.rs` calls `horizon_java_host::ready()`).
 - Ownership set: `BootFacts.seal` keeps the entries added or replaced after vanilla's bootstrap (and client id-mapper
@@ -69,7 +76,7 @@ One process: the game, with the JVM inside it (JNI). No second process, except a
   `items` lists above.
 - Boot order in `Boot.main`: `Bootstrap.bootStrap`, `BootFacts.snapshot`, `ClientLoader.load` (client) or
   `ServerModLoader.load` (server), load errors fail the boot, `BootFacts.seal`, handlers installed
-  (`Host.entry = Boot::op`, `Host.handler = GameBridge::call`).
+  (`Host.entry = Boot::op`, `GameBridge.register()` fills the op table, `Host.dispatcher = Crossing.DISPATCHER`).
 - The cache folder is under the process's working directory (`cache_dir`).
 
 ## 3. Server bridges
@@ -78,7 +85,7 @@ One process: the game, with the JVM inside it (JNI). No second process, except a
 
 | Piece | File | Key names |
 |---|---|---|
-| Dispatch | `B/GameBridge.java` | `call` (lock), `callLocked` (the `case` list: one per op), `depth`, `abandonCall` |
+| Dispatch | `B/Crossing.java`, `B/GameBridge.java` | `Crossing.dispatch`, `In`, `Out`, `Frame`; `GameBridge.register` (one `Crossing.game`/`free` per op), `locked` (lock), `game` (`depth`, `abandonCall`); `ClientBridge.OPS` registers the `client_*` ops |
 | Views | `GameBridge.java`, `B/ServerView.java`, `J/plugin/.../ViewInits.java`, `B/Inits.java` | `level`, `player`, `ServerView.create`, `openWorld`; a view skips its constructor and mods' constructor additions run via `Inits` |
 | Player view fill | `GameBridge.fill(input, refresh)` | Reads pose, position, mode, hand, slot, xp, `PlayerSync.fill`, motion, inventory; fires `PlayerLoggedIn` on first sight; `refresh` leaves xp and stacks alone |
 | Player state | `B/PlayerSync.java`, `B/mixin/FoodSyncMixin`, `PlayerSyncMixin`, `G/java_bridges/player.rs` | `acting`, `fill`, `settle`, `sendAttributes`; setters write through to Horizon's player |
@@ -117,6 +124,10 @@ One process: the game, with the JVM inside it (JNI). No second process, except a
 - Hook points: `G/java_hooks.rs` (`java_hook_*`, each a `cfg(java-mods)`/`cfg(not)` pair) are called from
   `G/native_hooks.rs` (world, server tick, break, attack, block entities) and `game.rs` (clicks, mining,
   `java_level_tick`, saves).
+- Entity loops: the 14 native loops that take an entity vector out of `Game` cross between two entities with
+  `G/crossing.rs` `cross_point(CrossPoint, &mut [Lent])`, which puts the vectors back in `Game` (`lend`) for the hook.
+  Fixed bound, removal marks (`removed`) and fresh state after a crossing: `Touched`, `Marks`, `mob_shared`/`mob_world`.
+  The hook does nothing yet outside `crossing_tests.rs`.
 - Acting-player ops go through `java_call_use` (one request shape: `java_use_request` header plus a tail) into
   `GameBridge.use(input, kind)`; kinds: 0 `use_item`, 1 `use_item_on`, 2 `click_block`, 3 `event_click_block`,
   4 `event_use_item`, 5 `event_break`, 6 `event_attack`, 7 `player_tick`, 8 `use_tick`, 9 `release_using`,
@@ -136,7 +147,7 @@ One process: the game, with the JVM inside it (JNI). No second process, except a
 | Login and packets | `B/Clients.java`, `B/RemoteClient.java`, `B/Wire.java`, `B/ClientLoader.java` | `Clients.toServer`, `joining`, `blockChanged`, `sendShapes`; `RemoteClient.connect`, `take`; `Wire.toServer` |
 | Resource reload | `B/ClientLoader.java`, `B/ClientResources.java`, `B/Sprites.java` | Textures without a GPU: atlases stand for their texture by id; `Sprites.locate`, `file` |
 | Client level | `B/ClientWorld.java`, `G/java_bridges/client_world.rs`, `G/java_screens.rs` `java_publish_client_world` | The level's chunks are the window's own columns |
-| Rust driver | `G/java_screens.rs` (`live` module) | `java_client_tick`, `java_client_frame`, `java_client_apply`, `java_client_left`, `Worker`, `Job`, `Done`, `CLIENT` thread-local |
+| Rust driver | `G/java_screens.rs` (`live` module) | `java_client_tick_begin` (collect, start of the window's tick) and `java_client_tick_send` (the batch, end of `fn tick`'s remote branch, so the tick's picks and movement are this tick's), `java_client_frame`, `java_client_apply`, `java_client_left`, `Worker`, `Job`, `Done`, `CLIENT` thread-local |
 | Boot-time hooks | `G/java_components.rs` `install`, `java_client_login`, `java_link` | `net::on_local_login`, `net::on_java_link` |
 
 ### Input, clicks, key bindings
@@ -177,6 +188,25 @@ One process: the game, with the JVM inside it (JNI). No second process, except a
   Rust `java_hud_frame`, `hud_frame_wanted`, `java_hud_frame_apply`); a frame that took a tick's status or while a
   tick runs asks for none.
 
+### The world recorder
+
+- What mods draw in the level's frame (`B/WorldFrame.java`): the real client's events (`ExtractLevelRenderStateEvent`,
+  `SubmitCustomGeometryEvent`, `PrepareRenderBuffersEvent`, the `RenderLevelStageEvent` stages, `OitTranslucent` with improved
+  transparency) fire in `fire` against vanilla's state objects, filled from the window's camera (`CAMERA` input event: position,
+  yaw, pitch, fov, far; `B/mixin/CameraAccess.java`). `FrameGraphSetupEvent` is not fired (it needs a frame graph and targets).
+- Runs only if a loaded mod listens to one of those events: `WorldFrame.decide()` reads the bus's listener lists once, at the
+  end of `ClientBridge.install`; with none, `take` returns at once and nothing is recorded or sent.
+- Two capture points: submitted geometry (`B/SubmitCapture.java`, shared with `BlockRenders`; world mode keeps the pose
+  applied, lines, shape outlines, strips) and draws on a recording GPU (`B/RecordingDevice.java`, `RecordingBuffer`,
+  `RecordingEncoder`, `RecordingRenderPass`, `RecordingPipeline`, `RecordingTransform`) that `B/mixin/RenderSystemMixin.java` and
+  `DynamicGpuDataMixin.java` hand out only while `WorldFrame.recording`. A texture view is already `Sprites.View` (its id).
+- A pipeline's own state picks the native pass (`WorldFrame.classify`); meshes are keyed by content or by buffer id and version
+  and sent once; pieces place them (`origin + linear * local`, world space, quantized).
+- Timing as the HUD: `ClientBridge.tick` takes a recording after the HUD's (`WorldFrame.take`); status carries
+  `bool world` (+ blob) and `bool worldAnimating`; while animating the window asks `client_world_frame`
+  (`G/java_world_renders.rs` `java_world_frame`, gated like `hud_frame_wanted`). Rust: `R/world_renders.rs` (`apply`, `draw`),
+  drawn by `game.rs` beside `dynamic_renders::draw`; quads after translucent terrain use `gfx::MOD_AFTER_TRANSLUCENT_OVERLAY` (36).
+
 ### Models, renders, items, text, sounds
 
 | Feature | Java | Rust | Draws |
@@ -204,14 +234,15 @@ payload. `tag` = NBT written by `GameBridge.writeTag`, read by `java_mods.rs` `r
 | Name (op) | Writer | Reader | Layout |
 |---|---|---|---|
 | Item list (`items`) | `GameBridge.items` | `H/lib.rs` `Items::read` | `int n`; n x (`text id`, `bool use`, `bool useOn`, `bool entity`, `bool mine`) |
-| State table (`states`) | `GameBridge.states` | `G/java_mods.rs` `java_bind_states` | `int count`, `int airId`; count x (`int id`, `text block`, `int n`, n x (`text name`, `text value`), `bool hasBlockEntity`, `bool owned`) |
+| State table (`states`) | `GameBridge.states` | `G/java_mods.rs` `java_bind_states` | `int count`, `int airId`, `bool wholeLoop`; count x (`int id`, `text block`, `int n`, n x (`text name`, `text value`), `bool hasBlockEntity`, `bool owned`, `byte animate`) |
 | Use request (`use_item` and the other kinds) | `Game::java_use_request` + tail | `GameBridge.fill`, `use` | uuid (2 `long`), `text name`, `text dim`, `long gameTime`, `text pose`, 3 `double` pos, 2 `float` look, `bool sneak`, `int mode`, `int hand`, `int slot`, xp (`int`, `float`, `int`), `PlayerSync.fill` block, 3 `double` motion, `bool onGround`, `int n` x (`int slot`, `bytes tag`), then the kind's tail |
 | Use reply | `GameBridge.use` end | `java_apply_use` | `bool handled`, `bool using`, `int ticks`, xp (`int`, `float`, `int`), `int n` x (`int slot`, tag or 0), effects |
 | Effects | `GameBridge.writeEffects` | `java_apply_effects` | `int n` x (`text sound`, 3 `double`, 2 `float`), `int n` x tag (spawned), `EntityViews.writeChanges` |
 | Block events (`block_events`) | `java_drain_block_events` | `GameBridge.blockEvents` | `text dim`, `long time`, `int n` x (`int kind`, `long pos`, `int a`, `int b`, `int c`); kind 0 changed (old, new, flags), 1 neighbour (state, moved, changed), 2 tick, 3 random tick |
 | Chunk events (`chunk_events`) | `java_chunks.rs` `java_chunk_events` | `GameBridge.chunkEvents`, `B/ChunkEvents.java` | Event kind (`DATA_LOAD`..`UNLOADED`) and the chunk's full tag; layouts in `java_chunks.rs` and its test `the_full_chunk_tag_survives_the_wire` |
-| Client tick (`client_tick`) | `java_screens.rs` `java_client_tick` | `ClientBridge.tick` | `int ticks`, `float partial`, `bool` size changed (+3 `int`), `int n` + `Input` entries, `bool moved` (+ pos, look, velocity, `bool onGround`), `int n` x `int soundHandle` finished |
-| Client status (tick reply) | `ClientBridge.status` | `java_client_status`, `status_pending` | `bool screen`, `int opened`, `bool pause`, `int pendingModels`, `int pendingRenders`, `int n` x (`int x`, `int z`) told, sound events (`int n` + bytes), `int shapes`, `bool hud` (+ `int len` + frame), `bool animating`, `bool tabsReady` |
+| Client tick (`client_tick`) | `java_screens.rs` `java_client_tick_send` | `ClientBridge.tick` | `int ticks`, `float partial`, `bool` size changed (+3 `int`), `int n` + `Input` entries (kind 14 `Animate`: `int n` x 3 `int` picked positions, one per window tick owed; 15 `Particles`: `int` option), `bool moved` (+ pos, look, velocity, `bool onGround`), `int n` x `int soundHandle` finished |
+| Client status (tick reply) | `ClientBridge.status` | `java_client_status`, `status_pending` | `bool screen`, `int opened`, `bool pause`, `int pendingModels`, `int pendingRenders`, `int n` x (`int x`, `int z`) told, sound events (`int n` + bytes), particles (`int n` x 6 `double` place and speed, `bytes` the type as `ClientboundLevelParticlesPacket` writes it), `int shapes`, `bool hud` (+ `int len` + frame), `bool animating`, `bool world` (+ `int len` + blob), `bool worldAnimating`, `bool tabsReady` |
+| World recording (inside status, `client_world_frame`) | `WorldFrame.blob` | `world_renders::apply` | `int generation`; `int n` x `long` dropped mesh; `int n` x mesh (`long id`, `int quads` x (`text texture`, 20 `float` xyzuv, 4 `int` argb, 4 `int` light, `bool` + 3 `float` normal), `int lines` x (6 `float`, `int argb`, `float width`)); `int n` x piece (`long mesh`, `byte pass` 0 opaque, 1 translucent, 2 after translucent, 3 additive, 4 see-through, 5 lines, 6 lines on top; `byte flags` 1 no cull, 2 writes depth; 3 `double` origin, 9 `float` linear, 4 `float` modulator). `client_world_frame` takes size (3 `int`), `float` partial, 3 `double` and 4 `float` camera and replies `bool animating`, `bool changed`, `int len` + blob |
 | GUI frame (`client_frame`, HUD frame) | `Recorder.bytes` | `paint_frame` | `int n`; n x entry. QUAD: `byte 0`, `text texture`, `byte kind`, `byte wrap`, 4 x (`float x,y,u,v`, `int color`), scissor. TEXT: `byte 1`, `float x,y,sx,sy`, `int color`, `bool shadow`, `int background`, `int runs` x (`text`, `int rgb` or -1, `byte flags`, `text font`), scissor. ITEM: `byte 2`, 4 `float`, tag, scissor. BLUR: `byte 3`. scissor = `bool` + 4 `int`. `client_hud_frame` replies `bool animating`, `bool changed`, frame |
 | Block-entity geometry (`client_models_take`) | `ClientModels.take` | `parse_models` | `int n`; n x (`long pos`, `int state`, `int key`, `bool fresh`, if fresh `int quads` x quad). Quad: 4 x 5 `float` (xyz, uv), `text sprite`, `byte face`, `byte cull` (6 none), `int tint`, `int color`, `bool shade`, `byte emission`, `byte layer` |
 | Renderer recordings (`client_renders_take`) | `BlockRenders.take`, `entry` | `parse_renders` | `int n`; n x (`long pos`, `int state`, `int draws` (-1 none), draws x (`bool translucent`, `int ops` x op (`T S R Q M` + params), `int quads` x (`text`, 4 x (5 `float`, `int color`, `int light`)), `bool item` + tag, `byte context`, `int seed`)) |
@@ -239,10 +270,11 @@ these end to end (`git show --stat 0ebe3cd78`).
 2. Implement `Game::java_<thing>` in `G/java_mods.rs`. Guard with `horizon_java_host::get()`. For a player's action
    build the tail with `Out` and call `java_call_use(what, op, tail, &mut claimed)` (model: `java_mine_block`,
    `java_attack_event`); for a level event call `java_level_call(op, |out| ...)`.
-3. Java: add `case "<op>" ->` in `GameBridge.callLocked`. For an acting-player op add a `kind` case in `GameBridge.use`
+3. Java: add `Crossing.game("<op>", ...)` in `GameBridge.register` (a `byte[] -> byte[]` method, or `(In, Out)` to read and write the buffer directly). For an acting-player op add a `kind` case in `GameBridge.use`
    and a `case` mapping the op to it. Wrap the hook call in `safely("<Event>", ...)`.
 4. Reply: return `effects()` (level ops) or fall through `use`'s tail; a cancel is the `handled` bool, which Rust reads as
    `claimed` (model: `event_break`, `CommonHooks.fireBlockBreak`).
+   A request over 64 KB or a reply over its arena grows it once; a reply over 16 MB always takes `Host.overflow()`.
 5. Test: observe it from the test mod (`Checks.check` in a `Checks*` class, section 6 below) and run
    `java_mods.py bridges`.
 
@@ -310,8 +342,9 @@ All from the repo root, inside `nix-shell -p jdk25 pkg-config alsa-lib udev` (se
 | Command | What it does |
 |---|---|
 | `python3 tools/java_mods.py build [--java-only]` | javac `host`, `plugin`, `boot` (plus `facts-shared*`), `testmod` into `.local/java-mods/` jars; then cargo builds `horizon-java-host`. Takes `build.lock` |
+| `python3 tools/java_mods.py crossing [--jars DIR] [--rounds 5] [--n 200000] [--soak 3]` | `H/examples/crossing_bench.rs` through the real `Host::request`, dedicated dist, no mods: ns per `bench_empty`, `bench_echo`, `bench_nested`, a 1 MB reply, the reentrancy and overflow checks and a four-thread soak. Fails above 1,000 ns for an empty request |
 | `python3 tools/java_mods.py unit` | Compiles `J/unit/**` and runs each `*Check` class on the built boot classes; no boot, no game |
-| `python3 tools/java_mods.py check` | Static: every bridge entry against the real jars (method exists, `Arg`/`Ret` line up, `Flat` has the overload) |
+| `python3 tools/java_mods.py check [--analysis INSTALL/analysis/entity-facts.json]` | Static: every bridge entry against the real jars (method exists, `Arg`/`Ret` line up, `Flat` has the overload); with `--analysis`, every entity writer mods call must be bridged or `java-owned` in `T/java_mods_skips` |
 | `python3 tools/java_mods.py bridges [--extra-jars DIR] [--scratch DIR]` | Live: the test mod's wand on a real click, the machine, a chunk unload; prints `CHECK` results; two sessions |
 | `python3 tools/java_mods.py install --pack MODS --out INSTALL` | A player install (JDK, libraries, jars, asset index); idempotent |
 | `python3 tools/java_mods.py launch --install INSTALL [--dedicated] ...` | Starts the game (or the server) from an install; scratch homes |
@@ -320,7 +353,8 @@ All from the repo root, inside `nix-shell -p jdk25 pkg-config alsa-lib udev` (se
 | `python3 tools/mod_parity.py mixins --install DIR --out OUT` | Same static mixin list |
 | `python3 tools/mod_parity.py run --install DIR --scenario basic --out OUT` | Real client, then Horizon, same scripted steps (`T/parity_scenarios/basic.json`), then the comparison; builds `J/parity/{lib,mod}`; uses the agents' gate |
 | `python3 tools/mod_parity.py compare --forge F --horizon H --mixins M --out OUT` | Compares two runs' JFR event counts and mixin handler counts per step |
-| `python3 -m unittest tests.test_mod_parity tests.test_java_mods_install tests.test_java_mods_assets` | Python unit tests of the tools (`test_mod_parity` also compiles `MixinScannerCheck`) |
+| `python3 tools/mod_replaces.py --install DIR --out OUT [--mixins M]` | `replaces.json` and `entity-facts.json` (guards per entity event, state groups and writers per entity class, edge and body routes, overrides, capabilities, opaque jars); exits non-zero listing entity methods `GROUPS` in `T/mod_entity_facts.py` doesn't name |
+| `python3 -m unittest tests.test_mod_entity_facts tests.test_mod_replaces tests.test_mod_parity tests.test_java_mods_install tests.test_java_mods_assets` | Python unit tests of the tools (`test_mod_parity` also compiles `MixinScannerCheck`) |
 | `python3 tools/profile_report.py DIR [--top N] [--no-jfr]` | Ranks a `HORIZON_PROFILE` folder: `server-ticks.log`, `java-ticks.log`, JFR |
 | `cargo test -p horizon-java-host` / `cargo test -p horizon-client --features java-mods --bins java_` | Rust tests of the host and the `java_*` modules (they live in the game binary and only compile with the feature) |
 
@@ -333,7 +367,8 @@ Environment:
   (`java_click_canceled`). Java: `ClientBridge` HUD debug, `Wire` per-packet lines, block entity loads, `use` results.
 - `HORIZON_PROFILE=DIR`: `H/profile.rs`. Starts JFR (`exit.jfr` on JVM exit), `G/profile.rs` `profile_tick` writes
   `server-ticks.log` and `java-ticks.log` each second (`Host::request` times per op, `Profile.take`), console
-  `profile dump` writes `dump-<ms>.jfr`.
+  `profile dump` writes `dump-<ms>.jfr`. Since the arena crossing a request costs about 1 µs less than before, so
+  per-op means drop by that much.
 
 Which check covers what:
 
@@ -341,9 +376,10 @@ Which check covers what:
 |---|---|
 | A bridged native | `java_mods.py check`, then a test-mod check and `bridges` |
 | An event or hook on the server | `bridges` (wand, machine, chunk unload and reload) |
-| Recorder, HUD timing, `ItemCode` | Java unit checks (`java_mods.py unit`) |
+| Recorder, HUD timing, `ItemCode`, the world recorder | Java unit checks (`java_mods.py unit`: `WorldFrameOrderCheck`, `WorldFrameSubmitCheck`, `WorldFrameListenersCheck`, `RecordingDeviceCheck`) |
 | A parser or wire layout | Rust unit tests in the same `java_*.rs` |
 | Boot facts, cache | `java_content.rs` tests (`the_fingerprint_follows_jars_configs_and_arguments`, `the_cache_holds_only_finished_content`) |
+| Entity facts | `tests/test_mod_entity_facts.py` (guards, groups, routes, caps on javac-built classes), `EntityFactsCheck` (`java_mods.py unit`), `cargo test -p horizon-java-host entity_facts` |
 | Mixins and events against stock | `mod_parity.py run` |
 | Anything visual or with real input | A person, in a window |
 
@@ -369,7 +405,7 @@ Which check covers what:
   fine. No code keyed on a mod id or class: fix the shared layer. Ownership is by registry entry, never a namespace
   (`BootFacts`; java-mods.md "What a mod owns").
 - **An empty reply means failure.** `Host::request` returns `None` when Java threw or the reply is empty
-  (`request_untimed`'s `.filter`). An op with nothing to say must return a byte (`GameBridge.refresh` returns `{1}`).
+  (`Host::cross`: a return of 0, -1 or a pending exception). An op with nothing to say must return a byte (`GameBridge.refresh` returns `{1}`).
 - **Calls don't nest from Rust.** A level hook runs inside `with_level`, so Java can't call back into the world
   there; queue and drain after (`BLOCK_EVENTS`, `push_event`). Inside Java, nested calls track `depth`: effects are
   written only at depth 1, and a throw at depth 1 abandons the call (`abandonCall`).

@@ -108,7 +108,8 @@ impl RaidLevel for Lvl<'_, '_> {
     }
     fn ravager_can_spawn(&self, [x, y, z]: [i32; 3]) -> bool {
         let g = self.game;
-        let w = g.mob_world_base(&[]);
+        let shared = g.mob_shared();
+        let w = g.mob_world(&shared, &[]);
         spawn_rules::is_spawn_position_ok(Species::Ravager, &w, x, y, z)
             || w.block_name(x, y - 1, z) == "minecraft:snow"
                 && g.res.facts().is_air(g.world.block(x, y, z))
@@ -1204,8 +1205,9 @@ impl Game<'_> {
         let mut members: Vec<Member> = Vec::new();
         let mut spawner = std::mem::take(&mut self.raiding.patrol);
         {
+            let shared = self.mob_shared();
             let level = PatrolCx {
-                level: self.natural_level(),
+                level: self.natural_level(&shared),
                 centers: self.village_centers(),
                 can_spawn: &biome_ok,
             };
@@ -1283,7 +1285,7 @@ impl Game<'_> {
             }
             let center = block_of(player.position);
             if !Self::is_village(&centers, center)
-                || self.natural_level().biome_tag(
+                || self.natural_level(&self.mob_shared()).biome_tag(
                     "minecraft:without_zombie_sieges",
                     center[0],
                     center[1],
@@ -1350,7 +1352,7 @@ impl Game<'_> {
             if Self::is_village(centers, [x, y, z])
                 && spawn_rules::check_spawn_rules(
                     Species::Zombie,
-                    &self.natural_level(),
+                    &self.natural_level(&self.mob_shared()),
                     spawn_rules::Reason::Event,
                     &mut random,
                     x,

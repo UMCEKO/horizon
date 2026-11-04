@@ -269,7 +269,14 @@ impl Game<'_> {
         }
         let multiplier = f64::from(multiplier);
         let mut mobs = std::mem::take(&mut self.mobs);
-        for m in mobs.iter_mut().filter(|m| m.alive()) {
+        let mut marks = super::crossing::Marks::new(&mobs);
+        // The mobs pushed now are the ones present; a crossing may add more.
+        let n = mobs.len();
+        for i in 0..n {
+            let m = &mut mobs[i];
+            if !m.alive() || marks.is_marked(m.id) {
+                continue;
+            }
             let feet = [m.position.x, m.position.y, m.position.z];
             let dist = distance(feet) / diameter;
             if dist > 1.0 {
@@ -289,13 +296,25 @@ impl Game<'_> {
                 m.velocity.y + dir[1] * power,
                 m.velocity.z + dir[2] * power,
             );
+            let id = m.id;
+            let t = self.cross_point(
+                super::crossing::CrossPoint::WindMob(id),
+                &mut [super::crossing::Lent::Mobs(&mut mobs)],
+            );
+            marks.mark_touched(&t, &mobs);
         }
         self.mobs = mobs;
         // ArmorStand.ignoreExplosion: a visible stand feels only a burst that
         // affects block-like entities (never a wind charge's).
         if blocklike {
             let mut stands = std::mem::take(&mut self.armor_stands);
-            for s in stands.iter_mut().filter(|s| !s.invisible) {
+            // The stands pushed now are the ones present; a crossing may add more.
+            let n = stands.len();
+            for i in 0..n {
+                let s = &mut stands[i];
+                if s.invisible || s.removed {
+                    continue;
+                }
                 let feet = [s.position.x, s.position.y, s.position.z];
                 let dist = distance(feet) / diameter;
                 if dist > 1.0 {
@@ -321,7 +340,13 @@ impl Game<'_> {
                     s.velocity.y + dir[1] * power,
                     s.velocity.z + dir[2] * power,
                 );
+                let id = s.id;
+                self.cross_point(
+                    super::crossing::CrossPoint::WindStand(id),
+                    &mut [super::crossing::Lent::Stands(&mut stands)],
+                );
             }
+            stands.retain(|s| !s.removed);
             self.armor_stands = stands;
         }
         // Arrows and other projectiles (the charges themselves ignore it).
@@ -329,7 +354,7 @@ impl Game<'_> {
             let feet = [position.x, position.y, position.z];
             let dist = distance(feet) / diameter;
             if dist > 1.0 {
-                return;
+                return false;
             }
             let exposure = game.seen_percent(
                 center,
@@ -343,21 +368,35 @@ impl Game<'_> {
                 velocity.y + dir[1] * power,
                 velocity.z + dir[2] * power,
             );
+            true
         };
         let mut projectiles = std::mem::take(&mut self.creatures.projectiles);
-        for p in projectiles.iter_mut().filter(|p| {
-            !p.stuck
-                && !matches!(
+        // The projectiles pushed now are the ones present; a crossing may add more.
+        let n = projectiles.len();
+        for i in 0..n {
+            let p = &mut projectiles[i];
+            if p.removed
+                || p.stuck
+                || matches!(
                     p.kind,
                     ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge
                 )
-        }) {
-            push(p.position, &mut p.velocity, self);
+            {
+                continue;
+            }
+            if push(p.position, &mut p.velocity, self) {
+                let id = p.id;
+                self.cross_point(
+                    super::crossing::CrossPoint::WindProjectile(id),
+                    &mut [super::crossing::Lent::Projectiles(&mut projectiles)],
+                );
+            }
         }
+        projectiles.retain(|p| !p.removed);
         self.creatures.projectiles = projectiles;
         let mut tnts = std::mem::take(&mut self.tnts);
         for t in &mut tnts {
-            push(t.position, &mut t.velocity, self);
+            let _ = push(t.position, &mut t.velocity, self);
         }
         self.tnts = tnts;
         pushed

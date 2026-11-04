@@ -33,6 +33,17 @@ abstract class GameRendererMixin {
         info.cancel();
     }
 
+    /** A mod's `RenderType.prepare` in a world frame reads these; the GPU's are native. */
+    @Inject(method = "overlayTexture", at = @At("HEAD"), cancellable = true)
+    private void horizon$overlay(org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<net.minecraft.client.renderer.texture.OverlayTexture> info) throws ReflectiveOperationException {
+        if (dev.horizonlab.javamods.boot.WorldFrame.recording) info.setReturnValue(dev.horizonlab.javamods.boot.WorldFrame.overlay());
+    }
+
+    @Inject(method = "lightmap", at = @At("HEAD"), cancellable = true)
+    private void horizon$lightmap(org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<com.mojang.renderpearl.api.textures.GpuTextureView> info) {
+        if (dev.horizonlab.javamods.boot.WorldFrame.recording) info.setReturnValue(dev.horizonlab.javamods.boot.WorldFrame.lightmap());
+    }
+
     @Inject(method = "checkEntityPostEffect", at = @At("HEAD"), cancellable = true)
     private void horizon$effect(net.minecraft.world.entity.Entity camera, CallbackInfo info) {
         info.cancel();

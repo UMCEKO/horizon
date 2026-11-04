@@ -39,6 +39,16 @@ impl SeenGrid {
         }
         grid
     }
+    /// Appends an entry with box `b`.
+    pub fn push(&mut self, b: Aabb) {
+        let at = corner(b);
+        self.reach = self.reach.max(width(b));
+        self.cells
+            .entry(at)
+            .or_default()
+            .push(self.cell_of.len() as u32);
+        self.cell_of.push(at);
+    }
     /// Entry `i`'s box is now `b` (the mob moved or resized).
     pub fn update(&mut self, i: usize, b: Aabb) {
         self.reach = self.reach.max(width(b));

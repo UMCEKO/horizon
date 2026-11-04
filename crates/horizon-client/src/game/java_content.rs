@@ -16,8 +16,12 @@ const GENERATION: u32 = 2;
 const DONE: &str = "done";
 const FACTS_HASH: &str = "facts.sha256";
 const KEYS: &str = "keys.tsv";
+const ENTITIES: &str = "entities.bin";
+const ENTITY_TYPES: &str = "entity-types.bin";
 
 static CARRIED: OnceLock<Vec<PathBuf>> = OnceLock::new();
+/// The folder of this run's cache entry.
+static CACHE_AT: OnceLock<PathBuf> = OnceLock::new();
 /// The mods' configs as this run's boot found them, before the mods could write theirs.
 static CONFIGS: OnceLock<Result<Vec<String>, String>> = OnceLock::new();
 /// What the loading screen says while a launch waits on the mods: 0 nothing, 1 their boot, 2 their content.
@@ -47,6 +51,7 @@ fn facts_file() -> PathBuf {
 pub(super) fn start(bridges: Vec<horizon_java_host::bridge::Bridge>) {
     if let Some(run) = std::env::var_os("HORIZON_JAVA_RUN").map(PathBuf::from) {
         let _ = CONFIGS.set(configs(&run));
+        horizon_client::keybinds::expect_mod_keys();
     }
     horizon_java_host::start(bridges, facts_file());
 }
@@ -71,6 +76,7 @@ fn content(run: &Path, resources: &Path) -> Result<Vec<PathBuf>, String> {
     let dir = cache_dir();
     let key = fingerprint(run, resources)?;
     let at = dir.join(&key);
+    let _ = CACHE_AT.set(at.clone());
     let next = dir.join(format!("{key}.next"));
     if next.join(DONE).exists() {
         let _ = fs::remove_dir_all(&at);
@@ -127,11 +133,13 @@ fn verify(run: &Path, resources: &Path, at: &Path, next: &Path) {
         }
     };
     refresh_keys(&host.keys(), &at.join(KEYS));
+    refresh_file(&host.entity_facts(), &at.join(ENTITIES));
     let cached = fs::read_to_string(at.join(FACTS_HASH)).unwrap_or_default();
     if live == cached.trim() {
         let _ = fs::remove_file(host.facts());
         let _ = fs::remove_file(host.baked());
         let _ = fs::remove_file(host.keys());
+        let _ = fs::remove_file(host.entity_facts());
         return;
     }
     let warning = "Horizon: WARNING: the Java mods registered other blocks or items than the cached content was built from; this run's tables don't match them, and the next launch uses rebuilt ones";
@@ -173,6 +181,11 @@ fn generate(
             fs::copy(&live, partial.join(KEYS)).map_err(|e| format!("{}: {e}", live.display()))?;
             load_keys(&partial.join(KEYS));
         }
+        let analysed = host.entity_facts();
+        if analysed.exists() {
+            fs::copy(&analysed, partial.join(ENTITIES))
+                .map_err(|e| format!("{}: {e}", analysed.display()))?;
+        }
     }
     fs::write(partial.join(FACTS_HASH), boot_hash(&kept, &kept_baked)?)
         .map_err(|e| e.to_string())?;
@@ -213,6 +226,26 @@ fn refresh_keys(live: &Path, cached: &Path) {
     }
     if fs::write(cached, &text).is_ok() {
         load_keys(cached);
+    }
+}
+
+/// The live boot's file replaces the cached one when they differ.
+fn refresh_file(live: &Path, cached: &Path) {
+    if let Ok(bytes) = fs::read(live) {
+        if fs::read(cached).is_ok_and(|c| c == bytes) {
+            return;
+        }
+        let _ = fs::write(cached, bytes);
+    }
+}
+
+/// After the first server start: the entity types' classes, from this cache entry or built by Java once.
+pub(super) fn entity_types() {
+    let (Some(host), Some(at)) = (horizon_java_host::get(), CACHE_AT.get()) else {
+        return;
+    };
+    if let Err(e) = host.entity_types(&at.join(ENTITY_TYPES)) {
+        log::error!("Horizon: the entity types of the Java mods are not loaded: {e}");
     }
 }
 
@@ -328,6 +361,13 @@ fn fingerprint_of(
     let args = fs::read(run.join("horizon-java.args")).unwrap_or_default();
     hash.update(b"args\n");
     hash.update(&args);
+    for analysis in String::from_utf8_lossy(&args)
+        .lines()
+        .filter_map(|l| l.strip_prefix("analysis "))
+    {
+        hash.update(b"analysis\n");
+        hash.update(fs::read(analysis).unwrap_or_default());
+    }
     for config in configs {
         hash.update(config);
     }
@@ -418,6 +458,31 @@ mod tests {
             fingerprint(&run, &res).unwrap(),
             "the loader's classpath"
         );
+        let analysis = dir.join("entity-facts.json");
+        fs::write(&analysis, "{}").unwrap();
+        fs::write(
+            run.join("horizon-java.args"),
+            format!("cp /y.jar\nanalysis {}\n", analysis.display()),
+        )
+        .unwrap();
+        let analysed = fingerprint(&run, &res).unwrap();
+        fs::write(&analysis, r#"{"events":{}}"#).unwrap();
+        assert_ne!(
+            analysed,
+            fingerprint(&run, &res).unwrap(),
+            "the entity analysis's bytes"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_live_boots_entity_facts_replace_the_cached_ones() {
+        let dir = scratch("entities");
+        let (live, cached) = (dir.join("live.bin"), dir.join("cached.bin"));
+        fs::write(&cached, b"old").unwrap();
+        fs::write(&live, b"new").unwrap();
+        refresh_file(&live, &cached);
+        assert_eq!(fs::read(&cached).unwrap(), b"new");
         let _ = fs::remove_dir_all(&dir);
     }
 

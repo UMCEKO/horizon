@@ -2,6 +2,7 @@
 //! reputation, sharing food and wares, picking up dropped items, making
 //! babies, calling iron golems and the prices they ask.
 use super::Game;
+use super::crossing::{CrossPoint, Lent};
 use horizon_client::{
     gossip::{self, GossipType},
     items::ItemStack,
@@ -105,7 +106,7 @@ impl Game<'_> {
         let id = self.next_entity + 1;
         let mut random = self.world.random.clone();
         let golem = villager::summon_golem(
-            &self.mob_world_base(&[]),
+            &self.mob_world(&self.mob_shared(), &[]),
             start,
             &mut random,
             |random, at, yaw| {
@@ -267,7 +268,8 @@ impl Game<'_> {
         if due.is_empty() {
             return;
         }
-        let w = self.mob_world_base(&[]);
+        let shared = self.mob_shared();
+        let w = self.mob_world(&shared, &[]);
         let mut found = Vec::new();
         for i in due {
             let m = &self.mobs[i];
@@ -425,7 +427,8 @@ impl Game<'_> {
         };
         let eye = Vec3::new(victim.position.x, victim.eye_y(), victim.position.z);
         let witnesses: Vec<usize> = {
-            let w = self.mob_world_base(&[]);
+            let shared = self.mob_shared();
+            let w = self.mob_world(&shared, &[]);
             self.mobs
                 .iter()
                 .enumerate()
@@ -510,8 +513,10 @@ impl Game<'_> {
         };
         let mut mobs = std::mem::take(&mut self.mobs);
         let mut events = Vec::new();
-        villager::stop_sleeping(&mut mobs[i], &self.mob_world_base(&[]), &mut events);
+        let shared = self.mob_shared();
+        villager::stop_sleeping(&mut mobs[i], &self.mob_world(&shared, &[]), &mut events);
         villager_brain::woken(&mut mobs[i], self.world.game_time);
+        self.cross_point(CrossPoint::VillagerWake(id), &mut [Lent::Mobs(&mut mobs)]);
         self.mobs = mobs;
         if let Err(e) = self.handle_mob_events(events) {
             log::warn!("waking villager {id}: {e}");

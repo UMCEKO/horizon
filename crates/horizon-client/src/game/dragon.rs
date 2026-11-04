@@ -1503,7 +1503,7 @@ impl Game<'_> {
                     let eye = Vec3::new(pos.x, pos.y + 6.8, pos.z);
                     let target_eye =
                         tracked.map_or(pp.y + 1.62, |p| p.bounds.max_position().y - 0.18);
-                    self.mob_world_base(&[])
+                    self.mob_world(&self.mob_shared(), &[])
                         .line_of_sight(eye, Vec3::new(pp.x, target_eye, pp.z))
                 };
                 if sees {

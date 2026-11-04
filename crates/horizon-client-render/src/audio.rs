@@ -913,6 +913,7 @@ impl Audio {
             sound.relative,
         );
         instance.can_start_silent = sound.can_start_silent;
+        instance.external = true;
         if sound.tickable {
             instance.ticking = Ticking::Remote;
         }
@@ -924,6 +925,10 @@ impl Audio {
         } else {
             self.play_instance(instance, true).0
         }
+    }
+    /// Asks `hook` before each sound this process plays itself: the Java client's `PlaySoundEvent` for it.
+    pub fn set_play_hook(&mut self, hook: Option<crate::sound_engine::PlayHook>) {
+        self.engine.play_hook = hook;
     }
     /// A tickable external sound's new volume, pitch and position, which the
     /// engine's next tick gives its channel.
@@ -1071,6 +1076,91 @@ mod tests {
         audio.stop_and_release(id);
         let mixer = audio.backend.mixer.lock().unwrap();
         assert!(mixer.channels.values().all(|c| c.state == State::Stopped));
+    }
+
+    fn listening_audio() -> Audio {
+        let mut audio = Audio::silent(Path::new("/nonexistent/horizon-test-assets"));
+        audio.engine.registry.add_file(
+            "minecraft",
+            br#"{"block.stone.break":{"sounds":["dig/stone1"]},"block.stone.hit":{"sounds":["dig/stone2"]}}"#,
+            &|_, _| true,
+        );
+        audio.engine.loaded = true;
+        audio.backend.live = true;
+        audio
+    }
+
+    #[test]
+    fn a_listener_that_cancels_stops_the_sound_before_it_plays() {
+        use crate::sound_engine::PlayVerdict;
+        let mut audio = listening_audio();
+        let asked = std::rc::Rc::new(std::cell::Cell::new(0));
+        let seen = asked.clone();
+        audio.set_play_hook(Some(Box::new(move |_| {
+            seen.set(seen.get() + 1);
+            PlayVerdict::Cancel
+        })));
+        audio.play(
+            "minecraft:block.stone.break",
+            Some([1.0, 2.0, 3.0]),
+            1.0,
+            1.0,
+        );
+        assert_eq!(asked.get(), 1);
+        assert_eq!(audio.engine.census()["playing"], 0);
+    }
+
+    #[test]
+    fn a_listener_that_changes_the_sound_makes_the_engine_play_the_change() {
+        use crate::sound_engine::PlayVerdict;
+        let mut audio = listening_audio();
+        audio.set_play_hook(Some(Box::new(|asked| {
+            assert_eq!(asked.identifier, "minecraft:block.stone.break");
+            PlayVerdict::Change {
+                identifier: "minecraft:block.stone.hit".into(),
+                volume: 0.5,
+                pitch: 2.0,
+                position: [9.0, 8.0, 7.0],
+            }
+        })));
+        audio.play(
+            "minecraft:block.stone.break",
+            Some([1.0, 2.0, 3.0]),
+            1.0,
+            1.0,
+        );
+        let played = audio.engine.instance(1).expect("played");
+        assert_eq!(played.identifier, "minecraft:block.stone.hit");
+        assert_eq!((played.volume, played.pitch), (0.5, 2.0));
+        assert_eq!(played.position, [9.0, 8.0, 7.0]);
+        assert_eq!(audio.engine.census()["playing"], 1);
+    }
+
+    #[test]
+    fn a_sound_the_java_client_made_is_not_asked_about_again() {
+        use crate::sound_engine::PlayVerdict;
+        let mut audio = listening_audio();
+        let asked = std::rc::Rc::new(std::cell::Cell::new(0));
+        let seen = asked.clone();
+        audio.set_play_hook(Some(Box::new(move |_| {
+            seen.set(seen.get() + 1);
+            PlayVerdict::Cancel
+        })));
+        let id = audio.play_external(&ExternalSound {
+            event: "minecraft:block.stone.break".into(),
+            source: 4,
+            volume: 1.0,
+            pitch: 1.0,
+            position: [0.0; 3],
+            looping: false,
+            delay: 0,
+            linear: true,
+            relative: false,
+            can_start_silent: false,
+            tickable: false,
+        });
+        assert!(audio.external_playing(id));
+        assert_eq!(asked.get(), 0);
     }
 
     #[test]

@@ -620,7 +620,7 @@ def allow_commands(data):
     return gzip.compress(bytes(raw))
 
 
-def run_real(install, scenario_file, out, world, parity_jars, java, reference, heap='3G', timeout=1500):
+def run_real(install, scenario_file, out, world, parity_jars, java, reference, heap='3G', timeout=1500, size=(1280, 720), extra_jvm=()):
     """One real NeoForge client session of the scenario; returns when it quits. Needs an X display (Xvfb) so no window opens on the desktop."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import neoforge_oracle as oracle
@@ -639,13 +639,13 @@ def run_real(install, scenario_file, out, world, parity_jars, java, reference, h
     shutil.copy(ref / 'game' / 'options.txt', game / 'options.txt')
     copy_world(world, game / 'saves', 'W')
     jvm = ['-Dfml.earlyWindowControl=false', f'-Dhorizon.parity.scenario={scenario_file}', f'-Dhorizon.parity.steps={out / "steps.txt"}',
-           f'-Dhorizon.parity.jfr={out / "forge.jfr"}', *jfr_options(PARITY / 'parity.jfc', out / 'forge.jfr', out / 'merged.txt')]
+           f'-Dhorizon.parity.jfr={out / "forge.jfr"}', *jfr_options(PARITY / 'parity.jfc', out / 'forge.jfr', out / 'merged.txt'), *extra_jvm]
     _, cmd = oracle.client_command(f'{java}/bin/java', heap, game, ref / 'natives', ref / 'assets', jvm=jvm,
-                                   game=['--width', '1280', '--height', '720', '--quickPlaySingleplayer', 'W'])
+                                   game=['--width', str(size[0]), '--height', str(size[1]), '--quickPlaySingleplayer', 'W'])
     env = {**os.environ, **gfx_env(), 'ALSOFT_DRIVERS': 'null', 'HORIZON_NEOFORGE': oracle.NEOFORGE, 'JAVA_HOME': java, 'PARITY_MARKER': str(out)}
     acquire_gate('parity')
     log = open(out / 'game.log', 'w')
-    display = subprocess.Popen(['Xvfb', ':97', '-screen', '0', '1280x720x24', '-nolisten', 'tcp'], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, env=env)
+    display = subprocess.Popen(['Xvfb', ':97', '-screen', '0', f'{size[0]}x{size[1]}x24', '-nolisten', 'tcp'], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, env=env)
     process = None
     try:
         time.sleep(2)

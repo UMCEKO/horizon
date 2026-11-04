@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Runs a scripted session on Horizon with the Java mods of an install, checks its state, and prints one short JSON result.
 
-    hz_scenario.py run --install DIR --script S.json --out OUT [--game BIN] [--jars DIR] [--world NAME] [--fresh] [--keep]
+    hz_scenario.py run --install DIR --script S.json --out OUT [--game BIN] [--jars DIR] [--world NAME] [--size WxH] [--fresh] [--keep]
 
 The install is only read: its home/ and client config are copied into OUT. Steps (a {"name": ...} entry labels the next step):
   {"wait": TICKS} {"command": "/fill ..."} {"look": [yaw, pitch]} {"lookat": [x, y, z]} {"slot": 0-8} {"use": TICKS} {"attack": TICKS}
-  {"key": "key.inventory"} {"close": true} {"tp": [x, y, z]} or {"tp": [x, y, z, yaw, pitch]} {"screenshot": "name"} {"quit": true}
+  {"key": "key.inventory"} {"close": true} {"tp": [x, y, z]} or {"tp": [x, y, z, yaw, pitch]} {"screenshot": "name"} {"camera": [x, y, z, yaw, pitch]} {"hud": false} {"quit": true}
   {"check": {...}} with one of:
     {"block": [x,y,z], "is": "stone", "state": "oak_stairs[facing=east]"}   the loaded block at a position
     {"looking_at": "stone"}                                                  the block under the crosshair
@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+CAMERA_SETTLE = 200  # ticks for chunks to mesh; horizon-ctl has no renderer-idle signal
 GATE = os.environ.get('HORIZON_GAME_GATE', '')
 GFX_ENV = os.environ.get('HORIZON_GFX_ENV', '')
 KEYS = {'key.inventory': 'e', 'key.jump': 'space', 'key.sneak': 'shift', 'key.sprint': 'ctrl', 'key.drop': 'q', 'key.chat': 't',
@@ -79,6 +80,10 @@ def ctl_commands(kind, arg):
     if kind == 'tp':
         lines = [['tp', *map(str, arg[:3])]]
         return lines + ([['look', str(arg[3]), str(arg[4])]] if len(arg) >= 5 else [])
+    if kind == 'camera':
+        return ctl_commands('tp', arg) + [['wait', str(CAMERA_SETTLE)]]
+    if kind == 'hud':
+        return [] if arg else [['key', 'f1', 'tap']]
     if kind == 'quit':
         return [['quit']]
     raise ValueError(f'unknown step {kind}')
@@ -389,9 +394,11 @@ def run(args):
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     started, keep, result = time.monotonic(), False, None
 
+    size = [x for v, flag in zip(args.size.split('x'), ('--width', '--height')) for x in (flag, v)] if args.size else []
+
     def launch():
         new = () if (saves / world / 'level.dat').is_file() else ('--creative', '--seed', '1')
-        code, data = ctl('launch', '--world', world, *new, '--offscreen', '--wait', '--resources', record['resources'], '--game', str(game),
+        code, data = ctl('launch', '--world', world, *new, '--offscreen', '--wait', *size, '--resources', record['resources'], '--game', str(game),
                          timeout=min(300, args.timeout))
         (out / 'launch.log').write_text(data if isinstance(data, str) else json.dumps(data))
         return code, data
@@ -428,6 +435,7 @@ def main():
     r.add_argument('--game', help='a horizon-client binary built with java-mods; horizon-ctl is taken from beside it')
     r.add_argument('--jars', help='the built horizon-java-*.jar (HORIZON_JAVA_MODS_DIR)')
     r.add_argument('--world', help='a world of the copied home (default: its first), made if missing')
+    r.add_argument('--size', help='window size WxH')
     r.add_argument('--fresh', action='store_true', help='start with an empty home')
     r.add_argument('--keep', action='store_true', help='on success leave the game running and print its ctl socket')
     r.add_argument('--timeout', type=int, default=600, help='seconds for the whole run, launch included')

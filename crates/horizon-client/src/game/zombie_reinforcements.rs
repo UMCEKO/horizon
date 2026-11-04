@@ -98,7 +98,8 @@ impl Game<'_> {
         own: &mut LegacyRandom,
         rules: &mut LegacyRandom,
     ) -> Option<[i32; 3]> {
-        let level = self.natural_level();
+        let shared = self.mob_shared();
+        let level = self.natural_level(&shared);
         let (width, height) = (kind.width as f32, kind.height as f32);
         for _ in 0..ATTEMPTS {
             let [x, y, z] = from.map(|v| v + offset(own));

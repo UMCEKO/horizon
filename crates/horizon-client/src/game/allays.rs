@@ -50,7 +50,8 @@ impl Game<'_> {
             // GoToWantedItem / wantsToPickUp: the same item within 32 that the
             // allay sees (NearestItemSensor's hasLineOfSight, eye to eye).
             let wanted = if griefing && carried < max && self.mobs[i].extra.ints[3] <= 0 {
-                let w = self.mob_world_base(&[]);
+                let shared = self.mob_shared();
+                let w = self.mob_world(&shared, &[]);
                 let eye = horizon_core::geometry::Vec3::new(pos.x, self.mobs[i].eye_y(), pos.z);
                 // The sensor looks in the allay's box grown by (32, 16, 32).
                 let b = self.mobs[i].bounds();

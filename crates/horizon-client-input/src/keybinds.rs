@@ -305,6 +305,28 @@ pub fn mod_keys() -> Arc<ModKeys> {
 }
 pub fn set_mod_keys(keys: ModKeys) {
     *MOD_KEYS.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(keys));
+    MOD_KEYS_STATE.store(LOADED, std::sync::atomic::Ordering::Relaxed);
+}
+
+const NO_MODS: u8 = 0;
+const PENDING: u8 = 1;
+const LOADED: u8 = 2;
+static MOD_KEYS_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(NO_MODS);
+
+/// Whether `Options.save` writes this mod mapping's line: a loaded mod registers it, or the mappings aren't known yet.
+pub fn saves_mod_key(name: &str) -> bool {
+    MOD_KEYS_STATE.load(std::sync::atomic::Ordering::Relaxed) == PENDING
+        || mod_keys().keys.iter().any(|k| k.name == name)
+}
+
+/// Java mods run but their mappings aren't known yet: saved mod key lines are kept until they are.
+pub fn expect_mod_keys() {
+    let _ = MOD_KEYS_STATE.compare_exchange(
+        NO_MODS,
+        PENDING,
+        std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,
+    );
 }
 
 /// InputConstants key names <-> winit physical keys.
@@ -665,13 +687,24 @@ impl KeyBinds {
         self.mods.remove(name);
     }
     /// What `options.txt` saves for the mods: every mapping the boot exported, and the ones a mod no longer registers are kept as they were.
+    /// `Options.save` writes registered mappings only, so a line no loaded mod registers is dropped, as in vanilla.
     pub fn saved_mods(&self) -> Vec<(String, Binding)> {
-        let table = mod_keys();
-        let mut out: BTreeMap<String, Binding> = self.mods.clone();
-        for key in &table.keys {
-            out.entry(key.name.to_owned())
-                .or_insert_with(|| key.default.clone());
+        if MOD_KEYS_STATE.load(std::sync::atomic::Ordering::Relaxed) == PENDING {
+            return self.mods.clone().into_iter().collect();
         }
+        let table = mod_keys();
+        let out: BTreeMap<String, Binding> = table
+            .keys
+            .iter()
+            .map(|key| {
+                let binding = self
+                    .mods
+                    .get(key.name)
+                    .cloned()
+                    .unwrap_or_else(|| key.default.clone());
+                (key.name.to_owned(), binding)
+            })
+            .collect();
         out.into_iter().collect()
     }
     /// The mapping a physical input triggers (first in list order).

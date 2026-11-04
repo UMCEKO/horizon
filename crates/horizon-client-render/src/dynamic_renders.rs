@@ -155,7 +155,7 @@ fn atlas_key(texture: &str) -> &str {
 }
 
 /// Horizon's packed light (`sky*16 | block*16 << 8`) for a vertex: the brighter of the world's and the renderer's.
-fn light(world: u8, coords: u32) -> (u32, bool) {
+pub(crate) fn light(world: u8, coords: u32) -> (u32, bool) {
     let (world_sky, world_block) = (u32::from(world >> 4), u32::from(world & 15));
     let (block, sky) = ((coords & 0xFFFF) >> 4, (coords >> 16) >> 4);
     let (sky, block) = (world_sky.max(sky.min(15)), world_block.max(block.min(15)));

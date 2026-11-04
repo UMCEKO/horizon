@@ -122,7 +122,8 @@ impl Game<'_> {
         };
         let mut events = Vec::new();
         let added = {
-            let w = self.mob_world_base(&snapshot);
+            let shared = self.mob_shared();
+            let w = self.mob_world(&shared, &snapshot);
             let mut host = Host {
                 mobs: &mut mobs,
                 added: Vec::new(),
@@ -139,6 +140,9 @@ impl Game<'_> {
         self.persist.uuids = uuids;
         self.next_entity = next_entity;
         self.world.random = random;
+        if let Some((Some(id), _)) = heart.creaking {
+            self.cross_point(super::crossing::CrossPoint::Creaking(id), &mut []);
+        }
         let mut mob_events = Vec::new();
         for e in events {
             match e {

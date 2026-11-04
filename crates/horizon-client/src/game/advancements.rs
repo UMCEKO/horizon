@@ -1105,7 +1105,8 @@ impl Game<'_> {
         // `ClipContext.Block.COLLIDER`, no fluids, within 128 blocks.
         let from = Vec3::new(eye[0], eye[1], eye[2]);
         let to = Vec3::new(m.position.x, m.eye_y(), m.position.z);
-        let world = self.mob_world_base(&[]);
+        let shared = self.mob_shared();
+        let world = self.mob_world(&shared, &[]);
         let clear = to.distance(from) <= 128.0 && world.clear_between(from, to, false);
         clear.then(|| self.mob_entity(m))
     }

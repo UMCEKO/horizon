@@ -483,22 +483,29 @@ impl Game<'_> {
         self.score.board.players_team(self.acting_player_name())
     }
     /// The teams of the player and of the mobs on one (empty without teams).
-    pub(super) fn mob_teams(&self) -> horizon_client::mobs::Teams<'_> {
+    pub(super) fn mob_teams(&self) -> horizon_client::mobs::Teams {
         let board = &self.score.board;
         if board.teams.is_empty() {
             return Default::default();
         }
-        horizon_client::mobs::Teams {
-            player: self.player_team(),
-            mobs: self
-                .persist
-                .uuids
-                .iter()
-                .filter_map(|(id, uuid)| {
-                    Some((*id, board.players_team(&self.scoreboard_name(*id, *uuid))?))
-                })
-                .collect(),
+        let mut teams = horizon_client::mobs::Teams {
+            player: self.player_team().cloned(),
+            ..Default::default()
+        };
+        for (id, uuid) in &self.persist.uuids {
+            let Some(team) = board.players_team(&self.scoreboard_name(*id, *uuid)) else {
+                continue;
+            };
+            let at = match teams.teams.iter().position(|t| t.name == team.name) {
+                Some(at) => at,
+                None => {
+                    teams.teams.push(team.clone());
+                    teams.teams.len() - 1
+                }
+            };
+            teams.mobs.insert(*id, at as u16);
         }
+        teams
     }
     /// The mobs on the player's team (`isAlliedTo`).
     pub(super) fn player_allies(&self) -> HashSet<u32> {

@@ -436,60 +436,78 @@ impl Game<'_> {
         // wither's spawn blast neither hurts nor pushes it.
         let spared = exploding.filter(|_| self.combat.explosion_source_named);
         let mut mobs = std::mem::take(&mut self.mobs);
-        for m in mobs
-            .iter_mut()
-            .filter(|m| m.alive() && spared != Some(m.id))
-        {
+        let mut marks = super::crossing::Marks::new(&mobs);
+        // The mobs hit now are the ones present; a crossing may add more.
+        let n = mobs.len();
+        for i in 0..n {
+            let m = &mut mobs[i];
+            if !m.alive() || spared == Some(m.id) || marks.is_marked(m.id) {
+                continue;
+            }
             let hurtable = teams_allow(self, self.mob_team(m.id));
             let feet = [m.position.x, m.position.y, m.position.z];
             let dist = distance(feet) / diameter;
             if dist > 1.0 {
                 continue;
             }
-            let (w, h) = (m.kind.width / 2.0, m.kind.height);
-            let eye = [feet[0], feet[1] + m.kind.eye_height, feet[2]];
-            let exposure = self.seen_percent(
-                center,
-                [feet[0] - w, feet[1], feet[2] - w],
-                [feet[0] + w, feet[1] + h, feet[2] + w],
-            );
-            // The exploding mob is the damage source's entity, so victims
-            // it kills drop its charged-creeper loot (`Creeper.killedEntity`).
-            let source = horizon_client::mobs::Damage {
-                kind: horizon_client::mobs::DamageKind::Explosion,
-                // A projectile's owner (`getIndirectSourceEntity`), else
-                // the exploding mob itself.
-                attacker: self
-                    .combat
-                    .explosion_owner
-                    .or(exploding)
-                    .filter(|&o| o != m.id)
-                    .map(horizon_client::mobs::Who::Mob),
-                from: Some(center),
-            };
-            let shielded =
-                cause.is_some_and(|c| horizon_client::mobs::wither::shielded_from(m.species(), c));
-            if hurtable && (shielded || !m.damage(damage(dist, exposure), source)) {
-                continue;
+            'hit: {
+                let (w, h) = (m.kind.width / 2.0, m.kind.height);
+                let eye = [feet[0], feet[1] + m.kind.eye_height, feet[2]];
+                let exposure = self.seen_percent(
+                    center,
+                    [feet[0] - w, feet[1], feet[2] - w],
+                    [feet[0] + w, feet[1] + h, feet[2] + w],
+                );
+                // The exploding mob is the damage source's entity, so victims
+                // it kills drop its charged-creeper loot (`Creeper.killedEntity`).
+                let source = horizon_client::mobs::Damage {
+                    kind: horizon_client::mobs::DamageKind::Explosion,
+                    // A projectile's owner (`getIndirectSourceEntity`), else
+                    // the exploding mob itself.
+                    attacker: self
+                        .combat
+                        .explosion_owner
+                        .or(exploding)
+                        .filter(|&o| o != m.id)
+                        .map(horizon_client::mobs::Who::Mob),
+                    from: Some(center),
+                };
+                let shielded = cause
+                    .is_some_and(|c| horizon_client::mobs::wither::shielded_from(m.species(), c));
+                if hurtable && (shielded || !m.damage(damage(dist, exposure), source)) {
+                    break 'hit;
+                }
+                // `EXPLOSION_KNOCKBACK_RESISTANCE`, not `KNOCKBACK_RESISTANCE`: its
+                // base is 0 for every mob type, so iron golems and ravagers are pushed.
+                let dir = direction(eye);
+                let power = (1.0 - dist) * f64::from(exposure);
+                m.velocity = Vec3::new(
+                    m.velocity.x + dir[0] * power,
+                    m.velocity.y + dir[1] * power,
+                    m.velocity.z + dir[2] * power,
+                );
             }
-            // `EXPLOSION_KNOCKBACK_RESISTANCE`, not `KNOCKBACK_RESISTANCE`: its
-            // base is 0 for every mob type, so iron golems and ravagers are pushed.
-            let dir = direction(eye);
-            let power = (1.0 - dist) * f64::from(exposure);
-            m.velocity = Vec3::new(
-                m.velocity.x + dir[0] * power,
-                m.velocity.y + dir[1] * power,
-                m.velocity.z + dir[2] * power,
+            let id = mobs[i].id;
+            let t = self.cross_point(
+                super::crossing::CrossPoint::ExplosionMob(id),
+                &mut [super::crossing::Lent::Mobs(&mut mobs)],
             );
+            marks.mark_touched(&t, &mobs);
         }
         self.mobs = mobs;
         // Dropped items: 5 health, destroyed by the explosion damage (nether stars resist).
         let mut items = std::mem::take(&mut self.dropped);
-        items.retain_mut(|item| {
+        // The items hit now are the ones present; a crossing may add more.
+        let n = items.len();
+        for i in 0..n {
+            if items[i].removed {
+                continue;
+            }
+            let item = &mut items[i];
             let feet = [item.position.x, item.position.y, item.position.z];
             let dist = distance(feet) / diameter;
             if dist > 1.0 {
-                return true;
+                continue;
             }
             let half = 0.125;
             let exposure = self.seen_percent(
@@ -498,17 +516,23 @@ impl Game<'_> {
                 [feet[0] + half, feet[1] + 0.25, feet[2] + half],
             );
             if &*item.stack.item != "minecraft:nether_star" && damage(dist, exposure) >= 5.0 {
-                return false;
+                item.removed = true;
+            } else {
+                let dir = direction([feet[0], feet[1] + 0.2125, feet[2]]);
+                let power = (1.0 - dist) * f64::from(exposure);
+                item.velocity = Vec3::new(
+                    item.velocity.x + dir[0] * power,
+                    item.velocity.y + dir[1] * power,
+                    item.velocity.z + dir[2] * power,
+                );
             }
-            let dir = direction([feet[0], feet[1] + 0.2125, feet[2]]);
-            let power = (1.0 - dist) * f64::from(exposure);
-            item.velocity = Vec3::new(
-                item.velocity.x + dir[0] * power,
-                item.velocity.y + dir[1] * power,
-                item.velocity.z + dir[2] * power,
+            let id = item.id;
+            self.cross_point(
+                super::crossing::CrossPoint::ExplosionItem(id),
+                &mut [super::crossing::Lent::Items(&mut items)],
             );
-            true
-        });
+        }
+        items.retain(|item| !item.removed);
         self.dropped = items;
         // Primed TNT: knockback only, from its position (not its eyes).
         let mut tnts = std::mem::take(&mut self.tnts);

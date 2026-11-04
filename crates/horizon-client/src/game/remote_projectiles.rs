@@ -556,23 +556,46 @@ impl Game<'_> {
         let mut projectiles = std::mem::take(&mut self.creatures.projectiles);
         let mut tridents = std::mem::take(&mut self.tridents);
         {
-            let w = self.mob_world_base(&[]);
-            let world = super::creatures::ProjWorld {
-                w: &w,
-                targets: Vec::new(),
-            };
-            for p in &mut projectiles {
-                match p.kind {
-                    ProjectileKind::Arrow { .. } => remote_arrow_tick(p, &world),
-                    // ShulkerBullet.tick: only the server steers it.
-                    ProjectileKind::ShulkerBullet { .. } => {
-                        p.previous = p.position;
-                        p.age += 1;
-                        p.position = p.position.add_vector(p.velocity);
+            let mut shared = self.mob_shared();
+            // The projectiles ticking now are the ones present; a crossing may add more.
+            let n = projectiles.len();
+            for i in 0..n {
+                if projectiles[i].removed {
+                    continue;
+                }
+                {
+                    let w = self.mob_world(&shared, &[]);
+                    let world = super::creatures::ProjWorld {
+                        w: &w,
+                        targets: Vec::new().into(),
+                    };
+                    let p = &mut projectiles[i];
+                    match p.kind {
+                        ProjectileKind::Arrow { .. } => remote_arrow_tick(p, &world),
+                        // ShulkerBullet.tick: only the server steers it.
+                        ProjectileKind::ShulkerBullet { .. } => {
+                            p.previous = p.position;
+                            p.age += 1;
+                            p.position = p.position.add_vector(p.velocity);
+                        }
+                        _ => remote_projectile_tick(p, &world),
                     }
-                    _ => remote_projectile_tick(p, &world),
+                }
+                let id = projectiles[i].id;
+                let t = self.cross_point(
+                    super::crossing::CrossPoint::RemoteProjectile(id),
+                    &mut [super::crossing::Lent::Projectiles(&mut projectiles)],
+                );
+                if t.shared {
+                    shared = self.mob_shared();
                 }
             }
+            projectiles.retain(|p| !p.removed);
+            let w = self.mob_world(&shared, &[]);
+            let world = super::creatures::ProjWorld {
+                w: &w,
+                targets: Vec::new().into(),
+            };
             for t in &mut tridents {
                 t.remote_tick(&world, self.remote_eye(t.owner));
             }

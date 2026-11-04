@@ -191,16 +191,22 @@ impl Game<'_> {
             java_air: 0,
             owned: Vec::new(),
             entity: Vec::new(),
+            animate: Vec::new(),
+            animate_whole: false,
+            animate_any: false,
         };
         let mut listed = In(&listed);
-        let (Some(count), Some(air)) = (listed.int(), listed.int()) else {
+        let (Some(count), Some(air), Some(whole)) = (listed.int(), listed.int(), listed.bool())
+        else {
             return;
         };
         map.java_air = air;
+        map.animate_whole = whole;
         map.to_horizon.resize(count as usize, None);
         map.to_java.resize(registry.len(), UNMAPPED);
         map.owned.resize(registry.len(), false);
         map.entity.resize(registry.len(), false);
+        map.animate.resize(registry.len(), 0);
         let mut missing: std::collections::BTreeMap<String, usize> = Default::default();
         for _ in 0..count {
             let read = (|| {
@@ -212,9 +218,10 @@ impl Game<'_> {
                 }
                 let entity = listed.bool()?;
                 let owned = listed.bool()?;
-                Some((java, name, properties, entity, owned))
+                let animate = listed.byte()?;
+                Some((java, name, properties, entity, owned, animate))
             })();
-            let Some((java, name, properties, entity, owned)) = read else {
+            let Some((java, name, properties, entity, owned, animate)) = read else {
                 log::error!(
                     "Horizon: Java's block state list ended early; Java mods' blocks are unbound"
                 );
@@ -236,10 +243,17 @@ impl Game<'_> {
                 map.to_java.resize(at + 1, UNMAPPED);
                 map.owned.resize(at + 1, false);
                 map.entity.resize(at + 1, false);
+                map.animate.resize(at + 1, 0);
             }
             map.to_java[at] = java;
             map.owned[at] = owned;
             map.entity[at] = entity;
+            map.animate[at] = animate;
+        }
+        let animated = map.animate.iter().filter(|a| **a != 0).count();
+        map.animate_any = animated > 0 || map.animate_whole;
+        if animated > 0 {
+            log::info!("Horizon: {animated} block states run animateTick in Java");
         }
         if !missing.is_empty() {
             let blocks: Vec<String> = missing.iter().map(|(b, n)| format!("{b} ({n})")).collect();
@@ -269,6 +283,31 @@ impl Game<'_> {
             );
         }
         let _ = STATES.set(map);
+        self.java_ask_play_sound_listeners(host);
+    }
+
+    /// `PlaySoundEvent` for the sounds this window plays, asked of the Java client right before each when a loaded mod listens; the answer cancels the sound or changes it.
+    fn java_ask_play_sound_listeners(&mut self, host: &'static horizon_java_host::Host) {
+        use horizon_client::sound_engine::PlayVerdict;
+        if host.request("client_sound_listened", &[]).as_deref() != Some(&[1]) {
+            return;
+        }
+        self.audio.set_play_hook(Some(Box::new(move |sound| {
+            let mut out = Out::default();
+            out.text(&sound.identifier);
+            out.int(sound.source as i32);
+            out.float(sound.volume);
+            out.float(sound.pitch);
+            out.bool(sound.relative);
+            sound.position.iter().for_each(|v| out.double(*v));
+            out.bool(sound.looping);
+            out.int(sound.delay);
+            out.bool(sound.attenuation == horizon_client::sound_engine::Attenuation::Linear);
+            let Some(reply) = host.request("client_play_sound", &out.0) else {
+                return PlayVerdict::Play;
+            };
+            parse_play_verdict(&reply)
+        })));
     }
 
     fn java_use_request(&mut self) -> Option<Vec<u8>> {
@@ -397,15 +436,25 @@ impl Game<'_> {
 
     /// Calls `GameBridge`'s `op` for this level, with what it does to the world applied after.
     fn java_level_call(&mut self, op: &str, body: impl FnOnce(&mut Out)) {
-        if horizon_java_host::get().is_none() {
+        let Some(host) = horizon_java_host::get() else {
             return;
-        }
+        };
         self.java_bind_states();
-        let mut out = Out::default();
-        out.text(self.dim.id());
-        out.long(self.world.game_time);
-        body(&mut out);
-        if let Some(reply) = self.java_request(op, &out.0) {
+        self.java_push_stale();
+        let (dim, time) = (self.dim.id(), self.world.game_time);
+        let effects = horizon_java_host::bridge::with_active(self, || {
+            host.call_with(
+                op,
+                |out| {
+                    out.text(dim);
+                    out.long(time);
+                    body(out);
+                },
+                // Nothing changed is the common reply: four empty counts.
+                |reply| Some((reply.0 != [0u8; 16]).then(|| reply.0.to_vec())),
+            )
+        });
+        if let Some(Some(reply)) = effects {
             self.java_apply_effects(&mut In(&reply));
         }
     }
@@ -1000,6 +1049,9 @@ impl Game<'_> {
             s.started = open;
             s.levels.clear();
         });
+        if open {
+            super::java_content::entity_types();
+        }
     }
 
     /// `ServerTickEvent`, and the server's queue of tasks mods gave it.
@@ -1166,5 +1218,58 @@ impl Game<'_> {
         if let Some(host) = &self.lan {
             java_wire_flush(&host.hub);
         }
+    }
+}
+
+/// The Java client's answer to a sound about to play: 0 cancel, 1 as asked, 2 changed (name, volume, pitch, place).
+fn parse_play_verdict(reply: &[u8]) -> horizon_client::sound_engine::PlayVerdict {
+    use horizon_client::sound_engine::PlayVerdict;
+    let mut reply = In(reply);
+    match reply.byte() {
+        Some(0) => PlayVerdict::Cancel,
+        Some(2) => (|| {
+            Some(PlayVerdict::Change {
+                identifier: reply.text()?.to_owned(),
+                volume: reply.float()?,
+                pitch: reply.float()?,
+                position: [reply.double()?, reply.double()?, reply.double()?],
+            })
+        })()
+        .unwrap_or(PlayVerdict::Play),
+        _ => PlayVerdict::Play,
+    }
+}
+
+#[cfg(test)]
+mod play_sound_tests {
+    use super::*;
+    use horizon_client::sound_engine::PlayVerdict;
+
+    #[test]
+    fn the_java_clients_answer_cancels_keeps_or_changes_the_sound() {
+        assert!(matches!(parse_play_verdict(&[0]), PlayVerdict::Cancel));
+        assert!(matches!(parse_play_verdict(&[1]), PlayVerdict::Play));
+        let mut changed = Out::default();
+        changed.0.push(2);
+        changed.text("a:b");
+        changed.float(0.5);
+        changed.float(2.0);
+        for v in [1.0, 2.0, 3.0] {
+            changed.double(v);
+        }
+        match parse_play_verdict(&changed.0) {
+            PlayVerdict::Change {
+                identifier,
+                volume,
+                pitch,
+                position,
+            } => {
+                assert_eq!(identifier, "a:b");
+                assert_eq!((volume, pitch, position), (0.5, 2.0, [1.0, 2.0, 3.0]));
+            }
+            _ => panic!("a change"),
+        }
+        changed.0.truncate(6);
+        assert!(matches!(parse_play_verdict(&changed.0), PlayVerdict::Play));
     }
 }
