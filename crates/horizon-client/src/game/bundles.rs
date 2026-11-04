@@ -34,6 +34,20 @@ impl Game<'_> {
             && (slot < 36 || slot == 504 || self.slots().contains(&slot))
     }
 
+    /// Whether the cursor is over a slot holding a bundle, which `bundle_scroll` would take the wheel for.
+    #[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+    pub(super) fn bundle_under_cursor(&mut self) -> bool {
+        let Some(slot) = self.inventory_target().0 else {
+            return false;
+        };
+        if !self.bundle_slot(slot) {
+            return false;
+        }
+        let stack = self.slot_mut(slot).clone();
+        let items = self.items();
+        stack.is_some_and(|s| items.get(&s.item).is_some_and(|i| i.bundle))
+    }
+
     /// `BundleMouseActions.onMouseScrolled`: the wheel over a bundle moves the selection
     /// through the items its tooltip shows. True when the bundle took the wheel.
     pub(super) fn bundle_scroll(&mut self, x: f64, y: f64) -> bool {

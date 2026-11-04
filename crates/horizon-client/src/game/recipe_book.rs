@@ -586,6 +586,24 @@ impl Game<'_> {
 
     // ---- clicks ----
 
+    /// Whether a point is on the book's green button or, with the book open, on its panel or tabs.
+    #[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+    pub(super) fn recipe_book_hit(&self, x: f32, y: f32) -> bool {
+        let Some(book_type) = self.active_book() else {
+            return false;
+        };
+        let Some(batch) = self.batch_for_size() else {
+            return false;
+        };
+        let (ox, _) = self.inventory_origin(&batch);
+        let (bx, by) = self.book_button_pos(book_type, ox, &batch);
+        if inside((x, y), bx, by, 20.0, 18.0) {
+            return true;
+        }
+        let (xo, yo) = self.book_origin(&batch);
+        self.book_open(book_type) && inside((x, y), xo - 30.0, yo, WIDTH + 30.0, HEIGHT)
+    }
+
     /// A click while a screen with a recipe book is open; true when the book
     /// used it.
     pub(super) fn recipe_book_click(&mut self, right: bool) -> bool {

@@ -347,4 +347,12 @@ public final class Recorder extends GuiRenderState {
         bytes.writeTo(whole);
         return whole.toByteArray();
     }
+
+    /** The entries since the last cut as a frame, then a fresh start: one recording in segments. */
+    byte[] cut() throws IOException {
+        byte[] frame = bytes();
+        bytes.reset();
+        count = 0;
+        return frame;
+    }
 }

@@ -49,6 +49,31 @@ pub(in crate::game) mod live {
         picked: Vec<[i32; 3]>,
         /// The open screen's frame blurs what is behind it (`blurBeforeThisStratum`).
         blurred: bool,
+        shell: Shell,
+    }
+
+    /// A vanilla screen of the window's that the Java client holds as a shell, so mods' screen events fire on it.
+    #[derive(Default)]
+    struct Shell {
+        open: bool,
+        /// Under native's screen, after its background, the mods' widgets, after its slots, on top.
+        segments: [Vec<u8>; 5],
+        animating: bool,
+        /// The cursor of the last recording, in GUI pixels.
+        drawn_at: Option<(f32, f32)>,
+        /// The tick that opened it has not answered yet: the next frame waits for it.
+        opening: bool,
+        /// A recording was applied since the last frame asked for one.
+        fresh: bool,
+    }
+
+    /// Who took an input over a shell, as the Java client answers.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum ShellOwner {
+        Event,
+        Widget,
+        Native,
+        None,
     }
 
     /// The window's input as the callbacks of its library would hand it to a real client.
@@ -64,7 +89,7 @@ pub(in crate::game) mod live {
         Move(f64, f64),
         Scroll(f64, f64),
         /// One of the window's own screens opened over the world (and whether it pauses), or closed.
-        Screen(bool, bool),
+        Screen(bool, bool, u8),
         Focus(bool),
         /// The window camera's position, yaw, pitch, field of view and far plane, told when its block or its view changes.
         Camera([f64; 3], [f32; 4]),
@@ -80,6 +105,8 @@ pub(in crate::game) mod live {
         Animate(&'a [[i32; 3]]),
         /// The window's Particles option.
         Particles(i32),
+        /// `leftPos`, `topPos`, `imageWidth`, `imageHeight` and the hovered menu slot (-1 none) of the screen native shows.
+        ShellLayout([i32; 5]),
     }
 
     impl Input<'_> {
@@ -101,6 +128,7 @@ pub(in crate::game) mod live {
                 Input::Camera(..) => 13,
                 Input::Animate(_) => 14,
                 Input::Particles(_) => 15,
+                Input::ShellLayout(_) => 16,
             };
             out.0.push(kind);
             match *self {
@@ -123,9 +151,10 @@ pub(in crate::game) mod live {
                     out.double(x);
                     out.double(y);
                 }
-                Input::Screen(open, pauses) => {
+                Input::Screen(open, pauses, shell) => {
                     out.bool(open);
                     out.bool(pauses);
+                    out.0.push(shell);
                 }
                 Input::Focus(focused) | Input::Drop(focused) => out.bool(focused),
                 Input::SwapHands => {}
@@ -145,6 +174,7 @@ pub(in crate::game) mod live {
                     group.iter().flatten().for_each(|v| out.int(*v));
                 }
                 Input::Particles(level) => out.int(level),
+                Input::ShellLayout(layout) => layout.iter().for_each(|v| out.int(*v)),
             }
         }
     }
@@ -169,7 +199,8 @@ pub(in crate::game) mod live {
     #[derive(Default)]
     struct Sent {
         size: Option<[i32; 3]>,
-        native_screen: Option<(bool, bool)>,
+        native_screen: Option<(bool, bool, u8)>,
+        layout: Option<[i32; 5]>,
         focused: Option<bool>,
         camera: Option<([i32; 3], [f32; 4])>,
         cursor: Option<(f64, f64)>,
@@ -271,6 +302,37 @@ pub(in crate::game) mod live {
             found.push((at, velocity, particle));
         }
         Some(found)
+    }
+
+    /// A shell's segments as a status (`counted`) or a `ShellReply` writes them.
+    fn read_segments(reply: &mut In, counted: bool) -> Option<[Vec<u8>; 5]> {
+        if counted && reply.int()? != 5 {
+            return None;
+        }
+        let mut segments: [Vec<u8>; 5] = Default::default();
+        for segment in &mut segments {
+            *segment = reply.bytes()?.to_vec();
+        }
+        Some(segments)
+    }
+
+    /// A status's end: whether the creative tabs wait, the open shell kind, its fresh recording if any, whether it animates.
+    fn read_shell_tail(reply: &mut In) -> Option<(bool, i32, Option<[Vec<u8>; 5]>, bool)> {
+        let tabs_ready = reply.bool()?;
+        let shell = reply.int()?;
+        let segments = if reply.bool()? {
+            Some(read_segments(reply, true)?)
+        } else {
+            None
+        };
+        Some((tabs_ready, shell, segments, reply.bool()?))
+    }
+
+    /// True once per run, and only with `HORIZON_JAVA_DEBUG`.
+    fn debug_once() -> bool {
+        static SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        std::env::var_os("HORIZON_JAVA_DEBUG").is_some()
+            && !SEEN.swap(true, std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The pending geometry and renderer counts, which lead a status reply's variable parts.
@@ -663,8 +725,9 @@ pub(in crate::game) mod live {
                 .flatten()
                 .map(<[u8]>::to_vec);
             let world_animating = reply.bool()?;
+            let (tabs_ready, shell, segments, shell_animating) = read_shell_tail(reply)?;
             super::super::java_world_renders::java_world_status(world.as_deref(), world_animating);
-            CLIENT.with_borrow_mut(|c| {
+            let refused = CLIENT.with_borrow_mut(|c| {
                 c.hud_animating = animating;
                 c.recorded = true;
                 c.shapes = shapes;
@@ -672,13 +735,42 @@ pub(in crate::game) mod live {
                 if let Some(hud) = hud {
                     c.hud = hud;
                 }
+                if (shell == 1) != c.shell.open && std::env::var_os("HORIZON_JAVA_DEBUG").is_some()
+                {
+                    let sizes = segments.as_ref().map(|s| s.each_ref().map(Vec::len));
+                    log::info!(
+                        "Horizon: Java shell {} {sizes:?}",
+                        if shell == 1 { "opened" } else { "closed" }
+                    );
+                }
+                c.shell.open = shell == 1;
+                c.shell.opening = false;
+                c.shell.animating = shell_animating;
+                if let Some(segments) = segments {
+                    c.shell.segments = segments;
+                    c.shell.fresh = true;
+                }
+                shell == 0 && matches!(c.sent.native_screen, Some((true, _, 1)))
             });
+            if tabs_ready {
+                self.java_creative_tabs_built();
+            }
             if open && self.screen != Screen::Java {
                 self.screen = Screen::Java;
                 self.capture(false);
             } else if !open && self.screen == Screen::Java {
-                self.screen = Screen::Playing;
-                self.capture(true);
+                // A mod's screen over a shell closed back to it: native's screen is the shell's again.
+                if shell == 1 {
+                    self.screen = Screen::Inventory;
+                    self.capture(false);
+                } else {
+                    self.screen = Screen::Playing;
+                    self.capture(true);
+                }
+            } else if refused && self.screen == Screen::Inventory && debug_once() {
+                log::info!(
+                    "Horizon: no shell opened for the inventory; native's screen stays alone"
+                );
             }
             Some(())
         }
@@ -776,6 +868,9 @@ pub(in crate::game) mod live {
             if !CLIENT.with_borrow(|c| c.joined) || self.screen == Screen::Java {
                 return;
             }
+            if self.java_shell_open() {
+                return;
+            }
             let input = match event {
                 WindowEvent::KeyboardInput { event, .. } => {
                     let PhysicalKey::Code(code) = event.physical_key else {
@@ -813,6 +908,9 @@ pub(in crate::game) mod live {
             repeat: bool,
         ) {
             if !CLIENT.with_borrow(|c| c.joined) || self.screen == Screen::Java {
+                return;
+            }
+            if self.java_shell_open() {
                 return;
             }
             let Some(name) = horizon_client::keybinds::key_name(code) else {
@@ -1013,6 +1111,7 @@ pub(in crate::game) mod live {
                 c.told.clear();
                 c.hud.clear();
                 c.hud_animating = false;
+                c.shell = Shell::default();
                 c.owed = 0;
                 c.animate.clear();
                 c.picked.clear();
@@ -1082,7 +1181,9 @@ pub(in crate::game) mod live {
                 }
             }
             let open = !self.java_world_has_input() && self.screen != Screen::Java;
-            let native_screen = (open, open && self.pause);
+            let kind = if open { self.java_shell_kind() } else { 0 };
+            let native_screen = (open, open && self.pause, kind);
+            let layout = (kind != 0).then(|| self.java_shell_layout());
             let camera = self.java_world_camera();
             self.java_publish_client_world();
             let (left, arrived) = self.java_client_chunk_changes();
@@ -1097,9 +1198,20 @@ pub(in crate::game) mod live {
                     Input::Chunk(*x, *z, true).write(&mut events);
                     count += 1;
                 }
+                if let Some(layout) = layout
+                    && c.sent.layout != Some(layout)
+                {
+                    c.sent.layout = Some(layout);
+                    Input::ShellLayout(layout).write(&mut events);
+                    count += 1;
+                }
                 if c.sent.native_screen != Some(native_screen) {
+                    if kind != 0 && c.sent.native_screen.is_none_or(|sent| sent.2 != kind) {
+                        c.shell.opening = true;
+                    }
                     c.sent.native_screen = Some(native_screen);
-                    Input::Screen(native_screen.0, native_screen.1).write(&mut events);
+                    Input::Screen(native_screen.0, native_screen.1, native_screen.2)
+                        .write(&mut events);
                     count += 1;
                 }
                 // A window starts focused; an offscreen one never hears otherwise.
@@ -1217,10 +1329,6 @@ pub(in crate::game) mod live {
                 CLIENT.with_borrow_mut(|c| c.armed = true);
                 self.java_client_arm();
             }
-            // A status ends with whether the login's creative tabs wait to be taken.
-            if tick.last() == Some(&1) {
-                self.java_creative_tabs_built();
-            }
             self.java_client_status(&mut In(&tick));
             if !CLIENT.with_borrow(|c| c.states) {
                 self.java_client_resources();
@@ -1304,7 +1412,11 @@ pub(in crate::game) mod live {
 
         /// A window frame's collection of the Java client's finished tick, without waiting for it.
         pub(in crate::game) fn java_client_frame(&mut self) {
-            self.java_client_collect(false);
+            if CLIENT.with_borrow_mut(|c| std::mem::take(&mut c.shell.opening)) {
+                self.java_client_collect(true);
+            } else {
+                self.java_client_collect(false);
+            }
             self.java_world_frame(java_client_busy());
         }
 
@@ -1368,6 +1480,210 @@ pub(in crate::game) mod live {
                 batch.clip_since(start, x0, y0, x1, y1);
             }
             Some(())
+        }
+
+        /// The vanilla screen a Java shell stands for: 1 the survival inventory.
+        fn java_shell_kind(&self) -> u8 {
+            u8::from(
+                self.screen == Screen::Inventory
+                    && self.container.is_none()
+                    && self.craft_size == 2
+                    && !self.mount_active()
+                    && self.station.is_none(),
+            )
+        }
+
+        /// leftPos, topPos, imageWidth, imageHeight and the hovered menu slot, as native lays the screen out now.
+        fn java_shell_layout(&self) -> [i32; 5] {
+            let batch = HudBatch::new(self.java_client_window_size());
+            let (x, y) = self.inventory_origin(&batch);
+            let hovered = self
+                .slot_at(&batch, self.cursor.0, self.cursor.1)
+                .and_then(|slot| Self::menu_slot_index("inventory", slot));
+            [
+                x.floor() as i32,
+                y.floor() as i32,
+                176,
+                166,
+                hovered.map_or(-1, |slot| slot as i32),
+            ]
+        }
+
+        fn java_client_window_size(&self) -> [u32; 2] {
+            self.renderer
+                .as_ref()
+                .map_or([854, 480], |r| [r.config.width, r.config.height])
+        }
+
+        /// A shell is the Java client's screen and native's inventory is showing.
+        pub(in crate::game) fn java_shell_open(&self) -> bool {
+            self.java_shell_kind() == 1 && CLIENT.with_borrow(|c| c.shell.open)
+        }
+
+        /// Applies a `ShellReply`: its recording, its animation; returns who took the input.
+        fn java_shell_apply(&self, reply: &mut In) -> Option<ShellOwner> {
+            let owner = match reply.byte()? {
+                0 => ShellOwner::Event,
+                1 => ShellOwner::Widget,
+                2 => ShellOwner::Native,
+                _ => ShellOwner::None,
+            };
+            let segments = reply.bool()?.then(|| read_segments(reply, false)).flatten();
+            let animating = reply.bool()?;
+            let at = self.cursor;
+            CLIENT.with_borrow_mut(|c| {
+                c.shell.animating = animating;
+                c.shell.drawn_at = Some(at);
+                if let Some(segments) = segments {
+                    c.shell.segments = segments;
+                }
+            });
+            Some(owner)
+        }
+
+        /// While the shell is open and its recording is stale: the cursor moved or it animates, and no tick status or running tick is newer.
+        pub(in crate::game) fn java_shell_frame(&mut self) {
+            if !self.java_shell_open() {
+                return;
+            }
+            let (wanted, fresh) = CLIENT.with_borrow_mut(|c| {
+                (
+                    c.shell.drawn_at != Some(self.cursor) || c.shell.animating,
+                    std::mem::take(&mut c.shell.fresh),
+                )
+            });
+            if !wanted || fresh || java_client_busy() {
+                return;
+            }
+            let Some(host) = horizon_java_host::get() else {
+                return;
+            };
+            self.java_publish_client_world();
+            let scale = self.java_client_window()[2] as f32;
+            let at = (
+                f64::from(self.cursor.0 * scale),
+                f64::from(self.cursor.1 * scale),
+            );
+            let mut out = Out::default();
+            self.java_client_size(&mut out);
+            out.float(self.clock.fraction() as f32);
+            out.double(at.0);
+            out.double(at.1);
+            self.java_shell_layout().iter().for_each(|v| out.int(*v));
+            CLIENT.with_borrow_mut(|c| c.sent.cursor = Some(at));
+            if let Some(reply) = host.request("client_shell_frame", &out.0) {
+                self.java_shell_apply(&mut In(&reply));
+            }
+        }
+
+        /// One of the open shell's five recorded segments, painted between native's layers; no Java call.
+        pub(in crate::game) fn draw_java_shell(&mut self, batch: &mut HudBatch, segment: usize) {
+            let frame = CLIENT.with_borrow(|c| {
+                if c.shell.open {
+                    c.shell.segments[segment].clone()
+                } else {
+                    Vec::new()
+                }
+            });
+            if frame.len() > 4 {
+                paint_frame(batch, &self.gui.atlas, &frame, |batch, reply| {
+                    self.java_screen_item(batch, reply)
+                });
+            }
+        }
+
+        /// Input over a shell: Java's screen events and mods' widgets first, in vanilla's order; native acts only when this says `Native`.
+        fn java_shell_input(
+            &mut self,
+            inputs: &[Input],
+            native_widget: bool,
+            native_handles: bool,
+        ) -> ShellOwner {
+            let Some(host) = horizon_java_host::get() else {
+                return ShellOwner::Native;
+            };
+            if !self.java_shell_open() {
+                return ShellOwner::Native;
+            }
+            self.java_publish_client_world();
+            let mut out = Out::default();
+            self.java_client_size(&mut out);
+            self.java_shell_layout().iter().for_each(|v| out.int(*v));
+            out.bool(native_widget);
+            out.bool(native_handles);
+            out.int(inputs.len() as i32);
+            for input in inputs {
+                input.write(&mut out);
+            }
+            host.request("client_shell_input", &out.0)
+                .and_then(|reply| self.java_shell_apply(&mut In(&reply)))
+                .unwrap_or(ShellOwner::Native)
+        }
+
+        /// A mouse button over the shell: true when native acts on it.
+        pub(in crate::game) fn java_shell_mouse(
+            &mut self,
+            button: MouseButton,
+            pressed: bool,
+        ) -> bool {
+            let hit = pressed && self.recipe_book_hit(self.cursor.0, self.cursor.1);
+            let mut inputs: Vec<Input> = self.java_cursor().into_iter().collect();
+            inputs.push(Input::Button(
+                button_number(button),
+                i32::from(pressed),
+                self.java_modifiers(),
+            ));
+            self.java_shell_input(&inputs, hit, true) == ShellOwner::Native
+        }
+
+        /// The wheel over the shell: true when native scrolls.
+        pub(in crate::game) fn java_shell_wheel(&mut self, x: f64, y: f64) -> bool {
+            let handles =
+                self.recipe_book_hit(self.cursor.0, self.cursor.1) || self.bundle_under_cursor();
+            let mut inputs: Vec<Input> = self.java_cursor().into_iter().collect();
+            inputs.push(Input::Scroll(x, y));
+            self.java_shell_input(&inputs, false, handles) == ShellOwner::Native
+        }
+
+        /// A key and its text over the shell: true when native acts on the event. A release always reaches native, which only keeps its held keys.
+        pub(in crate::game) fn java_shell_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+            let PhysicalKey::Code(code) = event.physical_key else {
+                return true;
+            };
+            let pressed = event.state == ElementState::Pressed;
+            if pressed {
+                self.keys.insert(code);
+            } else {
+                self.keys.remove(&code);
+            }
+            let modifiers = self.java_modifiers();
+            let Some(name) = horizon_client::keybinds::key_name(code) else {
+                return true;
+            };
+            let action = match (pressed, event.repeat) {
+                (false, _) => 0,
+                (true, false) => 1,
+                (true, true) => 2,
+            };
+            let handles = pressed && self.native_inventory_key(code);
+            let owner =
+                self.java_shell_input(&[Input::Key(name, action, modifiers)], false, handles);
+            if !pressed || owner == ShellOwner::Native {
+                return true;
+            }
+            let typed: Vec<Input> = event
+                .text
+                .as_deref()
+                .unwrap_or_default()
+                .chars()
+                .filter(|c| !c.is_control())
+                .map(|c| Input::Char(c as u32))
+                .collect();
+            if !typed.is_empty() {
+                let handles = self.recipe_search_focused();
+                self.java_shell_input(&typed, false, handles);
+            }
+            false
         }
 
         /// The modifier bits of `InputWithModifiers`: SDL's left and right of each.
@@ -1482,6 +1798,58 @@ pub(in crate::game) mod live {
 
     #[cfg(test)]
     mod tests {
+        #[test]
+        fn a_status_with_a_shell_reads_its_kind_and_segments_back() {
+            let mut out = Out::default();
+            out.bool(true);
+            out.int(1);
+            out.bool(true);
+            out.int(5);
+            for segment in [&[1u8, 2][..], &[], &[3], &[], &[]] {
+                out.bytes(segment);
+            }
+            out.bool(true);
+            let (tabs, shell, segments, animating) = read_shell_tail(&mut In(&out.0)).unwrap();
+            assert!(tabs && animating);
+            assert_eq!(shell, 1);
+            let segments = segments.unwrap();
+            assert_eq!(segments.each_ref().map(Vec::len), [2, 0, 1, 0, 0]);
+            let mut none = Out::default();
+            none.bool(false);
+            none.int(0);
+            none.bool(false);
+            none.bool(false);
+            let (_, shell, segments, animating) = read_shell_tail(&mut In(&none.0)).unwrap();
+            assert!(shell == 0 && segments.is_none() && !animating);
+        }
+
+        #[test]
+        fn a_shell_reply_has_no_segment_count() {
+            let mut out = Out::default();
+            for segment in [&[9u8][..], &[], &[], &[], &[7, 7]] {
+                out.bytes(segment);
+            }
+            let segments = read_segments(&mut In(&out.0), false).unwrap();
+            assert_eq!(segments.each_ref().map(Vec::len), [1, 0, 0, 0, 2]);
+        }
+
+        #[test]
+        fn the_shell_inputs_write_what_events_reads() {
+            let mut out = Out::default();
+            Input::Screen(true, false, 1).write(&mut out);
+            Input::ShellLayout([76, 83, 176, 166, -1]).write(&mut out);
+            let mut read = In(&out.0);
+            assert_eq!(read.byte(), Some(6));
+            assert_eq!(
+                (read.bool(), read.bool(), read.byte()),
+                (Some(true), Some(false), Some(1))
+            );
+            assert_eq!(read.byte(), Some(16));
+            let layout: Vec<i32> = (0..5).map(|_| read.int().unwrap()).collect();
+            assert_eq!(layout, [76, 83, 176, 166, -1]);
+            assert!(read.byte().is_none());
+        }
+
         #[test]
         fn the_animate_picks_are_a_count_then_their_positions() {
             let mut out = Out::default();
@@ -1791,4 +2159,18 @@ impl Game<'_> {
     pub(super) fn java_remote_joined(&mut self) {}
     pub(super) fn java_apply_mod_keys(&self) {}
     pub(super) fn java_wire_in(&mut self, _frame: &[u8]) {}
+    pub(super) fn java_shell_open(&self) -> bool {
+        false
+    }
+    pub(super) fn java_shell_frame(&mut self) {}
+    pub(super) fn draw_java_shell(&mut self, _batch: &mut HudBatch, _segment: usize) {}
+    pub(super) fn java_shell_mouse(&mut self, _button: MouseButton, _pressed: bool) -> bool {
+        true
+    }
+    pub(super) fn java_shell_wheel(&mut self, _x: f64, _y: f64) -> bool {
+        true
+    }
+    pub(super) fn java_shell_key(&mut self, _event: &winit::event::KeyEvent) -> bool {
+        true
+    }
 }

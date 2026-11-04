@@ -100,6 +100,7 @@ public final class ClientBridge {
         for (String name : OPS.keySet()) Crossing.client(name);
         WorldFrame.decide();
         NativeSounds.decide();
+        Shells.install();
         CreativeTabs.install();
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.LOWEST, true,
                 net.neoforged.neoforge.client.event.InputEvent.MouseScrollingEvent.class, event -> scrollCanceled = event.isCanceled());
@@ -192,6 +193,8 @@ public final class ClientBridge {
         OPS.put("client_creative_tabs", in -> CreativeTabs.take());
         OPS.put("client_sound_listened", in -> NativeSounds.listenedReply());
         OPS.put("client_play_sound", in -> NativeSounds.ask(in));
+        OPS.put("client_shell_frame", in -> shellFrame(in));
+        OPS.put("client_shell_input", in -> shellInput(in));
     }
 
     private static byte[] run(String op, byte[] input) {
@@ -509,7 +512,10 @@ public final class ClientBridge {
         timer(minecraft).updateFrozenState(!((dev.horizonlab.javamods.boot.mixin.MinecraftActions) minecraft).horizon$runningNormally());
         if (minecraft.level != null) BlockRenders.probe(minecraft.level, BLOCK_ENTITIES.values());
         cameraAndPick(minecraft);
-        return status(hud(), WorldFrame.take(WorldFrame.camera(), partial, timer(minecraft), windowWidth, windowHeight, false));
+        byte[] hud = hud();
+        byte[] world = WorldFrame.take(WorldFrame.camera(), partial, timer(minecraft), windowWidth, windowHeight, false);
+        recordShell(minecraft, minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(false));
+        return status(hud, world);
     }
 
     private static byte[] lastHud;
@@ -697,6 +703,7 @@ public final class ClientBridge {
     private static final byte CAMERA = 13;
     private static final byte ANIMATE = 14;
     private static final byte PARTICLES = 15;
+    private static final byte SHELL_LAYOUT = 16;
 
     private static double cursorX, cursorY;
     private static BlockPos cameraBlock;
@@ -731,7 +738,8 @@ public final class ClientBridge {
                     double dx = in.readDouble(), dy = in.readDouble();
                     minecraft.mouseHandler.onScroll(window, dx, dy);
                 }
-                case SCREEN -> nativeScreen(in.readBoolean(), in.readBoolean());
+                case SCREEN -> nativeScreen(in.readBoolean(), in.readBoolean(), in.readByte());
+                case SHELL_LAYOUT -> Shells.layout(new int[] {in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readInt()});
                 case FOCUS -> set(Window.class, minecraft.getWindow(), "focused", in.readBoolean());
                 case DROP -> {
                     boolean all = in.readBoolean();
@@ -855,16 +863,20 @@ public final class ClientBridge {
     /** The screen a Java mod could see: the window's own are stand-ins, not its screens. */
     private static Screen javaScreen() {
         Screen screen = Minecraft.getInstance().gui.screen();
-        return screen instanceof NativeScreen ? null : screen;
+        return screen instanceof NativeScreen || Shells.is(screen) ? null : screen;
     }
 
     /** A screen of the window's own opened over the world or closed, as `Gui.setScreen` does for one of vanilla's. */
-    private static void nativeScreen(boolean open, boolean pauses) throws ReflectiveOperationException {
+    private static void nativeScreen(boolean open, boolean pauses, byte shell) throws ReflectiveOperationException {
         Minecraft minecraft = Minecraft.getInstance();
         if (open) {
-            minecraft.gui.setScreen(new NativeScreen(pauses));
-        } else if (minecraft.gui.screen() instanceof NativeScreen) {
-            minecraft.gui.setScreen(null);
+            if (shell != 0) Shells.open(shell, minecraft);
+            // A shell a mod's `Opening` listener replaced leaves that screen alone.
+            boolean replaced = shell != 0 && minecraft.gui.screen() != null && !(minecraft.gui.screen() instanceof NativeScreen);
+            if (Shells.current == null && !replaced) minecraft.gui.setScreen(new NativeScreen(pauses));
+        } else {
+            Shells.close(minecraft);
+            if (minecraft.gui.screen() instanceof NativeScreen) minecraft.gui.setScreen(null);
         }
         // `runTick` sets it from the open screen: the window's pause screen pauses this client.
         set(Minecraft.class, minecraft, "pause", open && pauses);
@@ -970,7 +982,61 @@ public final class ClientBridge {
         }
         out.writeBoolean(WorldFrame.animating);
         out.writeBoolean(CreativeTabs.ready());
+        out.writeInt(Shells.is(Minecraft.getInstance().gui.screen()) ? 1 : 0);
+        Shells.write(out, shellSegments, shellChanged, true);
+        out.writeBoolean(Shells.animating);
+        shellSegments = null;
+        shellChanged = false;
         return bytes.toByteArray();
+    }
+
+    private static byte[][] shellSegments;
+    private static boolean shellChanged;
+
+    /** The open shell's recording for the status: a mod that listens for it draws as vanilla's frame would, once a tick and after each input. */
+    private static void recordShell(Minecraft minecraft, float partial) throws ReflectiveOperationException {
+        shellSegments = null;
+        shellChanged = false;
+        if (!Shells.is(minecraft.gui.screen())) return;
+        timer(minecraft).advanceRealTime(net.minecraft.util.Util.getMillis());
+        if (minecraft.gui.screen().width != guiWidth || minecraft.gui.screen().height != guiHeight) minecraft.gui.screen().resize(guiWidth, guiHeight);
+        var segments = Shells.record(minecraft, (int) minecraft.mouseHandler.getScaledXPos(minecraft.getWindow()), (int) minecraft.mouseHandler.getScaledYPos(minecraft.getWindow()), partial);
+        if (segments == null) return;
+        shellChanged = Shells.noteRecorded(segments, timer(minecraft).getRealtimeDeltaTicks());
+        shellSegments = segments;
+    }
+
+    /** The shell's recording for one window frame while it changes: the window's size, progress into the tick, cursor and layout. Replies `ShellReply`; 3 and no recording when the shell is not the screen. */
+    private static byte[] shellFrame(DataInputStream in) throws Exception {
+        size(in);
+        float partial = in.readFloat();
+        double x = in.readDouble(), y = in.readDouble();
+        Shells.layout(new int[] {in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readInt()});
+        Minecraft minecraft = Minecraft.getInstance();
+        if (!Shells.is(minecraft.gui.screen())) return Shells.reply(Shells.NONE, null, false);
+        receive();
+        advance(minecraft, partial);
+        minecraft.mouseHandler.onMove(minecraft.getWindow().handle(), x, y, x - cursorX, y - cursorY);
+        cursorX = x;
+        cursorY = y;
+        minecraft.mouseHandler.handleAccumulatedMovement();
+        recordShell(minecraft, partial);
+        return Shells.reply(Shells.NONE, shellSegments, shellChanged);
+    }
+
+    /** Input over the shell, through the real handlers: the owner is who took it, then the recording the input changed. */
+    private static byte[] shellInput(DataInputStream in) throws Exception {
+        size(in);
+        Shells.layout(new int[] {in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readInt()});
+        Shells.nativeWidget = in.readBoolean();
+        Shells.nativeHandles = in.readBoolean();
+        Shells.owner = Shells.EVENT;
+        events(in);
+        receive();
+        chunkEvents();
+        Minecraft minecraft = Minecraft.getInstance();
+        recordShell(minecraft, minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(false));
+        return Shells.reply(Shells.owner, shellSegments, shellChanged);
     }
 
     /** The open screen's drawing this frame, as Rust draws it. */
@@ -988,8 +1054,7 @@ public final class ClientBridge {
         if (screen.width != guiWidth || screen.height != guiHeight) screen.resize(guiWidth, guiHeight);
         var recorder = new Recorder();
         var graphics = new GuiGraphicsExtractor(minecraft, recorder, (int) mouseX, (int) mouseY);
-        screen.extractRenderStateWithTooltipAndSubtitles(graphics, (int) mouseX, (int) mouseY, partial);
-        graphics.extractDeferredElements((int) mouseX, (int) mouseY, partial);
+        net.neoforged.neoforge.client.ClientHooks.extractScreen(screen, ((dev.horizonlab.javamods.boot.mixin.GuiScreensAccessor) minecraft.gui).horizon$screenLayers(), graphics, (int) mouseX, (int) mouseY, partial);
         return recorder.bytes();
     }
 
@@ -999,6 +1064,7 @@ public final class ClientBridge {
         events(in);
         receive();
         chunkEvents();
+        recordShell(Minecraft.getInstance(), Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false));
         return status(null, null);
     }
 

@@ -7651,6 +7651,8 @@ impl Game<'_> {
             return;
         }
         let (ox, oy) = self.inventory_origin(batch);
+        self.java_shell_frame();
+        self.draw_java_shell(batch, 0);
         {
             let atlas = &self.gui.atlas;
             batch.fill(
@@ -7795,12 +7797,14 @@ impl Game<'_> {
                 }
             }
         }
+        self.draw_java_shell(batch, 1);
         if self.container.is_none() && self.craft_size != 3 && !self.mount_active() {
             self.draw_inventory_player(batch, ox, oy);
         }
         self.draw_inventory_slots(batch, ox, oy);
         self.draw_sort_buttons(batch, ox, oy);
         self.draw_recipe_book(batch);
+        self.draw_java_shell(batch, 2);
         if let Some(slot) = self.slot_at(batch, self.cursor.0, self.cursor.1) {
             let (sx, sy) = self.slot_position(slot);
             batch.fill(
@@ -7812,12 +7816,14 @@ impl Game<'_> {
                 rgba(255, 255, 255, 128),
             );
         }
+        self.draw_java_shell(batch, 3);
         self.draw_carried(batch);
         self.draw_slot_tooltip(batch);
         self.draw_native_screen_tooltip(batch);
         if self.container.is_none() && self.craft_size == 2 && !self.mount_active() {
             self.draw_inventory_effects(batch, (ox, oy), 176);
         }
+        self.draw_java_shell(batch, 4);
     }
     /// `AbstractContainerScreen` keeps `isQuickCrafting` and the drag it
     /// belongs to on the screen. Horizon keeps both on `Game` (`inv_clicks`,
@@ -8533,6 +8539,63 @@ impl Game<'_> {
         };
         search_key_swaps(numeric, hotbar_key, hover, self.carried.is_some())
             && self.inventory_hotkey(code)
+    }
+    /// A shell is open and no prompt or dialog of the window's sits over it, so Java hears its input first.
+    #[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+    fn java_shell_accepts(&self) -> bool {
+        self.java_shell_open()
+            && self.pending_save.is_none()
+            && !self.dialog_open()
+            && self.link_prompt.is_none()
+            && self.code_of_conduct.is_none()
+            && self.server_packs.prompt.is_none()
+    }
+    /// Whether native's inventory acts on a key (`AbstractContainerScreen.keyPressed`, the recipe book's search box) or the window does: Escape, the inventory key, a hotbar, swap or drop key over a slot, any key while the book's search is focused, and the window's own function keys and modifiers.
+    #[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+    fn native_inventory_key(&self, code: KeyCode) -> bool {
+        use KeyCode::*;
+        if self.recipe_search_focused()
+            || matches!(
+                code,
+                Escape
+                    | F1
+                    | F2
+                    | F3
+                    | F4
+                    | F5
+                    | F6
+                    | F7
+                    | F8
+                    | F9
+                    | F10
+                    | F11
+                    | F12
+                    | ShiftLeft
+                    | ShiftRight
+                    | ControlLeft
+                    | ControlRight
+                    | AltLeft
+                    | AltRight
+                    | SuperLeft
+                    | SuperRight
+            )
+        {
+            return true;
+        }
+        let hovered = self.renderer.as_ref().is_some_and(|r| {
+            let batch = HudBatch::new([r.config.width, r.config.height]);
+            self.slot_at(&batch, self.cursor.0, self.cursor.1).is_some()
+        });
+        self.settings
+            .keys
+            .translate_all(code)
+            .into_iter()
+            .any(|mapped| match mapped {
+                Ok(KeyE) => true,
+                Ok(KeyT) => self.recipe_search_focused(),
+                Ok(key) => hovered && (HOTBAR_DIGITS.contains(&key) || matches!(key, KeyF | KeyQ)),
+                Err(_) => false,
+            })
     }
     /// Number keys, F and Q over a slot of the open menu: SWAP with a hotbar
     /// slot or the off hand, THROW one or the whole stack.
@@ -14633,6 +14696,12 @@ impl ApplicationHandler for Game<'_> {
             return;
         }
         self.java_window_input(&event);
+        if let WindowEvent::KeyboardInput { event, .. } = &event
+            && self.java_shell_accepts()
+            && !self.java_shell_key(event)
+        {
+            return;
+        }
         if self.pending_save.is_some() {
             match event {
                 WindowEvent::CloseRequested => {
@@ -14759,6 +14828,12 @@ impl ApplicationHandler for Game<'_> {
                         }) * wheel_sensitivity
                     };
                     let d = scaled(raw_y) as f32;
+                    if self.java_shell_accepts()
+                        && d != 0.0
+                        && !self.java_shell_wheel(scaled(raw_x), scaled(raw_y))
+                    {
+                        return Ok(());
+                    }
                     if self.screen == Screen::Java {
                         self.java_screen_scroll(scaled(raw_x), scaled(raw_y));
                     } else if self.dialog_open() {
@@ -14948,6 +15023,9 @@ impl ApplicationHandler for Game<'_> {
                 }
                 WindowEvent::MouseInput { state, button, .. } => {
                     let pressed = state == ElementState::Pressed;
+                    if self.java_shell_accepts() && !self.java_shell_mouse(button, pressed) {
+                        return Ok(());
+                    }
                     if matches!(self.screen, Screen::Inventory | Screen::Creative)
                         && let Some(key) = self
                             .settings
