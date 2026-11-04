@@ -3,6 +3,7 @@
 //! spawn egg used on one (`SpawnEggItem.useOn`), their events and the mob
 //! spinning inside (`SpawnerRenderer`).
 use super::Game;
+use super::entity_life::{NewEntity, Origin};
 use horizon_client::{
     Result,
     containers::BlockEntity,
@@ -134,15 +135,18 @@ impl Game<'_> {
                 Planned::Finalized(mut mob, equipment) => {
                     self.next_entity += 1;
                     mob.id = self.next_entity;
-                    let id = mob.id;
-                    self.mobs.push(mob);
-                    self.enchant_spawn_equipment(id);
-                    self.spawn_jockeys(id, true);
-                    Some((id, equipment))
+                    match self.level_add(NewEntity::Mob(mob), Origin::Fresh, None) {
+                        Some(id) => {
+                            self.enchant_spawn_equipment(id);
+                            self.spawn_jockeys(id, true);
+                            Some((id, equipment))
+                        }
+                        None => None,
+                    }
                 }
-                Planned::Loaded(tag, equipment) => {
-                    self.load_mob(tag, None).map(|id| (id, equipment))
-                }
+                Planned::Loaded(tag, equipment) => self
+                    .load_mob(tag, None, Origin::Fresh)
+                    .map(|id| (id, equipment)),
             };
             if let Some((id, equipment)) = id {
                 // `nextSpawnData.getEquipment().ifPresent(mob::equip)`.

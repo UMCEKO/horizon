@@ -239,6 +239,54 @@ impl Game<'_> {
         self.java_attack_event(entity, canceled);
         let _ = (entity, canceled);
     }
+
+    /// `EntityJoinLevelEvent`, before the entity is in its vector: false refuses the join.
+    pub(super) fn java_hook_entity_joining(
+        &mut self,
+        e: &super::entity_life::NewEntity,
+        origin: super::entity_life::Origin,
+        saved: Option<&horizon_world::nbt::Tag>,
+    ) -> bool {
+        #[cfg(test)]
+        if let Some(mut hook) = self.test_life.take() {
+            let allow = hook(
+                self,
+                super::entity_life::LifeEvent::Join(e.kind(), e.id(), origin),
+            );
+            self.test_life = Some(hook);
+            if !allow {
+                return false;
+            }
+        }
+        #[cfg(feature = "java-mods")]
+        {
+            let _ = (e, origin, saved);
+            true
+        }
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (e, origin, saved);
+            true
+        }
+    }
+
+    /// `EntityLeaveLevelEvent`, after the entity is out of its vector (or marked `removed` inside a crossing).
+    pub(super) fn java_hook_entity_left(
+        &mut self,
+        kind: super::entity_life::Kind,
+        id: u32,
+        why: super::entity_life::Removal,
+    ) {
+        #[cfg(test)]
+        if let Some(mut hook) = self.test_life.take() {
+            hook(self, super::entity_life::LifeEvent::Leave(kind, id, why));
+            self.test_life = Some(hook);
+        }
+        #[cfg(feature = "java-mods")]
+        let _ = (kind, id, why);
+        #[cfg(not(feature = "java-mods"))]
+        let _ = (kind, id, why);
+    }
 }
 
 /// What a server of this run tells a Java client joining from another process in configuration, when it has Java mods: the Java side's configuration frames.

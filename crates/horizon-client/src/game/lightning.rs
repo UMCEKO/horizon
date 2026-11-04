@@ -4,6 +4,7 @@
 //! `thunderHit` (damage and burning, charged creepers, zombified piglins,
 //! witches, mooshroom colours, turtles, burnt items), lightning rods, the sky
 //! flash, the sounds and the branching additive bolt.
+use super::entity_life::{Kind, Removal};
 use super::{Game, commands::Target};
 use horizon_client::advancements::EntityView;
 use horizon_client::mobs::{Damage, DamageKind, MobEvent, SpawnSetup, Species};
@@ -550,7 +551,7 @@ impl Game<'_> {
             let p = self.cushions[i].position;
             if inside([p.x, p.y, p.z]) {
                 let before = self.dropped.len();
-                self.break_cushion(i, false);
+                self.break_cushion(i, false, Removal::Killed);
                 b.spared.extend(self.dropped[before..].iter().map(|e| e.id));
             }
         }
@@ -579,11 +580,17 @@ impl Game<'_> {
                 .map(|e| e.id),
         );
         // Dropped items burn up (ItemEntity health 5), save fire-resistant ones.
-        self.dropped.retain(|e| {
-            !inside([e.position.x, e.position.y, e.position.z])
-                || e.stack.item.contains("netherite")
-                || (e.age < 20 && b.spared.contains(&e.id))
-        });
+        let burnt: Vec<u32> = self
+            .dropped
+            .iter()
+            .filter(|e| {
+                inside([e.position.x, e.position.y, e.position.z])
+                    && !e.stack.item.contains("netherite")
+                    && !(e.age < 20 && b.spared.contains(&e.id))
+            })
+            .map(|e| e.id)
+            .collect();
+        self.level_remove_ids(Kind::Item, &burnt, Removal::Discarded);
         struck.into_iter().map(|(_, view)| view).collect()
     }
     /// `LightningBolt.shouldRenderAtSqrDistance`: a bolt is drawn within 64

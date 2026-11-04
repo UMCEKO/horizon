@@ -12,7 +12,7 @@ fn root() -> Option<PathBuf> {
 }
 
 /// A server `Game` over a flat, lit world, with a player so its chunks tick; none without the vanilla data.
-fn flat_game() -> Option<Game<'static>> {
+pub(super) fn flat_game() -> Option<Game<'static>> {
     let root = root()?;
     let mut options = Options::parse(
         [

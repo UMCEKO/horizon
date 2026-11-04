@@ -3,6 +3,7 @@
 //! babies, calling iron golems and the prices they ask.
 use super::Game;
 use super::crossing::{CrossPoint, Lent};
+use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use horizon_client::{
     gossip::{self, GossipType},
     items::ItemStack,
@@ -126,8 +127,8 @@ impl Game<'_> {
             self.audio
                 .play(&format!("minecraft:{sound}"), Some(at), 1.0, 1.0);
         }
-        self.mobs.push(golem);
-        true
+        self.level_add(NewEntity::Mob(golem), Origin::Fresh, None)
+            .is_some()
     }
 
     /// `VillagerMakeLove.tryToGiveBirth`: both eat, a free bed within 48
@@ -355,7 +356,8 @@ impl Game<'_> {
                 }
                 match rest {
                     None => {
-                        self.dropped.remove(j);
+                        let id = self.dropped[j].id;
+                        self.level_remove(Kind::Item, id, Removal::Discarded);
                     }
                     Some(rest) => {
                         self.dropped[j].stack.count = rest.count;

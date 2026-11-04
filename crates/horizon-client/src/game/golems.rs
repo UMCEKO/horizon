@@ -3,6 +3,7 @@
 //! T of four iron blocks (arms along X or Z, nothing beside the legs) an iron
 //! golem. Players placing the pumpkin and dispensers share it.
 use super::Game;
+use super::entity_life::{NewEntity, Origin};
 use horizon_client::Result;
 
 impl Game<'_> {
@@ -155,9 +156,7 @@ impl Game<'_> {
         mob.previous_yaw = yaw;
         mob.previous_body_yaw = yaw;
         mob.previous_head_yaw = yaw;
-        let id = mob.id;
-        self.mobs.push(mob);
-        Some(id)
+        self.level_add(NewEntity::Mob(mob), Origin::Fresh, None)
     }
     /// `CarvedPumpkinBlock.clearPatternBlocks`: every cell of the match
     /// becomes air (flags 2) with its destroy event (2001).

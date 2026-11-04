@@ -717,7 +717,7 @@ impl Game<'_> {
         let mut waiting = std::mem::take(&mut self.world.loaded_entities);
         let before = self.next_entity;
         self.world.loaded_entities.push((key, vec![tag]));
-        self.spawn_loaded_entities();
+        self.spawn_loaded_entities(crate::game::entity_life::Origin::Fresh);
         waiting.append(&mut self.world.loaded_entities);
         self.world.loaded_entities = waiting;
         if self.next_entity == before {

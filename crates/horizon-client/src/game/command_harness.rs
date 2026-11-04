@@ -139,7 +139,7 @@ impl Game<'_> {
                     // The oracle's settle also waits for the entities saved
                     // in those chunks (areEntitiesActuallyLoadedAndTicking):
                     // after a dimension change they come back from the save.
-                    self.spawn_loaded_entities();
+                    self.spawn_loaded_entities(super::entity_life::Origin::FromDisk);
                     return Ok(());
                 }
             }

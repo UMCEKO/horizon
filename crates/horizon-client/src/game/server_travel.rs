@@ -8,6 +8,7 @@
 //! exit once the destination has loaded around them.
 
 use super::end::GatewayJob;
+use super::entity_life::{NewEntity, Origin};
 use super::nether_portal::{PLAYER_DELAY, Plan};
 use super::respawn_anchor::RespawnConfig;
 use super::{Dim, Game, Mob, boats, lan::LanHost, minecarts};
@@ -643,18 +644,23 @@ impl Game<'_> {
         let Some(parked) = self.levels.parked_mut(source) else {
             return;
         };
-        if let Some(b) = take_vehicle(&mut parked.boats, id, at, yaw) {
-            self.boats.push(b);
+        let arrived = if let Some(b) = take_vehicle(&mut parked.boats, id, at, yaw) {
+            NewEntity::Boat(b)
         } else if let Some(c) = take_vehicle(&mut parked.carts, id, at, yaw) {
-            self.carts.push(c);
+            NewEntity::Cart(c)
         } else if let Some(m) = take_vehicle(&mut parked.mobs, id, at, yaw) {
-            self.mobs.push(m);
+            NewEntity::Mob(m)
         } else {
             return;
-        }
+        };
+        let joined = self.level_add(arrived, Origin::Fresh, None).is_some();
         // Its memory (its UUID and the compound it was loaded with) moves
         // with it, so it is saved in this level as it was in the other.
         self.move_entity_memory(source, id);
+        if !joined {
+            self.forget_entity(id);
+            return;
+        }
         // The vehicle that came through a portal does not go back through it
         // for a while (`Entity.setPortalCooldown`).
         self.set_portal_cooldown(id);

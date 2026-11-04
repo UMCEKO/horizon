@@ -2,6 +2,7 @@
 //! end crystals on a server's client (`ClientPacketListener.handleAddEntity`
 //! and `handleSetEntityData`): the server simulates them, the client draws
 //! them where it says and interpolates their moves.
+use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use super::{FallStep, FallingBlock, Game, fireworks::fireworks_of, view_vector};
 use horizon_client::items::ItemStack;
 use horizon_client::projectiles::{Hit, Projectile, ProjectileKind, ProjectileWorld};
@@ -321,14 +322,15 @@ impl Game<'_> {
                 // EndCrystal's constructor starts `time` random, so each
                 // placed crystal spins from its own phase.
                 let time = self.world.random.next_int_bound(100_000).unwrap_or(0);
-                self.crystals.push(super::dragon::Crystal {
+                let crystal = super::dragon::Crystal {
                     id,
                     position: at,
                     show_bottom: true,
                     time,
                     beam: None,
                     invulnerable: false,
-                });
+                };
+                self.level_add(NewEntity::Crystal(crystal), Origin::Fresh, None);
             }
             _ => {
                 let Some(k) = projectile_kind(kind) else {
@@ -703,10 +705,10 @@ impl Game<'_> {
         self.fangs.list.retain(|f| f.id != id);
         self.tnts.retain(|t| t.id != id);
         self.falling.retain(|f| f.id != id);
-        self.creatures.projectiles.retain(|p| p.id != id);
+        self.level_remove(Kind::Projectile, id, Removal::Discarded);
         self.tridents.retain(|t| t.id != id);
         self.rockets.retain(|r| r.id != id);
-        self.crystals.retain(|c| c.id != id);
+        self.level_remove(Kind::Crystal, id, Removal::Discarded);
         self.potions.remove_remote_thrown(id);
         self.potions.clouds.retain(|c| c.id != id);
         self.dragon_fireballs.retain(|b| b.id != id);
@@ -719,12 +721,12 @@ impl Game<'_> {
         self.fangs.list.clear();
         self.tnts.clear();
         self.falling.clear();
-        self.creatures.projectiles.clear();
+        self.level_remove_all(Kind::Projectile, Removal::UnloadedToChunk);
         self.tridents.clear();
         self.rockets.clear();
-        self.crystals.clear();
+        self.level_remove_all(Kind::Crystal, Removal::UnloadedToChunk);
         // The dragon a server sent goes with its crystals.
-        self.dragon = None;
+        self.level_remove_all(Kind::Dragon, Removal::UnloadedToChunk);
         self.potions.clear_thrown();
         self.potions.clouds.clear();
         self.dragon_fireballs.clear();

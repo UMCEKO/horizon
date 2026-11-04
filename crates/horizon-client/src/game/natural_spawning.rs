@@ -1,6 +1,7 @@
 //! The game's side of `NaturalSpawner` (`mobs::spawn_selection`): the level
 //! it reads, the spawning chunks and caps of `ServerChunkCache.tickChunks`,
 //! and the mobs it adds (finalized with the game's `finalizeSpawn`).
+use super::entity_life::{NewEntity, Origin};
 use super::{Dim, Game};
 use horizon_client::vanillagen::VanillaTerrain;
 use horizon_client::{
@@ -435,8 +436,9 @@ impl<'a> Game<'a> {
             self.next_entity += 1;
             mob.id = self.next_entity;
             mob.persistent = persistent;
-            let id = mob.id;
-            self.mobs.push(mob);
+            let Some(id) = self.level_add(NewEntity::Mob(mob), Origin::Fresh, None) else {
+                continue;
+            };
             self.enchant_spawn_equipment(id);
             if !persistent {
                 self.spawn_jockeys(id, true);
@@ -622,7 +624,7 @@ impl<'a> Game<'a> {
             return;
         };
         for nbt in added {
-            self.load_mob(Tag::Compound(nbt), None);
+            self.load_mob(Tag::Compound(nbt), None, Origin::Fresh);
         }
     }
     fn generation_creatures<Q: RandomSource + 'static>(

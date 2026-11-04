@@ -3,6 +3,7 @@
 //! draws), entity damage with exposure and knockback, block interaction with
 //! merged drops and TNT chain priming, and optional fire.
 use super::Game;
+use super::entity_life::{Kind, Removal};
 use horizon_client::{Result, blocks::Fluid, collisions::SceneCollisions, items::ItemStack};
 use horizon_core::{
     geometry::{Vec3, VoxelShape},
@@ -504,6 +505,7 @@ impl Game<'_> {
                 continue;
             }
             let item = &mut items[i];
+            let mut destroyed = false;
             let feet = [item.position.x, item.position.y, item.position.z];
             let dist = distance(feet) / diameter;
             if dist > 1.0 {
@@ -517,6 +519,7 @@ impl Game<'_> {
             );
             if &*item.stack.item != "minecraft:nether_star" && damage(dist, exposure) >= 5.0 {
                 item.removed = true;
+                destroyed = true;
             } else {
                 let dir = direction([feet[0], feet[1] + 0.2125, feet[2]]);
                 let power = (1.0 - dist) * f64::from(exposure);
@@ -527,6 +530,14 @@ impl Game<'_> {
                 );
             }
             let id = item.id;
+            if destroyed {
+                self.left_in_loop(
+                    &mut [super::crossing::Lent::Items(&mut items)],
+                    Kind::Item,
+                    id,
+                    Removal::Discarded,
+                );
+            }
             self.cross_point(
                 super::crossing::CrossPoint::ExplosionItem(id),
                 &mut [super::crossing::Lent::Items(&mut items)],
@@ -627,7 +638,7 @@ impl Game<'_> {
             let (lo, hi) = self.paintings[i].bounds();
             let at = [0, 1, 2].map(|k| (lo[k] + hi[k]) / 2.0);
             if blast_reaches(center, diameter, at) {
-                self.break_painting(i, false);
+                self.break_painting(i, false, Removal::Killed);
             } else {
                 i += 1;
             }
@@ -636,7 +647,7 @@ impl Game<'_> {
         while i < self.cushions.len() {
             let p = self.cushions[i].position;
             if blast_reaches(center, diameter, [p.x, p.y, p.z]) {
-                self.break_cushion(i, false);
+                self.break_cushion(i, false, Removal::Killed);
             } else {
                 i += 1;
             }

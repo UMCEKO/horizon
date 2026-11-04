@@ -167,7 +167,7 @@ impl Game<'_> {
                         }
                     }
                     if keys.is_empty() {
-                        self.spawn_loaded_entities();
+                        self.spawn_loaded_entities(super::entity_life::Origin::FromDisk);
                         save.stage = Stage::Entities(self.world.chunks.keys().copied().collect());
                     }
                     Ok(false)

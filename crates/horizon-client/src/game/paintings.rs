@@ -2,6 +2,7 @@
 //! variant choice (or the stack's `painting/variant`), `HangingEntity.survives`
 //! checks every 100 ticks, breaking by attack (`dropItem`), saving, and
 //! `PaintingRenderer` quads.
+use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use super::{Game, Hit};
 use horizon_client::{entities::Painting, items::ItemStack, mesher::Vertex};
 use horizon_core::{
@@ -182,7 +183,7 @@ impl Game<'_> {
         ];
         self.audio
             .play("minecraft:entity.painting.place", Some(at), 1.0, 1.0);
-        self.paintings.push(candidate);
+        self.level_add(NewEntity::Painting(candidate), Origin::Fresh, None);
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
         if !self.creative {
             self.consume_held();
@@ -217,8 +218,9 @@ impl Game<'_> {
         best
     }
     /// `Painting.hurtServer` -> kill and `dropItem`.
-    pub(super) fn break_painting(&mut self, index: usize, by_player: bool) {
-        let p = self.paintings.remove(index);
+    pub(super) fn break_painting(&mut self, index: usize, by_player: bool, why: Removal) {
+        let p = self.paintings[index].clone();
+        self.level_remove(Kind::Painting, p.id, why);
         let (lo, hi) = p.bounds();
         let at = [
             (lo[0] + hi[0]) / 2.0,
@@ -266,7 +268,7 @@ impl Game<'_> {
                 self.paintings[i].check_interval = 0;
                 let p = self.paintings[i].clone();
                 if !self.painting_survives(&p) {
-                    self.break_painting(i, false);
+                    self.break_painting(i, false, Removal::Discarded);
                     continue;
                 }
             }

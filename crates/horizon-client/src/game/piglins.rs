@@ -2,6 +2,7 @@
 //! bartering when the admiring is over, and anger at players who open
 //! their chests or mine their gold.
 use super::Game;
+use super::entity_life::{Kind, Removal};
 use horizon_client::{
     items::ItemStack,
     mobs::{
@@ -256,7 +257,9 @@ impl Game<'_> {
                 });
             }
             let stack = if &*item == "minecraft:gold_nugget" {
-                self.dropped.remove(j).stack
+                let e = self.dropped[j].clone();
+                self.level_remove(Kind::Item, e.id, Removal::Discarded);
+                e.stack
             } else {
                 let e = &mut self.dropped[j];
                 e.stack.count -= 1;
@@ -265,7 +268,8 @@ impl Game<'_> {
                     ..e.stack.clone()
                 };
                 if e.stack.count == 0 {
-                    self.dropped.remove(j);
+                    let id = self.dropped[j].id;
+                    self.level_remove(Kind::Item, id, Removal::Discarded);
                 }
                 one
             };

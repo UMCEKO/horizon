@@ -6,6 +6,7 @@
 //! the spikes, its parts (head and neck take full damage, the rest a quarter
 //! plus one), wing knockback, block breaking, the death flight and rays, the
 //! exit portal, the egg and the next gateway; and its rendering and boss bar.
+use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use super::{Dim, Game};
 use horizon_client::{
     hud::HudBatch,
@@ -848,14 +849,15 @@ impl Game<'_> {
             let time = self.world.random.next_int_bound(100_000).unwrap_or(0);
             // EndCrystal's constructor takes an id from the entity counter.
             self.next_entity += 1;
-            self.crystals.push(Crystal {
+            let crystal = Crystal {
                 id: self.next_entity,
                 position: at,
                 show_bottom: true,
                 time,
                 beam: None,
                 invulnerable: false,
-            });
+            };
+            self.level_add(NewEntity::Crystal(crystal), Origin::Fresh, None);
             self.world
                 .modified
                 .insert((at.x.floor() as i32 >> 4, at.z.floor() as i32 >> 4));
@@ -901,7 +903,8 @@ impl Game<'_> {
         if index >= self.crystals.len() || self.crystals[index].invulnerable {
             return;
         }
-        let c = self.crystals.remove(index);
+        let c = self.crystals[index].clone();
+        self.level_remove(Kind::Crystal, c.id, Removal::Killed);
         // Read before the blast, which can take other respawn crystals.
         let respawn_crystal = self.fight.respawn.is_some()
             && self
@@ -2117,7 +2120,9 @@ impl Game<'_> {
             if drops {
                 self.spawn_orbs([p.x, p.y, p.z], (xp as f32 * 0.2) as u32);
             }
-            self.dragon = None;
+            if let Some(id) = self.dragon.as_ref().map(|d| d.id) {
+                self.level_remove(Kind::Dragon, id, Removal::Killed);
+            }
             self.dragon_killed();
         }
     }
@@ -3006,14 +3011,15 @@ impl Game<'_> {
         // EndCrystal's constructor takes an id from the entity counter, so
         // the crystal is an entity a command can name (`@e[type=end_crystal]`).
         self.next_entity += 1;
-        self.crystals.push(Crystal {
+        let crystal = Crystal {
             id: self.next_entity,
             position: Vec3::new(x + 0.5, y, z + 0.5),
             show_bottom: false,
             time,
             beam: None,
             invulnerable: false,
-        });
+        };
+        self.level_add(NewEntity::Crystal(crystal), Origin::Fresh, None);
         self.world.modified.insert((above[0] >> 4, above[2] >> 4));
         if self.dim == Dim::End {
             self.try_respawn();
@@ -3039,7 +3045,7 @@ impl Game<'_> {
     /// drops it, and a killed dragon never gets there.
     pub(super) fn kill_dragon(&mut self, id: u32) {
         if self.dragon.as_ref().is_some_and(|d| d.id == id) {
-            self.dragon = None;
+            self.level_remove(Kind::Dragon, id, Removal::Killed);
             // ServerLevel.getDragonFight: only the End has a fight.
             if self.dim == Dim::End {
                 self.dragon_killed();
@@ -3287,17 +3293,23 @@ impl Game<'_> {
             }
         }
         let at = Vec3::new(f64::from(cx) + 0.5, f64::from(h + 1), f64::from(cz) + 0.5);
-        self.crystals
-            .retain(|c| c.position.distance_squared(at) > 0.01);
+        let ids: Vec<u32> = self
+            .crystals
+            .iter()
+            .filter(|c| c.position.distance_squared(at) <= 0.01)
+            .map(|c| c.id)
+            .collect();
+        self.level_remove_ids(Kind::Crystal, &ids, Removal::Killed);
         let time = self.world.random.next_int_bound(100_000).unwrap_or(0);
-        self.crystals.push(Crystal {
+        let crystal = Crystal {
             id: 0,
             position: at,
             show_bottom: true,
             time,
             beam: Some([0, 128, 0]),
             invulnerable: true,
-        });
+        };
+        self.level_add(NewEntity::Crystal(crystal), Origin::Fresh, None);
         let _ = self.set_state_named([cx, h, cz], "minecraft:bedrock", &[]);
         let _ = self.set_state_named([cx, h + 1, cz], "minecraft:fire", &[]);
         self.world.modified.insert((cx >> 4, cz >> 4));
@@ -3339,7 +3351,8 @@ impl Game<'_> {
     fn create_new_dragon(&mut self) {
         let yaw = self.world.random.next_float() * 360.0;
         let seed = self.world.random.next_long();
-        self.dragon = Some(Dragon::new(Vec3::new(0.0, 128.0, 0.0), yaw, seed));
+        let dragon = Dragon::new(Vec3::new(0.0, 128.0, 0.0), yaw, seed);
+        self.level_add(NewEntity::Dragon(Box::new(dragon)), Origin::Fresh, None);
     }
     /// The END stage: the portal crystals blow up (no block damage) and a
     /// new dragon takes over.
@@ -3353,7 +3366,8 @@ impl Game<'_> {
                 .iter()
                 .position(|c| c.position.distance_squared(p) < 0.01)
             {
-                let c = self.crystals.remove(i);
+                let c = self.crystals[i].clone();
+                self.level_remove(Kind::Crystal, c.id, Removal::Discarded);
                 self.world.modified.insert((
                     c.position.x.floor() as i32 >> 4,
                     c.position.z.floor() as i32 >> 4,
@@ -3448,7 +3462,7 @@ impl Game<'_> {
         let mut d = Dragon::new(at, yaw, i64::from(id));
         d.id = id as u32;
         d.phase = Phase::from_id(10);
-        self.dragon = Some(d);
+        self.level_add(NewEntity::Dragon(Box::new(d)), Origin::Fresh, None);
         self.place_dragon_parts();
         if let Some(d) = self.dragon.as_mut() {
             for part in &mut d.parts {
@@ -3490,7 +3504,7 @@ impl Game<'_> {
     /// keeps pointing at the same crystal.
     pub(super) fn remove_remote_dragon(&mut self, id: i32) {
         if self.remote_dragon_mut(id).is_some() {
-            self.dragon = None;
+            self.level_remove(Kind::Dragon, id as u32, Removal::Discarded);
             return;
         }
         let Some(index) = self.crystals.iter().position(|c| c.id as i32 == id) else {

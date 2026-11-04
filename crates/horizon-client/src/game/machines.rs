@@ -3,6 +3,7 @@
 //! the vanilla dispense behaviours Horizon has entities for, and container
 //! comparator signals (`AbstractContainerMenu.getRedstoneSignalFromContainer`).
 use super::Game;
+use super::entity_life::{Kind as EntityKind, Removal};
 
 mod crafter;
 use horizon_client::{
@@ -975,7 +976,8 @@ impl Game<'_> {
                 let stack = self.dropped[i].stack.clone();
                 match self.add_item(None, hopper, stack, None) {
                     None => {
-                        self.dropped.remove(i);
+                        let id = self.dropped[i].id;
+                        self.level_remove(EntityKind::Item, id, Removal::Discarded);
                         return true;
                     }
                     Some(rest) => self.dropped[i].stack = rest,

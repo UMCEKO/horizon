@@ -2,6 +2,7 @@
 //! gateway travel, the obsidian arrival platform, the exit portal and the End
 //! sky. The dragon fight itself lives in game/dragon.rs: the podium is
 //! inactive until the dragon dies.
+use super::entity_life::{Kind, Removal};
 use super::{Dim, Game};
 use horizon_client::nether_portal::ENTITY_DELAY;
 use horizon_client::{
@@ -1592,7 +1593,7 @@ impl Game<'_> {
                 uuid,
                 self.persist_raw(id),
             );
-            self.dropped.remove(i);
+            self.level_remove(Kind::Item, id, Removal::ChangedDimension);
             self.forget_entity(id);
             tag
         } else if let Some(i) = self.mobs.iter().position(|m| m.id == id) {
@@ -1614,13 +1615,14 @@ impl Game<'_> {
                 );
                 k += 1;
             }
-            self.mobs.retain(|m| !gone.contains(&m.id));
+            self.level_remove_ids(Kind::Mob, &gone, Removal::ChangedDimension);
             for g in gone {
                 self.forget_entity(g);
             }
             tag
         } else if let Some(i) = self.creatures.projectiles.iter().position(|p| p.id == id) {
-            let pearl = Box::new(self.creatures.projectiles.remove(i));
+            let pearl = Box::new(self.creatures.projectiles[i].clone());
+            self.level_remove(Kind::Projectile, id, Removal::ChangedDimension);
             let (job, target) = self.gateway_job([gateway.x, gateway.y, gateway.z]);
             let arrival = GatewayArrival {
                 traveller: Arriving::Pearl(pearl),

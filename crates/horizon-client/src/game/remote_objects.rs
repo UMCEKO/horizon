@@ -3,6 +3,7 @@
 //! `handleSetEquipment`): the server simulates them, the client places them
 //! where it says and interpolates their moves like a mob's.
 use super::Game;
+use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use horizon_client::entities::{ArmorStand, Cushion, ItemFrame, Painting};
 use horizon_client::mobs::leash::Holder;
 use horizon_client::particles::{ParticleOptions, ParticleType};
@@ -64,7 +65,7 @@ impl Game<'_> {
             let mut c = super::minecarts::Minecart::new(id, cart, at);
             c.yaw = yaw;
             c.previous_yaw = yaw;
-            self.carts.push(c);
+            self.level_add(NewEntity::Cart(c), Origin::Fresh, None);
         } else if let Some((wood, chest)) = super::boats::any_boat_wood(kind)
             && self.boat_models.has(wood, chest)
         {
@@ -72,11 +73,12 @@ impl Game<'_> {
             if chest {
                 b = b.with_chest();
             }
-            self.boats.push(b);
+            self.level_add(NewEntity::Boat(b), Origin::Fresh, None);
         } else if kind == "minecraft:armor_stand" {
-            self.armor_stands.push(ArmorStand::new(id, at, yaw));
+            let stand = ArmorStand::new(id, at, yaw);
+            self.level_add(NewEntity::Stand(stand), Origin::Fresh, None);
         } else if kind == "minecraft:item_frame" || kind == "minecraft:glow_item_frame" {
-            self.item_frames.push(ItemFrame {
+            let frame = ItemFrame {
                 id,
                 pos: block,
                 facing: data.clamp(0, 5) as u8,
@@ -87,17 +89,19 @@ impl Game<'_> {
                 fixed: false,
                 invisible: false,
                 check_interval: 0,
-            });
+            };
+            self.level_add(NewEntity::Frame(frame), Origin::Fresh, None);
         } else if kind == "minecraft:cushion" {
             // BlockAttachedEntity.pos: `BlockPos.containing` of the spawn.
-            self.cushions.push(Cushion {
+            let cushion = Cushion {
                 id,
                 position: at,
                 pos: block,
                 yaw: super::cushions::snap_yaw(yaw),
                 color: 0,
                 check_interval: 0,
-            });
+            };
+            self.level_add(NewEntity::Cushion(cushion), Origin::Fresh, None);
         } else if kind == "minecraft:lightning_bolt" {
             self.spawn_remote_bolt(id, position);
         } else if kind == "minecraft:painting" {
@@ -115,7 +119,7 @@ impl Game<'_> {
                 5 => 3,
                 _ => 0,
             };
-            self.paintings.push(Painting {
+            let painting = Painting {
                 id,
                 pos: block,
                 facing,
@@ -123,7 +127,8 @@ impl Game<'_> {
                 width,
                 height,
                 check_interval: 0,
-            });
+            };
+            self.level_add(NewEntity::Painting(painting), Origin::Fresh, None);
         } else {
             return false;
         }
@@ -398,12 +403,12 @@ impl Game<'_> {
         self.interactions.clear();
         self.ominous_spawners.clear();
         self.remote_knots.clear();
-        self.carts.clear();
-        self.boats.clear();
-        self.armor_stands.clear();
-        self.cushions.clear();
-        self.item_frames.clear();
-        self.paintings.clear();
+        self.level_remove_all(Kind::Cart, Removal::UnloadedToChunk);
+        self.level_remove_all(Kind::Boat, Removal::UnloadedToChunk);
+        self.level_remove_all(Kind::Stand, Removal::UnloadedToChunk);
+        self.level_remove_all(Kind::Cushion, Removal::UnloadedToChunk);
+        self.level_remove_all(Kind::Frame, Removal::UnloadedToChunk);
+        self.level_remove_all(Kind::Painting, Removal::UnloadedToChunk);
     }
 
     pub(super) fn remove_remote_object(&mut self, id: u32) {
@@ -411,12 +416,12 @@ impl Game<'_> {
         self.interactions.remove(&(id as i32));
         self.ominous_spawners.retain(|s| s.id != id);
         self.remote_knots.remove(&id);
-        self.carts.retain(|c| c.id != id);
-        self.boats.retain(|b| b.id != id);
-        self.armor_stands.retain(|a| a.id != id);
-        self.cushions.retain(|c| c.id != id);
-        self.item_frames.retain(|f| f.id != id);
-        self.paintings.retain(|p| p.id != id);
+        self.level_remove(Kind::Cart, id, Removal::Discarded);
+        self.level_remove(Kind::Boat, id, Removal::Discarded);
+        self.level_remove(Kind::Stand, id, Removal::Discarded);
+        self.level_remove(Kind::Cushion, id, Removal::Discarded);
+        self.level_remove(Kind::Frame, id, Removal::Discarded);
+        self.level_remove(Kind::Painting, id, Removal::Discarded);
         self.bolts.retain(|b| b.id != id);
     }
 }

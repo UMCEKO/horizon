@@ -18,6 +18,7 @@ mod test_runs;
 mod text_commands;
 mod world_cmds;
 
+use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use super::{Dim, Game, Screen, chat::PLAYER_NAME};
 use horizon_client::{
     command::{
@@ -1306,8 +1307,10 @@ impl Game<'_> {
                             p[1] + g.target_eye_height(Target::Player),
                             p[2],
                         ]);
-                        g.throw_from_eyes(rest, eye, false);
-                        if let Some(item) = g.dropped.last_mut() {
+                        let thrown = g.throw_from_eyes(rest, eye, false);
+                        if let Some(id) = thrown
+                            && let Some(item) = g.dropped.iter_mut().find(|i| i.id == id)
+                        {
                             item.thrower = None;
                             item.pickup_delay = 0;
                             item.target = uuid;
@@ -1926,32 +1929,51 @@ impl Game<'_> {
                     }
                 }
             }
-            Target::Item(id) => self.dropped.retain(|i| i.id != id),
+            Target::Item(id) => {
+                self.level_remove(Kind::Item, id, Removal::Killed);
+            }
             Target::Orb(id) => {
                 if let Some(o) = self.orbs.iter_mut().find(|o| o.id == id) {
                     o.age = u32::MAX / 2;
                 }
             }
             Target::Projectile(id) => {
-                self.creatures.projectiles.retain(|p| p.id != id);
+                self.level_remove(Kind::Projectile, id, Removal::Killed);
             }
-            Target::Stand(id) => self.armor_stands.retain(|a| a.id != id),
-            Target::Frame(id) => self.item_frames.retain(|f| f.id != id),
-            Target::Painting(id) => self.paintings.retain(|p| p.id != id),
+            Target::Stand(id) => {
+                self.level_remove(Kind::Stand, id, Removal::Killed);
+            }
+            Target::Frame(id) => {
+                self.level_remove(Kind::Frame, id, Removal::Killed);
+            }
+            Target::Painting(id) => {
+                self.level_remove(Kind::Painting, id, Removal::Killed);
+            }
             Target::Boat(id) => {
                 // AbstractBoat.remove: a killed boat drops its lead.
                 if let Some(i) = self.boats.iter().position(|b| b.id == id) {
-                    let b = self.boats.remove(i);
+                    let b = self.boats[i].clone();
+                    self.level_remove(Kind::Boat, id, Removal::Killed);
                     self.boat_removed(&b);
                 }
             }
-            Target::Cart(id) => self.carts.retain(|c| c.id != id),
-            Target::Other(id) => self.others.retain(|o| o.id != id),
+            Target::Cart(id) => {
+                self.level_remove(Kind::Cart, id, Removal::Killed);
+            }
+            Target::Other(id) => {
+                self.level_remove(Kind::Other, id, Removal::Killed);
+            }
             Target::Crystal(id) => self.kill_crystal(id),
             Target::Dragon(id) => self.kill_dragon(id),
         }
         // The orbs marked for removal are gone (Entity.kill removes them).
-        self.orbs.retain(|o| o.age < u32::MAX / 2);
+        let marked: Vec<u32> = self
+            .orbs
+            .iter()
+            .filter(|o| o.age >= u32::MAX / 2)
+            .map(|o| o.id)
+            .collect();
+        self.level_remove_ids(Kind::Orb, &marked, Removal::Killed);
     }
     fn cmd_kill(&mut self, ctx: &Context) -> R<i32> {
         let targets = if ctx.get("targets").is_some() {
@@ -2045,7 +2067,7 @@ impl Game<'_> {
                 }
                 "experience_orb" => {
                     self.next_entity += 1;
-                    self.orbs.push(horizon_client::entities::ExperienceOrb {
+                    let orb = horizon_client::entities::ExperienceOrb {
                         removed: false,
                         id: self.next_entity,
                         position: Vec3::new(pos[0], pos[1], pos[2]),
@@ -2056,7 +2078,8 @@ impl Game<'_> {
                         on_ground: false,
                         count: 1,
                         ticks: 0,
-                    });
+                    };
+                    self.level_add(NewEntity::Orb(orb), Origin::Fresh, None);
                     name = Text::translate("entity.minecraft.experience_orb", &[]);
                 }
                 "lightning_bolt" => {
@@ -2067,14 +2090,15 @@ impl Game<'_> {
                     // EndCrystal's constructor takes an id from the entity
                     // counter, and the crystal is shown with its base.
                     self.next_entity += 1;
-                    self.crystals.push(super::dragon::Crystal {
+                    let crystal = super::dragon::Crystal {
                         id: self.next_entity,
                         position: Vec3::new(pos[0], pos[1], pos[2]),
                         show_bottom: true,
                         time: self.world.random.next_int_bound(100_000).unwrap_or(0),
                         beam: None,
                         invulnerable: false,
-                    });
+                    };
+                    self.level_add(NewEntity::Crystal(crystal), Origin::Fresh, None);
                     name = Text::translate("entity.minecraft.end_crystal", &[]);
                 }
                 k if super::minecarts::CartKind::from_id(&kind).is_some() => {
@@ -2086,7 +2110,7 @@ impl Game<'_> {
                         cart_kind,
                         Vec3::new(pos[0], pos[1], pos[2]),
                     );
-                    self.carts.push(cart);
+                    self.level_add(NewEntity::Cart(cart), Origin::Fresh, None);
                     name = Text::translate(&format!("entity.minecraft.{k}"), &[]);
                 }
                 // SummonCommand.createEntity: any other type from an empty compound.
@@ -2811,7 +2835,13 @@ impl Game<'_> {
         self.sync_rules();
         if i == 0 {
             // Peaceful removes hostile mobs.
-            self.mobs.retain(|m| !m.hostile());
+            let hostile: Vec<u32> = self
+                .mobs
+                .iter()
+                .filter(|m| m.hostile())
+                .map(|m| m.id)
+                .collect();
+            self.level_remove_ids(Kind::Mob, &hostile, Removal::Discarded);
         }
         // MinecraftServer.setDifficulty: every player, guests included, is
         // sent the new difficulty.

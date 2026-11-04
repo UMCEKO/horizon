@@ -87,6 +87,8 @@ mod crossbow;
 mod crossing;
 #[cfg(test)]
 mod crossing_tests;
+mod entity_life;
+use entity_life::{Kind, NewEntity, Origin, Removal};
 pub(crate) mod cushions;
 mod debug_keys;
 mod debug_stick;
@@ -1969,6 +1971,8 @@ struct Game<'a> {
     lent: crossing::LentKinds,
     #[cfg(test)]
     test_cross: Option<Box<dyn for<'g> FnMut(&mut Game<'g>, crossing::CrossPoint)>>,
+    #[cfg(test)]
+    test_life: Option<Box<dyn for<'g> FnMut(&mut Game<'g>, entity_life::LifeEvent) -> bool>>,
     particles: horizon_client::particles::ParticleEngine,
     /// `ItemPickupParticle`s: taken items, orbs and arrows flying to their collector.
     pickups: pickups::Pickups,
@@ -3058,12 +3062,12 @@ impl Game<'_> {
         position: [f64; 3],
         velocity: [f64; 3],
         pickup_delay: u32,
-    ) {
+    ) -> Option<u32> {
         self.next_entity += 1;
         let p = Vec3::new(position[0], position[1], position[2]);
         // ItemEntity.bobOffs comes from the entity's own random, not the level's.
         let bob = self.particles.random().next_float() * std::f32::consts::PI * 2.0;
-        self.dropped.push(ItemEntity {
+        let item = ItemEntity {
             removed: false,
             health: 5,
             fire_ticks: 0,
@@ -3079,7 +3083,8 @@ impl Game<'_> {
             pickup_delay,
             bob_offset: bob,
             ticks: 0,
-        });
+        };
+        self.level_add(NewEntity::Item(item), Origin::Fresh, None)
     }
     /// `Block.getDrops` for a block a player breaks: the block's loot table
     /// with the player as `this`, drawing from its server random sequence
@@ -3149,7 +3154,12 @@ impl Game<'_> {
     /// along the view direction. `thrown_from_hand` (`drop(stack, true)`, the
     /// drop key) names the player as the thrower; `drop(stack, false)`, for
     /// what no longer fits in the inventory, does not.
-    fn throw_from_eyes(&mut self, thrown: ItemStack, eye: [f64; 3], thrown_from_hand: bool) {
+    fn throw_from_eyes(
+        &mut self,
+        thrown: ItemStack,
+        eye: [f64; 3],
+        thrown_from_hand: bool,
+    ) -> Option<u32> {
         let (yaw, pitch) = (
             f64::from(self.yaw).to_radians(),
             f64::from(self.pitch).to_radians(),
@@ -3162,11 +3172,14 @@ impl Game<'_> {
             -pitch.sin() * 0.3 + 0.1 + f64::from(r.next_float() - r.next_float()) * 0.1,
             yaw.cos() * pitch.cos() * 0.3 + spread.sin() * strength,
         ];
-        self.spawn_item(thrown, [eye[0], eye[1] - 0.3, eye[2]], v, 40);
+        let id = self.spawn_item(thrown, [eye[0], eye[1] - 0.3, eye[2]], v, 40)?;
         if thrown_from_hand {
             let uuid = self.acting_player_uuid();
-            self.dropped.last_mut().unwrap().thrower = Some(uuid);
+            if let Some(item) = self.dropped.iter_mut().find(|i| i.id == id) {
+                item.thrower = Some(uuid);
+            }
         }
+        Some(id)
     }
     /// The UUID of the player acting: the guest whose turn it is, else the host.
     pub(super) fn acting_player_uuid(&mut self) -> [i32; 4] {
@@ -3185,6 +3198,7 @@ impl Game<'_> {
         let merging = self.remote.is_none();
         // The items ticking now are the ones present; a crossing may add more.
         let n = items.len();
+        let mut left: Vec<u32> = Vec::new();
         for i in 0..n {
             if removed[i] || items[i].removed {
                 continue;
@@ -3238,17 +3252,25 @@ impl Game<'_> {
                     let max_stack = |stack: &ItemStack| {
                         catalog.get(&stack.item).map_or(64, |i| i.max_stack).max(1)
                     };
-                    horizon_client::entities::merge_with_neighbours(
+                    let merged = horizon_client::entities::merge_with_neighbours(
                         &mut items,
                         &mut removed,
                         &mut cells,
                         i,
                         &max_stack,
                     );
+                    for j in merged {
+                        items[j].removed = true;
+                        left.push(items[j].id);
+                    }
                 }
                 let item = &mut items[i];
                 if !alive || removed[i] {
+                    if !item.removed {
+                        left.push(item.id);
+                    }
                     removed[i] = true;
+                    item.removed = true;
                     cells.remove(i, item.position);
                     break 'tick;
                 }
@@ -3270,8 +3292,18 @@ impl Game<'_> {
                 }
                 if !environment.alive {
                     removed[i] = true;
+                    item.removed = true;
+                    left.push(item.id);
                     cells.remove(i, item.position);
                 }
+            }
+            for gone in left.drain(..) {
+                self.left_in_loop(
+                    &mut [crossing::Lent::Items(&mut items)],
+                    Kind::Item,
+                    gone,
+                    Removal::Discarded,
+                );
             }
             let t = self.cross_point(
                 crossing::CrossPoint::ItemAfter(id),
@@ -3310,8 +3342,9 @@ impl Game<'_> {
         );
         let feet = [p.position.x, p.position.y, p.position.z];
         let own = self.level.ensure_player_uuid();
-        let mut kept = Vec::with_capacity(items.len());
-        for mut item in items {
+        let mut at = 0;
+        while at < items.len() {
+            let item = &items[at];
             let b = item.bounds();
             let touching = b.min_position().x < max[0]
                 && b.max_position().x > min[0]
@@ -3326,6 +3359,13 @@ impl Game<'_> {
                 let thrower = item.thrower;
                 match self.give(item.stack.clone()) {
                     None => {
+                        let item = items.remove(at);
+                        self.left_in_loop(
+                            &mut [crossing::Lent::Items(&mut items)],
+                            Kind::Item,
+                            item.id,
+                            Removal::Discarded,
+                        );
                         self.stats.add("picked_up", &kind, before as i32);
                         if let Some(thrower) = thrower {
                             self.trigger_thrown_picked_up_by_player(&item.stack, thrower);
@@ -3344,6 +3384,7 @@ impl Game<'_> {
                         continue;
                     }
                     Some(rest) => {
+                        let item = &mut items[at];
                         if rest.count < before {
                             self.stats
                                 .add("picked_up", &kind, (before - rest.count) as i32);
@@ -3367,9 +3408,9 @@ impl Game<'_> {
                     }
                 }
             }
-            kept.push(item);
+            at += 1;
         }
-        self.dropped = kept;
+        self.dropped = items;
     }
     /// Run vanilla block behaviour against the world through `LevelAccess`.
     fn with_level<R>(
@@ -6539,7 +6580,9 @@ impl Game<'_> {
             horizon_client::spans::time("tick_items", || self.tick_items());
             horizon_client::spans::time("touch_arrows", || self.touch_arrows());
         }
-        horizon_client::spans::time("spawn_loaded_entities", || self.spawn_loaded_entities());
+        horizon_client::spans::time("spawn_loaded_entities", || {
+            self.spawn_loaded_entities(Origin::FromDisk)
+        });
         // The ride the player's file names, once the vehicle is in the world.
         self.restore_root_vehicle();
         if running {
@@ -9888,7 +9931,7 @@ impl Game<'_> {
                     > d
             })
         {
-            self.break_painting(i, true);
+            self.break_painting(i, true, Removal::Killed);
             return true;
         }
         // A ghast's fireball or a wind charge in front: turned back.
@@ -10587,12 +10630,12 @@ impl Game<'_> {
         self.falling.clear();
         self.transient_blocks.clear();
         self.tnts.clear();
-        self.mobs.clear();
-        self.creatures.projectiles.clear();
-        self.dropped.clear();
+        self.level_remove_all(Kind::Mob, Removal::UnloadedToChunk);
+        self.level_remove_all(Kind::Projectile, Removal::UnloadedToChunk);
+        self.level_remove_all(Kind::Item, Removal::UnloadedToChunk);
         self.particles.clear();
         self.pickups.clear();
-        self.orbs.clear();
+        self.level_remove_all(Kind::Orb, Removal::UnloadedToChunk);
         self.mining = None;
         self.clear_lod();
         self.pending_uploads.clear();
@@ -10833,22 +10876,26 @@ impl Game<'_> {
     /// Let go of every entity of the level (saved first): the next world
     /// opened must not inherit them, nor save them as its own.
     fn clear_entities(&mut self) {
-        self.mobs.clear();
-        self.dropped.clear();
-        self.orbs.clear();
-        self.creatures.projectiles.clear();
+        self.level_remove_all(Kind::Mob, Removal::UnloadedToChunk);
+        self.level_remove_all(Kind::Item, Removal::UnloadedToChunk);
+        self.level_remove_all(Kind::Orb, Removal::UnloadedToChunk);
+        self.level_remove_all(Kind::Projectile, Removal::UnloadedToChunk);
         self.falling.clear();
         self.transient_blocks.clear();
         self.tnts.clear();
-        self.boats.clear();
-        self.carts.clear();
-        self.armor_stands.clear();
-        self.cushions.clear();
-        self.item_frames.clear();
-        self.paintings.clear();
-        self.others.clear();
-        self.dragon = None;
-        self.crystals.clear();
+        for kind in [
+            Kind::Stand,
+            Kind::Frame,
+            Kind::Painting,
+            Kind::Boat,
+            Kind::Cart,
+            Kind::Other,
+            Kind::Crystal,
+            Kind::Cushion,
+            Kind::Dragon,
+        ] {
+            self.level_remove_all(kind, Removal::UnloadedToChunk);
+        }
         self.dragon_fireballs.clear();
         self.breath_clouds.clear();
         self.tridents.clear();
@@ -11625,7 +11672,7 @@ impl Game<'_> {
         let _yaw = r.next_float();
         let p = Vec3::new(at[0], at[1], at[2]);
         self.next_entity += 1;
-        self.orbs.push(ExperienceOrb {
+        let orb = ExperienceOrb {
             removed: false,
             id: self.next_entity,
             position: p,
@@ -11640,7 +11687,8 @@ impl Game<'_> {
             on_ground: false,
             count: 1,
             ticks: 0,
-        });
+        };
+        self.level_add(NewEntity::Orb(orb), Origin::Fresh, None);
     }
     fn can_place_used_fire(&mut self, target: [i32; 3]) -> bool {
         let pos = BlockPos::new(target[0], target[1], target[2]);
@@ -11772,6 +11820,14 @@ impl Game<'_> {
             );
             o.removed = !alive;
             let id = o.id;
+            if !alive {
+                self.left_in_loop(
+                    &mut [crossing::Lent::Orbs(&mut orbs)],
+                    Kind::Orb,
+                    id,
+                    Removal::Discarded,
+                );
+            }
             let t = self.cross_point(
                 crossing::CrossPoint::OrbAfter(id),
                 &mut [crossing::Lent::Orbs(&mut orbs)],
@@ -11783,10 +11839,18 @@ impl Game<'_> {
         orbs.retain(|o| !o.removed);
         // ExperienceOrb.scanForMerges runs on the server only.
         if self.remote.is_none() {
-            horizon_client::entities::merge_orbs(&mut orbs);
+            for gone in horizon_client::entities::merge_orbs(&mut orbs) {
+                self.left_in_loop(
+                    &mut [crossing::Lent::Orbs(&mut orbs)],
+                    Kind::Orb,
+                    gone,
+                    Removal::Discarded,
+                );
+            }
         }
         let mut gained = 0;
         let mut taken = Vec::new();
+        let mut used_up = Vec::new();
         if let Some((min, max)) = bounds {
             orbs.retain_mut(|o| {
                 let touching = o.position.x + 0.25 > min[0]
@@ -11802,10 +11866,21 @@ impl Game<'_> {
                     gained += o.value;
                     taken.push(o.clone());
                     o.count -= 1;
+                    if o.count == 0 {
+                        used_up.push(o.id);
+                    }
                     return o.count > 0;
                 }
                 true
             });
+            for gone in used_up {
+                self.left_in_loop(
+                    &mut [crossing::Lent::Orbs(&mut orbs)],
+                    Kind::Orb,
+                    gone,
+                    Removal::Discarded,
+                );
+            }
         }
         self.orbs = orbs;
         for o in taken {
@@ -15756,6 +15831,8 @@ impl<'a> Game<'a> {
             lent: Default::default(),
             #[cfg(test)]
             test_cross: None,
+            #[cfg(test)]
+            test_life: None,
             particles,
             pickups: Default::default(),
             sign_edit: None,

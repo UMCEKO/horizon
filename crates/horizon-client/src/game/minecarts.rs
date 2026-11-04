@@ -4,6 +4,7 @@
 //! `MinecartItem` placement, `VehicleEntity` breaking, the chest, hopper,
 //! furnace and TNT variants, saving, and `AbstractMinecartRenderer`'s old
 //! rail-following render with the display block.
+use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use super::{Game, Hit, Keys};
 use horizon_client::{
     blocks::Fluid,
@@ -702,7 +703,7 @@ impl Game<'_> {
         let at = [c.position.x, c.position.y, c.position.z];
         // The cart is the explosion's source: it is gone before the blast
         // looks for entities, so it can't hit itself.
-        self.carts.retain(|x| x.id != c.id);
+        self.level_remove(Kind::Cart, c.id, Removal::Discarded);
         // ExplosionInteraction.TNT: the tnt_explosion_drop_decay rule.
         let interaction = self.destroy_type("tnt_explosion_drop_decay");
         let _ = self.with_hive_emptying_blast(|g| g.server_explode(at, power, interaction, false));
@@ -853,7 +854,7 @@ impl Game<'_> {
                     self.perform_cart_command(id);
                 }
             } else {
-                self.carts.remove(i);
+                self.level_remove(Kind::Cart, id, Removal::Killed);
             }
         }
         // On the server for every cart, the ridden ones too.
@@ -957,7 +958,7 @@ impl Game<'_> {
             self.carts[i] = c;
             self.push_from_cart(i);
         } else {
-            self.carts.remove(i);
+            self.level_remove(Kind::Cart, c.id, Removal::Killed);
             self.riding = None;
         }
         true
@@ -1035,7 +1036,7 @@ impl Game<'_> {
         self.world
             .modified
             .insert((hit.pos[0] >> 4, hit.pos[2] >> 4));
-        self.carts.push(cart);
+        self.level_add(NewEntity::Cart(cart), Origin::Fresh, None);
         if !self.creative {
             self.consume_held();
         }
@@ -1238,7 +1239,8 @@ impl Game<'_> {
             return;
         }
         if burning && self.carts[i].kind == CartKind::Tnt {
-            let c = self.carts.remove(i);
+            let c = self.carts[i].clone();
+            self.level_remove(Kind::Cart, c.id, Removal::Discarded);
             self.explode_cart(&c, arrow_velocity.length_squared());
             return;
         }
@@ -1254,17 +1256,21 @@ impl Game<'_> {
         c.damage += damage * 10.0;
         let destroyed = creative || c.damage > 40.0;
         if destroyed {
-            let mut c = self.carts.remove(i);
+            let c = &self.carts[i];
             let speed = c.velocity.x * c.velocity.x + c.velocity.z * c.velocity.z;
             if c.kind == CartKind::Tnt && (fire || speed >= f64::from(0.01f32)) {
                 // MinecartTNT.destroy: prime instead of breaking.
-                if c.fuse < 0 {
-                    self.prime_cart(&mut c);
-                    let r = &mut self.world.random;
-                    c.fuse = r.next_int_bound(20).unwrap_or(0) + r.next_int_bound(20).unwrap_or(0);
-                }
-                self.carts.insert(i, c);
+                self.with_cart_outside(i, |g, c| {
+                    if c.fuse < 0 {
+                        g.prime_cart(c);
+                        let r = &mut g.world.random;
+                        c.fuse =
+                            r.next_int_bound(20).unwrap_or(0) + r.next_int_bound(20).unwrap_or(0);
+                    }
+                });
             } else {
+                let c = c.clone();
+                self.level_remove(Kind::Cart, c.id, Removal::Discarded);
                 let at = [c.position.x, c.position.y, c.position.z];
                 if self.ui.rules.bool("entity_drops") {
                     for s in c.items.iter().flatten() {

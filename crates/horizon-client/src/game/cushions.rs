@@ -6,6 +6,7 @@
 //! A cushion is a `BlockAttachedEntity`, not a block: it has no block state,
 //! only an entity whose `Pos` is the click point's height. Placement uses
 //! outline bounds, collision shapes and suffocation predicates.
+use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use super::{Game, Hit};
 use horizon_client::entities::{Cushion, dye_index};
 use horizon_client::items::ItemStack;
@@ -271,21 +272,24 @@ impl Game<'_> {
             position.y.floor() as i32,
             position.z.floor() as i32,
         ];
-        self.cushions.push(Cushion {
+        let cushion = Cushion {
             id,
             position,
             pos: attached,
             yaw: snap_yaw(self.yaw),
             color,
             check_interval: 0,
-        });
+        };
+        self.level_add(NewEntity::Cushion(cushion), Origin::Fresh, None);
         self.world
             .modified
             .insert((attached[0] >> 4, attached[2] >> 4));
         // `destroyIfInFire`: placed into fire, it breaks at once.
-        let placed = self.cushions.len() - 1;
-        if self.cushion_in_fire(&self.cushions[placed]) {
-            self.break_cushion(placed, false);
+        let placed = self.cushions.iter().position(|c| c.id == id);
+        if let Some(placed) = placed
+            && self.cushion_in_fire(&self.cushions[placed])
+        {
+            self.break_cushion(placed, false, Removal::Killed);
         }
         self.audio.play(
             "minecraft:entity.cushion.place",
@@ -356,14 +360,15 @@ impl Game<'_> {
         if !self.may_build() {
             return true;
         }
-        self.break_cushion(i, true);
+        self.break_cushion(i, true, Removal::Killed);
         true
     }
 
     /// `Cushion.dropItem`: the break sound and particles, then the coloured
     /// item unless drops are off or the breaker has infinite materials.
-    pub(super) fn break_cushion(&mut self, index: usize, by_player: bool) {
-        let c = self.cushions.remove(index);
+    pub(super) fn break_cushion(&mut self, index: usize, by_player: bool, why: Removal) {
+        let c = self.cushions[index].clone();
+        self.level_remove(Kind::Cushion, c.id, why);
         let p = c.position;
         self.world.modified.insert((c.pos[0] >> 4, c.pos[2] >> 4));
         if self.riding == Some(c.id) {
@@ -433,8 +438,14 @@ impl Game<'_> {
             }
             self.cushions[i].check_interval = 0;
             let c = self.cushions[i].clone();
-            if self.cushion_in_fire(&c) || !self.cushion_survives(&c) {
-                self.break_cushion(i, false);
+            let in_fire = self.cushion_in_fire(&c);
+            if in_fire || !self.cushion_survives(&c) {
+                let why = if in_fire {
+                    Removal::Killed
+                } else {
+                    Removal::Discarded
+                };
+                self.break_cushion(i, false, why);
                 continue;
             }
             i += 1;

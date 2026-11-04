@@ -2,6 +2,7 @@
 //! their server tick, bees going in, and the bees let out, angry, when a
 //! player breaks the hive or fire reaches it.
 use super::Game;
+use super::entity_life::{NewEntity, Origin};
 use horizon_client::{
     Result,
     beehive::{self, Beehive, BeehiveExt, HiveHost, Release},
@@ -48,13 +49,19 @@ impl HiveHost for GameHive<'_, '_> {
         {
             return None;
         }
-        let id = self.game.load_mob(tag.clone(), None)?;
-        let i = self.game.mobs.iter().position(|m| m.id == id)?;
-        Some(self.game.mobs.remove(i))
+        let uuid = horizon_client::entity_nbt::uuid(tag);
+        if uuid.is_some_and(|u| self.game.restored_vehicle(u).is_some()) {
+            return None;
+        }
+        let read = self.game.read_mob(tag.clone(), None, uuid)?;
+        let id = read.mob.id;
+        self.game.remember(id, uuid, read.tag);
+        Some(read.mob)
     }
     fn add(&mut self, m: Mob) -> bool {
-        self.game.mobs.push(m);
-        true
+        self.game
+            .level_add(NewEntity::Mob(m), Origin::Fresh, None)
+            .is_some()
     }
     fn sound(&mut self, name: &'static str, at: [f64; 3]) {
         self.game

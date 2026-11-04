@@ -1333,4 +1333,191 @@ mod tests {
         *report_of(&mut reports, original.origin).1 += 1;
         assert_eq!(reports, vec![(1, 1, 1)]);
     }
+
+    use super::super::crossing_tests::flat_game;
+    use super::super::entity_life::{Kind, LifeEvent, Origin, Removal};
+    use super::super::{ItemEntity, ItemStack, Vec3};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    type Log = Rc<RefCell<Vec<(LifeEvent, bool, i32)>>>;
+
+    // Records each event, whether the entity was in its vector, and the pickup stat then.
+    fn watch(game: &mut Game<'_>) -> Log {
+        let log: Log = Rc::default();
+        let seen = log.clone();
+        game.test_life = Some(Box::new(move |g, event| {
+            let (kind, id) = match event {
+                LifeEvent::Join(kind, id, _) | LifeEvent::Leave(kind, id, _) => (kind, id),
+            };
+            let present = match kind {
+                Kind::Mob => g.mobs.iter().any(|m| m.id == id && !m.removed),
+                Kind::Item => g.dropped.iter().any(|i| i.id == id && !i.removed),
+                _ => false,
+            };
+            let stat = g.stats.get("picked_up", "minecraft:stick");
+            seen.borrow_mut().push((event, present, stat));
+            true
+        }));
+        log
+    }
+
+    fn leaves(log: &Log) -> Vec<(Kind, Removal)> {
+        log.borrow()
+            .iter()
+            .filter_map(|(e, _, _)| match e {
+                LifeEvent::Leave(kind, _, why) => Some((*kind, *why)),
+                LifeEvent::Join(..) => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_refused_join_never_reaches_the_level() {
+        let Some(mut game) = flat_game() else { return };
+        let refuse = Rc::new(Cell::new(true));
+        let flag = refuse.clone();
+        game.test_life = Some(Box::new(move |_, _| !flag.replace(false)));
+        let before = game.mobs.len();
+        let next = game.next_entity;
+        let _ = game.summon("pig", Some([2.5, 61.0, 2.5]), false);
+        assert_eq!(game.mobs.len(), before, "no pig");
+        assert!(!game.persist.raw.contains_key(&(next + 1)));
+        let id = game.summon("pig", Some([2.5, 61.0, 2.5]), false).unwrap();
+        assert!(game.mobs.iter().any(|m| m.id == id));
+    }
+
+    #[test]
+    fn joins_come_before_the_entity_is_in_the_level() {
+        let Some(mut game) = flat_game() else { return };
+        let log = watch(&mut game);
+        let id = game.summon("pig", Some([2.5, 61.0, 2.5]), false).unwrap();
+        assert!(game.mobs.iter().any(|m| m.id == id));
+        let log = log.borrow();
+        let join = log
+            .iter()
+            .find(|(e, _, _)| matches!(e, LifeEvent::Join(Kind::Mob, i, _) if *i == id))
+            .expect("the pig joined");
+        assert!(!join.1, "the pig was not in the level at its join");
+    }
+
+    #[test]
+    fn leave_comes_after_removal_with_its_reason() {
+        let Some(mut game) = flat_game() else { return };
+        let log = watch(&mut game);
+        let pig = game.summon("pig", Some([2.5, 61.0, 2.5]), false).unwrap();
+        game.kill_target(super::super::commands::Target::Mob(pig));
+        for tick in 0..30 {
+            game.tick_creature_entities().unwrap();
+            if !leaves(&log).is_empty() {
+                assert!(tick >= 15, "the body stays while it dies");
+                break;
+            }
+        }
+        assert_eq!(leaves(&log), vec![(Kind::Mob, Removal::Killed)]);
+        assert!(
+            log.borrow()
+                .iter()
+                .all(|(e, present, _)| !matches!(e, LifeEvent::Leave(..)) || !present)
+        );
+        // A zombie out of every player's reach despawns.
+        let zombie = game
+            .summon("zombie", Some([2.5, 61.0, 2.5]), false)
+            .unwrap();
+        game.mobs
+            .iter_mut()
+            .find(|m| m.id == zombie)
+            .unwrap()
+            .persistent = false;
+        game.player = Some(
+            horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(1000.5, 61.0, 1000.5))
+                .unwrap(),
+        );
+        log.borrow_mut().clear();
+        game.tick_creature_entities().unwrap();
+        assert_eq!(leaves(&log), vec![(Kind::Mob, Removal::Discarded)]);
+        assert!(!game.mobs.iter().any(|m| m.id == zombie));
+    }
+
+    fn stick(game: &mut Game<'_>, at: Vec3) -> u32 {
+        game.next_entity += 1;
+        let id = game.next_entity;
+        game.dropped.push(ItemEntity {
+            health: 5,
+            fire_ticks: 0,
+            id,
+            stack: ItemStack::new("minecraft:stick", 1),
+            thrower: None,
+            target: None,
+            position: at,
+            previous: at,
+            velocity: Vec3::ZERO,
+            on_ground: true,
+            age: 0,
+            pickup_delay: 0,
+            bob_offset: 0.0,
+            ticks: 0,
+            removed: false,
+        });
+        id
+    }
+
+    #[test]
+    fn a_pickup_leaves_before_the_stat() {
+        let Some(mut game) = flat_game() else { return };
+        let log = watch(&mut game);
+        let at = game.player.as_ref().unwrap().position;
+        let id = stick(&mut game, at);
+        game.tick_items();
+        assert!(!game.dropped.iter().any(|i| i.id == id), "picked up");
+        let leaves = log
+            .borrow()
+            .iter()
+            .filter(|(e, _, _)| {
+                matches!(e, LifeEvent::Leave(Kind::Item, i, Removal::Discarded) if *i == id)
+            })
+            .map(|(_, present, stat)| (*present, *stat))
+            .collect::<Vec<_>>();
+        assert_eq!(leaves, vec![(false, 0)], "gone, and no stat yet");
+        assert_eq!(game.stats.get("picked_up", "minecraft:stick"), 1);
+    }
+
+    #[test]
+    fn a_chunk_unloaded_removes_its_entities_as_unloaded_to_chunk() {
+        let Some(mut game) = flat_game() else { return };
+        let log = watch(&mut game);
+        game.summon("cow", Some([20.5, 61.0, 20.5]), false).unwrap();
+        let keys = std::collections::HashSet::from([(1, 1)]);
+        let saved = game.entity_chunks(&keys, true);
+        assert!(
+            game.mobs
+                .iter()
+                .all(|m| m.species() != horizon_client::mobs::Species::Cow)
+        );
+        assert_eq!(saved.iter().map(|(_, tags)| tags.len()).sum::<usize>(), 1);
+        assert_eq!(leaves(&log), vec![(Kind::Mob, Removal::UnloadedToChunk)]);
+    }
+
+    #[test]
+    fn loaded_entities_join_from_disk() {
+        let Some(mut game) = flat_game() else { return };
+        game.summon("cow", Some([20.5, 61.0, 20.5]), false).unwrap();
+        let keys = std::collections::HashSet::from([(1, 1)]);
+        let saved = game.entity_chunks(&keys, true);
+        let log = watch(&mut game);
+        game.world.loaded_entities.extend(saved);
+        game.spawn_loaded_entities(Origin::FromDisk);
+        let joins = |log: &Log| {
+            log.borrow()
+                .iter()
+                .filter_map(|(e, _, _)| match e {
+                    LifeEvent::Join(Kind::Mob, _, origin) => Some(*origin),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(joins(&log), vec![Origin::FromDisk]);
+        game.summon("cow", Some([20.5, 61.0, 20.5]), false).unwrap();
+        assert_eq!(joins(&log), vec![Origin::FromDisk, Origin::Fresh]);
+    }
 }

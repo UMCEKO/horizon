@@ -2,6 +2,7 @@
 //! chunk-generation spawning (`NaturalSpawner`), mob events (attacks,
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
+use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use super::{Dim, Game, dispenser, view_vector};
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
@@ -461,8 +462,7 @@ impl Game<'_> {
             };
             horizon_client::mobs::raider::finalize(&mut mob, reason);
         }
-        let id = mob.id;
-        self.mobs.push(mob);
+        let id = self.level_add(NewEntity::Mob(mob), Origin::Fresh, None)?;
         self.enchant_spawn_equipment(id);
         if !persistent && !scripted {
             self.spawn_jockeys(id, true);
@@ -501,8 +501,7 @@ impl Game<'_> {
                 rider.extra.mount = Some(id);
             }
         }
-        self.mobs.push(mob);
-        Some(id)
+        self.level_add(NewEntity::Mob(mob), Origin::Fresh, None)
     }
     /// The `summon` command: spawn a mob in front of the player or at a position.
     pub(super) fn summon(&mut self, kind: &str, at: Option<[f64; 3]>, baby: bool) -> Result<u32> {
@@ -834,9 +833,9 @@ impl Game<'_> {
             // The mobs this tick ticks are the ones present now; a crossing may add more.
             let n = mobs.len();
             let mut marks = super::crossing::Marks::new(&mobs);
-            // Runs `$point` between two mobs with every vector in `Game`, then refreshes what it touched.
-            macro_rules! cross {
-                ($point:expr) => {{
+            // Runs `$call` (a crossing that returns what it touched) with the loop's state in `Game`, then refreshes what it touched.
+            macro_rules! around {
+                ($call:expr) => {{
                     std::mem::swap(&mut self.world.random, &mut scratch);
                     std::mem::swap(&mut self.died, &mut died);
                     if let Some(host) = self.lan.as_mut()
@@ -844,7 +843,7 @@ impl Game<'_> {
                     {
                         std::mem::swap(&mut host.mob_players, &mut bindings);
                     }
-                    let t = self.cross_point($point, &mut [super::crossing::Lent::Mobs(&mut mobs)]);
+                    let t = $call;
                     std::mem::swap(&mut self.world.random, &mut scratch);
                     std::mem::swap(&mut self.died, &mut died);
                     if let Some(host) = self.lan.as_mut()
@@ -869,6 +868,27 @@ impl Game<'_> {
                         grid.push(snapshot[at].bounds);
                         index.entry(mobs[at].id).or_insert(at as u32);
                     }
+                }};
+            }
+            // Runs `$point` between two mobs with every vector in `Game`.
+            macro_rules! cross {
+                ($point:expr) => {{ around!(self.cross_point($point, &mut [super::crossing::Lent::Mobs(&mut mobs)])) }};
+            }
+            // The mob at `$i` leaves the level for `$why`: marked removed, then its leave runs with every vector in `Game`.
+            macro_rules! leave {
+                ($i:expr, $why:expr) => {{
+                    let at = $i;
+                    mobs[at].removed = true;
+                    let gone = mobs[at].id;
+                    around!({
+                        self.left_in_loop(
+                            &mut [super::crossing::Lent::Mobs(&mut mobs)],
+                            Kind::Mob,
+                            gone,
+                            $why,
+                        );
+                        self.take_touched()
+                    })
                 }};
             }
             for i in 0..n {
@@ -920,7 +940,11 @@ impl Game<'_> {
                     .world
                     .loaded(m.position.x.floor() as i32, m.position.z.floor() as i32)
                 {
-                    keep.push(!m.hostile() || m.persistent);
+                    let kept = !m.hostile() || m.persistent;
+                    keep.push(kept);
+                    if !kept {
+                        leave!(i, Removal::Discarded);
+                    }
                     continue;
                 }
                 // ServerLevel.tick: every loaded entity checks despawning, but
@@ -939,6 +963,9 @@ impl Game<'_> {
                     if m.removed && kept {
                         marks.prior(id);
                     }
+                    if !kept {
+                        leave!(i, Removal::Discarded);
+                    }
                     cross!(super::crossing::CrossPoint::MobAfter(id));
                     continue;
                 }
@@ -952,6 +979,7 @@ impl Game<'_> {
                 horizon_client::mobs::apply_mob_pushes(m, &mut pushes);
                 horizon_client::mobs::blocks_changed(m, &w, &path_writes);
                 let from = events.len();
+                let mut why = Removal::Discarded;
                 let kept = m.tick(&w, &mut scratch, &mut events);
                 // A killed mob's body is removed: its effects that act on
                 // death run (`LivingEntity.remove` with KILLED).
@@ -963,6 +991,7 @@ impl Game<'_> {
                 if !kept && !m.removed && !m.alive() && m.death_time >= 20 {
                     let (width, height) = (f64::from(m.width()), f64::from(m.height()));
                     gone.push((m.id, m.position, width, height));
+                    why = Removal::Killed;
                 }
                 if let Some(conn) = seen_guest {
                     // ShulkerBullet.finalTarget is the guest's entity: the
@@ -1004,6 +1033,9 @@ impl Game<'_> {
                 snapshot[i].alive &= kept;
                 grid.update(i, snapshot[i].bounds);
                 horizon_client::mobs::apply_brain_events(&mut mobs, &mut events, from);
+                if !kept {
+                    leave!(i, why);
+                }
                 cross!(super::crossing::CrossPoint::MobAfter(id));
             }
             let mut flags = keep.into_iter();
@@ -1512,12 +1544,21 @@ impl Game<'_> {
     }
     /// Adds a projectile, giving it an id from the entity counter
     /// (`Entity.id`, the same counter as the rest) when it has none.
-    pub(super) fn add_projectile(&mut self, mut p: horizon_client::projectiles::Projectile) {
+    pub(super) fn add_projectile(&mut self, p: horizon_client::projectiles::Projectile) {
+        self.add_projectile_as(p, Origin::Fresh, None);
+    }
+    /// `add_projectile` with `addEntity`'s `loaded` and the compound it was read from.
+    pub(super) fn add_projectile_as(
+        &mut self,
+        mut p: horizon_client::projectiles::Projectile,
+        origin: Origin,
+        saved: Option<&horizon_world::nbt::Tag>,
+    ) -> Option<u32> {
         if p.id == 0 {
             self.next_entity += 1;
             p.id = self.next_entity;
         }
-        self.creatures.projectiles.push(p);
+        self.level_add(NewEntity::Projectile(p), origin, saved)
     }
     pub(super) fn handle_mob_events(&mut self, events: Vec<MobEvent>) -> Result<()> {
         for e in events {
@@ -1890,7 +1931,7 @@ impl Game<'_> {
                 MobEvent::Spawn(mut m) => {
                     self.next_entity += 1;
                     m.id = self.next_entity;
-                    self.mobs.push(*m);
+                    self.level_add(NewEntity::Mob(*m), Origin::Fresh, None);
                 }
                 MobEvent::SpawnKind { kind, at, setup } => {
                     if let Some(id) = self.spawn_mob(&kind, at, setup.persistent) {
@@ -1900,21 +1941,23 @@ impl Game<'_> {
                 MobEvent::Convert { from, kind, params } => {
                     self.convert_to(&from, kind, params);
                 }
-                MobEvent::DropItem { item, count, at } => self.spawn_item(
-                    ItemStack {
-                        item,
-                        count,
-                        damage: 0,
-                        extra: None,
-                    },
-                    at,
-                    // The ItemEntity constructor's motion, from the entity's
-                    // own random (not the level's), so spawnAtLocation drops
-                    // (a fox's berries, a panda's held food, a goat's horn)
-                    // land apart.
-                    dispenser::new_item_motion(),
-                    10,
-                ),
+                MobEvent::DropItem { item, count, at } => {
+                    self.spawn_item(
+                        ItemStack {
+                            item,
+                            count,
+                            damage: 0,
+                            extra: None,
+                        },
+                        at,
+                        // The ItemEntity constructor's motion, from the entity's
+                        // own random (not the level's), so spawnAtLocation drops
+                        // (a fox's berries, a panda's held food, a goat's horn)
+                        // land apart.
+                        dispenser::new_item_motion(),
+                        10,
+                    );
+                }
                 MobEvent::DropGift { table, at } => {
                     let stacks =
                         self.res
@@ -3009,6 +3052,13 @@ impl Game<'_> {
                 );
                 picked.push(shot.clone());
                 projectiles[i].removed = true;
+                let gone = projectiles[i].id;
+                self.left_in_loop(
+                    &mut [super::crossing::Lent::Projectiles(&mut projectiles)],
+                    Kind::Projectile,
+                    gone,
+                    Removal::Discarded,
+                );
             }
             let id = projectiles[i].id;
             let t = self.cross_point(
@@ -3207,6 +3257,15 @@ impl Game<'_> {
                     }
                 }
                 let id = projectiles[i].id;
+                if !keep_flags[i] && !projectiles[i].removed {
+                    projectiles[i].removed = true;
+                    self.left_in_loop(
+                        &mut [super::crossing::Lent::Projectiles(&mut projectiles)],
+                        Kind::Projectile,
+                        id,
+                        Removal::Discarded,
+                    );
+                }
                 let t = self.cross_point(
                     super::crossing::CrossPoint::ProjectileAfter(id),
                     &mut [super::crossing::Lent::Projectiles(&mut projectiles)],

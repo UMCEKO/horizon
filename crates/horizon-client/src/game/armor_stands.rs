@@ -3,6 +3,7 @@
 //! of `hurtServer` (creative breaks at once), and `ArmorStandRenderer` with
 //! the default pose, the hit wobble and humanoid armor layers.
 use super::Game;
+use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use horizon_client::{
     entities::ArmorStand,
     items::ItemStack,
@@ -430,7 +431,7 @@ impl Game<'_> {
             0.8,
         );
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
-        self.armor_stands.push(stand);
+        self.level_add(NewEntity::Stand(stand), Origin::Fresh, None);
         if !self.creative {
             self.consume_held();
         }
@@ -631,7 +632,8 @@ impl Game<'_> {
         let at = [at.x, at.y, at.z];
         if self.creative {
             let (width, height) = stand_box(&self.armor_stands[i]);
-            self.armor_stands.remove(i);
+            let id = self.armor_stands[i].id;
+            self.level_remove(Kind::Stand, id, Removal::Killed);
             self.audio
                 .play("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
             self.show_breaking_particles(at, f64::from(width), f64::from(height));
@@ -645,7 +647,8 @@ impl Game<'_> {
             return true;
         }
         // brokenByPlayer: the stand item, then brokenByAnything: the equipment.
-        let a = self.armor_stands.remove(i);
+        let a = self.armor_stands[i].clone();
+        self.level_remove(Kind::Stand, a.id, Removal::Killed);
         let (width, height) = stand_box(&a);
         self.audio
             .play("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
@@ -709,7 +712,8 @@ impl Game<'_> {
     /// breaks a stand: its equipment pops above its block, the stand item does
     /// not drop.
     pub(super) fn break_armor_stand_by_anything(&mut self, i: usize) {
-        let a = self.armor_stands.remove(i);
+        let a = self.armor_stands[i].clone();
+        self.level_remove(Kind::Stand, a.id, Removal::Killed);
         let at = [a.position.x, a.position.y, a.position.z];
         let (pos, drops) = broken_armor_stand_equipment(a);
         for stack in drops {

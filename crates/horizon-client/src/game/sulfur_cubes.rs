@@ -3,6 +3,7 @@
 //! out, lighting an explosive one, swallowing blocks from the ground and
 //! splitting into two babies.
 use super::Game;
+use super::entity_life::{Kind, Removal};
 use horizon_client::{
     items::ItemStack,
     mesher::Vertex,
@@ -244,7 +245,8 @@ impl Game<'_> {
             let e = &mut self.dropped[j];
             e.stack.count -= 1;
             if e.stack.count == 0 {
-                self.dropped.remove(j);
+                let id = self.dropped[j].id;
+                self.level_remove(Kind::Item, id, Removal::Discarded);
             }
             let m = &mut self.mobs[i];
             m.extra.head = Some(item);

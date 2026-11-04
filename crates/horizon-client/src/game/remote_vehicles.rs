@@ -330,18 +330,16 @@ impl Game<'_> {
             jumping: keys.jump,
             client: false,
         });
-        let mut mob = self.mobs.remove(i);
         let mut random = self.world.random.clone();
-        let mut events = Vec::new();
-        {
-            let shared = self.mob_shared();
-            let world = self.mob_world(&shared, &[]);
+        self.with_mob_outside(i, |g, mob| {
+            let mut events = Vec::new();
+            let shared = g.mob_shared();
+            let world = g.mob_world(&shared, &[]);
             mob.tick(&world, &mut random, &mut events);
-        }
-        // Only the server's packets take the mount away.
-        mob.removed = false;
+            // Only the server's packets take the mount away.
+            mob.removed = false;
+        });
         self.world.random = random;
-        self.mobs.insert(i, mob);
     }
 }
 

@@ -1,7 +1,8 @@
 //! Saving and loading the game state that lives outside chunk blocks:
 //! entities (`entities/*.mca`, per chunk like vanilla's `EntityStorage`) and
 //! scheduled block/fluid ticks (chunk `block_ticks`/`fluid_ticks`).
-use super::{FallingBlock, Game};
+use super::entity_life::{Kind, NewEntity, Origin, Removal};
+use super::{FallingBlock, Game, Mob};
 use horizon_client::{
     Result,
     chunk::Chunk,
@@ -246,7 +247,7 @@ impl Game<'_> {
         ))
     }
     /// Spawn the entities of chunks that finished loading.
-    pub(super) fn spawn_loaded_entities(&mut self) {
+    pub(super) fn spawn_loaded_entities(&mut self, origin: Origin) {
         let loaded = std::mem::take(&mut self.world.loaded_entities);
         let player_uuid = self.level.player_uuid;
         for (key, tags) in loaded {
@@ -280,15 +281,20 @@ impl Game<'_> {
                         if let Some(e) =
                             entity_nbt::item_entity_from_nbt(&tag, self.next_entity, bob)
                         {
-                            self.remember(e.id, uuid, tag);
-                            self.dropped.push(e);
+                            let id = e.id;
+                            if self
+                                .level_add(NewEntity::Item(e), origin, Some(&tag))
+                                .is_some()
+                            {
+                                self.remember(id, uuid, tag);
+                            }
                         }
                     }
                     "minecraft:experience_orb" => {
                         for mut orb in entity_nbt::orbs_from_nbt(&tag) {
                             self.next_entity += 1;
                             orb.id = self.next_entity;
-                            self.orbs.push(orb);
+                            self.level_add(NewEntity::Orb(orb), origin, Some(&tag));
                         }
                     }
                     "minecraft:arrow" => {
@@ -300,7 +306,7 @@ impl Game<'_> {
                             if let Some(a) = p.arrow.as_mut() {
                                 a.last_state = in_block.and_then(|t| self.state_from_nbt(&t));
                             }
-                            self.add_projectile(p);
+                            self.add_projectile_as(p, origin, Some(&tag));
                         }
                     }
                     "minecraft:fireball"
@@ -308,7 +314,7 @@ impl Game<'_> {
                     | "minecraft:wind_charge"
                     | "minecraft:breeze_wind_charge" => {
                         if let Some(p) = entity_nbt::fireball_from_nbt(&tag, player_uuid) {
-                            self.add_projectile(p);
+                            self.add_projectile_as(p, origin, Some(&tag));
                         }
                     }
                     "minecraft:falling_block" => {
@@ -387,10 +393,14 @@ impl Game<'_> {
                             // AbstractBoat.readAdditionalSaveData: the lead's holder.
                             b.leash_pending =
                                 horizon_client::mobs::leash::pending_from_nbt(tag.get("leash"));
-                            self.remember(id, uuid, tag);
-                            self.boats.push(b);
-                            for rider in riders {
-                                self.load_mob(rider, Some(id));
+                            if self
+                                .level_add(NewEntity::Boat(b), origin, Some(&tag))
+                                .is_some()
+                            {
+                                self.remember(id, uuid, tag);
+                                for rider in riders {
+                                    self.load_mob(rider, Some(id), origin);
+                                }
                             }
                         }
                     }
@@ -400,8 +410,12 @@ impl Game<'_> {
                         if let Some(mut c) = super::minecarts::Minecart::from_nbt(&tag, id, kind) {
                             self.roll_cart_loot(&mut c, &tag);
                             self.next_entity = id;
-                            self.remember(id, uuid, tag);
-                            self.carts.push(c);
+                            if self
+                                .level_add(NewEntity::Cart(c), origin, Some(&tag))
+                                .is_some()
+                            {
+                                self.remember(id, uuid, tag);
+                            }
                         }
                     }
                     "minecraft:ominous_item_spawner" => self.load_ominous_item_spawner(tag),
@@ -414,7 +428,7 @@ impl Game<'_> {
                             // parts' from the entity counter.
                             d.id = self.next_entity + 1;
                             self.next_entity += 9;
-                            self.dragon = Some(d);
+                            self.level_add(NewEntity::Dragon(Box::new(d)), origin, Some(&tag));
                         }
                     }
                     "minecraft:end_crystal" => {
@@ -424,28 +438,43 @@ impl Game<'_> {
                             // entity counter.
                             self.next_entity += 1;
                             c.id = self.next_entity;
-                            self.crystals.push(c);
+                            self.level_add(NewEntity::Crystal(c), origin, Some(&tag));
                         }
                     }
                     "minecraft:armor_stand" => {
                         self.next_entity += 1;
                         if let Some(a) = entity_nbt::armor_stand_from_nbt(&tag, self.next_entity) {
-                            self.remember(a.id, uuid, tag);
-                            self.armor_stands.push(a);
+                            let id = a.id;
+                            if self
+                                .level_add(NewEntity::Stand(a), origin, Some(&tag))
+                                .is_some()
+                            {
+                                self.remember(id, uuid, tag);
+                            }
                         }
                     }
                     "minecraft:item_frame" | "minecraft:glow_item_frame" => {
                         self.next_entity += 1;
                         if let Some(f) = entity_nbt::item_frame_from_nbt(&tag, self.next_entity) {
-                            self.remember(f.id, uuid, tag);
-                            self.item_frames.push(f);
+                            let id = f.id;
+                            if self
+                                .level_add(NewEntity::Frame(f), origin, Some(&tag))
+                                .is_some()
+                            {
+                                self.remember(id, uuid, tag);
+                            }
                         }
                     }
                     "minecraft:cushion" => {
                         self.next_entity += 1;
                         if let Some(c) = entity_nbt::cushion_from_nbt(&tag, self.next_entity) {
-                            self.remember(c.id, uuid, tag);
-                            self.cushions.push(c);
+                            let id = c.id;
+                            if self
+                                .level_add(NewEntity::Cushion(c), origin, Some(&tag))
+                                .is_some()
+                            {
+                                self.remember(id, uuid, tag);
+                            }
                         }
                     }
                     "minecraft:painting" => {
@@ -454,8 +483,7 @@ impl Game<'_> {
                         {
                             self.next_entity += 1;
                             let id = self.next_entity;
-                            self.remember(id, uuid, tag);
-                            self.paintings.push(horizon_client::entities::Painting {
+                            let painting = horizon_client::entities::Painting {
                                 id,
                                 pos,
                                 facing,
@@ -463,16 +491,22 @@ impl Game<'_> {
                                 width: v.width,
                                 height: v.height,
                                 check_interval: 0,
-                            });
+                            };
+                            if self
+                                .level_add(NewEntity::Painting(painting), origin, Some(&tag))
+                                .is_some()
+                            {
+                                self.remember(id, uuid, tag);
+                            }
                         } else {
                             self.persist.unknown.entry(key).or_default().push(tag);
                         }
                     }
                     _ if self.res.mob_types().contains_key(&kind) => {
-                        self.load_mob(tag, None);
+                        self.load_mob(tag, None, origin);
                     }
                     _ if !kind.is_empty() && entity_nbt::position(&tag).is_some() => {
-                        self.load_other(tag, &kind);
+                        self.load_other(tag, &kind, origin);
                     }
                     _ => self.persist.unknown.entry(key).or_default().push(tag),
                 }
@@ -480,11 +514,21 @@ impl Game<'_> {
         }
     }
     /// A saved mob and, under `Passengers`, the mobs riding it.
-    pub(super) fn load_mob(&mut self, tag: Tag, mount: Option<u32>) -> Option<u32> {
+    pub(super) fn load_mob(&mut self, tag: Tag, mount: Option<u32>, origin: Origin) -> Option<u32> {
         let uuid = entity_nbt::uuid(&tag);
         if let Some(id) = uuid.and_then(|u| self.restored_vehicle(u)) {
             return Some(id);
         }
+        let read = self.read_mob(tag, mount, uuid)?;
+        self.add_read_mob(read, origin)
+    }
+    /// A saved mob made, not yet in the level (`EntityType.loadEntityRecursive`).
+    pub(super) fn read_mob(
+        &mut self,
+        tag: Tag,
+        mount: Option<u32>,
+        uuid: Option<[i32; 4]>,
+    ) -> Option<ReadMob> {
         self.next_entity += 1;
         // Structure mobs that generation left to finish: saves from before
         // they were finalized at placement, or a placement that could not.
@@ -529,14 +573,31 @@ impl Game<'_> {
                 }
             }
         }
-        let id = m.id;
+        Some(ReadMob {
+            mob: m,
+            uuid,
+            tag,
+            riders,
+            finalize,
+        })
+    }
+    /// The join of a mob `read_mob` made, then its riders.
+    fn add_read_mob(&mut self, read: ReadMob, origin: Origin) -> Option<u32> {
+        let ReadMob {
+            mob,
+            uuid,
+            tag,
+            riders,
+            finalize,
+        } = read;
+        let id = mob.id;
+        self.level_add(NewEntity::Mob(mob), origin, Some(&tag))?;
         self.remember(id, uuid, tag);
-        self.mobs.push(m);
         if finalize {
             self.enchant_spawn_equipment(id);
         }
         for rider in riders {
-            if let Some(r) = self.load_mob(rider, Some(id))
+            if let Some(r) = self.load_mob(rider, Some(id), origin)
                 && let Some(v) = self.mobs.iter_mut().find(|m| m.id == id)
             {
                 v.extra.rider = Some(r);
@@ -588,7 +649,7 @@ impl Game<'_> {
         }
     }
     /// An entity of a type Horizon does not simulate, kept as its compound.
-    fn load_other(&mut self, mut tag: Tag, kind: &str) -> Option<u32> {
+    fn load_other(&mut self, mut tag: Tag, kind: &str, origin: Origin) -> Option<u32> {
         strip_finalize(&mut tag);
         let position = entity_nbt::position(&tag)?;
         let rotation = match tag.get("Rotation") {
@@ -604,14 +665,15 @@ impl Game<'_> {
         self.next_entity += 1;
         let id = self.next_entity;
         let uuid = entity_nbt::uuid(&tag);
-        self.remember(id, uuid, tag);
-        self.others.push(super::commands::OtherEntity {
+        let other = super::commands::OtherEntity {
             id,
             kind: kind.to_owned(),
             position,
             yaw: rotation[0],
             pitch: rotation[1],
-        });
+        };
+        self.level_add(NewEntity::Other(other), origin, Some(&tag))?;
+        self.remember(id, uuid, tag);
         Some(id)
     }
     /// The compound of an entity Horizon does not simulate, with its current
@@ -676,7 +738,7 @@ impl Game<'_> {
     }
     /// A vehicle already in the world that was restored from the player's file
     /// during this load (not any entity whose UUID is remembered).
-    fn restored_vehicle(&self, uuid: [i32; 4]) -> Option<u32> {
+    pub(super) fn restored_vehicle(&self, uuid: [i32; 4]) -> Option<u32> {
         if !self.persist.restored.contains(&uuid) {
             return None;
         }
@@ -709,7 +771,7 @@ impl Game<'_> {
             );
             self.persist.restored.insert(root_uuid);
             self.world.loaded_entities.push((key, vec![tag]));
-            self.spawn_loaded_entities();
+            self.spawn_loaded_entities(Origin::FromDisk);
         }
         self.persist.restored.insert(uuid);
         self.vehicle_by_uuid(uuid)
@@ -817,7 +879,7 @@ impl Game<'_> {
             &biome,
         ));
     }
-    fn remember(&mut self, id: u32, uuid: Option<[i32; 4]>, tag: Tag) {
+    pub(super) fn remember(&mut self, id: u32, uuid: Option<[i32; 4]>, tag: Tag) {
         self.restore_portal_cooldown(id, &tag);
         if let Some(u) = uuid {
             self.persist.uuids.insert(id, u);
@@ -1119,66 +1181,82 @@ impl Game<'_> {
             let gone = |p: Vec3| keys.contains(&chunk_of(p));
             let mut removed: Vec<u32> = Vec::new();
             let riding = self.riding;
-            self.boats.retain(|b| {
-                let keep = !gone(b.position) || Some(b.id) == riding;
-                if !keep {
-                    removed.push(b.id);
-                }
-                keep
-            });
-            self.crystals.retain(|c| !gone(c.position));
+            let ids: Vec<u32> = self
+                .boats
+                .iter()
+                .filter(|b| gone(b.position) && Some(b.id) != riding)
+                .map(|b| b.id)
+                .collect();
+            removed.extend(&ids);
+            self.level_remove_ids(Kind::Boat, &ids, Removal::UnloadedToChunk);
+            let ids: Vec<u32> = self
+                .crystals
+                .iter()
+                .filter(|c| gone(c.position))
+                .map(|c| c.id)
+                .collect();
+            self.level_remove_ids(Kind::Crystal, &ids, Removal::UnloadedToChunk);
             self.ominous_spawners
                 .retain(|s| !gone(Vec3::new(s.position[0], s.position[1], s.position[2])));
-            if self.dragon.as_ref().is_some_and(|d| gone(d.position)) {
-                self.dragon = None;
+            if let Some(d) = self.dragon.as_ref().filter(|d| gone(d.position)) {
+                let id = d.id;
+                self.level_remove(Kind::Dragon, id, Removal::UnloadedToChunk);
             }
-            self.carts.retain(|c| {
-                let keep = !gone(c.position) || Some(c.id) == riding;
-                if !keep {
-                    removed.push(c.id);
-                }
-                keep
-            });
-            self.others.retain(|o| {
-                let keep = !gone(o.position);
-                if !keep {
-                    removed.push(o.id);
-                }
-                keep
-            });
-            self.armor_stands.retain(|a| {
-                let keep = !gone(a.position);
-                if !keep {
-                    removed.push(a.id);
-                }
-                keep
-            });
-            self.item_frames.retain(|f| {
-                let (lo, hi) = f.bounds();
-                let keep = !gone(Vec3::new(
-                    (lo[0] + hi[0]) / 2.0,
-                    (lo[1] + hi[1]) / 2.0,
-                    (lo[2] + hi[2]) / 2.0,
-                ));
-                if !keep {
-                    removed.push(f.id);
-                }
-                keep
-            });
-            self.paintings.retain(|p| {
-                let keep = !gone(painting_center(p));
-                if !keep {
-                    removed.push(p.id);
-                }
-                keep
-            });
-            self.cushions.retain(|c| {
-                let keep = !gone(c.position);
-                if !keep {
-                    removed.push(c.id);
-                }
-                keep
-            });
+            let ids: Vec<u32> = self
+                .carts
+                .iter()
+                .filter(|c| gone(c.position) && Some(c.id) != riding)
+                .map(|c| c.id)
+                .collect();
+            removed.extend(&ids);
+            self.level_remove_ids(Kind::Cart, &ids, Removal::UnloadedToChunk);
+            let ids: Vec<u32> = self
+                .others
+                .iter()
+                .filter(|o| gone(o.position))
+                .map(|o| o.id)
+                .collect();
+            removed.extend(&ids);
+            self.level_remove_ids(Kind::Other, &ids, Removal::UnloadedToChunk);
+            let ids: Vec<u32> = self
+                .armor_stands
+                .iter()
+                .filter(|a| gone(a.position))
+                .map(|a| a.id)
+                .collect();
+            removed.extend(&ids);
+            self.level_remove_ids(Kind::Stand, &ids, Removal::UnloadedToChunk);
+            let ids: Vec<u32> = self
+                .item_frames
+                .iter()
+                .filter(|f| {
+                    let (lo, hi) = f.bounds();
+                    gone(Vec3::new(
+                        (lo[0] + hi[0]) / 2.0,
+                        (lo[1] + hi[1]) / 2.0,
+                        (lo[2] + hi[2]) / 2.0,
+                    ))
+                })
+                .map(|f| f.id)
+                .collect();
+            removed.extend(&ids);
+            self.level_remove_ids(Kind::Frame, &ids, Removal::UnloadedToChunk);
+            let ids: Vec<u32> = self
+                .paintings
+                .iter()
+                .filter(|p| gone(painting_center(p)))
+                .map(|p| p.id)
+                .collect();
+            removed.extend(&ids);
+            self.level_remove_ids(Kind::Painting, &ids, Removal::UnloadedToChunk);
+            let ids: Vec<u32> = self
+                .cushions
+                .iter()
+                .filter(|c| gone(c.position))
+                .map(|c| c.id)
+                .collect();
+            removed.extend(&ids);
+            self.level_remove_ids(Kind::Cushion, &ids, Removal::UnloadedToChunk);
             // Riders leave with their root vehicle, a boat's with the boat.
             let leaving: HashSet<u32> = (0..self.mobs.len())
                 .filter(|&i| {
@@ -1191,24 +1269,37 @@ impl Game<'_> {
                 })
                 .map(|i| self.mobs[i].id)
                 .collect();
-            self.mobs.retain(|m| {
-                let keep = !leaving.contains(&m.id);
-                if !keep {
-                    removed.push(m.id);
-                }
-                keep
-            });
-            self.dropped.retain(|e| {
-                let keep = !gone(e.position);
-                if !keep {
-                    removed.push(e.id);
-                }
-                keep
-            });
-            self.orbs.retain(|o| !gone(o.position));
-            self.creatures
+            let ids: Vec<u32> = self
+                .mobs
+                .iter()
+                .filter(|m| leaving.contains(&m.id))
+                .map(|m| m.id)
+                .collect();
+            removed.extend(&ids);
+            self.level_remove_ids(Kind::Mob, &ids, Removal::UnloadedToChunk);
+            let ids: Vec<u32> = self
+                .dropped
+                .iter()
+                .filter(|e| gone(e.position))
+                .map(|e| e.id)
+                .collect();
+            removed.extend(&ids);
+            self.level_remove_ids(Kind::Item, &ids, Removal::UnloadedToChunk);
+            let ids: Vec<u32> = self
+                .orbs
+                .iter()
+                .filter(|o| gone(o.position))
+                .map(|o| o.id)
+                .collect();
+            self.level_remove_ids(Kind::Orb, &ids, Removal::UnloadedToChunk);
+            let ids: Vec<u32> = self
+                .creatures
                 .projectiles
-                .retain(|p| p.arrow.is_none() || !gone(p.position));
+                .iter()
+                .filter(|p| p.arrow.is_some() && gone(p.position))
+                .map(|p| p.id)
+                .collect();
+            self.level_remove_ids(Kind::Projectile, &ids, Removal::UnloadedToChunk);
             self.falling.retain(|f| !gone(f.position));
             self.persist
                 .anon
@@ -1225,7 +1316,7 @@ impl Game<'_> {
     /// meanwhile: `PersistentEntitySectionManager.autoSave` stores them
     /// without `saveAll`'s flush.
     pub(super) fn save_entities(&mut self, wait: bool) -> Result<()> {
-        self.spawn_loaded_entities();
+        self.spawn_loaded_entities(Origin::FromDisk);
         let keys: HashSet<(i32, i32)> = self.world.chunks.keys().copied().collect();
         let chunks = self.entity_chunks(&keys, false);
         self.prune_entity_memory();
@@ -1258,7 +1349,7 @@ impl Game<'_> {
         if unloaded.is_empty() {
             return;
         }
-        self.spawn_loaded_entities();
+        self.spawn_loaded_entities(Origin::FromDisk);
         let keys: HashSet<(i32, i32)> = unloaded.iter().map(|c| (c.x, c.z)).collect();
         let chunks = self.entity_chunks(&keys, true);
         if let Err(e) = self.save.save_entities_later(chunks) {
@@ -1267,7 +1358,7 @@ impl Game<'_> {
     }
     /// Leaving a dimension: its entities are saved with it.
     pub(super) fn save_dimension_entities(&mut self) -> Result<()> {
-        self.spawn_loaded_entities();
+        self.spawn_loaded_entities(Origin::FromDisk);
         let keys: HashSet<(i32, i32)> = self.world.chunks.keys().copied().collect();
         let chunks = self.entity_chunks(&keys, true);
         self.persist = EntityMemory::default();
@@ -1279,4 +1370,13 @@ fn strip_finalize(tag: &mut Tag) {
     if let Tag::Compound(c) = tag {
         c.remove(&"horizon:finalize".into());
     }
+}
+
+/// A saved mob read from its compound, before it joins the level.
+pub(super) struct ReadMob {
+    pub(super) mob: Mob,
+    uuid: Option<[i32; 4]>,
+    pub(super) tag: Tag,
+    riders: Vec<Tag>,
+    finalize: bool,
 }

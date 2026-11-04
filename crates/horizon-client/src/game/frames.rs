@@ -2,6 +2,7 @@
 //! `ItemFrame.survives`, `interact` (put an item in, then rotate it),
 //! `hurtServer` (take the item out, then break the frame) and
 //! `ItemFrameRenderer` (the frame model and the item at a 45 degree step).
+use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use super::{Game, Hit};
 use horizon_assets::{bake::bake_model, model::CuboidModel, resolve::ModelLibrary};
 use horizon_client::{entities::ItemFrame, items::ItemStack, mesher::Vertex};
@@ -166,7 +167,7 @@ impl Game<'_> {
         self.audio
             .play(&sound(&frame, "place"), Some(center(&frame)), 1.0, 1.0);
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
-        self.item_frames.push(frame);
+        self.level_add(NewEntity::Frame(frame), Origin::Fresh, None);
         if !self.creative {
             self.consume_held();
         }
@@ -254,11 +255,10 @@ impl Game<'_> {
         }
         let with_frame = self.item_frames[i].item.is_none();
         let at = center(&self.item_frames[i]);
-        let f = if with_frame {
-            self.item_frames.remove(i)
-        } else {
-            self.item_frames[i].clone()
-        };
+        let f = self.item_frames[i].clone();
+        if with_frame {
+            self.level_remove(Kind::Frame, f.id, Removal::Killed);
+        }
         self.audio.play(
             &sound(&f, if with_frame { "break" } else { "remove_item" }),
             Some(at),
@@ -330,7 +330,8 @@ impl Game<'_> {
                 i += 1;
                 continue;
             }
-            let f = self.item_frames.remove(i);
+            let f = self.item_frames[i].clone();
+            self.level_remove(Kind::Frame, f.id, Removal::Killed);
             self.audio
                 .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
             self.drop_frame_items(&f, true, false);
@@ -356,7 +357,7 @@ impl Game<'_> {
                 self.item_frames[i].check_interval = 0;
                 let f = self.item_frames[i].clone();
                 if !self.frame_survives(&f) {
-                    self.item_frames.remove(i);
+                    self.level_remove(Kind::Frame, f.id, Removal::Discarded);
                     self.audio
                         .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
                     self.drop_frame_items(&f, true, false);

@@ -2,6 +2,7 @@
 //! paddling controls, collisions, riding (`positionRider`, `clampRotation`,
 //! dismounting), `BoatItem` placement, `VehicleEntity.hurtServer` breaking,
 //! saving and `AbstractBoatRenderer` with animated paddles.
+use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use super::{Game, Keys, entity_culling::at, view_vector};
 use horizon_client::{
     blocks::Fluid,
@@ -706,7 +707,7 @@ impl Game<'_> {
             boat.position.z.floor() as i32 >> 4,
         );
         self.world.modified.insert(key);
-        self.boats.push(boat);
+        self.level_add(NewEntity::Boat(boat), Origin::Fresh, None);
         if !self.creative {
             self.consume_held();
         }
@@ -890,7 +891,8 @@ impl Game<'_> {
         let destroyed = creative || b.damage > 40.0;
         if destroyed {
             self.eject_boat_mobs(i, true);
-            let b = self.boats.remove(i);
+            let b = self.boats[i].clone();
+            self.level_remove(Kind::Boat, b.id, Removal::Discarded);
             let at = [b.position.x, b.position.y, b.position.z];
             // AbstractBoat.remove: a destroyed boat drops its lead.
             self.boat_removed(&b);

@@ -6,6 +6,7 @@
 //! clicks). The player still moves with the local physics, as the vanilla
 //! client predicts its own movement; the server stays authoritative for
 //! everything else.
+use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use super::remote_chunks::{ChunkDecoder, ChunkFormat, Next};
 use super::{Dim, Game, Mining, Screen};
 use horizon_client::first_person::{Hand, SwingAnimation};
@@ -502,14 +503,14 @@ impl Game<'_> {
         self.craft_size = 2;
         self.player = None;
         self.spawn = None;
-        self.mobs.clear();
+        self.level_remove_all(Kind::Mob, Removal::UnloadedToChunk);
         self.clear_remote_objects();
         self.clear_remote_projectiles();
-        self.creatures.projectiles.clear();
-        self.dropped.clear();
+        self.level_remove_all(Kind::Projectile, Removal::UnloadedToChunk);
+        self.level_remove_all(Kind::Item, Removal::UnloadedToChunk);
         self.particles.clear();
         self.pickups.clear();
-        self.orbs.clear();
+        self.level_remove_all(Kind::Orb, Removal::UnloadedToChunk);
         self.falling.clear();
         self.travelling = None;
         self.mining = None;
@@ -700,10 +701,10 @@ impl Game<'_> {
         // Out of the server's bed: InBedChatScreen goes with the level.
         self.sleeping = None;
         self.sleep_timer = 0;
-        self.mobs.clear();
+        self.level_remove_all(Kind::Mob, Removal::UnloadedToChunk);
         self.clear_remote_objects();
         self.clear_remote_projectiles();
-        self.dropped.clear();
+        self.level_remove_all(Kind::Item, Removal::UnloadedToChunk);
         self.particles.clear();
         self.pickups.clear();
         self.score.board = Default::default();
@@ -1441,10 +1442,10 @@ impl Game<'_> {
             self.world.game_time = time;
             self.world.day_time = day;
             self.world.weather = weather;
-            self.mobs.clear();
+            self.level_remove_all(Kind::Mob, Removal::UnloadedToChunk);
             self.clear_remote_objects();
             self.clear_remote_projectiles();
-            self.dropped.clear();
+            self.level_remove_all(Kind::Item, Removal::UnloadedToChunk);
             self.particles.clear();
             self.pickups.clear();
             if let Some(r) = self.remote.as_mut() {
@@ -1765,19 +1766,23 @@ impl Game<'_> {
         }
         if kind == "minecraft:experience_orb" {
             // Its value (ExperienceOrb.DATA_VALUE) follows in SetEntityData.
-            self.orbs.retain(|o| o.id != id as u32);
-            self.orbs.push(ExperienceOrb {
-                removed: false,
-                id: id as u32,
-                position: at,
-                previous: at,
-                velocity: Vec3::ZERO,
-                value: 1,
-                age: 0,
-                on_ground: false,
-                count: 1,
-                ticks: 0,
-            });
+            self.level_remove(Kind::Orb, id as u32, Removal::Discarded);
+            self.level_add(
+                NewEntity::Orb(ExperienceOrb {
+                    removed: false,
+                    id: id as u32,
+                    position: at,
+                    previous: at,
+                    velocity: Vec3::ZERO,
+                    value: 1,
+                    age: 0,
+                    on_ground: false,
+                    count: 1,
+                    ticks: 0,
+                }),
+                Origin::Fresh,
+                None,
+            );
         }
         if let Some(t) = mob_type {
             let mut mob = Mob::new(id as u32, t, at, head);
@@ -1785,8 +1790,8 @@ impl Game<'_> {
             (mob.yaw, mob.previous_yaw) = (yaw, yaw);
             (mob.head_pitch, mob.previous_head_pitch) = (pitch, pitch);
             mob.persistent = true;
-            self.mobs.retain(|m| m.id != id as u32);
-            self.mobs.push(mob);
+            self.level_remove(Kind::Mob, id as u32, Removal::Discarded);
+            self.level_add(NewEntity::Mob(mob), Origin::Fresh, None);
             if let Some(r) = self.remote.as_mut() {
                 r.stepped.remove(&id);
             }
@@ -2006,9 +2011,9 @@ impl Game<'_> {
         // SetPassengers packet preceded the vehicle's removal. Otherwise
         // mobs and other players keep their passenger pose after it is gone.
         self.remote_set_passengers(id, &[]);
-        self.mobs.retain(|m| m.id != id as u32);
-        self.orbs.retain(|o| o.id != id as u32);
-        self.dropped.retain(|d| d.id != id as u32);
+        self.level_remove(Kind::Mob, id as u32, Removal::Discarded);
+        self.level_remove(Kind::Orb, id as u32, Removal::Discarded);
+        self.level_remove(Kind::Item, id as u32, Removal::Discarded);
         // Before the crystals go: the dragon's beam index follows them.
         self.remove_remote_dragon(id);
         self.remove_remote_object(id as u32);
@@ -4225,23 +4230,27 @@ impl Game<'_> {
         };
         let at = Vec3::new(p[0], p[1], p[2]);
         let bob_offset = self.world.random.next_float() * std::f32::consts::PI * 2.0;
-        self.dropped.push(ItemEntity {
-            removed: false,
-            health: 5,
-            fire_ticks: 0,
-            thrower: None,
-            target: None,
-            id: id as u32,
-            stack,
-            position: at,
-            previous: at,
-            velocity,
-            on_ground: false,
-            age: 0,
-            pickup_delay: 0,
-            bob_offset,
-            ticks: 0,
-        });
+        self.level_add(
+            NewEntity::Item(ItemEntity {
+                removed: false,
+                health: 5,
+                fire_ticks: 0,
+                thrower: None,
+                target: None,
+                id: id as u32,
+                stack,
+                position: at,
+                previous: at,
+                velocity,
+                on_ground: false,
+                age: 0,
+                pickup_delay: 0,
+                bob_offset,
+                ticks: 0,
+            }),
+            Origin::Fresh,
+            None,
+        );
     }
     /// `Entity.lerpMotion` (and `recreateFromPacket`'s motion) for the
     /// entities whose own tick moves them on a client: dropped items, falling

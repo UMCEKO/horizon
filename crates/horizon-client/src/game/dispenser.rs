@@ -4,6 +4,7 @@
 //! event it plays (`DefaultDispenseItemBehavior.dispense` then plays that
 //! event and the smoke animation, event 2000).
 use super::Game;
+use super::entity_life::{NewEntity, Origin};
 use horizon_client::{
     Result,
     collisions::SceneCollisions,
@@ -881,14 +882,12 @@ impl Game<'_> {
         let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
             return Ok(());
         };
-        let mut m = self.mobs.remove(i);
         let mut events = Vec::new();
-        {
-            let shared = self.mob_shared();
-            let w = self.mob_world(&shared, &[]);
-            horizon_client::mobs::ai::ambient_sound(&mut m, &w, &mut events);
-        }
-        self.mobs.insert(i, m);
+        self.with_mob_outside(i, |g, m| {
+            let shared = g.mob_shared();
+            let w = g.mob_world(&shared, &[]);
+            horizon_client::mobs::ai::ambient_sound(m, &w, &mut events);
+        });
         self.handle_mob_events(events)
     }
     /// A mob a bucket emptied: `setFromBucket` keeps it, then it calls out.
@@ -1065,7 +1064,7 @@ impl Game<'_> {
             stand.custom_name = Some(horizon_client::text::Text::literal(name));
         }
         self.world.modified.insert((front.0 >> 4, front.2 >> 4));
-        self.armor_stands.push(stand);
+        self.level_add(NewEntity::Stand(stand), Origin::Fresh, None);
         (shrink(stack), CLICK)
     }
     /// A tame donkey, mule or llama in front without a chest gets it.
@@ -1130,7 +1129,7 @@ impl Game<'_> {
             boat = boat.with_chest();
         }
         self.world.modified.insert((front.0 >> 4, front.2 >> 4));
-        self.boats.push(boat);
+        self.level_add(NewEntity::Boat(boat), Origin::Fresh, None);
         (shrink(stack), CLICK)
     }
     /// `MinecartDispenseItemBehavior`.
@@ -1169,7 +1168,7 @@ impl Game<'_> {
             Vec3::new(x, base_y + y_offset, z),
         );
         self.world.modified.insert((front.0 >> 4, front.2 >> 4));
-        self.carts.push(cart);
+        self.level_add(NewEntity::Cart(cart), Origin::Fresh, None);
         (shrink(stack), CLICK)
     }
 
@@ -1716,9 +1715,18 @@ impl Game<'_> {
         y_offset: f64,
         stack: ItemStack,
     ) -> [f64; 3] {
+        self.spawn_at_location_item(at, y_offset, stack).1
+    }
+    /// `spawn_at_location` with the id of the item entity that joined, if it did.
+    pub(super) fn spawn_at_location_item(
+        &mut self,
+        at: Vec3,
+        y_offset: f64,
+        stack: ItemStack,
+    ) -> (Option<u32>, [f64; 3]) {
         let v = new_item_motion();
-        self.spawn_item(stack, [at.x, at.y + y_offset, at.z], v, 10);
-        v
+        let id = self.spawn_item(stack, [at.x, at.y + y_offset, at.z], v, 10);
+        (id, v)
     }
     /// `Mob.convertTo(type, ConversionParams.single(this, false, false))`: a
     /// new mob of `kind` in the same place (no spawn finalization, so no
@@ -1753,10 +1761,8 @@ impl Game<'_> {
         ] {
             *slot = None;
         }
-        let id = mob.id;
         self.mobs[index].removed = true;
-        self.mobs.push(mob);
-        Some(id)
+        self.level_add(NewEntity::Mob(mob), Origin::Fresh, None)
     }
     /// `ShearsDispenseItemBehavior.tryShearEntity`: the first live, ready
     /// `Shearable` in the block is sheared.
@@ -1806,7 +1812,7 @@ impl Game<'_> {
                                 count: 1,
                                 ..stack.clone()
                             };
-                            self.spawn_at_location(at, 1.0, one);
+                            let (spawned, _) = self.spawn_at_location_item(at, 1.0, one);
                             // Sheep.shear nudges each item with the sheep's own random.
                             let r = &mut self.mobs[i].random;
                             let push = [
@@ -1814,7 +1820,9 @@ impl Game<'_> {
                                 f64::from(r.next_float() * 0.05),
                                 f64::from((r.next_float() - r.next_float()) * 0.1),
                             ];
-                            if let Some(item) = self.dropped.last_mut() {
+                            if let Some(id) = spawned
+                                && let Some(item) = self.dropped.iter_mut().find(|d| d.id == id)
+                            {
                                 item.velocity = Vec3::new(
                                     item.velocity.x + push[0],
                                     item.velocity.y + push[1],

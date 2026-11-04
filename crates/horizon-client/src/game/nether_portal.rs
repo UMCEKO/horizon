@@ -10,6 +10,7 @@
 //! once the other dimension has loaded around it. An item or mob that goes
 //! through waits as an `Arrival` (its saved compound and where it stood in its
 //! portal) until the player is in that dimension and its exit is loaded.
+use super::entity_life::{Kind, Removal};
 use super::{Dim, Game, Screen};
 use horizon_client::Result;
 use horizon_client::fast_hash::FxHashMap;
@@ -929,7 +930,7 @@ impl Game<'_> {
                 uuid,
                 self.persist_raw(id),
             );
-            self.dropped.remove(i);
+            self.level_remove(Kind::Item, id, Removal::ChangedDimension);
             self.forget_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
@@ -956,7 +957,7 @@ impl Game<'_> {
                 );
                 k += 1;
             }
-            self.mobs.retain(|m| !gone.contains(&m.id));
+            self.level_remove_ids(Kind::Mob, &gone, Removal::ChangedDimension);
             for g in gone {
                 self.forget_entity(g);
             }
@@ -980,7 +981,7 @@ impl Game<'_> {
                 self.persist_raw(id),
                 b.chest.then_some(&b.items[..]),
             );
-            self.boats.remove(i);
+            self.level_remove(Kind::Boat, id, Removal::ChangedDimension);
             self.forget_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
@@ -996,7 +997,7 @@ impl Game<'_> {
             }
             let uuid = self.uuid_for(id);
             let tag = self.carts[i].to_nbt(uuid, self.persist_raw(id));
-            self.carts.remove(i);
+            self.level_remove(Kind::Cart, id, Removal::ChangedDimension);
             self.forget_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;

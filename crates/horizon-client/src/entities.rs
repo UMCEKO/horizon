@@ -440,14 +440,15 @@ impl ItemCells {
 /// mergeable item whose box meets this one's grown by 0.5 sideways takes this
 /// stack or gives it its own, the smaller into the larger
 /// (`ItemEntity.tryToMerge`), until this item is used up. An emptied item is
-/// marked in `removed`.
+/// marked in `removed`; the indexes it marked come back.
 pub fn merge_with_neighbours(
     items: &mut [ItemEntity],
     removed: &mut [bool],
     cells: &mut ItemCells,
     i: usize,
     max_stack: &dyn Fn(&ItemStack) -> u32,
-) {
+) -> Vec<usize> {
+    let mut gone = Vec::new();
     let age = |items: &[ItemEntity], j: usize| {
         if j == i {
             items[j].age - 1
@@ -456,7 +457,7 @@ pub fn merge_with_neighbours(
         }
     };
     if removed[i] || !items[i].mergeable(age(items, i), max_stack(&items[i].stack)) {
-        return;
+        return gone;
     }
     let area = items[i].bounds().inflate(Vec3::new(0.5, 0.0, 0.5));
     let mut near = Vec::new();
@@ -496,12 +497,14 @@ pub fn merge_with_neighbours(
         to_item.age = to_age.min(from_age) + u32::from(to == i);
         if items[from].stack.count == 0 {
             removed[from] = true;
+            gone.push(from);
             cells.remove(from, items[from].position);
         }
         if removed[i] {
-            return;
+            return gone;
         }
     }
+    gone
 }
 /// ExperienceOrb: gravity 0.03, homing towards the player within 8 blocks.
 #[derive(Clone, Debug)]
@@ -651,7 +654,7 @@ impl ExperienceOrb {
 /// `ExperienceOrb.scanForMerges`, run by each orb on `tickCount % 20 == 1`:
 /// it absorbs the orbs that `canMerge` within 0.5 blocks of its box,
 /// adding their counts and keeping the smaller age.
-pub fn merge_orbs(orbs: &mut Vec<ExperienceOrb>) {
+pub fn merge_orbs(orbs: &mut Vec<ExperienceOrb>) -> Vec<u32> {
     let mut removed = vec![false; orbs.len()];
     for i in 0..orbs.len() {
         if removed[i] || orbs[i].ticks % 20 != 1 {
@@ -670,8 +673,15 @@ pub fn merge_orbs(orbs: &mut Vec<ExperienceOrb>) {
             }
         }
     }
+    let gone = orbs
+        .iter()
+        .zip(&removed)
+        .filter(|(_, r)| **r)
+        .map(|(o, _)| o.id)
+        .collect();
     let mut removed = removed.into_iter();
     orbs.retain(|_| !removed.next().unwrap_or(false));
+    gone
 }
 /// Player experience (Player.giveExperiencePoints / getXpNeededForNextLevel).
 #[derive(Clone, Copy, Debug, Default)]

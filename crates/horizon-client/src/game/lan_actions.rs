@@ -5,6 +5,7 @@
 //! blocks, attacking and the commands all behave exactly as they do for the
 //! host, and every world change they cause reaches all players through the
 //! block log, the level events and the entity tracker.
+use super::entity_life::{Kind, Removal};
 use super::{
     Dim, Game, GuestUse, Hit, Mining, Screen, lan::LanHost, respawn_anchor::RespawnConfig,
 };
@@ -1667,7 +1668,13 @@ impl Game<'_> {
                     self.level.set_difficulty(self.ui.difficulty);
                     self.sync_rules();
                     if self.ui.difficulty == 0 {
-                        self.mobs.retain(|m| !m.hostile());
+                        let hostile: Vec<u32> = self
+                            .mobs
+                            .iter()
+                            .filter(|m| m.hostile())
+                            .map(|m| m.id)
+                            .collect();
+                        self.level_remove_ids(Kind::Mob, &hostile, Removal::Discarded);
                     }
                     host.hub
                         .broadcast(&C::ChangeDifficulty(play::ChangeDifficulty {
@@ -3543,7 +3550,8 @@ impl Game<'_> {
             let rest = self.as_guest(host, conn, |g| g.give(stack)).flatten();
             match rest {
                 None => {
-                    let item = self.dropped.remove(i);
+                    let item = self.dropped[i].clone();
+                    self.level_remove(Kind::Item, item.id, Removal::Discarded);
                     if let Some(thrower) = thrower {
                         self.as_guest(host, conn, |g| {
                             g.trigger_thrown_picked_up_by_player(&item.stack, thrower);
@@ -3632,6 +3640,13 @@ impl Game<'_> {
             if taken {
                 picked.push(shot.clone());
                 projectiles[i].removed = true;
+                let gone = projectiles[i].id;
+                self.left_in_loop(
+                    &mut [super::crossing::Lent::Projectiles(&mut projectiles)],
+                    Kind::Projectile,
+                    gone,
+                    Removal::Discarded,
+                );
             }
             let shot_id = projectiles[i].id;
             self.cross_point(
@@ -3699,7 +3714,7 @@ impl Game<'_> {
         // A merged orb gives its value once per count and goes at zero.
         let orb = self.orbs[touching[pick]].clone();
         if orb.count <= 1 {
-            self.orbs.remove(touching[pick]);
+            self.level_remove(Kind::Orb, orb.id, Removal::Discarded);
         } else {
             self.orbs[touching[pick]].count -= 1;
         }

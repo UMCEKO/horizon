@@ -2,6 +2,7 @@
 //! (`Mob.aiStep`, `Panda.pickUpItem`), the bamboo a player gives them
 //! (`Panda.mobInteract`), the start a sneeze gives the grown pandas about,
 //! and the crumbs and the sneeze a window draws.
+use super::entity_life::{Kind, Removal};
 use super::{
     Game,
     pickups::{Collector, Taken},
@@ -43,7 +44,8 @@ impl Game<'_> {
                     .iter()
                     .position(|e| wants(self, e) && reach.intersects(e.bounds()));
                 if let Some(j) = taken {
-                    let e = self.dropped.remove(j);
+                    let e = self.dropped[j].clone();
+                    self.level_remove(Kind::Item, e.id, Removal::Discarded);
                     self.add_pickup(Taken::Item(Box::new(e.clone())), Collector::Mob(id));
                     panda::hold(&mut self.mobs[i], &e.stack.item, e.stack.count, true);
                 }

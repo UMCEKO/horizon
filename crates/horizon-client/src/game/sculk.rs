@@ -3,6 +3,7 @@
 //! ticker, redstone output, resonance, shrieks and warden summoning
 //! (`SculkShriekerBlockEntity`, `SpawnUtil`), catalysts feeding the sculk
 //! spreader from deaths, and the darkness wardens and shriekers cast.
+use super::entity_life::{NewEntity, Origin};
 use super::{Game, Result};
 use horizon_client::{
     containers::BlockEntity,
@@ -1150,8 +1151,9 @@ impl Game<'_> {
             if !self.warden_fits(&mob) {
                 continue;
             }
-            self.mobs.push(mob);
-            return true;
+            return self
+                .level_add(NewEntity::Mob(mob), Origin::Fresh, None)
+                .is_some();
         }
         false
     }

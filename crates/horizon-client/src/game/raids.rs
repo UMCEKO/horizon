@@ -2,6 +2,7 @@
 //! their waves, boss bar, victory and the raiders' bookkeeping. The rules are
 //! `horizon_client::patrol` and `horizon_client::raid`; this is the game's
 //! side of them.
+use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use super::{Dim, Game};
 use horizon_client::mobs::villager as mobs_villager;
 use horizon_client::{
@@ -743,8 +744,7 @@ impl Game<'_> {
         let difficulty = self.local_difficulty(at);
         spawning::finalize(&mut mob, &facts, &difficulty);
         raider::finalize(&mut mob, reason);
-        let id = mob.id;
-        self.mobs.push(mob);
+        let id = self.level_add(NewEntity::Mob(mob), Origin::Fresh, None)?;
         self.enchant_spawn_equipment(id);
         Some(id)
     }
@@ -918,9 +918,8 @@ impl Game<'_> {
             );
         }
         taken.sort_unstable();
-        for i in taken.into_iter().rev() {
-            self.dropped.remove(i);
-        }
+        let ids: Vec<u32> = taken.iter().rev().map(|&i| self.dropped[i].id).collect();
+        self.level_remove_ids(Kind::Item, &ids, Removal::Discarded);
         for (id, wave, mob) in new_leaders {
             if let Some(r) = self.raiding.raids.get_mut(id) {
                 r.set_leader(wave, mob);

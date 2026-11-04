@@ -2,6 +2,7 @@
 //! throwing their load to the player or note block, dancing to jukeboxes,
 //! and the hand-over interaction (`Allay.mobInteract`).
 use super::Game;
+use super::entity_life::{Kind, Removal};
 use horizon_client::{
     containers::BlockEntity,
     items::ItemStack,
@@ -101,7 +102,8 @@ impl Game<'_> {
                 let e = &mut self.dropped[j];
                 e.stack.count -= take as u32;
                 if e.stack.count == 0 {
-                    self.dropped.remove(j);
+                    let id = self.dropped[j].id;
+                    self.level_remove(Kind::Item, id, Removal::Discarded);
                 }
                 let at = [pos.x, pos.y, pos.z];
                 let pitch =
@@ -211,10 +213,12 @@ impl Game<'_> {
         m.extra.ints[1] -= 1;
         m.extra.ints[3] = 60;
         // ItemEntity.setDefaultPickUpDelay.
-        self.spawn_item(ItemStack::new(&item, 1), from, v, 10);
+        let spawned = self.spawn_item(ItemStack::new(&item, 1), from, v, 10);
         // BehaviorUtils.throwItem: ItemEntity.setThrower(the allay).
         let allay = self.mob_uuid(self.mobs[i].id);
-        if let Some(thrown) = self.dropped.last_mut() {
+        if let Some(id) = spawned
+            && let Some(thrown) = self.dropped.iter_mut().find(|d| d.id == id)
+        {
             thrown.thrower = Some(allay);
         }
         if self.world.game_time % 7 == 0 && self.world.random.next_double() < 0.9 {
