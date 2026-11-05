@@ -661,7 +661,7 @@ impl Host {
             let _ = env.exception_clear();
             return None;
         }
-        match n {
+        let result = match n {
             // SAFETY: Java wrote `n` bytes to the arena's start, and a request nested in `read` uses the next level's.
             1.. => read(unsafe { std::slice::from_raw_parts(address, n as usize) }),
             OVERFLOW => {
@@ -672,7 +672,21 @@ impl Host {
                 read(&reply)
             }
             _ => None,
-        }
+        };
+        self.shrink(&mut env, level);
+        result
+    }
+
+    /// Gives back a large arena of this level once its request is read, so one big call doesn't pin native memory for the thread's life.
+    fn shrink(&self, env: &mut JNIEnv, level: usize) {
+        CROSSING.with_borrow_mut(|c| {
+            if let Some(slot) = c.arenas.get_mut(level)
+                && capacity_after(slot.capacity) != slot.capacity
+                && let Some(small) = self.entry.new_arena(env, ARENA)
+            {
+                *slot = small;
+            }
+        });
     }
 }
 
@@ -776,6 +790,14 @@ thread_local! {
     static DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
+/// Arenas up to this size are kept for reuse; a larger one is replaced by a default one after its request.
+const ARENA_KEEP: usize = 1 << 20;
+
+/// What a held arena of `capacity` shrinks to once its request is done.
+fn capacity_after(capacity: usize) -> usize {
+    if capacity > ARENA_KEEP { ARENA } else { capacity }
+}
+
 /// An arena's size for a request or reply of `need` bytes: a power of two, so growth is rare.
 fn capacity_for(need: usize) -> usize {
     need.next_power_of_two().max(ARENA)
@@ -827,6 +849,9 @@ mod tests {
         assert_eq!(capacity_for(ARENA + 1), ARENA * 2);
         assert_eq!(capacity_for(1 << 20), 1 << 20);
         assert_eq!(capacity_for((1 << 20) + 1), 1 << 21);
+        assert!(capacity_after(capacity_for(10 << 20)) <= 1 << 20);
+        assert_eq!(capacity_after(capacity_for(1 << 20)), 1 << 20);
+        assert_eq!(capacity_after(capacity_for(1000)), ARENA);
     }
 
     #[test]
