@@ -39,6 +39,40 @@ pub enum PathType {
 }
 pub const PATH_TYPES: usize = 27;
 impl PathType {
+    /// `PathType.values()[i]`, vanilla's declaration order.
+    pub fn from_ordinal(i: usize) -> Option<Self> {
+        use PathType::*;
+        const ALL: [PathType; PATH_TYPES] = [
+            Blocked,
+            Open,
+            Walkable,
+            WalkableDoor,
+            Trapdoor,
+            PowderSnow,
+            OnTopOfPowderSnow,
+            Fence,
+            Lava,
+            Water,
+            WaterBorder,
+            Rail,
+            UnpassableRail,
+            FireInNeighbor,
+            Fire,
+            DamagingInNeighbor,
+            Damaging,
+            DoorOpen,
+            DoorWoodClosed,
+            DoorIronClosed,
+            Breach,
+            Leaves,
+            StickyHoney,
+            Cocoa,
+            DamageCautious,
+            OnTopOfTrapdoor,
+            BigMobsCloseToDanger,
+        ];
+        ALL.get(i).copied()
+    }
     pub fn from_name(name: &str) -> Self {
         match name {
             "OPEN" => Self::Open,

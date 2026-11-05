@@ -110,6 +110,18 @@ final class ChecksEntities {
         if (spawned != null) Checks.check("spawned_mob_is_the_live_view", () -> chicken == spawned);
         chicken.setHealth(1.5F);
         Checks.check("set_health_writes_through", () -> ((net.minecraft.server.level.ServerLevel) level).getEntity(chicken.getId()) == chicken && chicken.getHealth() == 1.5F);
+        chicken.setPathfindingMalus(net.minecraft.world.level.pathfinder.PathType.WATER, 0F);
+        Checks.check("malus_writes_through", () -> ((ServerLevel) level).getEntity(chicken.getId()) == chicken && chicken.getPathfindingMalus(net.minecraft.world.level.pathfinder.PathType.WATER) == 0F);
+        var arrow = EntityTypes.ARROW.create(level, EntitySpawnReason.COMMAND);
+        arrow.setPos(area.getX() + 0.5, area.getY() + 3, area.getZ() + 0.5);
+        level.addFreshEntity(arrow);
+        arrow.setBaseDamage(7.0);
+        Checks.check("arrow_base_damage_writes_through", () -> ((ServerLevel) level).getEntity(arrow.getId()) == arrow && baseDamage(arrow) == 7.0);
+        var snowball = EntityTypes.SNOWBALL.create(level, EntitySpawnReason.COMMAND);
+        snowball.setPos(area.getX() + 0.5, area.getY() + 3, area.getZ() + 0.5);
+        level.addFreshEntity(snowball);
+        snowball.shootFromRotation(chicken, 0, 90, 0, 1.5F, 0);
+        Checks.check("shoot_from_rotation_writes_through", () -> ((ServerLevel) level).getEntity(snowball.getId()) == snowball && snowball.getDeltaMovement().x < -1.4);
         chicken.setCustomName(net.minecraft.network.chat.Component.literal("java"));
         chicken.getPersistentData().putInt("horizon_java_test", 7);
         chicken.setDeltaMovement(0, 0.5, 0);
@@ -120,6 +132,16 @@ final class ChecksEntities {
             int id = doomed.getId();
             doomed.discard();
             Checks.check("discard_writes_through", () -> ((net.minecraft.server.level.ServerLevel) level).getEntity(id) == null && doomed.isRemoved());
+        }
+    }
+
+    private static double baseDamage(net.minecraft.world.entity.projectile.arrow.AbstractArrow arrow) {
+        try {
+            var field = net.minecraft.world.entity.projectile.arrow.AbstractArrow.class.getDeclaredField("baseDamage");
+            field.setAccessible(true);
+            return field.getDouble(arrow);
+        } catch (ReflectiveOperationException e) {
+            return Double.NaN;
         }
     }
 

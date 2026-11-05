@@ -39,6 +39,13 @@ fn parse_effect(text: &str) -> Option<EffectInstance> {
 }
 
 horizon_java_host::java_bridges! { table for Game<'static> {
+    "net/minecraft/world/entity/LivingEntity".releaseUsingItem
+    "()V" if "net/minecraft/server/level/ServerPlayer" =>
+    fn player_release_using_item(game) -> () {
+        game.java_release_using_item();
+        game.java_refresh_player();
+    }
+
     "net/minecraft/server/level/ServerPlayer".teleportTo
     "(DDD)V" =>
     fn player_teleport_to(game, x: f64, y: f64, z: f64) -> () {

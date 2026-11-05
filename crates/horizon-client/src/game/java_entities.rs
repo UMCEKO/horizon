@@ -5,6 +5,7 @@ use super::java_mods::{read_tag, write_tag};
 use super::*;
 use commands::Target;
 use horizon_client::entity_nbt;
+use horizon_client::projectiles::ProjectileKind;
 use horizon_client::save::{float, number, random_uuid, text};
 use horizon_java_host::wire::{In, Out};
 use horizon_world::nbt::Tag;
@@ -22,6 +23,7 @@ pub(super) const ITEM: u32 = 1024;
 pub(super) const RIDING: u32 = 2048;
 pub(super) const REMOVAL: u32 = 4096;
 pub(super) const SPECIES: u32 = 8192;
+pub(super) const AI: u32 = 32768;
 
 /// The keys of an entity's saved form that live in Java: attachments and persistent data.
 const JAVA_KEYS: [&str; 2] = ["neoforge:attachments", "NeoForgeData"];
@@ -73,6 +75,9 @@ enum SpeciesData {
         flashes: i32,
         seed: i64,
     },
+    Arrow {
+        base_damage: f64,
+    },
 }
 
 /// What the live structs know that the saved form does not.
@@ -87,6 +92,7 @@ struct Overlay {
     sprinting: bool,
     vehicle: u32,
     passengers: Vec<u32>,
+    malus: Vec<(u8, f32)>,
 }
 
 /// Which groups of the type's views are Java's `LivingEntity` and `ItemEntity` ones.
@@ -301,6 +307,14 @@ fn write_groups(out: &mut Out, tag: &Tag, over: &Overlay, shape: Shape, mask: u3
                 out.int(*flashes);
                 out.long(*seed);
             }
+            SpeciesData::Arrow { base_damage } => out.double(*base_damage),
+        }
+    }
+    if mask & AI != 0 {
+        out.int(over.malus.len() as i32);
+        for (ordinal, cost) in &over.malus {
+            out.0.push(*ordinal);
+            out.float(*cost);
         }
     }
 }
@@ -357,7 +371,15 @@ impl Game<'_> {
             None => (1, known),
         };
         // The bridges of the species group refresh it, whatever the mods read.
-        if matches!(kind, Some(Kind::Tnt | Kind::Bolt)) {
+        if kind == Some(Kind::Mob) {
+            shape.0 |= AI;
+        }
+        if matches!(kind, Some(Kind::Tnt | Kind::Bolt))
+            || matches!(
+                type_id,
+                "minecraft:arrow" | "minecraft:spectral_arrow" | "minecraft:trident"
+            )
+        {
             shape.0 |= SPECIES;
         }
         shape
@@ -403,6 +425,23 @@ impl Game<'_> {
                     ..Overlay::default()
                 };
             }
+            Target::Projectile(id) => {
+                return Overlay {
+                    species: self
+                        .creatures
+                        .projectiles
+                        .iter()
+                        .find(|p| p.id == id)
+                        .map_or(SpeciesData::None, |p| match p.kind {
+                            ProjectileKind::Arrow { base_damage, .. } => {
+                                SpeciesData::Arrow { base_damage }
+                            }
+                            ProjectileKind::Trident => SpeciesData::Arrow { base_damage: 2.0 },
+                            _ => SpeciesData::None,
+                        }),
+                    ..Overlay::default()
+                };
+            }
             _ => {}
         }
         let Target::Mob(id) = t else {
@@ -425,6 +464,13 @@ impl Game<'_> {
                 .iter()
                 .filter(|r| r.extra.mount == Some(id))
                 .map(|r| r.id)
+                .collect(),
+            malus: m
+                .ai
+                .malus
+                .iter()
+                .enumerate()
+                .filter_map(|(i, cost)| Some((i as u8, (*cost)?)))
                 .collect(),
         }
     }
@@ -959,6 +1005,68 @@ impl Game<'_> {
     }
 
     /// The damage `/damage` does to one entity: a mob's `damage`, a boat's or cart's `hurt`, an item's health.
+    /// `LivingEntity.releaseUsingItem` on a mob: its kinetic weapon has no release, so only `stopUsingItem`.
+    pub(super) fn java_mob_stop_using(&mut self, id: u32) -> bool {
+        use horizon_client::mobs::spear_use;
+        let Some(Target::Mob(mid)) = self.java_target(id) else {
+            return false;
+        };
+        let Some(m) = self.mobs.iter_mut().find(|m| m.id == mid) else {
+            return false;
+        };
+        let was_using = spear_use::is_using_item(m);
+        spear_use::stop_using_item(m);
+        if was_using {
+            self.post_entity_event(
+                "minecraft:item_interact_finish",
+                horizon_client::mobs::Who::Mob(mid),
+            );
+        }
+        true
+    }
+
+    /// A flattened `DamageSource` as the mob code takes it.
+    fn java_damage(
+        &mut self,
+        source: &horizon_java_host::bridge::Source,
+    ) -> horizon_client::mobs::Damage {
+        let causing = (source.causing > 0).then_some(source.causing as u32);
+        let attacker = causing.and_then(|c| {
+            if self.mobs.iter().any(|m| m.id == c) {
+                Some(horizon_client::mobs::Who::Mob(c))
+            } else if self.network_entity_id(Target::Player) == Some(c as i32) {
+                Some(horizon_client::mobs::Who::Player)
+            } else {
+                None
+            }
+        });
+        horizon_client::mobs::Damage {
+            kind: Self::damage_kind(&source.kind),
+            attacker,
+            from: source.at,
+        }
+    }
+
+    /// `LivingEntity.actuallyHurt` on a mob: the health it took.
+    pub(super) fn java_actually_hurt(
+        &mut self,
+        id: u32,
+        source: &horizon_java_host::bridge::Source,
+        amount: f32,
+    ) -> bool {
+        let Some(Target::Mob(mid)) = self.java_target(id) else {
+            return false;
+        };
+        let damage = self.java_damage(source);
+        let Some(m) = self.mobs.iter_mut().find(|m| m.id == mid) else {
+            return false;
+        };
+        if m.actually_hurt(damage, amount, None) != 0.0 {
+            self.mob_damage_event(mid);
+        }
+        true
+    }
+
     pub(super) fn java_hurt_target(
         &mut self,
         id: u32,
@@ -966,26 +1074,12 @@ impl Game<'_> {
         amount: f32,
     ) -> bool {
         let causing = (source.causing > 0).then_some(source.causing as u32);
-        let from = source.at;
         let Some(t) = self.java_target(id) else {
             return false;
         };
         match t {
             Target::Mob(mid) => {
-                let attacker = causing.and_then(|c| {
-                    if self.mobs.iter().any(|m| m.id == c) {
-                        Some(horizon_client::mobs::Who::Mob(c))
-                    } else if self.network_entity_id(Target::Player) == Some(c as i32) {
-                        Some(horizon_client::mobs::Who::Player)
-                    } else {
-                        None
-                    }
-                });
-                let damage = horizon_client::mobs::Damage {
-                    kind: Self::damage_kind(&source.kind),
-                    attacker,
-                    from,
-                };
+                let damage = self.java_damage(source);
                 let hurt = self
                     .mobs
                     .iter_mut()
@@ -1126,6 +1220,73 @@ impl Game<'_> {
 
     pub(super) fn java_vehicle_of(&self, id: u32) -> Option<u32> {
         self.mobs.iter().find(|m| m.id == id)?.extra.mount
+    }
+
+    /// `Entity.getKnownMovement` and `onGround` of a projectile's source.
+    fn java_known_movement(&mut self, id: u32) -> Option<(Vec3, bool)> {
+        if self.network_entity_id(Target::Player) == Some(id as i32) {
+            let on_ground = self.player.as_ref()?.ground.on_ground;
+            return Some((self.known_player_movement(), on_ground));
+        }
+        if let Some(g) = self
+            .lan
+            .as_ref()
+            .and_then(|h| h.hub.guests.iter().find(|g| g.entity_id == id as i32))
+        {
+            let k = g.known_movement;
+            return Some((Vec3::new(k[0], k[1], k[2]), g.on_ground));
+        }
+        match self.java_target(id)? {
+            Target::Mob(id) => self
+                .mobs
+                .iter()
+                .find(|m| m.id == id)
+                .map(|m| (m.velocity, m.on_ground)),
+            Target::Item(id) => self
+                .dropped
+                .iter()
+                .find(|i| i.id == id)
+                .map(|i| (i.velocity, i.on_ground)),
+            Target::Orb(id) => self
+                .orbs
+                .iter()
+                .find(|o| o.id == id)
+                .map(|o| (o.velocity, o.on_ground)),
+            Target::Boat(id) => self
+                .boats
+                .iter()
+                .find(|b| b.id == id)
+                .map(|b| (b.velocity, b.on_ground)),
+            Target::Tnt(id) => self
+                .tnts
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| (t.velocity, t.on_ground)),
+            _ => None,
+        }
+    }
+
+    /// `Projectile.shootFromRotation(source, xRot, yRot, yOffset, pow, uncertainty)`.
+    pub(super) fn java_shoot_from_rotation(&mut self, id: u32, source: u32, aim: [f32; 5]) -> bool {
+        let Some((movement, on_ground)) = self.java_known_movement(source) else {
+            return false;
+        };
+        let [pitch, yaw, offset, speed, uncertainty] = aim;
+        let Some(p) = self.creatures.projectiles.iter_mut().find(|p| p.id == id) else {
+            return false;
+        };
+        p.shoot_from_rotation(
+            &mut self.world.random,
+            pitch,
+            yaw,
+            offset,
+            speed,
+            uncertainty,
+            movement,
+            on_ground,
+        );
+        p.needs_sync = true;
+        true
     }
 
     /// `Entity.teleport` inside the level: the position, rotation and motion the transition says. Another level has no native travel to call.
@@ -1325,6 +1486,28 @@ mod tests {
             &seen[seen.len() - 4..],
             ["vehicle 9", "passenger 4", "passenger 5", "removal 0"]
         );
+    }
+
+    #[test]
+    fn the_ai_and_arrow_groups_read_back() {
+        let mut out = Out::default();
+        let over = Overlay {
+            malus: vec![(9, 0.0), (16, 8.0)],
+            species: SpeciesData::Arrow { base_damage: 7.0 },
+            ..Overlay::default()
+        };
+        write_groups(
+            &mut out,
+            &Tag::compound(Vec::<(&str, Tag)>::new()),
+            &over,
+            Shape::default(),
+            SPECIES | AI,
+        );
+        let mut r = In(&out.0);
+        assert_eq!(r.double(), Some(7.0));
+        assert_eq!(r.int(), Some(2));
+        assert_eq!((r.byte(), r.float()), (Some(9), Some(0.0)));
+        assert_eq!((r.byte(), r.float()), (Some(16), Some(8.0)));
     }
 
     #[test]

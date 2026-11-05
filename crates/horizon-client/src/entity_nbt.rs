@@ -402,7 +402,7 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
         map.remove(&horizon_world::nbt::JavaString::from("TicksFrozen"));
     }
     for (key, value) in [
-        ("AbsorptionAmount", Tag::Float(0)),
+        ("AbsorptionAmount", Tag::Float(m.absorption.to_bits())),
         ("FallFlying", Tag::Byte(0)),
         ("CanPickUpLoot", Tag::Byte(i8::from(m.can_pick_up_loot()))),
         ("current_impulse_context_reset_grace_time", Tag::Int(0)),
@@ -1215,6 +1215,7 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
         add_modifier(&mut m, Attr::FollowRange, id, bonus, Op::AddMultipliedBase);
     }
     m.health = float(tag.get("Health")).map_or(m.attrs.max_health, |h| h as f32);
+    m.absorption = float(tag.get("AbsorptionAmount")).map_or(0.0, |v| v as f32);
     // LivingEntity.setHealth clamps to the max health: a horse or llama is made
     // with the type's and saved before it drops to the one it rolled. (Only
     // the base is read here, so the clamp would cut a leader zombie's bonus.)

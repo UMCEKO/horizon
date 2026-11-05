@@ -127,6 +127,7 @@ public final class GameBridge {
         Crossing.game("items", input -> items());
         Crossing.game("states", input -> states());
         Crossing.game("refresh", GameBridge::refresh);
+        Crossing.game("clear_use", GameBridge::clearUse);
         Crossing.game("block_events", GameBridge::blockEvents);
         Crossing.game("block_entity_tick", GameBridge::blockEntityTick);
         Crossing.game("block_entity_load", GameBridge::blockEntityLoad);
@@ -438,6 +439,14 @@ public final class GameBridge {
 
     private static byte[] refresh(byte[] input) throws Exception {
         fill(Crossing.In.of(input), true);
+        return new byte[] {1};
+    }
+
+    /** Native ended the held use: the view forgets it as `stopUsingItem` leaves it. */
+    private static byte[] clearUse(byte[] input) throws Exception {
+        var in = Crossing.In.of(input);
+        var player = PLAYERS.get(new UUID(in.readLong(), in.readLong()));
+        if (player != null) Using.clear(player);
         return new byte[] {1};
     }
 

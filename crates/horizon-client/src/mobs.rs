@@ -1054,6 +1054,8 @@ pub struct Mob {
     /// last sent it, so the next update goes out at once.
     pub needs_sync: bool,
     pub health: f32,
+    /// `LivingEntity.getAbsorptionAmount`.
+    pub absorption: f32,
     pub hurt_time: i32,
     pub invulnerable: i32,
     pub death_time: i32,
@@ -2241,6 +2243,7 @@ impl Mob {
         let mut mob = Self {
             id,
             health: kind.max_health,
+            absorption: 0.0,
             position,
             previous: position,
             velocity: Vec3::ZERO,
@@ -2475,80 +2478,22 @@ impl Mob {
         {
             amount *= 5.0;
         }
-        let (worn, worn_toughness) = self.worn_armor();
-        // Shulker.setRawPeekAmount: a closed shell adds the covered armor modifier.
-        let covered = if self.species() == Species::Shulker && self.extra.counter == 0 {
-            20.0
-        } else {
-            0.0
-        };
-        if !source.bypasses_armor() && self.kind.armor + worn + covered > 0.0 {
-            // CombatRules.getDamageAfterAbsorb
-            let armor = self.kind.armor + worn + covered;
-            let toughness = 2.0 + (self.kind.armor_toughness + worn_toughness) / 4.0;
-            let effective = (armor - amount / toughness).clamp(armor * 0.2, 20.0);
-            let mut fraction = effective / 25.0;
-            if let Some(modify) = armor_effectiveness {
-                fraction = modify(fraction).clamp(0.0, 1.0);
-            }
-            amount *= 1.0 - fraction;
-        }
-        // CombatRules.getDamageAfterMagicAbsorb: enchantment protection.
-        let epf = gear::protection(self, source.kind);
-        if epf > 0.0 {
-            amount *= 1.0 - epf / 25.0;
-        }
-        // Witch.getDamageAfterMagicAbsorb: none from its own doing, else
-        // 85% less from `#witch_resistant_to`.
-        if self.species() == Species::Witch {
-            if source.attacker == Some(Who::Mob(self.id)) {
-                amount = 0.0;
-            } else if matches!(
-                source.kind,
-                DamageKind::Magic
-                    | DamageKind::IndirectMagic
-                    | DamageKind::SonicBoom
-                    | DamageKind::Thorns
-            ) {
-                amount *= 0.15;
-            }
-        }
         // Wolf.actuallyHurt: wolf armor takes the damage instead of the wolf.
         let absorbed = self.wolf_armor_absorbs(&source);
         let mut knock = true;
-        let dealt = if self.invulnerable as f32 > 10.0 {
+        // LivingEntity.hurtServer: the cooldown subtracts before `actuallyHurt`.
+        if self.invulnerable as f32 > 10.0 {
             if amount <= self.last_hurt {
                 return false;
             }
-            let dealt = amount - self.last_hurt;
-            if absorbed {
-                self.hurt_wolf_armor(dealt);
-            } else {
-                self.health -= dealt;
-            }
+            self.actually_hurt(source, amount - self.last_hurt, armor_effectiveness);
             self.last_hurt = amount;
             knock = false;
-            dealt
         } else {
             self.last_hurt = amount;
             self.invulnerable = 20;
-            if absorbed {
-                self.hurt_wolf_armor(amount);
-            } else {
-                self.health -= amount;
-            }
+            self.actually_hurt(source, amount, armor_effectiveness);
             self.hurt_time = 10;
-            amount
-        };
-        // LivingEntity.actuallyHurt: a hit that reaches the health is
-        // recorded (`CombatTracker.recordDamage`), with the fall it ends;
-        // Wolf.actuallyHurt keeps a hit its armor takes out of it.
-        if !absorbed && dealt != 0.0 {
-            self.record_damage(source, dealt);
-        }
-        // Animal.actuallyHurt: damage taken ends love mode (`resetLove`).
-        if drops::is_animal(self.species()) {
-            self.extra.in_love = 0;
         }
         self.last_damage = Some((source, i64::from(self.age)));
         if let Some(who) = source.attacker {
@@ -2618,6 +2563,76 @@ impl Mob {
             aquatic::hurt_server(self);
         }
         true
+    }
+    /// `LivingEntity.actuallyHurt` (`Wolf`, `Animal` and `Witch`'s overrides in it): the health `dmg` takes
+    /// after armor, protection and absorption.
+    pub fn actually_hurt(
+        &mut self,
+        source: Damage,
+        dmg: f32,
+        armor_effectiveness: Option<&mut dyn FnMut(f32) -> f32>,
+    ) -> f32 {
+        // Wolf.actuallyHurt: wolf armor takes the damage instead of the wolf.
+        if self.wolf_armor_absorbs(&source) {
+            self.hurt_wolf_armor(dmg);
+            return 0.0;
+        }
+        if self.invulnerable_flag && !source.kind.bypasses_invulnerability() {
+            return 0.0;
+        }
+        let mut dmg = dmg;
+        let (worn, worn_toughness) = self.worn_armor();
+        // Shulker.setRawPeekAmount: a closed shell adds the covered armor modifier.
+        let covered = if self.species() == Species::Shulker && self.extra.counter == 0 {
+            20.0
+        } else {
+            0.0
+        };
+        if !source.bypasses_armor() && self.kind.armor + worn + covered > 0.0 {
+            // CombatRules.getDamageAfterAbsorb
+            let armor = self.kind.armor + worn + covered;
+            let toughness = 2.0 + (self.kind.armor_toughness + worn_toughness) / 4.0;
+            let effective = (armor - dmg / toughness).clamp(armor * 0.2, 20.0);
+            let mut fraction = effective / 25.0;
+            if let Some(modify) = armor_effectiveness {
+                fraction = modify(fraction).clamp(0.0, 1.0);
+            }
+            dmg *= 1.0 - fraction;
+        }
+        // CombatRules.getDamageAfterMagicAbsorb: enchantment protection.
+        let epf = gear::protection(self, source.kind);
+        if epf > 0.0 {
+            dmg *= 1.0 - epf / 25.0;
+        }
+        // Witch.getDamageAfterMagicAbsorb: none from its own doing, else
+        // 85% less from `#witch_resistant_to`.
+        if self.species() == Species::Witch {
+            if source.attacker == Some(Who::Mob(self.id)) {
+                dmg = 0.0;
+            } else if matches!(
+                source.kind,
+                DamageKind::Magic
+                    | DamageKind::IndirectMagic
+                    | DamageKind::SonicBoom
+                    | DamageKind::Thorns
+            ) {
+                dmg *= 0.15;
+            }
+        }
+        let original = dmg;
+        dmg = (dmg - self.absorption).max(0.0);
+        self.absorption = (self.absorption - (original - dmg)).max(0.0);
+        // A hit that reaches the health is recorded (`CombatTracker.recordDamage`), with the fall it ends.
+        if dmg != 0.0 {
+            self.record_damage(source, dmg);
+            self.health -= dmg;
+            self.absorption = (self.absorption - dmg).max(0.0);
+        }
+        // Animal.actuallyHurt: damage taken ends love mode (`resetLove`).
+        if drops::is_animal(self.species()) {
+            self.extra.in_love = 0;
+        }
+        dmg
     }
     /// A splash or cloud's harming effect on this mob: the potion's
     /// `indirect_magic` is in `#witch_resistant_to`, so a witch takes 15%.
@@ -3517,6 +3532,46 @@ pub(crate) mod sensor_scan_tests {
         }
     }
 }
+#[cfg(test)]
+mod hurt_tests {
+    use super::sensor_scan_tests::kind;
+    use super::*;
+
+    fn armored() -> Mob {
+        let kind = Arc::new(MobType {
+            armor: 10.0,
+            ..(*kind()).clone()
+        });
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+    fn generic() -> Damage {
+        Damage {
+            kind: DamageKind::MobAttack,
+            attacker: None,
+            from: None,
+        }
+    }
+
+    #[test]
+    fn actually_hurt_in_the_cooldown_takes_the_pre_armor_difference() {
+        let mut m = armored();
+        assert!(m.damage(6.0, generic()));
+        assert!((m.health - 5.68).abs() < 1e-4, "{}", m.health);
+        // 8 is 2 more than the 6 before armor: 2 * (1 - 9/25) = 1.28.
+        assert!(m.damage(8.0, generic()));
+        assert!((m.health - 4.4).abs() < 1e-4);
+        assert_eq!(m.last_hurt, 8.0);
+        assert!(!m.damage(8.0, generic()));
+    }
+    #[test]
+    fn absorption_takes_the_damage_before_the_health() {
+        let mut m = Mob::new(1, kind(), Vec3::ZERO, 0.0);
+        m.absorption = 3.0;
+        assert_eq!(m.actually_hurt(generic(), 5.0, None), 2.0);
+        assert_eq!((m.absorption, m.health), (0.0, 8.0));
+    }
+}
+
 #[cfg(test)]
 mod push_tests {
     use super::sensor_scan_tests::kind;

@@ -32,11 +32,15 @@ public final class Flat {
 
     /** An entity by its id: the view's identity in Horizon's level. */
     public static int raw(net.minecraft.world.entity.Entity entity) {
-        return entity.getId();
+        return entity == null ? 0 : entity.getId();
     }
 
     public static int raw(net.minecraft.world.entity.Entity.RemovalReason reason) {
         return reason.ordinal();
+    }
+
+    public static int raw(net.minecraft.world.level.pathfinder.PathType type) {
+        return type.ordinal();
     }
 
     public static int raw(net.minecraft.world.entity.EquipmentSlot slot) {

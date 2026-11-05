@@ -1,11 +1,13 @@
 package dev.horizonlab.javamods.boot;
 
 import com.google.common.collect.ImmutableList;
+import dev.horizonlab.javamods.boot.mixin.AbstractArrowAccess;
 import dev.horizonlab.javamods.boot.mixin.EntityAccess;
 import dev.horizonlab.javamods.boot.mixin.EntityDataAccess;
 import dev.horizonlab.javamods.boot.mixin.ItemAccess;
 import dev.horizonlab.javamods.boot.mixin.ItemDataAccess;
 import dev.horizonlab.javamods.boot.mixin.LivingAccess;
+import dev.horizonlab.javamods.boot.mixin.MobAccess;
 import dev.horizonlab.javamods.boot.mixin.LightningBoltAccess;
 import dev.horizonlab.javamods.boot.mixin.LivingDataAccess;
 import dev.horizonlab.javamods.boot.mixin.PrimedTntAccess;
@@ -48,6 +50,8 @@ import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LightningBolt;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.item.PrimedTnt;
+import net.minecraft.world.level.pathfinder.PathType;
+import net.minecraft.world.entity.projectile.arrow.AbstractArrow;
 import net.minecraft.world.entity.animal.sheep.Sheep;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
@@ -60,7 +64,7 @@ import net.minecraft.world.phys.Vec3;
 
 /** One live Java object per native entity from its join to its leave: refreshed raw where native says, and written through by bridges. */
 public final class EntityViews implements LevelEntityGetter<Entity> {
-    private static final int POSITION = 2, MOTION = 4, HEALTH = 8, EFFECTS = 16, EQUIPMENT = 32, FIRE = 64, AIR = 128, FLAGS = 256, NAME = 512, ITEM = 1024, RIDING = 2048, REMOVAL = 4096, SPECIES = 8192;
+    private static final int POSITION = 2, MOTION = 4, HEALTH = 8, EFFECTS = 16, EQUIPMENT = 32, FIRE = 64, AIR = 128, FLAGS = 256, NAME = 512, ITEM = 1024, RIDING = 2048, REMOVAL = 4096, SPECIES = 8192, AI = 32768;
     private static final Map<ServerLevel, Int2ObjectOpenHashMap<Entity>> LIVE = new IdentityHashMap<>();
     private static Entity spawning;
     private static boolean unknownLogged;
@@ -336,6 +340,16 @@ public final class EntityViews implements LevelEntityGetter<Entity> {
                 bolts.horizon$life(life);
                 bolts.horizon$flashes(flashes);
                 bolt.seed = seed;
+            } else if (entity instanceof AbstractArrow arrow) {
+                ((AbstractArrowAccess) arrow).horizon$baseDamage(in.readDouble());
+            }
+        }
+        if ((mask & AI) != 0) {
+            var malus = ((MobAccess) entity).horizon$pathfindingMalus();
+            malus.clear();
+            for (int n = in.readInt(); n > 0; n--) {
+                var type = PathType.values()[in.readByte()];
+                malus.put(type, in.readFloat());
             }
         }
     }

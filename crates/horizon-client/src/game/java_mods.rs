@@ -78,6 +78,47 @@ impl Game<'_> {
         true
     }
 
+    /// `LivingEntity.releaseUsingItem` on the acting player: the item's release, its release tick, then `stopUsingItem`.
+    pub(super) fn java_release_using_item(&mut self) {
+        let Some((slot, ticks)) = self.using else {
+            return;
+        };
+        let Some(hand) = self.used_hand() else {
+            return;
+        };
+        let stack = self.stack_in(slot).cloned();
+        self.with_hand(hand, |g| {
+            if let Some(stack) = &stack {
+                g.release_using(stack, ticks, false);
+                if &*stack.item == "minecraft:crossbow" {
+                    g.tick_crossbow(slot, ticks, stack);
+                }
+            }
+        });
+        self.using = None;
+        let vibrates = stack.as_ref().is_some_and(|s| {
+            self.items()
+                .get(&s.item)
+                .is_none_or(|i| i.interact_vibrations)
+        });
+        if vibrates && let Some(p) = self.player.as_ref().map(|p| p.position) {
+            let ctx = self.player_context(None);
+            self.post_game_event("minecraft:item_interact_finish", [p.x, p.y, p.z], ctx);
+        }
+        self.java_clear_use();
+    }
+
+    /// The Java view forgets its held use once native has ended it.
+    fn java_clear_use(&mut self) {
+        let [a, b, c, d] = self.acting_uuid();
+        let mut out = Out::default();
+        out.long(((a as i64) << 32) | (b as u32 as i64));
+        out.long(((c as i64) << 32) | (d as u32 as i64));
+        if let Some(host) = horizon_java_host::get() {
+            host.request("clear_use", &out.0);
+        }
+    }
+
     /// `releaseUsingItem` (or `stopUsingItem` when the hand changed) for such an item; false leaves it to Horizon.
     pub(super) fn java_release_using(
         &mut self,

@@ -2,9 +2,10 @@
 
 use super::super::entity_life::Removal;
 use super::super::java_entities::{
-    EQUIPMENT, FIRE, FLAGS, HEALTH, ITEM, MOTION, NAME, POSITION, REMOVAL, RIDING, SPECIES,
+    AI, EQUIPMENT, FIRE, FLAGS, HEALTH, ITEM, MOTION, NAME, POSITION, REMOVAL, RIDING, SPECIES,
 };
 use super::*;
+use horizon_client::projectiles::ProjectileKind;
 use horizon_java_host::bridge::Ent;
 use horizon_world::nbt::Tag;
 
@@ -500,6 +501,53 @@ horizon_java_host::java_bridges! { table for Game<'static> {
             if let Some(vehicle) = vehicle {
                 after(game, Ent(vehicle), RIDING);
             }
+        }
+    }
+
+    "net/minecraft/world/entity/projectile/Projectile".shootFromRotation
+    "(Lnet/minecraft/world/entity/Entity;FFFFF)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
+    fn projectile_shoot_from_rotation(game, id: Ent, source: Ent, pitch: f32, yaw: f32, offset: f32, speed: f32, uncertainty: f32) -> () {
+        if game.java_shoot_from_rotation(id.0, source.0, [pitch, yaw, offset, speed, uncertainty]) {
+            after(game, id, MOTION | POSITION);
+        }
+    }
+
+    "net/minecraft/world/entity/projectile/arrow/AbstractArrow".setBaseDamage
+    "(D)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
+    fn arrow_set_base_damage(game, id: Ent, damage: f64) -> () {
+        if let Some(p) = game.creatures.projectiles.iter_mut().find(|p| p.id == id.0)
+            && let ProjectileKind::Arrow { base_damage, .. } = &mut p.kind
+        {
+            *base_damage = damage;
+        }
+        after(game, id, SPECIES);
+    }
+
+    "net/minecraft/world/entity/Mob".setPathfindingMalus
+    "(Lnet/minecraft/world/level/pathfinder/PathType;F)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
+    fn mob_set_pathfinding_malus(game, id: Ent, path_type: i32, cost: f32) -> () {
+        if let (Some(t), Some(m)) = (
+            horizon_client::mobs::path::PathType::from_ordinal(path_type as usize),
+            game.mobs.iter_mut().find(|m| m.id == id.0),
+        ) {
+            m.set_malus(t, cost);
+        }
+        after(game, id, AI);
+    }
+
+    "net/minecraft/world/entity/LivingEntity".actuallyHurt
+    "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/damagesource/DamageSource;F)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
+    fn living_actually_hurt(game, id: Ent, _level: Skip, source: Source, amount: f32) -> () {
+        if game.java_actually_hurt(id.0, &source, amount) {
+            after(game, id, HEALTH);
+        }
+    }
+
+    "net/minecraft/world/entity/LivingEntity".releaseUsingItem
+    "()V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
+    fn living_release_using_item(game, id: Ent) -> () {
+        if game.java_mob_stop_using(id.0) {
+            after(game, id, EQUIPMENT | FLAGS);
         }
     }
 
