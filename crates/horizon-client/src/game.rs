@@ -2397,13 +2397,7 @@ struct Game<'a> {
     /// Command feedback to forward to a guest.
     chat_capture: Option<Vec<horizon_client::text::Text>>,
     /// Packets for the guest acting now, sent once its action returns.
-    guest_packets: Vec<horizon_protocol::packets::play::Clientbound>,
-    /// The acting guest's cooldowns, as (item, ticks): their packet needs the
-    /// hub's item registry, which the guest's turn does not hold.
-    guest_cooldowns: Vec<(Arc<str>, i32)>,
-    /// The acting guest's own entity events (`ServerPlayer.connection.send`),
-    /// sent with their entity id, which the guest's turn does not hold.
-    guest_entity_events: Vec<i8>,
+    guest_packets: Vec<lan_actions::Outgoing>,
     /// `Player.playSound` of the acting guest (event, position, volume,
     /// pitch): `level.playSound(player, ...)` leaves the guest out, whose
     /// own client plays it.
@@ -5117,7 +5111,8 @@ impl Game<'_> {
     pub(super) fn add_cooldown(&mut self, group: Arc<str>, ticks: i32) {
         self.cooldowns.add(Arc::clone(&group), ticks);
         if self.lan_acting.is_some() {
-            self.guest_cooldowns.push((group, ticks));
+            self.guest_packets
+                .push(lan_actions::Outgoing::Cooldown(group, ticks));
         }
     }
     /// One hand's turn in `startUseItem`: `useItemOn` the block aimed at,
@@ -12459,13 +12454,14 @@ impl Game<'_> {
     /// A guest gets a packet, so its own client translates it.
     fn tell_sleeper(&mut self, key: &str, fallback: &str, overlay: bool) {
         if self.lan_acting.is_some() {
-            self.guest_packets
-                .push(horizon_protocol::packets::play::Clientbound::SystemChat(
+            self.guest_packets.push(lan_actions::Outgoing::Packet(
+                horizon_protocol::packets::play::Clientbound::SystemChat(
                     horizon_protocol::packets::play::SystemChat {
                         content: horizon_protocol::text::translatable(key, &[]),
                         overlay,
                     },
-                ));
+                ),
+            ));
         } else if overlay {
             self.message = Some((self.translate(key, fallback), Instant::now()));
         } else {
@@ -16095,8 +16091,6 @@ impl<'a> Game<'a> {
             lan_acting: None,
             lan_break_pos: None,
             guest_packets: Vec::new(),
-            guest_cooldowns: Vec::new(),
-            guest_entity_events: Vec::new(),
             guest_player_sounds: Vec::new(),
             lan_acting_name: None,
             lan_acting_uuid: None,

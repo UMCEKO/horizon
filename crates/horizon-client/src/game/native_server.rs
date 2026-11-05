@@ -275,7 +275,8 @@ impl Game<'_> {
             overlay: true,
         });
         if self.lan_acting_uuid == Some(uuid) {
-            self.guest_packets.push(packet);
+            self.guest_packets
+                .push(super::lan_actions::Outgoing::Packet(packet));
             return true;
         }
         let Some(host) = &self.lan else {

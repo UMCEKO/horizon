@@ -187,10 +187,13 @@ impl Game<'_> {
         if self.lan_acting.is_some() {
             let message = horizon_client::text::Text::translate(KEY, &[])
                 .with_color(horizon_client::text::RED);
-            self.guest_packets.push(C::SystemChat(play::SystemChat {
-                content: horizon_client::lan::data::component_nbt(&message.component()),
-                overlay: true,
-            }));
+            self.guest_packets
+                .push(super::lan_actions::Outgoing::Packet(C::SystemChat(
+                    play::SystemChat {
+                        content: horizon_client::lan::data::component_nbt(&message.component()),
+                        overlay: true,
+                    },
+                )));
         } else {
             self.message = Some((
                 self.translate(KEY, "Click actions are disabled for this sign"),

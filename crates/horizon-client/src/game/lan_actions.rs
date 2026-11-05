@@ -119,6 +119,33 @@ pub(super) struct GuestPlay {
     sculk: super::sculk::PlayerEvents,
 }
 
+/// What a guest's turn sends to that guest's own connection, kept in one list so the packets leave in the
+/// order the turn queued them (`ServerGamePacketListenerImpl.send`).
+pub(super) enum Outgoing {
+    Packet(C),
+    /// `ServerPlayer.connection.send` of an entity event about the guest, whose entity id the turn does not hold.
+    EntityEvent(i8),
+    /// `ServerItemCooldowns.onCooldownStarted`.
+    Cooldown(std::sync::Arc<str>, i32),
+}
+
+/// Sends a turn's outbox through `send`, in order, as the guest's entity `entity_id`.
+pub(super) fn drain_outbox(outbox: Vec<Outgoing>, entity_id: i32, mut send: impl FnMut(C)) {
+    for item in outbox {
+        send(match item {
+            Outgoing::Packet(packet) => packet,
+            Outgoing::EntityEvent(event) => C::EntityEvent(play::EntityEvent {
+                id: entity_id,
+                event,
+            }),
+            Outgoing::Cooldown(group, duration) => C::Cooldown(play::Cooldown {
+                group: group.to_string(),
+                duration,
+            }),
+        });
+    }
+}
+
 /// A guest's command waiting for the hub (`LanHost::commands`).
 pub(super) struct GuestCommand {
     pub(super) conn: u32,
@@ -193,9 +220,7 @@ pub(super) struct GuestSwap {
     /// That turn's `known_movement`.
     known_movement: Vec3,
     /// The packets queued for that guest.
-    packets: Vec<play::Clientbound>,
-    /// The entity events queued for that guest.
-    entity_events: Vec<i8>,
+    packets: Vec<Outgoing>,
     /// The host's count of swings started, kept while the guest acts.
     swings: u32,
     /// How many projectiles there were: those added since are the guest's.
@@ -484,7 +509,6 @@ impl Game<'_> {
             std::mem::replace(&mut self.lan_acting_main_arm_left, g.main_arm_left()),
         );
         let packets = std::mem::take(&mut self.guest_packets);
-        let entity_events = std::mem::take(&mut self.guest_entity_events);
         let swings = self.swings_started;
         let projectiles = self.creatures.projectiles.len();
         let modifiers = std::mem::replace(
@@ -555,7 +579,6 @@ impl Game<'_> {
             acting,
             known_movement,
             packets,
-            entity_events,
             swings,
             projectiles,
             modifiers,
@@ -619,7 +642,6 @@ impl Game<'_> {
             acting,
             known_movement,
             packets,
-            entity_events,
             swings,
             projectiles,
             modifiers,
@@ -640,20 +662,13 @@ impl Game<'_> {
         // The guest's swings are theirs: the host's own count stays the host's.
         play.swings += self.swings_started.wrapping_sub(swings);
         self.swings_started = swings;
-        for packet in std::mem::replace(&mut self.guest_packets, packets) {
-            host.hub.send_to(conn, &packet);
-        }
-        // ServerPlayer.connection.send: the guest's own entity events.
+        // ServerPlayer.connection.send, in the order the turn queued them.
         let entity_id = host.hub.guests[i].entity_id;
-        for event in std::mem::replace(&mut self.guest_entity_events, entity_events) {
-            host.hub.send_to(
-                conn,
-                &C::EntityEvent(play::EntityEvent {
-                    id: entity_id,
-                    event,
-                }),
-            );
-        }
+        drain_outbox(
+            std::mem::replace(&mut self.guest_packets, packets),
+            entity_id,
+            |packet| host.hub.send_to(conn, &packet),
+        );
         // Player.playSound: everyone near but the guest, in the players' source.
         let players = horizon_client::settings::SOUND_SOURCES
             .iter()
@@ -662,16 +677,6 @@ impl Game<'_> {
         for (name, at, volume, pitch) in std::mem::take(&mut self.guest_player_sounds) {
             host.hub
                 .sound(&name, at, volume, pitch, players, Some(conn));
-        }
-        // ServerItemCooldowns.onCooldownStarted: the guest's own cooldown.
-        for (group, duration) in std::mem::take(&mut self.guest_cooldowns) {
-            host.hub.send_to(
-                conn,
-                &C::Cooldown(play::Cooldown {
-                    group: group.to_string(),
-                    duration,
-                }),
-            );
         }
         (
             self.lan_acting,
@@ -3995,8 +4000,9 @@ fn eye_columns(at: [f64; 3], body: Dimensions) -> [std::ops::RangeInclusive<i32>
 
 #[cfg(test)]
 mod tests {
-    use super::eye_columns;
+    use super::{Outgoing, drain_outbox, eye_columns};
     use horizon_client::pose::Pose;
+    use horizon_protocol::packets::play::{self, Clientbound as C};
 
     /// #3684: a player shrunk to `minecraft:scale` 0.1 who stands 0.05 from a
     /// wall has eyes 0.048 wide, which don't reach into it: they don't
@@ -4016,5 +4022,29 @@ mod tests {
             eye_columns([205.7, 100.0, 530.5], Pose::Standing.dimensions(1.0)),
             [205..=205, 530..=530]
         );
+    }
+
+    /// The packets, entity events and cooldowns of one turn leave in the order they were queued.
+    #[test]
+    fn a_turns_outbox_keeps_its_order() {
+        let outbox = vec![
+            Outgoing::Packet(C::SetPassengers(play::SetPassengers {
+                vehicle: 7,
+                passengers: vec![3],
+            })),
+            Outgoing::EntityEvent(9),
+            Outgoing::Cooldown("minecraft:ender_pearl".into(), 20),
+            Outgoing::Packet(C::SetPassengers(play::SetPassengers {
+                vehicle: 7,
+                passengers: Vec::new(),
+            })),
+        ];
+        let mut sent = Vec::new();
+        drain_outbox(outbox, 3, |p| sent.push(p));
+        assert_eq!(sent.len(), 4);
+        assert!(matches!(&sent[0], C::SetPassengers(p) if p.passengers == [3]));
+        assert!(matches!(&sent[1], C::EntityEvent(e) if e.id == 3 && e.event == 9));
+        assert!(matches!(&sent[2], C::Cooldown(c) if c.duration == 20));
+        assert!(matches!(&sent[3], C::SetPassengers(p) if p.passengers.is_empty()));
     }
 }

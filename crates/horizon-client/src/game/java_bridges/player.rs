@@ -150,7 +150,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     fn player_remove_cooldown(game, group: Text) -> () {
         game.cooldowns.remove(&group.0);
         if game.lan_acting.is_some() {
-            game.guest_cooldowns.push((group.0.into(), 0));
+            game.guest_packets.push(super::lan_actions::Outgoing::Cooldown(group.0.into(), 0));
         }
     }
 

@@ -176,7 +176,9 @@ impl Game<'_> {
             if written {
                 let hand = i32::from(self.hand == Hand::Off);
                 self.guest_packets
-                    .push(C::OpenBook(play::OpenBook { hand }));
+                    .push(super::lan_actions::Outgoing::Packet(C::OpenBook(
+                        play::OpenBook { hand },
+                    )));
             }
         } else if let Some(screen) = self.book_screen(stack) {
             self.open_book(screen);
