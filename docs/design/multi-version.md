@@ -59,6 +59,10 @@ pub(super) fn hurt_entities(level: &mut Level) {
 - Deleting a version deletes its `v26_2.rs` files, their `mod` lines and their `..=V26_2 =>` arms.
 - `versions.py fork Class.method --mc-version 26.2` writes the copy, the attribute and the citation; the porter edits
   only the lines that differ. Going back to 26.1.2 forks the 26.2 copy, so each step starts from the nearest body.
+- Copies are whole, but nobody reads them whole: `versions.py diff Class.method` shows a copy as a diff against the
+  newer body it was forked from, and a backport PR's review comment lists exactly that diff per copy. When a PR
+  edits a 26.3 body that has copies, `pr_ready.py` prints the same diff for each copy, so a fix that applies to the
+  older versions is carried over in the same PR.
 - The ranged citation (`@..26.2`) tells the port ledger which versions a copy ports. Ranges follow the order in
   `research-lock.json` (the pin, then older versions newest first), never a parse of the version string.
 
