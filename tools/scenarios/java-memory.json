@@ -30,7 +30,7 @@
     {"name": "settle"},
     {"wait": 2400},
     {"name": "heap"},
-    {"check": {"java_heap": {"max_live_mb": 450, "max_metaspace_mb": 260}, "within": 0}},
+    {"check": {"java_heap": {"max_live_mb": 410, "max_metaspace_mb": 260}, "within": 0}},
     {"check": {"no_exceptions": true, "since": "start"}}
   ]
 }
