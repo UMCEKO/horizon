@@ -3,6 +3,7 @@ use super::{Arg, Context, Game, R, Target, err, texts};
 use horizon_client::{
     brewing::{self, namespaced},
     effects::EffectInstance,
+    mobs::effect::MobEffect,
     text::{self, Style, Text},
 };
 
@@ -73,12 +74,10 @@ impl Game<'_> {
                 Target::Mob(id) => match self.mobs.iter_mut().find(|m| m.id == id) {
                     Some(m) => {
                         let name = namespaced(effect.id);
-                        m.add_effect(name, duration, amplifier);
-                        m.extra.hidden_effects.retain(|h| *h != name);
-                        if !particles {
-                            m.extra.hidden_effects.push(name);
-                        }
-                        true
+                        let mut instance = MobEffect::new(name, duration, amplifier);
+                        instance.visible = particles;
+                        instance.show_icon = particles;
+                        m.add_effect_instance(instance)
                     }
                     None => false,
                 },
@@ -139,11 +138,7 @@ impl Game<'_> {
                         let before = m.extra.effects.len();
                         m.extra
                             .effects
-                            .retain(|x| e.is_some_and(|e| x.0 != namespaced(e.id)));
-                        let left = &m.extra.effects;
-                        m.extra
-                            .hidden_effects
-                            .retain(|h| left.iter().any(|x| x.0 == *h));
+                            .retain(|x| e.is_some_and(|e| x.id != namespaced(e.id)));
                         m.extra.effects.len() != before
                     }
                     None => false,

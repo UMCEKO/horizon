@@ -423,8 +423,8 @@ fn ram_tick(m: &mut Mob, cx: &mut Cx) {
             m.extra
                 .effects
                 .iter()
-                .find(|e| e.0 == effect)
-                .map_or(0, |e| e.2 + 1)
+                .find(|e| e.id == effect)
+                .map_or(0, |e| e.amplifier + 1)
         };
         let boost = 0.25 * (level("minecraft:speed") - level("minecraft:slowness")) as f32;
         let factor = (m.ai.speed * 1.65).clamp(0.2, 3.0) + boost;

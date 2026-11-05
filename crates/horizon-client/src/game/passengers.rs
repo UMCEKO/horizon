@@ -1003,7 +1003,11 @@ mod tests {
             .find(|m| m.id == pig)
             .unwrap()
             .extra
-            .effects = vec![("minecraft:speed", 100, 1)];
+            .effects = vec![horizon_client::mobs::effect::MobEffect::new(
+            "minecraft:speed",
+            100,
+            1,
+        )];
         game.lan_acting = Some(7);
         assert!(game.start_riding(Ent::Guest(7), Ent::Id(pig), true, false));
         assert_eq!(game.vehicle(), Some(pig));

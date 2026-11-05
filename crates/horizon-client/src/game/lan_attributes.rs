@@ -204,7 +204,8 @@ impl Game<'_> {
                 .map(|a| finalize::base_value(m, a))
         };
         // LivingEntity.onEffectAdded: MobEffect.addAttributeModifiers.
-        for &(effect, _, amplifier) in &m.extra.effects {
+        for instance in &m.extra.effects {
+            let (effect, amplifier) = (instance.id, instance.amplifier);
             let Some((attribute, id, amount, op)) =
                 effects::effect_modifier(effect.trim_start_matches("minecraft:"))
             else {

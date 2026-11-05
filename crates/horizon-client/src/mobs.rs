@@ -32,6 +32,7 @@ pub mod data;
 pub mod dolphin;
 pub mod doors;
 pub mod drops;
+pub mod effect;
 pub mod enderman;
 pub mod equine;
 pub mod farm;
@@ -913,10 +914,8 @@ pub struct Extra {
     /// sensed, looked up every 20 ticks.
     pub repellent: Option<[i32; 3]>,
     pub vector: [f64; 3],
-    /// Active status effects: (effect id, ticks left, amplifier).
-    pub effects: Vec<(&'static str, i32, i32)>,
-    /// The effects above given with `hideParticles`: no swirls for them.
-    pub hidden_effects: Vec<&'static str>,
+    /// `LivingEntity.activeEffects`.
+    pub effects: Vec<effect::MobEffect>,
     /// `LivingEntity.DATA_EFFECT_PARTICLES` and `DATA_EFFECT_AMBIENCE_ID` as a
     /// server gave them: the swirls around it, and whether they are all faint.
     pub effect_particles: Vec<crate::particles::ParticleOptions>,
@@ -1904,7 +1903,7 @@ impl Mob {
                 .extra
                 .effects
                 .iter()
-                .map(|e| e.0.trim_start_matches("minecraft:"))
+                .map(|e| e.id.trim_start_matches("minecraft:"))
                 .collect(),
             hunted_recently: m.species() == Species::Piglin && m.extra.ints[0] > 0,
             hurt_recently: m.species() == Species::Piglin && m.extra.piglin.hurt,
@@ -2768,8 +2767,9 @@ impl Mob {
         if self.extra.sprinting {
             v *= 1.0 + f64::from(0.3f32);
         }
-        for (e, _, amp) in &self.extra.effects {
-            match *e {
+        for e in &self.extra.effects {
+            let amp = e.amplifier;
+            match e.id {
                 "minecraft:speed" => v *= 1.0 + 0.2 * f64::from(amp + 1),
                 "minecraft:slowness" => v *= (1.0 - 0.15 * f64::from(amp + 1)).max(0.0),
                 _ => {}
@@ -2778,7 +2778,7 @@ impl Mob {
         v
     }
     pub fn has_effect(&self, effect: &str) -> bool {
-        self.extra.effects.iter().any(|e| e.0 == effect)
+        self.extra.effects.iter().any(|e| e.id == effect)
     }
     /// `LivingEntity.isCurrentlyGlowing`: the Glowing effect or the `Glowing` tag (on a
     /// server's client, `glowing` holds shared flag 6 instead).
@@ -2792,18 +2792,15 @@ impl Mob {
     }
     pub fn add_effect(&mut self, effect: &'static str, ticks: i32, amplifier: i32) {
         let effect = horizon_client_core::potions::namespaced(effect);
-        if let Some(e) = self.extra.effects.iter_mut().find(|e| e.0 == effect) {
-            // MobEffectInstance.update: a stronger effect replaces with its
-            // own duration, an equal one only extends it; a weaker one is
-            // ignored (vanilla keeps it hidden behind the active one).
-            if amplifier > e.2 {
-                e.1 = ticks;
-                e.2 = amplifier;
-            } else if amplifier == e.2 && e.1 != -1 && (ticks == -1 || e.1 < ticks) {
-                e.1 = ticks;
-            }
+        self.add_effect_instance(effect::MobEffect::new(effect, ticks, amplifier));
+    }
+    /// `LivingEntity.addEffect`: updates the active one of that effect, else adds it; true when it changed.
+    pub fn add_effect_instance(&mut self, new: effect::MobEffect) -> bool {
+        if let Some(e) = self.extra.effects.iter_mut().find(|e| e.id == new.id) {
+            e.update(&new)
         } else {
-            self.extra.effects.push((effect, ticks, amplifier));
+            self.extra.effects.push(new);
+            true
         }
     }
     pub fn speed_bonus(&self) -> f64 {

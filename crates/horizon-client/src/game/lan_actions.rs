@@ -137,7 +137,7 @@ pub(super) enum Outgoing {
     MobEffects {
         entity: u32,
         add: bool,
-        effects: Vec<(&'static str, i32, i32)>,
+        effects: Vec<horizon_client::mobs::effect::MobEffect>,
     },
     /// `connection.teleport(position, Relative.ROTATION)`.
     TeleportKeepingLook([f64; 3]),
@@ -190,15 +190,17 @@ pub(super) fn drain_outbox(
                 add,
                 effects,
             } => {
-                for (id, ticks, amplifier) in effects {
-                    let Some(effect) = effect(id) else { continue };
+                for instance in effects {
+                    let Some(effect) = effect(instance.id) else {
+                        continue;
+                    };
                     send(Delivery::Packet(if add {
                         C::UpdateMobEffect(play::UpdateMobEffect {
                             id: entity as i32,
                             effect,
-                            amplifier,
-                            duration: ticks,
-                            flags: 2 | 4,
+                            amplifier: instance.amplifier,
+                            duration: instance.ticks,
+                            flags: instance.packet_flags() as i8,
                         })
                     } else {
                         C::RemoveMobEffect(play::RemoveMobEffect {
@@ -4161,5 +4163,30 @@ mod tests {
         assert!(
             matches!(&sent[4], Delivery::Packet(C::SetPassengers(p)) if p.passengers.is_empty())
         );
+    }
+
+    /// The vehicle's effect leaves with the ambient, particle and icon flags it holds.
+    #[test]
+    fn a_vehicles_effect_packet_carries_its_real_flags() {
+        use super::Delivery;
+        use horizon_client::mobs::effect::MobEffect;
+        let mut ambient = MobEffect::new("minecraft:speed", 100, 2);
+        ambient.ambient = true;
+        ambient.visible = false;
+        let outbox = vec![Outgoing::MobEffects {
+            entity: 5,
+            add: true,
+            effects: vec![ambient, MobEffect::new("minecraft:poison", 40, 0)],
+        }];
+        let mut sent = Vec::new();
+        drain_outbox(outbox, 3, &|_| None, &|_| Some(1), |d| sent.push(d));
+        let flags: Vec<i8> = sent
+            .iter()
+            .filter_map(|d| match d {
+                Delivery::Packet(C::UpdateMobEffect(p)) => Some(p.flags),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(flags, [1 | 4, 2 | 4]);
     }
 }

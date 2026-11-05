@@ -200,8 +200,8 @@ pub(super) fn optimal_jump_vector(m: &mut Mob, target: Vec3) -> Option<Vec3> {
             .extra
             .effects
             .iter()
-            .find(|e| e.0 == "minecraft:jump_boost")
-            .map_or(0, |e| e.2);
+            .find(|e| e.id == "minecraft:jump_boost")
+            .map_or(0, |e| e.amplifier);
         // LivingEntity.getJumpBoostPower
         let boost = f64::from(0.1_f32 * (amp + 1) as f32);
         return Some(v.add_vector(Vec3::new(0.0, v.normalize().y * boost, 0.0)));

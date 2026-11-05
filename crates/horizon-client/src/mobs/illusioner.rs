@@ -149,9 +149,9 @@ impl Goal for Spell {
 /// `Entity.isInvisible` of an illusioner on a client: the shared flag stands
 /// in for the effect the server holds, which draws the mirror images.
 pub fn set_invisible(m: &mut Mob, on: bool) {
-    m.extra.effects.retain(|e| e.0 != INVISIBILITY);
+    m.extra.effects.retain(|e| e.id != INVISIBILITY);
     if on {
-        m.extra.effects.push((INVISIBILITY, i32::MAX, 0));
+        m.add_effect(INVISIBILITY, i32::MAX, 0);
     }
 }
 

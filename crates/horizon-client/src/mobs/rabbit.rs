@@ -226,8 +226,8 @@ fn jump_power(m: &Mob, block_factor: f32) -> f32 {
         .extra
         .effects
         .iter()
-        .find(|e| e.0 == "minecraft:jump_boost")
-        .map_or(0.0, |e| 0.1 * (e.2 + 1) as f32);
+        .find(|e| e.id == "minecraft:jump_boost")
+        .map_or(0.0, |e| 0.1 * (e.amplifier + 1) as f32);
     m.attrs.jump_strength as f32 * jump_scale(m) * block_factor + boost
 }
 fn apply_jump(m: &mut Mob, power: f32) {
@@ -542,7 +542,7 @@ mod tests {
         m.horizontal_collision = true;
         near(f64::from(jump_power(&m, 1.0)), 0.5);
         m.attrs.jump_strength = 0.84;
-        m.extra.effects.push(("minecraft:jump_boost", 100, 1));
+        m.add_effect("minecraft:jump_boost", 100, 1);
         near(f64::from(jump_power(&m, 0.5)), 0.7);
         apply_jump(&mut m, 0.2);
         near(m.velocity.z, 0.1 / 3.25_f64.sqrt());

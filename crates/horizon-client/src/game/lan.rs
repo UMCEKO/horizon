@@ -394,8 +394,8 @@ fn mob_meta(
     meta.extend(
         hub.effect_meta(
             (m.extra.effects.iter())
-                .filter(|e| !m.extra.hidden_effects.contains(&e.0))
-                .map(|e| (e.0, false)),
+                .filter(|e| e.visible)
+                .map(|e| (e.id, e.ambient)),
         ),
     );
     defaults.push((10, serializer::PARTICLES, Value::Particles(Vec::new())));
@@ -2489,11 +2489,17 @@ impl Game<'_> {
             m.extra.effect_ambient = visible().all(|e| e.ambient);
             // Entity.isInvisible: the invisibility effect hides the body (the
             // model pass, the name tag rules and `trader::is_invisible` read it).
-            m.extra.effects.retain(|e| e.0 != "minecraft:invisibility");
+            m.extra.effects.retain(|e| e.id != "minecraft:invisibility");
             if let Some(e) = g.effects.get("invisibility") {
-                m.extra
-                    .effects
-                    .push(("minecraft:invisibility", e.duration, e.amplifier));
+                let mut model = horizon_client::mobs::effect::MobEffect::new(
+                    "minecraft:invisibility",
+                    e.duration,
+                    e.amplifier,
+                );
+                model.ambient = e.ambient;
+                model.visible = e.visible;
+                model.show_icon = e.visible;
+                m.extra.effects.push(model);
             }
             // Lying in its bed (LivingEntity.getBedOrientation).
             m.extra.ints[1] = g.bed.map_or(0, |b| self.bed_facing(b));

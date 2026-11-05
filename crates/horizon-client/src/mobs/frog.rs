@@ -949,8 +949,8 @@ impl Goal for LongJump {
             .extra
             .effects
             .iter()
-            .find(|e| e.0 == "minecraft:jump_boost")
-            .map_or(0.0, |e| f64::from(0.1_f32 * (e.2 + 1) as f32));
+            .find(|e| e.id == "minecraft:jump_boost")
+            .map_or(0.0, |e| f64::from(0.1_f32 * (e.amplifier + 1) as f32));
         m.velocity = jump.scale((len + boost) / len);
         self.mid_jump = true;
         let at = [m.position.x, m.position.y, m.position.z];

@@ -486,8 +486,8 @@ impl Goal for Charge {
             m.extra
                 .effects
                 .iter()
-                .find(|x| x.0 == e)
-                .map_or(0, |x| x.2 + 1)
+                .find(|x| x.id == e)
+                .map_or(0, |x| x.amplifier + 1)
         };
         let boost = 0.25 * (level("minecraft:speed") - level("minecraft:slowness")) as f32;
         let factor = (self.speed as f32 * m.movement_speed() as f32).clamp(0.2, 2.0) + boost;

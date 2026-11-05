@@ -102,7 +102,13 @@ impl Mob {
         off_hand: bool,
         animation: crate::first_person::SwingAnimation,
     ) {
-        let amplifier = |id: &str| self.extra.effects.iter().find(|e| e.0 == id).map(|e| e.2);
+        let amplifier = |id: &str| {
+            self.extra
+                .effects
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.amplifier)
+        };
         let dig_speed = amplifier("minecraft:haste").max(amplifier("minecraft:conduit_power"));
         let fatigue = amplifier("minecraft:mining_fatigue");
         let duration = crate::first_person::swing_duration(animation, dig_speed, fatigue);
@@ -2383,13 +2389,12 @@ fn flower_contact_effects(m: &mut Mob, w: &MobWorld) {
 /// MobEffect ticking for the effects mobs receive (poison, wither, regeneration).
 fn tick_effects(m: &mut Mob, ride: super::anim::Ride) {
     let mut effects = std::mem::take(&mut m.extra.effects);
-    for (effect, ticks, amp) in &mut effects {
-        let interval = |base: i32| (base >> (*amp).max(0)).max(1);
+    for e in &mut effects {
+        let interval = |base: i32| (base >> e.amplifier.max(0)).max(1);
         // MobEffectInstance.tickServer: an infinite (-1) effect times its
         // ticks by the mob's tickCount and never counts down.
-        let infinite = *ticks == -1;
-        let count = if infinite { m.age as i32 } else { *ticks };
-        match *effect {
+        let count = if e.infinite() { m.age as i32 } else { e.ticks };
+        match e.id {
             "minecraft:poison"
                 if count % interval(25) == 0 && !m.kind.flags.undead && m.health > 1.0 =>
             {
@@ -2405,14 +2410,9 @@ fn tick_effects(m: &mut Mob, ride: super::anim::Ride) {
             }
             _ => {}
         }
-        if !infinite {
-            *ticks -= 1;
-        }
+        e.tick_down();
     }
-    effects.retain(|e| e.1 > 0 || e.1 == -1);
-    m.extra
-        .hidden_effects
-        .retain(|h| effects.iter().any(|e| e.0 == *h));
+    effects.retain(|e| e.has_remaining());
     m.extra.effects = effects;
 }
 
@@ -2644,7 +2644,7 @@ mod poison_effect_tests {
         let pig_kind = Arc::new(data.types.get("minecraft:pig").unwrap().clone());
         let mut pig = Mob::new(1, pig_kind, Vec3::new(0.0, 4.0, 0.0), 0.0);
         pig.add_effect("poison", 100, 0);
-        assert_eq!(pig.extra.effects[0].0, "minecraft:poison");
+        assert_eq!(pig.extra.effects[0].id, "minecraft:poison");
         let initial_pig_health = pig.health;
         tick_effects(&mut pig, crate::mobs::anim::Ride::default());
         assert_eq!(

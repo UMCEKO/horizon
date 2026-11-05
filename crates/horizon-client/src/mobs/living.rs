@@ -1144,11 +1144,12 @@ impl Mob {
         }
         let mut y = movement.y;
         // LivingEntity.travelInAir: levitation lifts by its amplifier.
-        if let Some(&(_, _, amp)) = self
+        if let Some(amp) = self
             .extra
             .effects
             .iter()
-            .find(|e| e.0 == "minecraft:levitation")
+            .find(|e| e.id == "minecraft:levitation")
+            .map(|e| e.amplifier)
         {
             y += (0.05 * f64::from(amp + 1) - movement.y) * 0.2;
         } else {

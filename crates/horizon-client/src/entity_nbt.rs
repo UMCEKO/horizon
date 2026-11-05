@@ -37,6 +37,46 @@ pub fn motion(tag: &Tag) -> Vec3 {
 pub fn rotation(tag: &Tag) -> [f32; 2] {
     read_doubles::<2>(tag.get("Rotation")).map_or([0.0; 2], |r| [r[0] as f32, r[1] as f32])
 }
+/// `MobEffectInstance.Details.MAP_CODEC` encoded: the fields at their default are left out.
+fn effect_details_tag(e: &crate::mobs::effect::MobEffect) -> Vec<(&'static str, Tag)> {
+    let mut entries = Vec::new();
+    if e.amplifier != 0 {
+        entries.push((
+            "amplifier",
+            Tag::Byte(e.amplifier.clamp(0, 255) as u8 as i8),
+        ));
+    }
+    if e.ticks != 0 {
+        entries.push(("duration", Tag::Int(e.ticks)));
+    }
+    if e.ambient {
+        entries.push(("ambient", Tag::Byte(1)));
+    }
+    if !e.visible {
+        entries.push(("show_particles", Tag::Byte(0)));
+    }
+    entries.push(("show_icon", Tag::Byte(i8::from(e.show_icon))));
+    if let Some(hidden) = &e.hidden {
+        entries.push(("hidden_effect", Tag::compound(effect_details_tag(hidden))));
+    }
+    entries
+}
+/// `MobEffectInstance.Details.create`: `show_icon` defaults to `show_particles`.
+fn effect_from_details(id: &'static str, tag: &Tag) -> crate::mobs::effect::MobEffect {
+    let mut e = crate::mobs::effect::MobEffect::new(
+        id,
+        number(tag.get("duration")).unwrap_or(0) as i32,
+        number(tag.get("amplifier")).unwrap_or(0) as i32,
+    );
+    e.ambient = flag(tag, "ambient");
+    e.visible = number(tag.get("show_particles")).is_none_or(|v| v != 0);
+    e.show_icon = number(tag.get("show_icon")).map_or(e.visible, |v| v != 0);
+    e.hidden = match tag.get("hidden_effect") {
+        Some(h @ Tag::Compound(_)) => Some(Box::new(effect_from_details(id, h))),
+        _ => None,
+    };
+    e
+}
 fn flag(tag: &Tag, key: &str) -> bool {
     number(tag.get(key)).unwrap_or(0) != 0
 }
@@ -351,29 +391,15 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
             map.remove(&horizon_world::nbt::JavaString::from(key));
         }
     }
-    // LivingEntity.addAdditionalSaveData: `active_effects` only when there are
-    // any (MobEffectInstance.CODEC; a mob's effects are never ambient, and one
-    // given with `hideParticles` shows neither particles nor its icon).
+    // LivingEntity.addAdditionalSaveData: `active_effects` only when there are any.
     if m.extra.effects.is_empty() {
         map.remove(&horizon_world::nbt::JavaString::from("active_effects"));
     } else {
-        let effects = m
-            .extra
-            .effects
-            .iter()
-            .map(|&(effect, duration, amplifier)| {
-                let shown = !m.extra.hidden_effects.contains(&effect);
-                let mut e = vec![
-                    ("id", string(crate::brewing::namespaced(effect))),
-                    ("amplifier", Tag::Byte(amplifier.clamp(0, 255) as u8 as i8)),
-                    ("duration", Tag::Int(duration)),
-                ];
-                if !shown {
-                    e.push(("show_particles", Tag::Byte(0)));
-                }
-                e.push(("show_icon", Tag::Byte(i8::from(shown))));
-                Tag::compound(e)
-            });
+        let effects = m.extra.effects.iter().map(|e| {
+            let mut entries = vec![("id", string(crate::brewing::namespaced(e.id)))];
+            entries.extend(effect_details_tag(e));
+            Tag::compound(entries)
+        });
         map.insert("active_effects".into(), Tag::List(effects.collect()));
     }
     map.insert(
@@ -1308,15 +1334,8 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
                 continue;
             };
             let effect = crate::brewing::namespaced(def.id);
-            let duration = number(e.get("duration")).unwrap_or(0) as i32;
-            let amplifier = number(e.get("amplifier")).unwrap_or(0) as i32;
-            m.extra.effects.retain(|x| x.0 != effect);
-            m.extra.effects.push((effect, duration, amplifier));
-            // Details.CODEC: `show_particles` defaults to true.
-            m.extra.hidden_effects.retain(|h| *h != effect);
-            if number(e.get("show_particles")) == Some(0) {
-                m.extra.hidden_effects.push(effect);
-            }
+            m.extra.effects.retain(|x| x.id != effect);
+            m.extra.effects.push(effect_from_details(effect, e));
         }
     }
     m.silent = flag(tag, "Silent");
@@ -3090,6 +3109,62 @@ pub fn load_bucket_data(m: &mut Mob, stack: &crate::items::ItemStack) {
         if let Some(id) = dye("minecraft:tropical_fish/pattern_color") {
             m.extra.variant3 = id as u8;
         }
+    }
+}
+
+#[cfg(test)]
+mod effect_nbt_tests {
+    use super::*;
+    use crate::mobs::effect::MobEffect;
+
+    #[test]
+    fn a_mobs_effect_keeps_its_flags_and_hidden_chain_across_a_save() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let kind = Arc::new(data.types.get("minecraft:pig").unwrap().clone());
+        let mut m = Mob::new(1, kind, Vec3::new(0.0, 4.0, 0.0), 0.0);
+        let mut speed = MobEffect::new("minecraft:speed", 100, 1);
+        speed.ambient = true;
+        speed.show_icon = false;
+        let mut slow = MobEffect::new("minecraft:speed", 600, 0);
+        slow.visible = false;
+        speed.hidden = Some(Box::new(slow));
+        m.extra.effects.push(speed.clone());
+        m.extra
+            .effects
+            .push(MobEffect::new("minecraft:poison", 0, 0));
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None);
+        let Some(Tag::List(saved)) = tag.get("active_effects") else {
+            panic!("no active_effects");
+        };
+        // Details.MAP_CODEC leaves defaults out: no amplifier, duration or ambient here.
+        let poison = &saved[1];
+        assert!(poison.get("amplifier").is_none() && poison.get("duration").is_none());
+        assert!(poison.get("ambient").is_none() && poison.get("show_particles").is_none());
+        assert_eq!(number(poison.get("show_icon")), Some(1));
+        let types: HashMap<_, _> = data
+            .types
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
+        let back = mob_from_nbt(&tag, &types, 2).unwrap();
+        assert_eq!(back.extra.effects[0], speed);
+        assert_eq!(
+            back.extra.effects[1],
+            MobEffect::new("minecraft:poison", 0, 0)
+        );
+    }
+
+    #[test]
+    fn show_icon_defaults_to_show_particles() {
+        let tag = Tag::compound([("show_particles", Tag::Byte(0))]);
+        let e = effect_from_details("minecraft:speed", &tag);
+        assert!(!e.visible && !e.show_icon && !e.ambient);
     }
 }
 
