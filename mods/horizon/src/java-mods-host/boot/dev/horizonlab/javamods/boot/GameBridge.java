@@ -141,6 +141,7 @@ public final class GameBridge {
         Crossing.game("hopper_transfer", GameBridge::hopperTransfer);
         Crossing.game("block_ticks", GameBridge::blockTicks);
         Crossing.game("entity_facts", input -> EntityFacts.bin());
+        Crossing.game("routes_bin", input -> Routing.bin());
         Crossing.game("entity_types", input -> EntityFacts.types(level("minecraft:overworld")));
         Crossing.game("click_block", (in, out) -> use(in, out, 2));
         Crossing.game("event_click_block", (in, out) -> use(in, out, 3));

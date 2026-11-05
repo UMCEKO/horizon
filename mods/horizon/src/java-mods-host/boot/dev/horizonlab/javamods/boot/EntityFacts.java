@@ -224,11 +224,8 @@ public final class EntityFacts {
         return methods.computeIfAbsent(key, k -> methods.size());
     }
 
-    /** The merged method of a handler: the one name ending `$handler`, told apart by the mixin it came from when several end alike. */
     private static String mergedName(World world, String target, String handler, String mixin) {
-        var found = world.merged(target, handler);
-        if (found.size() > 1) found = found.stream().filter(m -> mixin.equals(m[1])).toList();
-        return found.size() == 1 ? found.get(0)[0] : null;
+        return Routing.mergedName(world.merged(target, handler), mixin);
     }
 
     private static boolean anyMerged(World world, String target, JsonArray handlers) {
@@ -343,17 +340,7 @@ public final class EntityFacts {
 
         @Override
         public List<String[]> merged(String target, String handler) {
-            try {
-                var out = new ArrayList<String[]>();
-                for (Method m : Class.forName(target.replace('/', '.'), false, Boot.class.getClassLoader()).getDeclaredMethods()) {
-                    if (!m.getName().equals(handler) && !m.getName().endsWith("$" + handler)) continue;
-                    var from = m.getAnnotation(org.spongepowered.asm.mixin.transformer.meta.MixinMerged.class);
-                    out.add(new String[] {m.getName(), from == null ? null : from.mixin()});
-                }
-                return out;
-            } catch (ClassNotFoundException e) {
-                return List.of();
-            }
+            return Routing.merged(target, handler);
         }
     }
 
