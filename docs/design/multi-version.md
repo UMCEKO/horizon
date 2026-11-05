@@ -42,16 +42,18 @@ pub fn hurt_entities(&mut self) {
 ```
 
 ```rust
-// crates/horizon-world/src/level/v26_2/explosion.rs
+// crates/horizon-world/src/level/explosion/v26_2.rs (a child module: `use super::*`)
 /// `ServerExplosion.hurtEntities@..26.2`
-pub fn hurt_entities(level: &mut Level) {
+pub(super) fn hurt_entities(level: &mut Level) {
     ... // the 26.2 body, whole, no team check
 }
 ```
 
 - `#[versioned]` picks the function once at startup from `VersionProfile` (a dispatch table, not a branch per call),
   so the 26.3 body never contains another version's code.
-- Old copies live in a `v26_2/` module beside the code they replace; deleting a version deletes its folders.
+- A copy is a child module of the file it replaces (`explosion.rs` declares `mod v26_2;`), so it reaches the parent's
+  private helpers and nothing else can call it. Callers never change: they call the 26.3 fn, which routes.
+- Deleting a version deletes its `v26_2.rs` files, their `mod` lines and their `..V26_2 =>` entries.
 - `versions.py fork Class.method --mc-version 26.2` writes the copy, the attribute and the citation; the porter edits
   only the lines that differ. Going back to 26.1.2 forks the 26.2 copy, so each step starts from the nearest body.
 - The ranged citation (`@..26.2`) tells the port ledger which versions a copy ports. Ranges follow the order in
