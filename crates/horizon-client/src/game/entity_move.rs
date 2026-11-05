@@ -1013,6 +1013,13 @@ impl Game<'_> {
                 self.dragon = Some(dragon);
                 true
             }
+            Target::Cart(id) => {
+                let Some(i) = self.carts.iter().position(|c| c.id == id) else {
+                    return false;
+                };
+                self.with_cart_outside(i, |game, cart| game.move_cart(cart, delta));
+                true
+            }
             Target::Frame(_) | Target::Painting(_) => {
                 self.block_attached_move(target, delta);
                 true
@@ -1380,5 +1387,24 @@ mod tests {
             Vec3::new(1.0, 0.0, 0.0),
         );
         assert!(game.paintings.is_empty());
+    }
+
+    #[test]
+    fn a_cart_moved_down_lands_on_the_floor() {
+        let Some(mut game) = flat_game() else { return };
+        game.next_entity += 1;
+        let id = game.next_entity;
+        game.carts.push(super::minecarts::Minecart::new(
+            id,
+            super::minecarts::CartKind::Rideable,
+            Vec3::new(0.5, 63.0, 0.5),
+        ));
+        game.entity_move(
+            Target::Cart(id),
+            MoverType::SelfMovement,
+            Vec3::new(0.0, -5.0, 0.0),
+        );
+        assert_eq!(game.carts[0].position.y, 61.0);
+        assert!(game.carts[0].on_ground);
     }
 }
