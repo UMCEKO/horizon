@@ -20,9 +20,8 @@ import java.util.List;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import net.minecraft.core.registries.BuiltInRegistries;
-import org.spongepowered.asm.mixin.transformer.ClassInfo;
 
-/** The install's routing (`routing.json`) confirmed against Mixin's applied list, as `routes.bin`; see docs/java-mods-map.md. */
+/** The install's routing (`routing.json`) confirmed against the mixins merged at boot, as `routes.bin`; see docs/java-mods-map.md. */
 public final class Routing {
     private Routing() {}
 
@@ -113,13 +112,12 @@ public final class Routing {
             }
             var mods = new TreeSet<String>();
             int applied = 0;
-            var applying = type == null ? java.util.Set.<String>of() : appliedMixins(owner);
             for (JsonElement c : route.getAsJsonArray("changes")) {
                 var change = c.getAsJsonObject();
                 mods.add(change.get("mod").getAsString());
                 var mixin = change.get("mixin").getAsString();
                 var handler = change.get("handler").getAsString();
-                if (applied(applying, type == null ? List.of() : merged(owner, handler), mixin)) {
+                if (applied(type == null ? List.of() : merged(owner, handler), mixin)) {
                     applied++;
                 } else {
                     dropped++;
@@ -163,15 +161,9 @@ public final class Routing {
         System.err.println("Horizon: routes: " + on + " on, " + (ordered.size() - on) + " off, " + dropped + " changes dropped, confirmed in " + (System.nanoTime() - began) / 1_000_000 + " ms");
     }
 
-    /** Predicted but not applied is not an error: Mixin lets a mixin stay out (plugins, require = 0, an unloaded target), and its route is then off. */
-    static boolean applied(java.util.Set<String> applying, List<String[]> merged, String mixin) {
-        return applying.contains(mixin) && mergedName(merged, mixin) != null;
-    }
-
-    private static java.util.Set<String> appliedMixins(String owner) {
-        var out = new java.util.HashSet<String>();
-        for (var mixin : ClassInfo.forName(owner).getAppliedMixins()) out.add(mixin.getClassName());
-        return out;
+    /** Whether the mixin's handler is merged into the target: Mixin's own applied list is empty by the time the boot looks, but the merged method names its mixin. A predicted mixin that is not applied is off, not an error: plugins, require = 0 and unloaded targets leave mixins out. */
+    static boolean applied(List<String[]> merged, String mixin) {
+        return merged.stream().anyMatch(m -> mixin.equals(m[1]));
     }
 
     private static MethodHandle handle(Class<?> owner, String key, String name, String desc, boolean isStatic, ClassLoader loader) throws Exception {
