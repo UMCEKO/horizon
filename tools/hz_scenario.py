@@ -115,6 +115,20 @@ class Log:
             return ''
 
 
+class Logs:
+    """Several growing logs read as one: the game's latest.log and the launcher's ctl.log, where the Java side's stderr lands."""
+    def __init__(self, *paths):
+        self.logs = [Log(p) for p in paths]
+        self.path = self.logs[0].path
+
+    def mark(self):
+        for log in self.logs:
+            log.mark()
+
+    def text(self, since='step'):
+        return '\n'.join(log.text(since) for log in self.logs)
+
+
 def exception_heads(text, ignore=None):
     """The first line of every stack trace in the text: a line naming an exception class that is not a trace continuation."""
     heads = []
@@ -388,7 +402,7 @@ def run(args):
                         XDG_DATA_HOME=homes / 'xdg-data', XDG_CONFIG_HOME=homes / 'xdg-config', **extra)
     env = jm.launch_env(scratch, record, False, base)
     ctl = Ctl(game.parent / 'horizon-ctl', out / 'ctl.sock', env, out)
-    log = Log(homes / 'horizon' / 'logs' / 'latest.log')
+    log = Logs(homes / 'horizon' / 'logs' / 'latest.log', out / 'ctl.log')
     if not acquire_gate(os.environ.get('GATE_OWNER', 'scenario')):
         return result_of([{'i': -1, 'name': 'gate', 'ok': False, 'checks': [], 'error': 'the gate never opened', 'ms': 0}], log, out)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
