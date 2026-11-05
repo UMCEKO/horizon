@@ -5,6 +5,7 @@
 //! (`positionRider`, `clampRotation`) and how they get out.
 //! Saving them under the boat's `Passengers` lives in `persist.rs`.
 use super::{Game, boats::Boat, lan_mobs::guest_bounds};
+use horizon_client::riding::Ent;
 use horizon_client::{
     camera::wrap_degrees,
     mobs::{Mob, Species, Who, drops::is_animal, equine, riders},
@@ -75,12 +76,50 @@ impl Game<'_> {
     /// The mobs in boat `id`, in their seat order after the players
     /// (`Entity.addPassenger` puts a player first).
     pub(super) fn boat_mobs(&self, id: u32) -> Vec<usize> {
+        if let Some(r) = self.remote.as_ref() {
+            return self
+                .client_boat_seats(r, id)
+                .into_iter()
+                .map(|(j, _)| j)
+                .collect();
+        }
         (0..self.mobs.len())
             .filter(|&j| {
                 let m = &self.mobs[j];
                 m.extra.mount == Some(id) && !m.removed && m.alive()
             })
             .collect()
+    }
+    /// A client's mobs in boat `id` with their seats (`getPassengers().indexOf`), in the
+    /// order `SetPassengers` listed them.
+    fn client_boat_seats(&self, r: &super::remote::Remote, id: u32) -> Vec<(usize, usize)> {
+        r.passengers
+            .passengers_of(Ent::Id(id))
+            .iter()
+            .enumerate()
+            .filter_map(|(seat, e)| {
+                let Ent::Id(mob) = *e else { return None };
+                let j = self.mobs.iter().position(|m| m.id == mob)?;
+                (!self.mobs[j].removed && self.mobs[j].alive()).then_some((j, seat))
+            })
+            .collect()
+    }
+    /// The mobs in boat `id` with the seat each sits in, and the passenger count.
+    fn boat_seats(&self, id: u32) -> (Vec<(usize, usize)>, usize) {
+        if let Some(r) = self.remote.as_ref() {
+            let count = r.passengers.passengers_of(Ent::Id(id)).len();
+            return (self.client_boat_seats(r, id), count);
+        }
+        let players = self.boat_players(id);
+        let mobs = self.boat_mobs(id);
+        let count = players + mobs.len();
+        (
+            mobs.into_iter()
+                .enumerate()
+                .map(|(n, j)| (j, players + n))
+                .collect(),
+            count,
+        )
     }
     /// `getPassengers().size()` of boat `id`.
     pub(super) fn boat_passengers(&self, id: u32) -> usize {
@@ -96,6 +135,11 @@ impl Game<'_> {
     /// mob.
     pub(super) fn player_boat_seat(&self, i: usize) -> Vec3 {
         let b = &self.boats[i];
+        if let Some(r) = self.remote.as_ref() {
+            let list = r.passengers.passengers_of(Ent::Id(b.id));
+            let seat = list.iter().position(|&e| e == Ent::Host).unwrap_or(0);
+            return b.seat(seat, list.len().max(1), false, PLAYER_RIDING_OFFSET, false);
+        }
         let count = self.boat_players(b.id).max(1) + self.boat_mobs(b.id).len();
         b.seat(0, count, false, PLAYER_RIDING_OFFSET, false)
     }
@@ -341,19 +385,16 @@ impl Game<'_> {
     pub(super) fn seat_boat_mobs(&mut self) {
         for i in 0..self.boats.len() {
             let id = self.boats[i].id;
-            let mobs = self.boat_mobs(id);
+            let (mobs, count) = self.boat_seats(id);
             if mobs.is_empty() {
                 continue;
             }
-            let players = self.boat_players(id);
-            let count = players + mobs.len();
             let b = &self.boats[i];
             let full = count == b.max_passengers();
             let delta = b.delta_rotation;
             let seats: Vec<_> = mobs
                 .iter()
-                .enumerate()
-                .map(|(n, &j)| {
+                .map(|&(j, index)| {
                     let m = &self.mobs[j];
                     let animal = is_animal(m.species());
                     // Another player, on a server's client.
@@ -362,7 +403,6 @@ impl Game<'_> {
                     } else {
                         riders::vehicle_attachment(m, super::boats::WIDTH as f32)[1]
                     };
-                    let index = players + n;
                     // calculatePassengerBodyYRot.
                     let turn = match (animal && full, m.id.is_multiple_of(2)) {
                         (false, _) => 0.0,
@@ -388,7 +428,9 @@ impl Game<'_> {
                 m.velocity = Vec3::ZERO;
                 m.fall_distance = 0.0;
                 m.on_ground = false;
-                m.extra.passenger = true;
+                if self.remote.is_none() {
+                    m.extra.passenger = true;
+                }
                 m.ai.nav.stop();
                 let Some((body, previous_body)) = facing else {
                     continue;

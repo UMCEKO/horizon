@@ -12,7 +12,10 @@
 //! and tells the server of a riding jump (`START_RIDING_JUMP`). A minecart
 //! moves on the server with the rider's input, and the rider sits in it.
 use super::{Game, Keys, ray_box};
-use horizon_client::mobs::{Mob, equine};
+use horizon_client::{
+    mobs::{Mob, equine},
+    riding::Ent,
+};
 use horizon_core::geometry::{Aabb, Vec3};
 use horizon_protocol::packets::play::{self, Serverbound as S};
 
@@ -112,69 +115,63 @@ impl Game<'_> {
     }
 
     /// `ClientPacketListener.handleSetEntityPassengersPacket`: who rides
-    /// `vehicle` now. The local player gets in or out; mobs and other
-    /// players sit where the server keeps them.
+    /// `vehicle` now. The client's table is changed here and by entity removal only.
     pub(super) fn remote_set_passengers(&mut self, vehicle: i32, passengers: &[i32]) {
-        let Some(me) = self.remote.as_ref().map(|r| r.entity_id) else {
+        let Some(r) = self.remote.as_mut() else {
             return;
         };
-        let vehicle_id = vehicle as u32;
-        for m in &mut self.mobs {
-            // `Entity.isVehicle` (the saddle reins of a ridden horse): the
-            // server sends no rider on the mob itself, only this list.
-            if m.id == vehicle_id {
-                m.extra.rider = passengers.first().map(|&p| p as u32);
-            }
-            if m.extra.mount == Some(vehicle_id) && !passengers.contains(&(m.id as i32)) {
-                m.extra.mount = None;
-                m.extra.passenger = false;
-            } else if passengers.contains(&(m.id as i32)) {
-                m.extra.mount = Some(vehicle_id);
-                m.extra.passenger = true;
-            }
+        if !r.knows_entity(vehicle) {
+            log::warn!("Received passengers for unknown entity");
+            return;
         }
-        for (id, display) in &mut self.text_displays {
-            if passengers.contains(id) {
-                display.vehicle = Some(vehicle_id);
-            } else if display.vehicle == Some(vehicle_id) {
-                display.vehicle = None;
-            }
-        }
-        for (&id, i) in &mut self.interactions {
-            if passengers.contains(&id) {
-                i.vehicle = Some(vehicle_id);
-            } else if i.vehicle == Some(vehicle_id) {
-                i.vehicle = None;
-            }
-        }
-        if passengers.contains(&me)
-            && let Some(r) = self.remote.as_mut()
-        {
-            r.first_passenger = passengers.first() == Some(&me);
-        }
-        if passengers.contains(&me) {
-            if self.vehicle() != Some(vehicle_id) {
-                self.set_vehicle(Some(vehicle_id));
-                if let Some(p) = self.player.as_mut() {
-                    p.velocity = Vec3::ZERO;
-                    p.fall_distance = 0.0;
+        let v = r.client_ent(vehicle);
+        let was_mounted = r.passengers.indirect_passengers(v).contains(&Ent::Host);
+        let host_before = r.passengers.vehicle_of(Ent::Host);
+        let list: Vec<Ent> = passengers
+            .iter()
+            .filter(|&&id| r.knows_entity(id))
+            .map(|&id| r.client_ent(id))
+            .collect();
+        r.passengers.set_passengers(v, &list);
+        let host_after = r.passengers.vehicle_of(Ent::Host);
+        if host_after == Some(v) && !was_mounted {
+            // A boat turns the player to face the way it does.
+            if let Some(yaw) = v
+                .id()
+                .and_then(|id| self.boats.iter().find(|b| b.id == id))
+                .map(|b| b.yaw)
+            {
+                self.yaw = yaw;
+                if let Some(m) = self.player_model.as_mut() {
+                    m.yaw = yaw;
+                    m.previous_yaw = yaw;
+                    m.head_yaw = yaw;
                 }
             }
-        } else if self.vehicle() == Some(vehicle_id) {
+        }
+        if host_after == Some(v) && host_before != Some(v) {
+            if let Some(p) = self.player.as_mut() {
+                p.velocity = Vec3::ZERO;
+                p.fall_distance = 0.0;
+            }
+        } else if host_before != host_after
+            && let Some(old) = host_before.and_then(Ent::id)
+        {
             // The server takes the player out, then teleports it.
-            self.set_vehicle(None);
-            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == vehicle_id) {
+            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == old) {
                 m.rider = None;
             }
             // HappyGhast.removePassenger: a still timeout of 10 (the server's
             // STAYS_STILL confirms it), and the rider lands on top of the ghast
             // (`place_ghast_under`).
-            if let Some(m) = self.mobs.iter_mut().find(|m| {
-                m.id == vehicle_id && m.species() == horizon_client::mobs::Species::HappyGhast
-            }) {
+            if let Some(m) = self
+                .mobs
+                .iter_mut()
+                .find(|m| m.id == old && m.species() == horizon_client::mobs::Species::HappyGhast)
+            {
                 m.extra.counter = 10;
                 if let Some(r) = self.remote.as_mut() {
-                    r.ghast_dismount = Some(vehicle_id);
+                    r.ghast_dismount = Some(old);
                 }
             }
         }
@@ -290,7 +287,12 @@ impl Game<'_> {
     /// saddle (`isLocalInstanceAuthoritative`).
     fn drives(&self, m: &Mob) -> bool {
         self.vehicle() == Some(m.id)
-            && client_moves(m, self.remote.as_ref().is_some_and(|r| r.first_passenger))
+            && client_moves(
+                m,
+                self.remote.as_ref().is_some_and(|r| {
+                    r.passengers.first_passenger(Ent::Id(m.id)) == Some(Ent::Host)
+                }),
+            )
     }
 
     /// The mount this client moves, if the player rides one.

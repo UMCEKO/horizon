@@ -27,6 +27,7 @@ impl Ent {
 
 #[derive(Default, Clone, Debug)]
 pub struct Riding {
+    client: bool,
     vehicle: FxHashMap<Ent, Ent>,
     passengers: FxHashMap<Ent, Vec<Ent>>,
     boarding_cooldown: FxHashMap<Ent, i32>,
@@ -34,6 +35,13 @@ pub struct Riding {
 }
 
 impl Riding {
+    /// The table of a client level: `Entity.addPassenger` only seats a player first on a server.
+    pub fn client() -> Self {
+        Self {
+            client: true,
+            ..Self::default()
+        }
+    }
     /// `Entity.getVehicle`.
     pub fn vehicle_of(&self, e: Ent) -> Option<Ent> {
         self.vehicle.get(&e).copied()
@@ -106,7 +114,7 @@ impl Riding {
         self.vehicle.insert(r, v);
         let first_is_player = self.first_passenger(v).is_some_and(Ent::is_player);
         let list = self.passengers.entry(v).or_default();
-        if r.is_player() && !first_is_player && !list.is_empty() {
+        if !self.client && r.is_player() && !first_is_player && !list.is_empty() {
             list.insert(0, r);
         } else {
             list.push(r);
@@ -132,6 +140,45 @@ impl Riding {
             *c -= 1;
             *c > 0
         });
+    }
+    /// `Entity.ejectPassengers`: every passenger of `e` gets off, last to first.
+    pub fn eject_passengers(&mut self, e: Ent) {
+        for p in self.passengers_of(e).to_vec().into_iter().rev() {
+            self.unlink(p);
+        }
+    }
+    /// The table's part of `handleSetEntityPassengersPacket`: `v` carries exactly `list`, in that order.
+    pub fn set_passengers(&mut self, v: Ent, list: &[Ent]) {
+        self.eject_passengers(v);
+        for &p in list {
+            self.start_riding_forced(p, v);
+        }
+    }
+    /// `Entity.startRiding(v, true, ..)`: `r` leaves the vehicle it has and boards `v`, unless it rides
+    /// `v` already or `v` rides it.
+    pub fn start_riding_forced(&mut self, r: Ent, v: Ent) -> bool {
+        if self.vehicle_of(r) == Some(v) || self.rides_through(v, r) {
+            return false;
+        }
+        self.unlink(r);
+        self.link(r, v);
+        true
+    }
+    /// `Entity.setRemoved`: `e` leaves its vehicle when `destroys` (`RemovalReason.shouldDestroy`), its
+    /// passengers leave it, and a kept entity's own link is dropped without a dismount. Returns the
+    /// `(rider, vehicle)` pairs that were unlinked.
+    pub fn set_removed(&mut self, e: Ent, destroys: bool) -> Vec<(Ent, Ent)> {
+        let mut out = Vec::new();
+        if destroys && let Some(v) = self.unlink(e) {
+            out.push((e, v));
+        }
+        for p in self.passengers_of(e).to_vec() {
+            if let Some(v) = self.unlink(p) {
+                out.push((p, v));
+            }
+        }
+        self.forget(e);
+        out
     }
     /// Forget `e` entirely, as the table of a level that no longer holds it.
     pub fn forget(&mut self, e: Ent) {
@@ -206,6 +253,61 @@ mod tests {
         assert_eq!(t.passengers_of(v), &[Ent::Host, Ent::Id(2)]);
         t.link(Ent::Guest(7), v);
         assert_eq!(t.passengers_of(v), &[Ent::Host, Ent::Id(2), Ent::Guest(7)]);
+    }
+    #[test]
+    fn client_links_append() {
+        let mut t = Riding::client();
+        let v = Ent::Id(1);
+        t.link(Ent::Id(2), v);
+        t.link(Ent::Host, v);
+        assert_eq!(t.passengers_of(v), &[Ent::Id(2), Ent::Host]);
+    }
+    #[test]
+    fn set_passengers_replaces_the_list_in_packet_order() {
+        let mut t = Riding::client();
+        let v = Ent::Id(1);
+        t.set_passengers(v, &[Ent::Id(2), Ent::Host]);
+        assert_eq!(t.passengers_of(v), &[Ent::Id(2), Ent::Host]);
+        t.set_passengers(v, &[Ent::Host, Ent::Id(3)]);
+        assert_eq!(t.passengers_of(v), &[Ent::Host, Ent::Id(3)]);
+        assert!(!t.is_passenger(Ent::Id(2)));
+        // A rider listed on another vehicle moves.
+        t.set_passengers(Ent::Id(9), &[Ent::Id(3)]);
+        assert_eq!(t.passengers_of(v), &[Ent::Host]);
+        t.set_passengers(v, &[]);
+        assert!(!t.is_vehicle(v));
+    }
+    #[test]
+    fn forced_riding_leaves_the_old_vehicle_and_refuses_a_loop() {
+        let mut t = Riding::client();
+        assert!(t.start_riding_forced(Ent::Id(2), Ent::Id(1)));
+        assert!(!t.start_riding_forced(Ent::Id(2), Ent::Id(1)));
+        assert!(t.start_riding_forced(Ent::Id(2), Ent::Id(3)));
+        assert!(!t.is_vehicle(Ent::Id(1)));
+        assert!(!t.start_riding_forced(Ent::Id(3), Ent::Id(2)));
+        assert_eq!(t.vehicle_of(Ent::Id(2)), Some(Ent::Id(3)));
+    }
+    #[test]
+    fn set_removed_frees_passengers_and_keeps_an_unloaded_riders_link_quiet() {
+        let mut t = Riding::client();
+        t.link(Ent::Id(2), Ent::Id(1));
+        t.link(Ent::Id(3), Ent::Id(1));
+        t.link(Ent::Id(1), Ent::Id(9));
+        // A destroyed vehicle: its riders get off, in list order, and it leaves its own.
+        assert_eq!(
+            t.set_removed(Ent::Id(1), true),
+            [
+                (Ent::Id(1), Ent::Id(9)),
+                (Ent::Id(2), Ent::Id(1)),
+                (Ent::Id(3), Ent::Id(1))
+            ]
+        );
+        assert!(t.members().is_empty());
+        // A rider that only unloads leaves no dismount and keeps the vehicle's other riders.
+        t.link(Ent::Id(2), Ent::Id(1));
+        t.link(Ent::Id(3), Ent::Id(1));
+        assert!(t.set_removed(Ent::Id(2), false).is_empty());
+        assert_eq!(t.passengers_of(Ent::Id(1)), &[Ent::Id(3)]);
     }
     #[test]
     fn stop_riding_sets_the_boarding_cooldown_to_60() {

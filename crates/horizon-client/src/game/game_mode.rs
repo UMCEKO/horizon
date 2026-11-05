@@ -51,7 +51,10 @@ impl Game<'_> {
             self.mining = None;
             self.using = None;
             self.left = false;
-            self.dismount_for_spectator();
+            // A client learns it from SetPassengers.
+            if self.remote.is_none() {
+                self.dismount_for_spectator();
+            }
             if let Some(p) = self.player.as_mut() {
                 p.flying = true;
                 p.spectator = true;

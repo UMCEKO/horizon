@@ -533,6 +533,7 @@ impl Game<'_> {
         horizon_client::mobs::render::render_with(
             &m,
             1.0,
+            Default::default(),
             camera,
             &lookup,
             240 | 240 << 8,

@@ -430,7 +430,6 @@ impl Game<'_> {
         let main = self.inventory[self.selected].clone();
         let off = self.offhand.as_ref().map(|s| s.item.clone());
         let armor = self.armor.clone();
-        let riding = self.vehicle().is_some();
         let hurt = p.health.hurt_animation_time;
         let avatar = self.avatar;
         let previous_position = self.previous_position;
@@ -496,7 +495,6 @@ impl Game<'_> {
         m.extra.crouching = crouching;
         // Guests and server players take their pose from DATA_POSE, not here.
         m.extra.avatar_pose = pose;
-        m.extra.passenger = riding;
         m.velocity = velocity;
         m.extra.fall_flying = fall_flying;
         m.extra.fall_fly_ticks = fly_ticks;
@@ -627,6 +625,7 @@ impl Game<'_> {
         render(
             m,
             alpha as f32,
+            self.own_ride(),
             camera,
             &lookup,
             packed,
@@ -637,19 +636,28 @@ impl Game<'_> {
         let chest = self.armor[1].as_ref().map(|s| &*s.item);
         // CapeLayer: no cape on an invisible player (`isInvisible`, whoever looks).
         if !self.own_invisible() {
-            self.player_cape_geometry(m, chest, camera, alpha as f32, packed, out);
+            self.player_cape_geometry(m, self.own_ride(), chest, camera, alpha as f32, packed, out);
         }
         self.player_ears_geometry(
             m,
+            self.own_ride(),
             &self.own_profile_name(),
             camera,
             alpha as f32,
             packed,
             out,
         );
-        self.player_elytra_geometry(m, chest, camera, alpha as f32, packed, out);
-        self.spin_attack_geometry(m, camera, alpha as f32, packed, out);
-        self.stuck_in_body_geometry(m, self.own_entity_id(), camera, alpha as f32, packed, out);
+        self.player_elytra_geometry(m, self.own_ride(), chest, camera, alpha as f32, packed, out);
+        self.spin_attack_geometry(m, self.own_ride(), camera, alpha as f32, packed, out);
+        self.stuck_in_body_geometry(
+            m,
+            self.own_ride(),
+            self.own_entity_id(),
+            camera,
+            alpha as f32,
+            packed,
+            out,
+        );
         self.held_item_geometry(m, camera, alpha, packed, true, out);
         // CustomHeadLayer: a pumpkin, skull or other head item.
         self.head_item_geometry(m, camera, alpha, packed, true, out);
@@ -663,6 +671,7 @@ impl Game<'_> {
                 horizon_client::mobs::render::render(
                     m,
                     alpha as f32,
+                    self.own_ride(),
                     camera,
                     &lookup,
                     packed,
@@ -728,6 +737,7 @@ impl Game<'_> {
         render(
             &m,
             1.0,
+            self.own_ride(),
             camera,
             &lookup,
             240 | 240 << 8,
@@ -737,17 +747,34 @@ impl Game<'_> {
         );
         let chest = self.armor[1].as_ref().map(|s| &*s.item);
         if !self.own_invisible() {
-            self.player_cape_geometry(&m, chest, camera, 1.0, 240 | 240 << 8, &mut verts);
+            self.player_cape_geometry(
+                &m,
+                self.own_ride(),
+                chest,
+                camera,
+                1.0,
+                240 | 240 << 8,
+                &mut verts,
+            );
         }
         self.player_ears_geometry(
             &m,
+            self.own_ride(),
             &self.own_profile_name(),
             camera,
             1.0,
             240 | 240 << 8,
             &mut verts,
         );
-        self.player_elytra_geometry(&m, chest, camera, 1.0, 240 | 240 << 8, &mut verts);
+        self.player_elytra_geometry(
+            &m,
+            self.own_ride(),
+            chest,
+            camera,
+            1.0,
+            240 | 240 << 8,
+            &mut verts,
+        );
         self.held_item_geometry(&m, camera, 1.0, 240 | 240 << 8, false, &mut verts);
         self.head_item_geometry(&m, camera, 1.0, 240 | 240 << 8, false, &mut verts);
         let height = if m.extra.crouching { 1.5 } else { 1.8 };
@@ -787,10 +814,18 @@ impl Game<'_> {
 }
 
 impl Game<'_> {
+    /// The riding of the window's own player, as its renderers ask it.
+    pub(super) fn own_ride(&self) -> horizon_client::mobs::anim::Ride {
+        horizon_client::mobs::anim::Ride {
+            is_passenger: self.vehicle().is_some(),
+            is_ridden: false,
+        }
+    }
     /// `WingsLayer` for a player wearing `chest`.
     pub(super) fn player_elytra_geometry(
         &self,
         m: &Mob,
+        ride: horizon_client::mobs::anim::Ride,
         chest: Option<&str>,
         camera: glam::DVec3,
         partial: f32,
@@ -801,7 +836,7 @@ impl Game<'_> {
             chest,
             m.cape.as_deref(),
             false,
-            horizon_client::mobs::render::base_transform(m, partial, camera),
+            horizon_client::mobs::render::base_transform(m, partial, ride, camera),
             m.extra.elytra.angles(partial),
             m.extra.crouching,
             light,
@@ -893,6 +928,7 @@ impl Game<'_> {
     pub(super) fn player_cape_geometry(
         &self,
         m: &Mob,
+        ride: horizon_client::mobs::anim::Ride,
         chest: Option<&str>,
         camera: glam::DVec3,
         partial: f32,
@@ -916,13 +952,14 @@ impl Game<'_> {
         if layers.is_some_and(|k| k.contains_key("wings")) {
             return;
         }
-        let mut base = horizon_client::mobs::render::base_transform(m, partial, camera);
+        let mut base = horizon_client::mobs::render::base_transform(m, partial, ride, camera);
         if layers.is_some_and(|k| k.contains_key("humanoid")) {
             base *= glam::Mat4::from_translation(glam::Vec3::new(0.0, -0.053125, 0.06875));
         }
         horizon_client::mobs::render::cape(
             m,
             partial,
+            ride,
             base,
             [rect.u0, rect.v0, rect.u1, rect.v1],
             light,
@@ -935,6 +972,7 @@ impl Game<'_> {
     pub(super) fn player_ears_geometry(
         &self,
         m: &Mob,
+        ride: horizon_client::mobs::anim::Ride,
         name: &str,
         camera: glam::DVec3,
         partial: f32,
@@ -957,7 +995,8 @@ impl Game<'_> {
         horizon_client::mobs::render::ears(
             m,
             partial,
-            horizon_client::mobs::render::base_transform(m, partial, camera),
+            ride,
+            horizon_client::mobs::render::base_transform(m, partial, ride, camera),
             [rect.u0, rect.v0, rect.u1, rect.v1],
             light,
             self.res.mob_data(),
@@ -978,6 +1017,7 @@ impl Game<'_> {
     pub(super) fn stuck_in_body_geometry(
         &self,
         m: &Mob,
+        ride: horizon_client::mobs::anim::Ride,
         id: i32,
         camera: glam::DVec3,
         partial: f32,
@@ -1007,6 +1047,7 @@ impl Game<'_> {
                 m,
                 id,
                 partial,
+                ride,
                 camera,
                 self.res.mob_data(),
                 count,
@@ -1023,6 +1064,7 @@ impl Game<'_> {
     pub(super) fn spin_attack_geometry(
         &self,
         m: &Mob,
+        ride: horizon_client::mobs::anim::Ride,
         camera: glam::DVec3,
         partial: f32,
         light: u32,
@@ -1040,7 +1082,7 @@ impl Game<'_> {
         let age = m.age as f32 + partial;
         horizon_client::mobs::render_model(
             model,
-            horizon_client::mobs::render::base_transform(m, partial, camera),
+            horizon_client::mobs::render::base_transform(m, partial, ride, camera),
             &|part| {
                 let mut p = part.pose;
                 if let Some(i) = part
@@ -1302,8 +1344,12 @@ mod preview_tests {
         let mut m = Mob::new(1, player_type(&root).unwrap(), Vec3::ZERO, 0.0);
         for (id, expected) in [("minecraft:player", 0.9375), ("minecraft:zombie", 1.0)] {
             Arc::make_mut(&mut m.kind).id = id.into();
-            let transform =
-                horizon_client::mobs::render::base_transform_at(&m, 1.0, glam::Mat4::IDENTITY);
+            let transform = horizon_client::mobs::render::base_transform_at(
+                &m,
+                1.0,
+                Default::default(),
+                glam::Mat4::IDENTITY,
+            );
             for axis in [glam::Vec3::X, glam::Vec3::Y, glam::Vec3::Z] {
                 assert!((transform.transform_vector3(axis).length() - expected).abs() < 1e-6);
             }
@@ -1378,6 +1424,7 @@ mod preview_tests {
             render(
                 &m,
                 1.0,
+                Default::default(),
                 glam::DVec3::ZERO,
                 &atlas,
                 0xF0F0,

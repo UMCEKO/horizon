@@ -1777,7 +1777,7 @@ pub fn piglin_anim(m: &Mob, s: &State, p: &mut Poses) {
         pose,
         (25.0, m.extra.using_item as f32),
         m.main_arm_left(),
-        m.extra.passenger,
+        s.ride.is_passenger,
         spear,
     );
 }

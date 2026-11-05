@@ -973,7 +973,7 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses, a: &Animations) -> bool {
                 has_egg: m.extra.flag,
             },
         ),
-        Species::Strider => strider(p, s, m.rider.is_some()),
+        Species::Strider => strider(p, s, s.ride.is_ridden),
         Species::SnowGolem => snow_golem(p, s),
         Species::Silverfish => silverfish(p, s),
         Species::Endermite => endermite(p, s),

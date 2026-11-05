@@ -660,7 +660,12 @@ mod tests {
         let animations = HashMap::from([("BatAnimation.BAT_FLYING".into(), curve)]);
         let wing = |partial| {
             let mut poses = anim::Poses::new(&m.kind.model);
-            anim::setup(&m, &anim::state(&m, partial), &mut poses, &animations);
+            anim::setup(
+                &m,
+                &anim::state(&m, partial, anim::Ride::default()),
+                &mut poses,
+                &animations,
+            );
             poses.get("right_wing")[4]
         };
         assert!(wing(0.5) > wing(0.0));

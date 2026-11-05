@@ -171,6 +171,13 @@ impl Poses {
         self.hidden.contains(&part.name)
     }
 }
+/// What a renderer asks of the entity's riding: `HumanoidRenderState.isPassenger`,
+/// `IllagerRenderState.isRiding`, `*RenderState.isRidden` (`Entity.isVehicle`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Ride {
+    pub is_passenger: bool,
+    pub is_ridden: bool,
+}
 /// The LivingEntityRenderState values setupAnim reads.
 #[derive(Clone, Copy, Debug)]
 pub struct State {
@@ -184,8 +191,9 @@ pub struct State {
     pub swing: f32,
     pub baby: bool,
     pub partial: f32,
+    pub ride: Ride,
 }
-pub fn state(m: &Mob, alpha: f32) -> State {
+pub fn state(m: &Mob, alpha: f32, ride: Ride) -> State {
     let body = m.previous_body_yaw + wrap(m.body_yaw - m.previous_body_yaw) * alpha;
     let head = m.previous_head_yaw + wrap(m.head_yaw - m.previous_head_yaw) * alpha;
     let mut swing = m.anim.attack_anim - m.anim.attack_anim_o;
@@ -194,7 +202,7 @@ pub fn state(m: &Mob, alpha: f32) -> State {
     }
     let swing = m.anim.attack_anim_o + swing * alpha;
     // LivingEntityRenderer.extractRenderState: riding motion is not walking.
-    let walking = m.alive() && !m.extra.passenger;
+    let walking = m.alive() && !ride.is_passenger;
     State {
         pos: if walking {
             // WalkAnimationState.position(partial): babies' legs move 3 times as far.
@@ -213,6 +221,7 @@ pub fn state(m: &Mob, alpha: f32) -> State {
         swing,
         baby: m.is_baby(),
         partial: alpha,
+        ride,
     }
 }
 fn head(p: &mut Poses, s: &State) {
@@ -755,7 +764,7 @@ pub fn setup(
             h.zombie = Some(m.ai.aggressive);
             h.holding = m.extra.main_hand.is_some();
             h.crouching = m.extra.crouching;
-            h.passenger = m.extra.passenger;
+            h.passenger = s.ride.is_passenger;
             humanoid(p, s, &h);
             if m.kind.anim == Anim::Drowned {
                 drowned_swim(p, s, m.extra.swim.amount(s.partial));
@@ -832,7 +841,7 @@ pub fn setup(
                     (((v.x * v.x + v.y * v.y + v.z * v.z) as f32 / 0.2).powi(3)).max(1.0);
             }
             h.crouching = m.extra.crouching;
-            h.passenger = m.extra.passenger;
+            h.passenger = s.ride.is_passenger;
             h.swim = m.extra.swim.amount(s.partial);
             h.using_item = m.extra.using_item > 0;
             h.swing_right_arm = m.extra.swing_right_arm;
@@ -895,7 +904,7 @@ pub fn setup(
             // EquineSaddleModel.setupAnim: the reins show only while ridden
             // (`isRidden` is `Entity.isVehicle`: a player or a mob rides it).
             for part in ["left_saddle_line", "right_saddle_line"] {
-                p.visible(part, m.rider.is_some() || m.extra.rider.is_some());
+                p.visible(part, s.ride.is_ridden);
             }
         }
         Anim::Hoglin => super::piglin::hoglin_anim(m, s, p),
@@ -1049,6 +1058,7 @@ mod flight_pose_tests {
             swing: 0.0,
             baby: false,
             partial: 0.0,
+            ride: Ride::default(),
         };
         let make = || Poses {
             map: [
@@ -1097,6 +1107,7 @@ mod flight_pose_tests {
             swing: 0.0,
             baby: false,
             partial: 0.0,
+            ride: Ride::default(),
         };
         let make = || Poses {
             map: ["head", "right_arm", "left_arm", "right_leg", "left_leg"]
@@ -1190,6 +1201,7 @@ mod flight_pose_tests {
             swing: 0.0,
             baby: false,
             partial: 0.0,
+            ride: Ride::default(),
         };
         let mut p = Poses {
             map: ["head", "right_arm", "left_arm"]
@@ -1239,6 +1251,7 @@ mod flight_pose_tests {
             swing: 0.0,
             baby: false,
             partial: 0.0,
+            ride: Ride::default(),
         };
         let make = || Poses {
             map: ["head", "right_arm", "left_arm"]

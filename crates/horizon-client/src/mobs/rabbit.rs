@@ -432,7 +432,7 @@ mod tests {
             "bones": {"left_hind_foot": [{"target": "rotation", "keyframes": [[0,[0,0,0],[0,0,0],"linear"],[0.75,[1,0,0],[1,0,0],"linear"]]}]}}));
         let animations = HashMap::from([("RabbitAnimation.HOP".into(), curve)]);
         let mut poses = Poses::new(&m.kind.model);
-        let state = anim::state(&m, 0.5);
+        let state = anim::state(&m, 0.5, anim::Ride::default());
         body_anim::rabbit(
             &mut poses,
             &state,

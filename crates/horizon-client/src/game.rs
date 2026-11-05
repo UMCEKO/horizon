@@ -2533,10 +2533,20 @@ fn camera_rotation(camera_type: perspective::CameraType, yaw: f32, pitch: f32) -
 impl Game<'_> {
     /// `Entity.getVehicle` of the player in place.
     pub(super) fn vehicle(&self) -> Option<u32> {
-        self.riding
+        match self.remote.as_ref() {
+            Some(r) => r
+                .passengers
+                .vehicle_of(horizon_client::riding::Ent::Host)
+                .and_then(horizon_client::riding::Ent::id),
+            None => self.riding,
+        }
     }
     /// Only `startRiding` and `stopRiding` ports call this.
     pub(super) fn set_vehicle(&mut self, vehicle: Option<u32>) {
+        debug_assert!(
+            self.remote.is_none(),
+            "the client learns riding from SetPassengers only"
+        );
         self.riding = vehicle;
     }
     fn eye_position(&self) -> Option<[f64; 3]> {

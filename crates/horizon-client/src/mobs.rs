@@ -2866,12 +2866,13 @@ impl Mob {
 pub fn render(
     mob: &Mob,
     alpha: f32,
+    ride: anim::Ride,
     camera: glam::DVec3,
     uv: [f32; 4],
     light: u32,
     out: &mut Vec<Vertex>,
 ) {
-    render::render_single(mob, alpha, camera, uv, light, out);
+    render::render_single(mob, alpha, ride, camera, uv, light, out);
 }
 /// A parsed `entity-models.json` document, shared while loading model batches.
 /// Each lookup still constructs an independent part tree for the caller.

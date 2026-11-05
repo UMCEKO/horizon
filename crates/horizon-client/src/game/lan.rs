@@ -2474,6 +2474,7 @@ impl Game<'_> {
             horizon_client::mobs::render::render_with(
                 m,
                 alpha as f32,
+                self.ride_state(m),
                 camera,
                 &lookup,
                 packed,
@@ -2486,6 +2487,7 @@ impl Game<'_> {
             );
             self.player_elytra_geometry(
                 m,
+                self.ride_state(m),
                 m.extra.chest.as_deref(),
                 camera,
                 alpha as f32,
@@ -2493,11 +2495,27 @@ impl Game<'_> {
                 out,
             );
             if let Some(g) = host.hub.guest(*conn) {
-                self.player_ears_geometry(m, &g.name, camera, alpha as f32, packed, out);
+                self.player_ears_geometry(
+                    m,
+                    self.ride_state(m),
+                    &g.name,
+                    camera,
+                    alpha as f32,
+                    packed,
+                    out,
+                );
             }
-            self.spin_attack_geometry(m, camera, alpha as f32, packed, out);
+            self.spin_attack_geometry(m, self.ride_state(m), camera, alpha as f32, packed, out);
             if let Some(g) = host.hub.guest(*conn) {
-                self.stuck_in_body_geometry(m, g.entity_id, camera, alpha as f32, packed, out);
+                self.stuck_in_body_geometry(
+                    m,
+                    self.ride_state(m),
+                    g.entity_id,
+                    camera,
+                    alpha as f32,
+                    packed,
+                    out,
+                );
             }
             self.held_item_geometry(m, camera, alpha, packed, true, out);
             self.player_pumpkin_geometry(

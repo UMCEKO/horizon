@@ -3,7 +3,10 @@
 //! jockeys, strider jockeys, zombie horsemen) and the skeleton horse trap.
 //! Saving riders under `Passengers` lives in `persist.rs`.
 use super::Game;
-use horizon_client::mobs::{Species, riders};
+use horizon_client::{
+    mobs::{Mob, Species, riders},
+    riding::Ent,
+};
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use std::collections::HashMap;
 
@@ -25,6 +28,47 @@ fn zombie_kind(s: Species) -> bool {
 }
 
 impl Game<'_> {
+    /// What a renderer asks of mob `m`'s riding: from `SetPassengers` on a client, else from the mob.
+    pub(super) fn ride_state(&self, m: &Mob) -> horizon_client::mobs::anim::Ride {
+        use horizon_client::mobs::anim::Ride;
+        match self.remote.as_ref() {
+            Some(r) => {
+                let e = r.client_ent(m.id as i32);
+                Ride {
+                    is_passenger: r.passengers.is_passenger(e),
+                    is_ridden: r.passengers.is_vehicle(e),
+                }
+            }
+            None => Ride {
+                is_passenger: m.extra.passenger,
+                is_ridden: m.rider.is_some() || m.extra.rider.is_some(),
+            },
+        }
+    }
+    /// `Entity.getVehicle` of mob `id`: from `SetPassengers` on a client, else from the mob.
+    pub(super) fn mob_vehicle(&self, id: u32) -> Option<u32> {
+        match self.remote.as_ref() {
+            Some(r) => r.passengers.vehicle_of(Ent::Id(id)).and_then(Ent::id),
+            None => self.mobs.iter().find(|m| m.id == id)?.extra.mount,
+        }
+    }
+    /// `Entity.getFirstPassenger` of mob `id`, as an entity id.
+    pub(super) fn mob_first_passenger(&self, id: u32) -> Option<u32> {
+        match self.remote.as_ref() {
+            Some(r) => match r.passengers.first_passenger(Ent::Id(id))? {
+                Ent::Id(p) => Some(p),
+                _ => Some(r.entity_id as u32),
+            },
+            None => self.mobs.iter().find(|m| m.id == id)?.extra.rider,
+        }
+    }
+    /// `Entity.isVehicle` of vehicle `id` (a cart, say): something rides it.
+    pub(super) fn has_passengers(&self, id: u32) -> bool {
+        match self.remote.as_ref() {
+            Some(r) => r.passengers.is_vehicle(Ent::Id(id)),
+            None => self.mobs.iter().any(|m| m.extra.mount == Some(id)),
+        }
+    }
     /// `Entity.startRiding` for two mobs.
     pub(super) fn mount_mob(&mut self, rider: u32, vehicle: u32) {
         riders::link(&mut self.mobs, rider, vehicle);
@@ -80,34 +124,37 @@ impl Game<'_> {
             .enumerate()
             .map(|(i, m)| (m.id, i))
             .collect();
-        let client = self.remote.is_some();
-        // Riders of riders settle over a few passes.
-        for _ in 0..3 {
-            for i in 0..self.mobs.len() {
-                let Some(v) = self.mobs[i].extra.mount else {
-                    continue;
-                };
-                let Some(&j) = index.get(&v) else { continue };
-                let vehicle = &self.mobs[j];
-                // Mob vehicles hold one mob rider: it is passenger 0.
-                let attach = |yaw| riders::passenger_attachment(vehicle, 0, yaw, client);
-                let (pos, prev) = (vehicle.position, vehicle.previous);
-                let (yaw, prev_yaw) = (vehicle.yaw, vehicle.previous_yaw);
-                let (at, prev_at) = (attach(yaw), attach(prev_yaw));
-                let width = vehicle.width();
-                let (body, prev_body) = (vehicle.body_yaw, vehicle.previous_body_yaw);
-                let m = &mut self.mobs[i];
-                let offset = riders::vehicle_attachment(m, width);
-                m.position = riders::ride_position(pos, at, offset);
-                m.previous = riders::ride_position(prev, prev_at, offset);
-                m.velocity = Vec3::ZERO;
-                m.fall_distance = 0.0;
-                m.on_ground = false;
-                m.body_yaw = body;
-                m.previous_body_yaw = prev_body;
-                m.extra.passenger = true;
-                // A rider never walks off on its own.
-                m.ai.nav.stop();
+        if let Some(r) = self.remote.as_ref() {
+            // Roots first, so a rider of a rider is placed after its vehicle.
+            let pairs: Vec<(usize, usize, usize)> = r
+                .passengers
+                .riders_in_order()
+                .into_iter()
+                .filter_map(|(rider, vehicle)| {
+                    let (Ent::Id(rider_id), Ent::Id(vehicle_id)) = (rider, vehicle) else {
+                        return None;
+                    };
+                    let n = r
+                        .passengers
+                        .passengers_of(vehicle)
+                        .iter()
+                        .position(|&p| p == rider)?;
+                    Some((*index.get(&rider_id)?, *index.get(&vehicle_id)?, n))
+                })
+                .collect();
+            for (i, j, n) in pairs {
+                self.seat_on_mob(i, j, n, true);
+            }
+        } else {
+            // Riders of riders settle over a few passes.
+            for _ in 0..3 {
+                for i in 0..self.mobs.len() {
+                    let Some(v) = self.mobs[i].extra.mount else {
+                        continue;
+                    };
+                    let Some(&j) = index.get(&v) else { continue };
+                    self.seat_on_mob(i, j, 0, false);
+                }
             }
         }
         // Displays and interaction boxes riding anything the client tracks,
@@ -117,54 +164,90 @@ impl Game<'_> {
         // which is 0 for both (Display and Interaction are 0 by 0). On the
         // local player, the top of its box in its pose and scale
         // (`Avatar.POSES`).
-        let me = self.remote.as_ref().map(|r| r.entity_id as u32);
+        let Some(r) = self.remote.as_ref() else {
+            return;
+        };
+        let riding = |id: i32| r.passengers.vehicle_of(Ent::Id(id as u32));
+        let displays: Vec<(i32, Ent)> = self
+            .text_displays
+            .keys()
+            .filter_map(|&id| riding(id).map(|v| (id, v)))
+            .collect();
+        let interactions: Vec<(i32, Ent)> = self
+            .interactions
+            .keys()
+            .filter_map(|&id| riding(id).map(|v| (id, v)))
+            .collect();
         let own_seat = self.player.as_ref().map(|p| {
             p.position
                 .add_vector(Vec3::new(0.0, f64::from(p.dimensions.height), 0.0))
         });
         // A rider of a rider settles over a few passes, as the mobs above.
         for _ in 0..3 {
-            let mut vehicles: Vec<u32> = self
-                .text_displays
-                .values()
-                .filter_map(|d| d.vehicle)
-                .chain(self.interactions.values().filter_map(|i| i.vehicle))
+            let mut vehicles: Vec<Ent> = displays
+                .iter()
+                .chain(&interactions)
+                .map(|&(_, v)| v)
                 .collect();
             vehicles.sort_unstable();
             vehicles.dedup();
-            let seats: HashMap<u32, glam::DVec3> = vehicles
+            let seats: HashMap<Ent, glam::DVec3> = vehicles
                 .into_iter()
                 .filter_map(|v| {
-                    self.passenger_riding_position(v, me, own_seat, &index)
+                    self.passenger_riding_position(v, own_seat, &index)
                         .map(|at| (v, at))
                 })
                 .collect();
-            for display in self.text_displays.values_mut() {
-                if let Some(at) = display.vehicle.and_then(|v| seats.get(&v)) {
+            for (id, v) in &displays {
+                if let (Some(at), Some(display)) = (seats.get(v), self.text_displays.get_mut(id)) {
                     display.ride(*at);
                 }
             }
-            for interaction in self.interactions.values_mut() {
-                if let Some(at) = interaction.vehicle.and_then(|v| seats.get(&v)) {
+            for (id, v) in &interactions {
+                if let (Some(at), Some(interaction)) = (seats.get(v), self.interactions.get_mut(id))
+                {
                     interaction.ride_to(*at);
                 }
             }
         }
+    }
+    /// `Entity.positionRider` of mob `i` on mob `j`, as its passenger number `n`.
+    fn seat_on_mob(&mut self, i: usize, j: usize, n: usize, client: bool) {
+        let vehicle = &self.mobs[j];
+        let attach = |yaw| riders::passenger_attachment(vehicle, n, yaw, client);
+        let (pos, prev) = (vehicle.position, vehicle.previous);
+        let (yaw, prev_yaw) = (vehicle.yaw, vehicle.previous_yaw);
+        let (at, prev_at) = (attach(yaw), attach(prev_yaw));
+        let width = vehicle.width();
+        let (body, prev_body) = (vehicle.body_yaw, vehicle.previous_body_yaw);
+        let m = &mut self.mobs[i];
+        let offset = riders::vehicle_attachment(m, width);
+        m.position = riders::ride_position(pos, at, offset);
+        m.previous = riders::ride_position(prev, prev_at, offset);
+        m.velocity = Vec3::ZERO;
+        m.fall_distance = 0.0;
+        m.on_ground = false;
+        m.body_yaw = body;
+        m.previous_body_yaw = prev_body;
+        if !client {
+            m.extra.passenger = true;
+        }
+        // A rider never walks off on its own.
+        m.ai.nav.stop();
     }
 
     /// `Entity.getPassengerRidingPosition` of a vehicle: where the feet of a
     /// passenger whose own vehicle attachment is 0 land.
     fn passenger_riding_position(
         &self,
-        vehicle: u32,
-        me: Option<u32>,
+        vehicle: Ent,
         own_seat: Option<Vec3>,
         index: &HashMap<u32, usize>,
     ) -> Option<glam::DVec3> {
-        if Some(vehicle) == me {
+        let Ent::Id(vehicle) = vehicle else {
             let at = own_seat?;
             return Some(glam::DVec3::new(at.x, at.y, at.z));
-        }
+        };
         if let Some(&j) = index.get(&vehicle) {
             let v = &self.mobs[j];
             let attachment = riders::passenger_attachment(v, 0, v.yaw, self.remote.is_some());

@@ -148,7 +148,6 @@ fn entity_state(mob: &mut Mob, species: Species, case: &Value) {
         | Species::Parched => {
             mob.ai.aggressive = flag("isAggressive");
             mob.extra.crouching = flag("isCrouching");
-            mob.extra.passenger = flag("isPassenger");
             if flag("isHoldingBow") {
                 mob.extra.set_main_hand(Some("minecraft:bow".into()));
             }
@@ -276,9 +275,6 @@ fn entity_state(mob: &mut Mob, species: Species, case: &Value) {
         }
         Species::HappyGhast => {
             mob.extra.head = case["bodyItem"].as_str().map(Into::into);
-            if flag("isRidden") {
-                mob.rider = Some(Default::default());
-            }
         }
         Species::Warden => {
             use horizon_client::mobs::warden;
@@ -389,6 +385,7 @@ pub fn main() -> horizon_client::Result<()> {
         mob.extra.set_main_hand(None);
         let case = &v["case"];
         let f = |k: &str| case[k].as_f64().unwrap_or(0.0) as f32;
+        let ride_flag = |k: &str| case[k].as_bool().unwrap_or(false);
         if baby {
             mob.extra.age = -24000;
         }
@@ -402,6 +399,10 @@ pub fn main() -> horizon_client::Result<()> {
             swing: f("swingAnimation"),
             baby,
             partial: 0.0,
+            ride: anim::Ride {
+                is_passenger: ride_flag("isPassenger") || ride_flag("isRiding"),
+                is_ridden: ride_flag("isRidden"),
+            },
         };
         let mut poses = Poses::new(&model);
         entity_state(&mut mob, def.species, case);
@@ -414,7 +415,7 @@ pub fn main() -> horizon_client::Result<()> {
             if !case["@alive"].as_bool().unwrap() {
                 mob.health = 0.0;
             }
-            let extracted = anim::state(&mob, f("@partial"));
+            let extracted = anim::state(&mob, f("@partial"), state.ride);
             state.pos = extracted.pos;
             state.speed = extracted.speed;
         }
@@ -608,7 +609,6 @@ pub fn main() -> horizon_client::Result<()> {
                     Some("CELEBRATING") => ArmPose::Celebrating,
                     _ => ArmPose::Neutral,
                 };
-                mob.extra.passenger = flag("isRiding");
                 mob.extra.using_item = num("ticksUsingItem") as i32;
                 anim_pose(&mob, s, p, pose);
             }

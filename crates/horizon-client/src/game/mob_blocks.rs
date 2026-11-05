@@ -48,9 +48,14 @@ impl Game<'_> {
         let Some(stack) = stack.filter(|s| &*s.item == "minecraft:carved_pumpkin") else {
             return;
         };
-        let Some(head) =
-            render::part_transform(mob, alpha as f32, camera, self.res.mob_data(), "head")
-        else {
+        let Some(head) = render::part_transform(
+            mob,
+            alpha as f32,
+            self.ride_state(mob),
+            camera,
+            self.res.mob_data(),
+            "head",
+        ) else {
             return;
         };
         let pose = head
@@ -147,9 +152,14 @@ impl Game<'_> {
         }) else {
             return;
         };
-        let Some(head) =
-            render::part_transform(mob, alpha as f32, camera, self.res.mob_data(), "head")
-        else {
+        let Some(head) = render::part_transform(
+            mob,
+            alpha as f32,
+            self.ride_state(mob),
+            camera,
+            self.res.mob_data(),
+            "head",
+        ) else {
             return;
         };
         let m = banner_matrix(head);
@@ -203,7 +213,7 @@ impl Game<'_> {
         {
             // CarriedBlockLayer: OverlayTexture.NO_OVERLAY, never the hurt tint;
             // the block's baked model (seed 42) on the unit cube, not centred.
-            let base = render::base_transform(mob, alpha as f32, camera);
+            let base = render::base_transform(mob, alpha as f32, self.ride_state(mob), camera);
             let t = carried_block_matrix(base);
             // Preserve cross models (flowers, fungi) and state properties (facing).
             self.block_model_vertices(state, 42, t, light, true, out);
@@ -255,9 +265,14 @@ impl Game<'_> {
                 }
             }
         }
-        let Some(head) =
-            render::part_transform(mob, alpha as f32, camera, self.res.mob_data(), "head")
-        else {
+        let Some(head) = render::part_transform(
+            mob,
+            alpha as f32,
+            self.ride_state(mob),
+            camera,
+            self.res.mob_data(),
+            "head",
+        ) else {
             return;
         };
         // UNIT_CUBE_BOTTOM_CENTER_TO_ANTENNA_CENTER: translation(-0.5, 0, -0.5)
@@ -289,9 +304,14 @@ impl Game<'_> {
         let Some(state) = self.pack.assets.registry.default_state("minecraft:poppy") else {
             return;
         };
-        let Some(arm) =
-            render::part_transform(mob, alpha as f32, camera, self.res.mob_data(), "right_arm")
-        else {
+        let Some(arm) = render::part_transform(
+            mob,
+            alpha as f32,
+            self.ride_state(mob),
+            camera,
+            self.res.mob_data(),
+            "right_arm",
+        ) else {
             return;
         };
         let t = arm
@@ -334,8 +354,14 @@ impl Game<'_> {
             return;
         };
         let alpha = alpha as f32;
-        let Some(head) = render::part_transform(mob, alpha, camera, self.res.mob_data(), "head")
-        else {
+        let Some(head) = render::part_transform(
+            mob,
+            alpha,
+            self.ride_state(mob),
+            camera,
+            self.res.mob_data(),
+            "head",
+        ) else {
             return;
         };
         let unit = Mat4::from_translation(Vec3::splat(-0.5));
@@ -350,7 +376,7 @@ impl Game<'_> {
                     * unit,
             ]
         } else {
-            let base = render::base_transform(mob, alpha, camera);
+            let base = render::base_transform(mob, alpha, self.ride_state(mob), camera);
             vec![
                 base * at(0.2, -0.35, 0.5) * spin(-48.0) * flip * unit,
                 base * at(0.2, -0.35, 0.5)
@@ -394,11 +420,26 @@ impl Game<'_> {
                 && (&*mob.kind.id == "minecraft:player" || mob.species() == Species::Mannequin)
                 && off_hand == mob.extra.using_off_hand
                 && mob.extra.using_item > 0
-                && horizon_client::mobs::anim::state(mob, alpha as f32).swing < 1.0e-5;
+                && horizon_client::mobs::anim::state(mob, alpha as f32, self.ride_state(mob)).swing
+                    < 1.0e-5;
             let t = if spyglass_to_eye {
-                render::held_to_eye_matrix(mob, alpha as f32, camera, self.res.mob_data(), left)
+                render::held_to_eye_matrix(
+                    mob,
+                    alpha as f32,
+                    self.ride_state(mob),
+                    camera,
+                    self.res.mob_data(),
+                    left,
+                )
             } else {
-                render::held_item_transform(mob, alpha as f32, camera, self.res.mob_data(), left)
+                render::held_item_transform(
+                    mob,
+                    alpha as f32,
+                    self.ride_state(mob),
+                    camera,
+                    self.res.mob_data(),
+                    left,
+                )
             };
             let Some(t) = t else {
                 continue;
@@ -532,9 +573,14 @@ impl Game<'_> {
         {
             stack.enchant("minecraft:unbreaking", 1);
         }
-        let Some(head) =
-            render::part_transform(mob, alpha as f32, camera, self.res.mob_data(), "head")
-        else {
+        let Some(head) = render::part_transform(
+            mob,
+            alpha as f32,
+            self.ride_state(mob),
+            camera,
+            self.res.mob_data(),
+            "head",
+        ) else {
             return;
         };
         if let Some(kind) = super::armor_stands::skull_kind(&stack.item) {

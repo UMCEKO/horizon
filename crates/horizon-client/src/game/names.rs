@@ -121,8 +121,15 @@ impl Game<'_> {
             .map(|(m, name)| (m, name, true));
         // Who is riding whom: asked once per tag below, and rescanning every mob
         // for each tag made this quadratic in the number of loaded mobs.
-        let ridden: std::collections::HashSet<u32> =
-            self.mobs.iter().filter_map(|o| o.extra.mount).collect();
+        let ridden: std::collections::HashSet<u32> = match self.remote.as_ref() {
+            Some(r) => r
+                .passengers
+                .riders_in_order()
+                .into_iter()
+                .filter_map(|(_, vehicle)| vehicle.id())
+                .collect(),
+            None => self.mobs.iter().filter_map(|o| o.extra.mount).collect(),
+        };
         for (m, name, player) in named.chain(players) {
             if !m.alive() {
                 continue;

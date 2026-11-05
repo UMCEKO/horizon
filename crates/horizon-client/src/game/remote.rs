@@ -196,9 +196,8 @@ pub(super) struct Remote {
     /// The happy ghast the player just got off, until the server's teleport
     /// puts the player on top of it (`place_ghast_under`).
     pub(super) ghast_dismount: Option<u32>,
-    /// Whether the player is the first passenger of its vehicle, the one
-    /// `getControllingPassenger` names.
-    pub(super) first_passenger: bool,
+    /// `ClientLevel`'s `vehicle` and `passengers`, written only by `SetPassengers` and entity removal.
+    pub(super) passengers: horizon_client::riding::Riding,
     /// Item entities waiting for their item data: where they are and their
     /// motion.
     pending_items: HashMap<i32, ([f64; 3], Vec3)>,
@@ -585,7 +584,7 @@ impl Game<'_> {
             stepped: HashMap::new(),
             head_lerps: HashMap::new(),
             ghast_dismount: None,
-            first_passenger: false,
+            passengers: horizon_client::riding::Riding::client(),
             pending_items: HashMap::new(),
             health: (20.0, 20, 5.0),
             flash_on_set_health: false,
@@ -2008,9 +2007,11 @@ impl Game<'_> {
     }
     fn remove_entity(&mut self, id: i32) {
         // Entity.setRemoved detaches every passenger, even when no empty
-        // SetPassengers packet preceded the vehicle's removal. Otherwise
-        // mobs and other players keep their passenger pose after it is gone.
-        self.remote_set_passengers(id, &[]);
+        // SetPassengers packet preceded the vehicle's removal.
+        if let Some(r) = self.remote.as_mut() {
+            let e = r.client_ent(id);
+            r.passengers.set_removed(e, true);
+        }
         self.level_remove(Kind::Mob, id as u32, Removal::Discarded);
         self.level_remove(Kind::Orb, id as u32, Removal::Discarded);
         self.level_remove(Kind::Item, id as u32, Removal::Discarded);
@@ -2275,7 +2276,10 @@ impl Game<'_> {
                 // rides nothing: the server pairs a vehicle again with its
                 // passengers. A dimension change keeps the vehicle it travels in.
                 if p.keep & 2 == 0 {
-                    self.set_vehicle(None);
+                    if let Some(r) = self.remote.as_mut() {
+                        r.passengers
+                            .set_removed(horizon_client::riding::Ent::Host, true);
+                    }
                     // KEEP_ENTITY_DATA copies the old player's synched data
                     // (its shared flags) to the new one; without it they reset.
                     if let Some(r) = self.remote.as_mut() {
@@ -4921,7 +4925,7 @@ impl Game<'_> {
                 || m.species() == horizon_client::mobs::Species::Bat
                 || self
                     .vehicle()
-                    .is_some_and(|v| v == m.id || m.extra.mount == Some(v))
+                    .is_some_and(|v| v == m.id || self.mob_vehicle(m.id) == Some(v))
                 || !m.bounds().intersects(bounds)
                 || !horizon_client::scoreboard::pushable_by(mob_team, player_team, true)
             {
@@ -5810,8 +5814,7 @@ impl Game<'_> {
                 .iter()
                 .find(|c| c.id as i32 == hit.id)
                 .is_some_and(|c| {
-                    let ridden = self.vehicle() == Some(c.id)
-                        || self.mobs.iter().any(|m| m.extra.mount == Some(c.id));
+                    let ridden = self.vehicle() == Some(c.id) || self.has_passengers(c.id);
                     c.kind
                         .interact_passes(sneaking, ridden, self.can_use_game_master_blocks())
                 });
@@ -8248,6 +8251,19 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
 }
 
 impl Remote {
+    /// The table's key for the client entity with network id `id`: `Host` is the local player.
+    pub(super) fn client_ent(&self, id: i32) -> horizon_client::riding::Ent {
+        use horizon_client::riding::Ent;
+        if id == self.entity_id {
+            Ent::Host
+        } else {
+            Ent::Id(id as u32)
+        }
+    }
+    /// Whether `ClientLevel.getEntity(id)` finds something: the local player or a tracked entity.
+    pub(super) fn knows_entity(&self, id: i32) -> bool {
+        id == self.entity_id || self.entities.contains_key(&id)
+    }
     /// A player entity's profile name: the one it was created with, else its
     /// player-list entry's (an entity the list named after it spawned).
     fn level_player_name(&self, id: i32, uuid: &u128) -> Option<&str> {

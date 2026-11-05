@@ -511,7 +511,12 @@ impl Game<'_> {
                 self.sulfur_cube_body_geometry(
                     mob,
                     alpha as f32,
-                    horizon_client::mobs::render::base_transform_at(mob, alpha as f32, origin),
+                    horizon_client::mobs::render::base_transform_at(
+                        mob,
+                        alpha as f32,
+                        Default::default(),
+                        origin,
+                    ),
                     packed,
                     out,
                 );
@@ -519,6 +524,7 @@ impl Game<'_> {
             horizon_client::mobs::render::render_posed(
                 mob,
                 alpha as f32,
+                Default::default(),
                 origin,
                 &lookup,
                 packed,

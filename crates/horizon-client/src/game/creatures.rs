@@ -550,8 +550,8 @@ impl Game<'_> {
                     "target": m.ai.target.map(|t| format!("{t:?}")),
                     "goals": m.ai.goals.running_names(),
                     "held": m.extra.main_hand.as_deref(),
-                    "mount": m.extra.mount,
-                    "rider": m.extra.rider,
+                    "mount": self.mob_vehicle(m.id),
+                    "rider": self.mob_first_passenger(m.id),
                     // A player's input this tick, and whether it steers.
                     "ridden": m.rider.map(|r| r.steer),
                     "controlled": horizon_client::mobs::equine::controlled(m),
@@ -588,12 +588,12 @@ impl Game<'_> {
                         "leader": s.patrol_leader,
                         "patrolling": s.patrolling,
                         "patrol_target": s.patrol_target,
-                        "vehicle": m.extra.mount,
+                        "vehicle": self.mob_vehicle(m.id),
                     })),
                 });
                 // Drawn seated (Entity.isPassenger); set apart because the
                 // json! above is at the macro recursion limit.
-                state["passenger"] = m.extra.passenger.into();
+                state["passenger"] = self.ride_state(m).is_passenger.into();
                 state["guardian_beam"] = serde_json::json!(horizon_client::mobs::guardian::beam(m, 0.0));
                 state
             })
@@ -5455,7 +5455,12 @@ impl Game<'_> {
                 self.sulfur_cube_body_geometry(
                     mob,
                     alpha as f32,
-                    horizon_client::mobs::render::base_transform(mob, alpha as f32, camera),
+                    horizon_client::mobs::render::base_transform(
+                        mob,
+                        alpha as f32,
+                        self.ride_state(mob),
+                        camera,
+                    ),
                     packed,
                     out,
                 );
@@ -5474,6 +5479,7 @@ impl Game<'_> {
             render(
                 mob,
                 alpha as f32,
+                self.ride_state(mob),
                 camera,
                 &lookup,
                 packed,
@@ -5487,18 +5493,57 @@ impl Game<'_> {
                 // SpinAttackEffectLayer have no `isInvisible` check.
                 let chest = mob.extra.chest.as_deref();
                 if !layers_only {
-                    self.player_cape_geometry(mob, chest, camera, alpha as f32, packed, out);
+                    self.player_cape_geometry(
+                        mob,
+                        self.ride_state(mob),
+                        chest,
+                        camera,
+                        alpha as f32,
+                        packed,
+                        out,
+                    );
                 }
                 if let Some((_, name)) = self
                     .remote_player_names()
                     .into_iter()
                     .find(|(id, _)| *id == mob.id)
                 {
-                    self.player_ears_geometry(mob, &name, camera, alpha as f32, packed, out);
+                    self.player_ears_geometry(
+                        mob,
+                        self.ride_state(mob),
+                        &name,
+                        camera,
+                        alpha as f32,
+                        packed,
+                        out,
+                    );
                 }
-                self.player_elytra_geometry(mob, chest, camera, alpha as f32, packed, out);
-                self.spin_attack_geometry(mob, camera, alpha as f32, packed, out);
-                self.stuck_in_body_geometry(mob, mob.id as i32, camera, alpha as f32, packed, out);
+                self.player_elytra_geometry(
+                    mob,
+                    self.ride_state(mob),
+                    chest,
+                    camera,
+                    alpha as f32,
+                    packed,
+                    out,
+                );
+                self.spin_attack_geometry(
+                    mob,
+                    self.ride_state(mob),
+                    camera,
+                    alpha as f32,
+                    packed,
+                    out,
+                );
+                self.stuck_in_body_geometry(
+                    mob,
+                    self.ride_state(mob),
+                    mob.id as i32,
+                    camera,
+                    alpha as f32,
+                    packed,
+                    out,
+                );
             }
             // CustomHeadLayer (a pumpkin, skull or head item) included.
             self.mob_block_geometry(mob, camera, alpha, packed, out);

@@ -51,9 +51,6 @@ pub(super) struct RemoteTextDisplay {
     /// `TextDisplay.clientDisplayCache`: the split lines, until the render
     /// state changes.
     lines: Option<Lines>,
-    /// `Entity.vehicle`: the mob it rides (`SetPassengers`), which places it
-    /// every tick (`positionRider`), as NPC plugins hang a name over a head.
-    pub(super) vehicle: Option<u32>,
 }
 
 /// `Display.RENDER_STATE_IDS` and `TextDisplay.TEXT_RENDER_STATE_IDS`: the
@@ -88,7 +85,6 @@ impl RemoteTextDisplay {
             initialized: false,
             last_progress: 0.0,
             lines: None,
-            vehicle: None,
         }
     }
     /// `Entity.positionRider` through `setPos`: where its vehicle seats it this

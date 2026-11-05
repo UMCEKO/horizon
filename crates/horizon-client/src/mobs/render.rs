@@ -926,18 +926,18 @@ impl super::MobType {
     }
 }
 /// The mob's root transform (LivingEntityRenderer.submit + setupRotations).
-pub fn base_transform(m: &Mob, alpha: f32, camera: glam::DVec3) -> glam::Mat4 {
+pub fn base_transform(m: &Mob, alpha: f32, ride: anim::Ride, camera: glam::DVec3) -> glam::Mat4 {
     let a = f64::from(alpha);
     let p = glam::DVec3::new(
         m.previous.x + (m.position.x - m.previous.x) * a,
         m.previous.y + (m.position.y - m.previous.y) * a,
         m.previous.z + (m.position.z - m.previous.z) * a,
     ) - camera;
-    base_transform_at(m, alpha, glam::Mat4::from_translation(p.as_vec3()))
+    base_transform_at(m, alpha, ride, glam::Mat4::from_translation(p.as_vec3()))
 }
 /// `base_transform` from a pose of the entity's origin (`EntityRenderDispatcher.submit`
 /// under a pose stack, as `SpawnerRenderer` draws the mob inside a spawner).
-pub fn base_transform_at(m: &Mob, alpha: f32, origin: glam::Mat4) -> glam::Mat4 {
+pub fn base_transform_at(m: &Mob, alpha: f32, ride: anim::Ride, origin: glam::Mat4) -> glam::Mat4 {
     let mut body = m.previous_body_yaw + wrap(m.body_yaw - m.previous_body_yaw) * alpha;
     if shaking(m) {
         // LivingEntityRenderer.setupRotations: a rapid wobble.
@@ -987,7 +987,7 @@ pub fn base_transform_at(m: &Mob, alpha: f32, origin: glam::Mat4) -> glam::Mat4 
     // IronGolemRenderer.setupRotations, after LivingEntityRenderer's: the body
     // tilts side to side while it walks.
     if m.species() == Species::IronGolem {
-        let s = anim::state(m, alpha);
+        let s = anim::state(m, alpha, ride);
         if s.speed >= 0.01 {
             let wp = s.pos + 6.0;
             let triangle_wave = ((wp % 13.0 - 6.5).abs() - 3.25) / 3.25;
@@ -1266,13 +1266,14 @@ fn draw_normals(
 pub fn render(
     m: &Mob,
     alpha: f32,
+    ride: anim::Ride,
     camera: glam::DVec3,
     atlas: Atlas,
     light: u32,
     data: &MobData,
     out: &mut Vec<Vertex>,
 ) {
-    render_with(m, alpha, camera, atlas, light, data, &[], out);
+    render_with(m, alpha, ride, camera, atlas, light, data, &[], out);
 }
 /// `render` plus extra layers posed like the body (`HumanoidArmorLayer`:
 /// the armour model's parts copy the body's): (model, texture rect, colour,
@@ -1281,6 +1282,7 @@ pub fn render(
 pub fn render_with(
     m: &Mob,
     alpha: f32,
+    ride: anim::Ride,
     camera: glam::DVec3,
     atlas: Atlas,
     light: u32,
@@ -1297,8 +1299,8 @@ pub fn render_with(
                 let w = super::illusioner::wobble(i, age);
                 let shifted =
                     camera - glam::DVec3::new(off[0] + w[0], off[1] + w[1], off[2] + w[2]);
-                let base = base_transform(m, alpha, shifted);
-                render_visible(m, alpha, base, atlas, light, data, extra, true, out);
+                let base = base_transform(m, alpha, ride, shifted);
+                render_visible(m, alpha, ride, base, atlas, light, data, extra, true, out);
             }
         }
         return;
@@ -1306,7 +1308,8 @@ pub fn render_with(
     render_visible(
         m,
         alpha,
-        base_transform(m, alpha, camera),
+        ride,
+        base_transform(m, alpha, ride, camera),
         atlas,
         light,
         data,
@@ -1323,6 +1326,7 @@ pub fn render_with(
 pub fn cape(
     m: &Mob,
     alpha: f32,
+    ride: anim::Ride,
     base: glam::Mat4,
     uv: [f32; 4],
     light: u32,
@@ -1332,7 +1336,7 @@ pub fn cape(
     let Some(model) = m.kind.layer("player#cape") else {
         return;
     };
-    let s = anim::state(m, alpha);
+    let s = anim::state(m, alpha, ride);
     let mut poses = Poses::new(model);
     anim::setup(m, &s, &mut poses, &data.animations);
     let a = f64::from(alpha);
@@ -1365,6 +1369,7 @@ pub fn cape(
 pub fn ears(
     m: &Mob,
     alpha: f32,
+    ride: anim::Ride,
     base: glam::Mat4,
     uv: [f32; 4],
     light: u32,
@@ -1377,7 +1382,7 @@ pub fn ears(
     let Some(model) = m.kind.layer("player#ears") else {
         return;
     };
-    let s = anim::state(m, alpha);
+    let s = anim::state(m, alpha, ride);
     let mut poses = Poses::new(model);
     anim::setup(m, &s, &mut poses, &data.animations);
     // LivingEntityRenderer.getOverlayCoords(state, 0.0F).
@@ -1439,6 +1444,7 @@ pub fn stuck_in_body(
     m: &Mob,
     id: i32,
     alpha: f32,
+    ride: anim::Ride,
     camera: glam::DVec3,
     data: &MobData,
     count: i32,
@@ -1452,8 +1458,8 @@ pub fn stuck_in_body(
     if count <= 0 {
         return;
     }
-    let base = base_transform(m, alpha, camera);
-    let s = anim::state(m, alpha);
+    let base = base_transform(m, alpha, ride, camera);
+    let s = anim::state(m, alpha, ride);
     let (model_key, _) = body(m);
     let model = m
         .kind
@@ -1514,6 +1520,7 @@ pub fn stuck_in_body(
 pub fn render_layers(
     m: &Mob,
     alpha: f32,
+    ride: anim::Ride,
     camera: glam::DVec3,
     atlas: Atlas,
     light: u32,
@@ -1521,27 +1528,29 @@ pub fn render_layers(
     extra: &[(&Part, [f32; 4], u32, u32)],
     out: &mut Vec<Vertex>,
 ) {
-    let base = base_transform(m, alpha, camera);
-    render_visible(m, alpha, base, atlas, light, data, extra, false, out);
+    let base = base_transform(m, alpha, ride, camera);
+    render_visible(m, alpha, ride, base, atlas, light, data, extra, false, out);
 }
 /// A mob drawn under `origin` instead of at its position (the spinning mob
 /// of `SpawnerRenderer.submitEntityInSpawner`).
 pub fn render_posed(
     m: &Mob,
     alpha: f32,
+    ride: anim::Ride,
     origin: glam::Mat4,
     atlas: Atlas,
     light: u32,
     data: &MobData,
     out: &mut Vec<Vertex>,
 ) {
-    let base = base_transform_at(m, alpha, origin);
-    render_visible(m, alpha, base, atlas, light, data, &[], true, out);
+    let base = base_transform_at(m, alpha, ride, origin);
+    render_visible(m, alpha, ride, base, atlas, light, data, &[], true, out);
 }
 #[allow(clippy::too_many_arguments)]
 fn render_visible(
     m: &Mob,
     alpha: f32,
+    ride: anim::Ride,
     base: glam::Mat4,
     atlas: Atlas,
     light: u32,
@@ -1551,7 +1560,7 @@ fn render_visible(
     out: &mut Vec<Vertex>,
 ) {
     let overlay = u32::from(red_overlay(m));
-    let s = anim::state(m, alpha);
+    let s = anim::state(m, alpha, ride);
     let (model_key, texture) = body(m);
     let model = m
         .kind
@@ -1718,14 +1727,15 @@ fn armor_slot(model: &str) -> Option<usize> {
 pub fn render_single(
     m: &Mob,
     alpha: f32,
+    ride: anim::Ride,
     camera: glam::DVec3,
     uv: [f32; 4],
     light: u32,
     out: &mut Vec<Vertex>,
 ) {
-    let base = base_transform(m, alpha, camera);
+    let base = base_transform(m, alpha, ride, camera);
     let overlay = body_overlay(m, alpha);
-    let s = anim::state(m, alpha);
+    let s = anim::state(m, alpha, ride);
     let model = m.kind.model.clone();
     let mut poses = Poses::new(&model);
     anim::setup(m, &s, &mut poses, &std::collections::HashMap::new());
@@ -1837,12 +1847,13 @@ fn hand_base(
 pub fn part_transform(
     m: &Mob,
     alpha: f32,
+    ride: anim::Ride,
     camera: glam::DVec3,
     data: &MobData,
     part: &str,
 ) -> Option<glam::Mat4> {
-    let base = base_transform(m, alpha, camera);
-    let s = anim::state(m, alpha);
+    let base = base_transform(m, alpha, ride, camera);
+    let s = anim::state(m, alpha, ride);
     let (model_key, _) = body(m);
     let model = m
         .kind
@@ -1859,13 +1870,14 @@ pub fn part_transform(
 pub fn held_to_eye_matrix(
     m: &Mob,
     alpha: f32,
+    ride: anim::Ride,
     camera: glam::DVec3,
     data: &MobData,
     left: bool,
 ) -> Option<glam::Mat4> {
     use glam::{Mat4, Vec3};
-    let base = base_transform(m, alpha, camera);
-    let s = anim::state(m, alpha);
+    let base = base_transform(m, alpha, ride, camera);
+    let s = anim::state(m, alpha, ride);
     let (model_key, _) = body(m);
     let model = m
         .kind
@@ -1889,9 +1901,15 @@ pub fn held_to_eye_matrix(
 /// `FoxHeldItemLayer`: the item sits at the head's position under the render
 /// state's head roll, yaw and pitch (not the posed head's, which differ while
 /// it sleeps), pushed out to the mouth.
-fn fox_item_transform(m: &Mob, alpha: f32, camera: glam::DVec3, data: &MobData) -> glam::Mat4 {
+fn fox_item_transform(
+    m: &Mob,
+    alpha: f32,
+    ride: anim::Ride,
+    camera: glam::DVec3,
+    data: &MobData,
+) -> glam::Mat4 {
     use glam::{Mat4, Vec3};
-    let s = anim::state(m, alpha);
+    let s = anim::state(m, alpha, ride);
     let (model_key, _) = body(m);
     let model = m
         .kind
@@ -1903,7 +1921,7 @@ fn fox_item_transform(m: &Mob, alpha: f32, camera: glam::DVec3, data: &MobData) 
     let head = *poses.get("head");
     let fox = super::fox::pose(m, alpha);
     let baby = m.is_baby();
-    let mut t = base_transform(m, alpha, camera)
+    let mut t = base_transform(m, alpha, ride, camera)
         * Mat4::from_translation(Vec3::new(head[0], head[1], head[2]) / 16.0);
     if baby {
         t *= Mat4::from_scale(Vec3::splat(0.75));
@@ -1940,6 +1958,7 @@ fn crossed_arms_matrix(model: &Part, base: glam::Mat4, poses: &Poses) -> Option<
 pub fn held_item_transform(
     m: &Mob,
     alpha: f32,
+    ride: anim::Ride,
     camera: glam::DVec3,
     data: &MobData,
     left: bool,
@@ -1948,17 +1967,17 @@ pub fn held_item_transform(
     if m.species() == Species::Panda {
         return super::panda::item_offset(m, alpha)
             .filter(|_| !left)
-            .map(|offset| base_transform(m, alpha, camera) * offset);
+            .map(|offset| base_transform(m, alpha, ride, camera) * offset);
     }
     // FoxHeldItemLayer: the main hand's item in its mouth.
     if m.species() == Species::Fox {
-        return (!left).then(|| fox_item_transform(m, alpha, camera, data));
+        return (!left).then(|| fox_item_transform(m, alpha, ride, camera, data));
     }
     if !super::illager::shows_item(m) {
         return None;
     }
-    let base = base_transform(m, alpha, camera);
-    let s = anim::state(m, alpha);
+    let base = base_transform(m, alpha, ride, camera);
+    let s = anim::state(m, alpha, ride);
     let (model_key, _) = body(m);
     let model = m
         .kind
@@ -2145,6 +2164,7 @@ mod tests {
                     render_posed(
                         &mob,
                         0.5,
+                        anim::Ride::default(),
                         glam::Mat4::IDENTITY,
                         &atlas,
                         0xf0f0,
@@ -2155,6 +2175,7 @@ mod tests {
                     render(
                         &mob,
                         0.5,
+                        anim::Ride::default(),
                         glam::DVec3::ZERO,
                         &atlas,
                         0xf0f0,
@@ -2178,6 +2199,7 @@ mod tests {
             render(
                 &mob,
                 0.5,
+                anim::Ride::default(),
                 glam::DVec3::ZERO,
                 &atlas,
                 0xf0f0,
@@ -2229,6 +2251,7 @@ mod tests {
             render(
                 &mob,
                 0.5,
+                anim::Ride::default(),
                 glam::DVec3::ZERO,
                 &atlas,
                 0xf0f0,
@@ -2268,7 +2291,15 @@ mod tests {
             pois: Default::default(),
         };
         for left in [false, true] {
-            let t = held_item_transform(&mob, 0.5, glam::DVec3::ZERO, &data, left).unwrap();
+            let t = held_item_transform(
+                &mob,
+                0.5,
+                anim::Ride::default(),
+                glam::DVec3::ZERO,
+                &data,
+                left,
+            )
+            .unwrap();
             // The model's own part scale is 1, so the item's scale is the
             // renderer's: `poseStack.scale(0.55F, 0.55F, 0.55F)`.
             for axis in [t.x_axis, t.y_axis, t.z_axis] {
@@ -2298,10 +2329,40 @@ mod tests {
             let kind = std::sync::Arc::new(types.types[id].clone());
             let mut mob = Mob::new(1, kind, horizon_core::geometry::Vec3::ZERO, 0.0);
             let main = mob.main_arm_left();
-            assert!(held_item_transform(&mob, 1.0, glam::DVec3::ZERO, &data, main).is_none());
+            assert!(
+                held_item_transform(
+                    &mob,
+                    1.0,
+                    anim::Ride::default(),
+                    glam::DVec3::ZERO,
+                    &data,
+                    main
+                )
+                .is_none()
+            );
             mob.extra.set_main_hand(Some("minecraft:emerald".into()));
-            assert!(held_item_transform(&mob, 1.0, glam::DVec3::ZERO, &data, main).is_some());
-            assert!(held_item_transform(&mob, 1.0, glam::DVec3::ZERO, &data, !main).is_none());
+            assert!(
+                held_item_transform(
+                    &mob,
+                    1.0,
+                    anim::Ride::default(),
+                    glam::DVec3::ZERO,
+                    &data,
+                    main
+                )
+                .is_some()
+            );
+            assert!(
+                held_item_transform(
+                    &mob,
+                    1.0,
+                    anim::Ride::default(),
+                    glam::DVec3::ZERO,
+                    &data,
+                    !main
+                )
+                .is_none()
+            );
         }
     }
     /// PhantomRenderer.scale moves the model down into its 0.5-high box:
@@ -2319,8 +2380,8 @@ mod tests {
         let mut mob = Mob::new(1, kind, horizon_core::geometry::Vec3::ZERO, 0.0);
         for (size, scale) in [(0, 1.0f32), (5, 1.75)] {
             mob.extra.size = size;
-            let origin =
-                base_transform(&mob, 1.0, glam::DVec3::ZERO).transform_point3(glam::Vec3::ZERO);
+            let origin = base_transform(&mob, 1.0, anim::Ride::default(), glam::DVec3::ZERO)
+                .transform_point3(glam::Vec3::ZERO);
             let y = (1.501 - 1.3125) * scale;
             assert!(
                 (origin.y - y).abs() < 1.0e-4,
@@ -2382,6 +2443,7 @@ mod tests {
             render_with(
                 &mob,
                 0.5,
+                anim::Ride::default(),
                 glam::DVec3::ZERO,
                 &atlas,
                 0xf0f0,

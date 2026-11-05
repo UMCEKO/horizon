@@ -660,7 +660,7 @@ pub fn anim_pose(m: &Mob, s: &State, p: &mut Poses, pose: ArmPose) {
     p.yrot("head", hy);
     p.xrot("head", hx);
     let (pos, sp) = (s.pos, s.speed);
-    if m.extra.passenger {
+    if s.ride.is_passenger {
         for arm in ["right_arm", "left_arm"] {
             p.xrot(arm, -PI / 5.0);
             p.yrot(arm, 0.0);
