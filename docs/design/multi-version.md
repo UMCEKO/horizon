@@ -157,10 +157,10 @@ of ~20 batches measures how often the reviewer disagrees, and the table is tight
 
 - **Tier 0: tooling.** This note and the tooling PRs below. No older version is playable yet; nothing changes for
   players.
-- **Tier 1: the first older version.** 26.2 or 26.1.2, whichever the modpacks players ask for need first. It is
-  *playable* when its protocol, registries and worldgen batches are done and the LAN smoke set passes on it, and
+- **Tier 1: 26.2.** Versions go newest first: each step back starts from the smallest diff, and the next one
+  reuses its work. It is *playable* when its protocol, registries and worldgen batches are done and the LAN smoke set passes on it, and
   *done* when it has no `unreviewed` or `todo` rows and every harness that declares it passes.
-- **Tier 2: the other one,** the same way. Rows whose old body is shared with the first make most of it free.
+- **Tier 2: 26.1.2,** the same way. Rows whose 26.1.2 body is the same as 26.2's take 26.2's verdict and code.
 
 Each tier lands as small batch PRs and is usable on its own. The game's `VersionProfile`, the protocol tables and
 the launcher's picker are product PRs of Tier 1, each with its own issue.
