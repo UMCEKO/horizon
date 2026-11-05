@@ -3,7 +3,6 @@ use super::{Arg, Context, Game, R, Target, err, texts};
 use horizon_client::{
     brewing::{self, namespaced},
     effects::EffectInstance,
-    mobs::effect::MobEffect,
     text::{self, Style, Text},
 };
 
@@ -22,7 +21,7 @@ impl Tracker {
     }
 }
 fn effect_name(id: &str) -> Text {
-    Text::translate(&format!("effect.minecraft.{id}"), &[])
+    Text::translate(&brewing::description_id(id), &[])
 }
 impl Game<'_> {
     fn effect_arg(ctx: &Context) -> R<&'static brewing::EffectDef> {
@@ -74,10 +73,12 @@ impl Game<'_> {
                 Target::Mob(id) => match self.mobs.iter_mut().find(|m| m.id == id) {
                     Some(m) => {
                         let name = namespaced(effect.id);
-                        let mut instance = MobEffect::new(name, duration, amplifier);
-                        instance.visible = particles;
-                        instance.show_icon = particles;
-                        m.add_effect_instance(instance)
+                        let new = !m.has_effect(name);
+                        // `new MobEffectInstance(effect, duration, amplifier, false, particles)`.
+                        let changed =
+                            m.add_effect_with(name, duration, amplifier, false, particles);
+                        self.mod_effect_added(name, Some(id as i32), amplifier, new);
+                        changed
                     }
                     None => false,
                 },

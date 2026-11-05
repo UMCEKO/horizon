@@ -3,6 +3,7 @@ package dev.horizonlab.javamods.boot;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
@@ -20,7 +21,7 @@ public final class ClientResources {
     private ClientResources() {}
 
     private static volatile byte[] exported = new byte[0];
-    private static volatile byte[] baked = new byte[0];
+    private static volatile java.util.Set<net.minecraft.world.level.block.state.BlockState> bakeStates = java.util.Set.of();
 
     /** A listener whose whole work is for a GPU this client hasn't: it reaches the reload's barrier with nothing prepared and applies nothing. */
     public static CompletableFuture<Void> skipped(PreparableReloadListener.PreparationBarrier barrier) {
@@ -32,9 +33,15 @@ public final class ClientResources {
         return exported;
     }
 
-    /** The code-built block states' baked quads as `BakedWriter` writes them, for the game's generated content. */
-    static byte[] baked() {
-        return baked;
+    /** Streams the code-built block states' baked quads to `out` as `BakedWriter` writes them, for the game's generated content; the set is dropped after. */
+    static byte[] baked(Path out) throws IOException {
+        var states = bakeStates;
+        bakeStates = java.util.Set.of();
+        if (states.isEmpty()) return new byte[0];
+        var models = Minecraft.getInstance().getModelManager().getBlockStateModelSet();
+        var n = dev.horizonlab.facts.BakedWriter.write(out, models::get, states::contains);
+        System.err.println("Horizon: baked " + n[0] + " blocks, " + n[1] + " states, " + n[2] + " quads for the content");
+        return new byte[0];
     }
 
     /** Writes the export, then frees the stitched pixels nothing reads again. */
@@ -46,9 +53,7 @@ public final class ClientResources {
         var states = ClientModels.codeBuiltStates();
         out.writeInt(states.size());
         for (var state : states) out.writeInt(Block.BLOCK_STATE_REGISTRY.getId(state));
-        var models = minecraft.getModelManager().getBlockStateModelSet();
-        var quads = dev.horizonlab.facts.BakedWriter.build(models::get, states::contains);
-        baked = quads.json().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        bakeStates = states;
         var drawn = ClientModels.foreignItems();
         out.writeInt(drawn.size());
         for (var id : drawn) text(out, id.toString());
@@ -85,7 +90,7 @@ public final class ClientResources {
         }
         exported = bytes.toByteArray();
         System.err.println("Horizon: the client's resource reload stitched " + atlases.size() + " atlases (" + sprites + " sprites), " + states.size()
-                + " block states with code-built models (" + quads.blocks() + " blocks, " + quads.quads() + " quads baked for the content), " + drawn.size() + " items only their mods' code draws; freed " + freed / 1048576 + " MB of sprite mip levels" + report);
+                + " block states with code-built models, " + drawn.size() + " items only their mods' code draws; freed " + freed / 1048576 + " MB of sprite mip levels" + report);
     }
 
     private static void text(DataOutputStream out, String value) throws IOException {

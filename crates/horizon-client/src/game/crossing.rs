@@ -1,6 +1,7 @@
 //! Native entity loops lend their vectors back to `Game` so Java can run between two entities, in vanilla's order.
 #![allow(dead_code)] // The event phases after SPEC-1a put work at the crossing points.
 use super::*;
+use horizon_client::join_seq::JoinList;
 
 /// What a crossing changed through the native entity API, for the loop to refresh.
 #[derive(Default)]
@@ -55,11 +56,13 @@ impl Marks {
 
 /// One vector a loop took out of `Game`.
 pub(in crate::game) enum Lent<'a> {
-    Mobs(&'a mut Vec<Mob>),
-    Items(&'a mut Vec<ItemEntity>),
-    Orbs(&'a mut Vec<ExperienceOrb>),
-    Projectiles(&'a mut Vec<horizon_client::projectiles::Projectile>),
-    Stands(&'a mut Vec<horizon_client::entities::ArmorStand>),
+    Mobs(&'a mut JoinList<Mob>),
+    Items(&'a mut JoinList<ItemEntity>),
+    Orbs(&'a mut JoinList<ExperienceOrb>),
+    Projectiles(&'a mut JoinList<horizon_client::projectiles::Projectile>),
+    Stands(&'a mut JoinList<horizon_client::entities::ArmorStand>),
+    /// Every list the entity walk took (`take_entities`).
+    All(&'a mut super::entity::TakenEntities),
     Bolts(&'a mut Vec<lightning::Bolt>),
 }
 
@@ -74,6 +77,8 @@ impl LentKinds {
     pub(in crate::game) const PROJECTILES: Self = Self(8);
     pub(in crate::game) const STANDS: Self = Self(16);
     pub(in crate::game) const BOLTS: Self = Self(32);
+    /// The kinds whose removal a crossing can mark (they carry `removed`).
+    pub(in crate::game) const MARKED: Self = Self(31);
     pub(in crate::game) fn has(self, kind: Self) -> bool {
         self.0 & kind.0 != 0
     }
@@ -88,6 +93,7 @@ impl Lent<'_> {
             Self::Projectiles(_) => LentKinds::PROJECTILES,
             Self::Stands(_) => LentKinds::STANDS,
             Self::Bolts(_) => LentKinds::BOLTS,
+            Self::All(_) => LentKinds::MARKED,
         }
     }
 }
@@ -145,6 +151,7 @@ impl<'a> Game<'a> {
             Lent::Projectiles(v) => std::mem::swap(*v, &mut self.creatures.projectiles),
             Lent::Stands(v) => std::mem::swap(*v, &mut self.armor_stands),
             Lent::Bolts(v) => std::mem::swap(*v, &mut self.bolts),
+            Lent::All(taken) => self.swap_entities(taken),
         }
     }
     /// Records that the native entity API changed `id` (or shared state) during a crossing.
@@ -160,6 +167,18 @@ impl<'a> Game<'a> {
     /// Which kinds are lent right now: `level_remove` (SPEC-1b) marks instead of removing them.
     pub(in crate::game) fn lent(&self) -> LentKinds {
         self.lent
+    }
+    /// `cross_point` for a walk over lists left in `Game`: removals of `kinds` are marked, not made.
+    pub(in crate::game) fn cross_point_in_place(
+        &mut self,
+        point: CrossPoint,
+        kinds: LentKinds,
+    ) -> Touched {
+        let before = self.lent;
+        self.lent.0 |= kinds.0;
+        let t = self.cross_point(point, &mut []);
+        self.lent = before;
+        t
     }
     /// Between two entities of a loop: where later phases cross into Java. Does nothing outside tests in this phase.
     pub(in crate::game) fn cross_point(

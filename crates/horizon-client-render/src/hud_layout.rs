@@ -520,6 +520,36 @@ pub struct HealthInputs {
     pub under_water: bool,
     /// `getVehicleMaxHearts` of the ridden living vehicle (0 = none).
     pub vehicle_hearts: i32,
+    /// Bit per HUD layer id a mod cancelled: a cancelled bar draws nothing and adds no height.
+    pub cancelled: u32,
+}
+
+pub const LAYER_PLAYER_HEALTH: u32 = 4;
+pub const LAYER_ARMOR_LEVEL: u32 = 5;
+pub const LAYER_FOOD_LEVEL: u32 = 6;
+pub const LAYER_VEHICLE_HEALTH: u32 = 7;
+pub const LAYER_AIR_LEVEL: u32 = 8;
+
+/// The bars `HealthHud::layout` drew, in vanilla's call order (armor, health, food, air), cut per layer.
+#[derive(Debug, Default)]
+pub struct BarDraws {
+    pub all: Vec<GuiDraw>,
+    ends: [usize; 3],
+}
+
+impl BarDraws {
+    pub fn armor(&self) -> &[GuiDraw] {
+        &self.all[..self.ends[0]]
+    }
+    pub fn health(&self) -> &[GuiDraw] {
+        &self.all[self.ends[0]..self.ends[1]]
+    }
+    pub fn food(&self) -> &[GuiDraw] {
+        &self.all[self.ends[1]..self.ends[2]]
+    }
+    pub fn air(&self) -> &[GuiDraw] {
+        &self.all[self.ends[2]..]
+    }
 }
 
 /// `Hud.getVehicleMaxHearts` for a vehicle that shows its health.
@@ -629,7 +659,8 @@ fn heart(
 
 impl HealthHud {
     /// `Hud.extractPlayerHealth` for a screen of `w` x `h` GUI pixels.
-    pub fn layout(&mut self, i: &HealthInputs, w: i32, h: i32) -> Vec<GuiDraw> {
+    pub fn layout(&mut self, i: &HealthInputs, w: i32, h: i32) -> BarDraws {
+        let off = |layer: u32| i.cancelled & (1 << layer) != 0;
         let mut out = Vec::new();
         let tick = i64::from(i.tick);
         let current = ceil(i.health);
@@ -655,16 +686,32 @@ impl HealthHud {
         let rows = ceil((max_health + absorption as f32) / 2.0 / 10.0);
         let row_height = (10 - (rows - 2)).max(3);
         let mut y_air = y_base - 10;
-        self.left_height = 39 + (rows - 1) * row_height + 10 + if i.armor > 0 { 10 } else { 0 };
+        let health_rows = if off(LAYER_PLAYER_HEALTH) {
+            0
+        } else {
+            (rows - 1) * row_height + 10
+        };
+        self.left_height = 39
+            + health_rows
+            + if i.armor > 0 && !off(LAYER_ARMOR_LEVEL) {
+                10
+            } else {
+                0
+            };
         // The mount's heart rows (`extractVehicleHealth`); food adds its row below.
-        self.right_height = 39 + 10 * ((i.vehicle_hearts + 9) / 10);
+        self.right_height = 39
+            + if off(LAYER_VEHICLE_HEALTH) {
+                0
+            } else {
+                10 * ((i.vehicle_hearts + 9) / 10)
+            };
         let offset_index = if i.regeneration {
             i.tick % ceil(max_health + 5.0)
         } else {
             -1
         };
-        if i.armor > 0 {
-            let y = y_base - (rows - 1) * row_height - 10;
+        if i.armor > 0 && !off(LAYER_ARMOR_LEVEL) {
+            let y = y_base - health_rows;
             for n in 0..10 {
                 let x = x_left + n * 8;
                 if n * 2 + 1 < i.armor {
@@ -678,9 +725,14 @@ impl HealthHud {
                 }
             }
         }
+        let armor_end = out.len();
         let containers = f64::from(max_health / 2.0).ceil() as i32;
-        let absorb_containers = (f64::from(absorption) / 2.0).ceil() as i32;
-        for c in (0..containers + absorb_containers).rev() {
+        let (containers_drawn, absorb_containers) = if off(LAYER_PLAYER_HEALTH) {
+            (0, 0)
+        } else {
+            (containers, (f64::from(absorption) / 2.0).ceil() as i32)
+        };
+        for c in (0..containers_drawn + absorb_containers).rev() {
             let (row, column) = (c / 10, c % 10);
             let x = x_left + column * 8;
             let mut y = y_base - row * row_height;
@@ -727,7 +779,8 @@ impl HealthHud {
                 out.push(sprite(name, x, y, 9, 9));
             }
         }
-        if i.vehicle_hearts == 0 {
+        let health_end = out.len();
+        if i.vehicle_hearts == 0 && !off(LAYER_FOOD_LEVEL) {
             let (empty, half, full) = if i.hunger {
                 (
                     "hud/food_empty_hunger",
@@ -754,10 +807,11 @@ impl HealthHud {
             y_air -= 10;
             self.right_height += 10;
         }
+        let food_end = out.len();
         // Hud.extractAirBubbles.
         let max_air = i.max_air.max(1);
         let air = i.air.clamp(0, max_air);
-        if i.under_water || air < max_air {
+        if (i.under_water || air < max_air) && !off(LAYER_AIR_LEVEL) {
             self.right_height += 10;
             let rows = (f64::from(i.vehicle_hearts) / 10.0).ceil() as i32;
             let y = y_air - (rows - 1) * 10;
@@ -792,7 +846,10 @@ impl HealthHud {
                 }
             }
         }
-        out
+        BarDraws {
+            all: out,
+            ends: [armor_end, health_end, food_end],
+        }
     }
 }
 
@@ -817,16 +874,23 @@ pub fn paint(batch: &mut crate::hud::HudBatch, atlas: &crate::hud::HudAtlas, dra
                 color,
                 blend,
             } => {
-                // Effect sprites belong to the mob_effect atlas directory;
-                // the other blitSprite ids refer to GUI sprites.
+                // Effect sprites belong to the mob_effect atlas directory (a
+                // content mod's under its namespace); the other blitSprite
+                // ids refer to GUI sprites.
                 name.clear();
-                if sprite.starts_with("mob_effect/") {
-                    name.push_str(sprite);
-                } else {
+                let effect = sprite.starts_with("mob_effect/")
+                    || sprite
+                        .split_once(':')
+                        .is_some_and(|(_, path)| path.starts_with("mob_effect/"));
+                if !effect {
                     name.push_str("gui/sprites/");
-                    name.push_str(sprite);
                 }
-                let Some(mut r) = atlas.sprites.get(name.as_str()).copied() else {
+                name.push_str(sprite);
+                let found = match effect {
+                    true => atlas.sprite_or_missing(&name),
+                    false => atlas.sprites.get(name.as_str()).copied(),
+                };
+                let Some(mut r) = found else {
                     continue;
                 };
                 if let Some([sw, sh, u, v]) = *region {
@@ -940,4 +1004,79 @@ pub fn paint(batch: &mut crate::hud::HudBatch, atlas: &crate::hud::HudAtlas, dra
 pub fn abgr(color: u32) -> u32 {
     let [a, r, g, b] = color.to_be_bytes();
     crate::hud::rgba(r, g, b, a)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inputs(cancelled: u32) -> HealthInputs {
+        HealthInputs {
+            tick: 1,
+            millis: 0,
+            health: 20.0,
+            max_health: 20.0,
+            absorption: 0.0,
+            armor: 6,
+            food: 20,
+            saturation: 5.0,
+            kind: HeartKind::Normal,
+            regeneration: false,
+            hunger: false,
+            hardcore: false,
+            damage_cooldown: false,
+            air: 150,
+            max_air: 300,
+            under_water: true,
+            vehicle_hearts: 0,
+            cancelled,
+        }
+    }
+
+    fn first_y(draws: &[GuiDraw]) -> i32 {
+        match &draws[0] {
+            GuiDraw::Sprite { y, .. } => *y,
+            other => panic!("not a sprite: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_bars_split_into_the_layers_in_vanillas_call_order() {
+        let mut hud = HealthHud::default();
+        let bars = hud.layout(&inputs(0), 320, 240);
+        assert!(!bars.armor().is_empty() && !bars.health().is_empty());
+        assert!(!bars.food().is_empty() && !bars.air().is_empty());
+        let total = bars.armor().len() + bars.health().len() + bars.food().len() + bars.air().len();
+        assert_eq!(total, bars.all.len());
+        assert_eq!(hud.left_height, 39 + 10 + 10);
+        assert_eq!(hud.right_height, 39 + 10 + 10);
+    }
+
+    #[test]
+    fn a_cancelled_food_layer_draws_nothing_and_the_air_takes_its_row() {
+        let (w, h) = (320, 240);
+        let mut hud = HealthHud::default();
+        let with = hud.layout(&inputs(0), w, h);
+        let food_y = first_y(with.food());
+        let air_y = first_y(with.air());
+        let mut hud = HealthHud::default();
+        let without = hud.layout(&inputs(1 << LAYER_FOOD_LEVEL), w, h);
+        assert!(without.food().is_empty());
+        assert_eq!(first_y(without.air()), food_y);
+        assert_eq!(air_y, food_y - 10);
+        assert_eq!(hud.right_height, 39 + 10);
+    }
+
+    #[test]
+    fn a_cancelled_health_layer_lowers_the_armor_row_and_the_height() {
+        let (w, h) = (320, 240);
+        let mut hud = HealthHud::default();
+        let with = hud.layout(&inputs(0), w, h);
+        let armor_y = first_y(with.armor());
+        let mut hud = HealthHud::default();
+        let without = hud.layout(&inputs(1 << LAYER_PLAYER_HEALTH), w, h);
+        assert!(without.health().is_empty());
+        assert_eq!(first_y(without.armor()), armor_y + 10);
+        assert_eq!(hud.left_height, 39 + 10);
+    }
 }

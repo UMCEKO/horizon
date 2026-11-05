@@ -29,6 +29,8 @@ fn a_dynamic_block_meshes_the_registry_quads_instead_of_its_model() {
     let mesh = || {
         let mut mesher = Mesher {
             nether_shading: false,
+            shader_pack_lighting: false,
+            separate_ao: false,
             assets: &assets,
             render: &render,
             tables: &tables,
@@ -38,6 +40,8 @@ fn a_dynamic_block_meshes_the_registry_quads_instead_of_its_model() {
             blend_radius: 0,
             smooth_lighting: true,
             cutout_leaves: true,
+            translucent_layers: &[],
+            leaf_culling: crate::graphics::LeafCullingMode::Off,
         };
         mesher.mesh(&region, sy)
     };
@@ -137,6 +141,8 @@ fn dynamic_geometry_meshes_as_fast_as_native_models() {
     let mesh = || {
         let mut mesher = Mesher {
             nether_shading: false,
+            shader_pack_lighting: false,
+            separate_ao: false,
             assets: &assets,
             render: &render,
             tables: &tables,
@@ -146,6 +152,8 @@ fn dynamic_geometry_meshes_as_fast_as_native_models() {
             blend_radius: 0,
             smooth_lighting: true,
             cutout_leaves: true,
+            translucent_layers: &[],
+            leaf_culling: crate::graphics::LeafCullingMode::Off,
         };
         mesher.mesh(&region, sy)
     };

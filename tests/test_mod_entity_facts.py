@@ -2,6 +2,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from argparse import Namespace
 from pathlib import Path
 
@@ -20,14 +21,15 @@ SOURCES = {
                                                   'public static final EntityType COW = register(EntityTypeIds.COW); static EntityType register(Object k) { return null; } }'),
     'net/minecraft/world/entity/Entity.java': ('package net.minecraft.world.entity; import net.minecraft.world.level.Level; public class Entity { public Level level() { return null; } '
                                               'public EntityType getType() { return null; } public double getX() { return 0; } public void setPos(double x, double y, double z) {} '
-                                              'public void tick() {} public void frobnicate() {} public static void spawn() {} }'),
+                                              'public void tick() {} public void frobnicate() {} public void wobble() {} public void setAirSupply(int a) {} public static void spawn() {} }'),
     'net/minecraft/world/entity/LivingEntity.java': 'package net.minecraft.world.entity; public class LivingEntity extends Entity { public float getHealth() { return 0; } }',
     'net/minecraft/world/entity/player/Player.java': 'package net.minecraft.world.entity.player; public class Player extends net.minecraft.world.entity.LivingEntity { public void swing() {} }',
     'net/minecraft/world/entity/item/ItemEntity.java': ('package net.minecraft.world.entity.item; public class ItemEntity extends net.minecraft.world.entity.Entity { '
                                                        'public void tick() {} public boolean hurt(float a) { return false; } public boolean tryPick(int a) { return false; } }'),
     'net/neoforged/bus/api/Event.java': 'package net.neoforged.bus.api; public class Event {}',
     'net/neoforged/bus/api/SubscribeEvent.java': 'package net.neoforged.bus.api; import java.lang.annotation.*; @Retention(RetentionPolicy.RUNTIME) public @interface SubscribeEvent {}',
-    'net/neoforged/bus/api/IEventBus.java': 'package net.neoforged.bus.api; import java.util.function.Consumer; public interface IEventBus { <T extends Event> void addListener(Consumer<T> c); }',
+    'net/neoforged/bus/api/IEventBus.java': 'package net.neoforged.bus.api; import java.util.function.Consumer; public interface IEventBus { <T extends Event> void addListener(Consumer<T> c); '
+                                                    'default <T extends Event> T post(T e) { new net.minecraft.world.entity.Entity().setPos(0, 0, 0); return e; } }',
     'net/neoforged/neoforgespi/transformation/ClassProcessorProvider.java': 'package net.neoforged.neoforgespi.transformation; public interface ClassProcessorProvider {}',
     'net/neoforged/neoforge/event/entity/EntityEvent.java': ('package net.neoforged.neoforge.event.entity; public class EntityEvent extends net.neoforged.bus.api.Event { '
                                                             'public net.minecraft.world.entity.Entity getEntity() { return null; } }'),
@@ -44,6 +46,13 @@ SOURCES = {
     'org/spongepowered/asm/mixin/injection/callback/CallbackInfo.java': 'package org.spongepowered.asm.mixin.injection.callback; public class CallbackInfo {}',
     'org/spongepowered/asm/mixin/injection/callback/CallbackInfoReturnable.java': ('package org.spongepowered.asm.mixin.injection.callback; '
                                                                                  'public class CallbackInfoReturnable<R> extends CallbackInfo {}'),
+    'net/neoforged/neoforge/common/TestHooks.java': ('package net.neoforged.neoforge.common; import net.minecraft.world.entity.Entity; import net.neoforged.bus.api.IEventBus; '
+                                                    'import net.neoforged.neoforge.event.entity.*; public class TestHooks { '
+                                                    'public static void direct(Entity e) { e.setAirSupply(3); e.getX(); } '
+                                                    'public static void outer(Entity e) { mid(e); } static void mid(Entity e) { inner(e); } static void inner(Entity e) { e.setPos(1, 2, 3); } '
+                                                    'public static void posts(Entity e, IEventBus bus) { bus.post(new ProbeEvent()); new Object(); } '
+                                                    'public static void lambda(Entity e) { Runnable r = () -> e.setAirSupply(1); r.run(); } '
+                                                    'public static void bad(Entity e) { e.wobble(); } }'),
     'fixture/Caps.java': 'package fixture; public class Caps { public static final Object CAP = new Object(); public static final Object PROVIDER = new Object(); }',
     'fixture/Guards.java': f'''package fixture; import net.minecraft.world.entity.*; import net.minecraft.world.entity.player.Player; import net.minecraft.world.level.Level;
         import net.neoforged.bus.api.*; import {EVENTS}*; import net.neoforged.neoforge.capabilities.RegisterCapabilitiesEvent;
@@ -220,6 +229,56 @@ class Opaque(Facts):
         self.assertTrue(self.facts['opaque'][0].startswith('plain: service '))
 
 
+HOOK = 'net/neoforged/neoforge/common/TestHooks#%s(Lnet/minecraft/world/entity/Entity;%s)V'
+
+
+class Hooks(Facts):
+    def closure(self, name, extra='', **kw):
+        jars = mr.library_jars(self.install / 'libraries')
+        hier = mr.Hierarchy(mr.build_library_index(jars))
+        hier.jars = jars
+        return ef.hook_closure(hier, HOOK % (name, extra), **kw)
+
+    def keys(self, name):
+        return [w['key'] for w in self.closure(name)['writes']]
+
+    def test_a_hook_calling_set_air_supply_lists_the_writer(self):
+        got = self.closure('direct')
+        self.assertEqual(got['writes'], [{'key': 'net/minecraft/world/entity/Entity#setAirSupply(I)V', 'receiver': 'net/minecraft/world/entity/Entity', 'group': 'air'}])
+        self.assertEqual(got['reads'], ['position', 'air'])
+
+    def test_a_hook_reaching_a_helper_follows_it(self):
+        self.assertEqual(self.keys('outer'), ['net/minecraft/world/entity/Entity#setPos(DDD)V'])
+
+    def test_a_lambda_in_a_hook_is_followed(self):
+        self.assertEqual(self.keys('lambda'), ['net/minecraft/world/entity/Entity#setAirSupply(I)V'])
+
+    def test_the_walk_stops_at_post(self):
+        got = self.closure('posts', 'Lnet/neoforged/bus/api/IEventBus;')
+        self.assertEqual(got['writes'], [])
+
+    def test_the_events_a_hook_constructs_are_listed(self):
+        got = self.closure('posts', 'Lnet/neoforged/bus/api/IEventBus;')
+        self.assertEqual(got['events'], ['net/neoforged/neoforge/event/entity/ProbeEvent'])
+
+    def test_an_unmapped_entity_call_in_a_hook_fails(self):
+        with mock.patch.dict(ef.HOOKS, {'bad': HOOK % ('bad', '')}, clear=True):
+            ledger = Path(self.root) / 'ledger-hooks.json'
+            ledger.write_text(json.dumps(LEDGER))
+            mixins = Path(self.root) / 'mixins-hooks.json'
+            mixins.write_text(json.dumps(self.entries))
+            with self.assertRaises(SystemExit) as caught:
+                mr.run(Namespace(ledger=str(ledger), install=str(self.install), out=str(Path(self.root) / 'hooks-out'), cache=None, mixins=str(mixins)))
+        self.assertIn('Entity#wobble', str(caught.exception))
+
+    def test_hook_writes_join_the_top_level_writes_as_neoforge(self):
+        with mock.patch.dict(ef.HOOKS, {'direct': HOOK % ('direct', '')}, clear=True):
+            facts = mr.analyse(self.install, self.root / 'out2', LEDGER, entries=self.entries, host=[], log=lambda *_: None)['entity_facts']
+        self.assertEqual(facts['format'], 2)
+        self.assertEqual(facts['hooks']['direct']['reads'], ['position', 'air'])
+        self.assertIn(['neoforge'], [w['mods'] for w in facts['writes'] if w['key'].endswith('#setAirSupply(I)V')])
+
+
 class Bytecode(unittest.TestCase):
     def test_instructions_give_pool_locals_and_absolute_targets(self):
         code = bytes([0x2a, 0x4c, 0x99, 0x00, 0x04, 0xb1, 0xb1])
@@ -231,6 +290,21 @@ class Bytecode(unittest.TestCase):
     def test_the_event_slot_follows_wide_parameters(self):
         self.assertEqual(ef.slot_of_last('(JLa/B;)V', True), 2)
         self.assertEqual(ef.slot_of_last('(La/B;)V', False), 1)
+
+
+class Classify(unittest.TestCase):
+    def test_methods_mods_call_on_the_showcase_pack_have_groups(self):
+        for owner, name, want in (('net/minecraft/world/entity/Entity', 'makeStuckInBlock', ('motion', True)),
+                                  ('net/minecraft/world/entity/Entity', 'getPersistentData', ('java', False)),
+                                  ('net/minecraft/world/entity/decoration/ItemFrame', 'setRotation', ('item', True)),
+                                  ('net/minecraft/world/entity/vehicle/minecart/AbstractMinecartContainer', 'getItem', ('species', False)),
+                                  ('net/minecraft/world/entity/vehicle/minecart/AbstractMinecartContainer', 'setChanged', ('pure', False)),
+                                  ('net/minecraft/world/entity/Entity', 'load', ('all', True))):
+            self.assertEqual(ef.classify(owner, name), want, name)
+
+    def test_whole_entity_save_and_load_need_every_group(self):
+        self.assertEqual(ef.carried('all'), ef.STATE_GROUPS)
+        self.assertEqual(ef.carried('air'), ('air',))
 
 
 if __name__ == '__main__':

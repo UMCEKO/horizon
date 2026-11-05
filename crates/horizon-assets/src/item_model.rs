@@ -16,6 +16,7 @@ use std::{
     sync::{Arc, LazyLock, Mutex},
 };
 
+mod component_predicate;
 mod foreign;
 mod special;
 pub use special::{SpecialKind, SpecialModel};
@@ -460,6 +461,17 @@ impl ItemModelNode {
         let decode = |v: &Value| Self::decode_in(v, types);
         let m = object(v)?;
         let kind = ident(required(m, "type")?)?;
+        if kind == "minecraft:condition" {
+            let property = ident(required(m, "property")?)?;
+            if !property.starts_with("minecraft:") {
+                return Ok(Self::Condition {
+                    transformation: optional_transformation(m)?,
+                    property: ConditionProperty::Custom(property),
+                    on_true: Box::new(decode(required(m, "on_true")?)?),
+                    on_false: Box::new(decode(required(m, "on_false")?)?),
+                });
+            }
+        }
         Ok(match kind.as_str() {
             "minecraft:empty" => Self::Empty,
             "minecraft:model" => Self::Model(ModelLeaf {
@@ -675,6 +687,7 @@ impl TintSource {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConditionProperty {
+    Custom(String),
     CustomModelData(i32),
     UsingItem,
     Broken,
@@ -690,7 +703,7 @@ pub enum ConditionProperty {
     ExtendedView,
     KeybindDown(String),
     ViewEntity,
-    /// A `component` predicate, evaluated by the host.
+    /// A single `component` predicate; external predicate types use the host.
     Component(Value),
 }
 impl ConditionProperty {
@@ -713,13 +726,7 @@ impl ConditionProperty {
             "minecraft:extended_view" => Self::ExtendedView,
             "minecraft:keybind_down" => Self::KeybindDown(string(required(m, "keybind")?)?),
             "minecraft:view_entity" => Self::ViewEntity,
-            "minecraft:component" => {
-                let predicate = required(m, "predicate")?;
-                if object(predicate)?.len() != 1 {
-                    return Err(err("a single component predicate is expected"));
-                }
-                Self::Component(predicate.clone())
-            }
+            "minecraft:component" => Self::Component(component_predicate::decode(m, types)?),
             _ => return Err(err("unknown condition property")),
         })
     }
@@ -1015,6 +1022,10 @@ pub struct Context<'a> {
 
 /// Host services the resolver cannot derive from data alone.
 pub trait ItemEnv {
+    /// A mod's namespaced conditional property, false when no mod supplies it.
+    fn item_model_property(&self, _property: &str, _stack: &StackView) -> bool {
+        false
+    }
     /// `PotionContents.getColorOr` for the potion/effects part: the mixed
     /// effect colour, or `None` when the contents have no visible effects.
     fn potion_effect_color(&self, _potion_contents: &Value) -> Option<i32> {
@@ -1028,8 +1039,12 @@ pub trait ItemEnv {
     fn bundle_fullness(&self, _stack: &StackView, _components: &Components) -> f32 {
         0.0
     }
-    /// `ItemStack.getMaxStackSize` when the prototype has no component.
+    /// Additional component predicate types supplied by the host.
     fn component_matches(&self, _stack: &StackView, _predicate: &Value) -> bool {
+        false
+    }
+    /// Membership in the level's enchantment registry tags.
+    fn enchantment_in_tag(&self, _enchantment: &str, _tag: &str) -> bool {
         false
     }
     fn is_keybind_down(&self, _keybind: &str) -> bool {
@@ -1364,6 +1379,9 @@ impl Resolve<'_> {
     fn condition(&self, property: &ConditionProperty) -> bool {
         let owner = self.ctx.owner;
         match property {
+            ConditionProperty::Custom(property) => {
+                self.env.item_model_property(property, self.stack)
+            }
             ConditionProperty::CustomModelData(i) => {
                 self.component("minecraft:custom_model_data")
                     .and_then(|d| custom_data_at(d, "flags", *i))
@@ -1399,7 +1417,8 @@ impl Resolve<'_> {
             ConditionProperty::KeybindDown(key) => self.env.is_keybind_down(key),
             ConditionProperty::ViewEntity => owner.is_some_and(|o| o.is_view_entity),
             ConditionProperty::Component(predicate) => {
-                self.env.component_matches(self.stack, predicate)
+                component_predicate::matches(predicate, self.components, self.env)
+                    .unwrap_or_else(|| self.env.component_matches(self.stack, predicate))
             }
         }
     }

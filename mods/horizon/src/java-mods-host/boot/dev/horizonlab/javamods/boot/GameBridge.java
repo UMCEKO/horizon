@@ -145,6 +145,9 @@ public final class GameBridge {
         Crossing.game("hopper_transfer", GameBridge::hopperTransfer);
         Crossing.game("block_ticks", GameBridge::blockTicks);
         Crossing.game("entity_facts", input -> EntityFacts.bin());
+        Crossing.game("routes_bin", input -> Routing.bin());
+        Crossing.game("route", Routing::call);
+        Crossing.game("bench_route", Routing::benchCall);
         Crossing.game("entity_types", input -> EntityFacts.types(level("minecraft:overworld")));
         Crossing.game("click_block", (in, out) -> use(in, out, 2));
         Crossing.game("event_click_block", (in, out) -> use(in, out, 3));
@@ -288,7 +291,7 @@ public final class GameBridge {
         return type.cast(ReflectionFactory.getReflectionFactory().newConstructorForSerialization(type, parent).newInstance(args));
     }
 
-    private static ServerLevel level(String id) throws ReflectiveOperationException {
+    static ServerLevel level(String id) throws ReflectiveOperationException {
         var level = LEVELS.get(id);
         if (level != null) return level;
         var key = ResourceKey.create(Registries.DIMENSION, Identifier.parse(id));
@@ -381,10 +384,10 @@ public final class GameBridge {
         return out.toByteArray();
     }
 
-    private record Call(Crossing.In in, ServerLevel level, ServerPlayer player, InteractionHand hand, ItemStack[] before) {}
+    record Call(Crossing.In in, ServerLevel level, ServerPlayer player, InteractionHand hand, ItemStack[] before) {}
 
     /** Fills the views from what Horizon holds now. */
-    private static Call fill(Crossing.In in, boolean refresh) throws Exception {
+    static Call fill(Crossing.In in, boolean refresh) throws Exception {
         var id = new UUID(in.readLong(), in.readLong());
         String name = text(in);
         var level = level(text(in));
@@ -406,7 +409,7 @@ public final class GameBridge {
         type.updatePlayerAbilities(player.getAbilities());
         var hand = in.readInt() == 0 ? InteractionHand.MAIN_HAND : InteractionHand.OFF_HAND;
         Inventory inventory = player.getInventory();
-        inventory.setSelectedSlot(in.readInt());
+        ((dev.horizonlab.javamods.boot.mixin.InventoryAccessor) inventory).horizon$selected(in.readInt());
         int experienceLevel = in.readInt();
         float experienceProgress = in.readFloat();
         int totalExperience = in.readInt();
@@ -572,14 +575,22 @@ public final class GameBridge {
     }
 
     /** A call that threw has no reply to carry its effects. */
-    private static void abandonCall() {
+    static boolean outermost() {
+        return depth == 1;
+    }
+
+    static void abandonCall() {
         SOUNDS.clear();
     }
 
     private static final Sound[] NO_SOUNDS = new Sound[0];
 
     /** What Java did to the world since the last reply. */
-    private static void writeEffects(DataOutputStream out) throws IOException {
+    static void writeText(DataOutputStream out, String value) throws IOException {
+        text(out, value);
+    }
+
+    static void writeEffects(DataOutputStream out) throws IOException {
         Sound[] sounds = SOUNDS.isEmpty() ? NO_SOUNDS : SOUNDS.toArray(NO_SOUNDS);
         SOUNDS.clear();
         out.writeInt(sounds.length);
@@ -784,6 +795,13 @@ public final class GameBridge {
                     case 0 -> BlockEntities.blockChanged(level, pos, state, stateOrThrow(b), c);
                     case 1 -> {
                         if (BlockEntities.ours(now)) now.handleNeighborChanged(level, pos, stateOrThrow(c).getBlock(), null, b != 0);
+                    }
+                    case 4 -> {
+                        var dir = net.minecraft.core.Direction.from3DDataValue(b);
+                        if (now.is(state.getBlock())) {
+                            var result = now.updateShape(level, level, pos, dir, pos.relative(dir), stateOrThrow(c), level.getRandom());
+                            if (result != now) Block.updateOrDestroy(now, result, level, pos, 3 & ~32);
+                        }
                     }
                     case 2 -> {
                         if (now.is(state.getBlock())) now.tick(level, pos, level.getRandom());

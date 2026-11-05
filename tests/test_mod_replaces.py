@@ -237,11 +237,19 @@ class Routing(Fixture):
     def test_native_owned_changes_run_in_java_and_the_rest_already_do(self):
         tick, must = self.result['methods']['net/minecraft/world/Base#tick'], self.result['methods']['net/minecraft/world/Base#must']
         self.assertEqual((tick['routing'], tick['native']['status'], tick['native']['fns']), ('java', 'ported', ['crates/a.rs:7']))
-        self.assertEqual((must['routing'], must['native']['status']), ('java-already', 'absent'))
-        self.assertEqual({c['routing'] for c in must['changes'] if c['mechanism'] == 'mixin'}, {'java-already'})
+        self.assertEqual((must['routing'], must['native']['status']), ('undecided', 'absent'))
+        self.assertEqual({c['routing'] for c in must['changes'] if c['mechanism'] == 'mixin'}, {'undecided'})
+
+    def test_a_verdict_decides_a_weak_status(self):
+        native = mr.Native(LEDGER).info('net/minecraft/world/Base#must')
+        key = 'net/minecraft/world/Base#must'
+        self.assertEqual(mr.route('mixin', native, key, {'Base.must': 'port'}), 'java')
+        self.assertEqual(mr.route('mixin', native, key, {'Base.must': 'skip:server'}), 'java-already')
+        self.assertEqual(mr.route('mixin', native, key, {'Base.must': 'missing'}), 'java-already')
+        self.assertEqual(mr.route('mixin', native, key, {}), 'undecided')
 
     def test_totals_and_summary(self):
-        self.assertEqual(self.result['mods']['fix']['routing'], {'java': 1, 'java-own-type': 1, 'java-already': 2, 'native-hook': 3, 'inert': 1})
+        self.assertEqual(self.result['mods']['fix']['routing'], {'java': 1, 'java-own-type': 1, 'undecided': 1, 'java-already': 2, 'native-hook': 3, 'inert': 1})
         self.assertEqual(self.result['totals']['access'], 1)
 
     def test_the_markdown_lists_mods_opaque_flags_and_the_top_methods(self):

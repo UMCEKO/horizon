@@ -16,7 +16,7 @@ use super::{
     vehicle_rules::{Seat, Vehicle},
 };
 use horizon_client::{
-    mobs::{Mob, equine},
+    mobs::{Mob, equine, happy_ghast},
     riding::Ent,
 };
 use horizon_core::geometry::{Aabb, Vec3};
@@ -32,8 +32,39 @@ pub(super) struct ObjectHit {
 }
 
 impl Game<'_> {
+    /// BlockAttachedEntity.isPickable: the nearest fence knot's box the view meets, with its id,
+    /// distance and position. Its box is wider than the post inside it, so the crosshair meets it
+    /// first and LeashFenceKnotEntity.interact takes the click. The fence block behind only ties
+    /// the player's own mobs (LeadItem.useOn), it never takes one back.
+    fn remote_knot_hit(&self) -> Option<(i32, f64, [f64; 3])> {
+        let (eye, dir) = self.aim()?;
+        self.remote_knots
+            .iter()
+            .filter_map(|(&id, &block)| {
+                let knot = horizon_client::mobs::leash::knot_state(block);
+                let p = knot.position;
+                let half = knot.width / 2.0;
+                let bounds = Aabb::new(
+                    Vec3::new(p.x - half, p.y, p.z - half),
+                    Vec3::new(p.x + half, p.y + knot.height, p.z + half),
+                );
+                ray_box(eye, dir, self.entity_reach, bounds)
+                    .map(|d| (id as i32, d, [p.x, p.y, p.z]))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+    }
+
+    /// Whether a use starts on an entity: the crosshair's `EntityHitResult`, or a fence knot.
+    /// Only a use: Horizon's attacks still go to the fence behind a knot.
+    pub(super) fn remote_use_targets_entity(&self) -> bool {
+        self.entity_targeted()
+            || self
+                .remote_knot_hit()
+                .is_some_and(|(_, d, _)| self.before_block(d))
+    }
+
     /// The nearest boat, minecart, item frame, armor stand or painting the
-    /// view hits within reach; also End crystals when attacking.
+    /// view hits within reach; also End crystals when attacking, and fence knots when using.
     pub(super) fn remote_object_hit(&self, attacking: bool) -> Option<ObjectHit> {
         let (eye, dir) = self.aim()?;
         let at = |d: f64| {
@@ -79,18 +110,21 @@ impl Game<'_> {
         }
         // Interaction.isPickable: an invisible box the server clicks through
         // to its scripts, for both uses and attacks.
-        let reach = if self.creative { 5.0 } else { 3.0 };
+        let reach = self.entity_reach;
         for (&id, i) in &self.interactions {
             if let Some(d) = ray_box(eye, dir, reach, i.bounds()) {
                 let p = i.position;
                 hits.push((id, d, [p.x, p.y, p.z]));
             }
         }
+        if !attacking && let Some((id, d, p)) = self.remote_knot_hit() {
+            hits.push((id, d, p));
+        }
         if attacking {
             // EndCrystal.isPickable: its 2 x 2 box, with the server's entity
             // id, not special_targets' local projectile target id.
             // Entity.interact passes on a crystal, so right clicks use the item.
-            let reach = if self.creative { 5.0 } else { 3.0 };
+            let reach = self.entity_reach;
             for c in self.crystals.iter().filter(|c| c.id != 0) {
                 let p = c.position;
                 let bounds = Aabb::new(
@@ -153,6 +187,9 @@ impl Game<'_> {
             }
         }
         if host_after == Some(v) && host_before != Some(v) {
+            if let Some(c) = self.carts.iter_mut().find(|c| Some(c.id) == v.id()) {
+                c.passenger_yaw_delta = 0.0;
+            }
             if let Some(p) = self.player.as_mut() {
                 p.velocity = Vec3::ZERO;
                 p.fall_distance = 0.0;
@@ -161,7 +198,7 @@ impl Game<'_> {
             && let Some(old) = host_before.and_then(Ent::id)
         {
             // The server takes the player out, then teleports it.
-            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == old) {
+            if let Some(m) = self.mob_index.get_mut(&mut self.mobs, old) {
                 m.rider = None;
             }
             // HappyGhast.removePassenger: a still timeout of 10 (the server's
@@ -178,6 +215,22 @@ impl Game<'_> {
                 }
             }
         }
+    }
+
+    /// Camera.alignWithEntity's NewMinecartBehavior branch: sample the
+    /// vehicle's curved path at this frame, then apply the player's seat
+    /// attachment. Camera's own eye-height interpolation still runs afterwards.
+    pub(super) fn remote_minecart_rider_position(&self, partial: f32) -> Option<[f64; 3]> {
+        if !self.minecart_improvements() {
+            return None;
+        }
+        let id = self.vehicle()?;
+        self.carts
+            .iter()
+            .find(|c| c.id == id && c.kind == super::minecarts::CartKind::Rideable)?;
+        let (mut position, _, _) = self.remote_minecart_lerp(id, partial)?;
+        position[1] += super::minecarts::SEAT;
+        Some(position)
     }
 
     /// The local player's tick in its vehicle, in place of its own movement:
@@ -215,16 +268,47 @@ impl Game<'_> {
             // In front of a mob that shares the boat.
             Some(self.player_boat_seat(i))
         } else {
+            // Minecart.positionRider runs on the client after the cart tick.
+            // The offset belongs to the cart, so switching vehicles cannot
+            // transfer the previous vehicle's pending turn.
+            let rotate =
+                self.minecart_improvements() && self.settings.file.bool("rotateWithMinecart");
+            if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
+                c.passenger_yaw_delta = 0.0;
+                if rotate && c.kind == super::minecarts::CartKind::Rideable {
+                    c.rotate_passenger(&mut self.yaw);
+                }
+            }
             // A minecart: the server moves it, the rider sits in it.
-            self.carts
+            let cart = self
+                .carts
                 .iter()
                 .position(|c| c.id == id)
-                .map(|i| self.passenger_point(Vehicle::Cart(i), 0, 1, Seat::PLAYER, false))
+                .map(|i| self.passenger_point(Vehicle::Cart(i), 0, 1, Seat::PLAYER, false));
+            if cart.is_none() {
+                // Entity.baseTick: a passenger whose vehicle is gone stops
+                // riding it. Nothing with the id is in the level any more (it
+                // died, or the world it rode in was left), so the seat goes.
+                if let Some(r) = self.remote.as_mut() {
+                    r.passengers.unlink(Ent::Host);
+                }
+                return false;
+            }
+            cart
         };
+        let vehicle = self.vehicle();
         if let Some(p) = self.player.as_mut() {
-            self.previous_position = p.position;
+            // The tick a rider takes its seat is a teleport (`Entity.moveTo`,
+            // which sets the old position too): the camera must not sweep from
+            // where the player stood to the cushion, boat or cart. The ticks
+            // after it move with the vehicle and interpolate as usual.
+            let first = self.posed_rider != vehicle;
+            self.posed_rider = vehicle;
             if let Some(v) = seat {
+                self.previous_position = if first { v } else { p.position };
                 p.position = v;
+            } else {
+                self.previous_position = p.position;
             }
             p.velocity = Vec3::ZERO;
             p.fall_distance = 0.0;
@@ -263,7 +347,7 @@ impl Game<'_> {
     pub(super) fn remote_move_vehicle(&mut self, position: [f64; 3], yaw: f32) {
         let at = Vec3::new(position[0], position[1], position[2]);
         if let Some(id) = self.driven_mount().map(|m| m.id)
-            && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
+            && let Some(m) = self.mob_index.get_mut(&mut self.mobs, id)
         {
             m.previous = at;
             m.position = at;
@@ -283,6 +367,50 @@ impl Game<'_> {
         b.yaw = yaw;
         b.previous_yaw = yaw;
         b.velocity = Vec3::ZERO;
+    }
+
+    /// `AbstractBoat.handleEntityEvent`: 71 and 72, a bubble column dragging
+    /// the boat down or throwing it up (`handleBubbleColumnEffect`, which the
+    /// client applies to the boat it drives).
+    pub(super) fn remote_boat_event(&mut self, id: i32, event: i8) {
+        let drag_down = event == super::boats::BUBBLE_DOWN_EVENT;
+        if !drag_down && event != super::boats::BUBBLE_UP_EVENT {
+            return;
+        }
+        if let Some(i) = self.boats.iter().position(|b| b.id == id as u32) {
+            self.handle_bubble_column_effect(i, drag_down);
+        }
+    }
+
+    /// `AbstractBoat.tick`: the part that reaches bubble columns, for every
+    /// boat on a client: `status`, the two `applyEffectsFromBlocks` (a boat
+    /// above a column may splash; the boat the player drives is lifted or
+    /// dragged by a column it is inside) and `tickBubbleColumn`'s wobble from
+    /// the synched bubble time.
+    pub(super) fn tick_remote_boat_bubbles(&mut self) {
+        for i in 0..self.boats.len() {
+            let driven = self.vehicle() == Some(self.boats[i].id);
+            if !driven {
+                // `AbstractBoat.tick`: the non-authoritative copy carries no
+                // cached motion into the next time this player drives it.
+                self.boats[i].velocity = Vec3::ZERO;
+                self.boats[i].delta_rotation = 0.0;
+                self.refresh_boat_status(i);
+            }
+            let touches = self.boat_bubble_columns(i);
+            for _ in 0..2 {
+                for &column in &touches {
+                    if column.surface {
+                        if self.boat_splash_roll(i) {
+                            self.boat_bubble_splash(i);
+                        }
+                    } else if driven {
+                        self.boat_inside_bubble_column(i, column);
+                    }
+                }
+            }
+            self.boats[i].tick_bubble_wobble();
+        }
     }
 
     /// Whether this client moves `m`, the mount the player rides: as its
@@ -341,23 +469,33 @@ impl Game<'_> {
             client: false,
         });
         let mut random = self.world.random.clone();
-        self.with_mob_outside(i, |g, mob| {
+        let events = self.with_mob_outside(i, |g, mob| {
             let mut events = Vec::new();
-            let shared = g.mob_shared();
-            let world = g.mob_world(&shared, &[]);
+            let world = g.mob_world_base(&[]);
             mob.tick(&world, &mut random, &mut events);
             // Only the server's packets take the mount away.
             mob.removed = false;
+            events
         });
         self.world.random = random;
+        // #4821: footstep, gallop, breathe, splash and landing sounds from mob.tick
+        let _ = self.handle_mob_events(events);
     }
 }
 
 /// Whether a player's client moves `m`, the mount it rides
 /// (`isLocalInstanceAuthoritative`): a saddled horse, donkey, mule or camel
-/// it is the first passenger of (`AbstractHorse.getControllingPassenger`).
+/// it is the first passenger of (`AbstractHorse.getControllingPassenger`),
+/// or a harnessed adult Happy Ghast it controls (`HappyGhast.getControllingPassenger`:
+/// the rider steers it with `travelRidden` on their own client, and the mount
+/// goes to the server as `MoveVehicle`).
 fn client_moves(m: &Mob, controls: bool) -> bool {
-    controls && equine::moved_by_rider(m.species()) && m.alive()
+    controls
+        && m.alive()
+        && (equine::moved_by_rider(m.species())
+            || m.species() == horizon_client::mobs::Species::HappyGhast
+                && happy_ghast::harnessed_adult(m)
+                && !happy_ghast::on_still_timeout(m))
 }
 
 /// `LocalPlayer.sendRidingJump`: START_RIDING_JUMP with
@@ -420,6 +558,22 @@ mod tests {
             assert_eq!(client_moves(&m, controls(&m)), horse, "{kind}");
             assert!(!client_moves(&m, false), "{kind} behind another rider");
         }
+    }
+
+    /// #4107: on a vanilla server the rider's client moves a harnessed adult
+    /// Happy Ghast (`getControllingPassenger`); an unharnessed one, a baby
+    /// or a second passenger's ride is the server's.
+    #[test]
+    fn the_rider_moves_a_harnessed_ghast_on_its_client() {
+        let Some(mut m) = mob("minecraft:happy_ghast") else {
+            return;
+        };
+        assert!(!client_moves(&m, true), "ghast without a harness");
+        m.extra.body = Some("minecraft:white_happy_ghast_harness".into());
+        assert!(client_moves(&m, true), "harnessed adult");
+        assert!(!client_moves(&m, false), "behind another rider");
+        m.extra.age = -1;
+        assert!(!client_moves(&m, true), "baby ghast");
     }
 
     /// #2920: the client reports where it moved the mount, and a released

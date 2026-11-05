@@ -207,6 +207,7 @@ mod tests {
 
     fn span(name: &'static str, ms: f32) -> Span {
         Span {
+            depth: 0,
             name,
             ms,
             cpu_ms: ms,

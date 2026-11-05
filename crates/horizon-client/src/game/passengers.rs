@@ -33,6 +33,26 @@ fn zombie_kind(s: Species) -> bool {
     )
 }
 
+/// Which `finalizeSpawn` mounts a mob may roll for its spawn reason.
+#[derive(Debug, PartialEq, Eq)]
+struct MountRolls {
+    zombie_horse_rider: bool,
+    camel_husk: bool,
+    nautilus: bool,
+}
+
+/// `ZombieHorse.finalizeSpawn` (NATURAL only), `Husk.finalizeSpawn`
+/// (`triedToSpawnCamelHusk = reason != NATURAL`) and `Drowned.finalizeSpawn`
+/// (never a baby; vanilla also allows STRUCTURE, which comes from worldgen and
+/// never reaches `spawn_jockeys`, so only `natural` is modelled here).
+fn mount_rolls(species: Species, baby: bool, natural: bool) -> MountRolls {
+    MountRolls {
+        zombie_horse_rider: natural && species == Species::ZombieHorse,
+        camel_husk: natural && species == Species::Husk,
+        nautilus: natural && species == Species::Drowned && !baby,
+    }
+}
+
 impl Game<'_> {
     /// `Player.getMainArm` of the player this game acts as: a guest's `ClientInformation`, else the window's option.
     pub(super) fn acting_main_arm_left(&self) -> bool {
@@ -135,6 +155,21 @@ impl Game<'_> {
             let ctx = self.who_context(Some(Who::Mob(rider)), None);
             self.post_game_event("minecraft:entity_mount", at, ctx);
         }
+        // START_RIDING_TRIGGER for every player on the vehicle, indirect ones included.
+        let riders = self
+            .riding_table
+            .borrow()
+            .indirect_passengers(Ent::Id(vehicle));
+        for e in riders.into_iter().filter(|e| e.is_player()) {
+            self.trigger_started_riding(e);
+        }
+    }
+    /// `Entity.canRide`'s cooldown for the player acting now.
+    pub(super) fn may_board(&self) -> bool {
+        self.riding_table
+            .borrow()
+            .boarding_cooldown(self.acting_ent())
+            <= 0
     }
     /// The `canRide` overrides that say no: the wither, the warden and the dragon.
     fn never_rides(&self, r: Ent) -> bool {
@@ -155,6 +190,13 @@ impl Game<'_> {
         let Ent::Id(mut vehicle_id) = v else {
             return false;
         };
+        // Shulker.startRiding puts its attach face back before the ride is decided.
+        if let Some(m) = r
+            .id()
+            .and_then(|id| self.mobs.iter_mut().find(|m| m.id == id))
+        {
+            horizon_client::mobs::shulker::on_start_riding(m);
+        }
         let mut v = v;
         // Piglin.startRiding: a baby piglin boards the top of the piglins on a hoglin.
         if let Some(m) = r.id().and_then(|id| self.mobs.iter().find(|m| m.id == id))
@@ -195,6 +237,15 @@ impl Game<'_> {
         if !(force || can_ride && room) {
             return false;
         }
+        // EntityMountEvent: a native mod may cancel the mount.
+        let allowed = match r {
+            Ent::Id(rider) => self.native_mob_may_ride(rider, vehicle_id, true),
+            _ if r == self.acting_ent() => self.native_may_board(vehicle_id),
+            _ => true,
+        };
+        if !allowed {
+            return false;
+        }
         if self.is_passenger(r) {
             self.stop_riding(r);
         }
@@ -224,13 +275,51 @@ impl Game<'_> {
     fn trigger_started_riding(&mut self, e: Ent) {
         if e == self.acting_ent() {
             self.trigger_player("minecraft:started_riding");
-        } else if let Ent::Guest(c) = e
-            && let Some(mut host) = self.lan.take()
-        {
+        } else if let Ent::Guest(c) = e {
+            let Some(mut host) = self.lan.take() else {
+                // Another guest's turn holds the hub: fired once every player is back in place.
+                self.started_riding.push(e);
+                return;
+            };
             self.as_guest(&mut host, c, |g| {
                 g.trigger_player("minecraft:started_riding")
             });
             self.lan = Some(host);
+        }
+    }
+    /// Fires the `started_riding` triggers a guest's turn queued, with every player in place.
+    pub(super) fn flush_started_riding(&mut self) {
+        for e in std::mem::take(&mut self.started_riding) {
+            self.trigger_started_riding(e);
+        }
+    }
+    /// Armor stands riding the local player, on the top of its box. Vanilla
+    /// ticks the player (`tickNonPassenger`) before its passengers
+    /// (`tickPassenger` -> `positionRider`), so a rider's `xo` and `x` are the
+    /// seats before and after the same move: call this after the player's.
+    pub(super) fn seat_own_stands(&mut self) {
+        let (Some(r), Some(p)) = (self.remote.as_ref(), self.player.as_ref()) else {
+            return;
+        };
+        let up = Vec3::new(0.0, f64::from(p.dimensions.height), 0.0);
+        let (at, before) = (
+            p.position.add_vector(up),
+            self.previous_position.add_vector(up),
+        );
+        let mine: Vec<u32> = r
+            .passengers
+            .passengers_of(Ent::Host)
+            .iter()
+            .filter_map(|e| e.id())
+            .collect();
+        for stand in self
+            .armor_stands
+            .iter_mut()
+            .filter(|a| mine.contains(&a.id))
+        {
+            stand.position = at;
+            stand.previous = before;
+            stand.velocity = Vec3::ZERO;
         }
     }
     /// `ServerPlayer.startRiding` after the link: the player sits, its client is moved to the seat, told
@@ -375,6 +464,11 @@ impl Game<'_> {
             let m = &mut self.mobs[i];
             m.position = at;
             m.previous = at;
+        } else if r == self.acting_ent() && vehicle_gone {
+            // LivingEntity.dismountVehicle off a removed vehicle: a free spot no lower than it.
+            if let Some(at) = self.vehicle_position(old_id) {
+                self.dismount_removed_vehicle(at[1]);
+            }
         } else if r == self.acting_ent() && !vehicle_gone {
             let Some(p) = self.player.as_ref() else {
                 return;
@@ -654,6 +748,7 @@ impl Game<'_> {
         };
         let (species, baby) = (m.species(), m.is_baby());
         let at = [m.position.x, m.position.y, m.position.z];
+        let mounts = mount_rolls(species, baby, natural);
         match species {
             s if zombie_kind(s) && baby => {
                 if self.world.random.next_float() < CHICKEN_JOCKEY_ODDS {
@@ -682,7 +777,7 @@ impl Game<'_> {
             // comes from EntityType.create, which makes no zombie in peaceful
             // (canSpawn), so a peaceful zombie horse spawns without one.
             Species::ZombieHorse
-                if natural
+                if mounts.zombie_horse_rider
                     && (self.ui.difficulty != 0
                         || horizon_client::mobs::spawn_rules::allowed_in_peaceful(
                             Species::Zombie,
@@ -700,8 +795,8 @@ impl Game<'_> {
         }
         // After Zombie.finalizeSpawn's chickens: Husk and Drowned mounts.
         match species {
-            Species::Husk if natural => self.spawn_camel_husk_jockey(id, at),
-            Species::Drowned if natural && !baby => self.spawn_zombie_nautilus_jockey(id, at),
+            Species::Husk if mounts.camel_husk => self.spawn_camel_husk_jockey(id, at),
+            Species::Drowned if mounts.nautilus => self.spawn_zombie_nautilus_jockey(id, at),
             _ => {}
         }
     }
@@ -749,7 +844,7 @@ impl Game<'_> {
             at[2].floor() as i32,
         );
         let frequent = self.world.chunks.get(&(x >> 4, z >> 4)).is_some_and(|c| {
-            let b = self.res.biomes().get(c.biome(x, y, z));
+            let b = world_biomes!(self).get(c.biome(x, y, z));
             self.res
                 .mob_data()
                 .biome_has("minecraft:more_frequent_drowned_spawns", &b.name)
@@ -1070,7 +1165,7 @@ mod tests {
         let Some(mut game) = flat_game() else { return };
         let ghast = spawn(&mut game, "happy_ghast", [2.5, 61.0, 2.5]);
         let i = game.mobs.iter().position(|m| m.id == ghast).unwrap();
-        game.mobs[i].extra.head = Some("minecraft:white_harness".into());
+        game.mobs[i].extra.body = Some("minecraft:white_harness".into());
         game.lan_acting = Some(7);
         assert!(game.interact_happy_ghast(i, "minecraft:air"));
         assert_eq!(game.passengers_of(Ent::Id(ghast)), vec![Ent::Guest(7)]);
@@ -1182,17 +1277,20 @@ mod tests {
         let Some(mut game) = flat_game() else { return };
         let pig = spawn(&mut game, "pig", [2.5, 61.0, 2.5]);
         assert!(game.start_riding(Ent::Guest(3), Ent::Id(pig), true, false));
-        let (attach, tree) = game.parent_vehicle_save(Ent::Guest(3));
-        assert!(attach.is_some());
-        let tree = tree.expect("the root vehicle's tree");
+        let (tag, root, _) = game
+            .parent_vehicle_tag(Ent::Guest(3))
+            .expect("the root vehicle's tree");
+        assert_eq!(root, pig);
         assert_eq!(
-            horizon_client::entity_nbt::kind(&tree).as_deref(),
+            tag.get("Entity")
+                .and_then(horizon_client::entity_nbt::kind)
+                .as_deref(),
             Some("minecraft:pig")
         );
         assert!(game.start_riding(Ent::Guest(4), Ent::Id(pig), true, false));
-        assert_eq!(game.parent_vehicle_save(Ent::Guest(3)), (None, None));
+        assert!(game.parent_vehicle_tag(Ent::Guest(3)).is_none());
         game.stop_riding(Ent::Guest(3));
-        assert_eq!(game.parent_vehicle_save(Ent::Guest(3)), (None, None));
+        assert!(game.parent_vehicle_tag(Ent::Guest(3)).is_none());
     }
 
     fn add_stand(game: &mut Game<'_>, at: [f64; 3]) -> u32 {
@@ -1435,7 +1533,7 @@ mod tests {
             Vec3::new(9.5, 70.0, 9.5),
             Vec3::new(0.0, 0.2, 0.0),
             80,
-            air,
+            Some(air),
         );
         game.level_add(
             super::super::entity_life::NewEntity::Tnt(tnt),
@@ -1444,13 +1542,13 @@ mod tests {
         );
         assert!(game.start_riding(Ent::Id(tnt_id), Ent::Id(cart_id), true, false));
         game.zero_rider_motion();
-        game.tick_tnt().unwrap();
+        game.tick_one_tnt(0).unwrap();
         assert_eq!(game.tnts.iter().find(|t| t.id == tnt_id).unwrap().fuse, 79);
         game.tick_passengers();
         let at = game.tnts.iter().find(|t| t.id == tnt_id).unwrap().position;
         assert!((at.x - 4.5).abs() < 1e-9 && (at.z - 4.5).abs() < 1e-9);
         assert!(
-            (at.y - (61.0 + super::super::minecarts::PASSENGER_HEIGHT)).abs() < 1e-9,
+            (at.y - (61.0 + super::super::minecarts::PASSENGER_Y)).abs() < 1e-9,
             "{at:?}"
         );
     }
@@ -1539,5 +1637,36 @@ mod tests {
             Some(Ent::Id(stand)),
             "a boat rides a stand"
         );
+    }
+}
+
+#[cfg(test)]
+mod mount_roll_tests {
+    use super::*;
+
+    #[test]
+    fn spawner_and_reinforcement_spawns_get_no_mounts() {
+        for (species, baby) in [
+            (Species::ZombieHorse, false),
+            (Species::Husk, false),
+            (Species::Drowned, false),
+        ] {
+            let none = MountRolls {
+                zombie_horse_rider: false,
+                camel_husk: false,
+                nautilus: false,
+            };
+            assert_eq!(mount_rolls(species, baby, false), none, "{species:?}");
+        }
+    }
+
+    #[test]
+    fn natural_spawns_roll_their_own_mount() {
+        let r = |s, b| mount_rolls(s, b, true);
+        assert!(r(Species::ZombieHorse, false).zombie_horse_rider);
+        assert!(r(Species::Husk, false).camel_husk);
+        assert!(r(Species::Drowned, false).nautilus);
+        assert!(!r(Species::Drowned, true).nautilus);
+        assert!(!r(Species::Zombie, false).camel_husk);
     }
 }

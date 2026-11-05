@@ -5,7 +5,7 @@
 //! changed in the format of `VanillaDispenserOracle`.
 use super::{
     Game,
-    dispenser::{Slot, body_in_head, mob_set_slot, mob_slot_item},
+    dispenser::{Slot, mob_set_slot, mob_slot_item},
 };
 use horizon_client::{
     Result,
@@ -60,6 +60,22 @@ pub(super) fn record_events(events: &[horizon_world::level::LevelEvent]) {
             record(|| format!("L {id} {},{},{} {data}", pos.x, pos.y, pos.z));
         }
     }
+}
+
+/// The `S` line for a level event whose sound `LevelEventHandler` plays on the
+/// client (`playLocalSound`), so Horizon plays it unshared and never captures
+/// it: the lava fizz (1501, #7652) and `ComposterBlock.handleFill` (1500,
+/// `data > 0` = success, #9069).
+fn event_sound(line: &str) -> Option<String> {
+    let mut parts = line.strip_prefix("L ")?.split(' ');
+    let (id, pos, data) = (parts.next()?, parts.next()?, parts.next()?);
+    let sound = match id {
+        "1501" => "minecraft:block.lava.extinguish",
+        "1500" if data.parse::<i32>().ok()? > 0 => "minecraft:block.composter.fill_success",
+        "1500" => "minecraft:block.composter.fill",
+        _ => return None,
+    };
+    Some(format!("S {pos} {sound}"))
 }
 
 /// Java's `String.format("%.6f")`: the exact value rounded half up (away
@@ -123,7 +139,7 @@ impl Game<'_> {
     fn fixture_reset(&mut self, seed: i64) {
         self.world = World::new(self.res.facts().air, seed);
         // The oracle level is plains everywhere (bone meal's flowers, freezing).
-        let plains = u32::from(self.res.biomes().id("minecraft:plains"));
+        let plains = u32::from(world_biomes!(self).id("minecraft:plains"));
         for cx in -2..=2 {
             for cz in -2..=2 {
                 let mut chunk = Chunk::empty(cx, cz);
@@ -357,7 +373,7 @@ impl Game<'_> {
         for p in containers {
             let entity = &self.world.block_entities[&p];
             let single = match entity {
-                BlockEntity::Jukebox(j) => std::slice::from_ref(&j.record),
+                BlockEntity::Jukebox(j) => &j.items,
                 _ => entity.slots(),
             };
             for (i, slot) in single.iter().enumerate() {
@@ -431,9 +447,11 @@ impl Game<'_> {
             out.push(self.fixture_describe(i, t));
         }
         let log = LOG.with(|log| log.borrow_mut().take()).unwrap_or_default();
+        let event_sounds: Vec<String> = log.iter().filter_map(|l| event_sound(l)).collect();
         out.extend(log);
-        for (sound, at, _, _) in self.audio.capture.take().unwrap_or_default() {
-            out.push(format!("S {} {sound}", floor_pos(at)));
+        out.extend(event_sounds);
+        for sound in self.audio.capture.take().unwrap_or_default() {
+            out.push(format!("S {} {}", floor_pos(sound.position), sound.event));
         }
         out.extend(used);
         out.push(format!("rng {}", self.world.random.next_long()));
@@ -644,29 +662,41 @@ impl Game<'_> {
         let used_before = stack
             .as_ref()
             .map_or(0, |s| self.stats.get("used", &s.item));
-        let Some(&Target::Mob(id)) = targets.first() else {
-            return Err("an attack case hits a mob".into());
-        };
-        let index = self
-            .mobs
-            .iter()
-            .position(|m| m.id == id)
-            .ok_or("the target is gone")?;
-        let kind = self.mobs[index].kind.id.clone();
         let base = op["base"].as_f64().unwrap_or(0.0) as f32;
-        let bonus = self.smash_damage_bonus(&kind);
         let source = self.attack_source(feet);
-        let hurt = self.hurt_by_player(index, base + bonus, source);
-        // The hurt sound the mob raised, where it stands.
-        for event in std::mem::take(&mut self.mobs[index].outbox) {
-            if let horizon_client::mobs::MobEvent::Sound(s, at, volume, pitch) = event {
-                self.audio
-                    .play(&format!("minecraft:{s}"), Some(at), volume, pitch);
+        let (bonus, hurt) = match targets.first() {
+            Some(&Target::Mob(id)) => {
+                let index = self
+                    .mobs
+                    .iter()
+                    .position(|m| m.id == id)
+                    .ok_or("the target is gone")?;
+                let kind = self.mobs[index].kind.id.clone();
+                let bonus = self.smash_damage_bonus(&kind);
+                let hurt = self.hurt_by_player(index, base + bonus, source);
+                // The hurt sound the mob raised, where it stands.
+                for event in std::mem::take(&mut self.mobs[index].outbox) {
+                    if let horizon_client::mobs::MobEvent::Sound(s, at, volume, pitch) = event {
+                        self.audio
+                            .play(&format!("minecraft:{s}"), Some(at), volume, pitch);
+                    }
+                }
+                if hurt {
+                    self.weapon_hit(index);
+                }
+                (bonus, hurt)
             }
-        }
-        if hurt {
-            self.weapon_hit(index);
-        }
+            Some(&Target::Stand(id)) => {
+                let index = self
+                    .armor_stands
+                    .iter()
+                    .position(|s| s.id == id)
+                    .ok_or("the target is gone")?;
+                let bonus = self.smash_damage_bonus("minecraft:armor_stand");
+                (bonus, self.hit_armor_stand(index, |_, _, _| {}))
+            }
+            None => return Err("an attack case has a target".into()),
+        };
         self.process_level_events()?;
         let mut out = Vec::new();
         if let Some(s) = &stack {
@@ -692,7 +722,10 @@ impl Game<'_> {
                 },
                 Target::Stand(id) => match self.armor_stands.iter().find(|s| s.id == id) {
                     Some(s) => ("-".to_owned(), s.velocity),
-                    None => continue,
+                    None => {
+                        out.push(format!("V {i} gone"));
+                        continue;
+                    }
                 },
             };
             out.push(format!(
@@ -729,7 +762,7 @@ impl Game<'_> {
         let jukebox =
             &*self.res.facts().get(self.world.block(p.0, p.1, p.2)).name == "minecraft:jukebox";
         match self.world.block_entities.get_mut(&p) {
-            Some(BlockEntity::Jukebox(j)) => j.record = stack,
+            Some(BlockEntity::Jukebox(j)) => j.items[0] = stack,
             Some(BlockEntity::Lectern(l)) => l.book = stack,
             Some(BlockEntity::Campfire(c)) => {
                 if let Some(cell) = c.items.get_mut(slot) {
@@ -746,7 +779,7 @@ impl Game<'_> {
                 self.world.block_entities.insert(
                     p,
                     BlockEntity::Jukebox(horizon_client::containers::Jukebox {
-                        record: stack,
+                        items: [stack],
                         ticks: 0,
                         playing: false,
                     }),
@@ -903,6 +936,9 @@ impl Game<'_> {
             let mut stand = horizon_client::entities::ArmorStand::new(id, at, yaw);
             stand.marker = e["marker"].as_bool().unwrap_or(false);
             stand.moving.ground.on_ground = e["ground"].as_bool().unwrap_or(false);
+            if let Some(last_hit) = e["last_hit"].as_i64() {
+                stand.last_hit = last_hit;
+            }
             self.armor_stands.push(stand);
             return Ok(Target::Stand(id));
         }
@@ -918,6 +954,7 @@ impl Game<'_> {
             &mut mob.extra.main_hand,
             &mut mob.extra.off_hand,
             &mut mob.extra.head,
+            &mut mob.extra.body,
             &mut mob.extra.chest,
             &mut mob.extra.legs,
             &mut mob.extra.feet,
@@ -933,8 +970,8 @@ impl Game<'_> {
         if flag("baby") && ageable {
             mob.extra.age = -24000;
         }
-        let tamable =
-            body_in_head(s) || matches!(s, Species::Cat | Species::Parrot | Species::Ocelot);
+        let tamable = horizon_client::mobs::drops::body_slot_species(s)
+            || matches!(s, Species::Cat | Species::Parrot | Species::Ocelot);
         if flag("tame") && tamable {
             mob.extra.tame = true;
         }

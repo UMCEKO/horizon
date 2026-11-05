@@ -34,7 +34,7 @@ public final class EntityFacts {
 
     /** Bit i of a reads mask is GROUPS[i]. */
     static final String[] GROUPS = {"identity", "position", "motion", "health", "effects", "equipment", "fire", "air", "flags", "name", "item", "riding", "removal", "species", "attributes", "ai"};
-    static final int VERSION = 1;
+    static final int VERSION = 2;
 
     /** What the booted JVM can say about the analysis. */
     interface World {
@@ -187,6 +187,23 @@ public final class EntityFacts {
         }
         out.writeInt(attachments.size());
         for (String a : attachments) text(out, a);
+        var eventIndex = new ArrayList<>(events.keySet());
+        var hooks = facts.getAsJsonObject("hooks");
+        out.writeInt(hooks.size());
+        for (var e : hooks.entrySet()) {
+            text(out, e.getKey());
+            var hook = e.getValue().getAsJsonObject();
+            int mask = 0;
+            for (JsonElement g : hook.getAsJsonArray("reads")) mask |= 1 << groupIndex(g.getAsString());
+            out.writeInt(mask);
+            var posted = new ArrayList<Integer>();
+            for (JsonElement ev : hook.getAsJsonArray("events")) {
+                int at = eventIndex.indexOf(ev.getAsString());
+                if (at >= 0) posted.add(at);
+            }
+            out.writeInt(posted.size());
+            for (int at : posted) out.writeInt(at);
+        }
         return bytes.toByteArray();
     }
 
@@ -207,11 +224,8 @@ public final class EntityFacts {
         return methods.computeIfAbsent(key, k -> methods.size());
     }
 
-    /** The merged method of a handler: the one name ending `$handler`, told apart by the mixin it came from when several end alike. */
     private static String mergedName(World world, String target, String handler, String mixin) {
-        var found = world.merged(target, handler);
-        if (found.size() > 1) found = found.stream().filter(m -> mixin.equals(m[1])).toList();
-        return found.size() == 1 ? found.get(0)[0] : null;
+        return Routing.mergedName(world.merged(target, handler), mixin);
     }
 
     private static boolean anyMerged(World world, String target, JsonArray handlers) {
@@ -326,17 +340,7 @@ public final class EntityFacts {
 
         @Override
         public List<String[]> merged(String target, String handler) {
-            try {
-                var out = new ArrayList<String[]>();
-                for (Method m : Class.forName(target.replace('/', '.'), false, Boot.class.getClassLoader()).getDeclaredMethods()) {
-                    if (!m.getName().equals(handler) && !m.getName().endsWith("$" + handler)) continue;
-                    var from = m.getAnnotation(org.spongepowered.asm.mixin.transformer.meta.MixinMerged.class);
-                    out.add(new String[] {m.getName(), from == null ? null : from.mixin()});
-                }
-                return out;
-            } catch (ClassNotFoundException e) {
-                return List.of();
-            }
+            return Routing.merged(target, handler);
         }
     }
 

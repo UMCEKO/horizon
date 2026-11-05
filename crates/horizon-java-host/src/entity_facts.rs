@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 /// Bit i of a reads mask is `GROUPS[i]`.
 pub const GROUPS: [&str; 16] = [
     "identity",
@@ -23,6 +23,26 @@ pub const GROUPS: [&str; 16] = [
     "ai",
 ];
 const IDENTITY: u32 = 1;
+
+/// NeoForge's hooks the entity loop calls, in the analysis's `HOOKS` order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hook {
+    EntityTickPre,
+    EntityTickPost,
+    MobDespawn,
+    LivingBreathe,
+    StartTracking,
+    StopTracking,
+}
+
+const HOOK_NAMES: [(&str, Hook); 6] = [
+    ("entity_tick_pre", Hook::EntityTickPre),
+    ("entity_tick_post", Hook::EntityTickPost),
+    ("mob_despawn", Hook::MobDespawn),
+    ("living_breathe", Hook::LivingBreathe),
+    ("start_tracking", Hook::StartTracking),
+    ("stop_tracking", Hook::StopTracking),
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MethodId(u32);
@@ -74,10 +94,18 @@ struct Class {
 }
 
 #[derive(Debug, Default)]
+struct HookFacts {
+    reads: u32,
+    events: Vec<usize>,
+}
+
+#[derive(Debug, Default)]
 struct TypeFacts {
     reads: u32,
     living: bool,
     item: bool,
+    hook_server: u8,
+    hook_client: u8,
     routes: HashMap<MethodId, Route>,
     server: Vec<u64>,
     client: Vec<u64>,
@@ -93,6 +121,7 @@ pub struct EntityFacts {
     event_ids: HashMap<String, EventId>,
     caps: HashMap<String, Vec<String>>,
     attachments: Vec<String>,
+    hooks: [Option<HookFacts>; 6],
     types: OnceLock<HashMap<String, TypeFacts>>,
     runtime_caps: OnceLock<HashMap<String, Vec<String>>>,
 }
@@ -141,8 +170,10 @@ impl EntityFacts {
     /// Reads `entities.bin`.
     pub fn read(bytes: &[u8]) -> Result<Self, String> {
         let mut r = Reader(bytes);
-        if r.int()? != VERSION {
-            return Err("entities.bin has another version".into());
+        match r.int()? {
+            VERSION => {}
+            1 => return Err("re-run the analysis (entity facts format 2)".into()),
+            _ => return Err("entities.bin has another version".into()),
         }
         let methods = r.texts()?;
         let method_ids = methods
@@ -209,6 +240,24 @@ impl EntityFacts {
             caps.insert(r.text()?, r.texts()?);
         }
         let attachments = r.texts()?;
+        let mut hooks: [Option<HookFacts>; 6] = Default::default();
+        for _ in 0..r.count()? {
+            let name = r.text()?;
+            let mut hook = HookFacts {
+                reads: r.int()?,
+                events: Vec::new(),
+            };
+            for _ in 0..r.count()? {
+                let at = r.int()? as usize;
+                if at >= events.len() {
+                    return Err("entities.bin names an event it doesn't list".into());
+                }
+                hook.events.push(at);
+            }
+            if let Some((_, which)) = HOOK_NAMES.iter().find(|(n, _)| *n == name) {
+                hooks[*which as usize] = Some(hook);
+            }
+        }
         if methods.iter().any(|m| m.is_empty())
             || classes
                 .values()
@@ -227,6 +276,7 @@ impl EntityFacts {
             event_ids,
             caps,
             attachments,
+            hooks,
             types: OnceLock::new(),
             runtime_caps: OnceLock::new(),
         })
@@ -309,6 +359,22 @@ impl EntityFacts {
             }
         }
         let words = self.events.len().div_ceil(64);
+        for (i, hook) in self.hooks.iter().enumerate() {
+            let Some(hook) = hook else { continue };
+            for client in [false, true] {
+                if hook
+                    .events
+                    .iter()
+                    .any(|e| self.events[*e].admits(id, chain, client))
+                {
+                    *(if client {
+                        &mut facts.hook_client
+                    } else {
+                        &mut facts.hook_server
+                    }) |= 1 << i;
+                }
+            }
+        }
         facts.server = vec![0; words];
         facts.client = vec![0; words];
         for (i, event) in self.events.iter().enumerate() {
@@ -335,6 +401,27 @@ impl EntityFacts {
                     .is_some_and(|w| w >> (event.0 % 64) & 1 == 1)
             }
             None => self.events[event.0 as usize].admits(type_id, &[], client),
+        }
+    }
+
+    /// The state groups a NeoForge hook reads, as a mask over `GROUPS`; 0 when the analysis has no such hook.
+    pub fn hook_reads(&self, hook: Hook) -> u32 {
+        self.hooks[hook as usize].as_ref().map_or(0, |h| h.reads)
+    }
+
+    /// Whether any event the hook posts fires for an entity of this type on this side; false for a hook the analysis lacks.
+    pub fn hook_admits(&self, hook: Hook, type_id: &str, client: bool) -> bool {
+        let Some(facts) = &self.hooks[hook as usize] else {
+            return false;
+        };
+        match self.types.get().and_then(|t| t.get(type_id)) {
+            Some(t) => {
+                (if client { t.hook_client } else { t.hook_server }) >> hook as usize & 1 == 1
+            }
+            None => facts
+                .events
+                .iter()
+                .any(|e| self.events[*e].admits(type_id, &[], client)),
         }
     }
 
@@ -460,6 +547,9 @@ mod tests {
         b.text("leave").byte(1).int(0);
         b.int(1).text("minecraft:cow").int(1).text("a/Cap.X");
         b.int(1).text("a:att");
+        b.int(2);
+        b.text("living_breathe").int(128 | 256).int(2).int(1).int(0);
+        b.text("unknown_hook").int(1).int(0);
         EntityFacts::read(&b.0).unwrap()
     }
 
@@ -563,11 +653,30 @@ mod tests {
     }
 
     #[test]
+    fn a_hook_ors_its_events_and_unknown_or_missing_hooks_are_skipped() {
+        let facts = sample();
+        facts.load_types(&types()).unwrap();
+        assert_eq!(facts.hook_reads(Hook::LivingBreathe), 128 | 256);
+        assert_eq!(facts.hook_reads(Hook::MobDespawn), 0);
+        assert!(facts.hook_admits(Hook::LivingBreathe, "minecraft:zombie", false));
+        assert!(facts.hook_admits(Hook::LivingBreathe, "minecraft:zombie", true));
+        assert!(facts.hook_admits(Hook::LivingBreathe, "minecraft:player", false));
+        assert!(facts.hook_admits(Hook::LivingBreathe, "mod:unknown", false));
+        assert!(!facts.hook_admits(Hook::MobDespawn, "minecraft:zombie", false));
+    }
+
+    #[test]
+    fn version_one_is_refused_with_the_way_out() {
+        let err = EntityFacts::read(&[0, 0, 0, 1]).unwrap_err();
+        assert!(err.contains("format 2"));
+    }
+
+    #[test]
     fn types_load_once_and_a_short_or_wrong_file_is_refused() {
         let facts = sample();
         facts.load_types(&types()).unwrap();
         assert!(facts.load_types(&types()).is_err());
-        assert!(EntityFacts::read(&[0, 0, 0, 2]).is_err());
+        assert!(EntityFacts::read(&[0, 0, 0, 3]).is_err());
         assert!(EntityFacts::read(&[0, 0, 0, 1, 0, 0, 0]).is_err());
         let mut b = Bin::default();
         b.int(VERSION)
@@ -577,6 +686,7 @@ mod tests {
             .int(0)
             .int(1)
             .int(5)
+            .int(0)
             .int(0)
             .int(0)
             .int(0)

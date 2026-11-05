@@ -224,6 +224,13 @@ impl Game<'_> {
         true
     }
 
+    /// Drops what a crossing marked removed in lists that stayed in `Game` (mobs go with their tick).
+    pub(in crate::game) fn drop_marked(&mut self) {
+        self.dropped.retain(|e| !e.removed);
+        self.orbs.retain(|e| !e.removed);
+        self.creatures.projectiles.retain(|e| !e.removed);
+        self.armor_stands.retain(|e| !e.removed);
+    }
     /// `level_remove` for each of `ids`, in the order given.
     pub(in crate::game) fn level_remove_ids(&mut self, kind: Kind, ids: &[u32], why: Removal) {
         for &id in ids {

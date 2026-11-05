@@ -13,6 +13,7 @@ The install is only read: its home/ and client config are copied into OUT. Steps
     {"near": [x,y,z], "radius": 2}                                           the player's position
     {"output": "regex", "present": true}                                     the chat lines the last command returned
     {"log": "regex", "present": true}  {"no_exceptions": true, "ignore": "regex"}   the log since the last step started
+    {"java_heap": {"max_live_mb": 450, "max_metaspace_mb": 260}}             the game JVM's live heap after a full GC, and its Metaspace
   Every check takes "within" (seconds to keep trying, default 3) and the log checks take "since": "start".
 """
 import argparse
@@ -115,6 +116,20 @@ class Log:
             return ''
 
 
+class Logs:
+    """Several growing logs read as one: the game's latest.log and the launcher's ctl.log, where the Java side's stderr lands."""
+    def __init__(self, *paths):
+        self.logs = [Log(p) for p in paths]
+        self.path = self.logs[0].path
+
+    def mark(self):
+        for log in self.logs:
+            log.mark()
+
+    def text(self, since='step'):
+        return '\n'.join(log.text(since) for log in self.logs)
+
+
 def exception_heads(text, ignore=None):
     """The first line of every stack trace in the text: a line naming an exception class that is not a trace continuation."""
     heads = []
@@ -153,8 +168,9 @@ def summarize_errors(text):
 # horizon-ctl
 
 class Ctl:
-    def __init__(self, binary, socket, env, cwd):
+    def __init__(self, binary, socket, env, cwd, java=None, marker=None):
         self.base, self.env, self.cwd = [str(binary), '--socket', str(socket)], env, cwd
+        self.java, self.marker = java, marker
 
     def __call__(self, *args, timeout=120):
         """(exit code, parsed JSON or the text); a timeout is (None, 'timeout') with the call killed."""
@@ -174,6 +190,54 @@ def stack_item(stack):
 
 
 # Checks
+
+MIB = 1 << 20
+SIZE = {'bytes': 1, 'KB': 1 << 10, 'MB': MIB, 'GB': 1 << 30}
+
+
+def histogram_total(text):
+    """Bytes of the `Total` line of a GC.class_histogram, or None."""
+    found = re.search(r'^Total\s+\d+\s+(\d+)\s*$', text, re.M)
+    return int(found.group(1)) if found else None
+
+
+def metaspace_used(text):
+    """Bytes of the first `Both:` line of VM.metaspace that says `used`, or None."""
+    found = re.search(r'^\s*Both:.*?([\d.]+) (bytes|KB|MB|GB) \(\s*[<>]?\s*\d+%\) used', text, re.M)
+    return int(float(found.group(1)) * SIZE[found.group(2)]) if found else None
+
+
+def game_pid(marker):
+    """The pid of the game marked by HZ_SCENARIO_MARKER (argv[0] ends in /horizon-client: horizon-ctl's argv names it too)."""
+    needle = b'HZ_SCENARIO_MARKER=' + str(marker).encode() + b'\0'
+    for proc in Path('/proc').iterdir():
+        if proc.name.isdigit():
+            try:
+                argv0 = (proc / 'cmdline').read_bytes().split(b'\0')[0]
+                if argv0.endswith(b'/horizon-client') and needle in (proc / 'environ').read_bytes():
+                    return int(proc.name)
+            except OSError:
+                pass
+    return None
+
+
+def jcmd(java, pid, *command):
+    return subprocess.run([f'{java}/bin/jcmd', str(pid), *command], capture_output=True, text=True, timeout=120).stdout
+
+
+def read_java_heap(ctl, check):
+    """(ok, want, got) from the game JVM's forced-full-GC histogram and Metaspace, once."""
+    pid = game_pid(ctl.marker)
+    want = {k: check[k] for k in ('max_live_mb', 'max_metaspace_mb') if k in check}
+    if pid is None:
+        return False, want, 'no game process'
+    live, meta = histogram_total(jcmd(ctl.java, pid, 'GC.class_histogram')), metaspace_used(jcmd(ctl.java, pid, 'VM.metaspace'))
+    if live is None or meta is None:
+        return False, want, 'jcmd gave no total or metaspace'
+    got = {'live_mb': round(live / MIB), 'metaspace_mb': round(meta / MIB)}
+    ok = live <= check.get('max_live_mb', float('inf')) * MIB and meta <= check.get('max_metaspace_mb', float('inf')) * MIB
+    return ok, want, got
+
 
 def read_check(ctl, check, timeout):
     """(ok, want, got) from the game's state, once."""
@@ -214,6 +278,8 @@ def read_check(ctl, check, timeout):
         distance = sum((a - b) ** 2 for a, b in zip(got, check['near'])) ** 0.5
         radius = check.get('radius', 2)
         return distance <= radius, f'{check["near"]} within {radius}', f'{[round(v, 1) for v in got]} ({distance:.1f} away)'
+    if 'java_heap' in check:
+        return read_java_heap(ctl, check['java_heap'])
     raise ValueError(f'unknown check {sorted(check)}')
 
 
@@ -257,7 +323,7 @@ def run_steps(ctl, steps, out, log, deadline, step_timeout=120, sleep=time.sleep
             if remaining <= 0:
                 entry.update(ok=False, error='run timeout')
             elif kind == 'check':
-                entry['checks'] = [dict(evaluate(arg, ctl, log, last_output, timeout, sleep), check=next(k for k in ('block', 'looking_at', 'held', 'slot', 'near', 'output', 'log', 'no_exceptions') if k in arg))]
+                entry['checks'] = [dict(evaluate(arg, ctl, log, last_output, timeout, sleep), check=next(k for k in ('block', 'looking_at', 'held', 'slot', 'near', 'output', 'log', 'no_exceptions', 'java_heap') if k in arg))]
                 entry['ok'] = all(c['ok'] for c in entry['checks'])
             elif kind == 'screenshot':
                 path = Path(out) / f'{re.sub(r"[^\w.-]", "_", str(arg) if isinstance(arg, str) else name)}.png'
@@ -387,8 +453,8 @@ def run(args):
     base = lab.game_env({**os.environ, **gfx_env()}, TMPDIR=out, HZ_SCENARIO_MARKER=out, HORIZON_HOME=homes / 'horizon', HORIZON_LAUNCHER_HOME=homes / 'launcher',
                         XDG_DATA_HOME=homes / 'xdg-data', XDG_CONFIG_HOME=homes / 'xdg-config', **extra)
     env = jm.launch_env(scratch, record, False, base)
-    ctl = Ctl(game.parent / 'horizon-ctl', out / 'ctl.sock', env, out)
-    log = Log(homes / 'horizon' / 'logs' / 'latest.log')
+    ctl = Ctl(game.parent / 'horizon-ctl', out / 'ctl.sock', env, out, record['java'], out)
+    log = Logs(homes / 'horizon' / 'logs' / 'latest.log', out / 'ctl.log')
     if not acquire_gate(os.environ.get('GATE_OWNER', 'scenario')):
         return result_of([{'i': -1, 'name': 'gate', 'ok': False, 'checks': [], 'error': 'the gate never opened', 'ms': 0}], log, out)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))

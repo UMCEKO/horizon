@@ -252,8 +252,9 @@ fn decorations(c: &Value, atlas: &HudAtlas) -> Vec<GuiDraw> {
             max_air: int("maxAir", 300),
             under_water: c["underWater"].as_bool().unwrap_or(false),
             vehicle_hearts,
+            cancelled: 0,
         };
-        draws.extend(hud.layout(&inputs, w, h));
+        draws.extend(hud.layout(&inputs, w, h).all);
     }
     if vehicle_hearts > 0 {
         draws.extend(hud_layout::vehicle_health(

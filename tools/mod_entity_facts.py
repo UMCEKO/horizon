@@ -2,7 +2,7 @@
 """Entity facts from the jars of an install: which entity events fire for which subjects, which state of an entity mod code touches,
 which vanilla entity methods mods change, and the capabilities mods attach to vanilla entity types. No mod code runs.
 
-Called at the end of `mod_replaces.analyse`; `entity-facts.json` (format 1) is written beside `replaces.json`:
+Called at the end of `mod_replaces.analyse`; `entity-facts.json` (format 2) is written beside `replaces.json`:
   events           {event: {listeners: [{mod, class, method, guards}], subjects: "all" | [guards]}}; a guard is {side, require, exclude, types}
   reads            {class: [group]}: the state groups mod code reads or writes through that receiver class
   writes           [{key, receiver, group, mods}]: vanilla entity writers that mod code calls
@@ -10,6 +10,8 @@ Called at the end of `mod_replaces.analyse`; `entity-facts.json` (format 1) is w
   overrides        {mod class: [key]}
   caps             {entity type id: [capability field]}; caps_unresolved {mod: calls whose type or capability is not a static field}
   opaque           ["mod: why"] jars that can't be analysed ahead
+  hooks            {hook: {reads: [group], writes: [{key, receiver, group}], events: [event class]}}: what NeoForge's own hooks do, from the jar's bytecode
+  hooks_missing    [hook key] a HOOKS line the NeoForge jar doesn't have
   unclassified     entity methods mod code calls that GROUPS doesn't name (the tool exits non-zero)
   unresolved_listeners {mod: n}; reflective_entity_access {mod: n}
 A key is `class#name(descriptor)`; a bytecode-level guard that can't be proven is `all`.
@@ -249,35 +251,44 @@ def subjects(listeners):
 # State groups of the methods mod code calls
 
 GROUP_NAMES = {
-    'identity': 'getId setId getUUID getType typeHolder hashCode is',
-    'name': 'getName getDisplayName hasCustomName getCustomName setCustomName setCustomNameVisible',
-    'position': ('blockPosition getBoundingBox getBbHeight getBbWidth getBlockY getEyePosition getLookAngle getViewVector getLightProbePosition getOnPos getX getY getZ '
+    'identity': 'getId setId getUUID getType typeHolder hashCode is equals asLivingEntity setUUID',
+    'name': 'getName getDisplayName hasCustomName getCustomName setCustomName setCustomNameVisible entityTags',
+    'position': ('blockPosition getBoundingBox getBbHeight getBbWidth getBlockY getEyePosition getLookAngle getViewVector getLightProbePosition getEyeY getOnPos getX getY getZ '
                  'getXRot getYRot getYHeadRot oldPosition position setPos setXRot setYRot setYBodyRot setYHeadRot setOldPos setOldPosAndRot snapTo absSnapTo teleport '
-                 'teleportTo distanceTo distanceToSqr makeBoundingBox'),
-    'motion': 'getDeltaMovement setDeltaMovement move knockback shootFromRotation',
-    'health': 'thunderHit getHealth setHealth getMaxHealth isAlive getAbsorptionAmount hurt hurtServer actuallyHurt isInvulnerableTo isInvulnerableToBase',
-    'effects': 'getActiveEffects',
-    'equipment': ('getItemBySlot hasItemInSlot getMainHandItem getOffhandItem getItemBlockingWith getUsedItemHand releaseUsingItem setItemSlot getBodyArmorItem getMainArm'),
+                 'teleportTo distanceTo distanceToSqr makeBoundingBox getDimensions getDirection BlockAttachedEntity#getPos canCoexist getEyeHeight getVisualRotationYInDegrees setInitialPos setStartPos syncPacketPositionCodec'),
+    'motion': 'getDeltaMovement setDeltaMovement move knockback shootFromRotation lerpMotion onInsideBubbleColumn resetFallDistance makeStuckInBlock',
+    'health': 'thunderHit getHealth setHealth getMaxHealth isAlive getAbsorptionAmount hurt hurtServer actuallyHurt isInvulnerableTo isInvulnerableToBase getInvulnerableTime isInvulnerable markHurt getLastHurtByMob heal',
+    'effects': 'getActiveEffects addEffect getEffect hasEffect removeAllEffects',
+    'air': 'getAirSupply setAirSupply getMaxAirSupply',
+    'equipment': ('getItemBySlot hasItemInSlot getMainHandItem getOffhandItem getItemBlockingWith getUsedItemHand releaseUsingItem setItemSlot getBodyArmorItem getMainArm getUseItem getUseItemRemainingTicks stopUsingItem setItemInHand setDropChance getItemInHand'),
     'fire': 'isOnFire getRemainingFireTicks setRemainingFireTicks igniteForSeconds igniteForTicks fireImmune',
-    'flags': 'onGround getPose isInWater isInvisible isInvisibleTo isSpectator isPickable isFullyFrozen setSilent',
-    'item': 'ItemEntity#getItem ItemFrame#getItem setItem hasPickUpDelay setPickUpDelay setNoPickUpDelay setDefaultPickUpDelay ItemEntity#setTarget makeFakeItem',
-    'riding': 'getVehicle getPassengers getIndirectPassengers hasPassenger isPassenger getControllingPassenger startRiding stopRiding',
-    'removal': 'isRemoved remove discard setRemoved',
+    'flags': ('onGround getPose isInWater isInvisible isInvisibleTo isSpectator isPickable isFullyFrozen setSilent getFluidInteraction shouldTakeDrowningDamage '
+              'canBeRiddenUnderFluidType canDrownInFluidType isCrouching isShiftKeyDown isSprinting isNoGravity setNoGravity isInLava isFallFlying setOnGround'),
+    'item': 'ItemEntity#getItem ItemFrame#getItem setItem hasPickUpDelay setPickUpDelay setNoPickUpDelay setDefaultPickUpDelay ItemEntity#setTarget makeFakeItem getFrameItemStack dropItem ItemFrame#getRotation ItemFrame#setRotation setThrower setUnlimitedLifetime',
+    'riding': 'getVehicle getPassengers getIndirectPassengers hasPassenger isPassenger getControllingPassenger startRiding stopRiding getRootVehicle getControlledVehicle isVehicle ejectPassengers onPassengerTurned showVehicleHealth dropLeash getLeashHolder isLeashed setLeashedTo',
+    'removal': 'isRemoved remove discard setRemoved kill',
     'species': ('Entity#get Sheep#getColor Sheep#setColor isSheared isBaby isAgeLocked getAge getTicksLeftUntilAdult isInLove isSitting isInSittingPose isAngry isCamelSitting isConverting '
                 'isCreepy isPlayingDead isPowered isSaddled isScreamingGoat hasLeftHorn hasRightHorn hasNectar getCarriedBlock getMarkings getState getStrength getSwelling '
                 'getVariant getVillagerData getWeatherState getOffers getSize isSleeping getDescription getSpawner setBaseDamage setFuse getFuse setBlockState getBlockState '
-                'getItemStack getOwner setOwner setDamage setVisualOnly'),
+                'getItemStack getOwner setOwner setDamage setVisualOnly ExperienceOrb#getValue ExperienceOrb#setValue getEntityData AbstractMinecartContainer#getItem getContainerLootTable getContainerLootTableSeed setLootTable getStingerCount setStingerCount getSpawnType getOwnerReference isOrderedToSit setTamed isDancing setDancing startConverting stopSleeping getCurrentRaid'),
     'attributes': 'getAttribute getAttributeBaseValue getAttributeValue getAttributes getArmorValue',
-    'ai': 'getNavigation getBrain getLookControl getPathfindingMalus setPathfindingMalus getMaxHeadXRot',
-    'java': 'getData setData getCapability syncData',
+    'ai': 'setNoActionTime getNavigation getBrain getLookControl getPathfindingMalus setPathfindingMalus getMaxHeadXRot',
+    'all': 'save load',
+    'java': 'getData setData getCapability syncData hasData removeData getPersistentData getExistingDataOrNull',
     'pure': ('level registryAccess damageSources getRandom gameEvent playSound canTeleport canUsePortal canHitEntity updateFluidInteraction getLootTable getPickResult '
              'getParts isMultipartEntity shearOffAllLeashConnections tick baseTick explode onHit onHitBlock registerGoals readAdditionalSaveData addAdditionalSaveData '
              'defineSynchedData populateDefaultEquipmentSlots triggerOnDeathMobEffects sendEffectToPassengers refreshDirtyAttributes take spawnLingeringCloud getArrow '
-             'getSoundSource onAddedToLevel onRemovedFromLevel onClientRemoval'),
+             'getSoundSource onAddedToLevel onRemovedFromLevel onClientRemoval Container#getContainerSize MinecartChest#getContainerSize setChanged getPistonPushReaction spawnAtLocation startSeenByPlayer getRemoveItemSound getRotateItemSound onEquippedItemBroken playAmbientSound'),
 }
 GROUPS = {name: group for group, names in GROUP_NAMES.items() for name in names.split()}
-EXTRA_WRITERS = ('move', 'shootFromRotation', 'releaseUsingItem', 'makeFakeItem', 'actuallyHurt', 'thunderHit')
-NOT_WRITERS = ('addAdditionalSaveData', 'removeWhenFarAway', 'hurtServerCheck')
+EXTRA_WRITERS = ('makeStuckInBlock', 'ejectPassengers', 'dropItem', 'dropLeash', 'load', 'lerpMotion', 'markHurt', 'onInsideBubbleColumn', 'onPassengerTurned', 'startConverting',
+                 'stopSleeping', 'stopUsingItem', 'syncPacketPositionCodec', 'move', 'shootFromRotation', 'releaseUsingItem', 'makeFakeItem', 'actuallyHurt', 'thunderHit')
+NOT_WRITERS = ('setChanged', 'addAdditionalSaveData', 'removeWhenFarAway', 'hurtServerCheck')
+
+
+def carried(group):
+    """The state groups a method of this group needs in a view: `all` (whole-entity save and load) needs every one."""
+    return STATE_GROUPS if group == 'all' else (group,)
 
 
 def classify(owner, name):
@@ -420,6 +431,90 @@ def route_facts(archives, hier, methods):
     return out
 
 
+# NeoForge's hooks
+
+HOOKS = {
+    'entity_tick_pre': 'net/neoforged/neoforge/event/EventHooks#fireEntityTickPre(Lnet/minecraft/world/entity/Entity;)Lnet/neoforged/neoforge/event/tick/EntityTickEvent$Pre;',
+    'entity_tick_post': 'net/neoforged/neoforge/event/EventHooks#fireEntityTickPost(Lnet/minecraft/world/entity/Entity;)V',
+    'mob_despawn': 'net/neoforged/neoforge/event/EventHooks#checkMobDespawn(Lnet/minecraft/world/entity/Mob;)Z',
+    'living_breathe': 'net/neoforged/neoforge/common/CommonHooks#onLivingBreathe(Lnet/minecraft/world/entity/LivingEntity;Lnet/minecraft/server/level/ServerLevel;II)V',
+    'start_tracking': 'net/neoforged/neoforge/event/EventHooks#onStartEntityTracking(Lnet/minecraft/world/entity/Entity;Lnet/minecraft/world/entity/player/Player;)V',
+    'stop_tracking': 'net/neoforged/neoforge/event/EventHooks#onStopEntityTracking(Lnet/minecraft/world/entity/Entity;Lnet/minecraft/world/entity/player/Player;)V',
+}
+NEW = 0xbb
+FOLLOWED = 'net/neoforged/'
+NOT_FOLLOWED = 'net/neoforged/bus/'
+
+
+def hook_closure(hier, key, events=None, unclassified=None):
+    """{reads, writes, events} of one HOOKS line, or None when the jar has no such method: the entity calls of the hook and of every NeoForge method it reaches.
+
+    `events` is the set of event classes a `new` may name (default: event_classes); an unmapped entity method goes into `unclassified` as `Owner#name`."""
+    events = set(event_classes(hier)) if events is None else events
+    unclassified = {} if unclassified is None else unclassified
+    cache, seen = {}, set()
+    reads, writes, posted = set(), {}, set()
+
+    def parsed(cls):
+        if cls not in cache:
+            data = read_library_class(hier, cls)
+            try:
+                cache[cls] = mr.parse_class(data, code=True) if data else None
+            except (ValueError, IndexError, struct.error):
+                cache[cls] = None
+        return cache[cls]
+
+    def find(owner, name, desc):
+        for cls in [owner] + hier.ancestors(owner):
+            if not cls.startswith(FOLLOWED) or cls.startswith(NOT_FOLLOWED):
+                continue
+            info = parsed(cls)
+            method = next((m for m in info['methods'] if m['name'] == name and m['desc'] == desc and 'code' in m), None) if info else None
+            if method is not None:
+                return info, method
+        return None
+
+    def visit(owner, name, desc):
+        if (owner, name, desc) in seen:
+            return False
+        seen.add((owner, name, desc))
+        found = find(owner, name, desc)
+        if found is None:
+            return False
+        info, method = found
+        pool = info['pool']
+        for _, op, operand in instructions(method['code']):
+            if op == NEW:
+                if pool.cls(operand) in events:
+                    posted.add(pool.cls(operand))
+            elif op == INVOKEDYNAMIC:
+                impl = mr.lambda_impl(info, pool.e[operand][1])
+                if impl:
+                    visit(*impl[:3])
+            elif op in (INVOKEVIRTUAL, INVOKESPECIAL, INVOKESTATIC, INVOKEINTERFACE):
+                callee, cname, cdesc = pool.ref(operand)
+                if entity_receiver(hier, callee):
+                    ekey = entity_key(hier, callee, cname, cdesc)
+                    if ekey and not cname.startswith('<'):
+                        hit = classify(ekey.split('#')[0], cname)
+                        if hit is None:
+                            unclassified[f'{ekey.split("#")[0]}#{cname}'] = 'neoforge'
+                        else:
+                            if hit[0] not in UNCARRIED:
+                                reads.update(carried(hit[0]))
+                            if hit[1]:
+                                writes[(ekey, callee, hit[0])] = True
+                elif callee.startswith(FOLLOWED) and not callee.startswith(NOT_FOLLOWED):
+                    visit(callee, cname, cdesc)
+        return True
+
+    owner, _, rest = key.partition('#')
+    name, _, tail = rest.partition('(')
+    if not visit(owner, name, '(' + tail):
+        return None
+    return {'reads': sorted(reads, key=STATE_GROUPS.index), 'writes': [{'key': k, 'receiver': r, 'group': g} for k, r, g in sorted(writes)], 'events': sorted(posted)}
+
+
 # The analysis
 
 def loader_archive(hier):
@@ -516,7 +611,7 @@ def analyse(classes, archives, hier, entries, result):
                     else:
                         group, write = hit
                         if group not in UNCARRIED:
-                            reads[owner].add(group)
+                            reads[owner].update(carried(group))
                         if write:
                             writers.setdefault((key, owner, group), set()).add(mod)
             if 'code' in m and CAPS_EVENT.encode() in raw:
@@ -533,19 +628,33 @@ def analyse(classes, archives, hier, entries, result):
                 if hier.is_a(owner, ENTITY) or owner.startswith(CLIENT_ROUTES):
                     overrides[name].add(f'{key}{desc}')
     candidates = event_classes(hier)
+    hooks, hooks_missing = {}, []
+    for hook, line in HOOKS.items():
+        found = {}
+        closure = hook_closure(hier, line, set(candidates), found)
+        for k, who in found.items():
+            unclassified[k].add(who)
+        if closure is None:
+            hooks_missing.append(line)
+            continue
+        hooks[hook] = closure
+        for w in closure['writes']:
+            writers.setdefault((w['key'], w['receiver'], w['group']), set()).add('neoforge')
     inherit(events, hier, candidates)
     mods = result.get('mods', {})
     for event, row in events.items():
         row['subjects'] = subjects(row['listeners'])
         row['listeners'].sort(key=lambda l: (l['mod'], l['class'], l['method']))
     unresolved.update({m: r['unresolved_listeners'] for m, r in mods.items() if r.get('unresolved_listeners')})
-    return {'format': 1,
+    return {'format': 2,
             'event_root': ENTITY_EVENT,
             'event_prefixes': list(EVENT_PREFIXES),
             'event_supers': {c: [a for a in hier.ancestors(c) if a in candidates] for c in sorted(candidates) if any(a in candidates for a in hier.ancestors(c))},
             'events': dict(sorted(events.items())),
             'reads': {c: sorted(g) for c, g in sorted(reads.items())},
             'writes': [{'key': k, 'receiver': r, 'group': g, 'mods': sorted(m)} for (k, r, g), m in sorted(writers.items())],
+            'hooks': hooks,
+            'hooks_missing': hooks_missing,
             'routes': route_facts(archives, hier, result.get('methods', {})),
             'overrides': {c: sorted(k) for c, k in sorted(overrides.items())},
             'caps': {t: sorted(set(c)) for t, c in sorted(caps.items())},

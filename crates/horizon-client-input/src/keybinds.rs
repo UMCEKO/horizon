@@ -523,6 +523,19 @@ pub fn mouse_button(name: &str) -> Option<MouseButton> {
 }
 pub use horizon_client_core::key_display::display_name;
 
+/// The character the layout writes on this key without modifiers, when it is one.
+pub fn layout_char(event: &winit::event::KeyEvent) -> Option<char> {
+    use winit::keyboard::Key;
+    use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+    match event.key_without_modifiers() {
+        Key::Character(text) => {
+            let mut chars = text.chars();
+            chars.next().filter(|_| chars.next().is_none())
+        }
+        _ => None,
+    }
+}
+
 /// A key event: what the layout writes on its key, without modifiers, names
 /// that key from now on (`key_display::learn_layout`), so an AZERTY player's
 /// Q key shows A.
@@ -815,6 +828,21 @@ impl KeyBinds {
             .find(|mapping| self.get(mapping) == name)
             .and_then(|mapping| key_code(Self::default_of(mapping)))
     }
+    /// `AbstractContainerScreen.checkHotbarKeyPressed`: the off hand and the
+    /// hotbar slots, as the controls bind them now. Answers the key the menu
+    /// acts on (`KeyF` for the off hand, `DigitN` for a slot), so a rebound key
+    /// swaps instead of reaching the screen.
+    pub fn container_hotbar_key(&self, key: KeyCode) -> Option<KeyCode> {
+        let name = key_name(key)?;
+        if self.get("key.swapOffhand") == name {
+            return Some(KeyCode::KeyF);
+        }
+        MAPPINGS
+            .iter()
+            .filter(|m| m.0.starts_with("key.hotbar."))
+            .find(|m| self.get(m.0) == name)
+            .and_then(|m| key_code(Self::default_of(m.0)))
+    }
 }
 
 #[cfg(test)]
@@ -849,6 +877,29 @@ mod tests {
         assert_eq!(keys.container_mouse_key(MouseButton::Left, false), None);
         assert_eq!(keys.container_mouse_key(MouseButton::Right, false), None);
         assert_eq!(keys.container_mouse_key(MouseButton::Forward, false), None);
+    }
+
+    #[test]
+    fn container_hotkeys_follow_the_bound_keys() {
+        let mut keys = KeyBinds::default();
+        assert_eq!(
+            keys.container_hotbar_key(KeyCode::KeyF),
+            Some(KeyCode::KeyF)
+        );
+        assert_eq!(
+            keys.container_hotbar_key(KeyCode::Digit3),
+            Some(KeyCode::Digit3)
+        );
+        assert_eq!(keys.container_hotbar_key(KeyCode::Tab), None);
+        // The report's key: bound to the off hand, the menu takes it first.
+        keys.set("key.swapOffhand", "key.keyboard.tab");
+        assert_eq!(keys.container_hotbar_key(KeyCode::Tab), Some(KeyCode::KeyF));
+        assert_eq!(keys.container_hotbar_key(KeyCode::KeyF), None);
+        keys.set("key.hotbar.3", "key.keyboard.t");
+        assert_eq!(
+            keys.container_hotbar_key(KeyCode::KeyT),
+            Some(KeyCode::Digit3)
+        );
     }
 
     #[test]

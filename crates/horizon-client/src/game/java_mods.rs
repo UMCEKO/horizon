@@ -351,7 +351,7 @@ impl Game<'_> {
         })));
     }
 
-    fn java_use_request(&mut self) -> Option<Vec<u8>> {
+    pub(in crate::game) fn java_use_request(&mut self) -> Option<Vec<u8>> {
         let position = self.player.as_ref()?.position;
         let [a, b, c, d] = self.acting_uuid();
         let mut out = Out::default();
@@ -532,9 +532,15 @@ impl Game<'_> {
             | Target::Cart(id)
             | Target::Other(id)
             | Target::Crystal(id)
+            | Target::Dragon(id)
+            | Target::Fangs(id)
             | Target::Tnt(id)
             | Target::Bolt(id)
-            | Target::Dragon(id) => Some(id),
+            | Target::Falling(id)
+            | Target::Rocket(id)
+            | Target::Trident(id)
+            | Target::Spawner(id)
+            | Target::Cloud(id) => Some(id),
         }
     }
 
@@ -646,10 +652,12 @@ impl Game<'_> {
 
     /// Java made a block entity: its place in the chunk, which saves it and gives it its turn to tick.
     pub(in crate::game) fn java_adopt_block_entity(&mut self, pos: BlockPos, id: String) {
-        let entity = BlockEntity::Mod(Box::new(horizon_client::containers::ModBlockEntity {
-            id,
-            ..Default::default()
-        }));
+        let entity = BlockEntity::Mod(Box::new(horizon_client::containers::ModBlockEntity::new(
+            horizon_client::containers::ModBlockEntityFields {
+                id,
+                ..Default::default()
+            },
+        )));
         let key = (pos.x, pos.y, pos.z);
         self.world.block_entities.release_for_java(&key);
         self.world.block_entities.insert(key, entity);
@@ -1123,10 +1131,40 @@ fn push_event(kind: u8, pos: BlockPos, a: i32, b: i32, c: i32) {
 }
 
 /// A level's hook, inside `with_level`: `GameLevel` holds the world, so Java's calls back into it would alias it.
-pub(super) fn note_block_changed(pos: BlockPos, old: BlockStateId, new: BlockStateId, flags: i32) {
-    use horizon_java_host::bridge::java_block;
-    if java_block(old) || java_block(new) {
+pub(super) fn note_block_changed(
+    pos: BlockPos,
+    old: BlockStateId,
+    new: BlockStateId,
+    flags: i32,
+    block_changed: bool,
+) {
+    use horizon_java_host::bridge::{java_block, java_has_block_entity};
+    if java_block(old)
+        || java_block(new)
+        || (block_changed && (java_has_block_entity(old) || java_has_block_entity(new)))
+    {
         push_event(0, pos, java_id(old), java_id(new), flags);
+    }
+}
+
+/// `BlockState.updateShape` of a mod's block: `direction` is Java's ordinal, the neighbour is at `pos` beside it.
+pub(super) fn note_shape_update(
+    pos: BlockPos,
+    state: BlockStateId,
+    direction: horizon_core::geometry::Direction,
+    neighbour: BlockStateId,
+) {
+    use horizon_core::geometry::Direction::{Down, East, North, South, Up, West};
+    if horizon_java_host::bridge::java_block(state) {
+        let ordinal = match direction {
+            Down => 0,
+            Up => 1,
+            North => 2,
+            South => 3,
+            West => 4,
+            East => 5,
+        };
+        push_event(4, pos, java_id(state), ordinal, java_id(neighbour));
     }
 }
 
@@ -1244,5 +1282,50 @@ mod play_sound_tests {
         }
         changed.0.truncate(6);
         assert!(matches!(parse_play_verdict(&changed.0), PlayVerdict::Play));
+    }
+}
+
+#[cfg(test)]
+mod block_event_tests {
+    use super::*;
+    use horizon_core::geometry::Direction;
+    use horizon_java_host::bridge::{STATES, StateMap};
+
+    fn kinds() -> Vec<u8> {
+        BLOCK_EVENTS.take().iter().map(|e| e.kind).collect()
+    }
+
+    #[test]
+    fn block_entity_changes_and_mod_shapes_reach_java() {
+        let (air, stone, chest, ours) = (
+            BlockStateId(0),
+            BlockStateId(1),
+            BlockStateId(2),
+            BlockStateId(3),
+        );
+        let _ = STATES.set(StateMap {
+            to_horizon: vec![Some(air), Some(stone), Some(chest), Some(ours)],
+            to_java: vec![0, 1, 2, 3],
+            java_air: 0,
+            owned: vec![false, false, false, true],
+            entity: vec![false, false, true, false],
+            animate: vec![0; 4],
+            animate_whole: false,
+            animate_any: false,
+        });
+        let at = BlockPos::new(0, 0, 0);
+        BLOCK_EVENTS.take();
+        note_block_changed(at, air, chest, 3, true);
+        note_block_changed(at, chest, air, 3, true);
+        assert_eq!(kinds(), [0, 0]);
+        note_block_changed(at, air, stone, 3, true);
+        note_block_changed(at, chest, chest, 3, false);
+        assert!(kinds().is_empty());
+        note_shape_update(at, stone, Direction::Up, air);
+        assert!(kinds().is_empty());
+        note_shape_update(at, ours, Direction::East, air);
+        let events = BLOCK_EVENTS.take();
+        assert_eq!(events.len(), 1);
+        assert_eq!((events[0].kind, events[0].b), (4, 5));
     }
 }

@@ -6,10 +6,20 @@
 //! flash, the sounds and the branching additive bolt.
 use super::crossing::Lent;
 use super::entity_life::{Kind, NewEntity, Origin, Removal};
-use super::{Game, commands::Target};
+use super::{
+    Game,
+    commands::Target,
+    entity::{
+        Entity as _, EntityHandle, ThunderHit, entity_lists_of, for_each_entity, with_entity,
+    },
+};
 use horizon_client::advancements::EntityView;
 use horizon_client::mobs::{Damage, DamageKind, MobEvent, SpawnSetup, Species};
-use horizon_core::{position::BlockPos, random::RandomSource};
+use horizon_core::{
+    geometry::{Aabb, Vec3},
+    position::BlockPos,
+    random::RandomSource,
+};
 
 pub(super) struct Bolt {
     /// The entity id a server's players know it by.
@@ -67,12 +77,23 @@ impl Bolt {
     }
 }
 /// What one `thunderHit` carries: the bolt's damage and identity, and where it struck.
+#[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
 #[derive(Clone, Copy, Debug)]
 pub(super) struct BoltHit {
     pub damage: f32,
     pub uuid: [i32; 4],
     pub at: [f64; 3],
 }
+/// `Pig.thunderHit`: `SpawnSetup` for mobs converted by lightning, preserving baby state.
+fn thunder_mob_spawn_setup(m: &horizon_client::mobs::Mob) -> SpawnSetup {
+    SpawnSetup {
+        baby: m.is_baby(),
+        yaw: m.yaw,
+        persistent: true,
+        ..Default::default()
+    }
+}
+
 /// The box `LightningBolt.tick` collects the `LightningStrikeTrigger` bystanders from: 15 blocks
 /// around the bolt, 15 down and `6 + 15` up.
 fn in_viewer_box(bolt: [f64; 3], p: [f64; 3]) -> bool {
@@ -279,6 +300,18 @@ impl Game<'_> {
         let bolt = Bolt::new(id, at, flashes, seed, visual_only, uuid);
         self.level_add(NewEntity::Bolt(bolt), Origin::Fresh, None)
     }
+    pub(super) fn lightning_strike_allowed(
+        &mut self,
+        player: Option<u128>,
+        pos: [i32; 3],
+        cause: &str,
+    ) -> bool {
+        let mut cancel = false;
+        self.native_lightning_strike(player, pos, cause, &mut cancel);
+        !cancel
+    }
+    /// `ClientLevel.addEntity` for a server's lightning bolt: on a client it
+    /// only flashes, sounds and draws (`LightningBolt.tick` off the server).
     /// `ClientLevel.addEntity` for a server's lightning bolt: on a client it
     /// only flashes, sounds and draws (`LightningBolt.tick` off the server).
     pub(super) fn spawn_remote_bolt(&mut self, id: u32, at: [f64; 3]) {
@@ -505,94 +538,233 @@ impl Game<'_> {
     }
     /// `thunderHit` for entities within 3 blocks (up to 9 above). Returns the
     /// mobs in that box before the hit, as `CHANNELED_LIGHTNING` counts them.
+    /// How many entities of `stage` the strike reaches: one loop per list over
+    /// the borrowed slices, where a kind that takes no stage folds away, so a
+    /// stage nobody is in is skipped without walking the handles.
+    fn thunder_count(&self, strike: Aabb, stage: ThunderHit) -> usize {
+        let lists = entity_lists_of!(self);
+        let mut n = 0;
+        for_each_entity!(lists, e => {
+            if e.thunder_hit() == stage && strike.intersects(e.thunder_bounds()) {
+                n += 1;
+            }
+        });
+        n
+    }
+    /// Whether the strike reaches `h` and its kind takes `stage`.
+    fn thunder_struck(&self, h: EntityHandle, strike: Aabb, stage: ThunderHit) -> bool {
+        with_entity!(self, h, e => e.thunder_hit() == stage && strike.intersects(e.thunder_bounds()))
+    }
+    /// `thunderHit` for entities whose box meets the strike box, 3 blocks
+    /// around and up to 9 above (`getEntities(this, AABB)` tests boxes, not
+    /// positions). Returns the mobs in that box before the hit, as
+    /// `CHANNELED_LIGHTNING` counts them. Boats, minecarts and experience
+    /// orbs are hit too (`VehicleEntity.hurtServer` adds 5 x 10 > 40 and
+    /// destroys them; an orb has 5 health).
     fn thunder_hit(&mut self, b: &mut Bolt) -> Vec<EntityView> {
         let at = b.at;
-        let inside = move |p: [f64; 3]| {
-            (p[0] - at[0]).abs() <= 3.0
-                && (p[2] - at[2]).abs() <= 3.0
-                && p[1] >= at[1] - 3.0
-                && p[1] <= at[1] + 9.0
+        let strike = Aabb::new(
+            Vec3::new(at[0] - 3.0, at[1] - 3.0, at[2] - 3.0),
+            Vec3::new(at[0] + 3.0, at[1] + 9.0, at[2] + 3.0),
+        );
+        // Whether the box of an entity standing at `p` (half width `w`,
+        // height `h`) meets the strike box.
+        let meets = move |p: [f64; 3], w: f64, h: f64| {
+            strike.intersects(Aabb::new(
+                Vec3::new(p[0] - w, p[1], p[2] - w),
+                Vec3::new(p[0] + w, p[1] + h, p[2] + w),
+            ))
         };
-        let hit = BoltHit {
-            damage: b.damage,
-            uuid: b.uuid,
-            at,
+        let damage = Damage {
+            kind: DamageKind::Generic,
+            attacker: None,
+            from: Some(b.at),
+            attacker_species: None,
         };
-        let struck: Vec<(u32, EntityView)> = self
-            .mobs
-            .iter()
-            .filter(|m| m.alive() && inside([m.position.x, m.position.y, m.position.z]))
-            .map(|m| (m.id, self.mob_entity(m)))
-            .collect();
-        b.hit.extend(struck.iter().map(|(id, _)| *id));
+        let mut struck = Vec::new();
         let mut events = Vec::new();
-        for (id, _) in &struck {
-            self.thunder_hit_entity(Target::Mob(*id), &hit, &mut events);
+        let mut powered = Vec::new();
+        let peaceful = self.ui.difficulty == 0;
+        let mut left = self.thunder_count(strike, ThunderHit::Mob);
+        for h in self.entity_handles() {
+            if left == 0 {
+                break;
+            }
+            let EntityHandle::Mob(i) = h else { continue };
+            if !self.thunder_struck(h, strike, ThunderHit::Mob) {
+                continue;
+            }
+            left -= 1;
+            struck.push(self.mob_entity(&self.mobs[i]));
+            // LivingConversionEvent.Pre: a canceled conversion leaves the
+            // mob to the lightning's fire and damage, as `super.thunderHit`.
+            let outcome = match self.mobs[i].species() {
+                Species::Pig if !peaceful => Some("minecraft:zombified_piglin"),
+                Species::Villager if !peaceful => Some("minecraft:witch"),
+                _ => None,
+            };
+            let mut keep = false;
+            if let Some(outcome) = outcome {
+                let (id, kind) = (
+                    self.mobs[i].id,
+                    super::native_hooks::mob_kind(&self.mobs[i]),
+                );
+                self.native_living_conversion_pre(id, &kind, outcome, &mut keep);
+            }
+            let ride = self.mob_ride(self.mobs[i].id);
+            let m = &mut self.mobs[i];
+            b.hit.push(m.id);
+            let setup = thunder_mob_spawn_setup;
+            let at = [m.position.x, m.position.y, m.position.z];
+            match m.species() {
+                Species::Pig if !peaceful && !keep => {
+                    m.removed = true;
+                    events.push(MobEvent::SpawnKind {
+                        kind: "minecraft:zombified_piglin".into(),
+                        at,
+                        setup: setup(m),
+                    });
+                    continue;
+                }
+                Species::Villager if !peaceful && !keep => {
+                    m.removed = true;
+                    events.push(MobEvent::SpawnKind {
+                        kind: "minecraft:witch".into(),
+                        at,
+                        setup: setup(m),
+                    });
+                    continue;
+                }
+                Species::Mooshroom => {
+                    // MushroomCow.thunderHit: once per bolt (`lastLightningBoltUUID`).
+                    if m.extra.last_bolt != Some(b.uuid) {
+                        m.extra.last_bolt = Some(b.uuid);
+                        m.extra.variant = 1 - m.extra.variant.min(1);
+                        self.audio
+                            .play("minecraft:entity.mooshroom.convert", Some(at), 2.0, 1.0);
+                    }
+                    continue;
+                }
+                Species::Turtle => {
+                    m.damage(f32::MAX, damage, ride);
+                    continue;
+                }
+                Species::Creeper => {
+                    m.extra.charged = true;
+                    powered.push(m.id);
+                }
+                // CopperGolem.thunderHit (after Entity.thunderHit's fire and
+                // damage): once per bolt, an oxidized golem goes back one step
+                // and its weathering timer (or wax, -2) is reset to -1.
+                Species::CopperGolem if m.extra.last_bolt != Some(b.uuid) => {
+                    m.extra.last_bolt = Some(b.uuid);
+                    if m.extra.variant > 0 {
+                        m.extra.vector[0] = -1.0;
+                        m.extra.variant =
+                            horizon_client::mobs::copper_golem::weather_previous(m.extra.variant);
+                    }
+                }
+                _ => {}
+            }
+            // Entity.thunderHit: burning (8 seconds) and the bolt's damage.
+            m.fire_ticks += 1;
+            if m.fire_ticks == 0 {
+                m.ignite_for_ticks(160);
+            }
+
+            m.damage(b.damage, damage, ride);
         }
         if !events.is_empty() {
             let _ = self.handle_mob_events(events);
         }
-        // Cushion.thunderHit: a cushion in the box breaks and drops its item
+        for entity in powered {
+            self.native_creeper_power(entity, [at[0], at[1], at[2]]);
+        }
+        // Cushion.thunderHit: a cushion whose box meets the strike box breaks and drops its item
         // (the bolt is no player, so no creative spare). Last first, since
         // break_cushion removes the entry.
         for i in (0..self.cushions.len()).rev() {
-            let p = self.cushions[i].position;
-            if inside([p.x, p.y, p.z]) {
+            let (lo, hi) = self.cushions[i].bounds();
+            if strike.intersects(Aabb::new(
+                Vec3::new(lo[0], lo[1], lo[2]),
+                Vec3::new(hi[0], hi[1], hi[2]),
+            )) {
                 let before = self.dropped.len();
                 self.break_cushion(i, false, Removal::Killed);
                 b.spared.extend(self.dropped[before..].iter().map(|e| e.id));
             }
         }
-        // Every player in the box, the server's players too.
-        let strike = move |g: &mut Self| {
-            if let Some(p) = g.player.as_ref().map(|p| p.position)
-                && inside([p.x, p.y, p.z])
+        // Vehicles, then orbs: `VehicleEntity.hurtServer` for 5 damage (x 10
+        // over the 40 a vehicle takes) destroys them. Lightning is no fire
+        // source, so a TNT cart does not prime. `ExperienceOrb.hurtServer`:
+        // 5 damage off 5 health. Last first, since each removes its entry.
+        let mut left = self.thunder_count(strike, ThunderHit::Vehicle)
+            + self.thunder_count(strike, ThunderHit::Orb);
+        for h in self.entity_handles_rev() {
+            if left == 0 {
+                break;
+            }
+            if !self.thunder_struck(h, strike, ThunderHit::Vehicle)
+                && !self.thunder_struck(h, strike, ThunderHit::Orb)
             {
-                g.thunder_hit_entity(Target::Player, &hit, &mut Vec::new());
+                continue;
+            }
+            left -= 1;
+            match h {
+                EntityHandle::Boat(i) => {
+                    self.hurt_boat(i, b.damage, false);
+                }
+                EntityHandle::Cart(i) => self.hurt_cart(i, b.damage, false, false),
+                EntityHandle::Orb(i) if self.orbs[i].hurt(b.damage) => {
+                    let id = self.orbs[i].id;
+                    self.level_remove(Kind::Orb, id, Removal::Discarded);
+                }
+                _ => {}
+            }
+        }
+        self.native_leaves_flush();
+        // Every player in the box, the server's players too (0.6 x 1.8).
+        let bolt_damage = b.damage;
+        let strike_players = move |g: &mut Self| {
+            if let Some(p) = g.player.as_ref().map(|p| p.position)
+                && meets([p.x, p.y, p.z], 0.3, 1.8)
+            {
+                if let Some(p) = g.player.as_mut() {
+                    p.fire_ticks += 1;
+                    if p.fire_ticks == 0
+                        && let Err(error) = p.ignite_for_ticks(160)
+                    {
+                        g.error = Some(error);
+                    }
+                }
+                g.hurt_player_by("minecraft:lightning_bolt", bolt_damage);
             }
         };
-        strike(self);
-        self.each_guest_hit(strike);
-        b.hit_items.extend(
-            self.dropped
-                .iter()
-                .filter(|e| inside([e.position.x, e.position.y, e.position.z]))
-                .map(|e| e.id),
-        );
-        // Dropped items burn up (ItemEntity health 5), save the ones whose stack resists lightning.
-        let items: Vec<u32> = self
-            .dropped
-            .iter()
-            .filter(|e| {
-                inside([e.position.x, e.position.y, e.position.z])
-                    && !(e.age < 20 && b.spared.contains(&e.id))
-            })
-            .map(|e| e.id)
-            .collect();
-        for id in items {
-            self.thunder_hit_entity(Target::Item(id), &hit, &mut Vec::new());
+        strike_players(self);
+        self.each_guest_hit(strike_players);
+        // Dropped items burn up (ItemEntity health 5), save fire-resistant ones.
+        let mut left = self.thunder_count(strike, ThunderHit::Item);
+        for h in self.entity_handles_rev() {
+            if left == 0 {
+                break;
+            }
+            let EntityHandle::Item(i) = h else { continue };
+            if !self.thunder_struck(h, strike, ThunderHit::Item) {
+                continue;
+            }
+            left -= 1;
+            let e = &self.dropped[i];
+            b.hit_items.push(e.id);
+            if !(e.stack.item.contains("netherite") || (e.age < 20 && b.spared.contains(&e.id))) {
+                let id = e.id;
+                self.level_remove(Kind::Item, id, Removal::Discarded);
+            }
         }
-        let boats: Vec<u32> = self
-            .boats
-            .iter()
-            .filter(|e| inside([e.position.x, e.position.y, e.position.z]))
-            .map(|e| e.id)
-            .collect();
-        for id in boats {
-            self.thunder_hit_entity(Target::Boat(id), &hit, &mut Vec::new());
-        }
-        let carts: Vec<u32> = self
-            .carts
-            .iter()
-            .filter(|e| inside([e.position.x, e.position.y, e.position.z]))
-            .map(|e| e.id)
-            .collect();
-        for id in carts {
-            self.thunder_hit_entity(Target::Cart(id), &hit, &mut Vec::new());
-        }
-        struck.into_iter().map(|(_, view)| view).collect()
+        self.native_leaves_flush();
+        struck
     }
     /// `Entity.thunderHit` of one entity, with the override its class has; true when it changed.
+    #[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
     pub(super) fn thunder_hit_entity(
         &mut self,
         t: Target,
@@ -603,6 +775,7 @@ impl Game<'_> {
             kind: DamageKind::LightningBolt,
             attacker: None,
             from: Some(hit.at),
+            attacker_species: None,
         };
         let peaceful = self.ui.difficulty == 0;
         match t {
@@ -748,7 +921,9 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod viewer_tests {
-    use super::in_viewer_box;
+    use super::*;
+    use horizon_client::mobs::{Anim, Brain, Mob, MobType, Part};
+    use std::sync::Arc;
 
     #[test]
     fn viewer_box_reaches_15_around_and_down_and_21_up() {
@@ -758,5 +933,86 @@ mod viewer_tests {
         assert!(!in_viewer_box(bolt, [0.0, 85.5, 0.0]));
         assert!(!in_viewer_box(bolt, [0.0, 48.5, 0.0]));
         assert!(!in_viewer_box(bolt, [15.5, 64.0, 0.0]));
+    }
+
+    #[test]
+    fn a_baby_pig_hit_by_lightning_becomes_a_baby_zombified_piglin() {
+        let make_pig = |baby: bool| {
+            let kind = Arc::new(MobType {
+                attachments: Default::default(),
+                id: "minecraft:pig".into(),
+                species: Species::Pig,
+                width: 0.9,
+                height: 0.9,
+                eye_height: 0.85,
+                category: "creature".into(),
+                max_health: 10.0,
+                speed: 0.25,
+                flying_speed: 0.02,
+                attack_damage: 0.0,
+                attack_knockback: 0.0,
+                follow_range: 16.0,
+                step_height: 0.6,
+                armor: 0.0,
+                armor_toughness: 0.0,
+                knockback_resistance: 0.0,
+                jump_strength: 0.42,
+                attributes: Default::default(),
+                item_stack_limits: Default::default(),
+                gravity: 0.08,
+                safe_fall_distance: 3.0,
+                fall_damage_multiplier: 1.0,
+                water_efficiency: 0.0,
+                water_slowdown: 0.8,
+                air_speed: 0.02,
+                baby_scale: 0.5,
+                head_rot_speed: 10.0,
+                max_head_x_rot: 40.0,
+                max_head_y_rot: 75.0,
+                ambient_interval: 80,
+                flags: Default::default(),
+                model: Arc::new(Part {
+                    name: "root".into(),
+                    pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                    polygons: Vec::new(),
+                    children: Vec::new(),
+                }),
+                layers: Default::default(),
+                texture: String::new(),
+                brain: Brain::Passive,
+                anim: Anim::Quadruped,
+                sounds: ["", "", ""],
+                step_sound: None,
+                food: Default::default(),
+                tempt: Default::default(),
+            });
+            let mut pig = Mob::new(1, kind, Vec3::ZERO, 45.0);
+            if baby {
+                pig.extra.age = -24000;
+            }
+            pig
+        };
+
+        let adult_pig = make_pig(false);
+        assert!(!adult_pig.is_baby());
+        let adult_setup = thunder_mob_spawn_setup(&adult_pig);
+        assert!(!adult_setup.baby);
+        assert_eq!(adult_setup.yaw, 45.0);
+        assert!(adult_setup.persistent);
+
+        let baby_pig = make_pig(true);
+        assert!(baby_pig.is_baby());
+        let baby_setup = thunder_mob_spawn_setup(&baby_pig);
+        assert!(baby_setup.baby);
+        assert_eq!(baby_setup.yaw, 45.0);
+        assert!(baby_setup.persistent);
+
+        // When setup.baby is true, apply_setup sets m.extra.age = -24000,
+        // resulting in a baby mob (is_baby() == true).
+        let mut zombified = Mob::new(2, adult_pig.kind.clone(), Vec3::ZERO, 0.0);
+        if baby_setup.baby {
+            zombified.extra.age = -24000;
+        }
+        assert!(zombified.is_baby());
     }
 }

@@ -26,10 +26,10 @@ pub(super) fn flat_game() -> Option<Game<'static>> {
     .ok()??;
     options.execution_role = execution_role::ExecutionRole::IntegratedServer;
     options.dedicated = Some(Vec::new());
-    options.server_thread = false;
     let settings = Settings::default();
     let loaded = load_resources(
         root.clone(),
+        None,
         &root,
         &settings,
         Instant::now(),
@@ -215,6 +215,14 @@ fn items_in_a_crossing_are_in_place_added_ones_wait_and_removed_ones_are_skipped
             ticks: 0,
             removed: false,
             invulnerable: false,
+            rotation: [0.0, 0.0],
+            join: Default::default(),
+            no_gravity: false,
+            needs_sync: false,
+            stuck: Vec3::ZERO,
+            was_touching_water: false,
+            vertical_collision: false,
+            horizontal_collision: false,
         });
         game.next_entity
     };
@@ -271,6 +279,10 @@ fn orbs_in_a_crossing_are_in_place_added_ones_wait_and_removed_ones_are_skipped(
             count: 1,
             ticks: 0,
             removed: false,
+            rotation: [0.0, 0.0],
+            join: Default::default(),
+            no_gravity: false,
+            health: 5,
         });
         game.next_entity
     };
@@ -287,20 +299,25 @@ fn orbs_in_a_crossing_are_in_place_added_ones_wait_and_removed_ones_are_skipped(
             log.borrow_mut().push((id, g.orbs.len()));
             if id == a {
                 *slot.borrow_mut() = Some(orb(g, 3.5));
-                g.orbs.iter_mut().find(|o| o.id == b).unwrap().removed = true;
-                g.note_touched(Some(b));
+                g.level_remove(entity_life::Kind::Orb, b, entity_life::Removal::Discarded);
             }
         }
     });
-    game.tick_experience();
-    assert_eq!(*seen.borrow(), vec![(a, 3), (c, 4)]);
+    // The orbs move in the join-order walk, not in tick_experience.
+    let walk = |game: &mut Game<'_>| {
+        game.begin_ordered_ticks();
+        game.run_ordered_ticks(horizon_client::join_seq::JoinSeq::MAX, false)
+            .unwrap();
+    };
+    walk(&mut game);
+    assert_eq!(*seen.borrow(), vec![(a, 3), (c, 3)]);
     let id = added.borrow().unwrap();
     let age = |game: &Game<'_>, id: u32| game.orbs.iter().find(|o| o.id == id).map(|o| o.age);
     assert_eq!(age(&game, b), None);
     assert_eq!(age(&game, id), Some(0));
     assert_eq!(age(&game, a), Some(1));
     game.test_cross = None;
-    game.tick_experience();
+    walk(&mut game);
     assert_eq!(age(&game, id), Some(1));
 }
 

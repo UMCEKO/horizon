@@ -451,7 +451,7 @@ impl Game<'_> {
             // AbstractMinecart: the default attachment, 0.1875 above its feet.
             Vehicle::Cart(i) => self.carts[i].position.add_vector(Vec3::new(
                 0.0,
-                super::minecarts::PASSENGER_HEIGHT - seat.offset,
+                super::minecarts::PASSENGER_Y - seat.offset,
                 0.0,
             )),
             Vehicle::Cushion(i) => self.cushions[i].seat(),

@@ -162,6 +162,32 @@ final class ServerView {
         }
     }
 
+    /** Vanilla's `ProfileResolver.Cached` without the session service: the player list, then the name cache. */
+    private static final class OfflineProfiles implements net.minecraft.server.players.ProfileResolver {
+        private final MinecraftServer server;
+        private final net.minecraft.server.players.UserNameToIdResolver cache;
+
+        OfflineProfiles(MinecraftServer server, net.minecraft.server.players.UserNameToIdResolver cache) {
+            this.server = server;
+            this.cache = cache;
+        }
+
+        @Override
+        public java.util.Optional<com.mojang.authlib.GameProfile> fetchByName(String name) {
+            if (!net.minecraft.util.StringUtil.isValidPlayerName(name)) return java.util.Optional.empty();
+            var player = server.getPlayerList().getPlayerByName(name);
+            if (player != null) return java.util.Optional.of(player.getGameProfile());
+            return cache.get(name).map(known -> new com.mojang.authlib.GameProfile(known.id(), known.name()));
+        }
+
+        @Override
+        public java.util.Optional<com.mojang.authlib.GameProfile> fetchById(java.util.UUID id) {
+            var player = server.getPlayerList().getPlayer(id);
+            if (player != null) return java.util.Optional.of(player.getGameProfile());
+            return cache.get(id).map(known -> new com.mojang.authlib.GameProfile(known.id(), known.name()));
+        }
+    }
+
     /** What a server reads from its world folder, once Horizon has opened one: mods' saved data lands beside vanilla's. */
     static void openWorld(MinecraftServer server, Iterable<ServerLevel> levels, Path folder, long seed, WorldDimensions dimensions) throws ReflectiveOperationException {
         set(MinecraftServer.class, server, "serverThread", Thread.currentThread());
@@ -183,7 +209,7 @@ final class ServerView {
         }
         GameProfileRepository names = new OfflineNames();
         var cache = new CachedUserNameToIdResolver(names, folder.resolve("usercache.json").toFile());
-        set(MinecraftServer.class, server, "services", new Services(null, ServicesKeySet.EMPTY, names, cache, null));
+        set(MinecraftServer.class, server, "services", new Services(null, ServicesKeySet.EMPTY, names, cache, new OfflineProfiles(server, cache)));
         // Empty in Java: Horizon's own lists decide who is banned and who is an operator.
         var notices = new EmptyNotificationService();
         PlayerList players = server.getPlayerList();

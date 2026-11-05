@@ -137,6 +137,7 @@ impl Game<'_> {
             }
         }
         self.container_changed(key);
+        self.native_crafter_craft([key.0, key.1, key.2], &recipe);
         Ok(())
     }
     /// `CrafterBlock.dispenseItem`: into the container in front, else out as an item.
@@ -182,7 +183,7 @@ impl Game<'_> {
         });
         if near {
             let id = format!("minecraft:{recipe}");
-            let me = self.player_entity();
+            let me = self.player_entity_for("minecraft:crafter_recipe_crafted");
             self.trigger("minecraft:crafter_recipe_crafted", move |c, w| {
                 let ctx = adv::Entities {
                     this: Some(&me),
@@ -253,6 +254,7 @@ impl Game<'_> {
             )
             .resolve_legacy()
         });
+        crate::game::screen_info::name_container(|| title.plain());
         let tw = atlas.font.width_text(&title);
         batch.text_styled(
             atlas,

@@ -46,6 +46,31 @@ horizon_java_host::java_bridges! { table for Game<'static> {
         game.java_refresh_player();
     }
 
+    route "net/minecraft/world/entity/player/Inventory".setSelectedSlot
+    "(I)V" if "@dev/horizonlab/javamods/boot/Routing.serverInventory" =>
+    fn route_inventory_set_selected_slot(game, slot: i32) -> () {
+        game.set_selected_slot_body(slot);
+        game.java_refresh_player();
+    }
+
+    route "net/minecraft/world/entity/player/Inventory".pickSlot
+    "(I)V" if "@dev/horizonlab/javamods/boot/Routing.serverInventory" =>
+    fn route_inventory_pick_slot(game, slot: i32) -> () {
+        game.pick_slot_body(slot);
+        game.java_refresh_player();
+    }
+
+    route "net/minecraft/world/entity/player/Inventory".addAndPickItem
+    "(Lnet/minecraft/world/item/ItemStack;)V" if "@dev/horizonlab/javamods/boot/Routing.serverInventory" =>
+    fn route_inventory_add_and_pick_item(game, stack: Bytes) -> () {
+        if let Some(stack) = java_mods::read_tag(&stack.0)
+            .and_then(|tag| horizon_client::save::item_from_nbt(&tag))
+        {
+            game.add_and_pick_item_body(&stack);
+        }
+        game.java_refresh_player();
+    }
+
     "net/minecraft/server/level/ServerPlayer".teleportTo
     "(DDD)V" =>
     fn player_teleport_to(game, x: f64, y: f64, z: f64) -> () {

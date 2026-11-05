@@ -337,7 +337,14 @@ fn kind_of(t: Target) -> Option<(Kind, u32)> {
         Target::Dragon(id) => (Kind::Dragon, id),
         Target::Tnt(id) => (Kind::Tnt, id),
         Target::Bolt(id) => (Kind::Bolt, id),
-        Target::Player | Target::Guest(_) => return None,
+        Target::Player
+        | Target::Guest(_)
+        | Target::Fangs(_)
+        | Target::Falling(_)
+        | Target::Rocket(_)
+        | Target::Trident(_)
+        | Target::Spawner(_)
+        | Target::Cloud(_) => return None,
     })
 }
 
@@ -387,9 +394,28 @@ impl Game<'_> {
         shape
     }
 
+    /// `PrimedTnt.owner` as the UUID Java names it by: a mob's, or the player who lit it.
+    fn tnt_owner_uuid(
+        &self,
+        owner: Option<horizon_client::mobs::Who>,
+        guest: Option<u32>,
+    ) -> Option<[i32; 4]> {
+        match owner? {
+            horizon_client::mobs::Who::Mob(id) => self.persist.uuids.get(&id).copied(),
+            horizon_client::mobs::Who::Player => match guest {
+                Some(conn) => self
+                    .lan
+                    .as_ref()
+                    .and_then(|h| h.hub.guest(conn))
+                    .map(|g| horizon_client::lan::playerdata::uuid_ints(g.uuid)),
+                None => self.level.player_uuid,
+            },
+        }
+    }
     fn java_overlay(&self, t: Target) -> Overlay {
         match t {
             Target::Tnt(id) => {
+                let default_tnt = self.tnt_default_state();
                 return Overlay {
                     species: self
                         .tnts
@@ -401,13 +427,13 @@ impl Game<'_> {
                                 horizon_java_host::bridge::UNMAPPED,
                                 |m| {
                                     m.to_java
-                                        .get(t.block_state.0 as usize)
+                                        .get(t.block_state.unwrap_or(default_tnt).0 as usize)
                                         .copied()
                                         .unwrap_or(horizon_java_host::bridge::UNMAPPED)
                                 },
                             ),
-                            power: t.explosion_power,
-                            owner: t.owner,
+                            power: t.power,
+                            owner: self.tnt_owner_uuid(t.owner, t.guest),
                         }),
                     ..Overlay::default()
                 };
@@ -555,7 +581,12 @@ impl Game<'_> {
             NewEntity::Mob(m) => {
                 let uuid = self.uuid_for(m.id);
                 (
-                    entity_nbt::mob_to_nbt(m, uuid, raw(self, m.id).as_ref()),
+                    entity_nbt::mob_to_nbt(
+                        m,
+                        uuid,
+                        raw(self, m.id).as_ref(),
+                        Some(self.pack.assets.registry),
+                    ),
                     horizon_client::command::args::normalize(&m.kind.id),
                 )
             }
@@ -608,7 +639,7 @@ impl Game<'_> {
                         &b.entity_type(),
                         b.position,
                         b.velocity,
-                        b.yaw,
+                        [b.yaw, b.pitch],
                         &b.moving,
                         uuid,
                         raw(self, b.id).as_ref(),
@@ -626,11 +657,9 @@ impl Game<'_> {
                 (self.other_to_nbt(o, uuid), o.kind.clone())
             }
             NewEntity::Crystal(c) => {
-                let (uuid, raw) = self.persist_anon("minecraft:end_crystal", c.position);
-                (
-                    c.to_nbt(uuid.unwrap_or_else(random_uuid), raw),
-                    "minecraft:end_crystal".into(),
-                )
+                let uuid = self.uuid_for(c.id);
+                let raw = self.persist_anon("minecraft:end_crystal", c.position);
+                (c.to_nbt(uuid, raw), "minecraft:end_crystal".into())
             }
             NewEntity::Cushion(c) => {
                 let uuid = self.uuid_for(c.id);
@@ -641,17 +670,18 @@ impl Game<'_> {
             }
             NewEntity::Tnt(t) => {
                 let uuid = self.uuid_for(t.id);
-                let state = self.state_to_nbt(t.block_state);
+                let state = self.state_to_nbt(t.block_state.unwrap_or(self.tnt_default_state()));
+                let owner = self.tnt_owner_uuid(t.owner, t.guest);
                 (
-                    entity_nbt::tnt_to_nbt(
+                    entity_nbt::primed_tnt_to_nbt(
                         &entity_nbt::TntNbt {
                             position: t.position,
                             velocity: t.velocity,
                             on_ground: t.on_ground,
                             fuse: t.fuse,
                             state: Some(state),
-                            power: t.explosion_power,
-                            owner: t.owner,
+                            power: t.power,
+                            owner,
                         },
                         uuid,
                         raw(self, t.id).as_ref(),
@@ -671,11 +701,9 @@ impl Game<'_> {
                 "minecraft:lightning_bolt".into(),
             ),
             NewEntity::Dragon(d) => {
-                let (uuid, raw) = self.persist_anon("minecraft:ender_dragon", d.position);
-                (
-                    d.to_nbt(uuid.unwrap_or_else(random_uuid), raw),
-                    "minecraft:ender_dragon".into(),
-                )
+                let uuid = self.uuid_for(d.id);
+                let raw = self.persist_anon("minecraft:ender_dragon", d.position);
+                (d.to_nbt(uuid, raw), "minecraft:ender_dragon".into())
             }
         };
         let type_id = text(tag.get("id")).unwrap_or(type_id);
@@ -1064,6 +1092,7 @@ impl Game<'_> {
         horizon_client::mobs::Damage {
             kind: Self::damage_kind(&source.kind),
             attacker,
+            attacker_species: None,
             from: source.at,
         }
     }
@@ -1141,7 +1170,9 @@ impl Game<'_> {
     pub(super) fn java_knockback(&mut self, id: u32, power: f64, x: f64, z: f64) -> bool {
         match self.mobs.iter_mut().find(|m| m.id == id) {
             Some(m) => {
-                m.knockback(power, x, z);
+                let source =
+                    horizon_client::mobs::Damage::of(horizon_client::mobs::DamageKind::Generic);
+                m.knockback(power, x, z, &source);
                 true
             }
             None => false,
@@ -1689,7 +1720,7 @@ mod tests {
             power: 6.5,
             owner: Some([1, 2, 3, 4]),
         };
-        let tag = entity_nbt::tnt_to_nbt(&t, [9, 9, 9, 9], None);
+        let tag = entity_nbt::primed_tnt_to_nbt(&t, [9, 9, 9, 9], None);
         assert_eq!(number(tag.get("fuse")), Some(33));
         let back = entity_nbt::tnt_from_nbt(&tag).unwrap();
         assert_eq!(
@@ -1702,7 +1733,7 @@ mod tests {
             owner: None,
             ..t
         };
-        let tag = entity_nbt::tnt_to_nbt(&plain, [9, 9, 9, 9], None);
+        let tag = entity_nbt::primed_tnt_to_nbt(&plain, [9, 9, 9, 9], None);
         assert!(tag.get("explosion_power").is_none() && tag.get("owner").is_none());
         let clamped = compound(vec![
             ("Pos", doubles_tag(&[0.0, 0.0, 0.0])),

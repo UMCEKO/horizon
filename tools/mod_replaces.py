@@ -15,6 +15,7 @@ Mechanisms found in every jar of DIR/mods and the jars nested in it:
 Routing of one change (the rule is the code of `route`):
   java         a mixin of a vanilla method the port ledger says native owns (ported, mapped, named, structural, linked): that behaviour runs in Java
   java-own-type an override of such a method: native calls the mod's override for the mod's own types only
+  undecided    a mixin on a method the ledger can't say native runs, and no verdict yet: decide it in tools/port_map
   java-already native does not own it (absent, skipped, mentioned, inferred, none, not vanilla), the change implements an abstract method,
                or it overrides a client GUI method (mod screens and widgets run in Java)
   native-hook  an event listener: native fires the event
@@ -28,6 +29,9 @@ OUT/replaces.json (format 1):
   events   {"pkg/Event": {cancellable, bus, host_mentions, routing "native-hook", mods, changes}}; a change has via, class, method, priority, bus
   data     {kind: {mod: {files, samples}}}
   totals   {mechanism: n, routing: n, ...}
+OUT/routing.json (format 1, tools/mod_routing.py) and routing.tsv, from the mixins routed java:
+  routes     {"pkg/Class#name(desc)": {kind edge|body, static, family, args, ret, changes, returns, tail, overriders, closure, hot, side}}
+  undecided  {key: {status, mods}}; lambdas {lambda key: enclosing key}; routing.tsv is owner, name, descriptor, kind, tail (0/1), returns
 OUT/replaces.md is the per-mod summary and the 40 vanilla methods changed by most mods.
 """
 import argparse
@@ -57,7 +61,9 @@ DEFAULT_CACHE = ROOT / '.local' / 'mod-replaces'
 VANILLA_PREFIXES = ('net/minecraft/', 'com/mojang/')
 STATUS_ORDER = ('ported', 'mapped', 'named', 'structural', 'linked', 'inferred', 'mentioned', 'skipped', 'absent')
 OWNED = ('ported', 'mapped', 'named', 'structural', 'linked')
-ROUTING_ORDER = ('java', 'java-own-type', 'java-already', 'native-hook', 'inert')
+ROUTING_ORDER = ('java', 'java-own-type', 'undecided', 'java-already', 'native-hook', 'inert')
+WEAK_STATUSES = ('mentioned', 'inferred', 'absent', 'none', 'unknown')
+PORT_MAP = ROOT / 'tools' / 'port_map'
 OPAQUE_PACKAGES = ('net/neoforged/neoforgespi/transformation/', 'net/neoforged/neoforgespi/coremod/', 'cpw/mods/modlauncher/api/', 'org/spongepowered/asm/service/')
 OPAQUE_SERVICES = ('net.neoforged.neoforgespi.transformation.ClassProcessorProvider', 'net.neoforged.neoforgespi.coremod.ICoreMod')
 OPAQUE_FILES = ('META-INF/coremods.json',)
@@ -408,12 +414,39 @@ class Native:
         return {'status': 'none' if key in self.methods else 'unknown', 'owned': False, 'fns': [], 'note': ''}
 
 
-def route(mechanism, native, key=''):
+def read_verdicts(directory=PORT_MAP):
+    """{`Class.method`: verdict} from the verdict map's rows (tools/port_map/*.tsv, column 2)."""
+    out = {}
+    for path in sorted(Path(directory).glob('*.tsv')):
+        for line in path.read_text(encoding='utf-8').splitlines():
+            parts = [x.strip() for x in line.split('\t')]
+            if len(parts) > 1 and parts[0] and not parts[0].startswith('#'):
+                out[parts[0]] = parts[1]
+    return out
+
+
+def verdict_of(verdicts, key):
+    """The verdict map's answer for a key `pkg/Outer$Inner#name(desc)`, else None."""
+    cls, _, rest = key.partition('#')
+    name = rest.partition('(')[0]
+    simple = cls.rsplit('/', 1)[-1]
+    for candidate in (simple, simple.rsplit('$', 1)[-1]):
+        if f'{candidate}.{name}' in (verdicts or {}):
+            return verdicts[f'{candidate}.{name}']
+    return None
+
+
+def route(mechanism, native, key='', verdicts=None):
     """See the module docstring."""
     if mechanism == 'access':
         return 'inert'
     if mechanism == 'listener':
         return 'native-hook'
+    if mechanism == 'mixin' and native['status'] in WEAK_STATUSES:
+        verdict = verdict_of(verdicts, key)
+        if verdict in ('port', 'inline'):
+            return 'java'
+        return 'java-already' if verdict == 'missing' or (verdict or '').startswith('skip:') else 'undecided'
     if mechanism == 'implement' or not native['owned']:
         return 'java-already'
     if mechanism == 'mixin':
@@ -628,7 +661,7 @@ def host_words(lines=None):
     return set(re.findall(r'\w+', '\n'.join(text for _, _, text in (ex.host_lines() if lines is None else lines))))
 
 
-def analyse(install, out, ledger, cache=None, entries=None, host=None, log=print):
+def analyse(install, out, ledger, cache=None, entries=None, host=None, log=print, verdicts=None, vanilla_jar=None, bridges=None):
     """The whole result (replaces.json) for an install; `entries` skips the mixin scan."""
     install, out = Path(install), Path(out)
     started = time.time()
@@ -677,7 +710,12 @@ def analyse(install, out, ledger, cache=None, entries=None, host=None, log=print
     methods = collections.defaultdict(lambda: {'changes': []})
     events = collections.defaultdict(lambda: {'changes': []})
     vanilla_of = {}
-    for key, vanilla, record in mixin_records(entries, plugins, hier, native):
+    try:
+        from . import mod_routing as mrt
+    except ImportError:
+        import mod_routing as mrt
+    vanilla_classes = mrt.Vanilla(vanilla_jar or hier.jars)
+    for key, vanilla, record in mrt.fold_lambdas(mixin_records(entries, plugins, hier, native), hier, vanilla_classes):
         methods[key]['changes'].append(record)
         vanilla_of[key] = vanilla
         mods[record['mod']]['counts'][record['mechanism']] += 1
@@ -723,7 +761,9 @@ def analyse(install, out, ledger, cache=None, entries=None, host=None, log=print
         row['vanilla'] = vanilla_of.get(key, True)
         row['native'] = native.info(key) if row['vanilla'] else {'status': 'not-vanilla', 'owned': False, 'fns': [], 'note': ''}
         for change in row['changes']:
-            change['routing'] = route(change['mechanism'], row['native'], key)
+            change['routing'] = route(change['mechanism'], row['native'], key, verdicts)
+            if change['mechanism'] == 'mixin' and change['routing'] == 'java-already' and row['native']['status'] in WEAK_STATUSES and verdict_of(verdicts, key) == 'missing':
+                change['note'] = 'native lacks it'
             totals[change['mechanism']] += 1
         row['routing'] = top_routing([c['routing'] for c in row['changes']])
         row['mods'] = sorted({c['mod'] for c in row['changes']})
@@ -751,7 +791,8 @@ def analyse(install, out, ledger, cache=None, entries=None, host=None, log=print
     except ImportError:
         import mod_entity_facts as ef
     entity_facts = ef.analyse(classes, archives, hier, entries, {'mods': summary, 'methods': methods})
-    return {'format': 1, 'entity_facts': entity_facts, 'install': str(install), 'mods': summary, 'methods': dict(sorted(methods.items())), 'events': dict(sorted(events.items())),
+    routes = mrt.routing({'methods': methods}, archives, hier, ledger, verdicts, None, bridges, vanilla_classes)
+    return {'format': 1, 'entity_facts': entity_facts, 'routing': routes, 'install': str(install), 'mods': summary, 'methods': dict(sorted(methods.items())), 'events': dict(sorted(events.items())),
             'data': {k: dict(sorted(v.items())) for k, v in sorted(data_total.items())}, 'totals': dict(sorted(totals.items())), 'seconds': round(time.time() - started, 1)}
 
 
@@ -779,23 +820,50 @@ def markdown(result, top=40):
     lines += ['', f'## Top {top} vanilla methods by number of mods that change them', '']
     lines += table(['method', 'mods', 'mechanisms', 'routing', 'native'],
                    [(f'`{short(k)}`', len(v['mods']), ', '.join(sorted({c['mechanism'] for c in v['changes']})), v['routing'], v['native']['status']) for k, v in ranked])
+    report = result.get('routing')
+    if report:
+        routes = report['routes']
+        lines += ['', '## Routes', '', f'{len(routes)} routes: {sum(r["kind"] == "edge" for r in routes.values())} edge, {sum(r["kind"] == "body" for r in routes.values())} body; '
+                  f'{len(report["undecided"])} undecided; {len(report["lambdas"])} folded lambdas; {sum(r["hot"] for r in routes.values())} hot']
+        need = [(f'`{short(k)}`', ', '.join(f'`{short(n)}`' for n in r['closure']['needs_bridge'])) for k, r in routes.items() if r['closure']['needs_bridge']]
+        if need:
+            lines += ['', 'Body routes whose vanilla callees native owns and no bridge covers:', ''] + table(['route', 'needs a bridge'], need)
+        try:
+            from . import java_routing
+        except ImportError:
+            import java_routing
+        lines += ['', 'Gates (tools/java_routing.py):', ''] + java_routing.report_table(report)
     return '\n'.join(lines) + '\n'
+
+
+def write_routing(out, report):
+    try:
+        from . import mod_routing as mrt
+    except ImportError:
+        import mod_routing as mrt
+    out = Path(out)
+    (out / 'routing.json').write_text(json.dumps(report, indent=1) + '\n')
+    (out / 'routing.tsv').write_text(mrt.tsv(report))
 
 
 def install_analysis(install, cache=None, log=print):
     """INSTALL/analysis/entity-facts.json for the install's mods, redone only when the jars or this analysis changed; exits when an entity method has no state group."""
     install = Path(install)
     out = install / 'analysis'
-    sources = ''.join(hashlib.sha256((Path(__file__).resolve().parent / name).read_bytes()).hexdigest() for name in ('mod_replaces.py', 'mod_entity_facts.py', 'mod_parity.py'))
+    sources = ''.join(hashlib.sha256((Path(__file__).resolve().parent / name).read_bytes()).hexdigest() for name in ('mod_replaces.py', 'mod_entity_facts.py', 'mod_routing.py', 'mod_parity.py'))
+    ledger = json.loads(LEDGER_JSON.read_text()) if LEDGER_JSON.is_file() else {}
+    verdicts = read_verdicts()
+    sources += hashlib.sha256(json.dumps([LEDGER_JSON.stat().st_mtime_ns if LEDGER_JSON.is_file() else 0, sorted(verdicts.items())]).encode()).hexdigest()
     jars = [(j.name, j.stat().st_size, j.stat().st_mtime_ns) for j in sorted((install / 'mods').glob('*.jar'))]
     stamp = hashlib.sha256(json.dumps([jars, sources]).encode()).hexdigest()
-    if (out / 'stamp').is_file() and (out / 'stamp').read_text() == stamp and (out / 'entity-facts.json').is_file():
+    if (out / 'stamp').is_file() and (out / 'stamp').read_text() == stamp and (out / 'entity-facts.json').is_file() and (out / 'routing.json').is_file():
         return out / 'entity-facts.json'
     out.mkdir(parents=True, exist_ok=True)
-    result = analyse(install, out, {}, cache, log=log)
+    result = analyse(install, out, ledger, cache, log=log, verdicts=verdicts)
     facts = result['entity_facts']
     if facts['unclassified']:
         sys.exit('entity methods without a state group (add them to GROUPS in tools/mod_entity_facts.py):\n  ' + '\n  '.join(facts['unclassified']))
+    write_routing(out, result['routing'])
     (out / 'entity-facts.json').write_text(json.dumps(facts, indent=1) + '\n')
     (out / 'stamp').write_text(stamp)
     return out / 'entity-facts.json'
@@ -807,13 +875,21 @@ def run(args):
         sys.exit(f'no port ledger at {ledger_path}: run tools/port_ledger.py build')
     entries = json.loads(Path(args.mixins).read_text()) if args.mixins else None
     started = time.time()
-    result = analyse(args.install, args.out, json.loads(ledger_path.read_text()), args.cache, entries)
+    result = analyse(args.install, args.out, json.loads(ledger_path.read_text()), args.cache, entries, verdicts=read_verdicts())
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     facts = result.pop('entity_facts')
+    report = result.pop('routing')
+    write_routing(out, report)
+    if getattr(args, 'routes_out', None):
+        try:
+            from . import mod_routing as mrt
+        except ImportError:
+            import mod_routing as mrt
+        Path(args.routes_out).write_text(mrt.routes_tsv(report, Path(args.install).name))
     (out / 'entity-facts.json').write_text(json.dumps(facts, indent=1) + '\n')
     (out / 'replaces.json').write_text(json.dumps(result, indent=1) + '\n')
-    (out / 'replaces.md').write_text(markdown(result))
+    (out / 'replaces.md').write_text(markdown(dict(result, routing=report)))
     print(f'{out / "replaces.json"}: {len(result["mods"])} mods, {len(result["methods"])} methods, {len(result["events"])} events in {time.time() - started:.1f}s')
     print(json.dumps(result['totals']))
     if facts['unclassified']:
@@ -825,6 +901,7 @@ def add_arguments(parser):
     parser.add_argument('--out', required=True)
     parser.add_argument('--ledger', default=str(LEDGER_JSON))
     parser.add_argument('--cache', default=str(DEFAULT_CACHE), help='the libraries\' class index, kept here')
+    parser.add_argument('--routes-out', help='write the reference-pack list of routes (vanilla keys, kinds, mod ids) here')
     parser.add_argument('--mixins', help='a mixins.json of mod_parity.py to use instead of scanning')
 
 

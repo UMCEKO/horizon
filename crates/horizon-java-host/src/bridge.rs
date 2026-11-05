@@ -15,11 +15,13 @@ pub struct Bridge {
     pub class: &'static str,
     pub method: &'static str,
     pub desc: &'static str,
-    /// The method runs in Java when the receiver isn't this class; `@owner.method` is a static `(Object)Z` that must hold instead.
+    /// The method runs in Java when the receiver isn't this class; `@owner.method` names a static `(Object)Z` that must hold instead, and the native then goes on `owner`.
     pub guard: &'static str,
     pub native: &'static str,
     pub args: Vec<&'static str>,
     pub ret: &'static str,
+    /// The native is the method's body for a route stub, not the method's whole.
+    pub route: bool,
     pub pointer: *mut c_void,
 }
 // Only a pointer to a function, which every thread may call.
@@ -30,14 +32,15 @@ impl Bridge {
     /// One tab-separated line of the table the class processor reads.
     pub fn line(&self) -> String {
         format!(
-            "{}\t{}\t{}\t{}\thorizon$bridge${}\t{}\t{}",
+            "{}\t{}\t{}\t{}\thorizon$bridge${}\t{}\t{}\t{}",
             self.class,
             self.method,
             self.desc,
             self.guard,
             self.native,
             self.args.join(","),
-            self.ret
+            self.ret,
+            if self.route { "route" } else { "" }
         )
     }
     /// Where the native is declared: interfaces can't hold natives, so a guarded method's goes on the guard's class.
@@ -85,6 +88,25 @@ pub extern "system" fn n_link(mut env: JNIEnv, _class: JClass, target: JClass) {
         })
         .collect();
     let _ = env.register_native_methods(&target, &methods);
+}
+
+thread_local! {
+    static EARLY: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Marks a body fn's return as one of vanilla's early returns, for the route stub.
+pub fn early<T>(value: T) -> T {
+    EARLY.set(true);
+    value
+}
+
+/// `Host.earlyNative`, behind `Routing.early`: whether the body fn just returned one of vanilla's early returns.
+pub extern "system" fn n_route_early(_env: JNIEnv, _class: JClass) -> jboolean {
+    take_early() as jboolean
+}
+
+pub(crate) fn take_early() -> bool {
+    EARLY.replace(false)
 }
 
 thread_local! {
@@ -475,6 +497,14 @@ pub fn java_block(state: BlockStateId) -> bool {
         .is_some_and(|m| m.owned.get(state.0 as usize).copied().unwrap_or(false))
 }
 
+/// Whether this state has a block entity.
+#[inline]
+pub fn java_has_block_entity(state: BlockStateId) -> bool {
+    STATES
+        .get()
+        .is_some_and(|m| m.entity.get(state.0 as usize).copied().unwrap_or(false))
+}
+
 /// `BlockState`; None for a Java state with no Horizon block, as when a mod's blocks weren't carried over.
 pub struct State(pub Option<BlockStateId>);
 impl Arg for State {
@@ -511,11 +541,11 @@ impl Ret for BlockStateId {
     }
 }
 
-/// One entry serves one Java method from Rust: the class, the method and its descriptor, then a body on `&mut Game`.
+/// One entry serves one Java method from Rust: the class, the method and its descriptor, then a body on `&mut Game`; a leading `route` makes it the method's body for a route stub.
 #[macro_export]
 macro_rules! java_bridges {
     ($table:ident for $game:ty { $(
-        $class:literal . $method:ident $desc:literal $(if $guard:literal)? =>
+        $($route:ident)? $class:literal . $method:ident $desc:literal $(if $guard:literal)? =>
         fn $name:ident($g:ident $(, $arg:ident: $ty:ty)* $(,)?) -> $ret:ty $body:block
     )* }) => {
         $(
@@ -539,6 +569,7 @@ macro_rules! java_bridges {
                 native: stringify!($name),
                 args: vec![$(<$ty as $crate::bridge::Arg>::RAW),*],
                 ret: <$ret as $crate::bridge::Ret>::RAW,
+                route: { let route = false; $(let _ = stringify!($route); let route = true;)? route },
                 pointer: $name as *mut std::ffi::c_void,
             }),*]
         }
@@ -558,6 +589,7 @@ mod tests {
             native: "entity_discard",
             args: vec![Ent::RAW],
             ret: <() as Ret>::RAW,
+            route: false,
             pointer: std::ptr::null_mut(),
         }
     }
@@ -568,7 +600,7 @@ mod tests {
         assert_eq!(bridge.holder(), "dev/horizonlab/javamods/boot/EntityViews");
         assert_eq!(
             bridge.line(),
-            "net/minecraft/world/entity/Entity\tdiscard\t()V\t@dev/horizonlab/javamods/boot/EntityViews.backed\thorizon$bridge$entity_discard\tI\tV"
+            "net/minecraft/world/entity/Entity\tdiscard\t()V\t@dev/horizonlab/javamods/boot/EntityViews.backed\thorizon$bridge$entity_discard\tI\tV\t"
         );
         assert_eq!(bridge.signature(), "(I)V");
     }
@@ -598,5 +630,34 @@ mod tests {
     fn a_class_guard_and_no_guard_keep_their_holders() {
         assert_eq!(entry("").holder(), "net/minecraft/world/entity/Entity");
         assert_eq!(entry("a/B").holder(), "a/B");
+    }
+
+    #[allow(unused_variables)]
+    mod table {
+        crate::java_bridges! { table for () {
+            route "a/B".m "(I)I" if "a/G" => fn route_m(g, x: i32) -> i32 { x }
+            "a/C".n "()V" => fn plain_n(g) -> () {}
+        } }
+        pub fn lines() -> Vec<String> {
+            table().iter().map(super::super::Bridge::line).collect()
+        }
+    }
+
+    #[test]
+    fn a_route_entry_ends_its_line_with_route() {
+        let lines = table::lines();
+        assert_eq!(
+            lines[0],
+            "a/B\tm\t(I)I\ta/G\thorizon$bridge$route_m\tI\tI\troute"
+        );
+        assert_eq!(lines[1], "a/C\tn\t()V\t\thorizon$bridge$plain_n\t\tV\t");
+    }
+
+    #[test]
+    fn early_is_taken_once() {
+        assert!(!super::take_early());
+        assert_eq!(super::early(5), 5);
+        assert!(super::take_early());
+        assert!(!super::take_early());
     }
 }

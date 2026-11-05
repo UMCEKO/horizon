@@ -18,11 +18,40 @@ pub struct ModelQuad {
     pub material: Material,
     pub tint_index: i32,
     pub shade_direction_override: Option<Direction>,
+    /// The face's or element's `light_emission`.
     pub light_emission: u8,
+    /// Least (block, sky) light the quad is drawn with: its emission, raised by `neoforge_data`.
+    pub light: [u8; 2],
+    /// `neoforge_data` colour (ARGB) multiplied into the quad's tint.
+    pub color: Option<i32>,
+    /// `neoforge_data` override of the model's ambient occlusion for this quad.
+    pub ambient_occlusion: Option<bool>,
+    pub render_type: Option<RenderType>,
     /// False for a loader quad that takes no directional shading.
     pub shade: bool,
-    /// `BakedQuad.bakedColors` as ARGB, multiplied with the tint: an obj material's `Kd`.
-    pub color: u32,
+}
+
+/// NeoForge's `render_type` names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderType {
+    Solid,
+    Cutout,
+    CutoutMipped,
+    Translucent,
+    Tripwire,
+}
+impl RenderType {
+    /// Accepts a bare or `minecraft:` name; others (mods' own types) are `None`.
+    pub fn by_name(name: &str) -> Option<Self> {
+        match name.strip_prefix("minecraft:").unwrap_or(name) {
+            "solid" => Some(Self::Solid),
+            "cutout" => Some(Self::Cutout),
+            "cutout_mipped" => Some(Self::CutoutMipped),
+            "translucent" => Some(Self::Translucent),
+            "tripwire" => Some(Self::Tripwire),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -236,6 +265,7 @@ fn bake_geometry(
     skip_flat: bool,
     output: &mut Vec<ModelQuad>,
 ) -> Result<()> {
+    let render_type = model.render_type.as_deref().and_then(RenderType::by_name);
     for element in model.elements() {
         let element = element
             .as_ref()
@@ -257,7 +287,13 @@ fn bake_geometry(
                 force_translucent: false,
             });
             output.push(bake_face(
-                element, face, *direction, matrix, material, transform,
+                element,
+                face,
+                *direction,
+                matrix,
+                material,
+                transform,
+                render_type,
             )?);
         }
     }
@@ -300,8 +336,11 @@ fn baked_quad(quad: &BakedQuadData, transform: BlockModelTransform) -> ModelQuad
         tint_index: quad.tint,
         shade_direction_override: None,
         light_emission: quad.emission,
+        light: [quad.emission; 2],
+        color: None,
+        ambient_occlusion: None,
+        render_type: None,
         shade: quad.shade,
-        color: u32::MAX,
     }
 }
 /// Obj faces are unculled quads in block units; the blockstate transform moves them whole.
@@ -314,10 +353,11 @@ fn bake_obj(
     transform: BlockModelTransform,
     output: &mut Vec<ModelQuad>,
 ) -> Result<()> {
+    let render_type = model.render_type.as_deref().and_then(RenderType::by_name);
     for face in obj.faces.iter().filter(|f| !hidden.contains(&f.object)) {
-        let color = obj.diffuse.get(&face.material).map_or(u32::MAX, |kd| {
+        let color = obj.diffuse.get(&face.material).map(|kd| {
             let channel = |v: f32| (v.clamp(0.0, 1.0) * 255.0) as u32;
-            0xFF00_0000 | channel(kd[0]) << 16 | channel(kd[1]) << 8 | channel(kd[2])
+            (0xFF00_0000 | channel(kd[0]) << 16 | channel(kd[1]) << 8 | channel(kd[2])) as i32
         });
         let slot = match obj.materials.get(&face.material) {
             Some(MtlTexture::Sprite(sprite)) => {
@@ -330,6 +370,7 @@ fn bake_obj(
                     flip_v,
                     shade,
                     color,
+                    render_type,
                     transform,
                 ));
                 continue;
@@ -346,7 +387,15 @@ fn bake_obj(
             sprite: "minecraft:missingno".to_owned(),
             force_translucent: false,
         });
-        output.push(obj_quad(face, material, flip_v, shade, color, transform));
+        output.push(obj_quad(
+            face,
+            material,
+            flip_v,
+            shade,
+            color,
+            render_type,
+            transform,
+        ));
     }
     Ok(())
 }
@@ -355,7 +404,8 @@ fn obj_quad(
     material: Material,
     flip_v: bool,
     shade: bool,
-    color: u32,
+    color: Option<i32>,
+    render_type: Option<RenderType>,
     transform: BlockModelTransform,
 ) -> ModelQuad {
     let positions = face.vertices.map(|v| transform.position(v.position));
@@ -370,8 +420,11 @@ fn obj_quad(
         tint_index: -1,
         shade_direction_override: None,
         light_emission: 0,
-        shade,
+        light: [0; 2],
         color,
+        ambient_occlusion: None,
+        render_type,
+        shade,
     }
 }
 /// `FaceBakery.bakeQuad` for a quad with explicit corners and unit-atlas UVs
@@ -391,6 +444,7 @@ pub fn bake_flat_face(
         rotation: None,
         shade_direction_override: None,
         light_emission: 0,
+        neoforge_data: None,
     };
     let face = Face {
         cull: None,
@@ -398,6 +452,8 @@ pub fn bake_flat_face(
         texture: String::new(),
         uv: Some(uv),
         rotation: 0,
+        light_emission: None,
+        neoforge_data: None,
     };
     bake_face(
         &element,
@@ -406,6 +462,7 @@ pub fn bake_flat_face(
         None,
         material,
         BlockModelTransform::new([0; 3], false),
+        None,
     )
 }
 fn bake_face(
@@ -415,6 +472,7 @@ fn bake_face(
     matrix: Option<ElementMatrix>,
     material: Material,
     transform: BlockModelTransform,
+    render_type: Option<RenderType>,
 ) -> Result<ModelQuad> {
     let mut positions = corners(element.from, element.to, direction).map(|v| v.map(|c| c / 16.0));
     if let (Some(rotation), Some(matrix)) = (&element.rotation, matrix) {
@@ -464,6 +522,11 @@ fn bake_face(
             uv.swap(index, found);
         }
     }
+    let data = face
+        .neoforge_data
+        .unwrap_or_default()
+        .over(element.neoforge_data.unwrap_or_default());
+    let light_emission = face.light_emission.unwrap_or(element.light_emission);
     Ok(ModelQuad {
         positions,
         uv,
@@ -472,9 +535,12 @@ fn bake_face(
         material,
         tint_index: face.tint_index,
         shade_direction_override: element.shade_direction_override,
-        light_emission: element.light_emission,
+        light_emission,
+        light: [data.block_light, data.sky_light].map(|l| l.unwrap_or(0).max(light_emission)),
+        color: data.color,
+        ambient_occlusion: data.ambient_occlusion,
+        render_type,
         shade: true,
-        color: u32::MAX,
     })
 }
 
@@ -490,6 +556,7 @@ mod loader_tests {
             self.0.get(location).map(|text| (*text).to_owned())
         }
     }
+
     fn library(models: &[(&str, &str)], files: &[(&'static str, &'static str)]) -> ModelLibrary {
         let models = models
             .iter()
@@ -534,6 +601,17 @@ mod loader_tests {
         );
     }
     #[test]
+    fn an_inheriting_model_overrides_which_children_are_visible() {
+        let hidden =
+            COMPOSITE.replace(r#""children""#, r#""visibility":{"zeta":false},"children""#);
+        let shown = r#"{"parent":"t:hidden","visibility":{"zeta":true,"alpha":false}}"#;
+        let library = library(
+            &[("t:cube", CUBE), ("t:hidden", &hidden), ("t:shown", shown)],
+            &[],
+        );
+        assert_eq!(sprites(&bake(&library, "t:shown")), ["minecraft:block/own"]);
+    }
+    #[test]
     fn loader_is_inherited_by_parent_after_own_elements() {
         let derived = r##"{"parent":"t:comp","textures":{"all":"block/derived"},
             "elements":[{"from":[0,0,0],"to":[16,16,16],"faces":{"down":{"texture":"#all"}}}]}"##;
@@ -565,6 +643,12 @@ mod loader_tests {
         );
         assert!(bake(&library, "t:other").is_empty());
     }
+    #[test]
+    fn composites_that_nest_through_themselves_are_an_error() {
+        let looping = r#"{"loader":"neoforge:composite","children":{"a":{"parent":"t:loop"}}}"#;
+        let library = library(&[("t:loop", looping)], &[]);
+        assert!(library.resolve("t:loop").is_err());
+    }
 
     const OBJ: &str = "mtllib m.mtl\nv 0 0 0\nv 1 0 0\nv 1 0 1\nv 0 0 1\nv 0 1 0\n\
         vt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\n\
@@ -587,8 +671,8 @@ mod loader_tests {
         ];
         let library = library(&[("t:o", model)], &files);
         let quads = bake(&library, "t:o");
-        assert_eq!(quads[0].color, 0xFFCC_CCCC);
-        assert_eq!(quads[1].color, u32::MAX);
+        assert_eq!(quads[0].color, Some(0xFFCC_CCCC_u32 as i32));
+        assert_eq!(quads[1].color, None);
     }
     #[test]
     fn obj_faces_become_quads_with_materials_and_flipped_v() {
@@ -720,5 +804,27 @@ mod loader_tests {
         let child = r#"{"parent":"t:b"}"#;
         let library = library(&[("t:b", BAKED), ("t:c", child)], &[]);
         assert_eq!(bake(&library, "t:c").len(), 2);
+    }
+    #[test]
+    fn obj_visibility_skips_the_objects_a_model_hides() {
+        let two = "v 0 0 0\nv 1 0 0\nv 1 0 1\nv 0 0 1\no a\nusemtl m\nf 1 2 3 4\no b\nf 4 3 2 1\n";
+        let files = [("t:models/two.obj", two)];
+        let base =
+            r#"{"loader":"neoforge:obj","model":"t:models/two.obj","textures":{"m":"block/m"}}"#;
+        let hiding = r#"{"parent":"t:base","visibility":{"b":false}}"#;
+        let restoring = r#"{"parent":"t:hiding","visibility":{"b":true}}"#;
+        let library = library(
+            &[
+                ("t:base", base),
+                ("t:hiding", hiding),
+                ("t:restoring", restoring),
+            ],
+            &files,
+        );
+        assert_eq!(bake(&library, "t:base").len(), 2);
+        let quads = bake(&library, "t:hiding");
+        assert_eq!(quads.len(), 1);
+        assert_eq!(quads[0].facing, Direction::Down);
+        assert_eq!(bake(&library, "t:restoring").len(), 2);
     }
 }

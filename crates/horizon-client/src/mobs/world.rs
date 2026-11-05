@@ -117,6 +117,19 @@ impl MobWorld<'_> {
     }
     /// Level.clip with COLLIDER shapes (optionally stopping at any fluid): true on a miss.
     pub fn clear_between(&self, from: Vec3, to: Vec3, fluids_block: bool) -> bool {
+        self.clear_between_for(None, from, to, fluids_block)
+    }
+    /// The same for an entity whose `getY()` is `feet_y`: `ClipContext` hands
+    /// its `CollisionContext.of(entity)` to every block, so scaffolding is
+    /// solid for a viewer above it and open for one below.
+    fn clear_between_for(
+        &self,
+        feet_y: Option<f64>,
+        from: Vec3,
+        to: Vec3,
+        fluids_block: bool,
+    ) -> bool {
+        let context = feet_y.map(horizon_world::collision_context::CollisionContext::position);
         let mut scene = SceneCollisions {
             world: self.world,
             binding: self.collision,
@@ -130,10 +143,15 @@ impl MobWorld<'_> {
             if self.facts.is_air(state) {
                 return None;
             }
-            let shape = self
-                .collision
-                .collision_shape(&mut scene, state, [p.x, p.y, p.z])
-                .ok()?;
+            let shape = match &context {
+                Some(context) => self
+                    .collision
+                    .collision_shape_with_context(&mut scene, state, p, context),
+                None => self
+                    .collision
+                    .collision_shape(&mut scene, state, [p.x, p.y, p.z]),
+            }
+            .ok()?;
             shape.clip(from, to, p).map(|_| ())
         });
         matches!(result, Ok(None))
@@ -220,12 +238,16 @@ impl MobWorld<'_> {
     }
     /// LivingEntity.hasLineOfSight: eye to eye within 128 blocks.
     pub fn line_of_sight(&self, from_eye: Vec3, to: Vec3) -> bool {
+        self.line_of_sight_for(None, from_eye, to)
+    }
+    /// The same for a viewer standing at `feet_y` (its collision context).
+    pub fn line_of_sight_for(&self, feet_y: Option<f64>, from_eye: Vec3, to: Vec3) -> bool {
         let d =
             (to.x - from_eye.x).powi(2) + (to.y - from_eye.y).powi(2) + (to.z - from_eye.z).powi(2);
         if d > 128.0 * 128.0 {
             return false;
         }
-        self.clear_between(from_eye, to, false)
+        self.clear_between_for(feet_y, from_eye, to, false)
     }
     /// Level.canSeeSky: sky light 15 at the position (no roof above).
     pub fn can_see_sky(&self, x: i32, y: i32, z: i32) -> bool {
@@ -268,6 +290,11 @@ impl MobWorld<'_> {
         if self.daylight { 0 } else { 11 }
     }
     pub fn target_info(&self, who: Who) -> Option<TargetInfo> {
+        if let Some((id, target)) = self.dragon
+            && who == Who::Mob(id)
+        {
+            return Some(target);
+        }
         match who {
             Who::Player => self.player.as_ref().map(|p| TargetInfo {
                 position: p.position,
@@ -454,26 +481,73 @@ pub(crate) fn with_test_riding(
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../.local/horizon-client")
         .join(horizon_core::VANILLA_VERSION);
+    with_linked_resource_test_world(&root, others, links, true, |_, _| {}, f)
+}
+/// `with_test_world` with `build` placing blocks first.
+#[cfg(test)]
+pub(crate) fn with_built_test_world(
+    others: &[Seen],
+    build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
+    f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
+) -> bool {
+    with_built_test_world_rules(others, true, build, f)
+}
+/// `with_built_test_world` with the `mob_griefing` game rule the world reports.
+#[cfg(test)]
+pub(crate) fn with_built_test_world_rules(
+    others: &[Seen],
+    mob_griefing: bool,
+    build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
+    f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
+) -> bool {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.local/horizon-client")
+        .join(horizon_core::VANILLA_VERSION);
+    with_resource_test_world(&root, others, mob_griefing, build, f)
+}
+/// The same mob world loaded from a content mod's resource root.
+#[cfg(test)]
+pub(crate) fn with_resource_test_world(
+    root: &std::path::Path,
+    others: &[Seen],
+    mob_griefing: bool,
+    build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
+    f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
+) -> bool {
+    with_linked_resource_test_world(root, others, &[], mob_griefing, build, f)
+}
+#[cfg(test)]
+fn with_linked_resource_test_world(
+    root: &std::path::Path,
+    others: &[Seen],
+    links: &[(u32, u32)],
+    mob_griefing: bool,
+    build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
+    f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
+) -> bool {
     if !root.join("entity-types.json").exists() || !root.join("movement-properties.nbt").exists() {
         return false;
     }
-    let assets = crate::assets::Assets::load(&root).unwrap();
+    let assets = crate::assets::Assets::load(root).unwrap();
     let registry = assets.registry;
-    let facts = BlockFacts::load(&root, registry).unwrap();
-    let motion = crate::motion::MotionResources::load(&root, &assets).unwrap();
-    let data = super::MobData::load(&root, &facts);
-    let types = super::MobTypes::load(&root).unwrap();
-    let biomes = crate::biome::Biomes::load(&root).unwrap();
+    let facts = BlockFacts::load(root, registry).unwrap();
+    let motion = crate::motion::MotionResources::load(root, &assets).unwrap();
+    let data = super::MobData::load(root, &facts);
+    let types = super::MobTypes::load(root).unwrap();
+    let biomes = crate::biome::Biomes::load(root).unwrap();
     let items = crate::items::Items::load(
-        &root,
+        root,
         registry,
         &facts,
         &horizon_world::loot::PackOverlay::NONE,
     )
     .unwrap();
-    let collision = crate::collisions::load(&root, registry).unwrap();
+    let collision = std::sync::Arc::new(crate::collisions::load(root, registry).unwrap());
+    let suffocation =
+        crate::mobs::suffocation::bind(collision.clone(), &motion.causes_suffocation).unwrap();
     let air = registry.default_state("minecraft:air").unwrap();
-    let world = crate::world::World::new(air, 0);
+    let mut world = crate::world::World::new(air, 0);
+    build(&mut world, registry);
     let lid_openers = std::collections::HashMap::new();
     let riding = std::cell::RefCell::new(crate::riding::Riding::default());
     for &(rider, vehicle) in links {
@@ -488,13 +562,17 @@ pub(crate) fn with_test_riding(
         fluid_tables: &motion.fluids,
         movement: &motion.blocks,
         collision: &collision,
+        suffocation: &suffocation,
         data: &data,
         player: None,
+        controlling_player_movement: None,
         nearest_player: None,
         others,
+        dragon: None,
         leash_boats: &[],
         others_grid: None,
         others_index: None,
+        others_villagers: None,
         daylight: true,
         monsters_burn: false,
         game_time: 1000,
@@ -503,8 +581,10 @@ pub(crate) fn with_test_riding(
         thundering: false,
         nether: false,
         block_tags: &items.block_tags,
+        landing: &motion.landing,
         biomes: &biomes,
-        mob_griefing: true,
+        mob_griefing,
+        universal_anger: false,
         mob_drops: true,
         max_entity_cramming: 24,
         difficulty: super::spawning::LocalDifficulty::new(2, 18000, 0, 0.0),
@@ -513,7 +593,78 @@ pub(crate) fn with_test_riding(
         sea_level: 63,
         items: Some(&items),
         lid_openers: &lid_openers,
+        mod_effects: None,
+        border: None,
     };
     f(&w, &types);
     true
+}
+/// A player standing at `position` in survival, as mobs see one.
+#[cfg(test)]
+pub(crate) fn test_player(position: Vec3) -> super::PlayerView {
+    super::PlayerView {
+        position,
+        bounds: Aabb::new(
+            Vec3::new(position.x - 0.3, position.y, position.z - 0.3),
+            Vec3::new(position.x + 0.3, position.y + 1.8, position.z + 0.3),
+        ),
+        eye: [position.x, position.y + 1.62, position.z],
+        alive: true,
+        creative: false,
+        sneaking: false,
+        swimming: false,
+        look: [0.0; 3],
+        main_hand: None,
+        off_hand: None,
+        head: None,
+        armor_cover: 0.0,
+        invisible: false,
+        spectator: false,
+        gold_armor: false,
+        hurt_by: None,
+        last_hurt: None,
+        velocity: Vec3::ZERO,
+        yaw: 0.0,
+        sprinting: false,
+        riding: false,
+        hero: false,
+        effects: Vec::new(),
+        uuid: [0; 4],
+        allies: Default::default(),
+        remote: false,
+        sleeping: false,
+        sleep_timer: 0,
+        passenger: false,
+        riding_vehicle: None,
+        vehicle: None,
+    }
+}
+
+#[cfg(test)]
+mod scaffolding_sight_tests {
+    use super::*;
+
+    /// ScaffoldingBlock.getCollisionShape: a viewer below the block sees
+    /// through it, one above does not (issue 9607).
+    #[test]
+    fn scaffolding_blocks_sight_only_from_above() {
+        let ran = super::with_built_test_world(
+            &[],
+            |world, registry| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                let scaffolding = registry.default_state("minecraft:scaffolding").unwrap();
+                world.set(0, 65, 0, scaffolding).unwrap();
+            },
+            |w, _| {
+                let below = Vec3::new(0.5, 64.0 + 1.62, 0.5);
+                let above = Vec3::new(0.5, 66.0 + 1.62, 0.5);
+                assert!(w.line_of_sight_for(Some(64.0), below, above));
+                assert!(!w.line_of_sight_for(Some(66.0), above, below));
+            },
+        );
+        let _ = ran;
+    }
 }

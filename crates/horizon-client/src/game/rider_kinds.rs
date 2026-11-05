@@ -276,6 +276,20 @@ impl Game<'_> {
         if self.mobs.iter().any(|m| m.id == vehicle) || self.boats.iter().any(|b| b.id == vehicle) {
             return;
         }
+        // A mob on a text display (NPC plugins seat their sitting NPCs on one): the server's
+        // position gives way to the display's seat, as `rideTick` places it.
+        if let Some((at, before)) = self.text_displays.get(&(vehicle as i32)).map(|d| d.seat()) {
+            let m = &mut self.mobs[i];
+            // EntityType.TEXT_DISPLAY's box is zero wide.
+            let offset = horizon_client::mobs::riders::vehicle_attachment(m, 0.0)[1];
+            m.position = Vec3::new(at.x, at.y - offset, at.z);
+            m.previous = Vec3::new(before.x, before.y - offset, before.z);
+            m.velocity = Vec3::ZERO;
+            m.fall_distance = 0.0;
+            m.on_ground = false;
+            m.ai.nav.stop();
+            return;
+        }
         let m = &self.mobs[i];
         let width = self.plain_width(vehicle);
         let own = horizon_client::mobs::riders::vehicle_attachment(m, width);

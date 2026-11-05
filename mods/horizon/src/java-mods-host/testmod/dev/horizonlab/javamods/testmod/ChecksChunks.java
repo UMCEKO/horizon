@@ -1,6 +1,7 @@
 package dev.horizonlab.javamods.testmod;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.server.level.ChunkTrackingView;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -58,6 +59,12 @@ final class ChecksChunks {
             boolean placed = Battery.neighbor == Blocks.AIR;
             level.setBlock(at.above(), Blocks.AIR.defaultBlockState(), 3);
             return placed && Battery.neighbor == Blocks.GLASS;
+        });
+        Checks.check("updateShape hears its neighbour", () -> {
+            level.setBlock(at.above(), Blocks.GLASS.defaultBlockState(), 3);
+            boolean heard = Battery.shapeDirection == Direction.UP && Battery.shapeNeighbor == Blocks.GLASS;
+            level.setBlock(at.above(), Blocks.AIR.defaultBlockState(), 3);
+            return heard && Battery.shapeNeighbor == Blocks.AIR;
         });
         Checks.check("UPDATE_SKIP_ON_PLACE", () -> {
             int places = Battery.places;

@@ -176,5 +176,5 @@ pub fn of(m: &Mob) -> Attachments {
     } else if m.extra.size > 0 {
         a = a.scaled(m.extra.size as f32);
     }
-    a
+    a.scaled(m.model_scale())
 }

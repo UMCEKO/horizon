@@ -2,6 +2,7 @@
 use super::commands::Target;
 use super::entity_life::Removal;
 use super::*;
+use horizon_client::entity_rules::EntityRules;
 use horizon_client::{
     Result, collisions::SceneCollisions, landing::SceneSound, projectiles::ProjectileKind,
     riding::Ent,
@@ -810,7 +811,7 @@ impl Game<'_> {
                 };
                 let mut p = self.creatures.projectiles.remove(i);
                 let arrow = p.arrow.is_some();
-                let (gravity, air_drag) = (p.gravity(), p.air_drag());
+                let (gravity, air_drag) = (p.get_gravity(), p.air_drag());
                 let body = BodyRef {
                     id,
                     size: BodyRef::size_of(p.bounds()),
@@ -1029,17 +1030,38 @@ impl Game<'_> {
                 true
             }
             Target::Item(id) => {
-                let Some(item) = self.dropped.iter_mut().find(|i| i.id == id) else {
+                let Some(i) = self.dropped.iter().position(|i| i.id == id) else {
                     return false;
                 };
-                item.move_by(&self.world, self.res.facts(), self.collision, delta, false);
+                // `getEntityCollisions` along the move: what `canBeCollidedWith` the item.
+                let colliders = self.item_entity_collisions();
+                let border = self.border.geometry();
+                let item = &mut self.dropped[i];
+                item.move_by(
+                    &self.world,
+                    self.res.facts(),
+                    self.collision,
+                    delta,
+                    false,
+                    &colliders,
+                    Some(border),
+                    Some(&self.res.motion().blocks),
+                );
                 true
             }
             Target::Tnt(id) => {
+                let border = self.border.geometry();
                 let Some(tnt) = self.tnts.iter_mut().find(|t| t.id == id) else {
                     return false;
                 };
-                tnt.move_by(&self.world, self.collision, delta);
+                tnt.move_by(
+                    &self.world,
+                    self.collision,
+                    self.res.facts(),
+                    delta,
+                    Some(border),
+                    Some(&self.res.motion().blocks),
+                );
                 true
             }
             Target::Cart(id) => {
@@ -1106,6 +1128,10 @@ mod tests {
             count: 1,
             ticks: 0,
             removed: false,
+            health: 5,
+            join: Default::default(),
+            no_gravity: false,
+            rotation: [0.0, 0.0],
         });
         id
     }
@@ -1426,7 +1452,8 @@ mod tests {
         game.carts.push(super::minecarts::Minecart::new(
             id,
             super::minecarts::CartKind::Rideable,
-            Vec3::new(0.5, 63.0, 0.5),
+            // Away from the player, whose box a cart collides with.
+            Vec3::new(6.5, 63.0, 6.5),
         ));
         game.entity_move(
             Target::Cart(id),
@@ -1454,11 +1481,7 @@ mod tests {
             Vec3::new(3.5, 63.0, 0.5),
             Vec3::ZERO,
             80,
-            game.pack
-                .assets
-                .registry
-                .default_state("minecraft:tnt")
-                .unwrap(),
+            game.pack.assets.registry.default_state("minecraft:tnt"),
         ));
         for target in [Target::Item(item), Target::Tnt(tnt)] {
             assert!(game.entity_move(target, MoverType::SelfMovement, Vec3::new(0.0, -5.0, 0.0)));

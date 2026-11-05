@@ -37,6 +37,7 @@ public final class Host extends Entrypoint {
     public static native int shapeFlags(double[] x, double[] y, double[] z, boolean[] occupied);
     public static native long shapeHandle(double[] x, double[] y, double[] z, boolean[] occupied);
     public static native void shapeFree(long handle);
+    public static native boolean earlyNative();
     public static native void link(Class<?> target);
     /** The crossing bench's reentrancy native, registered by the bench alone. */
     public static native int benchBack(int tag);

@@ -135,7 +135,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     "(Lnet/minecraft/world/level/block/state/BlockState;)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
     fn tnt_set_block_state(game, id: Ent, state: State) -> () {
         if let (Some(t), Some(state)) = (game.tnts.iter_mut().find(|t| t.id == id.0), state.0) {
-            t.block_state = state;
+            t.block_state = Some(state);
         }
         after(game, id, SPECIES);
     }

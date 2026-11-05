@@ -107,6 +107,12 @@ pub fn register(m: &mut Mob) {
         outside: 0.1,
         gravity: true,
     };
+    // `Frog.FrogPathNavigation` (`AmphibiousPathNavigation`, and
+    // `prefersShallowSwimming` is the frog's own override): water deeper than
+    // ten blocks under sea level costs more, so a frog paths the shallows.
+    m.ai.nav.kind = super::nav::NavKind::Amphibious {
+        prefers_shallow: true,
+    };
     let g = &mut m.ai.goals;
     g.add(0, Float);
     g.add(1, Panic::new(1.25));
@@ -380,9 +386,10 @@ impl LaySpawn {
                 if let Some(state) = cx.w.registry.default_state("minecraft:frogspawn") {
                     cx.events.push(MobEvent::SetBlock { pos: spawn, state });
                 }
-                cx.events.push(MobEvent::Sound(
+                cx.events.push(MobEvent::entity_sound(
+                    m,
                     "entity.frog.lay_spawn",
-                    [m.position.x, m.position.y, m.position.z],
+                    6,
                     1.0,
                     1.0,
                 ));
@@ -536,16 +543,16 @@ impl Goal for ShootTongue {
         m.look_at([t.position.x, t.eye_y, t.position.z]);
         m.extra.frog.tongue_target = Some(id);
         m.extra.frog.time += 1;
-        let here = [m.position.x, m.position.y, m.position.z];
         match m.extra.frog.phase {
             Phase::MoveToTarget => {
                 if pos.distance_squared(m.position) < EATING_DISTANCE * EATING_DISTANCE {
                     cx.events
-                        .push(MobEvent::Sound("entity.frog.tongue", here, 2.0, 1.0));
+                        .push(MobEvent::entity_sound(m, "entity.frog.tongue", 6, 2.0, 1.0));
                     set_pose(m, sync::USING_TONGUE);
-                    // The target is drawn in at 0.75 a tick.
+                    // `target.setDeltaMovement(vectorTo(frog).normalize().scale(0.75))`: the
+                    // target's own motion is replaced, and it is drawn in.
                     let pull = m.position.subtract(pos).normalize().scale(0.75);
-                    cx.events.push(MobEvent::Push {
+                    cx.events.push(MobEvent::SetVelocity {
                         target: Who::Mob(id),
                         velocity: [pull.x, pull.y, pull.z],
                     });
@@ -566,8 +573,10 @@ impl Goal for ShootTongue {
                     f.phase = Phase::EatAnimation;
                     // eatEntity.
                     cx.events
-                        .push(MobEvent::Sound("entity.frog.eat", here, 2.0, 1.0));
+                        .push(MobEvent::entity_sound(m, "entity.frog.eat", 6, 2.0, 1.0));
                     super::ai::do_hurt_target(m, Who::Mob(id), cx);
+                    // `if (!target.isAlive()) target.remove(KILLED)`: no death animation.
+                    cx.events.push(MobEvent::RemoveKilled { target: id });
                 }
             }
             Phase::EatAnimation => {
@@ -782,13 +791,13 @@ impl LongJump {
                 // multiply(0.1F, 1.0, 0.1F): the float widened.
                 let slow = f64::from(0.1_f32);
                 m.velocity = m.velocity.multiply(Vec3::new(slow, 1.0, slow));
-                let at = [m.position.x, m.position.y, m.position.z];
                 let landing = if m.species() == Species::Goat {
                     "entity.goat.step"
                 } else {
                     "entity.frog.step"
                 };
-                cx.events.push(MobEvent::Sound(landing, at, 2.0, 1.0));
+                cx.events
+                    .push(MobEvent::entity_sound(m, landing, 6, 2.0, 1.0));
             }
             set_jump_pose(m, cx.w, sync::STANDING);
             sample_cooldown(m, cx.lr, 1);
@@ -953,8 +962,8 @@ impl Goal for LongJump {
             .map_or(0.0, |e| f64::from(0.1_f32 * (e.amplifier + 1) as f32));
         m.velocity = jump.scale((len + boost) / len);
         self.mid_jump = true;
-        let at = [m.position.x, m.position.y, m.position.z];
-        cx.events.push(MobEvent::Sound(jump_sound(m), at, 1.0, 1.0));
+        cx.events
+            .push(MobEvent::entity_sound(m, jump_sound(m), 6, 1.0, 1.0));
     }
 }
 
