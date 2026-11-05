@@ -4680,6 +4680,7 @@ impl Game<'_> {
         let riding = self.screen != Screen::Dead && self.remote_ride(keys);
         // The server sends no passenger's position: they sit where their
         // vehicles are now.
+        self.zero_rider_motion();
         self.position_riders();
         let Some(player) = self.player.as_mut() else {
             return Ok(());

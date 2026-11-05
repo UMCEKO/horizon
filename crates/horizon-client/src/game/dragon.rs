@@ -257,6 +257,12 @@ impl Phase {
         }
     }
 }
+impl Dragon {
+    /// `Entity.setDeltaMovement(ZERO)`.
+    pub(super) fn stop(&mut self) {
+        self.velocity = Vec3::ZERO;
+    }
+}
 pub(super) struct Dragon {
     /// `Entity.id` once tracked to guests (0 before); its parts take the
     /// eight ids after it (`EnderDragon`'s constructor reserves them).

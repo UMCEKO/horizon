@@ -12,6 +12,24 @@ struct Body {
     ty: String,
 }
 
+/// The middle of a box, where a block-attached entity stands.
+fn centre(lo: [f64; 3], hi: [f64; 3]) -> Vec3 {
+    Vec3::new(
+        (lo[0] + hi[0]) / 2.0,
+        (lo[1] + hi[1]) / 2.0,
+        (lo[2] + hi[2]) / 2.0,
+    )
+}
+
+/// `BlockAttachedEntity.setPos`: the block holding the point.
+fn block_of(at: Vec3) -> [i32; 3] {
+    [
+        at.x.floor() as i32,
+        at.y.floor() as i32,
+        at.z.floor() as i32,
+    ]
+}
+
 impl Game<'_> {
     /// `EntityType` attachments of `ty`, read once from `entity-types.json`.
     pub(super) fn type_attachments(&self, ty: &str) -> Option<Attachments> {
@@ -112,6 +130,22 @@ impl Game<'_> {
                 "minecraft:lightning_bolt",
             );
         }
+        if let Some(f) = self.item_frames.iter().find(|f| f.id == id) {
+            let (lo, hi) = f.bounds();
+            let yaw = [0.0, 0.0, 180.0, 0.0, 90.0, 270.0][usize::from(f.facing.min(5))];
+            return body(centre(lo, hi), yaw, f.kind());
+        }
+        if let Some(p) = self.paintings.iter().find(|p| p.id == id) {
+            let (lo, hi) = p.bounds();
+            return body(
+                centre(lo, hi),
+                f32::from(p.facing & 3) * 90.0,
+                "minecraft:painting",
+            );
+        }
+        if let Some(d) = self.dragon.as_ref().filter(|d| d.id == id) {
+            return body(d.position, d.yaw, "minecraft:ender_dragon");
+        }
         let o = self.others.iter().find(|o| o.id == id)?;
         body(o.position, o.yaw, &o.kind)
     }
@@ -138,9 +172,51 @@ impl Game<'_> {
             c.position = at;
         } else if let Some(b) = self.bolts.iter_mut().find(|b| b.id == id) {
             b.at = [at.x, at.y, at.z];
+        } else if let Some(f) = self.item_frames.iter_mut().find(|f| f.id == id) {
+            f.pos = block_of(at);
+        } else if let Some(p) = self.paintings.iter_mut().find(|p| p.id == id) {
+            p.pos = block_of(at);
+        } else if let Some(d) = self.dragon.as_mut().filter(|d| d.id == id) {
+            d.position = at;
         } else if let Some(o) = self.others.iter_mut().find(|o| o.id == id) {
             o.position = at;
         }
+    }
+
+    /// The yaw of a plain entity that has one.
+    fn plain_yaw_mut(&mut self, id: u32) -> Option<&mut f32> {
+        if let Some(p) = self.creatures.projectiles.iter_mut().find(|p| p.id == id) {
+            return Some(&mut p.yaw);
+        }
+        if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) {
+            return Some(&mut a.yaw);
+        }
+        if let Some(b) = self.boats.iter_mut().find(|b| b.id == id) {
+            return Some(&mut b.yaw);
+        }
+        if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
+            return Some(&mut c.yaw);
+        }
+        if let Some(c) = self.cushions.iter_mut().find(|c| c.id == id) {
+            return Some(&mut c.yaw);
+        }
+        self.others
+            .iter_mut()
+            .find(|o| o.id == id)
+            .map(|o| &mut o.yaw)
+    }
+
+    /// `AbstractBoat.positionRider` for a rider that cannot turn in boats: it turns with the boat, within 105 degrees of it.
+    fn turn_plain_in_boat(&mut self, rider: u32, boat_yaw: f32, delta_rotation: f32) {
+        let server = self.remote.is_none();
+        let Some(yaw) = self.plain_yaw_mut(rider) else {
+            return;
+        };
+        if server {
+            *yaw += delta_rotation;
+        }
+        let delta = horizon_client::camera::wrap_degrees(*yaw - boat_yaw);
+        *yaw += delta.clamp(-105.0, 105.0) - delta;
     }
 
     /// `Entity.setDeltaMovement(ZERO)` of an entity of a kind that is no mob.
@@ -159,42 +235,63 @@ impl Game<'_> {
             c.velocity = Vec3::ZERO;
         } else if let Some(t) = self.tnts.iter_mut().find(|t| t.id == id) {
             t.velocity = Vec3::ZERO;
+        } else if let Some(d) = self.dragon.as_mut().filter(|d| d.id == id) {
+            d.stop();
         }
     }
 
     /// `Entity.rideTick`'s `setDeltaMovement(ZERO)`, before the passenger's own tick.
     pub(super) fn zero_rider_motion(&mut self) {
-        let riders: Vec<u32> = self
-            .riding_table
-            .borrow()
-            .riders_in_order()
-            .into_iter()
-            .filter_map(|(rider, _)| rider.id())
-            .collect();
+        let ids = |table: &horizon_client::riding::Riding| -> Vec<u32> {
+            table
+                .riders_in_order()
+                .into_iter()
+                .filter_map(|(rider, _)| rider.id())
+                .collect()
+        };
+        let riders = match self.remote.as_ref() {
+            Some(r) => ids(&r.passengers),
+            None => ids(&self.riding_table.borrow()),
+        };
         for id in riders {
             self.zero_plain_motion(id);
         }
     }
 
-    /// `Entity.positionRider` of a mob on a vehicle of a kind that is no mob, boat or cart.
-    fn position_mob_on_plain(&mut self, rider: u32, vehicle: Ent, n: usize) {
+    /// `Entity.positionRider` of a mob on a vehicle of a kind that is no mob or boat.
+    fn position_mob_on_plain(&mut self, rider: u32, vehicle: Ent, n: usize, count: usize) {
         let (Some(vehicle), Some(i)) = (vehicle.id(), self.mobs.iter().position(|m| m.id == rider))
         else {
             return;
         };
-        if self.mobs.iter().any(|m| m.id == vehicle)
-            || self.boats.iter().any(|b| b.id == vehicle)
-            || self.carts.iter().any(|c| c.id == vehicle)
-        {
+        if self.mobs.iter().any(|m| m.id == vehicle) || self.boats.iter().any(|b| b.id == vehicle) {
             return;
         }
         let m = &self.mobs[i];
         let width = self.plain_width(vehicle);
         let own = horizon_client::mobs::riders::vehicle_attachment(m, width);
-        if let Some(at) = self.plain_seat(vehicle, n, own) {
+        let at = if let Some(c) = self.carts.iter().position(|c| c.id == vehicle) {
+            let seat = Seat {
+                offset: own[1],
+                animal: false,
+            };
+            Some(self.passenger_point(Vehicle::Cart(c), n, count, seat, false))
+        } else if let Some(c) = self.cushions.iter().position(|c| c.id == vehicle) {
+            let seat = Seat {
+                offset: own[1],
+                animal: false,
+            };
+            Some(self.passenger_point(Vehicle::Cushion(c), n, count, seat, false))
+        } else {
+            self.plain_seat(vehicle, n, own)
+        };
+        if let Some(at) = at {
             let m = &mut self.mobs[i];
             m.position = at;
             m.previous = at;
+            m.velocity = Vec3::ZERO;
+            m.fall_distance = 0.0;
+            m.ai.nav.stop();
         }
     }
 
@@ -208,8 +305,7 @@ impl Game<'_> {
 
     /// `Entity.positionRider` for the passengers that are no mob, on a vehicle of any kind.
     pub(super) fn position_plain_riders(&mut self) {
-        let pairs: Vec<(u32, Ent, usize, usize)> = {
-            let table = self.riding_table.borrow();
+        let place = |table: &horizon_client::riding::Riding| -> Vec<(u32, Ent, usize, usize)> {
             table
                 .riders_in_order()
                 .into_iter()
@@ -220,9 +316,13 @@ impl Game<'_> {
                 })
                 .collect()
         };
+        let pairs = match self.remote.as_ref() {
+            Some(r) => place(&r.passengers),
+            None => place(&self.riding_table.borrow()),
+        };
         for (rider, vehicle, n, count) in pairs {
             let Some(body) = self.plain_body(rider) else {
-                self.position_mob_on_plain(rider, vehicle, n);
+                self.position_mob_on_plain(rider, vehicle, n, count);
                 continue;
             };
             let Some(vehicle_id) = vehicle.id() else {
@@ -248,6 +348,10 @@ impl Game<'_> {
             };
             if let Some(at) = target {
                 self.set_plain_position(rider, at);
+            }
+            if let Some(i) = self.boats.iter().position(|b| b.id == vehicle_id) {
+                let (yaw, delta) = (self.boats[i].yaw, self.boats[i].delta_rotation);
+                self.turn_plain_in_boat(rider, yaw, delta);
             }
         }
     }

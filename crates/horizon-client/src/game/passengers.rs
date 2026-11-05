@@ -136,6 +136,20 @@ impl Game<'_> {
             self.post_game_event("minecraft:entity_mount", at, ctx);
         }
     }
+    /// The `canRide` overrides that say no: the wither, the warden and the dragon.
+    fn never_rides(&self, r: Ent) -> bool {
+        let Some(id) = r.id() else {
+            return false;
+        };
+        self.dragon.as_ref().is_some_and(|d| d.id == id)
+            || self.mobs.iter().any(|m| {
+                m.id == id
+                    && matches!(
+                        &*m.kind.id,
+                        "minecraft:wither" | "minecraft:warden" | "minecraft:ender_dragon"
+                    )
+            })
+    }
     /// `Entity.startRiding(v, force, events)`; whether it boarded.
     pub(super) fn start_riding(&mut self, r: Ent, v: Ent, force: bool, events: bool) -> bool {
         let Ent::Id(mut vehicle_id) = v else {
@@ -174,7 +188,9 @@ impl Game<'_> {
         // Entity.canRide: not crouching (the acting player's sneak key), and not just off a vehicle.
         let crouching =
             r.is_player() && r == self.acting_ent() && self.keys.contains(&KeyCode::ShiftLeft);
-        let can_ride = !crouching && self.riding_table.borrow().boarding_cooldown(r) <= 0;
+        let can_ride = !crouching
+            && self.riding_table.borrow().boarding_cooldown(r) <= 0
+            && !self.never_rides(r);
         let room = target.is_none_or(|t| self.can_add_passenger(t, &self.passengers_of(v)));
         if !(force || can_ride && room) {
             return false;
@@ -1224,6 +1240,85 @@ mod tests {
         };
         assert_eq!(v(&game, rider), Vec3::ZERO);
         assert_eq!(v(&game, free), Vec3::new(1.0, 2.0, 3.0));
+    }
+
+    #[test]
+    fn an_armor_stand_in_a_boat_turns_with_it() {
+        let Some(mut game) = flat_game() else { return };
+        game.next_entity += 1;
+        let boat_id = game.next_entity;
+        let mut boat =
+            super::super::boats::Boat::new(boat_id, "oak".into(), Vec3::new(4.5, 61.0, 4.5), 0.0);
+        boat.delta_rotation = 20.0;
+        game.level_add(
+            super::super::entity_life::NewEntity::Boat(boat),
+            super::super::entity_life::Origin::Fresh,
+            None,
+        );
+        let stand = add_stand(&mut game, [9.5, 70.0, 9.5]);
+        assert!(game.start_riding(Ent::Id(stand), Ent::Id(boat_id), true, false));
+        let yaw = |game: &Game<'_>| {
+            game.armor_stands
+                .iter()
+                .find(|a| a.id == stand)
+                .unwrap()
+                .yaw
+        };
+        game.tick_passengers();
+        assert_eq!(yaw(&game), 20.0);
+        for _ in 0..10 {
+            game.tick_passengers();
+        }
+        assert_eq!(yaw(&game), 105.0);
+    }
+
+    #[test]
+    fn a_painting_rides_by_its_block_and_a_dragon_refuses_unless_forced() {
+        let Some(mut game) = flat_game() else { return };
+        let pig = spawn(&mut game, "pig", [2.5, 61.0, 2.5]);
+        game.next_entity += 1;
+        let id = game.next_entity;
+        let painting = horizon_client::entities::Painting {
+            id,
+            pos: [20, 61, 20],
+            facing: 0,
+            variant: "minecraft:kebab".into(),
+            width: 1,
+            height: 1,
+            check_interval: 0,
+        };
+        game.level_add(
+            super::super::entity_life::NewEntity::Painting(painting),
+            super::super::entity_life::Origin::Fresh,
+            None,
+        );
+        assert!(game.start_riding(Ent::Id(id), Ent::Id(pig), true, false));
+        game.tick_passengers();
+        let m = game.mobs.iter().find(|m| m.id == pig).unwrap();
+        let p = game.paintings.iter().find(|p| p.id == id).unwrap();
+        assert_eq!(p.pos[0], m.position.x.floor() as i32);
+    }
+
+    #[test]
+    fn a_mob_in_a_cart_sits_in_it_through_the_table() {
+        let Some(mut game) = flat_game() else { return };
+        game.next_entity += 1;
+        let cart_id = game.next_entity;
+        let cart = super::super::minecarts::Minecart::new(
+            cart_id,
+            super::super::minecarts::CartKind::Rideable,
+            Vec3::new(4.5, 61.0, 4.5),
+        );
+        game.level_add(
+            super::super::entity_life::NewEntity::Cart(cart),
+            super::super::entity_life::Origin::Fresh,
+            None,
+        );
+        let zombie = spawn(&mut game, "zombie", [9.5, 61.0, 9.5]);
+        assert!(game.start_riding(Ent::Id(zombie), Ent::Id(cart_id), true, false));
+        game.tick_passengers();
+        let m = game.mobs.iter().find(|m| m.id == zombie).unwrap();
+        assert!((m.position.x - 4.5).abs() < 1e-9 && (m.position.z - 4.5).abs() < 1e-9);
     }
 
     #[test]
