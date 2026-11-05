@@ -261,7 +261,13 @@ impl Game<'_> {
     }
     /// `FluidState.getHeight` and whether it is a source, for `fluid` or,
     /// with `None`, any fluid (`ClipContext.Fluid.ANY`).
-    fn fluid_height_of(&self, x: i32, y: i32, z: i32, fluid: Option<Fluid>) -> Option<(f32, bool)> {
+    pub(super) fn fluid_height_of(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+        fluid: Option<Fluid>,
+    ) -> Option<(f32, bool)> {
         let f = self.res.facts().get(self.world.block(x, y, z));
         if f.fluid == Fluid::None || fluid.is_some_and(|want| f.fluid != want) {
             return None;
@@ -661,39 +667,17 @@ impl Game<'_> {
         }
         Ok(())
     }
-    /// `getDismountLocationForPassenger`: in front of the player if there is
-    /// floor there, else on top of the boat.
+    /// `LivingEntity.stopRiding` for the player in boat `i`.
     pub(super) fn dismount(&mut self, i: usize) {
         self.set_vehicle(None);
-        let target = self.boat_dismount_target(i, 0.6, self.yaw);
+        let Some(p) = self.player.as_ref() else {
+            return;
+        };
+        let rider = super::vehicle_rules::Rider::player(p, self.yaw);
+        let (target, _) = self.dismount_location(super::vehicle_rules::Vehicle::Boat(i), &rider);
         if let Some(p) = self.player.as_mut() {
             p.position = target;
             p.velocity = Vec3::ZERO;
-        }
-    }
-    /// `getDismountLocationForPassenger` for a passenger `width` wide
-    /// facing `yaw`.
-    pub(super) fn boat_dismount_target(&self, i: usize, width: f64, yaw: f32) -> Vec3 {
-        let b = &self.boats[i];
-        let r = yaw.to_radians();
-        let distance = (WIDTH * std::f64::consts::SQRT_2 + width + 1.0e-5) / 2.0;
-        let (s, c) = (-(r.sin()) as f64, r.cos() as f64);
-        let m = s.abs().max(c.abs());
-        let (x, z) = (
-            b.position.x + s * distance / m,
-            b.position.z + c * distance / m,
-        );
-        let top = b.bounds().max_position().y;
-        let (bx, by, bz) = (x.floor() as i32, top.floor() as i32, z.floor() as i32);
-        let below = self.res.facts().get(self.world.block(bx, by - 1, bz));
-        let here = self.res.facts().get(self.world.block(bx, by, bz));
-        if below.fluid != Fluid::Water
-            && !here.full_collision
-            && (below.full_collision || below.legacy_solid)
-        {
-            Vec3::new(x, f64::from(by), z)
-        } else {
-            Vec3::new(b.position.x, top, b.position.z)
         }
     }
     /// `BoatItem.use`: aim at a block or the water surface.

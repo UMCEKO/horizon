@@ -76,10 +76,6 @@ pub fn finalize(m: &mut Mob, warm_ocean: bool) {
         m.extra.variant = u8::from(warm_ocean);
     }
 }
-/// `getControllingPassenger`: a player on a saddled nautilus.
-pub fn controlled(m: &Mob) -> bool {
-    m.rider.is_some() && m.extra.saddled
-}
 /// `AbstractNautilus.isFood`: taming items while wild, food otherwise.
 pub fn is_food(m: &Mob, item: &str, taming: &[String]) -> bool {
     if !m.extra.tame && !m.is_baby() {

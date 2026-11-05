@@ -2,7 +2,10 @@
 //! vehicles, the jockeys that spawn mounted (chicken jockeys, spider
 //! jockeys, strider jockeys, zombie horsemen) and the skeleton horse trap.
 //! Saving riders under `Passengers` lives in `persist.rs`.
-use super::Game;
+use super::{
+    Game,
+    vehicle_rules::{Seat, Vehicle},
+};
 use horizon_client::{
     mobs::{Mob, Species, riders},
     riding::Ent,
@@ -266,10 +269,8 @@ impl Game<'_> {
             let at = b.seat(0, count, false, 0.0, false);
             return Some(glam::DVec3::new(at.x, at.y, at.z));
         }
-        if let Some(c) = self.carts.iter().find(|c| c.id == vehicle) {
-            let at = c
-                .position
-                .add_vector(Vec3::new(0.0, super::minecarts::SEAT, 0.0));
+        if let Some(i) = self.carts.iter().position(|c| c.id == vehicle) {
+            let at = self.passenger_point(Vehicle::Cart(i), 0, 1, Seat::PLAYER, false);
             return Some(glam::DVec3::new(at.x, at.y, at.z));
         }
         if let Some(a) = self.armor_stands.iter().find(|a| a.id == vehicle) {

@@ -231,20 +231,11 @@ pub fn inherit(child: &mut Mob, a: &Mob, b: &Mob, r: &mut impl RandomSource) {
     let speed = offspring(a.attrs.speed, b.attrs.speed, 0.1125, 0.3375, r);
     set_base(child, Attr::MovementSpeed, speed);
 }
-/// The rider controls the mount: saddled, with a player on it.
+/// The rider controls the mount (`getControllingPassenger`).
 pub fn controlled(m: &Mob) -> bool {
-    let Some(r) = m.rider else {
-        return false;
-    };
-    match m.species() {
-        // Pig/Strider.getControllingPassenger: saddled, the rider holding the stick.
-        Species::Pig | Species::Strider => m.extra.saddled && r.steer,
-        Species::HappyGhast => super::happy_ghast::controlled(m),
-        Species::Nautilus | Species::ZombieNautilus => super::nautilus::controlled(m),
-        // AbstractHorse.getControllingPassenger: saddled with a player on it. A
-        // tamed skeleton horse (SkeletonTrapGoal only tames it) needs the saddle too.
-        _ => m.extra.saddled,
-    }
+    m.rider.is_some_and(|r| {
+        super::riders::controlling_passenger(m, super::riders::First::Player { steer: r.steer })
+    })
 }
 /// `AbstractHorse`s (camels too, not llamas, which no player steers): the
 /// player controlling one moves it on its own client

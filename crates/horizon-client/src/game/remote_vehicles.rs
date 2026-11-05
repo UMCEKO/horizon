@@ -11,7 +11,10 @@
 //! donkey, mule or camel: its rider's client moves it and reports the moves,
 //! and tells the server of a riding jump (`START_RIDING_JUMP`). A minecart
 //! moves on the server with the rider's input, and the rider sits in it.
-use super::{Game, Keys, ray_box};
+use super::{
+    Game, Keys, ray_box,
+    vehicle_rules::{Seat, Vehicle},
+};
 use horizon_client::{
     mobs::{Mob, equine},
     riding::Ent,
@@ -213,10 +216,10 @@ impl Game<'_> {
             Some(self.player_boat_seat(i))
         } else {
             // A minecart: the server moves it, the rider sits in it.
-            self.carts.iter().find(|c| c.id == id).map(|c| {
-                c.position
-                    .add_vector(Vec3::new(0.0, super::minecarts::SEAT, 0.0))
-            })
+            self.carts
+                .iter()
+                .position(|c| c.id == id)
+                .map(|i| self.passenger_point(Vehicle::Cart(i), 0, 1, Seat::PLAYER, false))
         };
         if let Some(p) = self.player.as_mut() {
             self.previous_position = p.position;
@@ -286,12 +289,17 @@ impl Game<'_> {
     /// first passenger (`AbstractHorse.getControllingPassenger`), on its
     /// saddle (`isLocalInstanceAuthoritative`).
     fn drives(&self, m: &Mob) -> bool {
+        let Some(i) = self.mobs.iter().position(|o| o.id == m.id) else {
+            return false;
+        };
+        let passengers = self
+            .remote
+            .as_ref()
+            .map_or(&[][..], |r| r.passengers.passengers_of(Ent::Id(m.id)));
         self.vehicle() == Some(m.id)
             && client_moves(
                 m,
-                self.remote.as_ref().is_some_and(|r| {
-                    r.passengers.first_passenger(Ent::Id(m.id)) == Some(Ent::Host)
-                }),
+                self.controlling_passenger(Vehicle::Mob(i), passengers) == Some(Ent::Host),
             )
     }
 
@@ -348,8 +356,8 @@ impl Game<'_> {
 /// Whether a player's client moves `m`, the mount it rides
 /// (`isLocalInstanceAuthoritative`): a saddled horse, donkey, mule or camel
 /// it is the first passenger of (`AbstractHorse.getControllingPassenger`).
-fn client_moves(m: &Mob, first_passenger: bool) -> bool {
-    first_passenger && equine::moved_by_rider(m.species()) && m.extra.saddled && m.alive()
+fn client_moves(m: &Mob, controls: bool) -> bool {
+    controls && equine::moved_by_rider(m.species()) && m.alive()
 }
 
 /// `LocalPlayer.sendRidingJump`: START_RIDING_JUMP with
@@ -397,13 +405,19 @@ mod tests {
             let Some(mut m) = mob(&format!("minecraft:{kind}")) else {
                 return;
             };
-            assert!(!client_moves(&m, true), "{kind} without a saddle");
+            let controls = |m: &Mob| {
+                horizon_client::mobs::riders::controlling_passenger(
+                    m,
+                    horizon_client::mobs::riders::First::Player { steer: false },
+                )
+            };
+            assert!(!client_moves(&m, controls(&m)), "{kind} without a saddle");
             m.set_saddle(Some(horizon_client::items::ItemStack::new(
                 "minecraft:saddle",
                 1,
             )));
             let horse = matches!(kind, "horse" | "donkey" | "mule" | "camel");
-            assert_eq!(client_moves(&m, true), horse, "{kind}");
+            assert_eq!(client_moves(&m, controls(&m)), horse, "{kind}");
             assert!(!client_moves(&m, false), "{kind} behind another rider");
         }
     }

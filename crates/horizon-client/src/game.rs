@@ -292,6 +292,7 @@ mod tutorial;
 mod tweaks;
 mod ui_control;
 mod vault;
+mod vehicle_rules;
 mod villagers;
 mod wandering_trader;
 mod win;

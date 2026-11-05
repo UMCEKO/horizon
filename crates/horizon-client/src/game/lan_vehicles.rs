@@ -9,7 +9,11 @@
 //! here with the rider's input (`ServerPlayer.getLastClientMoveIntent`).
 //! Sneaking gets out (`Player.rideTick`: `wantsToStopRiding`), and the client
 //! is teleported where the player lands (`ServerPlayer.dismountTo`).
-use super::{Game, Keys, lan::LanHost, minecarts::SEAT};
+use super::{
+    Game, Keys,
+    lan::LanHost,
+    vehicle_rules::{Seat, Vehicle},
+};
 use horizon_client::collisions::SceneCollisions;
 use horizon_client::mobs::equine;
 use horizon_core::geometry::{Aabb, Vec3};
@@ -212,10 +216,10 @@ impl Game<'_> {
             .position(|b| b.id == vehicle)
             .map(|i| (self.boats[i].position, self.player_boat_seat(i)))
             .or_else(|| {
-                self.carts
-                    .iter()
-                    .find(|c| c.id == vehicle)
-                    .map(|c| (c.position, c.position.add_vector(Vec3::new(0.0, SEAT, 0.0))))
+                self.carts.iter().position(|c| c.id == vehicle).map(|i| {
+                    let seat = self.passenger_point(Vehicle::Cart(i), 0, 1, Seat::PLAYER, false);
+                    (self.carts[i].position, seat)
+                })
             })
             .or_else(|| {
                 self.cushions

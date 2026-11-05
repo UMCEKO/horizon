@@ -4,7 +4,12 @@
 //! it picks up (the end of `AbstractBoat.tick`), where they sit
 //! (`positionRider`, `clampRotation`) and how they get out.
 //! Saving them under the boat's `Passengers` lives in `persist.rs`.
-use super::{Game, boats::Boat, lan_mobs::guest_bounds};
+use super::{
+    Game,
+    boats::Boat,
+    lan_mobs::guest_bounds,
+    vehicle_rules::{Rider, Seat, Vehicle},
+};
 use horizon_client::riding::Ent;
 use horizon_client::{
     camera::wrap_degrees,
@@ -15,9 +20,6 @@ use horizon_core::geometry::{Aabb, Vec3};
 
 /// `Entity.boardingCooldown` once a mob leaves its boat.
 pub(super) const BOARDING_COOLDOWN: i32 = 60;
-/// `Player.DEFAULT_VEHICLE_ATTACHMENT`: how far below the seat a player's
-/// feet are.
-const PLAYER_RIDING_OFFSET: f64 = 0.6;
 
 /// `Entity.isVehicle`: a player or a mob rides it.
 fn carries(m: &Mob) -> bool {
@@ -128,20 +130,24 @@ impl Game<'_> {
     /// `AbstractBoat.canAddPassenger`: a seat is free and the boat is not
     /// under water.
     pub(super) fn boat_has_room(&self, i: usize) -> bool {
-        let b = &self.boats[i];
-        self.boat_passengers(b.id) < b.max_passengers() && !b.under_water()
+        let id = self.boats[i].id;
+        let mut current = vec![Ent::Id(0); self.boat_mobs(id).len()];
+        current.extend(vec![Ent::Host; self.boat_players(id)]);
+        let boat = Vehicle::Boat(i);
+        self.could_accept_passenger(boat) && self.can_add_passenger(boat, &current)
     }
     /// Where the player in boat `i` sits: in the middle alone, in front of a
     /// mob.
     pub(super) fn player_boat_seat(&self, i: usize) -> Vec3 {
         let b = &self.boats[i];
+        let boat = Vehicle::Boat(i);
         if let Some(r) = self.remote.as_ref() {
             let list = r.passengers.passengers_of(Ent::Id(b.id));
             let seat = list.iter().position(|&e| e == Ent::Host).unwrap_or(0);
-            return b.seat(seat, list.len().max(1), false, PLAYER_RIDING_OFFSET, false);
+            return self.passenger_point(boat, seat, list.len().max(1), Seat::PLAYER, false);
         }
         let count = self.boat_players(b.id).max(1) + self.boat_mobs(b.id).len();
-        b.seat(0, count, false, PLAYER_RIDING_OFFSET, false)
+        self.passenger_point(boat, 0, count, Seat::PLAYER, false)
     }
     /// `getRootVehicle` of mob `j`: the mob or boat at the bottom of what it
     /// rides, None when it rides nothing.
@@ -399,7 +405,7 @@ impl Game<'_> {
                     let animal = is_animal(m.species());
                     // Another player, on a server's client.
                     let offset = if &*m.kind.id == "minecraft:player" {
-                        PLAYER_RIDING_OFFSET
+                        Seat::PLAYER.offset
                     } else {
                         riders::vehicle_attachment(m, super::boats::WIDTH as f32)[1]
                     };
@@ -409,14 +415,15 @@ impl Game<'_> {
                         (true, true) => 90.0,
                         (true, false) => 270.0,
                     };
+                    let seat = Seat { offset, animal };
                     let turns = !self
                         .res
                         .mob_data()
                         .entity_has("minecraft:can_turn_in_boats", &m.kind.id);
                     (
                         j,
-                        b.seat(index, count, animal, offset, false),
-                        b.seat(index, count, animal, offset, true),
+                        self.passenger_point(Vehicle::Boat(i), index, count, seat, false),
+                        self.passenger_point(Vehicle::Boat(i), index, count, seat, true),
                         turns.then_some((b.yaw + turn, b.previous_yaw + turn)),
                     )
                 })
@@ -458,7 +465,7 @@ impl Game<'_> {
             let at = if broken {
                 Vec3::new(m.position.x, m.position.y.max(y), m.position.z)
             } else {
-                self.boat_dismount_target(i, f64::from(m.width()), m.yaw)
+                self.dismount_location(Vehicle::Boat(i), &Rider::mob(m)).0
             };
             let m = &mut self.mobs[j];
             m.extra.mount = None;

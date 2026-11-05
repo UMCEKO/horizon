@@ -78,12 +78,8 @@ fn setup(m: &mut Mob, baby: bool) {
     g.add(4, GhastTempt::default());
     g.add(5, FloatAround { blocks: 16 });
 }
-fn wearing_harness(m: &Mob) -> bool {
+pub fn wearing_harness(m: &Mob) -> bool {
     m.extra.head.is_some()
-}
-/// `getControllingPassenger`: a player on a harnessed adult.
-pub fn controlled(m: &Mob) -> bool {
-    m.rider.is_some() && wearing_harness(m) && !m.is_baby()
 }
 /// `getHappyGhastRestrictionRadius`.
 fn restriction_radius(m: &Mob) -> i32 {

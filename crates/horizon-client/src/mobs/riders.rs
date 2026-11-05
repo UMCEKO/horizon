@@ -265,15 +265,47 @@ pub fn drive(m: &mut Mob, w: &MobWorld) {
         m.nav_move_to_entity(w, [t.position.x, t.position.y, t.position.z], 0, 1.0);
     }
 }
-/// `Mob.getControllingPassenger` for a mob on its back: the rider, unless it
-/// is in `#non_controlling_rider` (`Entity.canControlVehicle`).
-pub fn mob_controlled(m: &Mob, w: &MobWorld) -> bool {
-    m.extra.rider.and_then(|r| w.seen(r)).is_some_and(|r| {
-        !matches!(
-            r.species,
+/// The first passenger, as `getControllingPassenger` asks about it.
+#[derive(Clone, Copy, Debug)]
+pub enum First {
+    /// A player; `steer` is holding the vehicle's steering stick.
+    Player {
+        steer: bool,
+    },
+    Mob(Species),
+}
+/// `getControllingPassenger` of mob `v` with `first` its first passenger: every
+/// override (`Pig`, `Strider`, `HappyGhast`, `AbstractHorse`, `AbstractNautilus`),
+/// else `Mob`'s (a mob rider that is no `#non_controlling_rider`, on a mob with AI).
+pub fn controlling_passenger(v: &Mob, first: First) -> bool {
+    let species = v.species();
+    if let First::Player { steer } = first {
+        match species {
+            Species::Pig | Species::Strider if v.extra.saddled && steer => return true,
+            Species::HappyGhast
+                if super::happy_ghast::wearing_harness(v)
+                    && !super::happy_ghast::on_still_timeout(v) =>
+            {
+                return true;
+            }
+            Species::Nautilus | Species::ZombieNautilus if v.extra.saddled => return true,
+            s if super::equine::is_equine(s) && v.extra.saddled => return true,
+            _ => {}
+        }
+    }
+    // Entity.canControlVehicle: #non_controlling_rider.
+    !v.no_ai
+        && matches!(first, First::Mob(s) if !matches!(
+            s,
             Species::Slime | Species::MagmaCube | Species::SulfurCube
-        )
-    })
+        ))
+}
+/// `Mob.getControllingPassenger` for a mob on its back.
+pub fn mob_controlled(m: &Mob, w: &MobWorld) -> bool {
+    m.extra
+        .rider
+        .and_then(|r| w.seen(r))
+        .is_some_and(|r| controlling_passenger(m, First::Mob(r.species)))
 }
 /// `Mob.requiresCustomPersistence`: a passenger never despawns.
 pub fn keeps_alive(m: &Mob) -> bool {

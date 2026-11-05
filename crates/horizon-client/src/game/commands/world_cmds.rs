@@ -1268,9 +1268,10 @@ impl Game<'_> {
         let Some(v) = self.mobs[i].extra.mount.take() else {
             return;
         };
-        let (width, yaw) = (f64::from(self.mobs[i].width()), self.mobs[i].yaw);
+        let rider = super::super::vehicle_rules::Rider::mob(&self.mobs[i]);
         let at = if let Some(b) = self.boats.iter().position(|b| b.id == v) {
-            self.boat_dismount_target(b, width, yaw)
+            self.dismount_location(super::super::vehicle_rules::Vehicle::Boat(b), &rider)
+                .0
         } else if let Some(m) = self.mobs.iter_mut().find(|m| m.id == v) {
             m.extra.rider = None;
             // Entity.getDismountLocationForPassenger: on top of the vehicle.

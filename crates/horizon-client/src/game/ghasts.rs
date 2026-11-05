@@ -6,7 +6,7 @@ use horizon_client::{
     items::ItemStack,
     mobs::{MobEvent, happy_ghast},
 };
-use horizon_core::geometry::{Aabb, Vec3};
+use horizon_core::geometry::Aabb;
 use horizon_world::registry::BlockStateId;
 
 impl Game<'_> {
@@ -88,7 +88,7 @@ impl Game<'_> {
         }
         false
     }
-    /// Getting off lands on top of it.
+    /// `HappyGhast.removePassenger`.
     pub(super) fn dismount_happy_ghast(&mut self, id: u32) {
         // removePassenger: held still for half a second, and with no one
         // aboard the ghast forgets its home.
@@ -99,16 +99,7 @@ impl Game<'_> {
         let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
             return;
         };
-        let top = Vec3::new(
-            m.position.x,
-            m.position.y + f64::from(m.height()),
-            m.position.z,
-        );
         let up: MobEvent = happy_ghast::goggles(false, m);
-        if let Some(p) = self.player.as_mut() {
-            p.position = top;
-            p.velocity = Vec3::ZERO;
-        }
         let _ = self.handle_mob_events(vec![up]);
     }
     /// `DriedGhastBlock.spawnGhastling`: a ghastling facing the way the block did.

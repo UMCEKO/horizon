@@ -142,7 +142,9 @@ fn push_along(push: Vec3, movement: Vec3) -> Vec3 {
     }
 }
 /// The minecart's passenger attachment minus Player.DEFAULT_VEHICLE_ATTACHMENT.
-pub(super) const SEAT: f64 = 0.1875 - 0.6;
+/// The cart's passenger attachment, above its feet.
+pub(super) const PASSENGER_HEIGHT: f64 = 0.1875;
+pub(super) const SEAT: f64 = PASSENGER_HEIGHT - 0.6;
 /// The placeholder container key under which an open cart's items live.
 pub(super) const CART_KEY_Y: i32 = horizon_client::lan::menu::VEHICLE_KEY_Y;
 
@@ -965,55 +967,14 @@ impl Game<'_> {
         }
         true
     }
-    /// `getDismountLocationForPassenger`: beside the cart (across its facing), else on top.
+    /// `LivingEntity.stopRiding` for the player in cart `i`.
     pub(super) fn dismount_cart(&mut self, i: usize) {
         self.set_vehicle(None);
-        let c = &self.carts[i];
-        let (bx, by, bz) = (
-            c.position.x.floor() as i32,
-            c.position.y.floor() as i32,
-            c.position.z.floor() as i32,
-        );
-        let mut target = None;
-        // DismountHelper.offsetsForDirection of the cart's facing
-        // (Direction.fromYRot of its yaw): right, left, back right, back left,
-        // forward right, forward left, back, forward.
-        let step = |q: i32| [(0, 1), (-1, 0), (0, -1), (1, 0)][(q & 3) as usize];
-        let facing = (f64::from(c.yaw) / 90.0 + 0.5).floor() as i32;
-        let (fx, fz) = step(facing);
-        let (rx, rz) = (-fz, fx);
-        let offsets = [
-            (rx, rz),
-            (-rx, -rz),
-            (rx - fx, rz - fz),
-            (-rx - fx, -rz - fz),
-            (fx + rx, fz + rz),
-            (fx - rx, fz - rz),
-            (-fx, -fz),
-            (fx, fz),
-        ];
-        'search: for dy in [0, 1, -1] {
-            for (dx, dz) in offsets {
-                let (x, y, z) = (bx + dx, by + dy, bz + dz);
-                let below = self.res.facts().get(self.world.block(x, y - 1, z));
-                let here = self.res.facts().get(self.world.block(x, y, z));
-                let head = self.res.facts().get(self.world.block(x, y + 1, z));
-                if (below.full_collision || below.legacy_solid)
-                    && !here.full_collision
-                    && !head.full_collision
-                    && here.fluid == Fluid::None
-                {
-                    target = Some(Vec3::new(
-                        f64::from(x) + 0.5,
-                        f64::from(y),
-                        f64::from(z) + 0.5,
-                    ));
-                    break 'search;
-                }
-            }
-        }
-        let top = c.bounds().max_position().y;
-        let target = target.unwrap_or(Vec3::new(c.position.x, top, c.position.z));
+        let Some(p) = self.player.as_ref() else {
+            return;
+        };
+        let rider = super::vehicle_rules::Rider::player(p, self.yaw);
+        let (target, _) = self.dismount_location(super::vehicle_rules::Vehicle::Cart(i), &rider);
         if let Some(p) = self.player.as_mut() {
             p.position = target;
             p.velocity = Vec3::ZERO;
