@@ -34,6 +34,7 @@ impl Seat {
 pub(super) enum Vehicle {
     Boat(usize),
     Cart(usize),
+    Cushion(usize),
     Mob(usize),
 }
 
@@ -357,7 +358,7 @@ impl Game<'_> {
                 max: self.boats[i].max_passengers(),
                 eyes_in_water: self.boats[i].under_water(),
             },
-            Vehicle::Cart(_) => Room::Default,
+            Vehicle::Cart(_) | Vehicle::Cushion(_) => Room::Default,
             Vehicle::Mob(i) => match self.mobs[i].species() {
                 Species::Camel | Species::CamelHusk => Room::Camel,
                 Species::HappyGhast => Room::HappyGhast,
@@ -387,7 +388,7 @@ impl Game<'_> {
             // AbstractBoat: the first passenger when it is a player.
             return match v {
                 Vehicle::Boat(_) => passengers.first().copied().filter(|p| p.is_player()),
-                _ => None,
+                Vehicle::Cart(_) | Vehicle::Cushion(_) | Vehicle::Mob(_) => None,
             };
         };
         let first = *passengers.first()?;
@@ -408,6 +409,7 @@ impl Game<'_> {
                 None,
             ),
             Vehicle::Cart(i) => (self.cart_dismount(i), None),
+            Vehicle::Cushion(i) => (self.cushions[i].dismount(), None),
             Vehicle::Mob(i) => {
                 let m = &self.mobs[i];
                 let mount = Mount::of(m);
@@ -447,6 +449,7 @@ impl Game<'_> {
                 super::minecarts::PASSENGER_HEIGHT - seat.offset,
                 0.0,
             )),
+            Vehicle::Cushion(i) => self.cushions[i].seat(),
             Vehicle::Mob(i) => {
                 let m = &self.mobs[i];
                 let (at, yaw) = if previous {

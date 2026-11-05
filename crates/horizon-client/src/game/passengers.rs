@@ -119,6 +119,12 @@ impl Game<'_> {
                 .iter()
                 .position(|c| c.id == id)
                 .map(Vehicle::Cart)
+                .or_else(|| {
+                    self.cushions
+                        .iter()
+                        .position(|c| c.id == id)
+                        .map(Vehicle::Cushion)
+                })
         }
     }
     /// What `Mob.startRiding` does after the link, for a mob that linked itself in its turn.
@@ -155,7 +161,7 @@ impl Game<'_> {
             return false;
         }
         let target = self.vehicle_target(vehicle_id);
-        if target.is_none() && !self.cushions.iter().any(|c| c.id == vehicle_id) {
+        if target.is_none() {
             return false;
         }
         if target.is_some_and(|t| !self.could_accept_passenger(t)) {
@@ -253,7 +259,8 @@ impl Game<'_> {
         } else if let Some(i) = self.mobs.iter().position(|m| m.id == vehicle) {
             self.passenger_point(Vehicle::Mob(i), index, count, Seat::PLAYER, false)
         } else {
-            self.cushions.iter().find(|c| c.id == vehicle)?.seat()
+            let i = self.cushions.iter().position(|c| c.id == vehicle)?;
+            self.passenger_point(Vehicle::Cushion(i), index, count, Seat::PLAYER, false)
         };
         if r == self.acting_ent()
             && let Some(p) = self.player.as_mut()
@@ -1071,5 +1078,70 @@ mod tests {
         assert!(game.start_riding(zombie, pig, true, false));
         assert!(game.start_riding(Ent::Guest(3), pig, true, false));
         assert_eq!(game.passengers_of(pig), vec![Ent::Guest(3), zombie]);
+    }
+
+    #[test]
+    fn a_sneaking_player_cannot_board() {
+        let Some(mut game) = flat_game() else { return };
+        let pig = Ent::Id(spawn(&mut game, "pig", [2.5, 61.0, 2.5]));
+        game.keys.insert(KeyCode::ShiftLeft);
+        assert!(!game.start_riding(Ent::Host, pig, false, true));
+        assert!(!game.is_passenger(Ent::Host));
+        game.keys.remove(&KeyCode::ShiftLeft);
+        assert!(game.start_riding(Ent::Host, pig, false, true));
+    }
+
+    #[test]
+    fn a_full_happy_ghast_refuses_the_fifth() {
+        let Some(mut game) = flat_game() else { return };
+        let ghast = Ent::Id(spawn(&mut game, "happy_ghast", [2.5, 61.0, 2.5]));
+        for _ in 0..4 {
+            let zombie = Ent::Id(spawn(&mut game, "zombie", [2.5, 61.0, 2.5]));
+            assert!(game.start_riding(zombie, ghast, false, false));
+        }
+        let fifth = Ent::Id(spawn(&mut game, "zombie", [2.5, 61.0, 2.5]));
+        assert!(!game.start_riding(fifth, ghast, false, false));
+        assert_eq!(game.passengers_of(ghast).len(), 4);
+    }
+
+    #[test]
+    fn a_camel_takes_three() {
+        let Some(mut game) = flat_game() else { return };
+        let camel = Ent::Id(spawn(&mut game, "camel", [2.5, 61.0, 2.5]));
+        for _ in 0..3 {
+            let zombie = Ent::Id(spawn(&mut game, "zombie", [2.5, 61.0, 2.5]));
+            assert!(game.start_riding(zombie, camel, false, false));
+        }
+        let fourth = Ent::Id(spawn(&mut game, "zombie", [2.5, 61.0, 2.5]));
+        assert!(!game.start_riding(fourth, camel, false, false));
+    }
+
+    #[test]
+    fn a_cushion_goes_through_the_vehicle_rules() {
+        let Some(mut game) = flat_game() else { return };
+        game.next_entity += 1;
+        let id = game.next_entity;
+        let cushion = horizon_client::entities::Cushion {
+            id,
+            position: Vec3::new(2.5, 61.0, 2.5),
+            pos: [2, 61, 2],
+            yaw: 0.0,
+            color: 0,
+            check_interval: 0,
+        };
+        game.level_add(
+            super::super::entity_life::NewEntity::Cushion(cushion),
+            super::super::entity_life::Origin::Fresh,
+            None,
+        );
+        let first = Ent::Id(spawn(&mut game, "zombie", [2.5, 61.0, 2.5]));
+        let second = Ent::Id(spawn(&mut game, "zombie", [2.5, 61.0, 2.5]));
+        assert!(game.start_riding(first, Ent::Id(id), false, false));
+        assert!(!game.start_riding(second, Ent::Id(id), false, false));
+        game.keys.insert(KeyCode::ShiftLeft);
+        game.stop_riding(first);
+        assert!(!game.start_riding(Ent::Host, Ent::Id(id), false, false));
+        game.keys.remove(&KeyCode::ShiftLeft);
+        assert!(game.start_riding(Ent::Host, Ent::Id(id), false, false));
     }
 }
