@@ -330,15 +330,19 @@ impl Game<'_> {
                 i += 1;
                 continue;
             }
-            let f = self.item_frames[i].clone();
-            self.level_remove(Kind::Frame, f.id, Removal::Killed);
-            self.audio
-                .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
-            self.drop_frame_items(&f, true, false);
-            self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
-            if f.item.is_some() {
-                self.frame_output_changed(f.pos);
-            }
+            self.kill_frame_and_drop(i);
+        }
+    }
+    /// `BlockAttachedEntity.kill` then `dropItem(null)` for the frame at `index`: it breaks with its item.
+    pub(super) fn kill_frame_and_drop(&mut self, index: usize) {
+        let f = self.item_frames[index].clone();
+        self.level_remove(Kind::Frame, f.id, Removal::Killed);
+        self.audio
+            .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
+        self.drop_frame_items(&f, true, false);
+        self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
+        if f.item.is_some() {
+            self.frame_output_changed(f.pos);
         }
     }
     /// BlockAttachedEntity.tick for frames.

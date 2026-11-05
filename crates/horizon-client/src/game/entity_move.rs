@@ -1,5 +1,6 @@
 //! `Entity.move` for the kinds without a port of their own, in vanilla's order through `move_entity`.
 use super::commands::Target;
+use super::entity_life::Removal;
 use super::*;
 use horizon_client::{
     Result, collisions::SceneCollisions, landing::SceneSound, projectiles::ProjectileKind,
@@ -1012,7 +1013,31 @@ impl Game<'_> {
                 self.dragon = Some(dragon);
                 true
             }
+            Target::Frame(_) | Target::Painting(_) => {
+                self.block_attached_move(target, delta);
+                true
+            }
             _ => false,
+        }
+    }
+
+    /// `BlockAttachedEntity.move`: on a server, any movement kills the entity and drops its item with no breaker.
+    fn block_attached_move(&mut self, target: Target, delta: Vec3) {
+        if self.remote.is_some() || delta.length_squared() <= 0.0 {
+            return;
+        }
+        match target {
+            Target::Frame(id) => {
+                if let Some(i) = self.item_frames.iter().position(|f| f.id == id) {
+                    self.kill_frame_and_drop(i);
+                }
+            }
+            Target::Painting(id) => {
+                if let Some(i) = self.paintings.iter().position(|p| p.id == id) {
+                    self.break_painting(i, false, Removal::Killed);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1333,5 +1358,27 @@ mod tests {
         let dragon = game.dragon.as_ref().unwrap();
         assert_eq!(dragon.position.y, 58.0);
         assert!(!dragon.moving.collision.vertical);
+    }
+
+    #[test]
+    fn a_painting_moved_is_killed() {
+        let Some(mut game) = flat_game() else { return };
+        game.next_entity += 1;
+        let id = game.next_entity;
+        game.paintings.push(horizon_client::entities::Painting {
+            id,
+            pos: [0, 62, 0],
+            facing: 0,
+            variant: "minecraft:kebab".into(),
+            width: 1,
+            height: 1,
+            check_interval: 0,
+        });
+        game.entity_move(
+            Target::Painting(id),
+            MoverType::SelfMovement,
+            Vec3::new(1.0, 0.0, 0.0),
+        );
+        assert!(game.paintings.is_empty());
     }
 }
