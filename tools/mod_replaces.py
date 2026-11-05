@@ -828,6 +828,11 @@ def markdown(result, top=40):
         need = [(f'`{short(k)}`', ', '.join(f'`{short(n)}`' for n in r['closure']['needs_bridge'])) for k, r in routes.items() if r['closure']['needs_bridge']]
         if need:
             lines += ['', 'Body routes whose vanilla callees native owns and no bridge covers:', ''] + table(['route', 'needs a bridge'], need)
+        try:
+            from . import java_routing
+        except ImportError:
+            import java_routing
+        lines += ['', 'Gates (tools/java_routing.py):', ''] + java_routing.report_table(report)
     return '\n'.join(lines) + '\n'
 
 

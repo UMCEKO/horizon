@@ -529,7 +529,7 @@ def java_args(desc):
 
 
 BRIDGES_DIR = oracle.ROOT / 'crates' / 'horizon-client' / 'src' / 'game' / 'java_bridges'
-BRIDGE_ENTRY = re.compile(r'"([\w/$]+)"\.(\S+)\s+"(\([^"]*)"(?:\s+if\s+"([\w/$]+)")?\s*=>\s*fn\s+(\w+)\(\s*\w+\s*((?:,\s*\w+:\s*\w+\s*)*),?\s*\)\s*->\s*([\w()]+)')
+BRIDGE_ENTRY = re.compile(r'"([\w/$]+)"\.(\S+)\s+"(\([^"]*)"(?:\s+if\s+"(@?[\w/$.]+)")?\s*=>\s*fn\s+(\w+)\(\s*\w+\s*((?:,\s*\w+:\s*\w+\s*)*),?\s*\)\s*->\s*([\w()]+)')
 
 
 def unbridged_writers(analysis):
@@ -595,7 +595,7 @@ def check_bridges(args=None):
             if owner not in classes or (method, desc) not in classes[owner][2]:
                 errors.append(f'{where}: no {owner}.{method}{desc}')
                 continue
-            if guard and not extends(guard, owner):
+            if guard and not guard.startswith('@') and not extends(guard, owner):
                 errors.append(f'{where}: {guard} is not a {owner}')
             args, ret = java_args(desc)
             types = [t.split(':')[1].strip() for t in params.split(',') if t.strip()]

@@ -112,6 +112,8 @@ public final class Routing {
         var liveFlags = new boolean[ordered.size()];
         var edgeFlags = new boolean[ordered.size()];
         boolean server = !net.neoforged.fml.loading.FMLEnvironment.getDist().isClient();
+        var gates = gates(Routing.class.getResourceAsStream("/route_gates.tsv"));
+        var ungated = new ArrayList<String>();
         int id = 0, on = 0, dropped = 0;
         var modOf = new java.util.HashMap<String, String>();
         for (var r : ordered.values()) {
@@ -178,9 +180,11 @@ public final class Routing {
                     for (String a : admitted) text(out, a);
                 }
             }
-            System.err.println("Horizon: route " + key + " " + (body ? "body" : "edge") + " " + (live ? "on" : "off") + " (" + String.join(", ", mods) + ")");
+            System.err.println(line(key, body, live, gates.get(key), mods));
+            if (live && !gates.containsKey(key)) for (String mod : mods) ungated.add(mod + ": " + simple(owner) + "." + name);
             id++;
         }
+        if (!ungated.isEmpty()) System.err.println(summary(ungated));
         HANDLES = handles;
         KEYS = keys;
         DESCS = descs;
@@ -192,6 +196,35 @@ public final class Routing {
         edges = edgeFlags;
         bin = bytes.toByteArray();
         System.err.println("Horizon: routes: " + on + " on, " + (ordered.size() - on) + " off, " + dropped + " changes dropped, confirmed in " + (System.nanoTime() - began) / 1_000_000 + " ms");
+    }
+
+    /** The routes this build gates, from `route_gates.tsv`: key to the number of native sites that still skip the gate; empty when the stream is null. */
+    static java.util.Map<String, Integer> gates(java.io.InputStream stream) throws IOException {
+        var out = new java.util.HashMap<String, Integer>();
+        if (stream == null) return out;
+        try (stream) {
+            for (String row : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\n")) {
+                if (row.isBlank() || row.startsWith("#")) continue;
+                String[] cells = row.split("\t");
+                out.put(cells[0], cells.length > 4 ? Integer.parseInt(cells[4]) : 0);
+            }
+        }
+        return out;
+    }
+
+    /** One route's boot line; `partial` is null for a route without a gate. */
+    static String line(String key, boolean body, boolean live, Integer partial, java.util.Collection<String> mods) {
+        String gate = partial == null ? "UNGATED" : partial == 0 ? "gated" : "gated (partial: " + partial + " sites)";
+        return "Horizon: route " + key + " " + (body ? "body" : "edge") + " " + (live ? "on" : "off") + " " + gate + " (" + String.join(", ", mods) + ")";
+    }
+
+    /** The loud line for patches that are on but have no gate; the items are `mod: Class.method`. */
+    static String summary(List<String> ungated) {
+        return "Horizon: " + ungated.size() + " behaviours mods change won't take effect (native runs them without the mods' patches): " + String.join(", ", ungated);
+    }
+
+    private static String simple(String owner) {
+        return owner.substring(owner.lastIndexOf('/') + 1);
     }
 
     /** Whether the mixin's handler is merged into the target: Mixin's own applied list is empty by the time the boot looks, but the merged method names its mixin. A predicted mixin that is not applied is off, not an error: plugins, require = 0 and unloaded targets leave mixins out. */
