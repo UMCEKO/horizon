@@ -731,9 +731,24 @@ impl Game<'_> {
         }
         i
     }
-    /// `RootVehicle.Attach` names the immediate mount, not the root of its tree.
-    pub(super) fn root_vehicle_uuid(&mut self, id: Option<u32>) -> Option<[i32; 4]> {
-        Some(self.uuid_for(id?))
+    /// `ServerPlayer.saveParentVehicle`: the UUID of the vehicle `me` rides and the tree of its root, only
+    /// when the root carries exactly one player.
+    pub(super) fn parent_vehicle_save(&mut self, me: Ent) -> (Option<[i32; 4]>, Option<Tag>) {
+        let Some(direct) = self.vehicle_of(me).and_then(Ent::id) else {
+            return (None, None);
+        };
+        let root = self.root_vehicle(me);
+        if !self
+            .riding_table
+            .borrow()
+            .exactly_one_player_passenger(root)
+        {
+            return (None, None);
+        }
+        match root.id().and_then(|id| self.vehicle_tree(id)) {
+            Some(tree) => (Some(self.uuid_for(direct)), Some(tree)),
+            None => (None, None),
+        }
     }
     /// The vehicle with this UUID, among the ones in the world.
     pub(super) fn vehicle_by_uuid(&self, uuid: [i32; 4]) -> Option<u32> {

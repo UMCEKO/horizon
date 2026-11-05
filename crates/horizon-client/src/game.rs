@@ -13056,7 +13056,7 @@ impl Game<'_> {
         self.level.selected_slot = self.selected as i32;
         let mode = self.mode_id();
         // The vehicle the player rides (`ServerPlayer.saveParentVehicle`).
-        let vehicle = self.root_vehicle_uuid(self.vehicle());
+        let (vehicle, tree) = self.parent_vehicle_save(self.acting_ent());
         let level = &mut self.level;
         level.creative = self.creative;
         level.game_mode = mode;
@@ -13074,6 +13074,7 @@ impl Game<'_> {
         level.xp_progress = self.experience.progress;
         level.xp_total = self.experience.total;
         level.root_vehicle = vehicle.or(self.pending_vehicle);
+        level.root_vehicle_tree = tree;
         if let Some(p) = &self.player {
             level.position = Some([p.position.x, p.position.y, p.position.z]);
             level.health = p.health.health();

@@ -1638,10 +1638,8 @@ impl Game<'_> {
         log("INFO", "Saving players");
         if let Some(host) = self.lan.take() {
             for g in &host.hub.guests {
-                // The vehicle the guest rides, for the file that names it.
-                let vehicle =
-                    self.root_vehicle_uuid(self.vehicle_of(Ent::Guest(g.conn)).and_then(Ent::id));
-                horizon_client::lan::playerdata::save(g, &self.world_root, vehicle, None);
+                let (vehicle, tree) = self.parent_vehicle_save(Ent::Guest(g.conn));
+                horizon_client::lan::playerdata::save(g, &self.world_root, vehicle, tree);
             }
             self.lan = Some(host);
         }

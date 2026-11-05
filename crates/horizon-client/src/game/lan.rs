@@ -1306,10 +1306,8 @@ impl Game<'_> {
     /// Save a guest when they leave or the world closes: an integrated
     /// server's owner with the world (`save_game`), anyone else in their file.
     pub(super) fn save_guest(&mut self, host: &LanHost, guest: &horizon_client::lan::guest::Guest) {
-        // The vehicle the guest rides, for the file that names it.
-        let vehicle =
-            self.root_vehicle_uuid(self.vehicle_of(Ent::Guest(guest.conn)).and_then(Ent::id));
-        self.save_guest_riding(host, guest, vehicle, None);
+        let (vehicle, tree) = self.parent_vehicle_save(Ent::Guest(guest.conn));
+        self.save_guest_riding(host, guest, vehicle, tree);
     }
     /// `save_guest` with the vehicle the file names and, when the player leaves it alone, its tree.
     fn save_guest_riding(
@@ -1347,18 +1345,8 @@ impl Game<'_> {
                 .riding_table
                 .borrow()
                 .exactly_one_player_passenger(root);
-            let direct = self.vehicle_of(me).and_then(Ent::id);
-            let tree = root
-                .id()
-                .filter(|_| alone)
-                .and_then(|id| self.vehicle_tree(id));
-            match tree {
-                Some(tree) => {
-                    let vehicle = self.root_vehicle_uuid(direct);
-                    self.save_guest_riding(host, guest, vehicle, Some(tree));
-                }
-                None => self.save_guest_riding(host, guest, None, None),
-            }
+            let (vehicle, tree) = self.parent_vehicle_save(me);
+            self.save_guest_riding(host, guest, vehicle, tree);
             if alone {
                 self.leave_vehicle_in_place(me);
                 if let Ent::Id(root) = root {
@@ -1502,18 +1490,19 @@ impl Game<'_> {
         else {
             return;
         };
-        let riding = self
+        let conn = self
             .lan
             .as_ref()
             .and_then(|h| h.hub.guests.iter().find(|g| g.uuid == uuid && g.placed))
-            .and_then(|g| self.vehicle_of(Ent::Guest(g.conn)).and_then(Ent::id));
-        // The vehicle the owner rides, by the UUID it is saved with.
-        let vehicle = self.root_vehicle_uuid(riding);
+            .map(|g| g.conn);
+        let (vehicle, tree) =
+            conn.map_or((None, None), |c| self.parent_vehicle_save(Ent::Guest(c)));
         let Some(host) = &self.lan else {
             return;
         };
         if let Some(g) = host.hub.guests.iter().find(|g| g.uuid == uuid && g.placed) {
             playerdata::store(g, &mut self.level, vehicle);
+            self.level.root_vehicle_tree = tree;
             self.save_guest_records(host, g);
         }
     }

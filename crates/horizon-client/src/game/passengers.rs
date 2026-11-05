@@ -1144,4 +1144,22 @@ mod tests {
         game.keys.remove(&KeyCode::ShiftLeft);
         assert!(game.start_riding(Ent::Host, Ent::Id(id), false, false));
     }
+
+    #[test]
+    fn a_periodic_save_writes_the_root_vehicle_tree_only_for_a_lone_player() {
+        let Some(mut game) = flat_game() else { return };
+        let pig = spawn(&mut game, "pig", [2.5, 61.0, 2.5]);
+        assert!(game.start_riding(Ent::Guest(3), Ent::Id(pig), true, false));
+        let (attach, tree) = game.parent_vehicle_save(Ent::Guest(3));
+        assert!(attach.is_some());
+        let tree = tree.expect("the root vehicle's tree");
+        assert_eq!(
+            horizon_client::entity_nbt::kind(&tree).as_deref(),
+            Some("minecraft:pig")
+        );
+        assert!(game.start_riding(Ent::Guest(4), Ent::Id(pig), true, false));
+        assert_eq!(game.parent_vehicle_save(Ent::Guest(3)), (None, None));
+        game.stop_riding(Ent::Guest(3));
+        assert_eq!(game.parent_vehicle_save(Ent::Guest(3)), (None, None));
+    }
 }
