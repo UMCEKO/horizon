@@ -37,7 +37,7 @@ extern "system" fn n_on_event(mut env: JNIEnv, _c: JClass, s: JString) {
 }
 
 /// The embedded JVM's memory, as a pack's launcher sets it: Rust holds the world, so Java keeps only mods' state (`docs/java-mods.md`).
-pub const MEMORY: &[&str] = &["-Xmx640m"];
+pub const MEMORY: &[&str] = &["-Xmx640m", "-XX:+UseCompactObjectHeaders"];
 
 /// The platform's classpath separator; the `cp` line of the args file uses it too.
 const CP_SEP: char = if cfg!(windows) { ';' } else { ':' };
