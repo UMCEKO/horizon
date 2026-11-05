@@ -626,37 +626,37 @@ impl Game<'_> {
     pub(super) fn mount_jumping(&self) -> bool {
         self.mount.jump_scale > 0.0 || self.mount.jump_ticks < 0
     }
-    /// `Hud.extractVehicleHealth`, and the jump bar when it is the
-    /// contextual bar (`jump_bar`). Returns the mount's heart count
-    /// (`getVehicleMaxHearts`).
-    pub(super) fn draw_mount_hud(
-        &self,
-        batch: &mut HudBatch,
-        w: i32,
-        h: i32,
-        jump_bar: bool,
-    ) -> i32 {
+    /// `Hud.getVehicleMaxHearts` of the ridden mob (0 = none).
+    pub(super) fn mount_hearts(&self) -> i32 {
+        self.mount_index().map_or(0, |i| {
+            horizon_client::hud_layout::vehicle_max_hearts(self.mobs[i].attrs.max_health)
+        })
+    }
+    /// `Hud.extractVehicleHealth`.
+    pub(super) fn draw_mount_hearts(&self, batch: &mut HudBatch, w: i32, h: i32) {
         let Some(i) = self.mount_index() else {
-            return 0;
+            return;
         };
         let m = &self.mobs[i];
-        let atlas = &self.gui.atlas;
         let hearts = horizon_client::hud_layout::vehicle_max_hearts(m.attrs.max_health);
         let draws = horizon_client::hud_layout::vehicle_health(w, h, hearts, m.health);
-        horizon_client::hud_layout::paint(batch, atlas, &draws);
-        if jump_bar {
-            // JumpableVehicleBar: `getJumpCooldown`, which only the camel's and
-            // the nautilus' dash have; a horse always shows the progress.
-            let cooldown = i32::from(
-                self.mount.jump_ticks < 0
-                    && (matches!(m.species(), Species::Camel | Species::CamelHusk)
-                        || horizon_client::mobs::nautilus::is_nautilus(m.species())),
-            );
-            let draws =
-                horizon_client::hud_overlays::jump_bar(w, h, cooldown, self.mount.jump_scale);
-            horizon_client::hud_layout::paint(batch, atlas, &draws);
-        }
-        hearts
+        horizon_client::hud_layout::paint(batch, &self.gui.atlas, &draws);
+    }
+    /// The jump bar, the contextual bar of a jumpable mount.
+    pub(super) fn draw_jump_bar(&self, batch: &mut HudBatch, w: i32, h: i32) {
+        let Some(i) = self.mount_index() else {
+            return;
+        };
+        let m = &self.mobs[i];
+        // JumpableVehicleBar: `getJumpCooldown`, which only the camel's and
+        // the nautilus' dash have; a horse always shows the progress.
+        let cooldown = i32::from(
+            self.mount.jump_ticks < 0
+                && (matches!(m.species(), Species::Camel | Species::CamelHusk)
+                    || horizon_client::mobs::nautilus::is_nautilus(m.species())),
+        );
+        let draws = horizon_client::hud_overlays::jump_bar(w, h, cooldown, self.mount.jump_scale);
+        horizon_client::hud_layout::paint(batch, &self.gui.atlas, &draws);
     }
 }
 

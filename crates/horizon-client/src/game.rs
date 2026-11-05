@@ -145,7 +145,7 @@ mod java_models;
 #[cfg(feature = "java-mods")]
 mod java_mods;
 mod java_screens;
-use java_screens::Leaf;
+use java_screens::{HudLayer, Leaf};
 #[cfg(feature = "java-mods")]
 mod java_shapes;
 #[cfg(feature = "java-mods")]
@@ -7165,70 +7165,75 @@ impl Game<'_> {
         }
         // Hud.extractRenderState: F1 (keyToggleGui) hides camera overlays, the
         // crosshair, hotbar, effects, bars, sidebar, action bar, titles and chat;
-        // the sleep overlay, debug screen and open screens still draw.
+        // the sleep overlay, debug screen and open screens still draw. The layers
+        // come in VanillaGuiLayers order, each followed by what mods drew after it.
         let spectator = self.spectator();
         let (wi, hi) = (w as i32, h as i32);
         let show_hud = !self.ui.hide_gui;
+        let cancelled = self.java_hud_cancelled();
+        let off = |layer: HudLayer| cancelled & (1 << layer as u32) != 0;
         // max(Hud.leftHeight, Hud.rightHeight) after the bars: the item name and
         // the action bar sit above it.
         let mut bar_height = 39;
         if show_hud {
-            self.draw_spyglass(&mut batch);
+            self.hud_start(&mut batch);
+            self.hud_layer(&mut batch, HudLayer::CameraOverlays, |this, batch| {
+                this.draw_spyglass(batch)
+            });
             // Hud.extractCrosshair / extractItemHotbar / extractPlayerHealth /
             // extractVehicleHealth and the experience bar, laid out by hud_layout.
             let indicator = self.settings.attack_indicator;
             let delay = horizon_client::attack_strength::delay(self.main_hand_attack_speed());
             let strength = self.hand_strength.scale(0.0, self.main_hand_attack_speed());
-            // The 3D crosshair (F3) takes the 2D one's place.
-            // Hud.extractCrosshair: a spectator only sees it over something to open.
-            if self.camera_type.first_person()
-                && (!spectator || self.spectator_crosshair())
-                && !self.debug_crosshair()
-            {
-                let attack = (indicator == 1).then_some(strength);
-                let full = attack.is_some_and(|a| {
-                    hud_layout::full_attack_indicator(a, delay, self.crosshair_living())
-                });
-                let draws = hud_layout::crosshair(wi, hi, attack, full);
-                hud_layout::paint(&mut batch, &self.gui.atlas, &draws);
-            }
-            if spectator {
-                self.draw_spectator_hotbar(&mut batch);
-            } else {
-                let partial = self.clock.fraction() as f32;
-                let inputs = hud_layout::HotbarInputs {
-                    selected: self.selected as i32,
-                    right_handed: !self.settings.main_hand_left,
-                    offhand: self.offhand.is_some(),
-                    slots: std::array::from_fn(|i| {
-                        self.inventory[i]
-                            .as_ref()
-                            .map(|_| (f32::from(self.hotbar_pop[i]) - partial).max(0.0))
-                    }),
-                    offhand_pop: (f32::from(self.hotbar_pop[9]) - partial).max(0.0),
-                    attack: (indicator == 2).then_some(strength),
-                };
-                let draws = hud_layout::hotbar(wi, hi, &inputs);
-                hud_layout::paint(&mut batch, &self.gui.atlas, &draws);
-                for d in &draws {
-                    if let hud_layout::GuiDraw::Item { slot, x, y, .. } = *d {
-                        let stack = if slot == 40 {
-                            self.offhand.as_ref()
-                        } else {
-                            self.inventory[slot as usize].as_ref()
-                        };
-                        if let Some(stack) = stack {
-                            self.draw_item(&mut batch, stack, x as f32, y as f32);
+            self.hud_layer(&mut batch, HudLayer::Crosshair, |this, batch| {
+                // The 3D crosshair (F3) takes the 2D one's place.
+                // Hud.extractCrosshair: a spectator only sees it over something to open.
+                if this.camera_type.first_person()
+                    && (!spectator || this.spectator_crosshair())
+                    && !this.debug_crosshair()
+                {
+                    let attack = (indicator == 1).then_some(strength);
+                    let full = attack.is_some_and(|a| {
+                        hud_layout::full_attack_indicator(a, delay, this.crosshair_living())
+                    });
+                    let draws = hud_layout::crosshair(wi, hi, attack, full);
+                    hud_layout::paint(batch, &this.gui.atlas, &draws);
+                }
+            });
+            self.hud_layer(&mut batch, HudLayer::AfterCameraDecorations, |_, _| {});
+            self.hud_layer(&mut batch, HudLayer::Hotbar, |this, batch| {
+                if spectator {
+                    this.draw_spectator_hotbar(batch);
+                } else {
+                    let partial = this.clock.fraction() as f32;
+                    let inputs = hud_layout::HotbarInputs {
+                        selected: this.selected as i32,
+                        right_handed: !this.settings.main_hand_left,
+                        offhand: this.offhand.is_some(),
+                        slots: std::array::from_fn(|i| {
+                            this.inventory[i]
+                                .as_ref()
+                                .map(|_| (f32::from(this.hotbar_pop[i]) - partial).max(0.0))
+                        }),
+                        offhand_pop: (f32::from(this.hotbar_pop[9]) - partial).max(0.0),
+                        attack: (indicator == 2).then_some(strength),
+                    };
+                    let draws = hud_layout::hotbar(wi, hi, &inputs);
+                    hud_layout::paint(batch, &this.gui.atlas, &draws);
+                    for d in &draws {
+                        if let hud_layout::GuiDraw::Item { slot, x, y, .. } = *d {
+                            let stack = if slot == 40 {
+                                this.offhand.as_ref()
+                            } else {
+                                this.inventory[slot as usize].as_ref()
+                            };
+                            if let Some(stack) = stack {
+                                this.draw_item(batch, stack, x as f32, y as f32);
+                            }
                         }
                     }
                 }
-            }
-            self.draw_effect_icons(&mut batch);
-            // Hud: the action bar and titles draw over the hotbar (nextStratum).
-            self.draw_boss_bars(&mut batch);
-            self.draw_extras(&mut batch);
-        }
-        if show_hud {
+            });
             // Hud.nextContextualInfoState: the jump bar, the experience bar or
             // the locator bar above the hotbar.
             let has_experience = !self.creative && !spectator;
@@ -7240,39 +7245,23 @@ impl Game<'_> {
                 self.experience_recent(),
             );
             use horizon_client::locator_bar::ContextualBar;
-            // The mount's hearts (and the jump bar).
-            let vehicle_hearts = if spectator {
-                0
-            } else {
-                self.draw_mount_hud(
-                    &mut batch,
-                    wi,
-                    hi,
-                    contextual == ContextualBar::JumpableVehicle,
-                )
-            };
+            let vehicle_hearts = if spectator { 0 } else { self.mount_hearts() };
             // Without the survival bars only the mount's hearts raise it.
-            bar_height = 39 + 10 * ((vehicle_hearts + 9) / 10);
-            if contextual == ContextualBar::Locator {
-                let (sprite, [x, y, w, h]) = horizon_client::locator_bar::background(wi, hi);
-                horizon_client::ui::nine_slice(
-                    &mut batch,
-                    &self.gui.atlas,
-                    sprite,
-                    x as f32,
-                    y as f32,
-                    w as f32,
-                    h as f32,
-                    u32::MAX,
-                );
-            }
+            bar_height = 39
+                + if off(HudLayer::VehicleHealth) {
+                    0
+                } else {
+                    10 * ((vehicle_hearts + 9) / 10)
+                };
+            let mut bars = None;
+            let mut experience_draws = Vec::new();
             if !self.creative
                 && !spectator
                 && let Some(p) = &mut self.player
             {
                 let atlas = &self.gui.atlas;
                 let width = |s: &str| HudBatch::text_width(atlas, s) as i32;
-                let draws = hud_layout::experience(
+                experience_draws = hud_layout::experience(
                     wi,
                     hi,
                     self.experience.progress,
@@ -7280,7 +7269,6 @@ impl Game<'_> {
                     contextual == ContextualBar::Experience,
                     &width,
                 );
-                hud_layout::paint(&mut batch, atlas, &draws);
                 let effects = &self.potions.effects;
                 let kind = if effects.get("poison").is_some() {
                     hud_layout::HeartKind::Poisoned
@@ -7315,9 +7303,9 @@ impl Game<'_> {
                     max_air: 300,
                     under_water,
                     vehicle_hearts,
+                    cancelled,
                 };
-                let draws = self.health_hud.layout(&inputs, wi, hi);
-                hud_layout::paint(&mut batch, atlas, &draws);
+                bars = Some(self.health_hud.layout(&inputs, wi, hi));
                 bar_height = self
                     .health_hud
                     .left_height
@@ -7336,34 +7324,115 @@ impl Game<'_> {
                     self.audio.capture = capture;
                 }
             }
-            if contextual == ContextualBar::Locator {
-                let draws = self.locator_bar_draws(wi, hi);
-                hud_layout::paint(&mut batch, &self.gui.atlas, &draws);
-            }
-            if !spectator {
-                self.draw_selected_name(&mut batch, bar_height, !self.creative);
-            }
+            self.hud_layer(&mut batch, HudLayer::PlayerHealth, |this, batch| {
+                if let Some(bars) = &bars {
+                    hud_layout::paint(batch, &this.gui.atlas, bars.health());
+                }
+            });
+            self.hud_layer(&mut batch, HudLayer::ArmorLevel, |this, batch| {
+                if let Some(bars) = &bars {
+                    hud_layout::paint(batch, &this.gui.atlas, bars.armor());
+                }
+            });
+            self.hud_layer(&mut batch, HudLayer::FoodLevel, |this, batch| {
+                if let Some(bars) = &bars {
+                    hud_layout::paint(batch, &this.gui.atlas, bars.food());
+                }
+            });
+            self.hud_layer(&mut batch, HudLayer::VehicleHealth, |this, batch| {
+                if vehicle_hearts > 0 {
+                    this.draw_mount_hearts(batch, wi, hi);
+                }
+            });
+            self.hud_layer(&mut batch, HudLayer::AirLevel, |this, batch| {
+                if let Some(bars) = &bars {
+                    hud_layout::paint(batch, &this.gui.atlas, bars.air());
+                }
+            });
+            self.hud_layer(
+                &mut batch,
+                HudLayer::ContextualInfoBarBackground,
+                |this, batch| {
+                    if contextual == ContextualBar::Locator {
+                        let (sprite, [x, y, w, h]) =
+                            horizon_client::locator_bar::background(wi, hi);
+                        horizon_client::ui::nine_slice(
+                            batch,
+                            &this.gui.atlas,
+                            sprite,
+                            x as f32,
+                            y as f32,
+                            w as f32,
+                            h as f32,
+                            u32::MAX,
+                        );
+                    }
+                },
+            );
+            self.hud_layer(&mut batch, HudLayer::ExperienceLevel, |this, batch| {
+                hud_layout::paint(batch, &this.gui.atlas, &experience_draws);
+            });
+            self.hud_layer(&mut batch, HudLayer::ContextualInfoBar, |this, batch| {
+                if contextual == ContextualBar::Locator {
+                    let draws = this.locator_bar_draws(wi, hi);
+                    hud_layout::paint(batch, &this.gui.atlas, &draws);
+                }
+                if contextual == ContextualBar::JumpableVehicle && !spectator {
+                    this.draw_jump_bar(batch, wi, hi);
+                }
+            });
+            self.hud_layer(&mut batch, HudLayer::SelectedItemName, |this, batch| {
+                if !spectator {
+                    this.draw_selected_name(batch, bar_height, !this.creative);
+                }
+            });
+            self.hud_layer(&mut batch, HudLayer::SpectatorTooltip, |_, _| {});
+            self.hud_layer(&mut batch, HudLayer::Effects, |this, batch| {
+                this.draw_effect_icons(batch)
+            });
+            // Hud: the action bar and titles draw over the hotbar (nextStratum).
+            self.hud_layer(&mut batch, HudLayer::BossOverlay, |this, batch| {
+                this.draw_boss_bars(batch)
+            });
+            self.draw_extras(&mut batch);
         }
         // Hud.extractSleepOverlay: over all health/food bars, under titles and chat.
-        let draws = hud_overlays::sleep_overlay(wi, hi, self.sleep_timer as i32);
-        hud_layout::paint(&mut batch, &self.gui.atlas, &draws);
+        let sleep = |this: &mut Self, batch: &mut HudBatch| {
+            let draws = hud_overlays::sleep_overlay(wi, hi, this.sleep_timer as i32);
+            hud_layout::paint(batch, &this.gui.atlas, &draws);
+        };
         if show_hud {
-            self.draw_titles(&mut batch, bar_height);
-            self.draw_scoreboard(&mut batch);
-            self.draw_subtitles(&mut batch);
-        }
-        let atlas = &self.gui.atlas;
-        if show_hud
-            && let Some((text, at)) = &self.message
-            && at.elapsed() < Duration::from_secs(3)
-        {
-            let tw = HudBatch::text_width(atlas, text);
-            batch.text(atlas, text, (w - tw) / 2.0, h - 59.0, u32::MAX, true);
-        }
-        self.draw_chat(&mut batch);
-        self.draw_tab_list(&mut batch);
-        if show_hud {
-            self.draw_java_hud(&mut batch);
+            self.hud_layer(&mut batch, HudLayer::SleepOverlay, sleep);
+            self.hud_layer(&mut batch, HudLayer::DemoOverlay, |_, _| {});
+            self.hud_layer(&mut batch, HudLayer::ScoreboardSidebar, |this, batch| {
+                this.draw_scoreboard(batch)
+            });
+            self.hud_layer(&mut batch, HudLayer::OverlayMessage, |this, batch| {
+                this.draw_overlay_message(batch, bar_height);
+                if let Some((text, at)) = &this.message
+                    && at.elapsed() < Duration::from_secs(3)
+                {
+                    let atlas = &this.gui.atlas;
+                    let tw = HudBatch::text_width(atlas, text);
+                    batch.text(atlas, text, (w - tw) / 2.0, h - 59.0, u32::MAX, true);
+                }
+            });
+            self.hud_layer(&mut batch, HudLayer::Title, |this, batch| {
+                this.draw_title(batch)
+            });
+            self.hud_layer(&mut batch, HudLayer::Chat, |this, batch| {
+                this.draw_chat(batch)
+            });
+            self.hud_layer(&mut batch, HudLayer::TabList, |this, batch| {
+                this.draw_tab_list(batch)
+            });
+            self.hud_layer(&mut batch, HudLayer::SubtitleOverlay, |this, batch| {
+                this.draw_subtitles(batch)
+            });
+        } else {
+            sleep(self, &mut batch);
+            self.draw_chat(&mut batch);
+            self.draw_tab_list(&mut batch);
         }
         // Screen.extractBlurredBackground blurs the world and HUD, while the
         // screen's background, widgets, toasts and debug overlay stay sharp.

@@ -101,6 +101,7 @@ public final class ClientBridge {
         WorldFrame.decide();
         NativeSounds.decide();
         Shells.install();
+        HudLayers.install(net.neoforged.neoforge.common.NeoForge.EVENT_BUS);
         CreativeTabs.install();
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.LOWEST, true,
                 net.neoforged.neoforge.client.event.InputEvent.MouseScrollingEvent.class, event -> scrollCanceled = event.isCanceled());
@@ -546,14 +547,21 @@ public final class ClientBridge {
     /** The recording of the mods' HUD layers with the timer's frame timing. */
     private static byte[] record(Minecraft minecraft, net.minecraft.client.DeltaTracker delta) throws IOException {
         var recorder = new Recorder();
-        if (minecraft.player != null && minecraft.level != null) {
-            int x = (int) minecraft.mouseHandler.getScaledXPos(minecraft.getWindow());
-            int y = (int) minecraft.mouseHandler.getScaledYPos(minecraft.getWindow());
-            var graphics = new GuiGraphicsExtractor(minecraft, recorder, x, y);
-            minecraft.gui.hud.extractRenderState(graphics, delta);
-            graphics.extractDeferredElements(x, y, delta.getGameTimeDeltaPartialTick(false));
+        var hud = minecraft.gui.hud;
+        HudLayers.begin(recorder, () -> hud.leftHeight, () -> hud.rightHeight);
+        try {
+            if (minecraft.player != null && minecraft.level != null) {
+                int x = (int) minecraft.mouseHandler.getScaledXPos(minecraft.getWindow());
+                int y = (int) minecraft.mouseHandler.getScaledYPos(minecraft.getWindow());
+                var graphics = new GuiGraphicsExtractor(minecraft, recorder, x, y);
+                hud.extractRenderState(graphics, delta);
+                graphics.extractDeferredElements(x, y, delta.getGameTimeDeltaPartialTick(false));
+            }
+        } catch (Throwable t) {
+            HudLayers.finish();
+            throw t;
         }
-        return recorder.bytes();
+        return HudLayers.finish();
     }
 
     /** True while the HUD is changing: the window also records frames with their own timing, between the tick's recordings. */

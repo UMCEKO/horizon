@@ -177,7 +177,10 @@ One process: the game, with the JVM inside it (JNI). No second process, except a
 - A stitched atlas's sprite is found by the primitive's UV middle (`Sprites.locate`) and sent as its file; Rust looks
   the file up in the GUI atlas (`atlas_key`) and warns once per missing texture.
 - `ClientBridge.record` records mods' HUD layers; vanilla layers still run into a discarding target
-  (`B/HudLayers.java`, `B/mixin/HudLayersMixin.java`) so layout bookkeeping matches.
+  (`B/HudLayers.java`, `B/mixin/HudLayersMixin.java`) so layout bookkeeping matches. The recording is 49 segments (a gap
+  after each of the 24 `VanillaGuiLayers`, a layer's own content when Java drew it) plus `cancelled` and `drawn` masks;
+  native paints the layers in that order (`hud_layer`, `hud_start`, `HudLayer` in `java_screens.rs`), skips a cancelled one,
+  and a layer a mod wraps or whose bar heights a mod raised is drawn by Java.
 
 ### Shell screens
 
