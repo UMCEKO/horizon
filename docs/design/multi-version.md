@@ -30,22 +30,32 @@ other way to ask which version runs; changing version means restarting the game.
 recipes, loot tables, worldgen data, block states, models and lang all come from that version's files, so most
 differences between versions never reach code at all.
 
-**Range gates, pinned arm first.** Where control flow differs, the port keeps the 26.3 body as the default arm and
-adds an arm for older versions:
+**One function per version, cut clean.** Where an older version's logic differs, it gets its own copy of the
+whole function; the 26.3 function keeps its body byte for byte and gains one attribute line:
 
 ```rust
 /// `ServerExplosion.hurtEntities`: damage and knockback for every entity in range.
-pub fn hurt_entities(&mut self, v: &VersionProfile) {
-    if v.before(V26_3) {
-        // `ServerExplosion.hurtEntities@..26.2`: no team check.
-        ...
-    }
-    ...
+#[versioned(..V26_2 => v26_2::hurt_entities)]
+pub fn hurt_entities(&mut self) {
+    ... // the 26.3 body, unchanged
 }
 ```
 
-The ranged citation (`@..26.2`) tells the port ledger which version that arm ports. Ranges follow the order in
-`research-lock.json` (the pin, then older versions newest first), never a parse of the version string.
+```rust
+// crates/horizon-world/src/level/v26_2/explosion.rs
+/// `ServerExplosion.hurtEntities@..26.2`
+pub fn hurt_entities(level: &mut Level) {
+    ... // the 26.2 body, whole, no team check
+}
+```
+
+- `#[versioned]` picks the function once at startup from `VersionProfile` (a dispatch table, not a branch per call),
+  so the 26.3 body never contains another version's code.
+- Old copies live in a `v26_2/` module beside the code they replace; deleting a version deletes its folders.
+- `versions.py fork Class.method --mc-version 26.2` writes the copy, the attribute and the citation; the porter edits
+  only the lines that differ. Going back to 26.1.2 forks the 26.2 copy, so each step starts from the nearest body.
+- The ranged citation (`@..26.2`) tells the port ledger which versions a copy ports. Ranges follow the order in
+  `research-lock.json` (the pin, then older versions newest first), never a parse of the version string.
 
 **Protocol tables per version.** Packet ids, registry ids and entity-data layouts differ between versions. They come
 from generated tables per version, selected through `VersionProfile` when the connection starts, not from `if`s in
@@ -58,7 +68,7 @@ is only for control flow.
 
 Everything else: the renderer, chunk storage, meshing, light, streaming, the world generator's machinery, entity
 physics, the server thread, LAN and the dedicated server, the launcher, the UI and mods. An older version is the same
-engine running different data, plus gated arms where vanilla's logic differs. There is one branch, one build and one
+engine running different data, plus per-version copies of the functions whose logic differs. There is one branch, one build and one
 binary per platform.
 
 ## What it costs a 26.3-only player
@@ -70,15 +80,15 @@ Nothing:
   26.3 today. Horizon still never downloads the game.
 - **No allocation, thread or file read** when the version is the pin. Per-version tables for older versions are
   only loaded when that version is selected.
-- **No change to the 26.3 code path.** The pinned arm of every gate stays byte-identical to main (checked, below).
-  Gates are kept off hot loops: there a difference is a per-version table chosen once, not a branch per call.
+- **No change to the 26.3 code path.** Every 26.3 function keeps its body byte-identical to main (checked, below);
+  the version is chosen once at startup, never branched on per call.
 - **No new choice.** The picker only offers versions the player has installed; 26.3 stays the default.
 
 ## How 26.3 stays safe
 
 - **26.3 harnesses unchanged and passing.** A backport PR never edits a 26.3 harness's expected output.
-- **Pinned arm unchanged.** `version_lint.py --pinned-unchanged` diffs the 26.3 arm of every gated fn against
-  `origin/main` in CI.
+- **26.3 bodies unchanged.** `version_lint.py --pinned-unchanged` checks in CI that a backport PR adds only
+  `#[versioned]` lines and `v<version>/` modules, and every `#[versioned]` fn's body matches `origin/main`.
 - **Version-constant lint.** `tools/version_lint.py` flags protocol and data version numbers, pack formats, version
   strings, `.local/.../26.3` paths, tables in registry order and numeric id constants written outside the generated
   `version.rs`, the older-server adapter and the datafixer. It lands with a baseline of what main has today, so it
@@ -122,8 +132,8 @@ rows with the same old body, at most ~15 rows or ~400 lines. Order: protocol and
    player's own jars (printed, never written into the repository), the Rust fn that ports it and the harnesses that
    cover it.
 2. Classify with the decision table below.
-3. If code is needed: a per-version data row for a constant, or a range gate on `VersionProfile` for control flow.
-   The pinned arm stays byte-identical.
+3. If code is needed: a per-version data row for a constant, or `versions.py fork` for logic, then edit the copy.
+   The 26.3 body stays byte-identical.
 4. Cover it: add the version to the fn's harness, or add a harness from the template.
 5. Run `parity.py --mc-version V <harnesses>`, then `parity.py <harnesses>` (26.3, must stay green), then
    `version_lint.py` and `versions.py check`.
@@ -138,18 +148,18 @@ After the batch: `pr_ready.py`, and a PR with `Fixes #N` for the batch issue.
 | Only names, descriptors or constant order differ | `same` | none (the tool writes it) |
 | Behaviour differs, and Rust already matches both (the harness passes on both, unchanged) | `same` | none |
 | A constant, threshold, table or registry entry differs | `ported-differently` | a per-version data row, never an `if` |
-| Control flow or a call differs | `ported-differently` | a range gate, pinned arm untouched |
+| Control flow or a call differs | `ported-differently` | a per-version copy (`versions.py fork`), 26.3 body untouched |
 | The subject doesn't exist in Horizon (dev tool, telemetry, a removed online service) | `not-applicable` | none, a one-line reason |
 | A stop condition | `todo #N` | none |
 
 **Stop conditions.** The agent writes `todo #N` with the reason, comments on the batch issue, `/unclaim`s what it
-can't finish and moves on when: the fix would touch the pinned arm or a 26.3 harness's expected output; no harness
+can't finish and moves on when: the fix would touch a 26.3 body or a 26.3 harness's expected output; no harness
 can observe the behaviour and none can be written from the template; it needs a subsystem Horizon doesn't have; the
 batch passes ~500 lines or 3 crates; or the two versions' harness results disagree in a way the diff doesn't
 explain. Those rows form a `needs-design` queue for a person.
 
 **Review.** CI is the gate: per-version harnesses, 26.3 harnesses, `versions.py check`, the version lint and the
-pinned-arm check. A second agent, not the author, re-derives each verdict from `versions.py show` without seeing the
+26.3-body check. A second agent, not the author, re-derives each verdict from `versions.py show` without seeing the
 author's. People spot-check a random 10% of `same` rows and every `not-applicable` row. Before scaling up, a pilot
 of ~20 batches measures how often the reviewer disagrees, and the table is tightened where it does.
 
@@ -179,7 +189,7 @@ Each under ~500 lines with tests, `skip-release` (players see nothing). Generate
 | 6 | Verdicts and `versions.py check`, `todo`, `show`, `batches` |
 | 7 | Bootstrapped `unreviewed` verdicts; the check in CI and `pr_ready.py`; ranged citations in the ledger |
 | 8 | Per-version port ledgers (`port_ledger.py --mc-version`) |
-| 9 | The version-constant lint with its baseline, and the pinned-arm-unchanged check |
+| 9 | The version-constant lint with its baseline, and the 26.3-body-unchanged check |
 | 10 | `parity.py --mc-version` and oracle overlays |
 | 11 | `horizon-prepare --mc-version` (hidden), per-version CI data and steps |
 | 12 | Harness scripts read the selected version instead of literal `26.3` paths |
