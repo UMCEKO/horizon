@@ -167,15 +167,36 @@ def args_lines(dist, libs, neoforge, client=None, server=None, assets=None, anal
     return lines
 
 
-def write_args(run, home):
+def mods_analysis(name, jars):
+    """The analysis of the mods in `jars` alone (not the host's own jars), so the boot confirms their routes."""
+    try:
+        from . import mod_replaces
+    except ImportError:
+        import mod_replaces
+    folder = JARS / 'runs' / f'{name}-analysis'
+    shutil.rmtree(folder, ignore_errors=True)
+    (folder / 'mods').mkdir(parents=True)
+    (folder / 'libraries').symlink_to((oracle.client()[0] if DIST == 'client' else oracle.install()) / 'libraries')
+    for jar in sorted(Path(jars).glob('*.jar')):
+        (folder / 'mods' / jar.name).symlink_to(jar.resolve())
+    out = folder / 'analysis'
+    out.mkdir()
+    ledger = json.loads(mod_replaces.LEDGER_JSON.read_text()) if mod_replaces.LEDGER_JSON.is_file() else {}
+    result = mod_replaces.analyse(folder, out, ledger, JARS / 'mod-replaces', verdicts=mod_replaces.read_verdicts())
+    mod_replaces.write_routing(out, result['routing'])
+    (out / 'entity-facts.json').write_text(json.dumps(result['entity_facts'], indent=1) + '\n')
+    return out / 'entity-facts.json'
+
+
+def write_args(run, home, analysis=None):
     """What the host starts the JVM with, in absolute paths, as NeoForge's launcher arguments would be."""
     libs = home / 'libraries'
     if DIST == 'client':
         _, neo, _, jars = oracle.client()
         index_id = json.loads((lab.GAME / 'manifest.json').read_text())['assetIndex']['id']
-        lines = args_lines('client', libs, NEOFORGE, client=(neo, jars), assets=(assets_index(lab.RESOURCES, index_id, JARS), index_id))
+        lines = args_lines('client', libs, NEOFORGE, client=(neo, jars), assets=(assets_index(lab.RESOURCES, index_id, JARS), index_id), analysis=analysis)
     else:
-        lines = args_lines('server', libs, NEOFORGE, server=(libs / 'net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text())
+        lines = args_lines('server', libs, NEOFORGE, server=(libs / 'net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text(), analysis=analysis)
     (run / 'horizon-java.args').write_text('\n'.join(lines) + '\n')
 
 
@@ -192,7 +213,7 @@ def instance(name, jars, boot):
     if boot:
         (run / 'mods' / BOOT_JAR.name).symlink_to(BOOT_JAR)
         (run / 'mods' / PLUGIN_JAR.name).symlink_to(PLUGIN_JAR)
-        write_args(run, home)
+        write_args(run, home, mods_analysis(name, jars))
     return run
 
 
@@ -295,6 +316,10 @@ def bridges(args):
             send(f'command fill {at} {y} {z - 6} {at + 14} {y + 14} {z + 4} air')
             send(f'command fill {at} {y - 1} {z - 6} {at + 14} {y - 1} {z + 4} minecraft:stone')
         send('wait 2')
+        # ctl counts slots from 1: the server's setSelectedSlot sees 1, 7 (the test mod cancels it), then 2.
+        for slot in (2, 8, 3):
+            send(f'select {slot}')
+            send('wait 3')
         send('command kill @e[type=item]')
         # Outside the checked stretches: an entity the player's client tracks.
         send(f'command summon minecraft:armor_stand {base[0] + 40} {y} {z - 12} {{NoGravity:1b}}')
@@ -433,7 +458,7 @@ def bridges(args):
     session(args, drive)
     checks = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     shutil.copy(Path(args.scratch) / 'ctl.log', Path(args.scratch) / 'first-session.log')
-    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'mod_key_follows_the_rebind', 'client_profile_resolver') if (name, 'ok') not in checks)
+    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail') if (name, 'ok') not in checks)
     session(args, again)
     second = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks += [(name + ' (second session)', result) for name, result in second]
