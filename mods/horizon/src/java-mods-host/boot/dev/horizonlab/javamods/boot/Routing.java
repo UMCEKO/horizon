@@ -355,7 +355,7 @@ public final class Routing {
         char ret = desc.charAt(desc.indexOf(')') + 1);
         String unreadable = SUPPORTED_RETURNS.indexOf(ret) < 0 ? "return type " + desc.substring(desc.indexOf(')') + 1) : null;
         for (var type : types) {
-            if (unreadable == null && !type.isPrimitive() && type != net.minecraft.core.BlockPos.class && type != String.class) unreadable = type.getName();
+            if (unreadable == null && !type.isPrimitive() && type != net.minecraft.core.BlockPos.class && type != String.class && type != net.minecraft.world.item.ItemStack.class) unreadable = type.getName();
             if (unreadable == null && type == void.class || type == byte.class || type == short.class || type == char.class) unreadable = type.getName();
         }
         if (unreadable != null || handle == null) {
@@ -388,6 +388,7 @@ public final class Routing {
             else if (type == double.class) args.add(in.readDouble());
             else if (type == boolean.class) args.add(in.readBoolean());
             else if (type == String.class) args.add(in.text());
+            else if (type == net.minecraft.world.item.ItemStack.class) args.add(GameBridge.decode(in.readNBytes(in.readInt())));
             else args.add(net.minecraft.core.BlockPos.of(in.readLong()));
         }
         long started = Profile.ON ? System.nanoTime() : 0;

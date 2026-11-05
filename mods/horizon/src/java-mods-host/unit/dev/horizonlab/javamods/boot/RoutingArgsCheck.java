@@ -25,6 +25,14 @@ public final class RoutingArgsCheck {
         String hex = java.util.HexFormat.of().formatHex(out.toByteArray());
         String rust = "fffffffe0102030405060708" + "3fc00000" + "c002000000000000" + "01" + String.format("%016x", BlockPos.asLong(1, 2, 3)) + "00000002" + "6869" + "00000002" + "796f";
         if (!hex.equals(rust)) throw new AssertionError("the layout Rust's test hard-codes: " + hex);
+        // an ItemStack goes as a length and its saved NBT, which GameBridge.decode reads
+        byte[] tag = {10, 0, 0, 8, 0, 2, 'i', 'd', 0, 15, 'm', 'i', 'n', 'e', 'c', 'r', 'a', 'f', 't', ':', 's', 't', 'o', 'n', 'e', 0};
+        var stack = new java.io.ByteArrayOutputStream();
+        var stackData = new java.io.DataOutputStream(stack);
+        stackData.writeInt(tag.length);
+        stackData.write(tag);
+        var stackIn = Crossing.In.of(stack.toByteArray());
+        if (!java.util.Arrays.equals(stackIn.readNBytes(stackIn.readInt()), tag) || stackIn.available() != 0) throw new AssertionError("a stack is a length and its tag");
         // a static no-op route answers status 0 and an empty effects block
         var request = new java.io.ByteArrayOutputStream();
         var write = new java.io.DataOutputStream(request);

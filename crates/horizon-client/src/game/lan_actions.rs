@@ -1879,12 +1879,12 @@ impl Game<'_> {
         let picked = self.as_guest(host, conn, |g| {
             let stack = stack(g)?;
             let infinite = g.creative;
-            horizon_client::pick_item::pick(
-                &mut g.inventory[..36],
-                &mut g.selected,
-                &stack,
-                infinite,
-            );
+            match horizon_client::pick_item::find_slot_matching_item(&g.inventory[..36], &stack) {
+                Some(slot) if slot < 9 => g.set_selected_slot(slot as i32),
+                Some(slot) => g.pick_slot(slot as i32),
+                None if infinite => g.add_and_pick_item(&stack),
+                None => {}
+            }
             Some(())
         });
         if picked.flatten().is_some()

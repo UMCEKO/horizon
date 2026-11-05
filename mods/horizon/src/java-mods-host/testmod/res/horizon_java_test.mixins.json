@@ -3,6 +3,6 @@
   "minVersion": "0.8",
   "package": "dev.horizonlab.javamods.testmod.mixin",
   "compatibilityLevel": "JAVA_21",
-  "mixins": ["InventoryRouteMixin"],
+  "mixins": ["InventoryRouteMixin", "InventoryFreeSlotMixin"],
   "injectors": {"defaultRequire": 1}
 }

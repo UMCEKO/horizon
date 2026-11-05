@@ -16,6 +16,7 @@ macro_rules! route_gate {
             static GATE: $crate::game::java_routing::Gate = $crate::game::java_routing::Gate::new($key);
             if let Some(id) = GATE.admitted(&$recv)
                 && let Some(value) = $game.route_call(id, $recv, |out| {
+                    let _ = &out;
                     $( $crate::game::java_routing::RouteArg::put(&$arg, out); )*
                 })
             {
@@ -147,6 +148,12 @@ mod gate {
     impl RouteArg for String {
         fn put(&self, out: &mut Out) {
             out.text(self);
+        }
+    }
+    impl RouteArg for &horizon_client::items::ItemStack {
+        fn put(&self, out: &mut Out) {
+            let tag = crate::game::java_mods::write_tag(horizon_client::save::item_to_nbt(self));
+            out.bytes(&tag.expect("an item stack encodes as NBT"));
         }
     }
 
@@ -310,6 +317,23 @@ mod gate {
         #[should_panic(expected = "answered in pieces")]
         fn a_short_reply_is_a_broken_protocol() {
             read_value::<i32>("k", &mut In(&[0, 0]));
+        }
+
+        #[test]
+        fn an_item_stack_goes_as_its_saved_tag() {
+            let stack = horizon_client::items::ItemStack {
+                item: "minecraft:stone".into(),
+                count: 3,
+                damage: 0,
+                extra: None,
+            };
+            let mut out = Out::default();
+            RouteArg::put(&&stack, &mut out);
+            let mut reply = In(&out.0);
+            let tag = crate::game::java_mods::read_tag(reply.bytes().unwrap()).unwrap();
+            let back = horizon_client::save::item_from_nbt(&tag).unwrap();
+            assert_eq!((back.item, back.count), (stack.item, 3));
+            assert!(reply.bytes().is_none());
         }
 
         #[test]

@@ -2897,19 +2897,17 @@ impl Game<'_> {
                 }
             }
         }
-        for i in 0..36 {
-            if self.inventory[i].is_none() {
-                let moved = stack.count.min(max);
-                self.inventory[i] = Some(ItemStack {
-                    count: moved,
-                    ..stack.clone()
-                });
-                stack.count -= moved;
-                added |= moved > 0;
-                if stack.count == 0 {
-                    self.tutorial_get_item(tutorial_item.as_ref());
-                    return None;
-                }
+        while let Ok(i) = usize::try_from(self.free_slot()) {
+            let moved = stack.count.min(max);
+            self.inventory[i] = Some(ItemStack {
+                count: moved,
+                ..stack.clone()
+            });
+            stack.count -= moved;
+            added |= moved > 0;
+            if stack.count == 0 {
+                self.tutorial_get_item(tutorial_item.as_ref());
+                return None;
             }
         }
         if added {

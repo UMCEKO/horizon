@@ -437,11 +437,10 @@ fn room_in(slots: &[&mut Option<ItemStack>], item: &str, max: u32) -> u32 {
         .sum()
 }
 
-/// Adds up to `count` plain `item`, onto its stacks first
-/// (`getSlotWithRemainingSpace`: the off hand's too), then into empty slots
-/// of the inventory (`getFreeSlot`), in [`order`]; what it added. Nothing
-/// is dropped.
-fn add_to(
+/// Adds up to `count` plain `item` onto its stacks (`getSlotWithRemainingSpace`:
+/// the off hand's too), in [`order`]; what it added. The rest goes into free
+/// slots (`getFreeSlot`).
+fn stack_onto(
     mut slots: Vec<&mut Option<ItemStack>>,
     selected: usize,
     item: &str,
@@ -449,30 +448,16 @@ fn add_to(
     count: u32,
 ) -> u32 {
     let mut added = 0;
-    for pass in 0..2 {
-        for i in order(selected) {
-            let slot = &mut *slots[i];
-            let n = match slot {
-                Some(s) if pass == 0 && &*s.item == item && plain(s) => {
-                    let n = max.saturating_sub(s.count).min(count - added);
-                    s.count += n;
-                    n
-                }
-                None if pass == 1 && i != OFFHAND => {
-                    let n = max.min(count - added);
-                    *slot = Some(ItemStack {
-                        item: item.into(),
-                        count: n,
-                        damage: 0,
-                        extra: None,
-                    });
-                    n
-                }
-                _ => 0,
-            };
+    for i in order(selected) {
+        if let Some(s) = &mut *slots[i]
+            && &*s.item == item
+            && plain(s)
+        {
+            let n = max.saturating_sub(s.count).min(count - added);
+            s.count += n;
             added += n;
             if added == count {
-                return added;
+                break;
             }
         }
     }
@@ -545,13 +530,27 @@ impl Game<'_> {
             return 0;
         }
         let selected = self.selected;
-        add_to(
+        let max = max.max(1);
+        let mut added = stack_onto(
             slots(&mut self.inventory, &mut self.offhand),
             selected,
             item,
-            max.max(1),
+            max,
             count,
-        )
+        );
+        while added < count
+            && let Ok(i) = usize::try_from(self.free_slot())
+        {
+            let n = max.min(count - added);
+            self.inventory[i] = Some(ItemStack {
+                item: item.into(),
+                count: n,
+                damage: 0,
+                extra: None,
+            });
+            added += n;
+        }
+        added
     }
 }
 
@@ -676,19 +675,15 @@ mod tests {
             4 + 64
         );
         assert_eq!(
-            add_to(slots(&mut inv, &mut off), 0, "minecraft:diamond", 64, 200),
-            68
+            stack_onto(slots(&mut inv, &mut off), 0, "minecraft:diamond", 64, 200),
+            4
         );
         assert_eq!(inv[3].as_ref().unwrap().count, 64, "onto its stack first");
-        assert!(off.is_none(), "never into an empty off hand (getFreeSlot)");
-        assert_eq!(inv[9].as_ref().unwrap().count, 64);
+        assert!(off.is_none(), "never onto an empty off hand");
+        assert_eq!(horizon_client::pick_item::free_slot_in(&inv), Some(9));
         assert_eq!(
             room_in(&slots(&mut inv, &mut off), "minecraft:diamond", 64),
-            0
-        );
-        assert_eq!(
-            add_to(slots(&mut inv, &mut off), 0, "minecraft:diamond", 64, 1),
-            0
+            64
         );
     }
 
