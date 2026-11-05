@@ -1013,6 +1013,21 @@ impl Game<'_> {
                 self.dragon = Some(dragon);
                 true
             }
+            Target::Mob(id) => {
+                let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
+                    return false;
+                };
+                let mut events = Vec::new();
+                self.with_mob_outside(i, |game, mob| {
+                    let shared = game.mob_shared();
+                    let world = game.mob_world(&shared, &[]);
+                    mob.do_move_by(&world, delta, &mut events);
+                });
+                if let Err(e) = self.handle_mob_events(events) {
+                    log::warn!("Horizon: a mob's move events failed: {e}");
+                }
+                true
+            }
             Target::Item(id) => {
                 let Some(item) = self.dropped.iter_mut().find(|i| i.id == id) else {
                     return false;
@@ -1452,5 +1467,30 @@ mod tests {
         assert_eq!(game.dropped[0].position.y, 61.0);
         assert!(game.tnts[0].on_ground);
         assert_eq!(game.tnts[0].position.y, 61.0);
+    }
+
+    #[test]
+    fn a_mob_moved_into_a_wall_stops_and_flags_it() {
+        let Some(mut game) = flat_game() else { return };
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        for y in 61..64 {
+            for z in -2..3 {
+                game.world.set(4, y, z, stone).unwrap();
+            }
+        }
+        let id = game.spawn_mob("zombie", [0.5, 61.0, 0.5], true).unwrap();
+        assert!(game.entity_move(
+            Target::Mob(id),
+            MoverType::SelfMovement,
+            Vec3::new(9.0, 0.0, 0.0)
+        ));
+        let mob = game.mobs.iter().find(|m| m.id == id).unwrap();
+        assert!(mob.horizontal_collision);
+        assert!((mob.position.x - 3.7).abs() < 1.0e-6, "{}", mob.position.x);
     }
 }

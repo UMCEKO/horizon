@@ -887,7 +887,7 @@ impl Game<'_> {
         };
         let moved = self.entity_move(target, mover, Vec3::new(delta[0], delta[1], delta[2]));
         if !moved {
-            log::warn!("Horizon: Entity.move of {target:?} has no port yet");
+            log::warn!("Horizon: Entity.move of {target:?}: a player moves by its own packets");
         }
         moved
     }
