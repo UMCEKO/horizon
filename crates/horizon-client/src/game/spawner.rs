@@ -144,9 +144,9 @@ impl Game<'_> {
                         None => None,
                     }
                 }
-                Planned::Loaded(tag, equipment) => self
-                    .load_mob(tag, None, Origin::Fresh)
-                    .map(|id| (id, equipment)),
+                Planned::Loaded(tag, equipment) => {
+                    self.load_tree(tag, Origin::Fresh).map(|id| (id, equipment))
+                }
             };
             if let Some((id, equipment)) = id {
                 // `nextSpawnData.getEquipment().ifPresent(mob::equip)`.

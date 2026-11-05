@@ -166,7 +166,7 @@ impl Game<'_> {
                 Tag::List(pos.iter().map(|v| Tag::Double(v.to_bits())).collect()),
             );
             c.insert("Owner".into(), Tag::IntArray(uuid.to_vec()));
-            self.load_mob(tag, None, super::entity_life::Origin::Fresh);
+            self.load_tree(tag, super::entity_life::Origin::Fresh);
         }
     }
 }

@@ -1206,6 +1206,9 @@ impl Game<'_> {
         if rider == seat || self.riding_table.borrow().rides_through(seat, rider) {
             return Err(err("commands.ride.mount.failure.loop", &[]));
         }
+        if self.target_level(target) != self.target_level(vehicle) {
+            return Err(err("commands.ride.mount.failure.wrong_dimension", &[]));
+        }
         // RideCommand.mount: target.startRiding(vehicle, true, true).
         if !self.start_riding(rider, seat, true, true) {
             return Err(err(
@@ -1233,6 +1236,30 @@ impl Game<'_> {
     pub(super) fn ride_vehicle(&self, t: Target) -> Option<Target> {
         let id = self.vehicle_of(self.ride_ent(t))?.id()?;
         self.level_entity(id as i32)
+    }
+    /// The command target of a ridden or riding entity.
+    fn ride_target(&self, e: Ent) -> Option<Target> {
+        match e {
+            Ent::Host => Some(Target::Player),
+            Ent::Guest(conn) => Some(Target::Guest(conn)),
+            Ent::Id(id) => self.level_entity(id as i32),
+        }
+    }
+
+    /// Entity.getPassengers of a command target.
+    pub(super) fn ride_passengers(&self, t: Target) -> Vec<Target> {
+        self.passengers_of(self.ride_ent(t))
+            .into_iter()
+            .filter_map(|e| self.ride_target(e))
+            .collect()
+    }
+
+    /// Entity.getControllingPassenger of a command target.
+    pub(super) fn ride_controller(&self, t: Target) -> Option<Target> {
+        let e = self.ride_ent(t);
+        let v = self.vehicle_target(e.id()?)?;
+        let first = self.controlling_passenger(v, &self.passengers_of(e))?;
+        self.ride_target(first)
     }
     // ---- /spreadplayers -----------------------------------------------------------------------
 

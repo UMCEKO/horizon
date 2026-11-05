@@ -627,7 +627,7 @@ impl<'a> Game<'a> {
             return;
         };
         for nbt in added {
-            self.load_mob(Tag::Compound(nbt), None, Origin::Fresh);
+            self.load_tree(Tag::Compound(nbt), Origin::Fresh);
         }
     }
     fn generation_creatures<Q: RandomSource + 'static>(

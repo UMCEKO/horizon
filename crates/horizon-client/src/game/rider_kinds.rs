@@ -64,6 +64,11 @@ impl Game<'_> {
             .cloned()
     }
 
+    /// Where the entity `id` of a kind that is no mob is.
+    pub(super) fn plain_position(&self, id: u32) -> Option<Vec3> {
+        self.plain_body(id).map(|b| b.at)
+    }
+
     /// Whether `id` is an entity of a kind that is no mob, boat, cart or cushion.
     pub(super) fn is_plain_vehicle(&self, id: u32) -> bool {
         self.plain_body(id).is_some()

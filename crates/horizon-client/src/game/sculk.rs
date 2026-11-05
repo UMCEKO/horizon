@@ -1765,8 +1765,10 @@ impl Game<'_> {
             b.position
         } else if let Some(c) = self.carts.iter().find(|c| c.id == id) {
             c.position
+        } else if let Some(c) = self.cushions.iter().find(|c| c.id == id) {
+            c.position
         } else {
-            self.cushions.iter().find(|c| c.id == id)?.position
+            self.plain_position(id)?
         };
         Some([p.x, p.y, p.z])
     }

@@ -733,12 +733,8 @@ impl Game<'_> {
                 _ => Vec::new(),
             },
             Some("vehicle") => self.ride_vehicle(entity).into_iter().collect(),
-            Some("controller") | Some("passengers") => match entity {
-                Target::Mob(id) if self.mobs.iter().any(|m| m.id == id && m.rider.is_some()) => {
-                    vec![Target::Player]
-                }
-                _ => Vec::new(),
-            },
+            Some("passengers") => self.ride_passengers(entity),
+            Some("controller") => self.ride_controller(entity).into_iter().collect(),
             Some("target") | Some("attacker") => {
                 let attacker = c.literals.last().is_some_and(|l| l == "attacker");
                 match entity {

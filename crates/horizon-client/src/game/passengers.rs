@@ -109,7 +109,7 @@ impl Game<'_> {
         self.riding_table.borrow().root_vehicle(e)
     }
     /// The vehicle with entity id `id`, by its place in the vector of its kind.
-    fn vehicle_target(&self, id: u32) -> Option<Vehicle> {
+    pub(super) fn vehicle_target(&self, id: u32) -> Option<Vehicle> {
         if let Some(i) = self.mobs.iter().position(|m| m.id == id) {
             Some(Vehicle::Mob(i))
         } else if let Some(i) = self.boats.iter().position(|b| b.id == id) {
@@ -1321,6 +1321,86 @@ mod tests {
         assert!((m.position.x - 4.5).abs() < 1e-9 && (m.position.z - 4.5).abs() < 1e-9);
     }
 
+    fn top_level(game: &mut Game<'_>, remove: bool) -> Vec<horizon_world::nbt::Tag> {
+        let keys = std::collections::HashSet::from([(0, 0)]);
+        game.entity_chunks(&keys, remove)
+            .into_iter()
+            .flat_map(|(_, tags)| tags)
+            .collect()
+    }
+
+    fn passengers_in(tag: &horizon_world::nbt::Tag) -> usize {
+        match tag.get("Passengers") {
+            Some(horizon_world::nbt::Tag::List(l)) => l.len(),
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn only_roots_are_saved_at_top_level() {
+        let Some(mut game) = flat_game() else { return };
+        let pig = spawn(&mut game, "pig", [2.5, 61.0, 2.5]);
+        let stand = add_stand(&mut game, [2.5, 61.0, 2.5]);
+        assert!(game.start_riding(Ent::Id(stand), Ent::Id(pig), true, false));
+        let tags = top_level(&mut game, false);
+        let kinds: Vec<_> = tags
+            .iter()
+            .filter_map(horizon_client::entity_nbt::kind)
+            .collect();
+        assert!(kinds.contains(&"minecraft:pig".to_owned()));
+        assert!(!kinds.contains(&"minecraft:armor_stand".to_owned()));
+        let pig_tag = tags.iter().find(|t| passengers_in(t) == 1).unwrap();
+        assert_eq!(
+            horizon_client::entity_nbt::kind(&pig_tag.get("Passengers").map_or(
+                horizon_world::nbt::Tag::End,
+                |l| match l {
+                    horizon_world::nbt::Tag::List(l) => l[0].clone(),
+                    _ => horizon_world::nbt::Tag::End,
+                }
+            ))
+            .as_deref(),
+            Some("minecraft:armor_stand")
+        );
+    }
+
+    #[test]
+    fn a_player_passenger_is_not_saved_in_its_vehicle() {
+        let Some(mut game) = flat_game() else { return };
+        let pig = spawn(&mut game, "pig", [2.5, 61.0, 2.5]);
+        assert!(game.start_riding(Ent::Guest(3), Ent::Id(pig), true, false));
+        let tags = top_level(&mut game, false);
+        assert!(tags.iter().all(|t| passengers_in(t) == 0));
+    }
+
+    #[test]
+    fn a_tree_of_any_kinds_round_trips() {
+        let Some(mut game) = flat_game() else { return };
+        let pig = spawn(&mut game, "pig", [2.5, 61.0, 2.5]);
+        let low = add_stand(&mut game, [2.5, 61.0, 2.5]);
+        let high = add_stand(&mut game, [2.5, 61.0, 2.5]);
+        assert!(game.start_riding(Ent::Id(low), Ent::Id(pig), true, false));
+        assert!(game.start_riding(Ent::Id(high), Ent::Id(low), true, false));
+        let tags = top_level(&mut game, true);
+        assert!(game.mobs.iter().all(|m| m.id != pig) && game.armor_stands.is_empty());
+        game.world.loaded_entities.push(((0, 0), tags));
+        game.spawn_loaded_entities(super::super::entity_life::Origin::FromDisk);
+        let pig = game
+            .mobs
+            .iter()
+            .find(|m| &*m.kind.id == "minecraft:pig")
+            .unwrap()
+            .id;
+        let [first] = game.passengers_of(Ent::Id(pig))[..] else {
+            panic!("one stand rides the pig");
+        };
+        let first = first.id().unwrap();
+        assert!(game.armor_stands.iter().any(|a| a.id == first));
+        let [second] = game.passengers_of(Ent::Id(first))[..] else {
+            panic!("one stand rides the stand");
+        };
+        assert!(game.armor_stands.iter().any(|a| Some(a.id) == second.id()));
+    }
+
     #[test]
     fn a_tnt_riding_a_cart_keeps_its_fuse() {
         let Some(mut game) = flat_game() else { return };
@@ -1369,6 +1449,33 @@ mod tests {
         game.run_command(command);
         let said = game.chat_capture.take().unwrap_or_default();
         said.iter().map(|t| t.plain()).collect::<Vec<_>>().join("|")
+    }
+
+    #[test]
+    fn summon_passengers_of_any_kind_ride_the_summoned_entity() {
+        let Some(mut game) = flat_game() else { return };
+        game.build_registries();
+        game.ui.registries.permission = 4;
+        let said = run(
+            &mut game,
+            "summon pig 2.5 61 2.5 {Passengers:[{id:armor_stand,Passengers:[{id:armor_stand}]}]}",
+        );
+        let pig = game
+            .mobs
+            .iter()
+            .find(|m| &*m.kind.id == "minecraft:pig")
+            .unwrap()
+            .id;
+        let [first] = game.passengers_of(Ent::Id(pig))[..] else {
+            panic!("{said}");
+        };
+        assert_eq!(game.passengers_of(first).len(), 1);
+        let said = run(
+            &mut game,
+            "execute as @e[type=armor_stand] on vehicle run tp @s 20 61 20",
+        );
+        let at = game.mobs.iter().find(|m| m.id == pig).unwrap().position;
+        assert_eq!(at.x, 20.5, "{said}");
     }
 
     #[test]

@@ -22,8 +22,15 @@ fn string(s: &str) -> Tag {
     Tag::String(s.into())
 }
 /// Entity type ID (`id`).
+/// The `id` as `Identifier.tryParse` reads it: no namespace means `minecraft`.
 pub fn kind(tag: &Tag) -> Option<String> {
-    text(tag.get("id"))
+    text(tag.get("id")).map(|id| {
+        if id.contains(':') {
+            id
+        } else {
+            format!("minecraft:{id}")
+        }
+    })
 }
 pub fn position(tag: &Tag) -> Option<Vec3> {
     read_doubles::<3>(tag.get("Pos")).map(|p| Vec3::new(p[0], p[1], p[2]))
