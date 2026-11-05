@@ -7200,7 +7200,7 @@ impl Game<'_> {
                 let partial = self.clock.fraction() as f32;
                 let inputs = hud_layout::HotbarInputs {
                     selected: self.selected as i32,
-                    right_handed: !self.settings.main_hand_left,
+                    right_handed: !self.acting_main_arm_left(),
                     offhand: self.offhand.is_some(),
                     slots: std::array::from_fn(|i| {
                         self.inventory[i]
@@ -12136,7 +12136,7 @@ impl Game<'_> {
             let inverse_height =
                 horizon_client::first_person::equip_displacement(heights[i], scale);
             // The main hand on its arm, the off hand on the other one.
-            let left = self.settings.main_hand_left != (hand == Hand::Off);
+            let left = self.acting_main_arm_left() != (hand == Hand::Off);
             let Some(stack) = item else {
                 // renderArmWithItem: only the main hand's empty arm shows,
                 // on the main arm (the left one with the main hand set to
