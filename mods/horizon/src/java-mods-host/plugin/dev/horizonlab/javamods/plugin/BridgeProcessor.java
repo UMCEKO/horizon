@@ -46,7 +46,7 @@ final class BridgeProcessor implements ClassProcessor {
 
         /** Where the native is declared: interfaces can't hold natives, so a guarded method's goes on the guard's class. */
         String holder() {
-            return guard.isEmpty() ? owner : guard;
+            return guard.isEmpty() || guard.startsWith("@") ? owner : guard;
         }
 
         String rawDesc() {
@@ -162,6 +162,10 @@ final class BridgeProcessor implements ClassProcessor {
         if (entry.java()) {
             head.add(new VarInsnNode(Opcodes.ALOAD, 0));
             head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, guiRoutes, "backed", "(Ljava/lang/Object;)Z", false));
+        } else if (!isStatic && entry.guard.startsWith("@")) {
+            int dot = entry.guard.lastIndexOf('.');
+            head.add(new VarInsnNode(Opcodes.ALOAD, 0));
+            head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, entry.guard.substring(1, dot), entry.guard.substring(dot + 1), "(Ljava/lang/Object;)Z", false));
         } else if (!isStatic && !entry.guard.isEmpty()) {
             head.add(new VarInsnNode(Opcodes.ALOAD, 0));
             head.add(new TypeInsnNode(Opcodes.INSTANCEOF, entry.guard));

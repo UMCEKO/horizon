@@ -198,6 +198,23 @@ fn main() {
                     std::hint::black_box(host.request("bench_nested", &[0, 0, 0, 1, 0, 0, 0, 2]));
                 }),
             );
+            let route = |out: &mut horizon_java_host::wire::Out| {
+                out.int(0);
+                out.0.push(2);
+            };
+            report(
+                "bench_route (static no-op)",
+                median(&options, options.n, || {
+                    std::hint::black_box(
+                        host.call_with("bench_route", route, |reply| reply.byte()),
+                    );
+                }),
+            );
+            check(
+                host.call_with("bench_route", route, |reply| reply.byte()) == Some(0),
+                "a route op answers status 0",
+                &mut failures,
+            );
             let big = (1i32 << 20).to_be_bytes();
             report(
                 "overflow reply 1 MB",

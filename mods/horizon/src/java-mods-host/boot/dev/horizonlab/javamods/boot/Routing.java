@@ -30,6 +30,13 @@ public final class Routing {
     /** One method handle per route, by its place in `routes.bin`; null for a route that is off. */
     public static volatile MethodHandle[] HANDLES = new MethodHandle[0];
 
+    private static volatile String[] KEYS = new String[0];
+    private static volatile String[] DESCS = new String[0];
+    private static volatile String[] OWNERS = new String[0];
+    private static volatile boolean[] STATICS = new boolean[0];
+    private static volatile java.util.Map<String, String> MODS = java.util.Map.of();
+    private static final java.util.Set<String> TOLD = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     private static volatile byte[] bin = new byte[0];
 
     private static final ThreadLocal<boolean[]> JAVA_EARLY = ThreadLocal.withInitial(() -> new boolean[1]);
@@ -55,6 +62,11 @@ public final class Routing {
     /** A Java body's early return, for the route stub. */
     public static void markEarly() {
         JAVA_EARLY.get()[0] = true;
+    }
+
+    /** Whether a call's receiver is a server player's inventory, which is all Horizon's native serves; the Java client's own is not. */
+    public static boolean serverInventory(Object receiver) {
+        return receiver instanceof net.minecraft.world.entity.player.Inventory inventory && inventory.player instanceof net.minecraft.server.level.ServerPlayer;
     }
 
     /** The route's id, -1 when the key is unknown or the route is off. */
@@ -92,6 +104,10 @@ public final class Routing {
         out.writeInt(VERSION);
         out.writeInt(ordered.size());
         var handles = new MethodHandle[ordered.size()];
+        var keys = new String[ordered.size()];
+        var descs = new String[ordered.size()];
+        var statics = new boolean[ordered.size()];
+        var owners = new String[ordered.size()];
         var idOf = new java.util.HashMap<String, Integer>();
         var liveFlags = new boolean[ordered.size()];
         var edgeFlags = new boolean[ordered.size()];
@@ -137,6 +153,10 @@ public final class Routing {
                 on++;
                 handles[id] = handle(type, key, name, desc, route.get("static").getAsBoolean(), loader);
             }
+            keys[id] = key;
+            descs[id] = desc;
+            owners[id] = owner;
+            statics[id] = route.get("static").getAsBoolean();
             boolean body = route.get("kind").getAsString().equals("body");
             idOf.put(key, id);
             liveFlags[id] = live;
@@ -162,6 +182,11 @@ public final class Routing {
             id++;
         }
         HANDLES = handles;
+        KEYS = keys;
+        DESCS = descs;
+        STATICS = statics;
+        OWNERS = owners;
+        MODS = modOf;
         ids = idOf;
         Routing.live = liveFlags;
         edges = edgeFlags;
@@ -270,6 +295,107 @@ public final class Routing {
         } catch (ReflectiveOperationException | IllegalArgumentException e) {
             throw new IllegalStateException("route " + key + ": no method handle", e);
         }
+    }
+
+    /** The `route` op: Rust's call of a vanilla method as Java's merged method. A throw is the reply, not caught here: Rust panics with it, as an exception ends a vanilla tick. */
+    static void call(Crossing.In in, Crossing.Out out) throws Exception {
+        int id = in.readInt();
+        run(KEYS[id], OWNERS[id], DESCS[id], STATICS[id], HANDLES[id], in, out);
+    }
+
+    private static MethodHandle noop;
+
+    static void noop() {}
+
+    /** `route` against a static no-op, for the crossing bench. */
+    static void benchCall(Crossing.In in, Crossing.Out out) throws Exception {
+        in.readInt();
+        if (noop == null) noop = MethodHandles.lookup().findStatic(Routing.class, "noop", MethodType.methodType(void.class));
+        run("bench#noop()V", "dev/horizonlab/javamods/boot/Routing", "()V", true, noop, in, out);
+    }
+
+    private static final String SUPPORTED_RETURNS = "VZIJFD";
+
+    private static void run(String key, String owner, String desc, boolean isStatic, MethodHandle handle, Crossing.In in, Crossing.Out out) throws Exception {
+        byte recv = in.readByte();
+        var types = MethodType.fromMethodDescriptorString(desc, Boot.class.getClassLoader()).parameterArray();
+        char ret = desc.charAt(desc.indexOf(')') + 1);
+        String unreadable = SUPPORTED_RETURNS.indexOf(ret) < 0 ? "return type " + desc.substring(desc.indexOf(')') + 1) : null;
+        for (var type : types) {
+            if (unreadable == null && !type.isPrimitive() && type != net.minecraft.core.BlockPos.class && type != String.class) unreadable = type.getName();
+            if (unreadable == null && type == void.class || type == byte.class || type == short.class || type == char.class) unreadable = type.getName();
+        }
+        if (unreadable != null || handle == null) {
+            if (TOLD.add(key)) System.err.println("Horizon: route " + key + ": no argument reader for " + unreadable);
+            out.writeByte(1);
+            GameBridge.writeText(out, "unknown");
+            GameBridge.writeText(out, "no argument reader for " + unreadable);
+            return;
+        }
+        Object receiver = null;
+        switch (recv) {
+            case 0 -> {
+                var player = GameBridge.fill(in, false).player();
+                receiver = owner.equals("net/minecraft/world/entity/player/Inventory") ? player.getInventory()
+                        : owner.equals("net/minecraft/world/inventory/AbstractContainerMenu") ? player.containerMenu : player;
+            }
+            case 1 -> {
+                var level = GameBridge.level(GameBridge.text(in));
+                ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
+                receiver = level;
+            }
+            default -> {}
+        }
+        var args = new ArrayList<Object>();
+        if (!isStatic) args.add(receiver);
+        for (var type : types) {
+            if (type == int.class) args.add(in.readInt());
+            else if (type == long.class) args.add(in.readLong());
+            else if (type == float.class) args.add(in.readFloat());
+            else if (type == double.class) args.add(in.readDouble());
+            else if (type == boolean.class) args.add(in.readBoolean());
+            else if (type == String.class) args.add(in.text());
+            else args.add(net.minecraft.core.BlockPos.of(in.readLong()));
+        }
+        long started = Profile.ON ? System.nanoTime() : 0;
+        Object result;
+        try {
+            result = handle.invokeWithArguments(args);
+        } catch (Throwable t) {
+            if (GameBridge.outermost()) GameBridge.abandonCall();
+            out.writeByte(1);
+            GameBridge.writeText(out, modOf(t));
+            var first = t.getStackTrace().length > 0 ? " at " + t.getStackTrace()[0] : "";
+            GameBridge.writeText(out, t + first);
+            return;
+        }
+        if (Profile.ON) Profile.event("route:" + key, System.nanoTime() - started);
+        out.writeByte(0);
+        switch (ret) {
+            case 'Z' -> out.writeBoolean((Boolean) result);
+            case 'I' -> out.writeInt((Integer) result);
+            case 'J' -> out.writeLong((Long) result);
+            case 'F' -> out.writeFloat((Float) result);
+            case 'D' -> out.writeDouble((Double) result);
+            default -> {}
+        }
+        GameBridge.writeEffects(out);
+    }
+
+    /** The mod of the first frame that runs a merged mixin handler, else "unknown". */
+    static String modOf(Throwable t) {
+        for (var frame : t.getStackTrace()) {
+            try {
+                for (Method m : Class.forName(frame.getClassName(), false, Boot.class.getClassLoader()).getDeclaredMethods()) {
+                    if (!m.getName().equals(frame.getMethodName())) continue;
+                    var from = m.getAnnotation(org.spongepowered.asm.mixin.transformer.meta.MixinMerged.class);
+                    if (from != null) return MODS.getOrDefault(from.mixin(), "unknown");
+                }
+            } catch (ClassNotFoundException | LinkageError skip) {
+                // a frame of a class that is gone
+            }
+        }
+        return "unknown";
     }
 
     /** The registry names the route's family admits, or null for a family without a list (all of it, or decided by the spec that adds its receivers). */

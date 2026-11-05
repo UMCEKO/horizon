@@ -15,7 +15,7 @@ pub struct Bridge {
     pub class: &'static str,
     pub method: &'static str,
     pub desc: &'static str,
-    /// The method runs in Java when the receiver isn't this class.
+    /// The method runs in Java when the receiver isn't this class, or when the static `@owner.method(Object)Z` it names says no.
     pub guard: &'static str,
     pub native: &'static str,
     pub args: Vec<&'static str>,
@@ -45,7 +45,7 @@ impl Bridge {
     }
     /// Where the native is declared: interfaces can't hold natives, so a guarded method's goes on the guard's class.
     fn holder(&self) -> &'static str {
-        if self.guard.is_empty() {
+        if self.guard.is_empty() || self.guard.starts_with('@') {
             self.class
         } else {
             self.guard

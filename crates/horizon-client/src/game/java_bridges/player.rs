@@ -39,6 +39,13 @@ fn parse_effect(text: &str) -> Option<EffectInstance> {
 }
 
 horizon_java_host::java_bridges! { table for Game<'static> {
+    route "net/minecraft/world/entity/player/Inventory".setSelectedSlot
+    "(I)V" if "@dev/horizonlab/javamods/boot/Routing.serverInventory" =>
+    fn route_inventory_set_selected_slot(game, slot: i32) -> () {
+        game.set_selected_slot_body(slot);
+        game.java_refresh_player();
+    }
+
     "net/minecraft/server/level/ServerPlayer".teleportTo
     "(DDD)V" =>
     fn player_teleport_to(game, x: f64, y: f64, z: f64) -> () {

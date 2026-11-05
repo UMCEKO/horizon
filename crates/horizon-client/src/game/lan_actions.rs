@@ -1330,10 +1330,10 @@ impl Game<'_> {
             },
             S::SetCarriedItem(p) => {
                 if (0..9).contains(&p.slot) {
-                    host.hub.guests[gi].selected = p.slot as usize;
                     if let Some(play) = host.play.get_mut(&conn) {
                         play.using = None;
                     }
+                    self.as_guest(host, conn, |g| g.set_selected_slot(i32::from(p.slot)));
                 }
             }
             // ServerGamePacketListenerImpl.handlePunch: the main hand swings

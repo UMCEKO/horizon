@@ -39,6 +39,9 @@ fn pack_files(world_tables: &Option<WorldTables>) -> horizon_world::loot::PackOv
     }
 }
 
+mod java_routing;
+#[allow(unused_imports)]
+use java_routing::{Recv, route};
 mod advancements;
 mod advancements_screen;
 mod agent;
@@ -127,6 +130,7 @@ mod hand;
 mod initial_spawn;
 mod integrated;
 mod interactions;
+mod inventory;
 mod item_draw;
 mod item_particles;
 #[cfg(feature = "java-mods")]
