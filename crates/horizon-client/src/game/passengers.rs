@@ -115,11 +115,12 @@ impl Game<'_> {
                 .map(Vehicle::Cart)
         }
     }
-    /// `Piglin.getTopPassenger`: down the chain of first passengers from `vehicle`, stopping at the `counter`th seat.
-    fn top_passenger(&self, vehicle: Ent, counter: i32) -> Ent {
-        match self.first_passenger(vehicle) {
-            Some(p) if counter != 1 => self.top_passenger(p, counter - 1),
-            _ => vehicle,
+    /// What `Mob.startRiding` does after the link, for a mob that linked itself in its turn.
+    pub(super) fn boarded(&mut self, rider: u32, vehicle: u32) {
+        self.break_leash(rider, true, false);
+        if let Some(at) = self.vehicle_position(vehicle) {
+            let ctx = self.who_context(Some(Who::Mob(rider)), None);
+            self.post_game_event("minecraft:entity_mount", at, ctx);
         }
     }
     /// `Entity.startRiding(v, force, events)` for mob `r`; whether it boarded.
@@ -137,7 +138,11 @@ impl Game<'_> {
                 .iter()
                 .any(|o| o.id == vehicle_id && o.species() == Species::Hoglin)
         {
-            v = self.top_passenger(v, riders::MAX_PASSENGERS_ON_ONE_HOGLIN);
+            v = riders::top_passenger(
+                &self.riding_table.borrow(),
+                v,
+                riders::MAX_PASSENGERS_ON_ONE_HOGLIN,
+            );
             vehicle_id = v.id().unwrap_or(vehicle_id);
         }
         if r == v || self.vehicle_of(r) == Some(v) {

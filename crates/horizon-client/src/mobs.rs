@@ -1387,9 +1387,8 @@ pub enum MobEvent {
         from: Who,
         at: [f64; 3],
     },
-    /// `Entity.startRiding` from a mob's brain (`Mount.create`): `rider` boards
-    /// `vehicle` if `Piglin.startRiding` and `canRide` allow it.
-    StartRiding {
+    /// `Mount.create`'s `startRiding` took effect in the table; the rest of it (the lead, the game event) follows.
+    Boarded {
         rider: u32,
         vehicle: u32,
     },

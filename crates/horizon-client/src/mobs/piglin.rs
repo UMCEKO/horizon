@@ -496,10 +496,18 @@ fn mount(m: &mut Mob, cx: &mut Cx) {
         return;
     }
     if m.distance_sqr(at) < 1.0 {
-        cx.events.push(MobEvent::StartRiding {
-            rider: m.id,
-            vehicle: ride.vehicle,
-        });
+        let Some(species) = cx.w.seen(ride.vehicle).map(|s| s.species) else {
+            return;
+        };
+        let baby_piglin = m.species() == Species::Piglin && m.is_baby();
+        if let Some(boarded) =
+            super::riders::board_in_turn(cx.w.riding, m.id, baby_piglin, ride.vehicle, species)
+        {
+            cx.events.push(MobEvent::Boarded {
+                rider: m.id,
+                vehicle: boarded,
+            });
+        }
         return;
     }
     m.look_at([at.x, eye_y, at.z]);

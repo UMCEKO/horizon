@@ -2260,10 +2260,7 @@ impl Game<'_> {
                         horizon_client::mobs::piglin::receive_retreat(m, from, at);
                     }
                 }
-                // Mount.create: `startRiding(vehicle)`.
-                MobEvent::StartRiding { rider, vehicle } => {
-                    self.start_riding(Ent::Id(rider), Ent::Id(vehicle), false, true);
-                }
+                MobEvent::Boarded { rider, vehicle } => self.boarded(rider, vehicle),
                 MobEvent::Dismounted { rider, at } => {
                     let ctx = self.who_context(Some(Who::Mob(rider)), None);
                     self.post_game_event("minecraft:entity_dismount", at, ctx);

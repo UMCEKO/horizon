@@ -7,15 +7,55 @@ use super::{
     Mob, MobWorld, Seen, Species, attachments,
     goals::{JUMP, LOOK, MOVE},
 };
-use crate::riding::Ent;
+use crate::riding::{Ent, Riding};
 use horizon_core::geometry::{Aabb, Vec3, trig};
 use horizon_world::nbt::{Compound, Tag};
+use std::cell::RefCell;
 
 /// The goal flags a controlling passenger takes from its vehicle.
 const CONTROLLED: u8 = MOVE | JUMP | LOOK;
 /// `Piglin.startRiding`: how many baby piglins stack on one hoglin.
 pub const MAX_PASSENGERS_ON_ONE_HOGLIN: i32 = 3;
 
+/// `Piglin.getTopPassenger`: down the chain of first passengers from `vehicle`, stopping at the `counter`th seat.
+pub fn top_passenger(riding: &Riding, vehicle: Ent, counter: i32) -> Ent {
+    match riding.first_passenger(vehicle) {
+        Some(p) if counter != 1 => top_passenger(riding, p, counter - 1),
+        _ => vehicle,
+    }
+}
+/// `Piglin.startRiding` then `Entity.startRiding(vehicle, false, ..)` in the turn of the piglin `rider`:
+/// the table links at once. A hoglin or piglin takes no one else (`canAddPassenger`); returns the vehicle boarded.
+pub fn board_in_turn(
+    riding: &RefCell<Riding>,
+    rider: u32,
+    baby_piglin: bool,
+    vehicle: u32,
+    vehicle_species: Species,
+) -> Option<u32> {
+    if !matches!(vehicle_species, Species::Hoglin | Species::Piglin) {
+        return None;
+    }
+    let r = Ent::Id(rider);
+    let mut table = riding.borrow_mut();
+    let mut v = Ent::Id(vehicle);
+    if baby_piglin && vehicle_species == Species::Hoglin {
+        v = top_passenger(&table, v, MAX_PASSENGERS_ON_ONE_HOGLIN);
+    }
+    if r == v
+        || table.vehicle_of(r) == Some(v)
+        || table.rides_through(v, r)
+        || table.boarding_cooldown(r) > 0
+        || table.is_vehicle(v)
+    {
+        return None;
+    }
+    if table.is_passenger(r) {
+        table.unlink(r);
+    }
+    table.link(r, v);
+    v.id()
+}
 /// `getPassengerAttachmentPoint` of a mob vehicle for its passenger number
 /// `index`, turned by `yaw`: the kind's override, else `getClamped(PASSENGER,
 /// index, yaw)` of the box's attachments. `client` is set where the level is
@@ -289,6 +329,34 @@ mod tests {
         m
     }
 
+    #[test]
+    fn a_piglin_boards_at_once_in_its_own_turn() {
+        let table = RefCell::new(Riding::default());
+        let boarded = board_in_turn(&table, 1, false, 2, Species::Hoglin);
+        assert_eq!(boarded, Some(2));
+        assert_eq!(table.borrow().vehicle_of(Ent::Id(1)), Some(Ent::Id(2)));
+    }
+    #[test]
+    fn a_baby_piglin_boards_the_top_of_the_stack_and_a_full_seat_refuses() {
+        let table = RefCell::new(Riding::default());
+        table.borrow_mut().link(Ent::Id(3), Ent::Id(2));
+        table.borrow_mut().link(Ent::Id(4), Ent::Id(3));
+        table.borrow_mut().link(Ent::Id(5), Ent::Id(4));
+        // The third seat down the chain holds a rider already: nothing to board.
+        assert_eq!(board_in_turn(&table, 1, true, 2, Species::Hoglin), None);
+        assert_eq!(board_in_turn(&table, 1, false, 2, Species::Hoglin), None);
+        assert_eq!(table.borrow().vehicle_of(Ent::Id(1)), None);
+        // With one rider fewer, the baby takes the top seat.
+        table.borrow_mut().unlink(Ent::Id(5));
+        assert_eq!(board_in_turn(&table, 1, true, 2, Species::Hoglin), Some(4));
+    }
+    #[test]
+    fn a_piglin_in_its_cooldown_does_not_board() {
+        let table = RefCell::new(Riding::default());
+        table.borrow_mut().link(Ent::Id(1), Ent::Id(9));
+        table.borrow_mut().unlink(Ent::Id(1));
+        assert_eq!(board_in_turn(&table, 1, false, 2, Species::Hoglin), None);
+    }
     #[test]
     fn attachments_turn_with_the_vehicle() {
         // A ravager's seat sits a sixteenth behind its centre.
