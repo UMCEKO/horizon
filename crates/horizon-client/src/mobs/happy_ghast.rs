@@ -602,7 +602,7 @@ pub fn anim(m: &Mob, s: &State, p: &mut Poses) {
     #[allow(clippy::approx_constant)]
     if p.has("goggles") {
         let g = p.get("goggles");
-        if m.rider.is_some() {
+        if s.ride.is_ridden {
             g[3] = 0.0;
             g[1] = 14.0;
         } else {
