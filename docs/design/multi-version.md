@@ -35,7 +35,10 @@ whole function; the 26.3 function keeps its body byte for byte and gains one att
 
 ```rust
 /// `ServerExplosion.hurtEntities`: damage and knockback for every entity in range.
-#[versioned(..V26_2 => v26_2::hurt_entities)]
+#[versioned {
+    ..=V26_2 => v26_2::hurt_entities,
+    V26_3 => self,
+}]
 pub fn hurt_entities(&mut self) {
     ... // the 26.3 body, unchanged
 }
@@ -53,7 +56,7 @@ pub(super) fn hurt_entities(level: &mut Level) {
   so the 26.3 body never contains another version's code.
 - A copy is a child module of the file it replaces (`explosion.rs` declares `mod v26_2;`), so it reaches the parent's
   private helpers and nothing else can call it. Callers never change: they call the 26.3 fn, which routes.
-- Deleting a version deletes its `v26_2.rs` files, their `mod` lines and their `..V26_2 =>` entries.
+- Deleting a version deletes its `v26_2.rs` files, their `mod` lines and their `..=V26_2 =>` arms.
 - `versions.py fork Class.method --mc-version 26.2` writes the copy, the attribute and the citation; the porter edits
   only the lines that differ. Going back to 26.1.2 forks the 26.2 copy, so each step starts from the nearest body.
 - The ranged citation (`@..26.2`) tells the port ledger which versions a copy ports. Ranges follow the order in
@@ -63,8 +66,19 @@ pub(super) fn hurt_entities(level: &mut Level) {
 from generated tables per version, selected through `VersionProfile` when the connection starts, not from `if`s in
 codecs. Packets whose fields changed get a codec per version range.
 
-**Data first.** A constant, threshold or table that differs becomes a per-version row in an existing table. An `if`
-is only for control flow.
+**Data first.** A constant, threshold or table that differs becomes a per-version value, never an `if`:
+
+```rust
+pub const ZOMBIE_FIRE_CHANCE: Versioned<f32> = versions! {
+    ..=V26_2 => 0.3,
+    V26_3 => 0.4,
+};
+```
+
+`versions!` and `#[versioned]` share one match-like syntax: arms are versions or inclusive ranges (`..=V26_2` is
+26.2 and everything older), checked at compile time like a `match`: every version covered once, no `_`, and the
+pinned version named in its own arm. Adding an older version needs no edit where it behaves like the newest arm
+covering it; where it doesn't, the arm splits (`V26_2 => …, ..=V26_1_2 => …`).
 
 ## What stays shared
 
