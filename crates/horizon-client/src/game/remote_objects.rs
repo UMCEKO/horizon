@@ -313,7 +313,7 @@ impl Game<'_> {
             if let Some(yaw) = yaw {
                 a.yaw = yaw;
             }
-            a.on_ground = on_ground;
+            a.moving.ground.on_ground = on_ground;
         }
     }
 

@@ -890,7 +890,7 @@ pub struct ArmorStand {
     pub id: u32,
     pub position: Vec3,
     pub velocity: Vec3,
-    pub on_ground: bool,
+    pub moving: horizon_world::entity_move::MoveState,
     pub yaw: f32,
     /// mainhand, offhand, feet, legs, chest, head (EquipmentSlot order).
     pub equipment: [Option<crate::items::ItemStack>; 6],
@@ -932,7 +932,13 @@ impl ArmorStand {
             id,
             position,
             velocity: Vec3::ZERO,
-            on_ground: true,
+            moving: horizon_world::entity_move::MoveState {
+                ground: horizon_world::ground_support::GroundState {
+                    on_ground: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
             yaw,
             equipment: Default::default(),
             small: false,
@@ -1047,13 +1053,13 @@ impl ArmorStand {
         // `travelInFluid` reads `isFalling` before the move and any push.
         let falling = wanted.y <= 0.0;
         let mut y = wanted.y;
-        if let Ok(moved) = scene.resolve(self.bounds(), wanted, 0.0, self.on_ground) {
+        if let Ok(moved) = scene.resolve(self.bounds(), wanted, 0.0, self.moving.ground.on_ground) {
             self.position = Vec3::new(
                 self.position.x + moved.x,
                 self.position.y + moved.y,
                 self.position.z + moved.z,
             );
-            self.on_ground = wanted.y < 0.0 && moved.y > wanted.y;
+            self.moving.ground.on_ground = wanted.y < 0.0 && moved.y > wanted.y;
             if moved.y != wanted.y {
                 y = 0.0;
             }

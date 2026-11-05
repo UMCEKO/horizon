@@ -902,7 +902,7 @@ impl Game<'_> {
         if kind == "minecraft:armor_stand" {
             let mut stand = horizon_client::entities::ArmorStand::new(id, at, yaw);
             stand.marker = e["marker"].as_bool().unwrap_or(false);
-            stand.on_ground = e["ground"].as_bool().unwrap_or(false);
+            stand.moving.ground.on_ground = e["ground"].as_bool().unwrap_or(false);
             self.armor_stands.push(stand);
             return Ok(Target::Stand(id));
         }

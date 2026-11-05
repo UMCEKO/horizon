@@ -31,10 +31,15 @@ use horizon_world::{
     registry::BlockStateId,
 };
 
+/// `minecraft:safe_fall_distance`'s default.
+const SAFE_FALL_DISTANCE: f64 = 3.0;
+
 /// The `checkFallDamage` the class has.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum FallRule {
     Entity,
+    /// `LivingEntity.checkFallDamage`: the block's crumbs where a fall landed, then `Entity`'s.
+    Living,
     /// `AbstractBoat.checkFallDamage`: the fall is kept and reset, nothing lands on a block.
     Boat,
 }
@@ -190,6 +195,34 @@ impl KindMoveWorld<'_, '_, '_> {
         let at = self.at();
         self.game.audio.play(&sounds.step, Some(at), volume, pitch);
     }
+    /// `LivingEntity.checkFallDamage`'s particles for a fall past the safe distance.
+    fn landing_crumbs(&mut self, state: BlockStateId, position: BlockPos) {
+        let power = (self.body.moving.fall_distance + 1.0e-6 - SAFE_FALL_DISTANCE)
+            .floor()
+            .max(0.0);
+        if power <= 0.0 || self.game.world.is_air(state) {
+            return;
+        }
+        let at = *self.body.position;
+        let (mut x, mut z) = (at.x, at.z);
+        let standing = BlockPos::containing(at);
+        if position.x != standing.x || position.z != standing.z {
+            let x_diff = at.x - f64::from(position.x) - 0.5;
+            let z_diff = at.z - f64::from(position.z) - 0.5;
+            let widest = x_diff.abs().max(z_diff.abs());
+            x = f64::from(position.x) + 0.5 + x_diff / widest * 0.5;
+            z = f64::from(position.z) + 0.5 + z_diff / widest * 0.5;
+        }
+        let scale = (f64::from(0.2_f32) + power / 15.0).min(2.5);
+        let count = (150.0 * scale) as i32;
+        self.game.landing_dust(
+            None,
+            state,
+            Vec3::new(x, at.y, z),
+            count,
+            f64::from(0.15_f32),
+        );
+    }
     fn game_event(&mut self, event: &'static str, state: Option<BlockStateId>) {
         let ctx = self.game.who_context(None, state);
         let at = self.at();
@@ -344,6 +377,13 @@ impl EntityMoveWorld for KindMoveWorld<'_, '_, '_> {
                 }
             }
             return Ok(());
+        }
+        if self.body.fall == FallRule::Living
+            && grounded
+            && self.body.moving.fall_distance > 0.0
+            && self.game.remote.is_none()
+        {
+            self.landing_crumbs(state, position);
         }
         if !self.touching_water() && dy < 0.0 {
             self.body.moving.fall_distance -= f64::from(dy as f32);
@@ -823,6 +863,31 @@ impl Game<'_> {
                 self.boats.insert(i, boat);
                 true
             }
+            Target::Stand(id) => {
+                let Some(i) = self.armor_stands.iter().position(|a| a.id == id) else {
+                    return false;
+                };
+                let mut stand = self.armor_stands.remove(i);
+                let body = BodyRef {
+                    id,
+                    size: BodyRef::size_of(stand.bounds()),
+                    removed: stand.removed,
+                    position: &mut stand.position,
+                    velocity: &mut stand.velocity,
+                    moving: &mut stand.moving,
+                    sync: None,
+                    no_physics: stand.marker,
+                    step_height: 0.0,
+                    gravity: 0.08,
+                    air_drag: 0.98,
+                    emission: MovementEmission::All,
+                    fall: FallRule::Living,
+                    steered: false,
+                };
+                self.move_body(body, mover, delta);
+                self.armor_stands.insert(i, stand);
+                true
+            }
             _ => false,
         }
     }
@@ -839,7 +904,7 @@ impl Game<'_> {
 mod tests {
     use super::super::crossing_tests::flat_game;
     use super::*;
-    use horizon_client::entities::ExperienceOrb;
+    use horizon_client::entities::{ArmorStand, ExperienceOrb};
     use horizon_client::projectiles::Projectile;
 
     fn orb(game: &mut Game<'_>, at: Vec3) -> u32 {
@@ -1018,5 +1083,30 @@ mod tests {
         let boat = game.boats.iter().find(|b| b.id == id).unwrap();
         assert!(boat.moving.collision.horizontal);
         assert!((boat.position.x - (4.0 - 1.375 / 2.0)).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn an_armor_stand_moved_down_lands_and_a_marker_goes_through_the_floor() {
+        let Some(mut game) = flat_game() else { return };
+        game.next_entity += 1;
+        let (a, b) = (game.next_entity, game.next_entity + 1);
+        game.next_entity += 1;
+        game.armor_stands
+            .push(ArmorStand::new(a, Vec3::new(0.5, 63.0, 0.5), 0.0));
+        let mut marker = ArmorStand::new(b, Vec3::new(3.5, 63.0, 0.5), 0.0);
+        marker.marker = true;
+        game.armor_stands.push(marker);
+        for id in [a, b] {
+            game.entity_move(
+                Target::Stand(id),
+                MoverType::SelfMovement,
+                Vec3::new(0.0, -5.0, 0.0),
+            );
+        }
+        let landed = game.armor_stands.iter().find(|s| s.id == a).unwrap();
+        assert_eq!(landed.position.y, 61.0);
+        assert!(landed.moving.ground.on_ground);
+        let through = game.armor_stands.iter().find(|s| s.id == b).unwrap();
+        assert_eq!(through.position.y, 58.0);
     }
 }

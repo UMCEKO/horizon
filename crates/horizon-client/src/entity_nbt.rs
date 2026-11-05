@@ -2345,8 +2345,8 @@ pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> 
         position: a.position,
         motion: a.velocity,
         rotation: [a.yaw, 0.0],
-        on_ground: a.on_ground,
-        fall_distance: 0.0,
+        on_ground: a.moving.ground.on_ground,
+        fall_distance: a.moving.fall_distance,
     };
     let mut tag = base.tag(raw);
     let equipment: Vec<(&str, Tag)> = ArmorStand::SLOTS
@@ -2439,7 +2439,7 @@ pub fn armor_stand_from_nbt(tag: &Tag, id: u32) -> Option<ArmorStand> {
     a.no_base_plate = flag(tag, "NoBasePlate");
     a.invisible = flag(tag, "Invisible");
     a.marker = flag(tag, "Marker");
-    a.on_ground = flag(tag, "OnGround");
+    a.moving = move_state(tag);
     // ArmorStand.readAdditionalSaveData: each part of `Pose` that is a list of
     // three numbers, the others staying at their defaults.
     if let Some(pose) = tag.get("Pose") {
