@@ -323,7 +323,7 @@ impl Game<'_> {
             .map(|p| [p.position.x, p.position.y, p.position.z]);
         if riptide > 0 {
             // `isInWaterOrRain() && !isPassenger()`.
-            if !self.in_water_or_rain() || self.riding.is_some() {
+            if !self.in_water_or_rain() || self.vehicle().is_some() {
                 return;
             }
             // `hurtWithoutBreaking` and the sound belong to the server; a server's

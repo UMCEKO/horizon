@@ -262,13 +262,14 @@ impl Game<'_> {
             p.pose == horizon_client::pose::Pose::Swimming,
         );
         let climbing = p.last_climbable.is_some() && d.y > 0.0;
-        let riding = self.riding.map(|id| {
+        let riding = self.vehicle().map(|id| {
             self.mobs
                 .iter()
                 .find(|m| m.id == id)
                 .map(|m| m.species())
                 .ok_or(())
         });
+        let vehicle = self.vehicle();
         let s = &mut self.stats;
         match riding {
             Some(Ok(sp)) => {
@@ -289,9 +290,9 @@ impl Game<'_> {
                 }
             }
             Some(Err(())) => {
-                if self.boats.iter().any(|b| Some(b.id) == self.riding) {
+                if self.boats.iter().any(|b| Some(b.id) == vehicle) {
                     s.custom("boat_one_cm", total)
-                } else if self.carts.iter().any(|c| Some(c.id) == self.riding) {
+                } else if self.carts.iter().any(|c| Some(c.id) == vehicle) {
                     s.custom("minecart_one_cm", total)
                 }
             }

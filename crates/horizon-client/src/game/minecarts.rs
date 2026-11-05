@@ -440,7 +440,7 @@ impl Game<'_> {
     /// `OldMinecartBehavior.moveAlongTrack`.
     fn move_along_track(&mut self, c: &mut Minecart, pos: [i32; 3], rail: &Rail, intent: [f64; 2]) {
         c.fall_distance = 0.0;
-        let ridden = Some(c.id) == self.riding;
+        let ridden = Some(c.id) == self.vehicle();
         let (x, z) = (c.position.x, c.position.z);
         let old = self.rail_pos(x, c.position.y, z);
         let mut y = f64::from(pos[1]);
@@ -664,8 +664,8 @@ impl Game<'_> {
     fn activate_cart(&mut self, c: &mut Minecart, powered: bool) {
         match c.kind {
             CartKind::Rideable if powered => {
-                if self.riding == Some(c.id) {
-                    self.riding = None;
+                if self.vehicle() == Some(c.id) {
+                    self.set_vehicle(None);
                 }
                 if c.hurt_time == 0 {
                     c.hurt_dir = -c.hurt_dir;
@@ -721,7 +721,7 @@ impl Game<'_> {
         }
         // (feet, box)
         let mut pushers: Vec<(Vec3, Aabb)> = Vec::new();
-        if self.riding.is_none()
+        if self.vehicle().is_none()
             && let Some(p) = self.player.as_ref()
         {
             pushers.push((p.position, p.bounds()));
@@ -832,7 +832,7 @@ impl Game<'_> {
                 continue;
             };
             let p = self.carts[i].position;
-            if Some(id) == self.riding
+            if Some(id) == self.vehicle()
                 || ridden.contains(&id)
                 || !ticking(p.x.floor() as i32, p.z.floor() as i32)
             {
@@ -908,7 +908,9 @@ impl Game<'_> {
                 self.audio.play_instance(instance, false);
             }
         }
-        let vehicle = self.riding.filter(|id| carts.iter().any(|c| c.id == *id));
+        let vehicle = self
+            .vehicle()
+            .filter(|id| carts.iter().any(|c| c.id == *id));
         if vehicle != self.riding_cart_sounds
             && let Some(cart) = carts.iter().find(|c| Some(c.id) == vehicle)
         {
@@ -923,7 +925,7 @@ impl Game<'_> {
     }
     /// The rider's tick: the cart moves with the rider's input as its push.
     pub(super) fn tick_cart_riding(&mut self, keys: Keys) -> bool {
-        let Some(i) = self.carts.iter().position(|c| Some(c.id) == self.riding) else {
+        let Some(i) = self.carts.iter().position(|c| Some(c.id) == self.vehicle()) else {
             return false;
         };
         if keys.shift {
@@ -951,7 +953,7 @@ impl Game<'_> {
             p.fall_distance = 0.0;
         }
         let Some(i) = self.carts.iter().position(|x| x.id == c.id) else {
-            self.riding = None;
+            self.set_vehicle(None);
             return true;
         };
         if alive {
@@ -959,13 +961,13 @@ impl Game<'_> {
             self.push_from_cart(i);
         } else {
             self.level_remove(Kind::Cart, c.id, Removal::Killed);
-            self.riding = None;
+            self.set_vehicle(None);
         }
         true
     }
     /// `getDismountLocationForPassenger`: beside the cart (across its facing), else on top.
     pub(super) fn dismount_cart(&mut self, i: usize) {
-        self.riding = None;
+        self.set_vehicle(None);
         let c = &self.carts[i];
         let (bx, by, bz) = (
             c.position.x.floor() as i32,
@@ -1048,7 +1050,7 @@ impl Game<'_> {
         let reach: f64 = if self.creative { 5.0 } else { 3.0 };
         let mut best: Option<(usize, f64)> = None;
         for (i, c) in self.carts.iter().enumerate() {
-            if Some(c.id) == self.riding {
+            if Some(c.id) == self.vehicle() {
                 continue;
             }
             let bb = c.bounds();
@@ -1097,10 +1099,10 @@ impl Game<'_> {
         let held = self.held().cloned();
         match self.carts[i].kind {
             CartKind::Rideable => {
-                if sneaking || self.riding.is_some() || self.ridden_by_guest(self.carts[i].id) {
+                if sneaking || self.vehicle().is_some() || self.ridden_by_guest(self.carts[i].id) {
                     return false;
                 }
-                self.riding = Some(self.carts[i].id);
+                self.set_vehicle(Some(self.carts[i].id));
             }
             // AbstractMinecartContainer.interact: no sneak check.
             CartKind::Chest | CartKind::Hopper => {
@@ -1426,7 +1428,7 @@ impl Game<'_> {
                 c.previous.z + (c.position.z - c.previous.z) * alpha,
             );
             // LevelExtractor.isEntityVisible: the cart the player rides always draws.
-            if self.riding != Some(c.id) {
+            if self.vehicle() != Some(c.id) {
                 let d = glam::DVec3::new(c.position.x, c.position.y, c.position.z) - camera;
                 if d.length_squared() >= range * range {
                     continue;

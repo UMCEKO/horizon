@@ -174,7 +174,7 @@ impl Game<'_> {
     }
     /// `ServerPlayer.setGameMode(SPECTATOR)`: `stopRiding`.
     fn dismount_for_spectator(&mut self) {
-        let Some(id) = self.riding else {
+        let Some(id) = self.vehicle() else {
             return;
         };
         if let Some(i) = self.boats.iter().position(|b| b.id == id) {
@@ -182,7 +182,7 @@ impl Game<'_> {
         } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
             self.dismount_cart(i);
         } else {
-            self.riding = None;
+            self.set_vehicle(None);
         }
     }
 }

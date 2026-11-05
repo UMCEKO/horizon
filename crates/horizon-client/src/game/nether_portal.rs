@@ -426,7 +426,7 @@ impl Game<'_> {
             .player
             .as_ref()
             .is_some_and(|p| !p.health.dead_or_dying());
-        if !alive || self.riding.is_some() || self.sleeping.is_some() {
+        if !alive || self.vehicle().is_some() || self.sleeping.is_some() {
             return;
         }
         // The client's LocalPlayer has the same cooldown (the Respawn
@@ -447,7 +447,7 @@ impl Game<'_> {
             .player
             .as_ref()
             .is_some_and(|p| !p.health.dead_or_dying());
-        if !alive || self.riding.is_some() {
+        if !alive || self.vehicle().is_some() {
             return;
         }
         if self.portals.player.cooldown > 0 {
@@ -470,7 +470,8 @@ impl Game<'_> {
         if self.travelling.is_some() {
             return Ok(());
         }
-        let allowed = !p.health.dead_or_dying() && self.riding.is_none() && self.sleeping.is_none();
+        let allowed =
+            !p.health.dead_or_dying() && self.vehicle().is_none() && self.sleeping.is_none();
         let rule = if p.invulnerable {
             "players_nether_portal_creative_delay"
         } else {
@@ -723,7 +724,7 @@ impl Game<'_> {
         use horizon_client::mobs::Species;
         m.alive()
             && m.extra.mount.is_none()
-            && self.riding != Some(m.id)
+            && self.vehicle() != Some(m.id)
             && (!self.guest_rides(m.id) || self.carries_riders())
             && m.species() != Species::Wither
     }
@@ -734,7 +735,7 @@ impl Game<'_> {
             return true;
         }
         self.carries_riders()
-            && self.riding != Some(id)
+            && self.vehicle() != Some(id)
             && !self.mobs.iter().any(|m| m.extra.mount == Some(id))
     }
     /// Whether a vehicle can take the server players riding it through a
@@ -771,7 +772,7 @@ impl Game<'_> {
     }
     /// Whether the player, a server player or a mob rides vehicle `id`.
     fn vehicle_occupied(&self, id: u32) -> bool {
-        self.riding == Some(id)
+        self.vehicle() == Some(id)
             || self.ridden_by_guest(id)
             || self.mobs.iter().any(|m| m.extra.mount == Some(id))
     }

@@ -151,16 +151,19 @@ impl Game<'_> {
         let seat = self.as_guest(host, conn, |game| {
             // A cushion does not move: the rider sits on it until it sneaks
             // (`Cushion.removePassenger` plays the get-up sound).
-            if game.cushions.iter().any(|c| Some(c.id) == game.riding) {
+            if game.cushions.iter().any(|c| Some(c.id) == game.vehicle()) {
                 if keys.shift {
                     game.tick_cushion_riding(keys);
                     return None;
                 }
-                let c = game.cushions.iter().find(|c| Some(c.id) == game.riding)?;
+                let c = game
+                    .cushions
+                    .iter()
+                    .find(|c| Some(c.id) == game.vehicle())?;
                 let p = c.seat();
                 return Some([p.x, p.y, p.z]);
             }
-            if let Some(i) = game.boats.iter().position(|b| Some(b.id) == game.riding) {
+            if let Some(i) = game.boats.iter().position(|b| Some(b.id) == game.vehicle()) {
                 if keys.shift {
                     game.dismount(i);
                     return None;
@@ -172,10 +175,10 @@ impl Game<'_> {
             // it sneaks or the cart breaks. An animal takes the rider's input
             // for its own tick (`travelRidden`), or lets it off.
             if !game.tick_cart_riding(keys) && game.tick_mount_riding(keys) {
-                game.riding?;
+                game.vehicle()?;
                 game.position_rider();
             }
-            game.riding?;
+            game.vehicle()?;
             let p = game.player.as_ref()?.position;
             Some([p.x, p.y, p.z])
         });
@@ -199,7 +202,7 @@ impl Game<'_> {
             return;
         }
         // The host in the window rides it already.
-        if self.riding == Some(vehicle) {
+        if self.vehicle() == Some(vehicle) {
             host.hub.guests[gi].vehicle = before;
             return;
         }

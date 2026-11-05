@@ -47,14 +47,15 @@ impl MountState {
 }
 impl Game<'_> {
     fn mount_index(&self) -> Option<usize> {
-        let id = self.riding?;
+        let id = self.vehicle()?;
         self.mobs.iter().position(|m| m.id == id)
     }
     /// `Pig` / `Strider.mobInteract`: saddle an adult, or ride a saddled one.
     fn interact_steerable(&mut self, index: usize, item: &str) -> bool {
         let held = self.inventory[self.selected].clone();
+        let vehicle = self.vehicle();
         let m = &mut self.mobs[index];
-        if m.is_baby() || !m.alive() || Some(m.id) == self.riding {
+        if m.is_baby() || !m.alive() || Some(m.id) == vehicle {
             return false;
         }
         let at = m.center();
@@ -77,7 +78,8 @@ impl Game<'_> {
         if !m.extra.saddled || food || self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft) {
             return false;
         }
-        self.riding = Some(m.id);
+        let id = m.id;
+        self.set_vehicle(Some(id));
         self.trigger_player("minecraft:started_riding");
         true
     }
@@ -135,7 +137,7 @@ impl Game<'_> {
         if horizon_client::mobs::nautilus::is_nautilus(species) {
             return self.interact_nautilus(index, item);
         }
-        if !equine::is_equine(species) || !m.alive() || Some(m.id) == self.riding {
+        if !equine::is_equine(species) || !m.alive() || Some(m.id) == self.vehicle() {
             return false;
         }
         // AbstractHorse.mobInteract: a horse a mob rides (`isVehicle`) has no
@@ -232,7 +234,8 @@ impl Game<'_> {
         m.extra.flag = false;
         m.extra.counter = 0;
         self.yaw = m.yaw;
-        self.riding = Some(m.id);
+        let id = m.id;
+        self.set_vehicle(Some(id));
         self.mount.jump_ticks = 0;
         self.mount.jump_scale = 0.0;
         self.trigger_player("minecraft:started_riding");
@@ -466,9 +469,10 @@ impl Game<'_> {
     }
     /// `removePassenger` + `getDismountLocationForPassenger`: beside the mount.
     pub(super) fn dismount_mount(&mut self) {
-        let Some(id) = self.riding.take() else {
+        let Some(id) = self.vehicle() else {
             return;
         };
+        self.set_vehicle(None);
         let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
             return;
         };
@@ -526,7 +530,7 @@ impl Game<'_> {
                 }
             }
             MobEvent::Buck { mob } => {
-                if self.riding == Some(mob) {
+                if self.vehicle() == Some(mob) {
                     self.dismount_mount();
                 } else {
                     // ejectPassengers: a server's player gets off too
@@ -561,7 +565,7 @@ impl Game<'_> {
     /// player, the server players and the mob on its back each get it, with
     /// their own safe distance and armour.
     pub(super) fn fall_to_passengers(&mut self, mob: u32, distance: f64, modifier: f32) {
-        if self.riding == Some(mob) {
+        if self.vehicle() == Some(mob) {
             self.rider_fall_damage(distance, modifier);
         }
         let guests: Vec<u32> = self.lan.as_ref().map_or_else(Vec::new, |h| {

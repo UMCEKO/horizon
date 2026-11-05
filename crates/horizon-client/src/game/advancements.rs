@@ -405,7 +405,7 @@ impl Game<'_> {
         for (i, a) in self.armor.iter().enumerate() {
             eq[2 + i] = a.as_ref().map(item_view);
         }
-        let vehicle = self.riding.and_then(|id| {
+        let vehicle = self.vehicle().and_then(|id| {
             self.mobs
                 .iter()
                 .find(|m| m.id == id)
@@ -440,7 +440,10 @@ impl Game<'_> {
     }
     /// The player as a passenger of the vehicle `id` (`Entity.getPassengers`).
     fn rider_entity(&self, id: u32) -> Option<EntityView> {
-        let p = self.player.as_ref().filter(|_| self.riding == Some(id))?;
+        let p = self
+            .player
+            .as_ref()
+            .filter(|_| self.vehicle() == Some(id))?;
         Some(EntityView {
             kind: "minecraft:player".into(),
             position: [p.position.x, p.position.y, p.position.z],
@@ -901,7 +904,7 @@ impl Game<'_> {
         let falling = p.fall_distance > 0.0;
         let dead = p.health.dead_or_dying();
         let lava = self
-            .riding
+            .vehicle()
             .and_then(|id| self.mobs.iter().find(|m| m.id == id))
             .is_some_and(|m| m.fluids.in_lava);
         match (falling, self.adv.marks.fall) {

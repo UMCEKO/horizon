@@ -50,7 +50,7 @@ impl Game<'_> {
     /// client sent for it), so a charge on horseback carries the horse's speed.
     pub(super) fn known_player_movement(&self) -> Vec3 {
         if let Some(i) = self
-            .riding
+            .vehicle()
             .and_then(|v| self.mobs.iter().position(|m| m.id == v))
         {
             return self.mob_speed(i).scale(1.0 / 20.0);
@@ -104,7 +104,7 @@ impl Game<'_> {
     /// ridden (`PiercingWeapon.canHitEntity`), with their index.
     pub(super) fn hittable_mob_boxes(&self) -> Vec<(usize, Aabb)> {
         (self.mobs.iter().enumerate())
-            .filter(|(_, m)| m.alive() && !m.removed && self.riding != Some(m.id))
+            .filter(|(_, m)| m.alive() && !m.removed && self.vehicle() != Some(m.id))
             .map(|(i, m)| (i, m.bounds()))
             .collect()
     }

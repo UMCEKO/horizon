@@ -542,7 +542,7 @@ impl Game<'_> {
         let driven = self.guest_vehicles();
         for i in 0..self.boats.len() {
             let p = self.boats[i].position;
-            if Some(self.boats[i].id) == self.riding
+            if Some(self.boats[i].id) == self.vehicle()
                 || driven.contains(&self.boats[i].id)
                 || !ticking(p.x.floor() as i32, p.z.floor() as i32)
             {
@@ -562,7 +562,7 @@ impl Game<'_> {
         let mut i = 0;
         while i < self.boats.len() {
             let p = self.boats[i].position;
-            let skip = Some(self.boats[i].id) == self.riding
+            let skip = Some(self.boats[i].id) == self.vehicle()
                 || !ticking(p.x.floor() as i32, p.z.floor() as i32);
             if skip || !self.boat_lava_tick(i) {
                 i += 1;
@@ -629,11 +629,11 @@ impl Game<'_> {
         if self.tick_cushion_riding(keys) {
             return Ok(());
         }
-        let Some(i) = self.boats.iter().position(|b| Some(b.id) == self.riding) else {
+        let Some(i) = self.boats.iter().position(|b| Some(b.id) == self.vehicle()) else {
             if self.tick_cart_riding(keys) || self.tick_mount_riding(keys) {
                 return Ok(());
             }
-            self.riding = None;
+            self.set_vehicle(None);
             return Ok(());
         };
         if keys.shift || self.boats[i].out_of_control >= 60.0 {
@@ -657,14 +657,14 @@ impl Game<'_> {
             p.fall_distance = 0.0;
         }
         if self.boat_lava_tick(i) {
-            self.riding = None;
+            self.set_vehicle(None);
         }
         Ok(())
     }
     /// `getDismountLocationForPassenger`: in front of the player if there is
     /// floor there, else on top of the boat.
     pub(super) fn dismount(&mut self, i: usize) {
-        self.riding = None;
+        self.set_vehicle(None);
         let target = self.boat_dismount_target(i, 0.6, self.yaw);
         if let Some(p) = self.player.as_mut() {
             p.position = target;
@@ -794,7 +794,7 @@ impl Game<'_> {
         let reach: f64 = if self.creative { 5.0 } else { 3.0 };
         let mut best: Option<(usize, f64)> = None;
         for (i, b) in self.boats.iter().enumerate() {
-            if Some(b.id) == self.riding {
+            if Some(b.id) == self.vehicle() {
                 continue;
             }
             let bb = b.bounds();
@@ -835,7 +835,7 @@ impl Game<'_> {
             return true;
         }
         // ChestBoat.interact: sneaking (or a full seat) opens the chest.
-        if self.boats[i].chest && (sneaking || self.riding.is_some() || !self.boat_has_room(i)) {
+        if self.boats[i].chest && (sneaking || self.vehicle().is_some() || !self.boat_has_room(i)) {
             let b = &self.boats[i];
             let key = (i32::MAX - 15, super::minecarts::CART_KEY_Y, b.id as i32);
             self.world.block_entities.insert(
@@ -851,13 +851,13 @@ impl Game<'_> {
         }
         if sneaking
             || self.boats[i].out_of_control >= 60.0
-            || self.riding.is_some()
+            || self.vehicle().is_some()
             || self.ridden_by_guest(self.boats[i].id)
             || !self.boat_has_room(i)
         {
             return false;
         }
-        self.riding = Some(self.boats[i].id);
+        self.set_vehicle(Some(self.boats[i].id));
         self.yaw = self.boats[i].yaw;
         // ServerPlayer.startRiding.
         self.trigger_player("minecraft:started_riding");

@@ -410,7 +410,7 @@ impl Game<'_> {
             self.level.position = None;
             // The dead player's Entity.setRemoved stopped its riding: the
             // new one is not put back into the vehicle.
-            self.riding = None;
+            self.set_vehicle(None);
         }
         if self.remote.is_some() {
             self.ui.death_text = None;

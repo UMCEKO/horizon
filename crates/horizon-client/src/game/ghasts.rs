@@ -22,7 +22,7 @@ impl Game<'_> {
             .iter()
             .filter(|m| {
                 (m.species() == horizon_client::mobs::Species::HappyGhast
-                    && Some(m.id) != self.riding
+                    && Some(m.id) != self.vehicle()
                     && happy_ghast::collides_with_player(m, p.position.y))
                     || (m.species() == horizon_client::mobs::Species::Shulker && m.alive())
             })
@@ -30,7 +30,7 @@ impl Game<'_> {
             .chain(
                 self.boats
                     .iter()
-                    .filter(|b| Some(b.id) != self.riding)
+                    .filter(|b| Some(b.id) != self.vehicle())
                     .map(super::boats::Boat::bounds),
             )
             .collect()
@@ -38,7 +38,7 @@ impl Game<'_> {
     /// `HappyGhast.mobInteract`. Returns whether the click was used.
     pub(super) fn interact_happy_ghast(&mut self, index: usize, item: &str) -> bool {
         let m = &self.mobs[index];
-        if !m.alive() || Some(m.id) == self.riding {
+        if !m.alive() || Some(m.id) == self.vehicle() {
             return false;
         }
         if m.is_baby() {
@@ -77,7 +77,7 @@ impl Game<'_> {
             // timeout.
             self.mobs[index].extra.counter = 0;
             self.yaw = self.mobs[index].yaw;
-            self.riding = Some(id);
+            self.set_vehicle(Some(id));
             self.mount.reset_jump();
             if was_empty {
                 let down = happy_ghast::goggles(true, &self.mobs[index]);

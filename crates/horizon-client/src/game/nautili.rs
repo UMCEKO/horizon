@@ -38,7 +38,7 @@ impl Game<'_> {
     /// `AbstractNautilus.mobInteract`. Returns whether the click was used.
     pub(super) fn interact_nautilus(&mut self, index: usize, item: &str) -> bool {
         let m = &self.mobs[index];
-        if !m.alive() || Some(m.id) == self.riding {
+        if !m.alive() || Some(m.id) == self.vehicle() {
             return false;
         }
         let taming: Vec<String> = self
@@ -129,7 +129,7 @@ impl Game<'_> {
             let id = self.mobs[index].id;
             self.break_leash(id, true, false);
             self.yaw = self.mobs[index].yaw;
-            self.riding = Some(id);
+            self.set_vehicle(Some(id));
             self.mount.reset_jump();
             self.trigger_player("minecraft:started_riding");
             return true;

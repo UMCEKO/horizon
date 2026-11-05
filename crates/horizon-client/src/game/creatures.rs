@@ -339,7 +339,7 @@ impl Game<'_> {
             velocity: p.velocity,
             yaw: self.yaw,
             sprinting: p.sprinting,
-            riding: self.riding.is_some(),
+            riding: self.vehicle().is_some(),
             hero: self.potions.effects.get("hero_of_the_village").is_some(),
             effects: self.potions.effects.list.iter().map(|e| e.id).collect(),
             uuid: self.level.player_uuid.unwrap_or_default(),
@@ -347,8 +347,8 @@ impl Game<'_> {
             remote: false,
             sleeping: self.sleeping.is_some(),
             sleep_timer: self.sleep_timer,
-            passenger: self.riding.is_some(),
-            vehicle: self.riding.and_then(|id| {
+            passenger: self.vehicle().is_some(),
+            vehicle: self.vehicle().and_then(|id| {
                 if let Some(b) = self.boats.iter().find(|b| b.id == id) {
                     // A boat's box: 1.375 wide and 0.5625 high around its position.
                     let w = 0.6875;

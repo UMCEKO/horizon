@@ -15,7 +15,7 @@ impl Game<'_> {
     /// instance reads about the mob the player rides.
     pub(super) fn start_riding_sound(&mut self) -> Option<RiddenSound> {
         let ridden = self
-            .riding
+            .vehicle()
             .and_then(|id| self.mobs.iter().find(|m| m.id == id && !m.removed))
             .map(|m| {
                 let species = m.species();

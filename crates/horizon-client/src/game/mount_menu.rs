@@ -159,7 +159,7 @@ impl Game<'_> {
     }
     /// E while riding a tamed mount opens its inventory instead of the player's.
     pub(super) fn open_ridden_mount_menu(&mut self) -> bool {
-        let Some(id) = self.riding else {
+        let Some(id) = self.vehicle() else {
             return false;
         };
         let Some(index) = self.mount_mob_index(id) else {
@@ -174,7 +174,7 @@ impl Game<'_> {
     }
     /// Riding a mount that has a horse inventory (`HasCustomInventoryScreen`).
     pub(super) fn riding_mount_with_menu(&self) -> bool {
-        self.riding
+        self.vehicle()
             .and_then(|id| self.mount_mob_index(id))
             .is_some_and(|i| has_mount_menu(self.mobs[i].species()))
     }

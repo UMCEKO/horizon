@@ -153,16 +153,16 @@ impl Game<'_> {
             r.first_passenger = passengers.first() == Some(&me);
         }
         if passengers.contains(&me) {
-            if self.riding != Some(vehicle_id) {
-                self.riding = Some(vehicle_id);
+            if self.vehicle() != Some(vehicle_id) {
+                self.set_vehicle(Some(vehicle_id));
                 if let Some(p) = self.player.as_mut() {
                     p.velocity = Vec3::ZERO;
                     p.fall_distance = 0.0;
                 }
             }
-        } else if self.riding == Some(vehicle_id) {
+        } else if self.vehicle() == Some(vehicle_id) {
             // The server takes the player out, then teleports it.
-            self.riding = None;
+            self.set_vehicle(None);
             if let Some(m) = self.mobs.iter_mut().find(|m| m.id == vehicle_id) {
                 m.rider = None;
             }
@@ -183,7 +183,7 @@ impl Game<'_> {
     /// The local player's tick in its vehicle, in place of its own movement:
     /// false when it rides nothing.
     pub(super) fn remote_ride(&mut self, keys: Keys) -> bool {
-        let Some(id) = self.riding else {
+        let Some(id) = self.vehicle() else {
             return false;
         };
         if let Some(i) = self.mobs.iter().position(|m| m.id == id) {
@@ -239,7 +239,7 @@ impl Game<'_> {
             return vec![mount_move(m)];
         }
         let Some(b) = self
-            .riding
+            .vehicle()
             .and_then(|id| self.boats.iter().find(|b| b.id == id))
         else {
             return Vec::new();
@@ -273,7 +273,7 @@ impl Game<'_> {
             return;
         }
         let Some(b) = self
-            .riding
+            .vehicle()
             .and_then(|id| self.boats.iter_mut().find(|b| b.id == id))
         else {
             return;
@@ -289,13 +289,13 @@ impl Game<'_> {
     /// first passenger (`AbstractHorse.getControllingPassenger`), on its
     /// saddle (`isLocalInstanceAuthoritative`).
     fn drives(&self, m: &Mob) -> bool {
-        self.riding == Some(m.id)
+        self.vehicle() == Some(m.id)
             && client_moves(m, self.remote.as_ref().is_some_and(|r| r.first_passenger))
     }
 
     /// The mount this client moves, if the player rides one.
     pub(super) fn driven_mount(&self) -> Option<&Mob> {
-        let id = self.riding?;
+        let id = self.vehicle()?;
         self.mobs.iter().find(|m| m.id == id && self.drives(m))
     }
 

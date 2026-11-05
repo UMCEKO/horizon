@@ -271,7 +271,7 @@ impl Game<'_> {
             return;
         };
         if effects.is_empty()
-            || self.riding.is_some()
+            || self.vehicle().is_some()
             || p.fall_flying
             || p.fluids.was_touching_water
             || !(self.creative || p.health.food.food >= 7)
@@ -667,6 +667,7 @@ impl Game<'_> {
     /// client leaves it to its server.
     pub(super) fn tick_soul_speed(&mut self) -> Option<([f64; 3], [f64; 3])> {
         const ID: &str = "minecraft:soul_speed";
+        let riding = self.vehicle().is_some();
         let player = self.player.as_mut()?;
         if player.client_side {
             return None;
@@ -689,7 +690,6 @@ impl Game<'_> {
         let mut active = was_active > 0 && !equipped;
         let mut wear = false;
         if level > 0 && (changed_block || landed || equipped) {
-            let riding = self.riding.is_some();
             let wanted = !riding && !flying && (on_soul || (active && !on_ground));
             active = wanted;
             // `random_chance` is the first term of the wear's `all_of`: it
@@ -795,7 +795,7 @@ impl Game<'_> {
         if cell(from) == cell(at) && !(on_ground && !was_on_ground) {
             return;
         }
-        let riding = self.riding.is_some();
+        let riding = self.vehicle().is_some();
         let mut disks = Vec::new();
         for (stack, slot) in self.armor.iter().zip(["head", "chest", "legs", "feet"]) {
             let Some(stack) = stack else { continue };

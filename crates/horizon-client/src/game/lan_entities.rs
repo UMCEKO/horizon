@@ -92,7 +92,7 @@ impl Game<'_> {
                 riding.add(vehicle as i32, m.id as i32);
             }
         }
-        if let (Some(host), Some(vehicle)) = (host_entity, self.riding) {
+        if let (Some(host), Some(vehicle)) = (host_entity, self.vehicle()) {
             riding.add(vehicle as i32, host);
         }
     }

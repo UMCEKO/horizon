@@ -798,7 +798,7 @@ impl Game<'_> {
     pub(super) fn restore_root_vehicle(&mut self) {
         if self.serving.is_some()
             || self.options.dedicated.is_some()
-            || self.riding.is_some()
+            || self.vehicle().is_some()
             || self.player.is_none()
         {
             return;
@@ -814,7 +814,7 @@ impl Game<'_> {
             p.remove(&"RootVehicle".into());
         }
         self.pending_vehicle = None;
-        self.riding = Some(id);
+        self.set_vehicle(Some(id));
     }
     /// A mob's entity tag with the mobs riding it under `Passengers`.
     pub(super) fn mob_tree_nbt(&mut self, i: usize) -> Tag {
@@ -1224,7 +1224,7 @@ impl Game<'_> {
         if remove {
             let gone = |p: Vec3| keys.contains(&chunk_of(p));
             let mut removed: Vec<u32> = Vec::new();
-            let riding = self.riding;
+            let riding = self.vehicle();
             let ids: Vec<u32> = self
                 .boats
                 .iter()

@@ -72,7 +72,7 @@ impl Game<'_> {
     /// llamas and trader llamas. Returns whether the click was used.
     pub(super) fn interact_llama(&mut self, index: usize, item: &str) -> bool {
         let m = &self.mobs[index];
-        if !m.alive() || Some(m.id) == self.riding {
+        if !m.alive() || Some(m.id) == self.vehicle() {
             return false;
         }
         let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
@@ -135,7 +135,8 @@ impl Game<'_> {
         m.extra.flag = false;
         m.extra.counter = 0;
         self.yaw = m.yaw;
-        self.riding = Some(m.id);
+        let id = m.id;
+        self.set_vehicle(Some(id));
         self.mount.reset_jump();
         self.trigger_player("minecraft:started_riding");
         true

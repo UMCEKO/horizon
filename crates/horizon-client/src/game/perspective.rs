@@ -333,7 +333,7 @@ impl Game<'_> {
         // Camera.setup: the living mount's scale and camera distance
         // attributes (the happy ghast's is 8, the default 4).
         let mount = self
-            .riding
+            .vehicle()
             .and_then(|id| self.mobs.iter().find(|m| m.id == id))
             .map(|m| {
                 let attribute = |name: &str, default: f64| {
@@ -349,7 +349,7 @@ impl Game<'_> {
         // interpolates a passenger's yaw: the boat's turn is spread over the
         // frames of a tick.
         let ride_turn = self
-            .riding
+            .vehicle()
             .and_then(|id| self.boats.iter().find(|b| b.id == id))
             .map_or(0.0, |b| b.delta_rotation);
         let entity = CameraEntity {
@@ -430,7 +430,7 @@ impl Game<'_> {
         let main = self.inventory[self.selected].clone();
         let off = self.offhand.as_ref().map(|s| s.item.clone());
         let armor = self.armor.clone();
-        let riding = self.riding.is_some();
+        let riding = self.vehicle().is_some();
         let hurt = p.health.hurt_animation_time;
         let avatar = self.avatar;
         let previous_position = self.previous_position;
@@ -545,7 +545,7 @@ impl Game<'_> {
         // keeps the view within 105 degrees of the boat at every turn, not
         // only at the tick, so it never swings past and back.
         if let Some(b) = self
-            .riding
+            .vehicle()
             .and_then(|id| self.boats.iter().find(|b| b.id == id))
         {
             let delta = (self.yaw - b.yaw + 180.0).rem_euclid(360.0) - 180.0;

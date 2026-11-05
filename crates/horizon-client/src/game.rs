@@ -2531,6 +2531,14 @@ fn camera_rotation(camera_type: perspective::CameraType, yaw: f32, pitch: f32) -
     )
 }
 impl Game<'_> {
+    /// `Entity.getVehicle` of the player in place.
+    pub(super) fn vehicle(&self) -> Option<u32> {
+        self.riding
+    }
+    /// Only `startRiding` and `stopRiding` ports call this.
+    pub(super) fn set_vehicle(&mut self, vehicle: Option<u32>) {
+        self.riding = vehicle;
+    }
     fn eye_position(&self) -> Option<[f64; 3]> {
         let p = self.player.as_ref()?;
         Some([
@@ -5029,7 +5037,7 @@ impl Game<'_> {
         }
         let on_block = matches!(guest, Some(GuestUse::OnBlock(_)));
         if !on_block
-            && self.riding.is_some()
+            && self.vehicle().is_some()
             && let Some(item) = self.held().map(|s| s.item.clone())
             && self.use_steering_stick(&item)
         {
@@ -6181,7 +6189,7 @@ impl Game<'_> {
         self.tell_native_now();
         let camera_eye = self.camera_eye_height();
         let stick = self.pad_move();
-        if self.riding.is_some() && self.player.is_some() {
+        if self.vehicle().is_some() && self.player.is_some() {
             let playing = self.screen == Screen::Playing;
             let held = |k| playing && self.keys.contains(&k);
             let keys = Keys {
@@ -6197,7 +6205,7 @@ impl Game<'_> {
             .with_stick(stick.filter(|_| playing));
             self.tick_riding(keys)?;
         }
-        let riding = self.riding.is_some();
+        let riding = self.vehicle().is_some();
         let entity_collisions = self.player_entity_collisions();
         let spin_targets = self.spin_targets();
         let sprint_window = self.settings.sprint_window;
@@ -9740,7 +9748,7 @@ impl Game<'_> {
             // ProjectileUtil.getEntityHitResult: the mob the player rides
             // shares its root vehicle and is never the hit, nor is the
             // camera entity the pick starts from.
-            if !m.alive() || Some(m.id) == self.riding || Some(m.id) == self.remote_camera_id() {
+            if !m.alive() || Some(m.id) == self.vehicle() || Some(m.id) == self.remote_camera_id() {
                 continue;
             }
             if let Some(t) = ray_box(eye, dir, reach, m.bounds())
@@ -9916,7 +9924,8 @@ impl Game<'_> {
                 && !p.fluids.was_touching_water
                 && !p.sprinting
         });
-        let restricted = self.potions.effects.get("blindness").is_some() || self.riding.is_some();
+        let restricted =
+            self.potions.effects.get("blindness").is_some() || self.vehicle().is_some();
         scale > 0.9 && falling && !restricted
     }
     /// Player.attack with the attack-strength charge, crits and knockback.
@@ -10908,7 +10917,7 @@ impl Game<'_> {
         self.rockets.clear();
         self.particles.clear();
         self.pickups.clear();
-        self.riding = None;
+        self.set_vehicle(None);
         self.persist = Default::default();
     }
     /// Equipment attribute modifiers (LivingEntity.collectEquipmentChanges).
@@ -13035,7 +13044,7 @@ impl Game<'_> {
         self.level.selected_slot = self.selected as i32;
         let mode = self.mode_id();
         // The vehicle the player rides (`ServerPlayer.saveParentVehicle`).
-        let vehicle = self.root_vehicle_uuid(self.riding);
+        let vehicle = self.root_vehicle_uuid(self.vehicle());
         let level = &mut self.level;
         level.creative = self.creative;
         level.game_mode = mode;

@@ -220,7 +220,7 @@ impl Game<'_> {
     }
     /// `LivingEntity.stopRiding`.
     pub(super) fn stop_riding(&mut self) {
-        let Some(id) = self.riding else {
+        let Some(id) = self.vehicle() else {
             return;
         };
         if let Some(i) = self.boats.iter().position(|b| b.id == id) {
@@ -302,7 +302,7 @@ impl TeleportConsumeWorld for Teleporter<'_, '_> {
         Ok(self.0.level_shapes.get(level.id()).logical_height)
     }
     fn is_passenger(&mut self) -> Result<bool, Infallible> {
-        Ok(self.0.riding.is_some())
+        Ok(self.0.vehicle().is_some())
     }
     fn stop_riding(&mut self) -> Result<(), Infallible> {
         self.0.stop_riding();

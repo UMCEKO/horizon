@@ -70,7 +70,7 @@ impl Game<'_> {
                 .filter(|g| Some(g.conn) != self.lan_acting && g.vehicle == Some(id))
                 .count()
         });
-        usize::from(self.riding == Some(id)) + guests
+        usize::from(self.vehicle() == Some(id)) + guests
     }
     /// The mobs in boat `id`, in their seat order after the players
     /// (`Entity.addPassenger` puts a player first).
@@ -120,7 +120,7 @@ impl Game<'_> {
     fn players_outside(&self, id: u32) -> Vec<(Aabb, bool)> {
         let mut out = Vec::new();
         if let Some(p) = self.player.as_ref()
-            && self.riding != Some(id)
+            && self.vehicle() != Some(id)
             && !self.spectator()
             && !p.health.dead_or_dying()
         {
@@ -307,7 +307,7 @@ impl Game<'_> {
                 self.boats[i].velocity = self.boats[i].velocity.subtract(v);
             }
             let cid = self.carts[c].id;
-            let ridden = self.riding == Some(cid)
+            let ridden = self.vehicle() == Some(cid)
                 || guest_carts.contains(&cid)
                 || self.mobs.iter().any(|m| m.extra.mount == Some(cid));
             if !ridden {

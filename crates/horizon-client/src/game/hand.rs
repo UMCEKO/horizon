@@ -337,7 +337,7 @@ impl Game<'_> {
     }
     /// `LocalPlayer.isHandsBusy`: paddling a boat.
     fn hands_busy(&self) -> bool {
-        self.riding
+        self.vehicle()
             .is_some_and(|id| self.boats.iter().any(|b| b.id == id))
             && [
                 winit::keyboard::KeyCode::KeyW,

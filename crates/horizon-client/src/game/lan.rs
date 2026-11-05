@@ -1639,9 +1639,10 @@ impl Game<'_> {
         let state = self.lan_host_state(&host);
         // An animal whose rider left the game (or the level) stops taking
         // its input.
+        let vehicle = self.vehicle();
         for m in &mut self.mobs {
             if m.rider.is_some()
-                && self.riding != Some(m.id)
+                && vehicle != Some(m.id)
                 && !host.hub.guests.iter().any(|g| g.vehicle == Some(m.id))
             {
                 m.rider = None;

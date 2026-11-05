@@ -2275,7 +2275,7 @@ impl Game<'_> {
                 // rides nothing: the server pairs a vehicle again with its
                 // passengers. A dimension change keeps the vehicle it travels in.
                 if p.keep & 2 == 0 {
-                    self.riding = None;
+                    self.set_vehicle(None);
                     // KEEP_ENTITY_DATA copies the old player's synched data
                     // (its shared flags) to the new one; without it they reset.
                     if let Some(r) = self.remote.as_mut() {
@@ -4920,7 +4920,7 @@ impl Game<'_> {
                 || spectator
                 || m.species() == horizon_client::mobs::Species::Bat
                 || self
-                    .riding
+                    .vehicle()
                     .is_some_and(|v| v == m.id || m.extra.mount == Some(v))
                 || !m.bounds().intersects(bounds)
                 || !horizon_client::scoreboard::pushable_by(mob_team, player_team, true)
@@ -4946,7 +4946,7 @@ impl Game<'_> {
         // AbstractBoat.push(player) from the boat's own tick (its box grown
         // by 0.2 sideways) and from the player's pushEntities (its box).
         let area = Vec3::new(f64::from(0.2_f32), f64::from(-0.01_f32), f64::from(0.2_f32));
-        for b in self.boats.iter().filter(|b| self.riding != Some(b.id)) {
+        for b in self.boats.iter().filter(|b| self.vehicle() != Some(b.id)) {
             let bb = b.bounds();
             let times = usize::from(
                 bounds.intersects(bb.inflate(area))
@@ -5428,7 +5428,7 @@ impl Game<'_> {
             p.sprinting,
         );
         let (yaw, pitch, selected) = (self.yaw, self.pitch, self.selected);
-        let riding = self.riding.is_some();
+        let riding = self.vehicle().is_some();
         let controls_camera = self.controls_camera();
         let vehicle = self.remote_vehicle_packets();
         let Some(r) = self.remote.as_mut() else {
@@ -5810,7 +5810,7 @@ impl Game<'_> {
                 .iter()
                 .find(|c| c.id as i32 == hit.id)
                 .is_some_and(|c| {
-                    let ridden = self.riding == Some(c.id)
+                    let ridden = self.vehicle() == Some(c.id)
                         || self.mobs.iter().any(|m| m.extra.mount == Some(c.id));
                     c.kind
                         .interact_passes(sneaking, ridden, self.can_use_game_master_blocks())

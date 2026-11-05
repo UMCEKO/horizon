@@ -1235,7 +1235,7 @@ impl Game<'_> {
             m.extra.counter = 0;
             self.yaw = m.yaw;
         }
-        self.riding = Some(mob_id);
+        self.set_vehicle(Some(mob_id));
         self.mount.jump_ticks = 0;
         self.mount.jump_scale = 0.0;
         self.feedback(Text::translate(
@@ -1248,7 +1248,7 @@ impl Game<'_> {
     /// Entity.getVehicle: the player's mount, or a mob's.
     pub(super) fn ride_vehicle(&self, t: Target) -> Option<Target> {
         let id = match t {
-            Target::Player => return self.riding.map(Target::Mob),
+            Target::Player => return self.vehicle().map(Target::Mob),
             Target::Mob(id) => self.mobs.iter().find(|m| m.id == id)?.extra.mount?,
             _ => return None,
         };

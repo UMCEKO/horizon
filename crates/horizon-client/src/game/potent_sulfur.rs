@@ -360,7 +360,7 @@ impl Game<'_> {
             unobstructed_block_count(&level, [pos.0, pos.1 + 1, pos.2], water_blocks)
         };
         let area = launch_area(pos, height);
-        let (spectator, riding) = (self.spectator(), self.riding.is_some());
+        let (spectator, riding) = (self.spectator(), self.vehicle().is_some());
         let Some(p) = self.player.as_mut() else {
             return;
         };

@@ -1589,7 +1589,7 @@ impl Game<'_> {
             if on_ground && !self.spectator() {
                 self.step_on_redstone_ore(at, crouch, true);
             }
-            self.mount_events(Who::Player, self.riding, true);
+            self.mount_events(Who::Player, self.vehicle(), true);
             let in_water = self.in_water_at(at);
             self.entity_motion_events(
                 Who::Player,

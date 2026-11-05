@@ -324,7 +324,7 @@ impl Game<'_> {
             return false;
         }
         let id = self.cushions[i].id;
-        let occupied = self.riding == Some(id)
+        let occupied = self.vehicle() == Some(id)
             || self
                 .lan
                 .as_ref()
@@ -336,7 +336,7 @@ impl Game<'_> {
         // `Entity.startRiding`: a passenger first gets off what it rides
         // (`stopRiding`), so a seated player moves to this cushion.
         self.stop_riding();
-        self.riding = Some(id);
+        self.set_vehicle(Some(id));
         let p = self.cushions[i].position;
         self.audio.play(
             "minecraft:entity.cushion.sit",
@@ -371,8 +371,8 @@ impl Game<'_> {
         self.level_remove(Kind::Cushion, c.id, why);
         let p = c.position;
         self.world.modified.insert((c.pos[0] >> 4, c.pos[2] >> 4));
-        if self.riding == Some(c.id) {
-            self.riding = None;
+        if self.vehicle() == Some(c.id) {
+            self.set_vehicle(None);
         }
         self.audio.play(
             "minecraft:entity.cushion.break",
@@ -457,7 +457,7 @@ impl Game<'_> {
     /// rather than one whose cushion was killed.
     pub(super) fn get_up_from_cushion(&mut self, c: &Cushion) {
         let at = c.dismount();
-        self.riding = None;
+        self.set_vehicle(None);
         if let Some(p) = self.player.as_mut() {
             self.previous_position = p.position;
             p.position = at;
@@ -477,7 +477,7 @@ impl Game<'_> {
         let Some(c) = self
             .cushions
             .iter()
-            .find(|c| Some(c.id) == self.riding)
+            .find(|c| Some(c.id) == self.vehicle())
             .cloned()
         else {
             return false;

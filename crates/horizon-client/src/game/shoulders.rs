@@ -32,7 +32,7 @@ impl Game<'_> {
         if !horizon_client::mobs::tame::owned_by(self.mobs[i].extra.owner, self.acting_uuid()) {
             return;
         }
-        if self.riding.is_some()
+        if self.vehicle().is_some()
             || !p.ground.on_ground
             || p.fluids.was_touching_water
             || p.in_powder_snow
