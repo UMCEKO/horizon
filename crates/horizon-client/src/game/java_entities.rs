@@ -609,6 +609,7 @@ impl Game<'_> {
                         b.position,
                         b.velocity,
                         b.yaw,
+                        &b.moving,
                         uuid,
                         raw(self, b.id).as_ref(),
                         b.chest.then_some(&b.items[..]),
@@ -1271,7 +1272,7 @@ impl Game<'_> {
                 .boats
                 .iter()
                 .find(|b| b.id == id)
-                .map(|b| (b.velocity, b.on_ground)),
+                .map(|b| (b.velocity, b.moving.ground.on_ground)),
             Target::Tnt(id) => self
                 .tnts
                 .iter()

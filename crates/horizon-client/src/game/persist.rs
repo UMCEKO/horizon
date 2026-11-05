@@ -483,6 +483,7 @@ impl Game<'_> {
                         );
                     }
                     b.velocity = velocity;
+                    b.moving = entity_nbt::move_state(&tag);
                     // AbstractBoat.readAdditionalSaveData: the lead's holder.
                     b.leash_pending =
                         horizon_client::mobs::leash::pending_from_nbt(tag.get("leash"));
@@ -1190,6 +1191,7 @@ impl Game<'_> {
                 b.position,
                 b.velocity,
                 b.yaw,
+                &b.moving,
                 uuid,
                 self.persist.raw.get(&id),
                 b.chest.then_some(&b.items[..]),

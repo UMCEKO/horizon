@@ -54,7 +54,7 @@ pub(super) struct Boat {
     pub paddling: [bool; 2],
     /// left, right, up, down
     pub input: [bool; 4],
-    pub on_ground: bool,
+    pub moving: horizon_world::entity_move::MoveState,
     /// `ChestBoat`: a chest with 27 slots in the back seat.
     pub chest: bool,
     pub items: Vec<Option<ItemStack>>,
@@ -95,7 +95,7 @@ impl Boat {
             paddles: [0.0; 2],
             paddling: [false; 2],
             input: [false; 4],
-            on_ground: false,
+            moving: Default::default(),
             chest: false,
             items: Vec::new(),
             leash: None,
@@ -493,13 +493,13 @@ impl Game<'_> {
             entities: &obstacles,
             border: None,
         };
-        if let Ok(moved) = scene.resolve(b.bounds(), b.velocity, 0.0, b.on_ground) {
+        if let Ok(moved) = scene.resolve(b.bounds(), b.velocity, 0.0, b.moving.ground.on_ground) {
             b.position = Vec3::new(
                 b.position.x + moved.x,
                 b.position.y + moved.y,
                 b.position.z + moved.z,
             );
-            b.on_ground = b.velocity.y < 0.0 && moved.y > b.velocity.y;
+            b.moving.ground.on_ground = b.velocity.y < 0.0 && moved.y > b.velocity.y;
             if (moved.x - b.velocity.x).abs() > 1.0e-7 {
                 b.velocity.x = 0.0;
             }

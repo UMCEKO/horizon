@@ -977,6 +977,7 @@ impl Game<'_> {
                 b.position,
                 b.velocity,
                 b.yaw,
+                &b.moving,
                 uuid,
                 self.persist_raw(id),
                 b.chest.then_some(&b.items[..]),

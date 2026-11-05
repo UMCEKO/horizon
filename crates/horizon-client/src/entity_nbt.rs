@@ -88,7 +88,7 @@ fn flag(tag: &Tag, key: &str) -> bool {
     number(tag.get(key)).unwrap_or(0) != 0
 }
 /// `OnGround` and `fall_distance`, as the base tag names them.
-fn move_state(tag: &Tag) -> horizon_world::entity_move::MoveState {
+pub fn move_state(tag: &Tag) -> horizon_world::entity_move::MoveState {
     let mut state = horizon_world::entity_move::MoveState::default();
     state.ground.on_ground = flag(tag, "OnGround");
     state.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
@@ -2462,6 +2462,7 @@ pub fn boat_to_nbt(
     position: Vec3,
     motion: Vec3,
     yaw: f32,
+    moving: &horizon_world::entity_move::MoveState,
     uuid: [i32; 4],
     raw: Option<&Tag>,
     items: Option<&[Option<crate::items::ItemStack>]>,
@@ -2472,8 +2473,8 @@ pub fn boat_to_nbt(
         position,
         motion,
         rotation: [yaw, 0.0],
-        on_ground: false,
-        fall_distance: 0.0,
+        on_ground: moving.ground.on_ground,
+        fall_distance: moving.fall_distance,
     }
     .tag(raw);
     if let (Some(items), Tag::Compound(map)) = (items, &mut tag) {

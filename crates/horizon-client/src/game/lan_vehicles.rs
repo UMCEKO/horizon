@@ -311,7 +311,7 @@ impl Game<'_> {
                 b.velocity,
                 b.bounds(),
                 0.0,
-                b.on_ground,
+                b.moving.ground.on_ground,
             )
         } else if let Some(i) = mount {
             let m = &self.mobs[i];
@@ -391,7 +391,7 @@ impl Game<'_> {
         b.position = target;
         b.previous_yaw = b.yaw;
         b.yaw = p.yaw;
-        b.on_ground = p.on_ground;
+        b.moving.ground.on_ground = p.on_ground;
         let seat = self.player_boat_seat(i);
         let g = &mut host.hub.guests[gi];
         g.previous_position = g.position;

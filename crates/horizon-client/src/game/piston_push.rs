@@ -316,7 +316,7 @@ impl Game<'_> {
                 Some(Body {
                     bounds: entity.bounds(),
                     position: entity.position,
-                    on_ground: entity.on_ground,
+                    on_ground: entity.moving.ground.on_ground,
                     step_height: 0.0,
                     supported: false,
                 })

@@ -122,7 +122,13 @@ impl Game<'_> {
             .collect();
         for b in &self.boats {
             let p = b.position;
-            let mut e = state(b.id, &b.entity_type(), [p.x, p.y, p.z], b.yaw, b.on_ground);
+            let mut e = state(
+                b.id,
+                &b.entity_type(),
+                [p.x, p.y, p.z],
+                b.yaw,
+                b.moving.ground.on_ground,
+            );
             // Leashable.setLeashedTo / dropLeash: who holds the boat's lead.
             e.leash = self.boat_leash_link(b, host_entity, &guests);
             e.velocity = [b.velocity.x, b.velocity.y, b.velocity.z];

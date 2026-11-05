@@ -798,6 +798,31 @@ impl Game<'_> {
                 self.creatures.projectiles.insert(i, p);
                 true
             }
+            Target::Boat(id) => {
+                let Some(i) = self.boats.iter().position(|b| b.id == id) else {
+                    return false;
+                };
+                let mut boat = self.boats.remove(i);
+                let body = BodyRef {
+                    id,
+                    size: BodyRef::size_of(boat.bounds()),
+                    removed: false,
+                    position: &mut boat.position,
+                    velocity: &mut boat.velocity,
+                    moving: &mut boat.moving,
+                    sync: None,
+                    no_physics: false,
+                    step_height: 0.0,
+                    gravity: 0.04,
+                    air_drag: 1.0,
+                    emission: MovementEmission::Events,
+                    fall: FallRule::Boat,
+                    steered: true,
+                };
+                self.move_body(body, mover, delta);
+                self.boats.insert(i, boat);
+                true
+            }
             _ => false,
         }
     }
@@ -928,5 +953,70 @@ mod tests {
             .find(|p| p.id == id)
             .unwrap();
         assert!(arrow.arrow.as_ref().unwrap().in_ground);
+    }
+
+    fn boat_at(game: &mut Game<'_>, at: Vec3) -> u32 {
+        game.next_entity += 1;
+        let id = game.next_entity;
+        game.boats
+            .push(super::super::boats::Boat::new(id, "oak".into(), at, 0.0));
+        id
+    }
+
+    #[test]
+    fn a_boat_moved_down_onto_slime_bounces() {
+        let Some(mut game) = flat_game() else { return };
+        let slime = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:slime_block")
+            .unwrap();
+        for x in -2..3 {
+            for z in -2..3 {
+                game.world.set(x, 60, z, slime).unwrap();
+            }
+        }
+        let id = boat_at(&mut game, Vec3::new(0.5, 63.0, 0.5));
+        game.boats.iter_mut().find(|b| b.id == id).unwrap().velocity = Vec3::new(0.0, -1.0, 0.0);
+        game.entity_move(
+            Target::Boat(id),
+            MoverType::SelfMovement,
+            Vec3::new(0.0, -3.0, 0.0),
+        );
+        let boat = game.boats.iter().find(|b| b.id == id).unwrap();
+        assert!(boat.moving.collision.below && boat.moving.ground.on_ground);
+        assert!(boat.velocity.y > 0.0, "{:?}", boat.velocity);
+    }
+
+    #[test]
+    fn a_boat_pushed_into_a_wall_flags_horizontal_collision() {
+        let Some(mut game) = flat_game() else { return };
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        for y in 61..64 {
+            for z in -2..3 {
+                game.world.set(4, y, z, stone).unwrap();
+            }
+        }
+        let id = boat_at(&mut game, Vec3::new(0.5, 61.0, 0.5));
+        game.boats
+            .iter_mut()
+            .find(|b| b.id == id)
+            .unwrap()
+            .moving
+            .fall_distance = 5.0;
+        game.entity_move(
+            Target::Boat(id),
+            MoverType::SelfMovement,
+            Vec3::new(6.0, 0.0, 0.0),
+        );
+        let boat = game.boats.iter().find(|b| b.id == id).unwrap();
+        assert!(boat.moving.collision.horizontal);
+        assert!((boat.position.x - (4.0 - 1.375 / 2.0)).abs() < 1.0e-6);
     }
 }

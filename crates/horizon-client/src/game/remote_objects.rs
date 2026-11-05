@@ -304,7 +304,7 @@ impl Game<'_> {
             if let Some(yaw) = yaw {
                 b.yaw = yaw;
             }
-            b.on_ground = on_ground;
+            b.moving.ground.on_ground = on_ground;
         } else if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
             if let Some(yaw) = yaw {
                 c.yaw = yaw;
