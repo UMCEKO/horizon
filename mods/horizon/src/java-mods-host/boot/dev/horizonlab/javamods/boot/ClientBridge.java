@@ -180,7 +180,7 @@ public final class ClientBridge {
         OPS.put("client_leave", in -> leave());
         OPS.put("client_models_probe", in -> modelsProbe());
         OPS.put("client_resources", in -> ClientResources.export());
-        OPS.put("client_baked", in -> ClientResources.baked());
+        OPS.put("client_baked", in -> ClientResources.baked(java.nio.file.Path.of(new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8))));
         OPS.put("client_keys", in -> ModKeyMappings.export());
         OPS.put("client_keys_apply", in -> ModKeyMappings.apply(in));
         OPS.put("client_models_take", in -> Minecraft.getInstance().level == null ? new byte[0] : ClientModels.take(Minecraft.getInstance().level));

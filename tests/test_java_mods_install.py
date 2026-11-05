@@ -138,5 +138,52 @@ class Sync(unittest.TestCase):
             self.assertEqual((root / 'd' / 'f').read_bytes(), b'three')
 
 
+class PatchedClient(unittest.TestCase):
+    MANIFEST = b'Manifest-Version: 1.0\r\nMain-Class: x\r\n\r\nName: a.class\r\nSHA-384-Digest: aa\r\n\r\nName: b.class\r\nSHA-384-Digest: bb\r\n\r\nName: c.class\r\nSHA-384-Digest: cc\r\n\r\n'
+    REL = Path('net/neoforged/minecraft-client-patched/1/minecraft-client-patched-1.jar')
+
+    def jar(self, path, *extra):
+        import zipfile
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(path, 'w', zipfile.ZIP_STORED) as z:
+            z.writestr('META-INF/MANIFEST.MF', self.MANIFEST)
+            for name in ('a.class', 'b.class', 'c.class', *extra):
+                z.writestr(name, b'data ' + name.encode())
+
+    def install(self, root, *extra):
+        self.jar(root / 'src' / self.REL, *extra)
+        java_mods.sync_tree(root / 'src', root / 'dest')
+        return root / 'src' / self.REL, root / 'dest' / self.REL
+
+    def test_an_unsigned_jar_keeps_its_entries_and_only_the_main_manifest_section(self):
+        import zipfile
+        with tempfile.TemporaryDirectory() as tmp:
+            source, dest = self.install(Path(tmp))
+            with zipfile.ZipFile(source) as a, zipfile.ZipFile(dest) as b:
+                self.assertEqual(b.read('META-INF/MANIFEST.MF'), b'Manifest-Version: 1.0\r\nMain-Class: x\r\n\r\n')
+                self.assertEqual([n for n in a.namelist()], b.namelist())
+                self.assertEqual([a.read(n) for n in a.namelist() if n != 'META-INF/MANIFEST.MF'], [b.read(n) for n in b.namelist() if n != 'META-INF/MANIFEST.MF'])
+            self.assertIn(b'SHA-384-Digest', source.read_bytes())
+            before = dest.stat().st_ino
+            java_mods.sync_tree(Path(tmp) / 'src', Path(tmp) / 'dest')
+            self.assertEqual(dest.stat().st_ino, before)
+
+    def test_a_hard_link_from_before_is_replaced_without_touching_the_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.jar(root / 'src' / self.REL)
+            (root / 'dest' / self.REL).parent.mkdir(parents=True)
+            import os
+            os.link(root / 'src' / self.REL, root / 'dest' / self.REL)
+            java_mods.sync_tree(root / 'src', root / 'dest')
+            self.assertIn(b'SHA-384-Digest', (root / 'src' / self.REL).read_bytes())
+            self.assertNotIn(b'SHA-384-Digest', (root / 'dest' / self.REL).read_bytes())
+
+    def test_a_signed_jar_stays_a_hard_link(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, dest = self.install(Path(tmp), 'META-INF/X.SF')
+            self.assertEqual(source.stat().st_ino, dest.stat().st_ino)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -4,6 +4,7 @@ import argparse
 import collections
 import concurrent.futures
 import fcntl
+import fnmatch
 import hashlib
 import io
 import json
@@ -956,10 +957,41 @@ def sync_file(source, dest):
         shutil.copy2(source, dest)
 
 
+SIGNATURE = re.compile(r'^META-INF/[^/]+\.(SF|RSA|DSA|EC)$', re.I)
+
+
+def sync_stripped(source, dest):
+    """`dest` as a copy of the unsigned `source` jar whose manifest keeps only its main section (FML keeps the per-entry digests in memory); a signed jar is linked as is."""
+    with zipfile.ZipFile(source) as zin:
+        if any(SIGNATURE.match(name) for name in zin.namelist()) or 'META-INF/MANIFEST.MF' not in zin.namelist():
+            return sync_file(source, dest)
+        stat = source.stat()
+        if dest.exists() and not dest.is_symlink() and dest.stat().st_ino != stat.st_ino and dest.stat().st_mtime_ns == stat.st_mtime_ns:
+            return
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        part = dest.with_name(f'{dest.name}.{os.getpid()}.part')
+        with zipfile.ZipFile(part, 'w') as zout:
+            for info in zin.infolist():
+                data = zin.read(info)
+                if info.filename == 'META-INF/MANIFEST.MF':
+                    data = re.split(rb'\r?\n\r?\n', data, maxsplit=1)[0] + b'\r\n\r\n'
+                entry = zipfile.ZipInfo(info.filename, info.date_time)
+                entry.external_attr, entry.comment, entry.extra = info.external_attr, info.comment, info.extra
+                zout.writestr(entry, data, compress_type=info.compress_type)
+    os.utime(part, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    dest.unlink(missing_ok=True)
+    os.replace(part, dest)
+
+
+def patched_client(relative):
+    return fnmatch.fnmatch(relative.as_posix(), 'net/neoforged/minecraft-client-patched/*/minecraft-client-patched-*.jar')
+
+
 def sync_tree(source, dest):
     for path in sorted(source.rglob('*')):
         if path.is_file():
-            sync_file(path.resolve(), dest / path.relative_to(source))
+            relative = path.relative_to(source)
+            (sync_stripped if patched_client(relative) else sync_file)(path.resolve(), dest / relative)
 
 
 def sync_links(folder, targets):

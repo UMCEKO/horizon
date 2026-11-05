@@ -249,12 +249,18 @@ public final class Sprites {
         for (var sprite : atlas.getTextures().values()) {
             var contents = sprite.contents();
             var levels = contents.byMipLevel;
-            if (levels.length < 2) continue;
             for (int level = 1; level < levels.length; level++) {
                 bytes += (long) levels[level].getWidth() * levels[level].getHeight() * 4;
                 levels[level].close();
             }
-            contents.byMipLevel = new com.mojang.blaze3d.platform.NativeImage[] {levels[0]};
+            // Level 0 is the original image; vanilla reads it only for transparency, which the mask answers.
+            if (levels.length > 0 && levels[0] == contents.getOriginalImage() && SpriteMasks.keep(contents, levels[0])) {
+                bytes += (long) levels[0].getWidth() * levels[0].getHeight() * 4;
+                levels[0].close();
+                contents.byMipLevel = new com.mojang.blaze3d.platform.NativeImage[0];
+            } else if (levels.length > 1) {
+                contents.byMipLevel = new com.mojang.blaze3d.platform.NativeImage[] {levels[0]};
+            }
         }
         return bytes;
     }
