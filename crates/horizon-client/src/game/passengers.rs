@@ -80,6 +80,7 @@ impl Game<'_> {
             .enumerate()
             .map(|(i, m)| (m.id, i))
             .collect();
+        let client = self.remote.is_some();
         // Riders of riders settle over a few passes.
         for _ in 0..3 {
             for i in 0..self.mobs.len() {
@@ -88,14 +89,17 @@ impl Game<'_> {
                 };
                 let Some(&j) = index.get(&v) else { continue };
                 let vehicle = &self.mobs[j];
-                let attach = riders::passenger_attachment(vehicle);
+                // Mob vehicles hold one mob rider: it is passenger 0.
+                let attach = |yaw| riders::passenger_attachment(vehicle, 0, yaw, client);
                 let (pos, prev) = (vehicle.position, vehicle.previous);
                 let (yaw, prev_yaw) = (vehicle.yaw, vehicle.previous_yaw);
+                let (at, prev_at) = (attach(yaw), attach(prev_yaw));
+                let width = vehicle.width();
                 let (body, prev_body) = (vehicle.body_yaw, vehicle.previous_body_yaw);
                 let m = &mut self.mobs[i];
-                let offset = riders::vehicle_attachment(m);
-                m.position = riders::seat(attach, offset, pos, yaw);
-                m.previous = riders::seat(attach, offset, prev, prev_yaw);
+                let offset = riders::vehicle_attachment(m, width);
+                m.position = riders::ride_position(pos, at, offset);
+                m.previous = riders::ride_position(prev, prev_at, offset);
                 m.velocity = Vec3::ZERO;
                 m.fall_distance = 0.0;
                 m.on_ground = false;
@@ -163,7 +167,8 @@ impl Game<'_> {
         }
         if let Some(&j) = index.get(&vehicle) {
             let v = &self.mobs[j];
-            let at = riders::seat(riders::passenger_attachment(v), 0.0, v.position, v.yaw);
+            let attachment = riders::passenger_attachment(v, 0, v.yaw, self.remote.is_some());
+            let at = riders::ride_position(v.position, attachment, [0.0; 3]);
             return Some(glam::DVec3::new(at.x, at.y, at.z));
         }
         if let Some(d) = self.text_displays.get(&(vehicle as i32)) {

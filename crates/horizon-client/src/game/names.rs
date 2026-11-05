@@ -488,6 +488,7 @@ mod tests {
             width: 0.6,
             height: 1.8,
             eye_height: 1.62,
+            attachments: Default::default(),
             category: "misc".into(),
             max_health: 20.0,
             speed: 0.1,

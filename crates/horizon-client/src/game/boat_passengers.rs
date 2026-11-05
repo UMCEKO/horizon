@@ -360,7 +360,7 @@ impl Game<'_> {
                     let offset = if &*m.kind.id == "minecraft:player" {
                         PLAYER_RIDING_OFFSET
                     } else {
-                        riders::vehicle_attachment(m)
+                        riders::vehicle_attachment(m, super::boats::WIDTH as f32)[1]
                     };
                     let index = players + n;
                     // calculatePassengerBodyYRot.

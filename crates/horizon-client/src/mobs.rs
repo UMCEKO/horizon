@@ -12,6 +12,7 @@ pub mod anim;
 pub mod animal_brain;
 pub mod aquatic;
 pub mod armadillo;
+pub mod attachments;
 pub mod axolotl;
 pub mod bat;
 pub mod bee;
@@ -337,6 +338,8 @@ pub struct MobType {
     pub width: f64,
     pub height: f64,
     pub eye_height: f64,
+    /// The passenger and vehicle attachment points (`EntityAttachments`) of the type's boxes.
+    pub attachments: attachments::TypeAttachments,
     pub category: String,
     pub max_health: f32,
     pub speed: f64,
@@ -463,6 +466,7 @@ impl MobTypes {
                     width: t["width"].as_f64().unwrap_or(0.6),
                     height: t["height"].as_f64().unwrap_or(1.8),
                     eye_height: t["eye_height"].as_f64().unwrap_or(1.6),
+                    attachments: attachments::TypeAttachments::parse(&id, t, def.baby)?,
                     max_health: attr("max_health").unwrap_or(10.0) as f32,
                     speed,
                     flying_speed: attr("flying_speed").unwrap_or(0.4),
@@ -3337,6 +3341,7 @@ pub(crate) mod sensor_scan_tests {
             width: 0.9,
             height: 1.4,
             eye_height: 1.3,
+            attachments: Default::default(),
             category: "creature".into(),
             max_health: 10.0,
             speed: 0.2,

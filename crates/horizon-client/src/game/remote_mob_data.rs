@@ -627,7 +627,7 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("horizon-bat-animation-{}", std::process::id()));
         fs::create_dir(&root).unwrap();
-        fs::write(root.join("entity-types.json"), r#"{"minecraft:bat": {}}"#).unwrap();
+        fs::write(root.join("entity-types.json"), r#"{"minecraft:bat": {"attachments": {"passenger": [[0, 0.5, 0]], "vehicle": [[0, 0, 0]]}, "dimensions": {}}}"#).unwrap();
         fs::write(
             root.join("entity-models.json"),
             r#"{"minecraft:bat#main": {"children": {"right_wing": {}, "head": {}}}}"#,

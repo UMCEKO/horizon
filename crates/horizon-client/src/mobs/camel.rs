@@ -514,6 +514,7 @@ mod tests {
             width: 1.7,
             height: 2.375,
             eye_height: 2.275,
+            attachments: Default::default(),
             category: "creature".into(),
             max_health: 32.0,
             speed: 0.09,

@@ -161,6 +161,14 @@ pub(super) fn player_type(root: &Path) -> Option<Arc<MobType>> {
 /// `player_type` from the document: the model and its layers from one parse.
 fn load_player_type(root: &Path) -> Option<Arc<MobType>> {
     let models = horizon_client::mobs::EntityModelDocument::load(root).ok()?;
+    let types: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("entity-types.json")).ok()?).ok()?;
+    let attachments = horizon_client::mobs::attachments::TypeAttachments::parse(
+        "minecraft:player",
+        &types["minecraft:player"],
+        horizon_client::mobs::species::Baby::None,
+    )
+    .ok()?;
     models.model("minecraft:player#main").map(|model| {
         Arc::new(MobType {
             id: "minecraft:player".into(),
@@ -169,6 +177,7 @@ fn load_player_type(root: &Path) -> Option<Arc<MobType>> {
             width: 0.6,
             height: 1.8,
             eye_height: 1.62,
+            attachments,
             category: "misc".into(),
             max_health: 20.0,
             speed: 0.1,
