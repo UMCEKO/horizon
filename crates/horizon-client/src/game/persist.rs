@@ -724,6 +724,7 @@ impl Game<'_> {
             position,
             yaw: rotation[0],
             pitch: rotation[1],
+            moving: entity_nbt::move_state(&tag),
         };
         self.level_add(NewEntity::Other(other), origin, Some(&tag))?;
         self.remember(id, uuid, tag);
@@ -756,6 +757,14 @@ impl Game<'_> {
                 ]),
             );
             c.insert("UUID".into(), Tag::IntArray(uuid.to_vec()));
+            c.insert(
+                "OnGround".into(),
+                Tag::Byte(i8::from(o.moving.ground.on_ground)),
+            );
+            c.insert(
+                "fall_distance".into(),
+                Tag::Double(o.moving.fall_distance.to_bits()),
+            );
         }
         tag
     }

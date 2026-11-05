@@ -35,6 +35,10 @@ impl Game<'_> {
     pub(super) fn type_attachments(&self, ty: &str) -> Option<Attachments> {
         self.type_entry(ty).map(|e| e.0)
     }
+    /// `EntityType.getWidth` and `getHeight` of `ty`.
+    pub(super) fn type_size(&self, ty: &str) -> [f64; 2] {
+        self.type_entry(ty).map_or([0.0; 2], |e| [e.2, e.1])
+    }
     /// `EntityType.getHeight` of `ty`.
     fn type_height(&self, ty: &str) -> f64 {
         self.type_entry(ty).map_or(0.0, |e| e.1)

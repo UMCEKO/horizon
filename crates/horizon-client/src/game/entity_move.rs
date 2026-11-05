@@ -9,6 +9,7 @@ use horizon_core::{
     geometry::{Aabb, Direction, VoxelShape, traverse_blocks},
     position::BlockPos,
 };
+use horizon_world::nbt::Tag;
 use horizon_world::{
     block_entity_push::BlockPushWorld,
     block_landing::{
@@ -944,6 +945,47 @@ impl Game<'_> {
                 self.bolts.insert(i, bolt);
                 true
             }
+            Target::Other(id) => {
+                let Some(i) = self.others.iter().position(|o| o.id == id) else {
+                    return false;
+                };
+                let mut other = self.others.remove(i);
+                // Its motion lives in the saved compound.
+                let mut velocity = self
+                    .persist
+                    .raw
+                    .get(&id)
+                    .map_or(Vec3::ZERO, horizon_client::entity_nbt::motion);
+                let body = BodyRef {
+                    id,
+                    size: self.type_size(&other.kind),
+                    removed: false,
+                    position: &mut other.position,
+                    velocity: &mut velocity,
+                    moving: &mut other.moving,
+                    sync: None,
+                    no_physics: false,
+                    step_height: 0.0,
+                    gravity: 0.0,
+                    air_drag: 0.98,
+                    emission: MovementEmission::All,
+                    fall: FallRule::Entity,
+                    steered: false,
+                };
+                self.move_body(body, mover, delta);
+                if let Some(Tag::Compound(raw)) = self.persist.raw.get_mut(&id) {
+                    raw.insert(
+                        "Motion".into(),
+                        Tag::List(
+                            [velocity.x, velocity.y, velocity.z]
+                                .map(|v| Tag::Double(v.to_bits()))
+                                .to_vec(),
+                        ),
+                    );
+                }
+                self.others.insert(i, other);
+                true
+            }
             _ => false,
         }
     }
@@ -1227,5 +1269,28 @@ mod tests {
             Vec3::new(2.0, 0.0, 1.0)
         ));
         assert_eq!(game.bolts[0].at, [2.5, 62.0, 1.5]);
+    }
+
+    #[test]
+    fn an_entity_of_a_type_native_does_not_simulate_moves_and_lands() {
+        let Some(mut game) = flat_game() else { return };
+        game.next_entity += 1;
+        let id = game.next_entity;
+        game.others.push(super::commands::OtherEntity {
+            id,
+            kind: "minecraft:item_display".into(),
+            position: Vec3::new(0.5, 63.0, 0.5),
+            yaw: 0.0,
+            pitch: 0.0,
+            moving: Default::default(),
+        });
+        assert!(game.entity_move(
+            Target::Other(id),
+            MoverType::SelfMovement,
+            Vec3::new(0.0, -5.0, 0.0)
+        ));
+        let other = game.others.iter().find(|o| o.id == id).unwrap();
+        assert!(other.moving.ground.on_ground);
+        assert_eq!(other.position.y, 61.0);
     }
 }
