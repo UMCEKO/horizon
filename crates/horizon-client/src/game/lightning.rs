@@ -620,7 +620,11 @@ impl Game<'_> {
                     if m.fire_ticks == 0 {
                         m.ignite_for_ticks(160);
                     }
-                    m.damage(hit.damage, source);
+                    m.damage(
+                        hit.damage,
+                        source,
+                        horizon_client::mobs::anim::Ride::of(&self.riding_table, m.id),
+                    );
                 };
                 match m.species() {
                     Species::Pig if !peaceful => {
@@ -653,7 +657,11 @@ impl Game<'_> {
                         }
                     }
                     Species::Turtle => {
-                        m.damage(f32::MAX, source);
+                        m.damage(
+                            f32::MAX,
+                            source,
+                            horizon_client::mobs::anim::Ride::of(&self.riding_table, m.id),
+                        );
                     }
                     Species::Creeper => {
                         m.extra.charged = true;

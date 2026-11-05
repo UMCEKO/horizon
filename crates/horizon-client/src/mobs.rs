@@ -2391,12 +2391,13 @@ impl Mob {
         amount: f32,
         from: Option<[f64; 3]>,
         _random: &mut LegacyRandom,
+        ride: anim::Ride,
     ) -> bool {
         let source = match from {
             Some(f) => Damage::player(f),
             None => Damage::of(DamageKind::Generic),
         };
-        self.damage(amount, source)
+        self.damage(amount, source, ride)
     }
     /// LivingEntity.hurtServer: invulnerability frames, armor, knockback and
     /// the last-hurt-by bookkeeping goals read.
@@ -2422,13 +2423,10 @@ impl Mob {
         .map(|i| spawning::armor_stats(i))
         .fold((0.0, 0.0), |(a, t), (x, y)| (a + x, t + y))
     }
-    pub fn damage(&mut self, amount: f32, source: Damage) -> bool {
-        self.damage_with(amount, source, None, anim::Ride::default())
-    }
-    /// `damage` of a mob with its ride from the riding table: an enderman hit by a
+    /// `hurt` of a mob with its ride from the riding table: an enderman hit by a
     /// projectile only teleports away when it is no passenger, and an armadillo
     /// curls up only when it is neither.
-    pub fn damage_riding(&mut self, amount: f32, source: Damage, ride: anim::Ride) -> bool {
+    pub fn damage(&mut self, amount: f32, source: Damage, ride: anim::Ride) -> bool {
         self.damage_with(amount, source, None, ride)
     }
     /// `damage` by a source with a weapon: `armor_effectiveness` runs the
@@ -3562,13 +3560,13 @@ mod hurt_tests {
     #[test]
     fn actually_hurt_in_the_cooldown_takes_the_pre_armor_difference() {
         let mut m = armored();
-        assert!(m.damage(6.0, generic()));
+        assert!(m.damage(6.0, generic(), anim::Ride::default()));
         assert!((m.health - 5.68).abs() < 1e-4, "{}", m.health);
         // 8 is 2 more than the 6 before armor: 2 * (1 - 9/25) = 1.28.
-        assert!(m.damage(8.0, generic()));
+        assert!(m.damage(8.0, generic(), anim::Ride::default()));
         assert!((m.health - 4.4).abs() < 1e-4);
         assert_eq!(m.last_hurt, 8.0);
-        assert!(!m.damage(8.0, generic()));
+        assert!(!m.damage(8.0, generic(), anim::Ride::default()));
     }
     #[test]
     fn absorption_takes_the_damage_before_the_health() {

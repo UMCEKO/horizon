@@ -669,7 +669,7 @@ fn effects_from_blocks(
             m.position.z.floor() as i32,
         );
         if w.block_name(x, y, z) == "minecraft:magma_block" {
-            m.damage(1.0, Damage::of(DamageKind::HotFloor));
+            m.damage(1.0, Damage::of(DamageKind::HotFloor), w.ride(m.id));
         }
     }
     let mut visited: Vec<[i32; 3]> = Vec::new();
@@ -693,7 +693,7 @@ fn effects_from_blocks(
                     }
                     match w.block_name(x, y, z) {
                         "minecraft:cactus" => {
-                            m.damage(1.0, Damage::of(DamageKind::Cactus));
+                            m.damage(1.0, Damage::of(DamageKind::Cactus), w.ride(m.id));
                         }
                         // CampfireBlock.entityInside: a lit campfire hurts a
                         // living entity by its fire damage (1, soul 2).
@@ -705,7 +705,7 @@ fn effects_from_blocks(
                             } else {
                                 2.0
                             };
-                            m.damage(damage, Damage::of(DamageKind::Campfire));
+                            m.damage(damage, Damage::of(DamageKind::Campfire), w.ride(m.id));
                         }
                         // WebBlock.entityInside -> makeStuckInBlock, which a
                         // spider ignores for cobwebs and a wither always.
@@ -734,7 +734,7 @@ fn effects_from_blocks(
                                 && (moved.x.abs() >= f64::from(0.003_f32)
                                     || moved.z.abs() >= f64::from(0.003_f32))
                             {
-                                m.damage(1.0, Damage::of(DamageKind::SweetBerryBush));
+                                m.damage(1.0, Damage::of(DamageKind::SweetBerryBush), w.ride(m.id));
                             }
                         }
                         "minecraft:honey_block" => honey_slide(m, p, level_random, events),
@@ -839,7 +839,7 @@ fn axolotl_air_supply(m: &mut Mob, w: &MobWorld) {
         m.air = before - 1;
         if m.air <= -20 {
             m.air = 0;
-            m.damage(2.0, Damage::of(DamageKind::DryOut));
+            m.damage(2.0, Damage::of(DamageKind::DryOut), w.ride(m.id));
         }
     }
 }
@@ -879,7 +879,7 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             &mut m.random,
             multiplier,
         );
-        m.damage(fire, Damage::of(DamageKind::InFire));
+        m.damage(fire, Damage::of(DamageKind::InFire), w.ride(m.id));
     }
     // Fire: water or rain (Entity.isInRain) extinguishes, lava ignites,
     // burning hurts every second.
@@ -894,21 +894,21 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     }
     if m.fluids.in_lava && !m.kind.flags.fire_immune {
         m.ignite_for_ticks(300);
-        m.damage(4.0, Damage::of(DamageKind::Lava));
+        m.damage(4.0, Damage::of(DamageKind::Lava), w.ride(m.id));
     }
     if m.fire_ticks > 0 {
         if m.kind.flags.fire_immune {
             m.fire_ticks = 0;
         } else {
             if m.fire_ticks % 20 == 0 && !m.fluids.in_lava {
-                m.damage(1.0, Damage::of(DamageKind::OnFire));
+                m.damage(1.0, Damage::of(DamageKind::OnFire), w.ride(m.id));
             }
             m.fire_ticks -= 1;
         }
     }
     // Entity.checkBelowWorld: LivingEntity.onBelowWorld hurts 4 a tick.
     if m.position.y < f64::from(w.world.bottom_y() - 64) {
-        m.damage(4.0, Damage::of(DamageKind::OutOfWorld));
+        m.damage(4.0, Damage::of(DamageKind::OutOfWorld), w.ride(m.id));
     }
     m.first_tick = false;
     if m.alive() {
@@ -925,7 +925,7 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             && m.width() < 1.0
             && m.species() != Species::Vex
         {
-            m.damage(1.0, Damage::of(DamageKind::InWall));
+            m.damage(1.0, Damage::of(DamageKind::InWall), w.ride(m.id));
         }
         // Air supply and drowning (WaterAnimal.handleAirSupply for aquatic mobs).
         if m.species() == Species::Axolotl {
@@ -935,7 +935,7 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                 m.air -= 1;
                 if m.air == -20 {
                     m.air = 0;
-                    m.damage(2.0, Damage::of(DamageKind::Drown));
+                    m.damage(2.0, Damage::of(DamageKind::Drown), w.ride(m.id));
                 }
             } else {
                 m.air = 300;
@@ -948,18 +948,18 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                     mob: m.id,
                     at: [m.position.x, m.position.y, m.position.z],
                 });
-                m.damage(2.0, Damage::of(DamageKind::Drown));
+                m.damage(2.0, Damage::of(DamageKind::Drown), w.ride(m.id));
             }
         } else if m.air < 300 {
             m.air = (m.air + 4).min(300);
         }
 
         if m.kind.flags.water_sensitive && (m.fluids.in_water || in_rain(m, w)) {
-            m.damage(1.0, Damage::of(DamageKind::Drown));
+            m.damage(1.0, Damage::of(DamageKind::Drown), w.ride(m.id));
         }
         freeze_tick(m, w);
     }
-    tick_effects(m);
+    tick_effects(m, w.ride(m.id));
     if m.species() == Species::Illusioner {
         super::illusioner::tick(m, events);
     }
@@ -1006,7 +1006,7 @@ fn freeze_tick(m: &mut Mob, w: &MobWorld) {
         m.ticks_frozen = (m.ticks_frozen - 2).max(0);
     }
     if m.age.is_multiple_of(40) && m.is_fully_frozen() && can_freeze {
-        m.damage(1.0, Damage::of(DamageKind::Freeze));
+        m.damage(1.0, Damage::of(DamageKind::Freeze), w.ride(m.id));
     }
 }
 /// Whether the mob's box (shrunk by `1.0E-5`, as in `Entity.checkInsideBlocks`)
@@ -1359,7 +1359,7 @@ fn push_entities(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         && m.random.next_int_bound(4).unwrap_or(1) == 0
         && targets.iter().filter(|t| !t.2).count() as i64 > i64::from(limit) - 1
     {
-        m.damage(6.0, Damage::of(DamageKind::Cramming));
+        m.damage(6.0, Damage::of(DamageKind::Cramming), w.ride(m.id));
     }
     for (who, at, _, same) in targets {
         // Warden.doPush: touching it angers it, then the push itself.
@@ -2381,7 +2381,7 @@ fn flower_contact_effects(m: &mut Mob, w: &MobWorld) {
 }
 
 /// MobEffect ticking for the effects mobs receive (poison, wither, regeneration).
-fn tick_effects(m: &mut Mob) {
+fn tick_effects(m: &mut Mob, ride: super::anim::Ride) {
     let mut effects = std::mem::take(&mut m.extra.effects);
     for (effect, ticks, amp) in &mut effects {
         let interval = |base: i32| (base >> (*amp).max(0)).max(1);
@@ -2393,10 +2393,10 @@ fn tick_effects(m: &mut Mob) {
             "minecraft:poison"
                 if count % interval(25) == 0 && !m.kind.flags.undead && m.health > 1.0 =>
             {
-                m.damage(1.0, Damage::of(DamageKind::Magic));
+                m.damage(1.0, Damage::of(DamageKind::Magic), ride);
             }
             "minecraft:wither" if count % interval(40) == 0 => {
-                m.damage(1.0, Damage::of(DamageKind::Magic));
+                m.damage(1.0, Damage::of(DamageKind::Magic), ride);
             }
             "minecraft:regeneration"
                 if count % interval(50) == 0 && !m.kind.flags.undead && m.alive() =>
@@ -2646,7 +2646,7 @@ mod poison_effect_tests {
         pig.add_effect("poison", 100, 0);
         assert_eq!(pig.extra.effects[0].0, "minecraft:poison");
         let initial_pig_health = pig.health;
-        tick_effects(&mut pig);
+        tick_effects(&mut pig, crate::mobs::anim::Ride::default());
         assert_eq!(
             pig.health,
             initial_pig_health - 1.0,
@@ -2658,7 +2658,7 @@ mod poison_effect_tests {
         let mut zombie = Mob::new(2, zombie_kind, Vec3::new(0.0, 4.0, 0.0), 0.0);
         zombie.add_effect("poison", 100, 0);
         let initial_zombie_health = zombie.health;
-        tick_effects(&mut zombie);
+        tick_effects(&mut zombie, crate::mobs::anim::Ride::default());
         assert_eq!(
             zombie.health, initial_zombie_health,
             "undead mobs are immune to poison"

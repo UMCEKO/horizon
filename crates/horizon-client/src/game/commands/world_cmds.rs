@@ -204,11 +204,13 @@ impl Game<'_> {
                     attacker,
                     from,
                 };
-                let hurt = self
-                    .mobs
-                    .iter_mut()
-                    .find(|m| m.id == id)
-                    .is_some_and(|m| m.damage(amount, damage));
+                let hurt = self.mobs.iter_mut().find(|m| m.id == id).is_some_and(|m| {
+                    m.damage(
+                        amount,
+                        damage,
+                        horizon_client::mobs::anim::Ride::of(&self.riding_table, m.id),
+                    )
+                });
                 if hurt {
                     self.resolve_player_responsible(id, damage);
                 }

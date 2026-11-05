@@ -514,10 +514,10 @@ impl Game<'_> {
             self.lan = Some(host);
         }
         for rider in self.passengers_of(Ent::Id(mob)) {
-            let ridden = self.is_vehicle(rider);
             if let Some(r) = self.mobs.iter_mut().find(|m| Some(m.id) == rider.id()) {
                 let mut events = Vec::new();
-                r.cause_fall_damage_from(distance, modifier, ridden, &mut events);
+                let ride = horizon_client::mobs::anim::Ride::of(&self.riding_table, r.id);
+                r.cause_fall_damage_from(distance, modifier, ride, &mut events);
                 let _ = self.handle_mob_events(events);
             }
         }

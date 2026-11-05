@@ -308,7 +308,7 @@ pub fn server_ai_step(m: &mut Mob, cx: &mut Cx) {
     let b = st(m);
     b.under_water = if in_water { b.under_water + 1 } else { 0 };
     if b.under_water > 20 {
-        m.damage(1.0, Damage::of(DamageKind::Drown));
+        m.damage(1.0, Damage::of(DamageKind::Drown), cx.w.ride(m.id));
     }
     if stung {
         let b = st(m);
@@ -321,7 +321,7 @@ pub fn server_ai_step(m: &mut Mob, cx: &mut Cx) {
                 == 0
         {
             let health = m.health;
-            m.damage(health, Damage::of(DamageKind::Generic));
+            m.damage(health, Damage::of(DamageKind::Generic), cx.w.ride(m.id));
         }
     }
     if !has_nectar(m) {

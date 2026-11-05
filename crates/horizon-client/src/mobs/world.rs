@@ -322,6 +322,10 @@ impl MobWorld<'_> {
     pub fn is_passenger(&self, id: u32) -> bool {
         self.riding.borrow().is_passenger(Ent::Id(id))
     }
+    /// `isPassenger` and `isVehicle` of mob `id`, for the damage it takes.
+    pub fn ride(&self, id: u32) -> super::anim::Ride {
+        super::anim::Ride::of(self.riding, id)
+    }
     /// `Entity.isVehicle`.
     pub fn is_vehicle(&self, id: u32) -> bool {
         self.riding.borrow().is_vehicle(Ent::Id(id))

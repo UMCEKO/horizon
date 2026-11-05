@@ -476,7 +476,14 @@ impl Game<'_> {
                 };
                 let shielded = cause
                     .is_some_and(|c| horizon_client::mobs::wither::shielded_from(m.species(), c));
-                if hurtable && (shielded || !m.damage(damage(dist, exposure), source)) {
+                if hurtable
+                    && (shielded
+                        || !m.damage(
+                            damage(dist, exposure),
+                            source,
+                            horizon_client::mobs::anim::Ride::of(&self.riding_table, m.id),
+                        ))
+                {
                     break 'hit;
                 }
                 // `EXPLOSION_KNOCKBACK_RESISTANCE`, not `KNOCKBACK_RESISTANCE`: its

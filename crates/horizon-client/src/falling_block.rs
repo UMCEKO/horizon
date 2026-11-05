@@ -218,11 +218,22 @@ fn inside_blocks(
         check(to, to, 1);
     }
 }
-pub fn hurt_mobs(mobs: &mut [Mob], position: Vec3, amount: f32) {
-    hurt_mobs_with_kind(mobs, position, amount, DamageKind::FallingBlock);
+pub fn hurt_mobs(
+    mobs: &mut [Mob],
+    riding: &std::cell::RefCell<crate::riding::Riding>,
+    position: Vec3,
+    amount: f32,
+) {
+    hurt_mobs_with_kind(mobs, riding, position, amount, DamageKind::FallingBlock);
 }
 
-pub fn hurt_mobs_with_kind(mobs: &mut [Mob], position: Vec3, amount: f32, kind: DamageKind) {
+pub fn hurt_mobs_with_kind(
+    mobs: &mut [Mob],
+    riding: &std::cell::RefCell<crate::riding::Riding>,
+    position: Vec3,
+    amount: f32,
+    kind: DamageKind,
+) {
     if amount <= 0.0 {
         return;
     }
@@ -236,7 +247,7 @@ pub fn hurt_mobs_with_kind(mobs: &mut [Mob], position: Vec3, amount: f32, kind: 
         .iter_mut()
         .filter(|m| m.alive() && bounds.intersects(m.bounds()))
     {
-        mob.damage(amount, source);
+        mob.damage(amount, source, crate::mobs::anim::Ride::of(riding, mob.id));
     }
 }
 
@@ -408,8 +419,10 @@ mod tests {
         mobs[2].invulnerable_flag = true;
         mobs[3].extra.head = Some("minecraft:carved_pumpkin".into());
         let initial = mobs.iter().map(|m| m.health).collect::<Vec<_>>();
+        let riding = std::cell::RefCell::new(crate::riding::Riding::default());
         hurt_mobs(
             &mut mobs,
+            &riding,
             Vec3::ZERO,
             Damage::anvil().impact(5.0).unwrap().amount,
         );

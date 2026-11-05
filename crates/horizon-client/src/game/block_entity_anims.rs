@@ -628,7 +628,11 @@ impl Game<'_> {
             return;
         };
         let at = [m.position.x, m.position.y, m.position.z];
-        m.damage(4.0, Damage::of(DamageKind::Magic));
+        m.damage(
+            4.0,
+            Damage::of(DamageKind::Magic),
+            horizon_client::mobs::anim::Ride::of(&self.riding_table, m.id),
+        );
         self.audio
             .play("minecraft:block.conduit.attack.target", Some(at), 1.0, 1.0);
     }

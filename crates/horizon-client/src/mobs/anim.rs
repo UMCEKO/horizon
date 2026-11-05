@@ -178,6 +178,16 @@ pub struct Ride {
     pub is_passenger: bool,
     pub is_ridden: bool,
 }
+impl Ride {
+    /// `isPassenger` and `isVehicle` of mob `id` in a level's riding table.
+    pub fn of(table: &std::cell::RefCell<crate::riding::Riding>, id: u32) -> Self {
+        let table = table.borrow();
+        Self {
+            is_passenger: table.is_passenger(crate::riding::Ent::Id(id)),
+            is_ridden: table.is_vehicle(crate::riding::Ent::Id(id)),
+        }
+    }
+}
 /// The LivingEntityRenderState values setupAnim reads.
 #[derive(Clone, Copy, Debug)]
 pub struct State {
@@ -1292,5 +1302,27 @@ mod flight_pose_tests {
         assert_eq!(p.get("left_arm")[4], 0.0);
         assert!((p.get("right_arm")[3] + PI / 10.0).abs() < 1e-6);
         assert_eq!(p.get("right_arm")[4], 0.0);
+    }
+
+    #[test]
+    fn a_ride_reads_both_ends_of_the_table() {
+        use crate::riding::{Ent, Riding};
+        let table = std::cell::RefCell::new(Riding::default());
+        table.borrow_mut().link(Ent::Id(2), Ent::Id(1));
+        assert_eq!(
+            Ride::of(&table, 2),
+            Ride {
+                is_passenger: true,
+                is_ridden: false
+            }
+        );
+        assert_eq!(
+            Ride::of(&table, 1),
+            Ride {
+                is_passenger: false,
+                is_ridden: true
+            }
+        );
+        assert_eq!(Ride::of(&table, 3), Ride::default());
     }
 }

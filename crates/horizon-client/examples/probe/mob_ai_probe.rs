@@ -1250,7 +1250,11 @@ pub fn main() -> horizon_client::Result<()> {
                 let at = player
                     .as_ref()
                     .map_or([0.0; 3], |p| [p.position.x, p.position.y, p.position.z]);
-                mobs[i].damage(1.0, Damage::player(at));
+                mobs[i].damage(
+                    1.0,
+                    Damage::player(at),
+                    horizon_client::mobs::anim::Ride::default(),
+                );
                 // Creaking.hurtServer: the heart's reaction, then the sway.
                 if let Some((home, by_player)) = creaking::take_hurt(&mut mobs[i], &w) {
                     if by_player && let Some((_, h)) = hearts.iter_mut().find(|(at, _)| *at == home)
@@ -1367,7 +1371,7 @@ pub fn main() -> horizon_client::Result<()> {
                         source,
                     } = events[k]
                         && let Some(t) = mobs.iter_mut().find(|m| m.id == target)
-                        && t.damage(amount, source)
+                        && t.damage(amount, source, horizon_client::mobs::anim::Ride::default())
                     {
                         let raised = std::mem::take(&mut t.outbox);
                         let n = raised.len();

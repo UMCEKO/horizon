@@ -162,7 +162,7 @@ impl Game<'_> {
                         is_passenger: table.is_passenger(horizon_client::riding::Ent::Id(m.id)),
                         is_ridden: table.is_vehicle(horizon_client::riding::Ent::Id(m.id)),
                     };
-                    m.damage_riding(1.0, source, ride);
+                    m.damage(1.0, source, ride);
                     // `Enderman.hurtServer` for a thrown potion: the hit is
                     // `Enderman.hurtWithCleanWater`, then
                     // `Enderman.repeatedlyTryToTeleport`, which does nothing

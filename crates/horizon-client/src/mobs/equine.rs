@@ -967,7 +967,11 @@ mod tests {
         (1..=n)
             .filter(|&id| {
                 let mut m = equine(id, species, name);
-                assert!(m.damage(1.0, Damage::player([0.0, 64.0, 0.0])));
+                assert!(m.damage(
+                    1.0,
+                    Damage::player([0.0, 64.0, 0.0]),
+                    crate::mobs::anim::Ride::default()
+                ));
                 m.extra.counter == 20
             })
             .count() as u32

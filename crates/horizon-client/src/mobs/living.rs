@@ -650,8 +650,9 @@ impl Mob {
         if self.on_ground {
             if self.fall_distance > 0.0 {
                 self.trample_farmland(w, events);
-                let ridden = w.is_vehicle(self.id) || self.rider.is_some();
-                self.cause_fall_damage(ridden, events);
+                let mut ride = w.ride(self.id);
+                ride.is_ridden |= self.rider.is_some();
+                self.cause_fall_damage(ride, events);
             }
             self.fall_distance = 0.0;
         }
@@ -894,8 +895,8 @@ impl Mob {
     }
     /// The landing of `check_fall_damage`: the whole fall, with no block
     /// softening it.
-    fn cause_fall_damage(&mut self, ridden: bool, events: &mut Vec<MobEvent>) {
-        self.cause_fall_damage_from(self.fall_distance, 1.0, ridden, events);
+    fn cause_fall_damage(&mut self, ride: super::anim::Ride, events: &mut Vec<MobEvent>) {
+        self.cause_fall_damage_from(self.fall_distance, 1.0, ride, events);
     }
     /// `LivingEntity.causeFallDamage`: a fall of `distance` blocks at `modifier`
     /// (its own landing, or a vehicle's passed on by `propagateFallToPassengers`)
@@ -906,7 +907,7 @@ impl Mob {
         &mut self,
         distance: f64,
         modifier: f32,
-        ridden: bool,
+        ride: super::anim::Ride,
         events: &mut Vec<MobEvent>,
     ) {
         // Breeze.causeFallDamage: a landing from higher than three blocks.
@@ -951,7 +952,7 @@ impl Mob {
         }
         // LivingEntity.causeFallDamage lets the riders fall first.
         if !horse {
-            self.fall_to_passengers(ridden, distance, modifier, events);
+            self.fall_to_passengers(ride.is_ridden, distance, modifier, events);
         }
         if damage > 0.0 {
             // Llama.causeFallDamage: only a fall of six blocks or more hurts the
@@ -972,9 +973,9 @@ impl Mob {
             if !horse {
                 events.push(MobEvent::Sound(sound, at, 1.0, 1.0));
             }
-            self.damage(damage as f32, super::Damage::fall());
+            self.damage(damage as f32, super::Damage::fall(), ride);
             if horse {
-                self.fall_to_passengers(ridden, distance, modifier, events);
+                self.fall_to_passengers(ride.is_ridden, distance, modifier, events);
             }
         }
     }

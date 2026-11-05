@@ -152,7 +152,7 @@ impl Game<'_> {
                     is_passenger: table.is_passenger(horizon_client::riding::Ent::Id(m.id)),
                     is_ridden: table.is_vehicle(horizon_client::riding::Ent::Id(m.id)),
                 };
-                m.damage_riding(
+                m.damage(
                     6.0,
                     horizon_client::mobs::Damage {
                         kind: horizon_client::mobs::DamageKind::Magic,

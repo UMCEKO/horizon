@@ -596,7 +596,7 @@ impl Game<'_> {
                     let ride = self.mob_ride(id);
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                         let from = Some([t.position.x, t.position.y, t.position.z]);
-                        let hurt = m.damage_riding(
+                        let hurt = m.damage(
                             damage,
                             Damage {
                                 kind: DamageKind::Arrow,

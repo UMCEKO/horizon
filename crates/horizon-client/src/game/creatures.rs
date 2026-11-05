@@ -1407,7 +1407,7 @@ impl Game<'_> {
         let mut infested = false;
         let ride = self.mob_ride(target);
         if let Some(t) = self.mobs.iter_mut().find(|m| m.id == target) {
-            let hit = t.damage_riding(amount, source, ride);
+            let hit = t.damage(amount, source, ride);
             hurt = hit;
             if hit {
                 killed = !t.alive();
@@ -1912,7 +1912,11 @@ impl Game<'_> {
                 }
                 MobEvent::HurtSelf { mob, kind, amount } => {
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
-                        m.damage(amount, horizon_client::mobs::Damage::of(kind));
+                        m.damage(
+                            amount,
+                            horizon_client::mobs::Damage::of(kind),
+                            horizon_client::mobs::anim::Ride::of(&self.riding_table, m.id),
+                        );
                     }
                 }
                 MobEvent::SetTarget { mob, target } => {
@@ -3812,7 +3816,7 @@ impl Game<'_> {
                         self.mobs
                             .iter_mut()
                             .find(|m| m.id == id)
-                            .is_some_and(|m| m.damage_riding(amount, source, ride))
+                            .is_some_and(|m| m.damage(amount, source, ride))
                     }
                 };
                 let outcome = if hurt {
@@ -3856,7 +3860,7 @@ impl Game<'_> {
                             .mobs
                             .iter_mut()
                             .find(|m| m.id == id)
-                            .is_some_and(|m| m.damage_riding(amount, source, ride));
+                            .is_some_and(|m| m.damage(amount, source, ride));
                         dodged = !hurt
                             && self.mobs.iter().find(|m| m.id == id).is_some_and(|m| {
                                 m.species() == Species::Enderman
@@ -4008,7 +4012,7 @@ impl Game<'_> {
                     } else {
                         0.0
                     };
-                    m.damage_riding(amount, source, ride);
+                    m.damage(amount, source, ride);
                 }
                 self.thrown_break_event(p.id, atp);
                 self.item_burst(atp, "minecraft:snowball");
@@ -4019,7 +4023,11 @@ impl Game<'_> {
                 } = hit
                     && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
                 {
-                    m.damage(0.0, source);
+                    m.damage(
+                        0.0,
+                        source,
+                        horizon_client::mobs::anim::Ride::of(&self.riding_table, m.id),
+                    );
                 }
                 // ThrownEgg.onHit: 1/8 chance of a chick, 1/32 of four.
                 if self.world.random.next_int_bound(8).unwrap_or(1) == 0 {
@@ -4045,7 +4053,11 @@ impl Game<'_> {
                 } = hit
                     && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
                 {
-                    m.damage(0.0, source);
+                    m.damage(
+                        0.0,
+                        source,
+                        horizon_client::mobs::anim::Ride::of(&self.riding_table, m.id),
+                    );
                 }
                 if p.owner == Some(Who::Player) && self.player.is_some() {
                     // ThrownEnderpearl: 5% endermite where the player was
@@ -4106,7 +4118,7 @@ impl Game<'_> {
                             if !m.kind.flags.fire_immune {
                                 m.ignite_for_ticks(100);
                             }
-                            let hurt = m.damage_riding(5.0, source, ride);
+                            let hurt = m.damage(5.0, source, ride);
                             if !hurt {
                                 m.fire_ticks = remaining;
                             }
@@ -4153,7 +4165,7 @@ impl Game<'_> {
                                 .mobs
                                 .iter_mut()
                                 .find(|m| m.id == id)
-                                .is_some_and(|m| m.damage_riding(6.0, source, ride))
+                                .is_some_and(|m| m.damage(6.0, source, ride))
                             {
                                 self.player_hurt_mob(p, id);
                             }
@@ -4258,7 +4270,11 @@ impl Game<'_> {
                 }
                 Who::Mob(id) => {
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                        m.damage(1.0, source);
+                        m.damage(
+                            1.0,
+                            source,
+                            horizon_client::mobs::anim::Ride::of(&self.riding_table, m.id),
+                        );
                     }
                 }
             },
@@ -4279,7 +4295,7 @@ impl Game<'_> {
                 Who::Mob(id) => {
                     let ride = self.mob_ride(id);
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
-                        && m.damage_riding(4.0, source, ride)
+                        && m.damage(4.0, source, ride)
                     {
                         m.add_effect("minecraft:levitation", 200, 0);
                         // Shulker.hurtServer: a shulker hit by a bullet.
@@ -4930,6 +4946,7 @@ impl Game<'_> {
                 let hurt = m.damage(
                     f32::MAX,
                     horizon_client::mobs::Damage::player(player_at.unwrap_or(center)),
+                    horizon_client::mobs::anim::Ride::of(&self.riding_table, m.id),
                 );
                 // The feeder gets the kill, as for a normal player attack.
                 if hurt {

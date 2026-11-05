@@ -220,7 +220,7 @@ pub fn ai_step(m: &mut Mob, w: &super::MobWorld) {
         m.extra.egg_time -= 1;
         if m.extra.egg_time == 0 {
             m.extra.egg_time = 20;
-            m.damage(1.0, Damage::of(DamageKind::Generic));
+            m.damage(1.0, Damage::of(DamageKind::Generic), w.ride(m.id));
         }
     }
 }

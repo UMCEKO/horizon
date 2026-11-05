@@ -26,6 +26,7 @@ impl Game<'_> {
                 };
                 falling_block::hurt_mobs_with_kind(
                     &mut self.mobs,
+                    &self.riding_table,
                     block.position,
                     impact.amount,
                     mob_kind,

@@ -75,11 +75,7 @@ impl Game<'_> {
     }
     /// `isPassenger` and `isVehicle` of mob `id` in the level's table, for a damage that asks.
     pub(super) fn mob_ride(&self, id: u32) -> horizon_client::mobs::anim::Ride {
-        let table = self.riding_table.borrow();
-        horizon_client::mobs::anim::Ride {
-            is_passenger: table.is_passenger(Ent::Id(id)),
-            is_ridden: table.is_vehicle(Ent::Id(id)),
-        }
+        horizon_client::mobs::anim::Ride::of(&self.riding_table, id)
     }
     /// `Entity.getVehicle` in the level's table.
     pub(super) fn vehicle_of(&self, e: Ent) -> Option<Ent> {

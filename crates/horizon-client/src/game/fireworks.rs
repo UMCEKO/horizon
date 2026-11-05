@@ -474,6 +474,7 @@ impl Game<'_> {
                         attacker,
                         from: Some(at),
                     },
+                    horizon_client::mobs::anim::Ride::of(&self.riding_table, m.id),
                 );
             }
         }

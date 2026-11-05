@@ -175,7 +175,11 @@ impl Game<'_> {
                         false
                     }
                     Some(m) => {
-                        let hit = m.damage(amount, source);
+                        let hit = m.damage(
+                            amount,
+                            source,
+                            horizon_client::mobs::anim::Ride::of(&self.riding_table, m.id),
+                        );
                         if hit && m.alive() && m.species() != Species::Wither && wither_ticks > 0 {
                             m.add_effect("minecraft:wither", wither_ticks, 1);
                         }

@@ -684,7 +684,11 @@ impl Game<'_> {
                             // `LivingEntity.addEffect` refuses nothing here; the
                             // tick hurts with magic (6 << amp) or heals (4 << amp).
                             if (effect == "instant_damage") != inverted {
-                                m.damage((6 << amp.min(30)) as f32, Damage::of(DamageKind::Magic));
+                                m.damage(
+                                    (6 << amp.min(30)) as f32,
+                                    Damage::of(DamageKind::Magic),
+                                    horizon_client::mobs::anim::Ride::of(&self.riding_table, m.id),
+                                );
                             } else {
                                 m.health =
                                     (m.health + (4 << amp.min(30)) as f32).min(m.attrs.max_health);
@@ -1094,7 +1098,12 @@ impl Game<'_> {
                                 |base: i32| (0.5 * f64::from(base << amp) + 0.5) as i32 as f32;
                             if (*id == "instant_damage") != inverted {
                                 let harm = m.potion_harm(amount(6));
-                                m.hurt(harm, Some(at), &mut self.world.random);
+                                m.hurt(
+                                    harm,
+                                    Some(at),
+                                    &mut self.world.random,
+                                    horizon_client::mobs::anim::Ride::of(&self.riding_table, m.id),
+                                );
                             } else {
                                 m.health = (m.health + amount(4)).min(m.kind.max_health);
                             }
@@ -1399,7 +1408,12 @@ impl Game<'_> {
                 let m = &mut self.mobs[i];
                 if harm {
                     let harm = m.potion_harm((intensity * f64::from(6 << amp) + 0.5) as i32 as f32);
-                    m.hurt(harm, Some([at.x, at.y, at.z]), &mut self.world.random);
+                    m.hurt(
+                        harm,
+                        Some([at.x, at.y, at.z]),
+                        &mut self.world.random,
+                        horizon_client::mobs::anim::Ride::of(&self.riding_table, m.id),
+                    );
                 } else {
                     m.health = (m.health + (intensity * f64::from(4 << amp) + 0.5) as i32 as f32)
                         .min(m.kind.max_health);

@@ -668,7 +668,11 @@ impl Game<'_> {
                         .map(|p| [p.position.x, p.position.y, p.position.z])
                         .unwrap_or_default();
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                        m.damage(amount, horizon_client::mobs::Damage::player(at));
+                        m.damage(
+                            amount,
+                            horizon_client::mobs::Damage::player(at),
+                            horizon_client::mobs::anim::Ride::of(&self.riding_table, m.id),
+                        );
                     }
                     self.last_hurt_by_player.insert(id, self.lan_acting);
                 }

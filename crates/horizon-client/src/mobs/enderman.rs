@@ -501,6 +501,21 @@ mod tests {
         Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0)
     }
 
+    /// The ride a hit reads is the riding table's: a linked enderman takes the arrow, a free one dodges it.
+    #[test]
+    fn the_hit_reads_the_ride_from_the_table() {
+        use crate::{
+            mobs::anim::Ride,
+            riding::{Ent, Riding},
+        };
+        let table = std::cell::RefCell::new(Riding::default());
+        let mut free = enderman();
+        let arrow = Damage::of(DamageKind::Arrow);
+        assert!(!free.damage(1.0, arrow, Ride::of(&table, free.id)));
+        table.borrow_mut().link(Ent::Id(1), Ent::Id(2));
+        let mut seated = enderman();
+        assert!(seated.damage(1.0, arrow, Ride::of(&table, seated.id)));
+    }
     /// Enderman.hurtServer: a projectile makes a free enderman teleport away
     /// unhurt, but one that rides something (`isPassenger`) takes the hit.
     #[test]

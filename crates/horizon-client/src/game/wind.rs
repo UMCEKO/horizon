@@ -146,7 +146,11 @@ impl Game<'_> {
                     if owner_breeze && m.species() == Species::Breeze {
                         return;
                     }
-                    m.damage(1.0, source);
+                    m.damage(
+                        1.0,
+                        source,
+                        horizon_client::mobs::anim::Ride::of(&self.riding_table, m.id),
+                    );
                 }
                 if p.owner == Some(Who::Player) {
                     self.last_hurt_by_player.insert(id, self.lan_acting);

@@ -446,7 +446,12 @@ impl Game<'_> {
         };
         for damage in self.thorns_damage() {
             let m = &mut self.mobs[index];
-            m.hurt(damage, None, &mut self.world.random);
+            m.hurt(
+                damage,
+                None,
+                &mut self.world.random,
+                horizon_client::mobs::anim::Ride::of(&self.riding_table, m.id),
+            );
             let center = [m.position.x, m.position.y, m.position.z];
             self.audio
                 .play("minecraft:enchant.thorns.hit", Some(center), 1.0, 1.0);
