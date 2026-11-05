@@ -26,7 +26,8 @@ public final class EntityFactsCheck {
            "r/Leave": {"listeners": [{}, {}], "subjects": "all"},
            "r/Missing": {"listeners": [{}], "subjects": "all"},
            "r/Grown": {"listeners": [{}], "subjects": [{"side": "both", "require": [], "exclude": [], "types": ["minecraft:cow"]}]}},
-         "caps": {"minecraft:cow": ["c/Cap.X"]}}
+         "caps": {"minecraft:cow": ["c/Cap.X"]},
+         "hooks": {"living_breathe": {"reads": ["air", "flags"], "writes": [], "events": ["r/Leave", "r/Missing", "r/Grown"]}}}
         """.formatted(ITEM, ITEM, ITEM, ITEM, ITEM, ITEM);
 
     public static void main(String[] args) throws Exception {
@@ -54,7 +55,7 @@ public final class EntityFactsCheck {
         };
         var bytes = EntityFacts.build(JsonParser.parseString(FACTS).getAsJsonObject(), world, log::add, List.of("a:att"));
         var in = new DataInputStream(new ByteArrayInputStream(bytes));
-        expect(in.readInt() == 1, "version");
+        expect(in.readInt() == 2, "version");
         var methods = new ArrayList<String>();
         for (int n = in.readInt(), i = 0; i < n; i++) methods.add(text(in));
         expect(methods.equals(List.of(ITEM + "#tick()V", ITEM + "#hurt(F)Z")), "methods " + methods);
@@ -92,6 +93,8 @@ public final class EntityFactsCheck {
                 "r/Child", "all")), "events " + events);
         expect(in.readInt() == 1 && text(in).equals("minecraft:cow") && in.readInt() == 1 && text(in).equals("c/Cap.X"), "caps");
         expect(in.readInt() == 1 && text(in).equals("a:att"), "attachments");
+        expect(in.readInt() == 1 && text(in).equals("living_breathe") && in.readInt() == (128 | 256), "a hook and its reads");
+        expect(in.readInt() == 2 && in.readInt() == 2 && in.readInt() == 1, "its events by position, the unlistened one skipped");
         expect(in.available() == 0, "nothing left");
         expect(log.stream().anyMatch(l -> l.equals("r/Missing not listened at runtime")), "a dropped event is logged: " + log);
         expect(log.stream().anyMatch(l -> l.equals("r/Parent listened at runtime only")), "a runtime-only event is logged: " + log);

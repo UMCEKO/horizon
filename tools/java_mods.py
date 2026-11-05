@@ -554,6 +554,7 @@ def check_bridges(args=None):
         return False
 
     errors, total, natives = [], 0, set()
+    analysis = getattr(args, 'analysis', None)
     for path in sorted((oracle.ROOT / 'crates' / 'horizon-client' / 'src' / 'game' / 'java_bridges').glob('*.rs')):
         for owner, method, desc, guard, native, params, result in entry.findall(path.read_text()):
             total += 1
@@ -598,8 +599,8 @@ def check_bridges(args=None):
                     errors.append(f'{where}: Flat has no to{simple}({mine_ret}) -> {ret}')
             elif ret != mine_ret:
                 errors.append(f'{where}: returns {ret} against {mine_ret}')
-    if getattr(args, 'analysis', None):
-        errors += [f'no bridge for {key} ({", ".join(mods)})' for key, mods in unbridged_writers(args.analysis)]
+    if analysis:
+        errors += [f'no bridge for {key} ({", ".join(mods)})' for key, mods in unbridged_writers(analysis)]
     for error in errors:
         print(error)
     print(f'{total} bridges, {len(errors)} problems')

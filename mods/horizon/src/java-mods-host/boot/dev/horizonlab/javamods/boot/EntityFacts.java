@@ -34,7 +34,7 @@ public final class EntityFacts {
 
     /** Bit i of a reads mask is GROUPS[i]. */
     static final String[] GROUPS = {"identity", "position", "motion", "health", "effects", "equipment", "fire", "air", "flags", "name", "item", "riding", "removal", "species", "attributes", "ai"};
-    static final int VERSION = 1;
+    static final int VERSION = 2;
 
     /** What the booted JVM can say about the analysis. */
     interface World {
@@ -187,6 +187,23 @@ public final class EntityFacts {
         }
         out.writeInt(attachments.size());
         for (String a : attachments) text(out, a);
+        var eventIndex = new ArrayList<>(events.keySet());
+        var hooks = facts.getAsJsonObject("hooks");
+        out.writeInt(hooks.size());
+        for (var e : hooks.entrySet()) {
+            text(out, e.getKey());
+            var hook = e.getValue().getAsJsonObject();
+            int mask = 0;
+            for (JsonElement g : hook.getAsJsonArray("reads")) mask |= 1 << groupIndex(g.getAsString());
+            out.writeInt(mask);
+            var posted = new ArrayList<Integer>();
+            for (JsonElement ev : hook.getAsJsonArray("events")) {
+                int at = eventIndex.indexOf(ev.getAsString());
+                if (at >= 0) posted.add(at);
+            }
+            out.writeInt(posted.size());
+            for (int at : posted) out.writeInt(at);
+        }
         return bytes.toByteArray();
     }
 
