@@ -98,6 +98,10 @@ physics, the server thread, LAN and the dedicated server, the launcher, the UI a
 engine running different data, plus per-version copies of the functions whose logic differs. There is one branch; each supported version is
 one build, one binary per platform.
 
+**Mods declare their versions.** Content mods and native hooks are built against 26.3's registries and hook
+catalog, so a mod's manifest lists the versions it supports (`minecraft = ["26.3"]` by default). A world of
+another version refuses to load a mod that doesn't list it, and the registry index shows the list.
+
 ## What it costs a 26.3-only player
 
 Nothing:
@@ -110,6 +114,9 @@ Nothing:
 - **No change to the 26.3 code path.** Every 26.3 function keeps its body byte-identical to main, and CI compares
   the 26.3 build's generated code for versioned functions and their callers against main (below).
 - **No new choice.** The picker only offers versions the player has installed; 26.3 stays the default.
+- **Same ownership gate.** The picker keeps the Microsoft sign-in and entitlement check for every version, and
+  offers a version only when the official launcher installed it. Nothing on Horizon's side fetches a 26.2 or
+  26.1.2 jar, CI included: the runners import from the maintainer's own install.
 
 ## How 26.3 stays safe
 
@@ -144,6 +151,10 @@ Nothing:
 Harnesses opt in per version (`PARITY_VERSIONS = "26.2.."`); `tools/parity.py --mc-version 26.2` runs only those,
 with per-version oracle overlays in `mods/horizon/src/versions/<version>/java/`, so no harness script needs an edit.
 Until a harness declares an older version, the extra CI step selects nothing and costs seconds.
+
+**CI budget.** On a PR, older-version harnesses run only when the PR touches a versioned function, a `v*.rs`
+copy or that version's data, and only the harnesses selected for those files; the 26.3 parity job is unchanged.
+Every older-version harness runs nightly, once per version, so per-PR parity time doesn't double.
 
 ## Backporting by agents
 
@@ -237,3 +248,4 @@ steps print a notice and run nothing.
   `linguist-generated`, no code: the same kind of data as `tools/port_map/`. It is what lets the check run on forks'
   PRs without jars. Proposed: yes.
 - **Older versions on the runners.** Importing 26.2 and 26.1.2 once, after PR 1 lands.
+- **Merging.** Merging this note is its own decision, and each tooling PR after it is reviewed on its own.
