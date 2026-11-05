@@ -426,7 +426,7 @@ impl Game<'_> {
         let Some(p) = self.player.as_ref() else {
             return;
         };
-        let rider = Rider::player(p, self.yaw);
+        let rider = Rider::player(p, self.yaw, self.acting_main_arm_left());
         let (spot, pose) = self.dismount_location(Vehicle::Mob(i), &rider);
         if let Some(p) = self.player.as_mut() {
             p.position = spot;

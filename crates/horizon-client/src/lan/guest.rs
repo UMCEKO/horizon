@@ -457,6 +457,10 @@ impl Guest {
             (self.position[2].floor() as i32) >> 4,
         )
     }
+    /// `Avatar.getMainArm` of the server player: `ClientInformation.mainHand` is a `HumanoidArm` id, 0 left and 1 right.
+    pub fn main_arm_left(&self) -> bool {
+        self.info.main_hand == 0
+    }
     pub fn creative(&self) -> bool {
         self.game_mode == CREATIVE
     }
@@ -1114,6 +1118,14 @@ mod tests {
             stack.component(component::INSTRUMENT),
             Some(&Component::Instrument(1))
         );
+    }
+
+    #[test]
+    fn a_guests_main_arm_is_its_client_information() {
+        let mut g = guest_at([0.0; 3]);
+        assert!(!g.main_arm_left());
+        g.info.main_hand = 0;
+        assert!(g.main_arm_left());
     }
 
     fn guest_at(position: [f64; 3]) -> Guest {

@@ -675,7 +675,7 @@ impl Game<'_> {
         let Some(p) = self.player.as_ref() else {
             return;
         };
-        let rider = super::vehicle_rules::Rider::player(p, self.yaw);
+        let rider = super::vehicle_rules::Rider::player(p, self.yaw, self.acting_main_arm_left());
         let (target, _) = self.dismount_location(super::vehicle_rules::Vehicle::Boat(i), &rider);
         if let Some(p) = self.player.as_mut() {
             p.position = target;

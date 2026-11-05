@@ -32,6 +32,14 @@ fn zombie_kind(s: Species) -> bool {
 }
 
 impl Game<'_> {
+    /// `Player.getMainArm` of the player this game acts as: a guest's `ClientInformation`, else the window's option.
+    pub(super) fn acting_main_arm_left(&self) -> bool {
+        if self.lan_acting.is_some() {
+            self.lan_acting_main_arm_left
+        } else {
+            self.settings.main_hand_left
+        }
+    }
     /// What a renderer asks of mob `m`'s riding: from `SetPassengers` on a client, else from the table.
     pub(super) fn ride_state(&self, m: &Mob) -> horizon_client::mobs::anim::Ride {
         use horizon_client::mobs::anim::Ride;

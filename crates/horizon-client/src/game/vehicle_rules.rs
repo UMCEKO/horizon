@@ -59,14 +59,17 @@ struct Mount {
 /// `getLocalBoundsForPose` for each of `Player.getDismountPoses`.
 pub(super) struct Rider {
     pub(super) yaw: f32,
+    /// `getMainArm() == HumanoidArm.LEFT`.
+    pub(super) main_arm_left: bool,
     pub(super) width: f32,
     pub(super) poses: Vec<(Pose, Dimensions)>,
 }
 impl Rider {
     /// A player getting off, facing `yaw`.
-    pub(super) fn player(p: &PlayerMotion, yaw: f32) -> Self {
+    pub(super) fn player(p: &PlayerMotion, yaw: f32, main_arm_left: bool) -> Self {
         Self {
             yaw,
+            main_arm_left,
             width: p.dimensions.width,
             poses: rider_poses(p),
         }
@@ -75,6 +78,7 @@ impl Rider {
     pub(super) fn mob(m: &Mob) -> Self {
         Self {
             yaw: m.yaw,
+            main_arm_left: m.main_arm_left(),
             width: m.width(),
             poses: vec![(
                 Pose::Standing,
@@ -291,9 +295,13 @@ fn horse_dismount_location(
     rider: &Rider,
     world: &impl DismountWorld,
 ) -> (Vec3, Option<Pose>) {
-    // The main arm is the default, right: Horizon keeps no player's setting.
     let (vehicle, passenger) = (f64::from(horse.width), f64::from(rider.width));
-    for side in [90.0, -90.0] {
+    let sides = if rider.main_arm_left {
+        [-90.0, 90.0]
+    } else {
+        [90.0, -90.0]
+    };
+    for side in sides {
         let direction = escape_vector(vehicle, passenger, horse.yaw + side);
         if let Some((at, pose)) = horse_dismount_in_direction(horse, direction, rider, world) {
             return (at, Some(pose));
@@ -561,6 +569,7 @@ mod tests {
     fn rider(yaw: f32) -> Rider {
         Rider {
             yaw,
+            main_arm_left: false,
             width: 0.6,
             poses: DISMOUNT_POSES
                 .iter()
@@ -659,6 +668,22 @@ mod tests {
         let open = Sea::with(&[]);
         let (at, pose) = horse_dismount_location(&horse, &rider(0.0), &open);
         assert_eq!((at, pose), (horse.position, None));
+    }
+
+    #[test]
+    fn a_horse_puts_a_left_handed_rider_on_the_other_side_first() {
+        let sea = Sea::with(&[[-1, 29, 0], [1, 29, 0]]);
+        let horse = strider_at(0.5, 0.5);
+        let right = horse_dismount_location(&horse, &rider(0.0), &sea).0;
+        let left_handed = Rider {
+            main_arm_left: true,
+            ..rider(0.0)
+        };
+        let left = horse_dismount_location(&horse, &left_handed, &sea).0;
+        assert!(right.x < horse.position.x && left.x > horse.position.x);
+        // With only the right-handed side open, a left-handed rider falls back to it.
+        let west = Sea::with(&[[-1, 29, 0]]);
+        assert!(horse_dismount_location(&horse, &left_handed, &west).0.x < horse.position.x);
     }
 
     #[test]

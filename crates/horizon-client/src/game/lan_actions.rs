@@ -189,7 +189,7 @@ pub(super) struct GuestSwap {
     /// The guest's own damage record, in place while they act.
     combat: super::combat::CombatTracker,
     /// The guest whose turn this one nests in, if any.
-    acting: (Option<u32>, Option<String>, Option<u128>, Option<u8>),
+    acting: (Option<u32>, Option<String>, Option<u128>, Option<u8>, bool),
     /// That turn's `known_movement`.
     known_movement: Vec3,
     /// The packets queued for that guest.
@@ -481,6 +481,7 @@ impl Game<'_> {
             self.lan_acting_name.replace(g.name.clone()),
             self.lan_acting_uuid.replace(g.uuid),
             self.lan_acting_permission.replace(g.permission),
+            std::mem::replace(&mut self.lan_acting_main_arm_left, g.main_arm_left()),
         );
         let packets = std::mem::take(&mut self.guest_packets);
         let entity_events = std::mem::take(&mut self.guest_entity_events);
@@ -677,6 +678,7 @@ impl Game<'_> {
             self.lan_acting_name,
             self.lan_acting_uuid,
             self.lan_acting_permission,
+            self.lan_acting_main_arm_left,
         ) = acting;
         self.known_movement = known_movement;
         play.death_cause = std::mem::replace(&mut self.ui.death_cause, death_cause);
