@@ -12,6 +12,12 @@
     "name": "platform"
   },
   {
+    "command": "/forceload add -16 -16 16 16"
+  },
+  {
+    "wait": 60
+  },
+  {
     "command": "/fill -2 99 -2 2 99 2 minecraft:stone"
   },
   {
