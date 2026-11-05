@@ -26,7 +26,7 @@ public final class Shells {
     private Shells() {}
 
     public static final int EVENT = 0, WIDGET = 1, NATIVE = 2, NONE = 3;
-    static final int SEGMENTS = 5;
+    static final int SEGMENTS = ShellLeaves.COUNT * 2;
 
     /** The open shell, kept while a mod's screen covers it: a mod returns to the same object. */
     static Screen current;
@@ -38,6 +38,9 @@ public final class Shells {
     static boolean nativeWidget, nativeHandles;
     static int owner = EVENT;
     static byte[][] last = new byte[SEGMENTS][];
+    static int lastRouted;
+    /** Bits of the steps Java drew in the last recording; native skips its own for them. */
+    static int routed;
     static boolean animating;
     private static final Set<String> HEARD = new java.util.HashSet<>();
     private static boolean cancelledLogged;
@@ -108,6 +111,7 @@ public final class Shells {
         }
         current = shell;
         last = new byte[SEGMENTS][];
+        lastRouted = 0;
         animating = false;
         minecraft.gui.setScreen(shell);
         if (minecraft.gui.screen() != shell) current = null;
@@ -164,33 +168,66 @@ public final class Shells {
         return none;
     }
 
-    /** `extractRenderStateWithTooltipAndSubtitles` as NeoForge's `extractScreen` runs it, cut where native paints its own layers; null when a mod's overlay failed. */
+    /** Whether a step's vanilla method runs in Java: only a loaded mod's detected patch of it does. */
+    static boolean routes(Screen shell, int leaf) {
+        return false;
+    }
+
+    /** The recording of one frame: a gap after each step holds what mods drew there, a step's own part what Java drew of it. */
+    private static final class Steps {
+        final Recorder recorder = new Recorder();
+        final byte[][] segments = empty();
+        int gap;
+
+        void put(int index) throws IOException {
+            byte[] frame = recorder.cut();
+            segments[index] = Recorder.concat(segments[index], frame);
+        }
+
+        /** Closes the open gap and opens the one after `leaf`. */
+        void step(int leaf) throws IOException {
+            put(gap);
+            gap = leaf * 2;
+        }
+    }
+
+    /** `extractRenderStateWithTooltipAndSubtitles` as NeoForge's `extractScreen` runs it, cut at native's draw steps; null when a mod's overlay failed. */
     static byte[][] record(Minecraft minecraft, int mx, int my, float partial) {
         try {
             var shell = current;
-            var recorder = new Recorder();
-            var graphics = new GuiGraphicsExtractor(minecraft, recorder, mx, my);
+            var steps = new Steps();
+            var graphics = new GuiGraphicsExtractor(minecraft, steps.recorder, mx, my);
             apply(shell);
             var bus = NeoForge.EVENT_BUS;
-            byte[][] segments = new byte[SEGMENTS][];
+            routed = 0;
             if (bus.post(new ScreenEvent.Render.Pre(shell, graphics, mx, my, partial)).isCanceled()) {
                 if (!cancelledLogged) System.err.println("Horizon: a mod cancelled Render.Pre of a native screen; native still draws it");
                 cancelledLogged = true;
                 return empty();
             }
-            segments[0] = recorder.cut();
+            steps.step(ShellLeaves.BACKGROUND);
             graphics.nextStratum();
             bus.post(new ScreenEvent.Render.Background(shell, graphics, mx, my, partial));
-            segments[1] = recorder.cut();
+            steps.step(ShellLeaves.EFFECTS);
             graphics.nextStratum();
+            steps.step(ShellLeaves.WIDGETS);
             for (var renderable : new ArrayList<>(shell.renderables)) if (!vanilla.contains(renderable)) renderable.extractRenderState(graphics, mx, my, partial);
-            segments[2] = recorder.cut();
+            steps.put(ShellLeaves.WIDGETS * 2 + 1);
+            steps.step(ShellLeaves.LABELS);
+            steps.step(ShellLeaves.HIGHLIGHT_BACK);
+            steps.step(ShellLeaves.SLOTS);
+            steps.step(ShellLeaves.HIGHLIGHT_FRONT);
             bus.post(new ScreenEvent.Render.Foreground(shell, graphics, mx, my, partial));
-            segments[3] = recorder.cut();
+            steps.step(ShellLeaves.EXTRA);
+            steps.step(ShellLeaves.RECIPE_BOOK);
+            steps.step(ShellLeaves.CARRIED);
+            steps.step(ShellLeaves.TOOLTIP);
+            steps.step(ShellLeaves.BOOK_TOOLTIP);
+            steps.step(ShellLeaves.DEFERRED);
             graphics.extractDeferredElements(mx, my, partial);
             bus.post(new ScreenEvent.Render.Post(shell, graphics, mx, my, partial));
-            segments[4] = recorder.cut();
-            return segments;
+            steps.put(steps.gap);
+            return steps.segments;
         } catch (Throwable t) {
             System.err.println("Horizon: a mod's screen overlay failed");
             t.printStackTrace();
@@ -199,8 +236,9 @@ public final class Shells {
     }
 
     /** The HUD's rule: a recording differing from the last starts the animation, two alike end it only if real time passed. Answers whether it changed. */
-    static boolean noteRecorded(byte[][] segments, float realtimeDeltaTicks) {
-        boolean identical = java.util.Arrays.deepEquals(segments, last);
+    static boolean noteRecorded(byte[][] segments, int routedBits, float realtimeDeltaTicks) {
+        boolean identical = routedBits == lastRouted && java.util.Arrays.deepEquals(segments, last);
+        lastRouted = routedBits;
         if (!identical) animating = true;
         else if (HudAnimation.ends(true, realtimeDeltaTicks)) animating = false;
         last = segments;
@@ -284,15 +322,17 @@ public final class Shells {
         return native_();
     }
 
-    /** `bool recorded` and, when it is, the segments (a status counts them first, a `ShellReply` does not). */
+    /** `bool recorded`, when it is the segments (a status counts them first, a `ShellReply` does not), then `int routed`. */
     static void write(java.io.DataOutputStream out, byte[][] segments, boolean changed, boolean counted) throws IOException {
         out.writeBoolean(changed);
-        if (!changed) return;
-        if (counted) out.writeInt(SEGMENTS);
-        for (byte[] segment : segments) {
-            out.writeInt(segment.length);
-            out.write(segment);
+        if (changed) {
+            if (counted) out.writeInt(SEGMENTS);
+            for (byte[] segment : segments) {
+                out.writeInt(segment.length);
+                out.write(segment);
+            }
         }
+        out.writeInt(routed);
     }
 
     /** `ShellReply`: who owns the input, the fresh recording, whether it animates. */
