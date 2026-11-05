@@ -1746,7 +1746,6 @@ impl Behaviours {
             let state = sim.state(tick.pos);
             if u32::from(self.block(state).0) == tick.kind.0 {
                 sim.level.observe_block_tick(tick.pos, state, false);
-                sim.tick_block(state, tick.pos);
                 sim.tick_due_block(state, tick.pos);
             }
         }
@@ -1827,7 +1826,6 @@ impl Behaviours {
             let state = sim.state(tick.pos);
             if u32::from(self.block(state).0) == tick.kind.0 {
                 sim.level.observe_block_tick(tick.pos, state, false);
-                sim.tick_block(state, tick.pos);
                 sim.tick_due_block(state, tick.pos);
             }
         }
