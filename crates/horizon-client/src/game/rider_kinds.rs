@@ -15,7 +15,14 @@ struct Body {
 impl Game<'_> {
     /// `EntityType` attachments of `ty`, read once from `entity-types.json`.
     pub(super) fn type_attachments(&self, ty: &str) -> Option<Attachments> {
-        static TABLE: std::sync::OnceLock<HashMap<String, Attachments>> =
+        self.type_entry(ty).map(|e| e.0)
+    }
+    /// `EntityType.getHeight` of `ty`.
+    fn type_height(&self, ty: &str) -> f64 {
+        self.type_entry(ty).map_or(0.0, |e| e.1)
+    }
+    fn type_entry(&self, ty: &str) -> Option<(Attachments, f64, f64)> {
+        static TABLE: std::sync::OnceLock<HashMap<String, (Attachments, f64, f64)>> =
             std::sync::OnceLock::new();
         TABLE
             .get_or_init(|| {
@@ -25,7 +32,11 @@ impl Game<'_> {
                     .and_then(|v| {
                         v.as_object().map(|o| {
                             o.iter()
-                                .filter_map(|(k, t)| Some((k.clone(), Attachments::parse(t)?)))
+                                .filter_map(|(k, t)| {
+                                    let height = f64::from(t["height"].as_f64()? as f32);
+                                    let width = f64::from(t["width"].as_f64()? as f32);
+                                    Some((k.clone(), (Attachments::parse(t)?, height, width)))
+                                })
                                 .collect()
                         })
                     })
@@ -33,6 +44,29 @@ impl Game<'_> {
             })
             .get(ty)
             .cloned()
+    }
+
+    /// Whether `id` is an entity of a kind that is no mob, boat, cart or cushion.
+    pub(super) fn is_plain_vehicle(&self, id: u32) -> bool {
+        self.plain_body(id).is_some()
+    }
+
+    /// `Entity.getDismountLocationForPassenger`: the top of the vehicle's box.
+    pub(super) fn plain_dismount(&self, id: u32) -> Vec3 {
+        self.plain_body(id).map_or(Vec3::ZERO, |b| {
+            Vec3::new(b.at.x, b.at.y + self.type_height(&b.ty), b.at.z)
+        })
+    }
+
+    /// The passenger point of the plain vehicle `id` for the passenger at `index`, less `own`.
+    pub(super) fn plain_seat(&self, id: u32, index: usize, own: [f64; 3]) -> Option<Vec3> {
+        let v = self.plain_body(id)?;
+        let attach = self.type_attachments(&v.ty)?.passenger_point(index, v.yaw);
+        Some(Vec3::new(
+            v.at.x + attach[0] - own[0],
+            v.at.y + attach[1] - own[1],
+            v.at.z + attach[2] - own[2],
+        ))
     }
 
     /// The place and type of the entity `id` when it is of a kind that is no mob.
@@ -142,6 +176,36 @@ impl Game<'_> {
         }
     }
 
+    /// `Entity.positionRider` of a mob on a vehicle of a kind that is no mob, boat or cart.
+    fn position_mob_on_plain(&mut self, rider: u32, vehicle: Ent, n: usize) {
+        let (Some(vehicle), Some(i)) = (vehicle.id(), self.mobs.iter().position(|m| m.id == rider))
+        else {
+            return;
+        };
+        if self.mobs.iter().any(|m| m.id == vehicle)
+            || self.boats.iter().any(|b| b.id == vehicle)
+            || self.carts.iter().any(|c| c.id == vehicle)
+        {
+            return;
+        }
+        let m = &self.mobs[i];
+        let width = self.plain_width(vehicle);
+        let own = horizon_client::mobs::riders::vehicle_attachment(m, width);
+        if let Some(at) = self.plain_seat(vehicle, n, own) {
+            let m = &mut self.mobs[i];
+            m.position = at;
+            m.previous = at;
+        }
+    }
+
+    /// `EntityType.getWidth` of the plain entity `id`.
+    fn plain_width(&self, id: u32) -> f32 {
+        let Some(b) = self.plain_body(id) else {
+            return 0.0;
+        };
+        self.type_entry(&b.ty).map_or(0.0, |e| e.2) as f32
+    }
+
     /// `Entity.positionRider` for the passengers that are no mob, on a vehicle of any kind.
     pub(super) fn position_plain_riders(&mut self) {
         let pairs: Vec<(u32, Ent, usize, usize)> = {
@@ -158,6 +222,7 @@ impl Game<'_> {
         };
         for (rider, vehicle, n, count) in pairs {
             let Some(body) = self.plain_body(rider) else {
+                self.position_mob_on_plain(rider, vehicle, n);
                 continue;
             };
             let Some(vehicle_id) = vehicle.id() else {
@@ -179,14 +244,7 @@ impl Game<'_> {
             } else if let Some(i) = self.cushions.iter().position(|c| c.id == vehicle_id) {
                 Some(self.passenger_point(Vehicle::Cushion(i), n, count, seat, false))
             } else {
-                self.plain_body(vehicle_id).and_then(|v| {
-                    let attach = self.type_attachments(&v.ty)?.passenger_point(n, v.yaw);
-                    Some(Vec3::new(
-                        v.at.x + attach[0] - own[0],
-                        v.at.y + attach[1] - own[1],
-                        v.at.z + attach[2] - own[2],
-                    ))
-                })
+                self.plain_seat(vehicle_id, n, own)
             };
             if let Some(at) = target {
                 self.set_plain_position(rider, at);

@@ -36,6 +36,8 @@ pub(super) enum Vehicle {
     Cart(usize),
     Cushion(usize),
     Mob(usize),
+    /// Any other kind, by entity id.
+    Plain(u32),
 }
 
 /// The mount a rider gets off: its kind, where it stands, its box,
@@ -358,7 +360,7 @@ impl Game<'_> {
                 max: self.boats[i].max_passengers(),
                 eyes_in_water: self.boats[i].under_water(),
             },
-            Vehicle::Cart(_) | Vehicle::Cushion(_) => Room::Default,
+            Vehicle::Cart(_) | Vehicle::Cushion(_) | Vehicle::Plain(_) => Room::Default,
             Vehicle::Mob(i) => match self.mobs[i].species() {
                 Species::Camel | Species::CamelHusk => Room::Camel,
                 Species::HappyGhast => Room::HappyGhast,
@@ -388,7 +390,9 @@ impl Game<'_> {
             // AbstractBoat: the first passenger when it is a player.
             return match v {
                 Vehicle::Boat(_) => passengers.first().copied().filter(|p| p.is_player()),
-                Vehicle::Cart(_) | Vehicle::Cushion(_) | Vehicle::Mob(_) => None,
+                Vehicle::Cart(_) | Vehicle::Cushion(_) | Vehicle::Mob(_) | Vehicle::Plain(_) => {
+                    None
+                }
             };
         };
         let first = *passengers.first()?;
@@ -410,6 +414,7 @@ impl Game<'_> {
             ),
             Vehicle::Cart(i) => (self.cart_dismount(i), None),
             Vehicle::Cushion(i) => (self.cushions[i].dismount(), None),
+            Vehicle::Plain(id) => (self.plain_dismount(id), None),
             Vehicle::Mob(i) => {
                 let m = &self.mobs[i];
                 let mount = Mount::of(m);
@@ -450,6 +455,9 @@ impl Game<'_> {
                 0.0,
             )),
             Vehicle::Cushion(i) => self.cushions[i].seat(),
+            Vehicle::Plain(id) => self
+                .plain_seat(id, index, [0.0, seat.offset, 0.0])
+                .unwrap_or(Vec3::ZERO),
             Vehicle::Mob(i) => {
                 let m = &self.mobs[i];
                 let (at, yaw) = if previous {

@@ -125,6 +125,7 @@ impl Game<'_> {
                         .position(|c| c.id == id)
                         .map(Vehicle::Cushion)
                 })
+                .or_else(|| self.is_plain_vehicle(id).then_some(Vehicle::Plain(id)))
         }
     }
     /// What `Mob.startRiding` does after the link, for a mob that linked itself in its turn.
@@ -258,9 +259,12 @@ impl Game<'_> {
             self.passenger_point(Vehicle::Cart(i), index, count, Seat::PLAYER, false)
         } else if let Some(i) = self.mobs.iter().position(|m| m.id == vehicle) {
             self.passenger_point(Vehicle::Mob(i), index, count, Seat::PLAYER, false)
-        } else {
-            let i = self.cushions.iter().position(|c| c.id == vehicle)?;
+        } else if let Some(i) = self.cushions.iter().position(|c| c.id == vehicle) {
             self.passenger_point(Vehicle::Cushion(i), index, count, Seat::PLAYER, false)
+        } else {
+            self.is_plain_vehicle(vehicle).then(|| {
+                self.passenger_point(Vehicle::Plain(vehicle), index, count, Seat::PLAYER, false)
+            })?
         };
         if r == self.acting_ent()
             && let Some(p) = self.player.as_mut()
@@ -1262,6 +1266,65 @@ mod tests {
         assert!(
             (at.y - (61.0 + super::super::minecarts::PASSENGER_HEIGHT)).abs() < 1e-9,
             "{at:?}"
+        );
+    }
+
+    fn run(game: &mut Game<'_>, command: &str) -> String {
+        game.chat_capture = Some(Vec::new());
+        game.run_command(command);
+        let said = game.chat_capture.take().unwrap_or_default();
+        said.iter().map(|t| t.plain()).collect::<Vec<_>>().join("|")
+    }
+
+    #[test]
+    fn ride_mounts_any_entity_on_any_entity() {
+        let Some(mut game) = flat_game() else { return };
+        let pig = spawn(&mut game, "pig", [2.5, 61.0, 2.5]);
+        let stand = add_stand(&mut game, [2.5, 61.0, 2.5]);
+        game.build_registries();
+        game.ui.registries.permission = 4;
+        let said = run(
+            &mut game,
+            "ride @e[type=armor_stand,limit=1] mount @e[type=pig,limit=1]",
+        );
+        assert_eq!(
+            game.vehicle_of(Ent::Id(stand)),
+            Some(Ent::Id(pig)),
+            "{said}"
+        );
+        game.run_command("ride @e[type=armor_stand,limit=1] mount @e[type=pig,limit=1]");
+        assert_eq!(
+            game.passengers_of(Ent::Id(pig)),
+            vec![Ent::Id(stand)],
+            "already riding"
+        );
+        game.run_command("ride @e[type=pig,limit=1] mount @e[type=armor_stand,limit=1]");
+        assert_eq!(game.vehicle_of(Ent::Id(pig)), None, "a loop");
+        game.run_command("ride @e[type=armor_stand,limit=1] dismount");
+        assert_eq!(game.vehicle_of(Ent::Id(stand)), None);
+        let boat = {
+            game.next_entity += 1;
+            let id = game.next_entity;
+            let b = super::super::boats::Boat::new(
+                id,
+                std::sync::Arc::from("oak"),
+                Vec3::new(2.5, 61.0, 2.5),
+                0.0,
+            );
+            game.level_add(
+                super::super::entity_life::NewEntity::Boat(b),
+                super::super::entity_life::Origin::Fresh,
+                None,
+            );
+            id
+        };
+        game.run_command("ride @e[type=pig,limit=1] mount @e[type=oak_boat,limit=1]");
+        assert_eq!(game.vehicle_of(Ent::Id(pig)), Some(Ent::Id(boat)));
+        game.run_command("ride @e[type=oak_boat,limit=1] mount @e[type=armor_stand,limit=1]");
+        assert_eq!(
+            game.vehicle_of(Ent::Id(boat)),
+            Some(Ent::Id(stand)),
+            "a boat rides a stand"
         );
     }
 }

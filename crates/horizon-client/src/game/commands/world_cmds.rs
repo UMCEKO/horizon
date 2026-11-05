@@ -1172,16 +1172,14 @@ impl Game<'_> {
             return Ok(0);
         };
         let name = self.target_name(target);
+        let rider = self.ride_ent(target);
         if id == "ride.dismount" {
             let Some(v) = self.ride_vehicle(target) else {
                 return Err(err("commands.ride.not_riding", &[&name.plain()]));
             };
             let vehicle_name = self.target_name(v);
-            match target {
-                Target::Player => self.dismount_mount(),
-                Target::Mob(rider) => self.stop_riding(Ent::Id(rider)),
-                _ => {}
-            }
+            // Entity.stopRiding.
+            self.stop_riding(rider);
             self.feedback(Text::translate(
                 "commands.ride.dismount.success",
                 &[name, vehicle_name],
@@ -1200,53 +1198,21 @@ impl Game<'_> {
                 &[&name.plain(), &current.plain()],
             ));
         }
-        if vehicle == Target::Player {
+        if matches!(vehicle, Target::Player | Target::Guest(_)) {
             return Err(err("commands.ride.mount.failure.cant_ride_players", &[]));
         }
         // getSelfAndPassengers: the vehicle is the target or rides it.
-        let mut up = Some(vehicle);
-        while let Some(v) = up {
-            if v == target {
-                return Err(err("commands.ride.mount.failure.loop", &[]));
-            }
-            up = self.ride_vehicle(v);
+        let seat = self.ride_ent(vehicle);
+        if rider == seat || self.riding_table.borrow().rides_through(seat, rider) {
+            return Err(err("commands.ride.mount.failure.loop", &[]));
         }
-        // Players and mobs can ride mobs.
-        let Target::Mob(mob_id) = vehicle else {
-            return Err(err(
-                "commands.ride.mount.failure.generic",
-                &[&name.plain(), &vehicle_name.plain()],
-            ));
-        };
-        let rider = match target {
-            Target::Mob(id) => Some(id),
-            _ => None,
-        };
-        if !(target == Target::Player || rider.is_some())
-            || !self.mobs.iter().any(|m| m.id == mob_id && m.alive())
-        {
+        // RideCommand.mount: target.startRiding(vehicle, true, true).
+        if !self.start_riding(rider, seat, true, true) {
             return Err(err(
                 "commands.ride.mount.failure.generic",
                 &[&name.plain(), &vehicle_name.plain()],
             ));
         }
-        if let Some(rider) = rider {
-            // RideCommand.mount: rider.startRiding(vehicle, true, true).
-            self.start_riding(Ent::Id(rider), Ent::Id(mob_id), true, true);
-            self.feedback(Text::translate(
-                "commands.ride.mount.success",
-                &[name, vehicle_name],
-            ));
-            return Ok(1);
-        }
-        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob_id) {
-            m.extra.flag = false;
-            m.extra.counter = 0;
-            self.yaw = m.yaw;
-        }
-        self.start_riding(self.acting_ent(), Ent::Id(mob_id), true, false);
-        self.mount.jump_ticks = 0;
-        self.mount.jump_scale = 0.0;
         self.feedback(Text::translate(
             "commands.ride.mount.success",
             &[name, vehicle_name],
@@ -1254,18 +1220,19 @@ impl Game<'_> {
         Ok(1)
     }
 
-    /// Entity.getVehicle: the player's mount, or a mob's.
+    /// The table entry of a command target.
+    fn ride_ent(&self, t: Target) -> Ent {
+        match t {
+            Target::Player => self.acting_ent(),
+            Target::Guest(conn) => Ent::Guest(conn),
+            other => Ent::Id(super::non_player_entity_id(other).map_or(0, |id| id as u32)),
+        }
+    }
+
+    /// Entity.getVehicle of a command target.
     pub(super) fn ride_vehicle(&self, t: Target) -> Option<Target> {
-        let id = match t {
-            Target::Player => return self.vehicle().map(Target::Mob),
-            Target::Mob(id) => self.mob_vehicle(id)?,
-            _ => return None,
-        };
-        Some(if self.boats.iter().any(|b| b.id == id) {
-            Target::Boat(id)
-        } else {
-            Target::Mob(id)
-        })
+        let id = self.vehicle_of(self.ride_ent(t))?.id()?;
+        self.level_entity(id as i32)
     }
     // ---- /spreadplayers -----------------------------------------------------------------------
 
