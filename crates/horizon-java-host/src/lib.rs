@@ -343,11 +343,8 @@ fn boot(run_dir: &str) -> Result<Host, String> {
         .ok_or("the mods' items didn't list")?;
     host.items = Items::read(&list).ok_or("the mods' item list ended early")?;
     host.client_resources = host.request("client_resources", &[]).unwrap_or_default();
-    let baked = host.request("client_baked", &[]).unwrap_or_default();
-    if !baked.is_empty() {
-        std::fs::write(host.baked(), baked)
-            .map_err(|e| format!("{}: {e}", host.baked().display()))?;
-    }
+    let baked = host.baked();
+    host.request("client_baked", baked.to_string_lossy().as_bytes());
     let keys = host.request("client_keys", &[]).unwrap_or_default();
     if !keys.is_empty() {
         std::fs::write(host.keys(), keys).map_err(|e| format!("{}: {e}", host.keys().display()))?;
