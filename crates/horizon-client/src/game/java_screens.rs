@@ -1222,7 +1222,7 @@ pub(in crate::game) mod live {
             {
                 return;
             }
-            let advances = self.gui.atlas.font.advances();
+            let advances = trimmed_advances(self.gui.atlas.font.advances());
             let mut out = Out::default();
             out.text(&self.settings.language);
             out.int(advances.len() as i32);
@@ -1965,8 +1965,32 @@ pub(in crate::game) mod live {
         }
     }
 
+    /// The advance Java's font answers for a code point past the table's end.
+    const JAVA_MISSING_ADVANCE: f32 = 6.0;
+
+    /// The table up to the last code point whose advance Java wouldn't answer by itself.
+    fn trimmed_advances(mut advances: Vec<f32>) -> Vec<f32> {
+        let keep = advances
+            .iter()
+            .rposition(|a| *a != JAVA_MISSING_ADVANCE)
+            .map_or(0, |last| last + 1);
+        advances.truncate(keep);
+        advances
+    }
+
     #[cfg(test)]
     mod tests {
+        #[test]
+        fn the_font_table_ends_at_the_last_code_point_java_cannot_guess() {
+            let mut table = vec![6.0; 0x11_0000];
+            table[0x41] = 5.0;
+            table[0xFFFD] = 7.0;
+            let trimmed = super::trimmed_advances(table);
+            assert_eq!(trimmed.len(), 0xFFFE);
+            assert_eq!(trimmed[0xFFFD], 7.0);
+            assert!(super::trimmed_advances(vec![6.0; 8]).is_empty());
+        }
+
         #[test]
         fn a_key_input_lays_out_name_action_modifiers_keycode() {
             let mut out = Out::default();
