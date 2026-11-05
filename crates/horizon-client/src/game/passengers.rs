@@ -1066,6 +1066,17 @@ mod tests {
     }
 
     #[test]
+    fn a_guest_right_clicking_a_harnessed_happy_ghast_boards_it() {
+        let Some(mut game) = flat_game() else { return };
+        let ghast = spawn(&mut game, "happy_ghast", [2.5, 61.0, 2.5]);
+        let i = game.mobs.iter().position(|m| m.id == ghast).unwrap();
+        game.mobs[i].extra.head = Some("minecraft:white_harness".into());
+        game.lan_acting = Some(7);
+        assert!(game.interact_happy_ghast(i, "minecraft:air"));
+        assert_eq!(game.passengers_of(Ent::Id(ghast)), vec![Ent::Guest(7)]);
+    }
+
+    #[test]
     fn a_player_leaving_has_no_boarding_cooldown() {
         let Some(mut game) = flat_game() else { return };
         let pig = Ent::Id(spawn(&mut game, "pig", [2.5, 61.0, 2.5]));
