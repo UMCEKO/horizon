@@ -10,6 +10,7 @@ use super::{
     lan_pvp::meets_players,
     native_hooks::mob_kind,
 };
+use horizon_client::projectiles::Owner;
 use horizon_client::{
     arrows::ArrowEvent,
     mobs::Who,
@@ -61,9 +62,9 @@ impl Game<'_> {
     /// The entity id of the one who shot `p`: a mob's, a player's, else 0.
     fn native_impact_owner(&self, p: &Projectile) -> u32 {
         match p.owner {
-            Some(Who::Mob(id)) => id,
-            Some(Who::Player) => self.native_thrower(p.guest),
-            None => 0,
+            Some(Owner::Entity(id)) => id,
+            Some(Owner::Player { guest }) => self.native_thrower(guest),
+            Some(Owner::Unloaded(_)) | None => 0,
         }
     }
 
@@ -262,16 +263,18 @@ impl Game<'_> {
         &self,
         mut p: Projectile,
     ) -> (Projectile, bool, Vec<(Vec3, ArrowEvent)>) {
-        let mob_shot = !matches!(p.owner, Some(Who::Player));
+        let mob_shot = !matches!(p.owner, Some(Owner::Player { .. }));
         let pvp = !mob_shot && meets_players(&p.kind);
         // A guest's shot flies from that guest, as in `tick_projectiles`.
         let shooter = p
-            .guest
+            .owner
+            .and_then(Owner::guest)
             .filter(|_| pvp)
             .and_then(|c| self.lan_guest_entities().into_iter().find(|&(g, _)| g == c))
-            .map(|(_, id)| Who::Mob(id));
-        if shooter.is_some() {
-            p.owner = shooter;
+            .map(|(_, id)| id);
+        let owned = p.owner;
+        if let Some(id) = shooter {
+            p.owner = Some(Owner::Entity(id));
         }
         let mut targets = self.projectile_targets();
         if mob_shot || pvp {
@@ -290,7 +293,7 @@ impl Game<'_> {
             })
         };
         if shooter.is_some() {
-            p.owner = Some(Who::Player);
+            p.owner = owned;
         }
         let at = p.position;
         let events = p

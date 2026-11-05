@@ -122,6 +122,12 @@ final class ChecksEntities {
         level.addFreshEntity(snowball);
         snowball.shootFromRotation(chicken, 0, 90, 0, 1.5F, 0);
         Checks.check("shoot_from_rotation_writes_through", () -> ((ServerLevel) level).getEntity(snowball.getId()) == snowball && snowball.getDeltaMovement().x < -1.4);
+        var stand = EntityTypes.ARMOR_STAND.create(level, EntitySpawnReason.COMMAND);
+        stand.setPos(area.getX() + 2.5, area.getY() + 1, area.getZ() + 0.5);
+        level.addFreshEntity(stand);
+        snowball.setOwner(stand);
+        Checks.check("projectile_owner_any_entity", () -> snowball.getOwner() == stand);
+        arrow.setOwner(context.getPlayer());
         chicken.setCustomName(net.minecraft.network.chat.Component.literal("java"));
         chicken.getPersistentData().putInt("horizon_java_test", 7);
         chicken.setDeltaMovement(0, 0.5, 0);
@@ -151,5 +157,7 @@ final class ChecksEntities {
         Checks.check("mob_change_written_back", () -> chickens.stream().anyMatch(c -> c.getHealth() == 1.5F));
         Checks.check("mob_name_written_back", () -> chickens.stream().anyMatch(c -> c.hasCustomName() && "java".equals(c.getCustomName().getString())));
         Checks.check("persistent_data_saved", () -> chickens.stream().anyMatch(c -> c.getPersistentData().getIntOr("horizon_java_test", 0) == 7));
+        var arrows = level.getEntitiesOfClass(net.minecraft.world.entity.projectile.arrow.AbstractArrow.class, new AABB(area).inflate(6));
+        Checks.check("projectile_owner_survives_reload", () -> arrows.stream().anyMatch(a -> a.getOwner() == context.getPlayer()));
     }
 }

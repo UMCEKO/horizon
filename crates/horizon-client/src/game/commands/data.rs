@@ -171,11 +171,7 @@ impl Game<'_> {
             Target::Projectile(id) => {
                 let uuid = self.uuid_for(id);
                 let p = self.creatures.projectiles.iter().find(|p| p.id == id)?;
-                let owner = if p.owner == Some(horizon_client::mobs::Who::Player) {
-                    player_uuid
-                } else {
-                    None
-                };
+                let owner = p.owner_uuid;
                 let in_block = p
                     .arrow
                     .as_ref()

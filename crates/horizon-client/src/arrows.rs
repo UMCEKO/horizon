@@ -10,7 +10,7 @@ use crate::{
     collisions::SceneCollisions,
     mobs::Who,
     motion::{FluidResources, LAVA, WATER},
-    projectiles::{Hit, Projectile, ProjectileKind},
+    projectiles::{Hit, Owner, Projectile, ProjectileKind},
     world::World,
 };
 use horizon_core::{
@@ -887,7 +887,7 @@ impl Ticker<'_, '_, '_, '_> {
         }
         let owner = targets
             .iter()
-            .find(|(who, _)| Some(*who) == self.p.owner)
+            .find(|(who, _)| Some(*who) == self.p.owner.and_then(Owner::target))
             .map(|(_, b)| *b);
         let swept = bounds(self.p.position)
             .expand_towards(self.p.velocity)
@@ -937,7 +937,9 @@ impl Ticker<'_, '_, '_, '_> {
         // ThrownTrident.findHitEntity: none once it has dealt damage.
         let targets = if self.st.dealt_damage { &[] } else { targets };
         for (who, b) in targets {
-            if Some(*who) == self.p.owner && !self.p.left_owner || !b.intersects(area) {
+            if Some(*who) == self.p.owner.and_then(Owner::target) && !self.p.left_owner
+                || !b.intersects(area)
+            {
                 continue;
             }
             // canHitEntity: not an entity a piercing arrow has gone through.
@@ -1071,7 +1073,7 @@ impl Ticker<'_, '_, '_, '_> {
             self.st.events.push(ArrowEvent::Block {
                 pos,
                 reaction,
-                owner: self.p.owner,
+                owner: self.p.owner.and_then(Owner::target),
             });
         }
         let v = self.p.velocity;
@@ -1092,8 +1094,9 @@ impl Ticker<'_, '_, '_, '_> {
     /// `Projectile.mayInteract`: an arrow owned by anything but a player needs `mob_griefing`.
     fn may_interact(&self) -> bool {
         let by_entity = match self.p.owner {
-            Some(Who::Mob(_)) => true,
-            Some(Who::Player) => false,
+            Some(Owner::Entity(_)) => true,
+            Some(Owner::Player { .. }) => false,
+            Some(Owner::Unloaded(u)) => self.scene.owners.non_player_entity(u),
             None => self
                 .p
                 .owner_uuid

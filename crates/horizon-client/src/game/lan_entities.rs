@@ -9,6 +9,7 @@ use horizon_client::lan::{
     hub::Hub,
     playerdata::ints_uuid,
 };
+use horizon_client::projectiles::Owner;
 use horizon_protocol::entity_data::{Value, serializer};
 use horizon_world::{nbt::Tag, registry::BlockStateId};
 
@@ -642,9 +643,11 @@ impl Game<'_> {
             e.velocity = at(p.velocity);
             e.needs_sync = p.needs_sync;
             // Projectile.getAddEntityPacket: the owner's id.
-            e.data = match p.guest.and_then(|conn| hub.guest(conn)) {
-                Some(g) => g.entity_id,
-                None => owner(p.owner),
+            e.data = match p.owner {
+                Some(Owner::Player { guest: Some(conn) }) => {
+                    hub.guest(conn).map_or(0, |g| g.entity_id)
+                }
+                o => owner(o.and_then(Owner::target)),
             };
             // Entity.DATA_SHARED_FLAGS_ID's FLAG_ONFIRE: Entity.baseTick's
             // `setSharedFlagOnFire(remainingFireTicks > 0)`, which a client's

@@ -2,6 +2,7 @@
 //! its boss bar, and its skulls hitting and exploding.
 use super::Game;
 use horizon_client::block_pattern::{BlockPattern, PatternMatch, WITHER_FULL};
+use horizon_client::projectiles::Owner;
 use horizon_client::{
     items::ItemStack,
     mobs::{Damage, DamageKind, Species, Who},
@@ -134,11 +135,11 @@ impl Game<'_> {
     ) -> horizon_client::Result<()> {
         // Projectile.getOwner: none once the owner is gone.
         let live_owner = match p.owner {
-            Some(Who::Mob(id)) if self.mobs.iter().any(|m| m.id == id && !m.removed) => {
+            Some(Owner::Entity(id)) if self.mobs.iter().any(|m| m.id == id && !m.removed) => {
                 Some(Who::Mob(id))
             }
-            Some(Who::Mob(_)) => None,
-            other => other,
+            Some(Owner::Entity(_) | Owner::Unloaded(_)) | None => None,
+            Some(Owner::Player { .. }) => Some(Who::Player),
         };
         let owner = match live_owner {
             Some(Who::Mob(id)) => Some(id),
@@ -258,7 +259,11 @@ impl Game<'_> {
                 }
             }
             // The player (or the guest acting now) who owns the skull.
-            Some(Who::Player) if p.guest.is_none() || p.guest == self.lan_acting => {
+            Some(Who::Player)
+                if p.owner
+                    .and_then(Owner::guest)
+                    .is_none_or(|g| Some(g) == self.lan_acting) =>
+            {
                 self.apply_effect_action(horizon_client::effects::EffectAction::Heal(5.0));
             }
             _ => {}

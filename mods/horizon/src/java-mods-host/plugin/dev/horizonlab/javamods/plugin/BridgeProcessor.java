@@ -52,7 +52,7 @@ final class BridgeProcessor implements ClassProcessor {
 
         String rawDesc() {
             var desc = new StringBuilder("(");
-            for (String arg : args) desc.append(arg.equals("-") ? "B" : arg);
+            for (String arg : args) desc.append(arg.equals("-") ? "B" : rawOf(arg));
             return desc.append(')').append(ret).toString();
         }
     }
@@ -185,12 +185,13 @@ final class BridgeProcessor implements ClassProcessor {
             flatten(head, Type.getObjectType(entry.guard.startsWith("@") ? "net/minecraft/world/entity/Entity" : node.name), entry.args[arg++]);
         }
         for (Type param : params) {
-            String raw = entry.args[arg++];
+            String flat = entry.args[arg++];
+            String raw = rawOf(flat);
             if (raw.equals("-")) {
                 head.add(new InsnNode(Opcodes.ICONST_0));
             } else {
                 head.add(new VarInsnNode(param.getOpcode(Opcodes.ILOAD), local));
-                if (param.getSort() >= Type.ARRAY && !raw.equals(param.getDescriptor())) flatten(head, param, raw);
+                if (param.getSort() >= Type.ARRAY && !raw.equals(param.getDescriptor())) flatten(head, param, flat);
             }
             local += param.getSize();
         }
@@ -299,8 +300,15 @@ final class BridgeProcessor implements ClassProcessor {
         return false;
     }
 
-    private static void flatten(InsnList head, Type type, String raw) {
-        head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, FLAT, "raw", "(" + type.getDescriptor() + ")" + raw, false));
+    /** An argument's JNI type: `name:type` names the `Flat` method that flattens it, else it is `raw`. */
+    static String rawOf(String arg) {
+        return arg.substring(arg.indexOf(':') + 1);
+    }
+
+    private static void flatten(InsnList head, Type type, String arg) {
+        int split = arg.indexOf(':');
+        String name = split < 0 ? "raw" : arg.substring(0, split);
+        head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, FLAT, name, "(" + type.getDescriptor() + ")" + rawOf(arg), false));
     }
 
     /** The method's arguments as they stand at its first instruction. */

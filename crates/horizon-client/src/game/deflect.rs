@@ -4,10 +4,7 @@
 //! along the player's view and is the player's now (`Projectile.deflect`
 //! sets the owner), so a ghast it meets dies of it (`Ghast.isReflectedFireball`).
 use super::{Game, lan::LanHost, ray_box, view_vector};
-use horizon_client::{
-    mobs::Who,
-    projectiles::{Projectile, ProjectileKind},
-};
+use horizon_client::projectiles::{Owner, Projectile, ProjectileKind};
 use horizon_core::geometry::{Aabb, Vec3};
 
 /// `AbstractHurtingProjectile.getPickRadius`: the crosshair finds it a block
@@ -33,15 +30,14 @@ pub(super) fn redirectable(p: &Projectile) -> bool {
 pub(super) fn aim_deflect(
     p: &mut Projectile,
     look: Option<Vec3>,
-    owner: Option<Who>,
+    owner: Option<Owner>,
     owner_uuid: Option<[i32; 4]>,
-    guest: Option<u32>,
 ) {
     if let Some(look) = look {
         p.velocity = look;
         p.needs_sync = true;
     }
-    (p.owner, p.owner_uuid, p.guest) = (owner, owner_uuid, guest);
+    (p.owner, p.owner_uuid) = (owner, owner_uuid);
     p.acceleration = 0.1;
 }
 
@@ -179,18 +175,19 @@ impl Game<'_> {
 
     /// `Entity.getLookAngle` of a projectile's owner: the host, the guest who
     /// threw it, or a mob; none when the owner is not here.
-    pub(super) fn owner_look(&self, owner: Option<Who>, guest: Option<u32>) -> Option<Vec3> {
-        let (pitch, yaw) = match (owner?, guest) {
-            (Who::Player, Some(conn)) => {
+    pub(super) fn owner_look(&self, owner: Option<Owner>) -> Option<Vec3> {
+        let (pitch, yaw) = match self.resolve_owner(owner?) {
+            Owner::Player { guest: Some(conn) } => {
                 let lan = self.lan.as_ref()?;
                 let g = lan.hub.guests.iter().find(|g| g.conn == conn)?;
                 (g.pitch, g.yaw)
             }
-            (Who::Player, None) => {
+            Owner::Player { guest: None } => {
                 self.player.as_ref()?;
                 (self.pitch, self.yaw)
             }
-            (Who::Mob(id), _) => {
+            Owner::Unloaded(_) => return None,
+            Owner::Entity(id) => {
                 let m = self.mobs.iter().find(|m| m.id == id)?;
                 (m.head_pitch, m.yaw)
             }
@@ -206,9 +203,8 @@ impl Game<'_> {
         p.velocity = Vec3::new(dir[0], dir[1], dir[2]);
         p.yaw = dir[0].atan2(dir[2]).to_degrees() as f32;
         p.pitch = dir[1].atan2(dir[0].hypot(dir[2])).to_degrees() as f32;
-        p.owner = Some(Who::Player);
         // On a server, the guest who struck it (their projectile now).
-        (p.guest, p.owner_uuid) = (guest, owner_uuid);
+        (p.owner, p.owner_uuid) = (Some(Owner::Player { guest }), owner_uuid);
         // Not into the one who turned it on its way out.
         p.left_owner = false;
         // `AbstractHurtingProjectile.onDeflection` by an attack, and the
@@ -230,6 +226,7 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horizon_client::mobs::Who;
 
     #[test]
     fn only_ghast_fireballs_and_wind_charges_are_redirectable() {
@@ -279,10 +276,10 @@ mod tests {
     fn a_redirected_wind_charge_flies_along_the_new_owners_look() {
         let mut p = wind_charge();
         let look = Vec3::new(0.0, -1.0, 0.0);
-        aim_deflect(&mut p, Some(look), Some(Who::Player), Some([4; 4]), Some(3));
+        let guest = Some(Owner::Player { guest: Some(3) });
+        aim_deflect(&mut p, Some(look), guest, Some([4; 4]));
         assert_eq!(p.velocity, look);
-        assert_eq!((p.owner, p.owner_uuid), (Some(Who::Player), Some([4; 4])));
-        assert_eq!(p.guest, Some(3));
+        assert_eq!((p.owner, p.owner_uuid), (guest, Some([4; 4])));
         assert_eq!(p.acceleration, 0.1);
         assert!(p.needs_sync);
     }
@@ -291,7 +288,7 @@ mod tests {
     fn with_no_owner_here_it_keeps_its_movement_but_changes_hands() {
         let mut p = wind_charge();
         p.owner_uuid = Some([7; 4]);
-        aim_deflect(&mut p, None, None, None, None);
+        aim_deflect(&mut p, None, None, None);
         assert_eq!(p.velocity, Vec3::new(0.0, 1.5, 0.0));
         assert_eq!((p.owner, p.owner_uuid), (None, None));
         assert_eq!(p.acceleration, 0.1);

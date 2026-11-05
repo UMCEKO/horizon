@@ -2611,6 +2611,9 @@ pub fn arrow_from_nbt(
     p.left_owner = flag(tag, "LeftOwner");
     p.moving = move_state(tag);
     p.owner_uuid = owner;
+    if p.owner.is_none() {
+        p.owner = owner.map(crate::projectiles::Owner::Unloaded);
+    }
     p.no_gravity = flag(tag, "NoGravity");
     let a = p.arrow.as_mut()?;
     a.life = number(tag.get("life")).unwrap_or(0) as i16 as i32;
@@ -2819,6 +2822,9 @@ pub fn throwable_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Project
     p.left_owner = flag(tag, "LeftOwner");
     p.has_been_shot = flag(tag, "HasBeenShot");
     p.owner_uuid = owner;
+    if p.owner.is_none() {
+        p.owner = owner.map(crate::projectiles::Owner::Unloaded);
+    }
     p.no_gravity = flag(tag, "NoGravity");
     Some(p)
 }
@@ -2846,6 +2852,9 @@ pub fn spit_or_bullet_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Pr
     p.left_owner = flag(tag, "LeftOwner");
     p.has_been_shot = flag(tag, "HasBeenShot");
     p.owner_uuid = owner;
+    if p.owner.is_none() {
+        p.owner = owner.map(crate::projectiles::Owner::Unloaded);
+    }
     p.no_gravity = flag(tag, "NoGravity");
     Some(p)
 }
@@ -2904,6 +2913,9 @@ pub fn fireball_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projecti
     p.left_owner = flag(tag, "LeftOwner");
     p.has_been_shot = flag(tag, "HasBeenShot");
     p.owner_uuid = owner;
+    if p.owner.is_none() {
+        p.owner = owner.map(crate::projectiles::Owner::Unloaded);
+    }
     p.no_gravity = flag(tag, "NoGravity");
     p.acceleration = float(tag.get("acceleration_power")).unwrap_or(0.1);
     if let Some(item) = tag.get("Item").and_then(item_from_nbt) {
@@ -6485,7 +6497,7 @@ mod fireball_nbt_tests {
             assert_eq!(number(tag.get("HasBeenShot")), Some(1));
             assert_eq!(uuid_from_tag(tag.get("Owner")), player);
             let back = throwable_from_nbt(&tag, player).unwrap();
-            assert_eq!((back.kind, back.owner), (kind, Some(Who::Player)));
+            assert_eq!((back.kind, back.owner), (kind, Some(Who::Player.into())));
             assert_eq!((back.position, back.velocity), (p.position, p.velocity));
             assert_eq!(
                 ([back.yaw, back.pitch], back.left_owner),
@@ -6493,7 +6505,10 @@ mod fireball_nbt_tests {
             );
             // an owner who is not here keeps their UUID through a moved resave.
             let mut away = throwable_from_nbt(&tag, Some([9; 4])).unwrap();
-            assert_eq!((away.owner, away.owner_uuid), (None, player));
+            assert_eq!(
+                (away.owner, away.owner_uuid),
+                (player.map(crate::projectiles::Owner::Unloaded), player)
+            );
             away.position.y += 3.0;
             let resaved = throwable_to_nbt(&away, [1; 4], away.owner_uuid, None).unwrap();
             assert_eq!(uuid_from_tag(resaved.get("Owner")), player);

@@ -5,6 +5,7 @@ use super::Game;
 use super::entity::{Blast, Entity as _, for_each_entity_mut};
 use horizon_client::advancements::EntityView;
 use horizon_client::join_seq::Joined as _;
+use horizon_client::projectiles::Owner;
 use horizon_client::{
     Result,
     mobs::{Damage, DamageKind, Species, Who},
@@ -126,7 +127,7 @@ impl Game<'_> {
     }
     /// `AbstractWindCharge.onHitEntity`: one point of damage.
     fn wind_charge_damage(&mut self, p: &Projectile, who: Who) {
-        let owner_breeze = matches!(p.owner, Some(Who::Mob(id))
+        let owner_breeze = matches!(p.owner, Some(Owner::Entity(id))
             if self.mobs.iter().any(|m| m.id == id && m.species() == Species::Breeze));
         match who {
             Who::Player => {
@@ -145,7 +146,7 @@ impl Game<'_> {
                     self.hit_special(
                         id,
                         1.0,
-                        p.owner == Some(Who::Player),
+                        p.owner.is_some_and(Owner::is_player),
                         horizon_client::mobs::DamageKind::WindCharge,
                         Some(&p.kind),
                     );
@@ -154,7 +155,7 @@ impl Game<'_> {
             Who::Mob(id) => {
                 let source = Damage {
                     kind: DamageKind::Thrown,
-                    attacker: p.owner,
+                    attacker: p.owner.and_then(Owner::target),
                     from: Some([p.previous.x, p.previous.y, p.previous.z]),
                     attacker_species: owner_breeze.then_some(Species::Breeze),
                 };
@@ -169,7 +170,7 @@ impl Game<'_> {
                         horizon_client::mobs::anim::Ride::of(&self.riding_table, m.id),
                     );
                 }
-                if p.owner == Some(Who::Player) {
+                if p.owner.is_some_and(Owner::is_player) {
                     self.last_hurt_by_player.insert(id, self.lan_acting);
                 }
             }

@@ -622,6 +622,7 @@ def check_bridges(args=None):
     bridge_rs = (oracle.ROOT / 'crates' / 'horizon-java-host' / 'src' / 'bridge.rs').read_text()
     for kind, ty, raw in re.findall(r'impl (Arg|Ret) for (\w+) \{.*?const RAW: &\'static str = "([^"]+)"', bridge_rs, re.S):
         raws[ty] = raw
+    flats = dict(re.findall(r'impl Arg for (\w+) \{[^}]*?const FLAT: &\'static str = "([^"]+)"', bridge_rs))
     entry = BRIDGE_ENTRY
 
     def extends(name, target):
@@ -651,6 +652,7 @@ def check_bridges(args=None):
             args, ret = java_args(desc)
             types = [t.split(':')[1].strip() for t in params.split(',') if t.strip()]
             mine = [raws.get(t) for t in types]
+            named = [flats.get(t, 'raw') for t in types]
             if None in mine:
                 errors.append(f'{where}: no Arg for {types}')
                 continue
@@ -659,14 +661,14 @@ def check_bridges(args=None):
                 errors.append(f'{where}: {len(mine)} arguments for {desc}')
                 continue
             lined = ([f'L{"net/minecraft/world/entity/Entity" if guard.startswith("@") else owner};'] if this else []) + args
-            for java, raw in zip(lined, mine):
+            for java, raw, name in zip(lined, mine, named):
                 if raw == '-':
                     continue
                 if java[0] in 'L[':
                     if java == raw:
                         continue
-                    if java[0] == 'L' and ('raw', f'({java}){raw}') not in flat:
-                        errors.append(f'{where}: Flat has no raw({java}) -> {raw}')
+                    if java[0] == 'L' and (name, f'({java}){raw}') not in flat:
+                        errors.append(f'{where}: Flat has no {name}({java}) -> {raw}')
                     elif java[0] == '[' and java != raw:
                         errors.append(f'{where}: {java} against {raw}')
                 elif java != raw:

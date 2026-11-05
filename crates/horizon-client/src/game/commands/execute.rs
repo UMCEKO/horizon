@@ -725,25 +725,21 @@ impl Game<'_> {
                     .and_then(|p| {
                         // Projectile.getOwner resolves EntityReference<Entity>,
                         // including loaded owners that cannot be a Who.
-                        let Some(owner) = p.owner else {
-                            return p.owner_uuid.and_then(|uuid| {
-                                self.target_by_uuid(horizon_client::lan::playerdata::ints_uuid(
-                                    uuid,
-                                ))
-                            });
-                        };
-                        match (owner, p.guest) {
-                            // A guest's shot: `Who::Player` is them.
-                            (horizon_client::mobs::Who::Player, Some(conn))
+                        use horizon_client::projectiles::Owner;
+                        match p.owner.map(|o| self.resolve_owner(o)) {
+                            Some(Owner::Player { guest: Some(conn) })
                                 if self.lan_acting == Some(conn) =>
                             {
                                 Some(Target::Player)
                             }
-                            (horizon_client::mobs::Who::Player, Some(conn)) => {
-                                Some(Target::Guest(conn))
-                            }
-                            (horizon_client::mobs::Who::Player, None) => Some(Target::Player),
-                            (horizon_client::mobs::Who::Mob(id), _) => Some(Target::Mob(id)),
+                            Some(Owner::Player { guest: Some(conn) }) => Some(Target::Guest(conn)),
+                            Some(Owner::Player { guest: None }) => Some(Target::Player),
+                            Some(Owner::Entity(id)) => self.level_entity(id as i32),
+                            Some(Owner::Unloaded(_)) | None => p.owner_uuid.and_then(|uuid| {
+                                self.target_by_uuid(horizon_client::lan::playerdata::ints_uuid(
+                                    uuid,
+                                ))
+                            }),
                         }
                     })
                     .into_iter()
