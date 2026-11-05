@@ -1535,6 +1535,7 @@ impl Minecart {
             self.position,
             self.velocity,
             self.yaw,
+            &Default::default(),
             uuid,
             raw,
         );

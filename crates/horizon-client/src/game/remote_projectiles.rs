@@ -326,6 +326,7 @@ impl Game<'_> {
                     time,
                     beam: None,
                     invulnerable: false,
+                    moving: Default::default(),
                 };
                 self.level_add(NewEntity::Crystal(crystal), Origin::Fresh, None);
             }

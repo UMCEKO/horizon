@@ -2488,6 +2488,7 @@ pub fn vehicle_to_nbt(
     position: Vec3,
     motion: Vec3,
     yaw: f32,
+    moving: &horizon_world::entity_move::MoveState,
     uuid: [i32; 4],
     raw: Option<&Tag>,
 ) -> Tag {
@@ -2497,8 +2498,8 @@ pub fn vehicle_to_nbt(
         position,
         motion,
         rotation: [yaw, 0.0],
-        on_ground: false,
-        fall_distance: 0.0,
+        on_ground: moving.ground.on_ground,
+        fall_distance: moving.fall_distance,
     }
     .tag(raw)
 }

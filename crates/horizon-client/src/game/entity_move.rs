@@ -888,6 +888,33 @@ impl Game<'_> {
                 self.armor_stands.insert(i, stand);
                 true
             }
+            Target::Crystal(id) => {
+                let Some(i) = self.crystals.iter().position(|c| c.id == id) else {
+                    return false;
+                };
+                let mut crystal = self.crystals.remove(i);
+                // An end crystal holds no motion of its own.
+                let mut velocity = Vec3::ZERO;
+                let body = BodyRef {
+                    id,
+                    size: [2.0, 2.0],
+                    removed: false,
+                    position: &mut crystal.position,
+                    velocity: &mut velocity,
+                    moving: &mut crystal.moving,
+                    sync: None,
+                    no_physics: false,
+                    step_height: 0.0,
+                    gravity: 0.0,
+                    air_drag: 0.98,
+                    emission: MovementEmission::None,
+                    fall: FallRule::Entity,
+                    steered: false,
+                };
+                self.move_body(body, mover, delta);
+                self.crystals.insert(i, crystal);
+                true
+            }
             _ => false,
         }
     }
@@ -1108,5 +1135,47 @@ mod tests {
         assert!(landed.moving.ground.on_ground);
         let through = game.armor_stands.iter().find(|s| s.id == b).unwrap();
         assert_eq!(through.position.y, 58.0);
+    }
+
+    #[test]
+    fn an_end_crystal_moves_by_the_delta_and_stops_at_a_wall() {
+        let Some(mut game) = flat_game() else { return };
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        for y in 61..64 {
+            for z in -2..3 {
+                game.world.set(4, y, z, stone).unwrap();
+            }
+        }
+        game.next_entity += 1;
+        let id = game.next_entity;
+        let at = Vec3::new(0.5, 61.0, 0.5);
+        game.crystals.push(super::super::dragon::Crystal {
+            id,
+            position: at,
+            show_bottom: true,
+            time: 0,
+            beam: None,
+            invulnerable: false,
+            moving: Default::default(),
+        });
+        game.entity_move(
+            Target::Crystal(id),
+            MoverType::SelfMovement,
+            Vec3::new(1.0, 0.0, 0.0),
+        );
+        assert_eq!(game.crystals[0].position.x, 1.5);
+        game.entity_move(
+            Target::Crystal(id),
+            MoverType::SelfMovement,
+            Vec3::new(9.0, 0.0, 0.0),
+        );
+        let crystal = &game.crystals[0];
+        assert_eq!(crystal.position.x, 3.0);
+        assert!(crystal.moving.collision.horizontal);
     }
 }

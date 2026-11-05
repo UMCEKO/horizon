@@ -99,6 +99,7 @@ pub(super) struct Crystal {
     pub beam: Option<[i32; 3]>,
     /// `setPermanentlyInvulnerable` (respawned spike crystals).
     pub invulnerable: bool,
+    pub moving: horizon_world::entity_move::MoveState,
 }
 #[derive(Clone, Debug, Default)]
 struct Path {
@@ -862,6 +863,7 @@ impl Game<'_> {
                 time,
                 beam: None,
                 invulnerable: false,
+                moving: Default::default(),
             };
             self.level_add(NewEntity::Crystal(crystal), Origin::Fresh, None);
             self.world
@@ -2799,6 +2801,7 @@ impl Dragon {
             self.position,
             self.velocity,
             self.yaw,
+            &Default::default(),
             uuid,
             raw,
         );
@@ -2836,6 +2839,7 @@ impl Crystal {
             self.position,
             Vec3::ZERO,
             0.0,
+            &self.moving,
             uuid,
             raw,
         );
@@ -2863,6 +2867,7 @@ impl Crystal {
                 _ => None,
             },
             invulnerable: matches!(tag.get("Invulnerable"), Some(Tag::Byte(1))),
+            moving: horizon_client::entity_nbt::move_state(tag),
         })
     }
 }
@@ -3024,6 +3029,7 @@ impl Game<'_> {
             time,
             beam: None,
             invulnerable: false,
+            moving: Default::default(),
         };
         self.level_add(NewEntity::Crystal(crystal), Origin::Fresh, None);
         self.world.modified.insert((above[0] >> 4, above[2] >> 4));
@@ -3314,6 +3320,7 @@ impl Game<'_> {
             time,
             beam: Some([0, 128, 0]),
             invulnerable: true,
+            moving: Default::default(),
         };
         self.level_add(NewEntity::Crystal(crystal), Origin::Fresh, None);
         let _ = self.set_state_named([cx, h, cz], "minecraft:bedrock", &[]);

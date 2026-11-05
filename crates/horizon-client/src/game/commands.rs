@@ -2136,6 +2136,7 @@ impl Game<'_> {
                         time: self.world.random.next_int_bound(100_000).unwrap_or(0),
                         beam: None,
                         invulnerable: false,
+                        moving: Default::default(),
                     };
                     self.level_add(NewEntity::Crystal(crystal), Origin::Fresh, None);
                     name = Text::translate("entity.minecraft.end_crystal", &[]);
