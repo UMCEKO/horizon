@@ -632,6 +632,12 @@ impl Facts {
         if item.block.is_some() {
             return Err("a block item without a block".into());
         }
+        self.item_alone(id)
+    }
+
+    /// A block's item declared as an item of its own, for a block whose template has no item to copy.
+    pub fn item_alone(&self, id: &str) -> Result<(Value, Vec<String>), String> {
+        let item = self.items.get(id).ok_or("not in the oracle")?;
         let template = self.item_template(&self.template_components(item));
         let decl = self.item_decl(item, &template);
         let mut v = json!({"template": decl.template});

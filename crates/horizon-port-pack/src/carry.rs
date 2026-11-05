@@ -984,6 +984,8 @@ pub fn carry(
         report.oracle = true;
         let prefix = format!("{id}:");
         let mut declared = BTreeSet::new();
+        // Blocks with an item of their own whose template has none (a fluid): that item is declared alone.
+        let mut alone = BTreeSet::new();
         for (full, block) in facts.blocks.range(prefix.clone()..) {
             let Some(b) = full.strip_prefix(&prefix) else {
                 break;
@@ -1020,6 +1022,13 @@ pub fn carry(
                     .entry(b.to_owned())
                     .or_default()
                     .push(format!("its item is {}", block.item));
+            } else if facts
+                .blocks
+                .get(&choice.template)
+                .is_some_and(|t| t.item == "minecraft:air")
+            {
+                v["item"] = json!(false);
+                alone.insert(full.clone());
             } else {
                 declared.insert(full.clone());
                 let template_item = facts.blocks.get(&choice.template).map(|t| t.item.as_str());
@@ -1102,7 +1111,12 @@ pub fn carry(
                     .insert(name.to_owned(), "its block is left out".into());
                 continue;
             }
-            match facts.item(full) {
+            let made = if alone.contains(full) {
+                facts.item_alone(full)
+            } else {
+                facts.item(full)
+            };
+            match made {
                 Ok((v, differences)) => {
                     write_decl("item", name, &v)?;
                     report.items += 1;
@@ -2056,6 +2070,70 @@ mod tests {
             !out.join("carry/data/gem/horizon/data_component_type/other.json")
                 .exists()
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_fluid_block_with_an_item_but_a_template_without_one_declares_the_item_alone() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-port-pack-fluid-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let jar = dir.join("gem-1.0.jar");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&jar).unwrap());
+        zip.start_file(
+            "META-INF/neoforge.mods.toml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"license = \"MIT\"\n[[mods]]\nmodId = \"gem\"\nversion = \"1.0\"\n")
+            .unwrap();
+        zip.finish().unwrap();
+        let info = crate::jar::read(&jar).unwrap();
+        let state = json!({"hardness": 100.0, "emission": 0, "requires_tool": false, "map_color_id": 4,
+            "sound": {"break": "empty"}, "outline": [], "collision": []});
+        let liquid = |class: &str, item: &str| {
+            json!({"class": [class, "net.minecraft.world.level.block.LiquidBlock", "net.minecraft.world.level.block.Block"],
+                "properties": {"level": ["0", "1"]}, "default": "level=0", "item": item,
+                "explosion_resistance": 100.0, "friction": 0.6, "speed_factor": 1.0, "jump_factor": 1.0,
+                "states": {"level=0": state.clone(), "level=1": state.clone()}})
+        };
+        let facts: Facts = serde_json::from_value(json!({
+            "blocks": {
+                "minecraft:lava": liquid("net.minecraft.world.level.block.LiquidBlock", "minecraft:air"),
+                "gem:blood": liquid("gem.BloodBlock", "gem:blood"),
+            },
+            "items": {
+                "gem:blood": {"class": "net.minecraft.world.item.BlockItem", "max_stack_size": 64,
+                    "rarity": "common", "block": "gem:blood"},
+            }
+        }))
+        .unwrap();
+        let out = dir.join("work/mods/gem");
+        let pack = Pack {
+            loaded: &|_| true,
+            mods: &|_| false,
+        };
+        let report = carry(
+            &jar,
+            &info,
+            &out,
+            Some(&facts),
+            None,
+            &|_| true,
+            &pack,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let decl = |kind: &str| -> Value {
+            let path = format!("carry/data/gem/horizon/{kind}/blood.json");
+            serde_json::from_slice(&fs::read(out.join(path)).unwrap()).unwrap()
+        };
+        assert_eq!(decl("block")["template"], "minecraft:lava");
+        assert_eq!(decl("block")["item"], json!(false));
+        assert!(decl("item")["template"].is_string());
+        assert_eq!(report.items, 1);
+        assert!(report.items_unknown.is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 }
