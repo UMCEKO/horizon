@@ -502,6 +502,10 @@ def java_args(desc):
     return args, desc[i + 1:]
 
 
+BRIDGES_DIR = oracle.ROOT / 'crates' / 'horizon-client' / 'src' / 'game' / 'java_bridges'
+BRIDGE_ENTRY = re.compile(r'"([\w/$]+)"\.(\S+)\s+"(\([^"]*)"(?:\s+if\s+"([\w/$]+)")?\s*=>\s*fn\s+(\w+)\(\s*\w+\s*((?:,\s*\w+:\s*\w+\s*)*),?\s*\)\s*->\s*([\w()]+)')
+
+
 def unbridged_writers(analysis):
     """The entity writers of an install's entity-facts.json with no bridged native and no `java-owned` line in tools/java_mods_skips: [(key, mods)]."""
     facts = json.loads(Path(analysis).read_text())
@@ -540,7 +544,7 @@ def check_bridges(args=None):
     bridge_rs = (oracle.ROOT / 'crates' / 'horizon-java-host' / 'src' / 'bridge.rs').read_text()
     for kind, ty, raw in re.findall(r'impl (Arg|Ret) for (\w+) \{.*?const RAW: &\'static str = "([^"]+)"', bridge_rs, re.S):
         raws[ty] = raw
-    entry = re.compile(r'"([\w/$]+)"\.(\S+)\s+"(\([^"]*)"(?:\s+if\s+"([\w/$]+)")?\s*=>\s*fn\s+(\w+)\(\s*\w+\s*((?:,\s*\w+:\s*\w+\s*)*),?\s*\)\s*->\s*([\w()]+)')
+    entry = BRIDGE_ENTRY
 
     def extends(name, target):
         seen, queue = set(), [name]
