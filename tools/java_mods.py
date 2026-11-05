@@ -432,7 +432,7 @@ def bridges(args):
     session(args, drive)
     checks = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     shutil.copy(Path(args.scratch) / 'ctl.log', Path(args.scratch) / 'first-session.log')
-    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'mod_key_follows_the_rebind') if (name, 'ok') not in checks)
+    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'mod_key_follows_the_rebind', 'client_profile_resolver') if (name, 'ok') not in checks)
     session(args, again)
     second = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks += [(name + ' (second session)', result) for name, result in second]

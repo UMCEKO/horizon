@@ -228,7 +228,7 @@ final class ClientLoader {
         set(minecraft, "atlasManager", atlases);
         resources.registerReloadListener(atlases);
         // No skin downloads: Horizon fetches the skins it draws.
-        var skins = new PlayerSkinRenderCache(textures, null, null);
+        var skins = new PlayerSkinRenderCache(textures, null, profiles(minecraft));
         set(minecraft, "playerSkinRenderCache", skins);
         // Its constructor bakes the missing glyphs into a GPU texture; Horizon's font draws all text, so `FontManagerMixin` leaves its reload out too.
         var fonts = GameBridge.construct(net.minecraft.client.gui.font.FontManager.class, object);
@@ -330,5 +330,20 @@ final class ClientLoader {
         // `onGameLoadFinished`'s first screens are left out: Horizon shows its own title screen.
         ClientHooks.fireResourceLoadFinishedEvent(true);
         ClientResources.take();
+    }
+
+    /** Vanilla's client resolver: the connection's player info first; with no session service, a stranger resolves to nothing. */
+    static net.minecraft.server.players.ProfileResolver profiles(Minecraft minecraft) {
+        return new net.minecraft.client.player.LocalPlayerResolver(minecraft, new net.minecraft.server.players.ProfileResolver() {
+            @Override
+            public Optional<com.mojang.authlib.GameProfile> fetchByName(String name) {
+                return Optional.empty();
+            }
+
+            @Override
+            public Optional<com.mojang.authlib.GameProfile> fetchById(java.util.UUID id) {
+                return Optional.empty();
+            }
+        });
     }
 }

@@ -135,7 +135,7 @@ public final class ClientBridge {
         set(social.getClass(), social, "discoveredNamesToUUID", new HashMap<>());
         set(Minecraft.class, minecraft, "playerSocialManager", social);
         // No signed chat here: no keys, so `enforcesSecureChat` is false as an offline server's.
-        set(Minecraft.class, minecraft, "services", new net.minecraft.server.Services(null, com.mojang.authlib.services.ServicesKeySet.EMPTY, null, null, null));
+        set(Minecraft.class, minecraft, "services", new net.minecraft.server.Services(null, com.mojang.authlib.services.ServicesKeySet.EMPTY, null, null, ClientLoader.profiles(minecraft)));
         set(Minecraft.class, minecraft, "isLocalServer", true);
         set(Minecraft.class, minecraft, "userApiService", com.mojang.authlib.minecraft.UserApiService.OFFLINE);
         set(Minecraft.class, minecraft, "reportingContext", net.minecraft.client.multiplayer.chat.report.ReportingContext.create(net.minecraft.client.multiplayer.chat.report.ReportEnvironment.local(), com.mojang.authlib.minecraft.UserApiService.OFFLINE));

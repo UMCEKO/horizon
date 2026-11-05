@@ -23,5 +23,15 @@ final class ChecksServer {
         Checks.check("server_seed", () -> server.getWorldGenSettings().options().seed() == ((net.minecraft.server.level.ServerLevel) level).getSeed());
         Checks.check("saved_data", () -> level.getServer().getDataStorage() != null && ((net.minecraft.server.level.ServerLevel) level).getDataStorage() != null);
         Checks.check("recipes_loaded", () -> server.getRecipeManager().getRecipes().size() > 100);
+
+        Checks.check("profile_resolver_player", () -> {
+            var id = context.getPlayer().getUUID();
+            return server.services().profileResolver().fetchById(id).map(profile -> profile.id().equals(id)).orElse(false);
+        });
+        Checks.check("profile_resolver_unknown", () -> server.services().profileResolver().fetchById(new java.util.UUID(1, 2)).isEmpty());
+        Checks.check("fake_player_for_profile", () -> {
+            var profile = context.getPlayer().getGameProfile();
+            return net.neoforged.neoforge.common.util.FakePlayerFactory.get((net.minecraft.server.level.ServerLevel) level, profile).getUUID().equals(profile.id());
+        });
     }
 }
