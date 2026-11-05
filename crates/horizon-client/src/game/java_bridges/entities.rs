@@ -2,7 +2,7 @@
 
 use super::super::entity_life::Removal;
 use super::super::java_entities::{
-    AI, EQUIPMENT, FIRE, FLAGS, HEALTH, ITEM, MOTION, NAME, POSITION, REMOVAL, RIDING, SPECIES,
+    AI, AIR, EQUIPMENT, FIRE, FLAGS, HEALTH, ITEM, MOTION, NAME, POSITION, REMOVAL, RIDING, SPECIES,
 };
 use super::*;
 use horizon_client::projectiles::ProjectileKind;
@@ -504,6 +504,14 @@ horizon_java_host::java_bridges! { table for Game<'static> {
         }
     }
 
+    "net/minecraft/world/entity/projectile/Projectile".setOwner
+    "(Lnet/minecraft/world/entity/Entity;)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
+    fn projectile_set_owner(game, id: Ent, owner: Ent) -> () {
+        if game.java_set_owner(id.0, owner.0) {
+            after(game, id, SPECIES);
+        }
+    }
+
     "net/minecraft/world/entity/projectile/Projectile".shootFromRotation
     "(Lnet/minecraft/world/entity/Entity;FFFFF)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
     fn projectile_shoot_from_rotation(game, id: Ent, source: Ent, pitch: f32, yaw: f32, offset: f32, speed: f32, uncertainty: f32) -> () {
@@ -548,6 +556,23 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     fn living_release_using_item(game, id: Ent) -> () {
         if game.java_mob_stop_using(id.0) {
             after(game, id, EQUIPMENT | FLAGS);
+        }
+    }
+
+    "net/minecraft/world/entity/Entity".setAirSupply
+    "(I)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
+    fn entity_set_air_supply(game, id: Ent, air: i32) -> () {
+        if let Some(m) = game.mobs.iter_mut().find(|m| m.id == id.0) {
+            m.air = air;
+        }
+        after(game, id, AIR);
+    }
+
+    "net/minecraft/world/entity/LivingEntity".setNoActionTime
+    "(I)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
+    fn living_set_no_action_time(game, id: Ent, ticks: i32) -> () {
+        if let Some(m) = game.mobs.iter_mut().find(|m| m.id == id.0) {
+            m.ai.no_action_time = ticks;
         }
     }
 

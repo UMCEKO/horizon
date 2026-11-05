@@ -5,6 +5,7 @@ use super::java_mods::{read_tag, write_tag};
 use super::*;
 use commands::Target;
 use horizon_client::entity_nbt;
+use horizon_client::mobs::Who;
 use horizon_client::projectiles::ProjectileKind;
 use horizon_client::riding::Ent;
 use horizon_client::save::{float, number, random_uuid, text};
@@ -17,7 +18,7 @@ pub(super) const HEALTH: u32 = 8;
 const EFFECTS: u32 = 16;
 pub(super) const EQUIPMENT: u32 = 32;
 pub(super) const FIRE: u32 = 64;
-const AIR: u32 = 128;
+pub(super) const AIR: u32 = 128;
 pub(super) const FLAGS: u32 = 256;
 pub(super) const NAME: u32 = 512;
 pub(super) const ITEM: u32 = 1024;
@@ -1259,6 +1260,38 @@ impl Game<'_> {
                 .map(|t| (t.velocity, t.on_ground)),
             _ => None,
         }
+    }
+
+    /// `Projectile.setOwner(owner)`: the player or mob owner `owner` names (0 for none); another kind of owner has no place in a projectile yet.
+    pub(super) fn java_set_owner(&mut self, id: u32, owner: u32) -> bool {
+        let who = if owner == 0 {
+            Some((None, None))
+        } else if self.network_entity_id(Target::Player) == Some(owner as i32) {
+            Some((Some(Who::Player), None))
+        } else if let Some(g) = self
+            .lan
+            .as_ref()
+            .and_then(|h| h.hub.guests.iter().find(|g| g.entity_id == owner as i32))
+        {
+            Some((Some(Who::Player), Some(g.conn)))
+        } else if self.mobs.iter().any(|m| m.id == owner) {
+            Some((Some(Who::Mob(owner)), None))
+        } else {
+            None
+        };
+        let (Some((who, guest)), Some(p)) = (
+            who,
+            self.creatures.projectiles.iter_mut().find(|p| p.id == id),
+        ) else {
+            return false;
+        };
+        p.owner = who;
+        p.guest = guest;
+        if let Some(a) = p.arrow.as_mut() {
+            a.set_owner(who);
+        }
+        p.needs_sync = true;
+        true
     }
 
     /// `Projectile.shootFromRotation(source, xRot, yRot, yOffset, pow, uncertainty)`.
