@@ -641,11 +641,11 @@ impl Game<'_> {
             if self.tick_cart_riding(keys) || self.tick_mount_riding(keys) {
                 return Ok(());
             }
-            self.set_vehicle(None);
+            self.stop_riding(self.acting_ent());
             return Ok(());
         };
         if keys.shift || self.boats[i].out_of_control >= 60.0 {
-            self.dismount(i);
+            self.dismount();
             return Ok(());
         }
         // The boat steers with the input `LocalPlayer.rideTick` latched on the
@@ -665,22 +665,13 @@ impl Game<'_> {
             p.fall_distance = 0.0;
         }
         if self.boat_lava_tick(i) {
-            self.set_vehicle(None);
+            self.stop_riding(self.acting_ent());
         }
         Ok(())
     }
     /// `LivingEntity.stopRiding` for the player in boat `i`.
-    pub(super) fn dismount(&mut self, i: usize) {
-        self.set_vehicle(None);
-        let Some(p) = self.player.as_ref() else {
-            return;
-        };
-        let rider = super::vehicle_rules::Rider::player(p, self.yaw, self.acting_main_arm_left());
-        let (target, _) = self.dismount_location(super::vehicle_rules::Vehicle::Boat(i), &rider);
-        if let Some(p) = self.player.as_mut() {
-            p.position = target;
-            p.velocity = Vec3::ZERO;
-        }
+    pub(super) fn dismount(&mut self) {
+        self.stop_riding(self.acting_ent());
     }
     /// `BoatItem.use`: aim at a block or the water surface.
     pub(super) fn place_boat(&mut self, stack: &ItemStack) -> bool {
@@ -835,18 +826,13 @@ impl Game<'_> {
             self.swing_arm();
             return true;
         }
-        if sneaking
-            || self.boats[i].out_of_control >= 60.0
-            || self.vehicle().is_some()
-            || self.ridden_by_guest(self.boats[i].id)
-            || !self.boat_has_room(i)
-        {
+        if sneaking || self.boats[i].out_of_control >= 60.0 {
             return false;
         }
-        self.set_vehicle(Some(self.boats[i].id));
+        if !self.start_riding(self.acting_ent(), Ent::Id(self.boats[i].id), false, true) {
+            return false;
+        }
         self.yaw = self.boats[i].yaw;
-        // ServerPlayer.startRiding.
-        self.trigger_player("minecraft:started_riding");
         true
     }
     /// `VehicleEntity.hurtServer` from the player's attack.

@@ -46,7 +46,7 @@ pub(super) fn boat_pushes(boat: Aabb, other: Aabb, other_is_boat: bool) -> bool 
 impl Game<'_> {
     /// `Entity.isVehicle`: a player or a mob rides it.
     fn carries(&self, m: &Mob) -> bool {
-        m.rider.is_some() || self.is_vehicle(Ent::Id(m.id))
+        self.is_vehicle(Ent::Id(m.id))
     }
     /// `isPushable`, as `pushableBy` and `canVehicleCollide` ask it:
     /// `Mob::pushable` plus the shulkers it leaves out (they take no push, but
@@ -63,14 +63,12 @@ impl Game<'_> {
     /// The players in boat `id`: the window's player (or the server player
     /// acting as it) and the server's other players.
     pub(super) fn boat_players(&self, id: u32) -> usize {
-        let guests = self.lan.as_ref().map_or(0, |h| {
-            h.hub
-                .guests
-                .iter()
-                .filter(|g| Some(g.conn) != self.lan_acting && g.vehicle == Some(id))
-                .count()
-        });
-        usize::from(self.vehicle() == Some(id)) + guests
+        let others = self
+            .passengers_of(Ent::Id(id))
+            .iter()
+            .filter(|e| e.is_player() && **e != self.acting_ent())
+            .count();
+        usize::from(self.vehicle() == Some(id)) + others
     }
     /// The mobs in boat `id`, in their seat order after the players
     /// (`Entity.addPassenger` puts a player first).
@@ -172,7 +170,7 @@ impl Game<'_> {
                     && g.loaded
                     && !g.dead
                     && !g.spectator()
-                    && g.vehicle != Some(id)
+                    && self.vehicle_of(Ent::Guest(g.conn)) != Some(Ent::Id(id))
             }) {
                 out.push((guest_bounds(g), false));
             }

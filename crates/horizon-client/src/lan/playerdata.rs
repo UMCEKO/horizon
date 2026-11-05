@@ -131,12 +131,18 @@ pub fn apply(guest: &mut Guest, level: &Level) {
 }
 
 /// Save a guest (PlayerDataStorage.save).
-pub fn save(guest: &Guest, world: &Path, vehicle: Option<[i32; 4]>) {
+pub fn save(
+    guest: &Guest,
+    world: &Path,
+    vehicle: Option<[i32; 4]>,
+    tree: Option<horizon_world::nbt::Tag>,
+) {
     let mut level = Level {
         player_uuid: Some(uuid_ints(guest.uuid)),
         ..Level::default()
     };
     store(guest, &mut level, vehicle);
+    level.root_vehicle_tree = tree;
     let file = path(world, guest.uuid);
     if let Some(dir) = file.parent() {
         let _ = std::fs::create_dir_all(dir);

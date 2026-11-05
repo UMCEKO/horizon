@@ -268,7 +268,7 @@ impl Goal for CamelPanic {
     }
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // CamelHusk.isMobControlled: not with a mob on its back either.
-        m.rider.is_none()
+        !cx.w.has_player_passenger(m.id)
             && !(m.species() == super::Species::CamelHusk && cx.w.is_vehicle(m.id))
             && self.0.can_use(m, cx)
     }
@@ -298,7 +298,7 @@ impl Goal for RandomSitting {
             && pose_time(m) >= 400
             && m.extra.leash.is_none()
             && m.on_ground
-            && m.rider.is_none()
+            && !cx.w.has_player_passenger(m.id)
             && !super::riders::mob_controlled(m, cx.w)
             && m.random.next_int_bound(4).unwrap_or(1) == 0
     }

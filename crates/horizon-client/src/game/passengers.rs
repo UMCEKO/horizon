@@ -5,6 +5,7 @@
 use super::{
     Game,
     entity_life::Removal,
+    lan_actions::Outgoing,
     vehicle_rules::{Rider, Seat, Vehicle},
 };
 use horizon_client::{
@@ -13,6 +14,7 @@ use horizon_client::{
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use std::collections::HashMap;
+use winit::keyboard::KeyCode;
 
 /// `Zombie.finalizeSpawn`: a baby zombie takes a chicken one time in twenty,
 /// and another one time in twenty of the rest.
@@ -53,7 +55,7 @@ impl Game<'_> {
             }
             None => Ride {
                 is_passenger: self.is_passenger(Ent::Id(m.id)),
-                is_ridden: m.rider.is_some() || self.is_vehicle(Ent::Id(m.id)),
+                is_ridden: self.is_vehicle(Ent::Id(m.id)),
             },
         }
     }
@@ -127,14 +129,14 @@ impl Game<'_> {
             self.post_game_event("minecraft:entity_mount", at, ctx);
         }
     }
-    /// `Entity.startRiding(v, force, events)` for mob `r`; whether it boarded.
+    /// `Entity.startRiding(v, force, events)`; whether it boarded.
     pub(super) fn start_riding(&mut self, r: Ent, v: Ent, force: bool, events: bool) -> bool {
-        let (Ent::Id(rider), Ent::Id(mut vehicle_id)) = (r, v) else {
+        let Ent::Id(mut vehicle_id) = v else {
             return false;
         };
         let mut v = v;
         // Piglin.startRiding: a baby piglin boards the top of the piglins on a hoglin.
-        if let Some(m) = self.mobs.iter().find(|m| m.id == rider)
+        if let Some(m) = r.id().and_then(|id| self.mobs.iter().find(|m| m.id == id))
             && m.species() == Species::Piglin
             && m.is_baby()
             && self
@@ -152,34 +154,145 @@ impl Game<'_> {
         if r == v || self.vehicle_of(r) == Some(v) {
             return false;
         }
-        let Some(target) = self.vehicle_target(vehicle_id) else {
+        let target = self.vehicle_target(vehicle_id);
+        if target.is_none() && !self.cushions.iter().any(|c| c.id == vehicle_id) {
             return false;
-        };
-        if !self.could_accept_passenger(target) {
+        }
+        if target.is_some_and(|t| !self.could_accept_passenger(t)) {
             return false;
         }
         if self.riding_table.borrow().rides_through(v, r) {
             return false;
         }
-        let can_ride = self.riding_table.borrow().boarding_cooldown(r) <= 0;
-        if !(force || can_ride && self.can_add_passenger(target, &self.passengers_of(v))) {
+        // Entity.canRide: not crouching (the acting player's sneak key), and not just off a vehicle.
+        let crouching =
+            r.is_player() && r == self.acting_ent() && self.keys.contains(&KeyCode::ShiftLeft);
+        let can_ride = !crouching && self.riding_table.borrow().boarding_cooldown(r) <= 0;
+        let room = target.is_none_or(|t| self.can_add_passenger(t, &self.passengers_of(v)));
+        if !(force || can_ride && room) {
             return false;
         }
         if self.is_passenger(r) {
             self.stop_riding(r);
         }
         self.riding_table.borrow_mut().link(r, v);
-        // Mob.startRiding: a leashed mob lets go of its lead.
-        self.break_leash(rider, true, false);
-        if events && let Some(at) = self.vehicle_position(vehicle_id) {
-            let ctx = self.who_context(Some(Who::Mob(rider)), None);
-            self.post_game_event("minecraft:entity_mount", at, ctx);
+        if let Some(rider) = r.id() {
+            // Mob.startRiding: a leashed mob lets go of its lead.
+            self.break_leash(rider, true, false);
+        }
+        if events {
+            if let Some(at) = self.vehicle_position(vehicle_id) {
+                let who = r.id().map_or(Who::Player, Who::Mob);
+                let ctx = self.who_context(Some(who), None);
+                self.post_game_event("minecraft:entity_mount", at, ctx);
+            }
+            // START_RIDING_TRIGGER for every player on the vehicle, indirect ones included.
+            let riders = self.riding_table.borrow().indirect_passengers(v);
+            for e in riders.into_iter().filter(|e| e.is_player()) {
+                self.trigger_started_riding(e);
+            }
+        }
+        if r.is_player() {
+            self.player_boarded(r, vehicle_id);
         }
         true
     }
+    /// `CriteriaTriggers.START_RIDING_TRIGGER` for the player `e`, in its own turn when it is not acting.
+    fn trigger_started_riding(&mut self, e: Ent) {
+        if e == self.acting_ent() {
+            self.trigger_player("minecraft:started_riding");
+        } else if let Ent::Guest(c) = e
+            && let Some(mut host) = self.lan.take()
+        {
+            self.as_guest(&mut host, c, |g| {
+                g.trigger_player("minecraft:started_riding")
+            });
+            self.lan = Some(host);
+        }
+    }
+    /// `ServerPlayer.startRiding` after the link: the player sits, its client is moved to the seat, told
+    /// the vehicle's effects and its passengers.
+    fn player_boarded(&mut self, r: Ent, vehicle: u32) {
+        let seat = self.player_seat(r, vehicle);
+        if let Some(at) = seat {
+            self.send_to_player(r, Outgoing::TeleportKeepingLook([at.x, at.y, at.z]));
+        }
+        if let Some(m) = self.mobs.iter().find(|m| m.id == vehicle) {
+            let effects = m.extra.effects.clone();
+            if !effects.is_empty() {
+                self.send_to_player(
+                    r,
+                    Outgoing::MobEffects {
+                        entity: vehicle,
+                        add: true,
+                        effects,
+                    },
+                );
+            }
+        }
+        let passengers = self.passengers_of(Ent::Id(vehicle));
+        self.send_to_player(
+            r,
+            Outgoing::SetPassengers {
+                vehicle,
+                passengers,
+            },
+        );
+    }
+    /// Where player `r` sits in `vehicle` (`Entity.positionRider`); the acting player is moved there.
+    fn player_seat(&mut self, r: Ent, vehicle: u32) -> Option<Vec3> {
+        let list = self.passengers_of(Ent::Id(vehicle));
+        let (index, count) = (
+            list.iter().position(|e| *e == r).unwrap_or(0),
+            list.len().max(1),
+        );
+        let at = if let Some(i) = self.boats.iter().position(|b| b.id == vehicle) {
+            self.passenger_point(Vehicle::Boat(i), index, count, Seat::PLAYER, false)
+        } else if let Some(i) = self.carts.iter().position(|c| c.id == vehicle) {
+            self.passenger_point(Vehicle::Cart(i), index, count, Seat::PLAYER, false)
+        } else if let Some(i) = self.mobs.iter().position(|m| m.id == vehicle) {
+            self.passenger_point(Vehicle::Mob(i), index, count, Seat::PLAYER, false)
+        } else {
+            self.cushions.iter().find(|c| c.id == vehicle)?.seat()
+        };
+        if r == self.acting_ent()
+            && let Some(p) = self.player.as_mut()
+        {
+            self.previous_position = p.position;
+            p.position = at;
+            p.velocity = Vec3::ZERO;
+            p.fall_distance = 0.0;
+        }
+        Some(at)
+    }
+    /// What `ServerPlayer`'s connection is sent: queued in the acting guest's turn outbox, or held for the
+    /// next flush when that guest is not acting. The window's player has no connection.
+    pub(super) fn send_to_player(&mut self, e: Ent, item: Outgoing) {
+        match e {
+            Ent::Guest(c) if self.lan_acting == Some(c) => self.guest_packets.push(item),
+            Ent::Guest(c) => self.guest_deferred.push((c, item)),
+            _ => {}
+        }
+    }
     /// `Entity.stopRiding` (`removeVehicle`, then `LivingEntity.dismountVehicle`).
     pub(super) fn stop_riding(&mut self, r: Ent) {
+        // A guest that is not acting is set down in its own turn, which tells its client.
+        if let Ent::Guest(c) = r
+            && self.lan_acting != Some(c)
+            && self.is_passenger(r)
+            && let Some(mut host) = self.lan.take()
+        {
+            let done = self.as_guest(&mut host, c, |g| g.remove_vehicle(r, None, false));
+            self.lan = Some(host);
+            if done.is_some() {
+                return;
+            }
+        }
         self.remove_vehicle(r, None, false);
+    }
+    /// `Entity.removeVehicle` alone: `r` gets off and stays where it is (a teleport sends it elsewhere).
+    pub(super) fn leave_vehicle_in_place(&mut self, r: Ent) {
+        self.remove_vehicle(r, None, true);
     }
     /// `removeVehicle` of `r`, which is being removed for `removal` or, with None, is staying: it gets
     /// off, and a rider that stays is put down where its vehicle lets it out.
@@ -187,9 +300,14 @@ impl Game<'_> {
         let Some(old) = self.riding_table.borrow_mut().unlink(r) else {
             return;
         };
-        let (Ent::Id(rider), Ent::Id(old_id)) = (r, old) else {
+        let who = r.id().map_or(Who::Player, Who::Mob);
+        let Ent::Id(old_id) = old else {
             return;
         };
+        // Player.removeVehicle: a player may board again at once.
+        if r.is_player() {
+            self.riding_table.borrow_mut().clear_cooldown(r);
+        }
         // HappyGhast.removePassenger.
         if removal.is_none()
             && self
@@ -202,29 +320,76 @@ impl Game<'_> {
         if removal.is_none_or(Removal::destroys)
             && let Some(at) = self.vehicle_position(old_id)
         {
-            let ctx = self.who_context(Some(Who::Mob(rider)), None);
+            let ctx = self.who_context(Some(who), None);
             self.post_game_event("minecraft:entity_dismount", at, ctx);
+        }
+        // ServerPlayer.removeVehicle: the vehicle's effects go, then its passengers are sent.
+        if r.is_player() {
+            self.player_unboarded(r, old_id);
         }
         if removal.is_some() {
             return;
         }
         // LivingEntity.dismountVehicle.
-        let (Some(i), Some(target)) = (
-            self.mobs.iter().position(|m| m.id == rider),
-            self.vehicle_target(old_id),
-        ) else {
+        let Some(target) = self.vehicle_target(old_id) else {
             return;
         };
-        let at = if vehicle_gone {
-            // The vehicle is being removed: the rider stays, no lower than the vehicle.
-            let (p, vehicle_y) = (self.mobs[i].position, self.vehicle_position(old_id));
-            Vec3::new(p.x, vehicle_y.map_or(p.y, |v| p.y.max(v[1])), p.z)
-        } else {
-            self.dismount_location(target, &Rider::mob(&self.mobs[i])).0
-        };
-        let m = &mut self.mobs[i];
-        m.position = at;
-        m.previous = at;
+        if let Ent::Id(rider) = r {
+            let Some(i) = self.mobs.iter().position(|m| m.id == rider) else {
+                return;
+            };
+            let at = if vehicle_gone {
+                // The vehicle is being removed: the rider stays, no lower than the vehicle.
+                let (p, vehicle_y) = (self.mobs[i].position, self.vehicle_position(old_id));
+                Vec3::new(p.x, vehicle_y.map_or(p.y, |v| p.y.max(v[1])), p.z)
+            } else {
+                self.dismount_location(target, &Rider::mob(&self.mobs[i])).0
+            };
+            let m = &mut self.mobs[i];
+            m.position = at;
+            m.previous = at;
+        } else if r == self.acting_ent() && !vehicle_gone {
+            let Some(p) = self.player.as_ref() else {
+                return;
+            };
+            let rider = Rider::player(p, self.yaw, self.acting_main_arm_left());
+            let (spot, pose) = self.dismount_location(target, &rider);
+            if let Some(p) = self.player.as_mut() {
+                p.position = spot;
+                p.velocity = Vec3::ZERO;
+                // LivingEntity.setPose: the dismount pose that fit.
+                if let Some(pose) = pose
+                    && let Err(e) = p.set_pose(pose)
+                {
+                    log::warn!("dismount pose: {e}");
+                }
+            }
+        }
+    }
+    /// `ServerPlayer.removeVehicle` after the unlink.
+    fn player_unboarded(&mut self, r: Ent, old: u32) {
+        if let Some(m) = self.mobs.iter().find(|m| m.id == old) {
+            let effects = m.extra.effects.clone();
+            if !effects.is_empty() {
+                self.send_to_player(
+                    r,
+                    Outgoing::MobEffects {
+                        entity: old,
+                        add: false,
+                        effects,
+                    },
+                );
+            }
+        }
+        let passengers = self.passengers_of(Ent::Id(old));
+        self.send_to_player(
+            r,
+            Outgoing::SetPassengers {
+                vehicle: old,
+                passengers,
+            },
+        );
+        self.send_to_player(r, Outgoing::ClearVehicleGood);
     }
     /// `Entity.ejectPassengers`: last to first.
     pub(super) fn eject_passengers(&mut self, v: Ent) {
@@ -714,7 +879,7 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::crossing_tests::flat_game;
+    use super::super::{crossing_tests::flat_game, entity_life::Kind};
     use super::*;
 
     fn spawn(game: &mut Game<'_>, kind: &str, at: [f64; 3]) -> u32 {
@@ -827,5 +992,80 @@ mod tests {
             game.passengers_of(piglins[2]).is_empty()
                 || game.passengers_of(piglins[2]) == vec![piglins[3]]
         );
+    }
+
+    #[test]
+    fn a_guest_boarding_gets_set_passengers_and_its_effects() {
+        let Some(mut game) = flat_game() else { return };
+        let pig = spawn(&mut game, "pig", [2.5, 61.0, 2.5]);
+        game.mobs
+            .iter_mut()
+            .find(|m| m.id == pig)
+            .unwrap()
+            .extra
+            .effects = vec![("minecraft:speed", 100, 1)];
+        game.lan_acting = Some(7);
+        assert!(game.start_riding(Ent::Guest(7), Ent::Id(pig), true, false));
+        assert_eq!(game.vehicle(), Some(pig));
+        let kinds: Vec<&str> = game
+            .guest_packets
+            .iter()
+            .map(|o| match o {
+                Outgoing::TeleportKeepingLook(_) => "teleport",
+                Outgoing::MobEffects { add: true, .. } => "effects",
+                Outgoing::SetPassengers { .. } => "passengers",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["teleport", "effects", "passengers"]);
+        game.guest_packets.clear();
+        game.stop_riding(Ent::Guest(7));
+        let kinds: Vec<&str> = game
+            .guest_packets
+            .iter()
+            .map(|o| match o {
+                Outgoing::MobEffects { add: false, .. } => "effects",
+                Outgoing::SetPassengers { passengers, .. } if passengers.is_empty() => "passengers",
+                Outgoing::ClearVehicleGood => "good",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["effects", "passengers", "good"]);
+    }
+
+    #[test]
+    fn a_player_leaving_has_no_boarding_cooldown() {
+        let Some(mut game) = flat_game() else { return };
+        let pig = Ent::Id(spawn(&mut game, "pig", [2.5, 61.0, 2.5]));
+        assert!(game.start_riding(Ent::Host, pig, true, false));
+        game.stop_riding(Ent::Host);
+        assert_eq!(game.riding_table.borrow().boarding_cooldown(Ent::Host), 0);
+        assert!(game.start_riding(Ent::Host, pig, false, false));
+    }
+
+    #[test]
+    fn logout_removes_a_vehicle_with_only_that_player() {
+        let Some(mut game) = flat_game() else { return };
+        let pig = spawn(&mut game, "pig", [2.5, 61.0, 2.5]);
+        assert!(game.start_riding(Ent::Guest(3), Ent::Id(pig), true, false));
+        assert!(
+            game.riding_table
+                .borrow()
+                .exactly_one_player_passenger(Ent::Id(pig))
+        );
+        game.leave_vehicle_in_place(Ent::Guest(3));
+        game.level_remove(Kind::Mob, pig, Removal::UnloadedWithPlayer);
+        assert!(game.mobs.iter().all(|m| m.id != pig));
+        assert!(!game.is_vehicle(Ent::Id(pig)));
+    }
+
+    #[test]
+    fn a_player_and_a_mob_in_a_boat_keep_the_player_first() {
+        let Some(mut game) = flat_game() else { return };
+        let pig = Ent::Id(spawn(&mut game, "pig", [2.5, 61.0, 2.5]));
+        let zombie = Ent::Id(spawn(&mut game, "zombie", [2.5, 61.0, 2.5]));
+        assert!(game.start_riding(zombie, pig, true, false));
+        assert!(game.start_riding(Ent::Guest(3), pig, true, false));
+        assert_eq!(game.passengers_of(pig), vec![Ent::Guest(3), zombie]);
     }
 }

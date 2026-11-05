@@ -2140,7 +2140,6 @@ impl Goal for Breed {
         if equine
             && (!m.extra.tame
                 || m.is_baby()
-                || m.rider.is_some()
                 || cx.w.is_vehicle(m.id)
                 || cx.w.is_passenger(m.id)
                 || m.health < m.attrs.max_health)
@@ -2162,7 +2161,7 @@ impl Goal for Breed {
                     // AbstractHorse.canParent of the partner.
                     && (!equine
                         || s.tame
-                            && !(s.player_rider || cx.w.is_vehicle(s.id) || cx.w.is_passenger(s.id))
+                            && !(cx.w.is_vehicle(s.id) || cx.w.is_passenger(s.id))
                             && s.health >= s.stats[0] as f32)
                     && (!sniffer || super::sniffer::can_mate_state(s.variant))
             })

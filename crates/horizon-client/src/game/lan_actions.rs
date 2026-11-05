@@ -22,6 +22,7 @@ use horizon_client::{
     },
     motion::{MotionEvent, MotionWorld, PlayerMotion},
     pose::Dimensions,
+    riding::Ent,
 };
 use horizon_core::{
     geometry::{Aabb, Vec3},
@@ -127,23 +128,122 @@ pub(super) enum Outgoing {
     EntityEvent(i8),
     /// `ServerItemCooldowns.onCooldownStarted`.
     Cooldown(std::sync::Arc<str>, i32),
+    /// `new ClientboundSetPassengersPacket(vehicle)`, the list as it was when queued.
+    SetPassengers {
+        vehicle: u32,
+        passengers: Vec<Ent>,
+    },
+    /// `ClientboundUpdateMobEffectPacket` (`add`) or `ClientboundRemoveMobEffectPacket` for each effect of a vehicle.
+    MobEffects {
+        entity: u32,
+        add: bool,
+        effects: Vec<(&'static str, i32, i32)>,
+    },
+    /// `connection.teleport(position, Relative.ROTATION)`.
+    TeleportKeepingLook([f64; 3]),
+    /// `lastGoodX/Y/Z` of a vehicle the guest no longer rides.
+    ClearVehicleGood,
 }
 
-/// Sends a turn's outbox through `send`, in order, as the guest's entity `entity_id`.
-pub(super) fn drain_outbox(outbox: Vec<Outgoing>, entity_id: i32, mut send: impl FnMut(C)) {
+/// What the hub does for an `Outgoing`.
+pub(super) enum Delivery {
+    Packet(C),
+    TeleportKeepingLook([f64; 3]),
+    ClearVehicleGood,
+}
+
+/// Sends a turn's outbox through `send`, in order, as the guest's entity `entity_id`; `ids` gives the
+/// network id of an entity of the table and `effect` the registry id of a mob effect.
+pub(super) fn drain_outbox(
+    outbox: Vec<Outgoing>,
+    entity_id: i32,
+    ids: &impl Fn(Ent) -> Option<i32>,
+    effect: &impl Fn(&str) -> Option<i32>,
+    mut send: impl FnMut(Delivery),
+) {
     for item in outbox {
-        send(match item {
-            Outgoing::Packet(packet) => packet,
-            Outgoing::EntityEvent(event) => C::EntityEvent(play::EntityEvent {
-                id: entity_id,
-                event,
-            }),
-            Outgoing::Cooldown(group, duration) => C::Cooldown(play::Cooldown {
-                group: group.to_string(),
-                duration,
-            }),
-        });
+        match item {
+            Outgoing::Packet(packet) => send(Delivery::Packet(packet)),
+            Outgoing::EntityEvent(event) => {
+                send(Delivery::Packet(C::EntityEvent(play::EntityEvent {
+                    id: entity_id,
+                    event,
+                })));
+            }
+            Outgoing::Cooldown(group, duration) => {
+                send(Delivery::Packet(C::Cooldown(play::Cooldown {
+                    group: group.to_string(),
+                    duration,
+                })));
+            }
+            Outgoing::SetPassengers {
+                vehicle,
+                passengers,
+            } => {
+                send(Delivery::Packet(C::SetPassengers(play::SetPassengers {
+                    vehicle: vehicle as i32,
+                    passengers: passengers.into_iter().filter_map(ids).collect(),
+                })));
+            }
+            Outgoing::MobEffects {
+                entity,
+                add,
+                effects,
+            } => {
+                for (id, ticks, amplifier) in effects {
+                    let Some(effect) = effect(id) else { continue };
+                    send(Delivery::Packet(if add {
+                        C::UpdateMobEffect(play::UpdateMobEffect {
+                            id: entity as i32,
+                            effect,
+                            amplifier,
+                            duration: ticks,
+                            flags: 2 | 4,
+                        })
+                    } else {
+                        C::RemoveMobEffect(play::RemoveMobEffect {
+                            id: entity as i32,
+                            effect,
+                        })
+                    }));
+                }
+            }
+            Outgoing::TeleportKeepingLook(at) => send(Delivery::TeleportKeepingLook(at)),
+            Outgoing::ClearVehicleGood => send(Delivery::ClearVehicleGood),
+        }
     }
+}
+
+/// Sends `outbox` to guest `i` of `host` through its hub, in order.
+pub(super) fn deliver_outbox(host: &mut LanHost, i: usize, outbox: Vec<Outgoing>) {
+    let conn = host.hub.guests[i].conn;
+    let entity_id = host.hub.guests[i].entity_id;
+    let guests: Vec<(u32, i32)> = host
+        .hub
+        .guests
+        .iter()
+        .map(|g| (g.conn, g.entity_id))
+        .collect();
+    let host_entity = host.host_entity;
+    let ids = |e: Ent| match e {
+        Ent::Id(id) => Some(id as i32),
+        Ent::Host => Some(host_entity),
+        Ent::Guest(c) => guests.iter().find(|g| g.0 == c).map(|g| g.1),
+    };
+    let sync = host.hub.sync.clone();
+    let effect = |id: &str| {
+        let name = if id.contains(':') {
+            id.to_string()
+        } else {
+            format!("minecraft:{id}")
+        };
+        sync.id("minecraft:mob_effect", &name)
+    };
+    drain_outbox(outbox, entity_id, &ids, &effect, |d| match d {
+        Delivery::Packet(packet) => host.hub.send_to(conn, &packet),
+        Delivery::TeleportKeepingLook(at) => host.hub.teleport_keeping_look(i, at),
+        Delivery::ClearVehicleGood => host.hub.guests[i].vehicle_good = None,
+    });
 }
 
 /// A guest's command waiting for the hub (`LanHost::commands`).
@@ -197,7 +297,6 @@ pub(super) struct GuestSwap {
     swing: horizon_client::first_person::SwingState,
     left: bool,
     right: bool,
-    riding: Option<u32>,
     host_station: Option<super::stations::Station>,
     sleeping: Option<[i32; 3]>,
     sleep_timer: u32,
@@ -322,6 +421,23 @@ impl Game<'_> {
             );
         }
         Some(result)
+    }
+
+    /// What guests that were not acting are owed (`ServerPlayer.connection.send`), sent in the order it was queued.
+    pub(super) fn flush_guest_deferred(&mut self, host: &mut LanHost) {
+        let owed = std::mem::take(&mut self.guest_deferred);
+        let mut by_conn: Vec<(u32, Vec<Outgoing>)> = Vec::new();
+        for (conn, item) in owed {
+            match by_conn.iter_mut().find(|(c, _)| *c == conn) {
+                Some((_, list)) => list.push(item),
+                None => by_conn.push((conn, vec![item])),
+            }
+        }
+        for (conn, list) in by_conn {
+            if let Some(i) = host.hub.guests.iter().position(|g| g.conn == conn) {
+                deliver_outbox(host, i, list);
+            }
+        }
     }
 
     /// The first half of `as_guest`: the guest's state in place of the
@@ -466,8 +582,6 @@ impl Game<'_> {
         let (left, right) = (self.left, self.right);
         self.left = play.digging.is_some();
         self.right = play.using.is_some() || self.using.is_some();
-        // The guest's vehicle (Entity.vehicle) for its turn.
-        let riding = std::mem::replace(&mut self.riding, g.vehicle);
         let host_station = self.station.take();
         // The guest's bed, sleep counter and respawn point; the host's
         // respawn point, anchor and action bar stay theirs.
@@ -563,7 +677,6 @@ impl Game<'_> {
             swing,
             left,
             right,
-            riding,
             host_station,
             sleeping,
             sleep_timer,
@@ -591,6 +704,12 @@ impl Game<'_> {
     pub(super) fn leave_guest(&mut self, host: &mut LanHost, swap: GuestSwap) {
         // A totem that saved the guest this turn (its hurt set it off).
         let totem = self.apply_totem();
+        // ServerPlayer.teleportTo: a player that is teleported gets off its vehicle where it is sent.
+        let me = Ent::Guest(swap.conn);
+        if self.player.as_ref().is_some_and(|p| p.teleported) && self.is_passenger(me) {
+            self.leave_vehicle_in_place(me);
+        }
+        let riding = self.is_passenger(me);
         let GuestSwap {
             conn,
             i,
@@ -625,7 +744,6 @@ impl Game<'_> {
             swing,
             left,
             right,
-            riding,
             host_station,
             sleeping,
             sleep_timer,
@@ -663,12 +781,7 @@ impl Game<'_> {
         play.swings += self.swings_started.wrapping_sub(swings);
         self.swings_started = swings;
         // ServerPlayer.connection.send, in the order the turn queued them.
-        let entity_id = host.hub.guests[i].entity_id;
-        drain_outbox(
-            std::mem::replace(&mut self.guest_packets, packets),
-            entity_id,
-            |packet| host.hub.send_to(conn, &packet),
-        );
+        deliver_outbox(host, i, std::mem::replace(&mut self.guest_packets, packets));
         // Player.playSound: everyone near but the guest, in the players' source.
         let players = horizon_client::settings::SOUND_SOURCES
             .iter()
@@ -706,7 +819,6 @@ impl Game<'_> {
         self.level.spawn = respawn.1;
         // ServerPlayer.displayClientMessage(_, true): the guest's action bar.
         let guest_message = std::mem::replace(&mut self.message, message);
-        let guest_vehicle = std::mem::replace(&mut self.riding, riding);
         self.left = left;
         self.right = right;
         play.mining = std::mem::replace(&mut self.mining, mining);
@@ -738,11 +850,6 @@ impl Game<'_> {
         let guest_mount = std::mem::replace(&mut self.mount_menu, host_mount_menu).opened_mob();
         self.keys = host_keys;
         let g = &mut host.hub.guests[i];
-        let left_vehicle = g.vehicle.filter(|_| guest_vehicle.is_none());
-        if guest_vehicle.is_none() {
-            g.vehicle_good = None;
-        }
-        g.vehicle = guest_vehicle;
         let fell_asleep = bed.is_some() && g.bed.is_none();
         (g.bed, g.sleep_timer, g.spawn) = (bed, guest_sleep_timer, guest_spawn);
         g.respawn_elsewhere = guest_respawn.map(|c| c.saved());
@@ -816,24 +923,8 @@ impl Game<'_> {
             let teleported = std::mem::take(&mut m.teleported);
             let moved: f64 = (0..3).map(|k| (at[k] - g.position[k]).powi(2)).sum();
             g.motion = Some(Box::new(m));
-            // Entity.teleportTo takes a rider out of its vehicle.
-            let left_vehicle = match g.vehicle.filter(|_| teleported) {
-                Some(v) => {
-                    (g.vehicle, g.vehicle_good) = (None, None);
-                    Some(v)
-                }
-                None => left_vehicle,
-            };
-            // ServerPlayer.dismountTo: the client hears it is out of the
-            // vehicle before the teleport beside it. A rider sits where its
-            // vehicle puts it (lan_vehicles.rs), with no teleport.
-            if let Some(vehicle) = left_vehicle {
-                g.send(&C::SetPassengers(play::SetPassengers {
-                    vehicle: vehicle as i32,
-                    passengers: Vec::new(),
-                }));
-            }
-            if g.vehicle.is_none() && (moved > 0.0001 || turned || teleported) {
+            // A rider sits where its vehicle puts it (lan_vehicles.rs), with no teleport.
+            if !riding && (moved > 0.0001 || turned || teleported) {
                 host.hub.teleport(i, Some(at));
             }
         }
@@ -1494,7 +1585,7 @@ impl Game<'_> {
                 {
                     return;
                 }
-                let before = host.hub.guests[gi].vehicle;
+                let before = self.vehicle_of(Ent::Guest(conn)).and_then(Ent::id);
                 if self
                     .look_at_entity(host, gi, p.id, Some(p.location))
                     .is_some()
@@ -1985,6 +2076,10 @@ impl Game<'_> {
     }
     fn guest_tick_death(&mut self, host: &mut LanHost, gi: usize) {
         if host.hub.guests[gi].tick_death() {
+            // remove(KILLED): `Entity.setRemoved` stops its riding.
+            let conn = host.hub.guests[gi].conn;
+            self.riding_removed(Ent::Guest(conn), Removal::Killed);
+            self.flush_guest_deferred(host);
             self.guest_drop_carried(host, gi);
         }
     }
@@ -2566,6 +2661,9 @@ impl Game<'_> {
         };
         xp.respawn(self.ui.rules.bool("keep_inventory") || g.game_mode == SPECTATOR);
         (g.xp_level, g.xp_progress, g.xp_total) = (xp.level, xp.progress, xp.total);
+        // ServerLevel.removePlayerImmediately: the dead player's setRemoved (KILLED) stops its riding.
+        self.riding_removed(Ent::Guest(conn), Removal::Killed);
+        self.flush_guest_deferred(host);
         let clock_rate = self.network_clock_rate();
         let ctx = TickCtx {
             world: &mut self.world,
@@ -2582,6 +2680,7 @@ impl Game<'_> {
             collision: Some(self.collision),
             border: &self.border,
             streaming: Some(&self.streaming),
+            riding: &self.riding_table,
         };
         host.hub.respawn(i, spawn, &ctx);
         // ServerGamePacketListenerImpl.handleClientCommand: a hardcore world's
@@ -2626,6 +2725,7 @@ impl Game<'_> {
 
     /// Per tick, for every guest: dig, use items, pick up drops, die.
     pub(super) fn tick_guests(&mut self, host: &mut LanHost) {
+        self.flush_guest_deferred(host);
         self.tick_guest_cameras(host);
         self.lan_merchant_tick(host);
         self.lan_stations_tick(host);
@@ -3021,7 +3121,7 @@ impl Game<'_> {
         let in_wall = !g.sleeping && self.in_wall(g.position, g.dimensions());
         let at = g.position;
         let (sneaking, sleeping) = (g.sneaking, g.sleeping);
-        let riding = g.vehicle.is_some();
+        let riding = self.is_passenger(Ent::Guest(conn));
         let mut soul = None;
         let events = self.as_guest(host, conn, |game| {
             let (rules, motion) = (game.world.health_rules, game.motion);
@@ -3292,8 +3392,9 @@ impl Game<'_> {
     /// `Player.canGlide`: not flying, airborne, not riding, no levitation, and
     /// a glider that its next point of wear won't break.
     fn guest_can_glide(&mut self, host: &mut LanHost, conn: u32) -> Option<bool> {
+        let riding = self.is_passenger(Ent::Guest(conn));
         let g = host.hub.guest_mut(conn)?;
-        if g.flying || g.on_ground || g.vehicle.is_some() {
+        if g.flying || g.on_ground || riding {
             return Some(false);
         }
         self.as_guest(host, conn, |game| {
@@ -4000,9 +4101,9 @@ fn eye_columns(at: [f64; 3], body: Dimensions) -> [std::ops::RangeInclusive<i32>
 
 #[cfg(test)]
 mod tests {
-    use super::{Outgoing, drain_outbox, eye_columns};
+    use super::{Ent, Outgoing, drain_outbox, eye_columns};
     use horizon_client::pose::Pose;
-    use horizon_protocol::packets::play::{self, Clientbound as C};
+    use horizon_protocol::packets::play::Clientbound as C;
 
     /// #3684: a player shrunk to `minecraft:scale` 0.1 who stands 0.05 from a
     /// wall has eyes 0.048 wide, which don't reach into it: they don't
@@ -4024,27 +4125,41 @@ mod tests {
         );
     }
 
-    /// The packets, entity events and cooldowns of one turn leave in the order they were queued.
+    /// The packets, entity events, cooldowns and riding effects of one turn leave in the order they were queued.
     #[test]
     fn a_turns_outbox_keeps_its_order() {
+        use super::Delivery;
         let outbox = vec![
-            Outgoing::Packet(C::SetPassengers(play::SetPassengers {
+            Outgoing::SetPassengers {
                 vehicle: 7,
-                passengers: vec![3],
-            })),
+                passengers: vec![Ent::Id(3), Ent::Guest(1)],
+            },
             Outgoing::EntityEvent(9),
+            Outgoing::TeleportKeepingLook([1.0, 2.0, 3.0]),
             Outgoing::Cooldown("minecraft:ender_pearl".into(), 20),
-            Outgoing::Packet(C::SetPassengers(play::SetPassengers {
+            Outgoing::SetPassengers {
                 vehicle: 7,
                 passengers: Vec::new(),
-            })),
+            },
         ];
         let mut sent = Vec::new();
-        drain_outbox(outbox, 3, |p| sent.push(p));
-        assert_eq!(sent.len(), 4);
-        assert!(matches!(&sent[0], C::SetPassengers(p) if p.passengers == [3]));
-        assert!(matches!(&sent[1], C::EntityEvent(e) if e.id == 3 && e.event == 9));
-        assert!(matches!(&sent[2], C::Cooldown(c) if c.duration == 20));
-        assert!(matches!(&sent[3], C::SetPassengers(p) if p.passengers.is_empty()));
+        let ids = |e: Ent| match e {
+            Ent::Id(i) => Some(i as i32),
+            Ent::Guest(c) => Some(100 + c as i32),
+            Ent::Host => None,
+        };
+        drain_outbox(outbox, 3, &ids, &|_| None, |d| sent.push(d));
+        assert_eq!(sent.len(), 5);
+        assert!(
+            matches!(&sent[0], Delivery::Packet(C::SetPassengers(p)) if p.passengers == [3, 101])
+        );
+        assert!(
+            matches!(&sent[1], Delivery::Packet(C::EntityEvent(e)) if e.id == 3 && e.event == 9)
+        );
+        assert!(matches!(&sent[2], Delivery::TeleportKeepingLook(_)));
+        assert!(matches!(&sent[3], Delivery::Packet(C::Cooldown(c)) if c.duration == 20));
+        assert!(
+            matches!(&sent[4], Delivery::Packet(C::SetPassengers(p)) if p.passengers.is_empty())
+        );
     }
 }

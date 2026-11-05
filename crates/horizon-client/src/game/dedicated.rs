@@ -7,6 +7,7 @@
 //! from server.properties, with the operator, whitelist and ban lists and a
 //! console on standard input.
 use super::{Game, Options, lan::LanSettings, world_loading::WorldRequest};
+use horizon_client::riding::Ent;
 use horizon_client::{
     Result,
     lan::{LoginGate, NetConfig, NetLog, OnlineMode, hub::HubConfig},
@@ -1638,8 +1639,9 @@ impl Game<'_> {
         if let Some(host) = self.lan.take() {
             for g in &host.hub.guests {
                 // The vehicle the guest rides, for the file that names it.
-                let vehicle = self.root_vehicle_uuid(g.vehicle);
-                horizon_client::lan::playerdata::save(g, &self.world_root, vehicle);
+                let vehicle =
+                    self.root_vehicle_uuid(self.vehicle_of(Ent::Guest(g.conn)).and_then(Ent::id));
+                horizon_client::lan::playerdata::save(g, &self.world_root, vehicle, None);
             }
             self.lan = Some(host);
         }

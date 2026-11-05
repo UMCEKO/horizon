@@ -105,8 +105,6 @@ pub struct Guest {
     /// The last `ServerboundPlayerInputPacket` flags (forward 1, backward 2,
     /// left 4, right 8, jump 16, shift 32, sprint 64).
     pub input: u8,
-    /// The boat or minecart the player rides (`Entity.getVehicle`).
-    pub vehicle: Option<u32>,
     /// `ServerGamePacketListenerImpl.lastGoodX/Y/Z` of the vehicle it controls.
     pub vehicle_good: Option<[f64; 3]>,
     pub sprinting: bool,
@@ -332,7 +330,6 @@ impl Guest {
             permission: 0,
             sneaking: false,
             input: 0,
-            vehicle: None,
             vehicle_good: None,
             sprinting: false,
             fall_flying: false,
@@ -430,21 +427,11 @@ impl Guest {
     pub fn send(&self, packet: &play::Clientbound) {
         self.sender.send(packet.encode());
     }
-    /// `Entity.stopRiding`: out of the vehicle it rode.
-    pub fn stop_riding(&mut self) {
-        (self.vehicle, self.vehicle_good) = (None, None);
-    }
     /// `LivingEntity.tickDeath` for a dead player: true once its body is
-    /// removed, 20 ticks after it died (`remove(KILLED)`, whose
-    /// `Entity.setRemoved` stops its riding). The body sits in its vehicle
-    /// until then.
+    /// removed, 20 ticks after it died (`remove(KILLED)`).
     pub fn tick_death(&mut self) -> bool {
         self.death_time += 1;
-        let removed = self.death_time >= 20;
-        if removed {
-            self.stop_riding();
-        }
-        removed
+        self.death_time >= 20
     }
     pub fn send_all(&self, packets: &[play::Clientbound]) {
         for p in packets {
@@ -1162,23 +1149,6 @@ mod tests {
         g.living_flags = 0;
         assert_eq!(g.own_living_flags(), Some(0));
         assert_eq!(g.own_living_flags(), None);
-    }
-
-    #[test]
-    fn a_dead_player_leaves_its_vehicle_when_its_body_is_removed() {
-        let mut g = guest_at([0.5, -120.0, 0.5]);
-        g.vehicle = Some(7);
-        g.vehicle_good = Some([0.5, -120.0, 0.5]);
-        g.dead = true;
-        // LivingEntity.tickDeath: the body sits in the boat for 19 ticks...
-        for tick in 1..20 {
-            assert!(!g.tick_death(), "tick {tick}");
-            assert_eq!(g.vehicle, Some(7), "tick {tick}");
-        }
-        // ...then remove(KILLED)'s setRemoved stops its riding, so the
-        // respawned player is not put back into the boat.
-        assert!(g.tick_death());
-        assert_eq!((g.vehicle, g.vehicle_good), (None, None));
     }
 
     #[test]

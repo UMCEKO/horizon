@@ -16,6 +16,7 @@ use super::{
 };
 use horizon_client::collisions::SceneCollisions;
 use horizon_client::mobs::equine;
+use horizon_client::riding::Ent;
 use horizon_core::geometry::{Aabb, Vec3};
 use horizon_protocol::{
     packets::play::{self, Clientbound as C},
@@ -84,28 +85,29 @@ impl Game<'_> {
     /// The vehicles the server's players ride: they move with their riders,
     /// not in `tick_boats` and `tick_carts`.
     pub(super) fn guest_vehicles(&self) -> Vec<u32> {
-        self.lan.as_ref().map_or_else(Vec::new, |h| {
-            h.hub.guests.iter().filter_map(|g| g.vehicle).collect()
-        })
+        let table = self.riding_table.borrow();
+        table
+            .members()
+            .into_iter()
+            .filter(|e| matches!(e, Ent::Guest(_)))
+            .filter_map(|e| table.vehicle_of(e)?.id())
+            .collect()
     }
 
     /// Whether a server player other than the one acting rides `vehicle`
     /// (`Entity.canAddPassenger`: a boat or minecart seats one player here).
     pub(super) fn ridden_by_guest(&self, vehicle: u32) -> bool {
-        self.lan.as_ref().is_some_and(|h| {
-            h.hub
-                .guests
-                .iter()
-                .any(|g| Some(g.conn) != self.lan_acting && g.vehicle == Some(vehicle))
-        })
+        self.passengers_of(Ent::Id(vehicle))
+            .iter()
+            .any(|e| matches!(e, Ent::Guest(c) if Some(*c) != self.lan_acting))
     }
     /// Whether a server player rides `vehicle` (`Entity.isPassenger`: a
     /// passenger does not use a portal on its own, the vehicle carries it
     /// across, `Entity.teleportCrossDimension`).
     pub(super) fn guest_rides(&self, vehicle: u32) -> bool {
-        self.lan
-            .as_ref()
-            .is_some_and(|h| h.hub.guests.iter().any(|g| g.vehicle == Some(vehicle)))
+        self.passengers_of(Ent::Id(vehicle))
+            .iter()
+            .any(|e| matches!(e, Ent::Guest(_)))
     }
 
     /// `Player.rideTick` for a server player, before its moves this tick:
@@ -115,7 +117,7 @@ impl Game<'_> {
             return;
         };
         let g = &host.hub.guests[gi];
-        let Some(vehicle) = g.vehicle else {
+        let Some(vehicle) = self.vehicle_of(Ent::Guest(conn)).and_then(Ent::id) else {
             return;
         };
         let (keys, dead) = (input_keys(g.input), g.dead || g.health <= 0.0);
@@ -126,8 +128,9 @@ impl Game<'_> {
         // The vehicle is gone (broken, in another level) or the rider died:
         // its client drops it with the entity or the death screen.
         if dead || (boat.is_none() && !cart && !mount && !cushion) {
-            let g = &mut host.hub.guests[gi];
-            (g.vehicle, g.vehicle_good) = (None, None);
+            self.as_guest(host, conn, |game| {
+                game.leave_vehicle_in_place(Ent::Guest(conn))
+            });
             return;
         }
         if let Some(i) = boat {
@@ -169,7 +172,7 @@ impl Game<'_> {
             }
             if let Some(i) = game.boats.iter().position(|b| Some(b.id) == game.vehicle()) {
                 if keys.shift {
-                    game.dismount(i);
+                    game.dismount();
                     return None;
                 }
                 let p = game.player_boat_seat(i);
@@ -199,15 +202,10 @@ impl Game<'_> {
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
             return;
         };
-        let Some(vehicle) = host.hub.guests[gi].vehicle else {
+        let Some(vehicle) = self.vehicle_of(Ent::Guest(conn)).and_then(Ent::id) else {
             return;
         };
         if before == Some(vehicle) {
-            return;
-        }
-        // The host in the window rides it already.
-        if self.vehicle() == Some(vehicle) {
-            host.hub.guests[gi].vehicle = before;
             return;
         }
         let at = self
@@ -281,7 +279,10 @@ impl Game<'_> {
             return;
         }
         let owner = host.hub.singleplayer_owner == Some(g.uuid);
-        let (vehicle, good) = (g.vehicle, g.vehicle_good);
+        let (vehicle, good) = (
+            self.vehicle_of(Ent::Guest(conn)).and_then(Ent::id),
+            g.vehicle_good,
+        );
         let back = |host: &mut LanHost, position: Vec3, yaw: f32| {
             let packet = play::MoveVehicle {
                 position: [position.x, position.y, position.z],
@@ -398,13 +399,8 @@ impl Game<'_> {
     }
 
     /// `handlePaddleBoat`: the paddles of the boat the player drives.
-    pub(super) fn guest_paddle_boat(&mut self, host: &LanHost, conn: u32, paddles: [bool; 2]) {
-        let vehicle = host
-            .hub
-            .guests
-            .iter()
-            .find(|g| g.conn == conn)
-            .and_then(|g| g.vehicle);
+    pub(super) fn guest_paddle_boat(&mut self, _host: &LanHost, conn: u32, paddles: [bool; 2]) {
+        let vehicle = self.vehicle_of(Ent::Guest(conn)).and_then(Ent::id);
         if let Some(b) = self.boats.iter_mut().find(|b| Some(b.id) == vehicle) {
             b.paddling = paddles;
         }

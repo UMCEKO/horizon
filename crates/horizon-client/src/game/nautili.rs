@@ -2,6 +2,7 @@
 //! pufferfish, feeding, the saddle and armour, riding, and the zombie
 //! nautilus a drowned with a trident sometimes rides.
 use super::Game;
+use horizon_client::riding::Ent;
 use horizon_client::{
     items::ItemStack,
     mobs::{Species, nautilus},
@@ -129,9 +130,9 @@ impl Game<'_> {
             let id = self.mobs[index].id;
             self.break_leash(id, true, false);
             self.yaw = self.mobs[index].yaw;
-            self.set_vehicle(Some(id));
-            self.mount.reset_jump();
-            self.trigger_player("minecraft:started_riding");
+            if self.start_riding(self.acting_ent(), Ent::Id(id), false, true) {
+                self.mount.reset_jump();
+            }
             return true;
         }
         // Animal.mobInteract: a tame adult fed falls in love (not a zombie).

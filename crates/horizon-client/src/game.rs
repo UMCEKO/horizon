@@ -2212,8 +2212,6 @@ struct Game<'a> {
     /// Atlas trim slots in use: (sprite name, slot), least recently drawn first.
     trim_slots: Vec<(String, usize)>,
     cart_models: minecarts::CartModels,
-    /// The boat the player rides.
-    riding: Option<u32>,
     /// The vehicle the player's file names, waiting for it to be in the world
     /// (`ServerPlayer.loadAndSpawnParentVehicle`).
     pending_vehicle: Option<[i32; 4]>,
@@ -2398,6 +2396,8 @@ struct Game<'a> {
     chat_capture: Option<Vec<horizon_client::text::Text>>,
     /// Packets for the guest acting now, sent once its action returns.
     guest_packets: Vec<lan_actions::Outgoing>,
+    /// What a guest that is not acting is owed, sent at the next `flush_guest_deferred`.
+    guest_deferred: Vec<(u32, lan_actions::Outgoing)>,
     /// `Player.playSound` of the acting guest (event, position, volume,
     /// pitch): `level.playSound(player, ...)` leaves the guest out, whose
     /// own client plays it.
@@ -2530,6 +2530,13 @@ fn camera_rotation(camera_type: perspective::CameraType, yaw: f32, pitch: f32) -
     )
 }
 impl Game<'_> {
+    /// The player in place as an entity of the riding table: the acting guest, else the window's.
+    pub(super) fn acting_ent(&self) -> horizon_client::riding::Ent {
+        match self.lan_acting {
+            Some(conn) => horizon_client::riding::Ent::Guest(conn),
+            None => horizon_client::riding::Ent::Host,
+        }
+    }
     /// `Entity.getVehicle` of the player in place.
     pub(super) fn vehicle(&self) -> Option<u32> {
         match self.remote.as_ref() {
@@ -2537,16 +2544,10 @@ impl Game<'_> {
                 .passengers
                 .vehicle_of(horizon_client::riding::Ent::Host)
                 .and_then(horizon_client::riding::Ent::id),
-            None => self.riding,
+            None => self
+                .vehicle_of(self.acting_ent())
+                .and_then(horizon_client::riding::Ent::id),
         }
-    }
-    /// Only `startRiding` and `stopRiding` ports call this.
-    pub(super) fn set_vehicle(&mut self, vehicle: Option<u32>) {
-        debug_assert!(
-            self.remote.is_none(),
-            "the client learns riding from SetPassengers only"
-        );
-        self.riding = vehicle;
     }
     fn eye_position(&self) -> Option<[f64; 3]> {
         let p = self.player.as_ref()?;
@@ -10927,7 +10928,7 @@ impl Game<'_> {
         self.rockets.clear();
         self.particles.clear();
         self.pickups.clear();
-        self.set_vehicle(None);
+        self.stop_riding(self.acting_ent());
         self.persist = Default::default();
     }
     /// Equipment attribute modifiers (LivingEntity.collectEquipmentChanges).
@@ -15999,7 +16000,6 @@ impl<'a> Game<'a> {
             skin_slots: horizon_client::skins::SkinSlots::new(horizon_client::hud::SKIN_SLOTS),
             trim_slots: Vec::new(),
             cart_models: prepared.cart_models,
-            riding: None,
             pending_vehicle: None,
             ender_items: vec![None; 27],
             ender_open: None,
@@ -16091,6 +16091,7 @@ impl<'a> Game<'a> {
             lan_acting: None,
             lan_break_pos: None,
             guest_packets: Vec::new(),
+            guest_deferred: Vec::new(),
             guest_player_sounds: Vec::new(),
             lan_acting_name: None,
             lan_acting_uuid: None,

@@ -330,6 +330,14 @@ impl MobWorld<'_> {
     pub fn is_vehicle(&self, id: u32) -> bool {
         self.riding.borrow().is_vehicle(Ent::Id(id))
     }
+    /// Whether a player is among `id`'s passengers.
+    pub fn has_player_passenger(&self, id: u32) -> bool {
+        self.riding
+            .borrow()
+            .passengers_of(Ent::Id(id))
+            .iter()
+            .any(|e| e.is_player())
+    }
     /// `Entity.getRootVehicle`.
     pub fn root_vehicle(&self, id: u32) -> Ent {
         self.riding.borrow().root_vehicle(Ent::Id(id))

@@ -788,6 +788,35 @@ impl Game<'_> {
         self.persist.restored.insert(uuid);
         self.vehicle_by_uuid(uuid)
     }
+    /// The kind of the vehicle-capable entity `id`.
+    pub(super) fn kind_of_entity(&self, id: u32) -> Option<Kind> {
+        if self.mobs.iter().any(|m| m.id == id) {
+            Some(Kind::Mob)
+        } else if self.boats.iter().any(|b| b.id == id) {
+            Some(Kind::Boat)
+        } else if self.carts.iter().any(|c| c.id == id) {
+            Some(Kind::Cart)
+        } else if self.cushions.iter().any(|c| c.id == id) {
+            Some(Kind::Cushion)
+        } else {
+            None
+        }
+    }
+    /// `Entity.save` of the vehicle `id` with the passengers it carries.
+    pub(super) fn vehicle_tree(&mut self, id: u32) -> Option<Tag> {
+        let at = match self.kind_of_entity(id)? {
+            Kind::Mob => self.mobs.iter().find(|m| m.id == id)?.position,
+            Kind::Boat => self.boats.iter().find(|b| b.id == id)?.position,
+            Kind::Cart => self.carts.iter().find(|c| c.id == id)?.position,
+            _ => self.cushions.iter().find(|c| c.id == id)?.position,
+        };
+        let uuid = self.uuid_for(id);
+        let keys = HashSet::from([chunk_of(at)]);
+        self.entity_chunks(&keys, false)
+            .into_iter()
+            .flat_map(|(_, tags)| tags)
+            .find(|t| entity_nbt::uuid(t) == Some(uuid))
+    }
     /// `ServerPlayer.loadAndSpawnParentVehicle`: the ride the player's file
     /// names, once the vehicle is in the world.
     pub(super) fn restore_root_vehicle(&mut self) {
@@ -809,7 +838,7 @@ impl Game<'_> {
             p.remove(&"RootVehicle".into());
         }
         self.pending_vehicle = None;
-        self.set_vehicle(Some(id));
+        self.start_riding(self.acting_ent(), Ent::Id(id), true, false);
     }
     /// A mob's entity tag with the mobs riding it under `Passengers`.
     pub(super) fn mob_tree_nbt(&mut self, i: usize) -> Tag {

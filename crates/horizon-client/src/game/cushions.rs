@@ -11,6 +11,7 @@ use super::{Game, Hit};
 use horizon_client::entities::{Cushion, dye_index};
 use horizon_client::items::ItemStack;
 use horizon_client::mobs::anim::Poses;
+use horizon_client::riding::Ent;
 use horizon_core::geometry::{Aabb, Vec3};
 use winit::keyboard::KeyCode;
 
@@ -324,19 +325,14 @@ impl Game<'_> {
             return false;
         }
         let id = self.cushions[i].id;
-        let occupied = self.vehicle() == Some(id)
-            || self
-                .lan
-                .as_ref()
-                .is_some_and(|h| h.hub.guests.iter().any(|g| g.vehicle == Some(id)));
+        let occupied = self.is_vehicle(Ent::Id(id));
         // `Cushion.interact`: an occupied cushion (`isVehicle`) passes.
         if occupied {
             return false;
         }
-        // `Entity.startRiding`: a passenger first gets off what it rides
-        // (`stopRiding`), so a seated player moves to this cushion.
-        self.dismount_player();
-        self.set_vehicle(Some(id));
+        if !self.start_riding(self.acting_ent(), Ent::Id(id), false, true) {
+            return true;
+        }
         let p = self.cushions[i].position;
         self.audio.play(
             "minecraft:entity.cushion.sit",
@@ -372,7 +368,7 @@ impl Game<'_> {
         let p = c.position;
         self.world.modified.insert((c.pos[0] >> 4, c.pos[2] >> 4));
         if self.vehicle() == Some(c.id) {
-            self.set_vehicle(None);
+            self.stop_riding(self.acting_ent());
         }
         self.audio.play(
             "minecraft:entity.cushion.break",
@@ -457,7 +453,7 @@ impl Game<'_> {
     /// rather than one whose cushion was killed.
     pub(super) fn get_up_from_cushion(&mut self, c: &Cushion) {
         let at = c.dismount();
-        self.set_vehicle(None);
+        self.stop_riding(self.acting_ent());
         if let Some(p) = self.player.as_mut() {
             self.previous_position = p.position;
             p.position = at;

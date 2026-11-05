@@ -6,6 +6,7 @@
 //! rail-following render with the display block.
 use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use super::{Game, Hit, Keys};
+use horizon_client::riding::Ent;
 use horizon_client::{
     blocks::Fluid,
     collisions::SceneCollisions,
@@ -667,7 +668,7 @@ impl Game<'_> {
         match c.kind {
             CartKind::Rideable if powered => {
                 if self.vehicle() == Some(c.id) {
-                    self.set_vehicle(None);
+                    self.stop_riding(self.acting_ent());
                 }
                 if c.hurt_time == 0 {
                     c.hurt_dir = -c.hurt_dir;
@@ -730,7 +731,11 @@ impl Game<'_> {
         }
         if let Some(host) = self.lan.as_ref() {
             for g in host.hub.guests.iter().filter(|g| {
-                host.hub.here(g) && g.loaded && !g.dead && !g.spectator() && g.vehicle.is_none()
+                host.hub.here(g)
+                    && g.loaded
+                    && !g.dead
+                    && !g.spectator()
+                    && !self.is_passenger(Ent::Guest(g.conn))
             }) {
                 let [x, y, z] = g.position;
                 pushers.push((Vec3::new(x, y, z), g.bounds()));
@@ -931,7 +936,7 @@ impl Game<'_> {
             return false;
         };
         if keys.shift {
-            self.dismount_cart(i);
+            self.dismount_cart();
             return true;
         }
         // ServerPlayer.getLastClientMoveIntent: getInputVector((left, 0, forward), 1, yRot).
@@ -955,7 +960,7 @@ impl Game<'_> {
             p.fall_distance = 0.0;
         }
         let Some(i) = self.carts.iter().position(|x| x.id == c.id) else {
-            self.set_vehicle(None);
+            self.stop_riding(self.acting_ent());
             return true;
         };
         if alive {
@@ -963,22 +968,13 @@ impl Game<'_> {
             self.push_from_cart(i);
         } else {
             self.level_remove(Kind::Cart, c.id, Removal::Killed);
-            self.set_vehicle(None);
+            self.stop_riding(self.acting_ent());
         }
         true
     }
     /// `LivingEntity.stopRiding` for the player in cart `i`.
-    pub(super) fn dismount_cart(&mut self, i: usize) {
-        self.set_vehicle(None);
-        let Some(p) = self.player.as_ref() else {
-            return;
-        };
-        let rider = super::vehicle_rules::Rider::player(p, self.yaw, self.acting_main_arm_left());
-        let (target, _) = self.dismount_location(super::vehicle_rules::Vehicle::Cart(i), &rider);
-        if let Some(p) = self.player.as_mut() {
-            p.position = target;
-            p.velocity = Vec3::ZERO;
-        }
+    pub(super) fn dismount_cart(&mut self) {
+        self.stop_riding(self.acting_ent());
     }
     /// `MinecartItem.useOn`: a cart on the clicked rail.
     pub(super) fn place_minecart(&mut self, hit: &Hit, stack: &ItemStack) -> bool {
@@ -1060,10 +1056,12 @@ impl Game<'_> {
         let held = self.held().cloned();
         match self.carts[i].kind {
             CartKind::Rideable => {
-                if sneaking || self.vehicle().is_some() || self.ridden_by_guest(self.carts[i].id) {
+                if sneaking || self.is_vehicle(Ent::Id(self.carts[i].id)) {
                     return false;
                 }
-                self.set_vehicle(Some(self.carts[i].id));
+                if !self.start_riding(self.acting_ent(), Ent::Id(self.carts[i].id), false, true) {
+                    return false;
+                }
             }
             // AbstractMinecartContainer.interact: no sneak check.
             CartKind::Chest | CartKind::Hopper => {

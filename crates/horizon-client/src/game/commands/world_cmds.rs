@@ -1244,7 +1244,7 @@ impl Game<'_> {
             m.extra.counter = 0;
             self.yaw = m.yaw;
         }
-        self.set_vehicle(Some(mob_id));
+        self.start_riding(self.acting_ent(), Ent::Id(mob_id), true, false);
         self.mount.jump_ticks = 0;
         self.mount.jump_scale = 0.0;
         self.feedback(Text::translate(

@@ -151,6 +151,8 @@ pub struct TickCtx<'a> {
     /// each neighbour is loaded or a decorated proto chunk (#4294). None:
     /// every column there is is loaded.
     pub streaming: Option<&'a crate::streaming::Streaming>,
+    /// Who rides what in the level (`Entity.getVehicle` of a player).
+    pub riding: &'a std::cell::RefCell<crate::riding::Riding>,
 }
 
 /// What the gameplay code has to do for a guest.
@@ -220,7 +222,7 @@ pub struct Hub {
     pub config: HubConfig,
     pub encoder: ChunkEncoder,
     pub guests: Vec<Guest>,
-    pub(super) sync: Arc<SyncData>,
+    pub sync: Arc<SyncData>,
     pub ticks: u64,
     /// `Level.soundSeedGenerator`: a fresh `nextLong` per `playSound`.
     pub(super) sound_seeds: Mutex<LegacyRandom>,
@@ -1144,6 +1146,15 @@ impl Hub {
         self.teleport_relative(i, position, 0);
     }
 
+    /// `ServerPlayer.startRiding`'s teleport: to `position`, the look kept (`Relative.ROTATION`).
+    pub fn teleport_keeping_look(&mut self, i: usize, position: [f64; 3]) {
+        self.teleport_relative(
+            i,
+            Some(position),
+            play::relative::Y_ROT | play::relative::X_ROT,
+        );
+    }
+
     /// A teleport to `position` that keeps the player's motion and look
     /// (`Relative.DELTA` and `Relative.ROTATION`: an End gateway's).
     pub fn teleport_keeping_motion(&mut self, i: usize, position: [f64; 3]) {
@@ -1398,7 +1409,7 @@ impl Hub {
         for i in 0..self.guests.len() {
             if self.here(&self.guests[i]) {
                 self.process_inbox(i, ctx, &mut events);
-                self.tick_floating(i, &mut events);
+                self.tick_floating(i, ctx, &mut events);
             }
         }
         if !self.guests.iter().any(|g| self.here(g)) {
@@ -2702,6 +2713,10 @@ impl Hub {
         events: &mut Vec<HostEvent>,
     ) {
         let (frozen, (check, elytra_check)) = (self.ticking.1, self.movement_checks);
+        let riding = ctx
+            .riding
+            .borrow()
+            .is_passenger(crate::riding::Ent::Guest(self.guests[i].conn));
         let g = &mut self.guests[i];
         let owner = self.singleplayer_owner == Some(g.uuid);
         let to = [
@@ -2711,7 +2726,7 @@ impl Hub {
         ];
         let (yaw, pitch) = (wrap_degrees(yaw), wrap_degrees(pitch));
         // A passenger only turns: its vehicle carries it (absSnapTo where it is).
-        if g.vehicle.is_some() {
+        if riding {
             (g.yaw, g.pitch) = (yaw, pitch);
             return;
         }
@@ -2841,9 +2856,13 @@ impl Hub {
     /// `ServerGamePacketListenerImpl.tickPlayer`'s flying check: a player the
     /// last move left hovering for more than `getMaximumFlyingTicks` ticks is
     /// kicked.
-    fn tick_floating(&mut self, i: usize, events: &mut Vec<HostEvent>) {
+    fn tick_floating(&mut self, i: usize, ctx: &TickCtx, events: &mut Vec<HostEvent>) {
+        let riding = ctx
+            .riding
+            .borrow()
+            .is_passenger(crate::riding::Ent::Guest(self.guests[i].conn));
         let g = &mut self.guests[i];
-        if g.client_is_floating && !g.sleeping && g.vehicle.is_none() && !g.dead {
+        if g.client_is_floating && !g.sleeping && !riding && !g.dead {
             g.above_ground_ticks += 1;
             if g.above_ground_ticks > maximum_flying_ticks(PLAYER_GRAVITY) {
                 let line = format!("{} was kicked for floating too long!", g.name);
@@ -3034,10 +3053,6 @@ impl Hub {
         let g = &mut self.guests[i];
         // PlayerList.respawn: into the level in place (the respawn level).
         g.dimension = self.config.dimension.clone();
-        // ServerLevel.removePlayerImmediately: the dead player's
-        // Entity.setRemoved (KILLED) stops its riding; the new player rides
-        // nothing.
-        g.stop_riding();
         // ServerLevel.removePlayerImmediately: every entity paired with the dead player is
         // removed (ServerEntity.removePairing, one packet each). Its chunks are dropped
         // without ForgetLevelChunk (PlayerChunkSender.dropChunk skips dead players): the

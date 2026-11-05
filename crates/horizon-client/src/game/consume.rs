@@ -226,10 +226,10 @@ impl Game<'_> {
         let Some(id) = self.vehicle() else {
             return;
         };
-        if let Some(i) = self.boats.iter().position(|b| b.id == id) {
-            self.dismount(i);
-        } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
-            self.dismount_cart(i);
+        if self.boats.iter().any(|b| b.id == id) {
+            self.dismount();
+        } else if self.carts.iter().any(|c| c.id == id) {
+            self.dismount_cart();
         } else if let Some(c) = self.cushions.iter().find(|c| c.id == id).cloned() {
             self.get_up_from_cushion(&c);
         } else {

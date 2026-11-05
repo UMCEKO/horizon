@@ -4,7 +4,7 @@
 //! mount's health and jump bar on the HUD.
 use super::{
     Game,
-    vehicle_rules::{Rider, Seat, Vehicle},
+    vehicle_rules::{Seat, Vehicle},
 };
 use horizon_client::riding::Ent;
 use horizon_client::{
@@ -64,8 +64,7 @@ impl Game<'_> {
             return false;
         }
         let id = m.id;
-        self.set_vehicle(Some(id));
-        self.trigger_player("minecraft:started_riding");
+        self.start_riding(self.acting_ent(), Ent::Id(id), false, true);
         true
     }
     /// `FoodOnAStickItem.use` while riding: boost the mount, wear the stick.
@@ -221,10 +220,10 @@ impl Game<'_> {
         m.extra.counter = 0;
         self.yaw = m.yaw;
         let id = m.id;
-        self.set_vehicle(Some(id));
-        self.mount.jump_ticks = 0;
-        self.mount.jump_scale = 0.0;
-        self.trigger_player("minecraft:started_riding");
+        if self.start_riding(self.acting_ent(), Ent::Id(id), false, true) {
+            self.mount.jump_ticks = 0;
+            self.mount.jump_scale = 0.0;
+        }
         true
     }
     /// `AbstractHorse.handleEating`.
@@ -415,28 +414,9 @@ impl Game<'_> {
         let Some(id) = self.vehicle() else {
             return;
         };
-        self.set_vehicle(None);
-        let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
-            return;
-        };
-        self.mobs[i].rider = None;
-        if self.mobs[i].species() == Species::HappyGhast {
-            self.happy_ghast_passenger_left(id);
-        }
-        let Some(p) = self.player.as_ref() else {
-            return;
-        };
-        let rider = Rider::player(p, self.yaw, self.acting_main_arm_left());
-        let (spot, pose) = self.dismount_location(Vehicle::Mob(i), &rider);
-        if let Some(p) = self.player.as_mut() {
-            p.position = spot;
-            p.velocity = Vec3::ZERO;
-            // LivingEntity.setPose: the dismount pose that fit.
-            if let Some(pose) = pose
-                && let Err(e) = p.set_pose(pose)
-            {
-                log::warn!("dismount pose: {e}");
-            }
+        self.stop_riding(self.acting_ent());
+        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+            m.rider = None;
         }
     }
     pub(super) fn mount_event(&mut self, e: &MobEvent) {
@@ -462,21 +442,8 @@ impl Game<'_> {
                 if self.vehicle() == Some(mob) {
                     self.dismount_mount();
                 } else {
-                    // ejectPassengers: a server's player gets off too
-                    // (leave_guest tells their client).
-                    let rider = self.lan.as_ref().and_then(|h| {
-                        h.hub
-                            .guests
-                            .iter()
-                            .find(|g| g.vehicle == Some(mob))
-                            .map(|g| g.conn)
-                    });
-                    if let Some(conn) = rider
-                        && let Some(mut host) = self.lan.take()
-                    {
-                        self.as_guest(&mut host, conn, |g| g.dismount_mount());
-                        self.lan = Some(host);
-                    }
+                    // ejectPassengers: a server's player gets off too.
+                    self.eject_passengers(Ent::Id(mob));
                 }
                 // RunAroundLikeCrazyGoal.tick: entity event 6, smoke.
                 self.mob_event_particles(mob, 6);
@@ -497,14 +464,14 @@ impl Game<'_> {
         if self.vehicle() == Some(mob) {
             self.rider_fall_damage(distance, modifier);
         }
-        let guests: Vec<u32> = self.lan.as_ref().map_or_else(Vec::new, |h| {
-            h.hub
-                .guests
-                .iter()
-                .filter(|g| g.vehicle == Some(mob) && Some(g.conn) != self.lan_acting)
-                .map(|g| g.conn)
-                .collect()
-        });
+        let guests: Vec<u32> = self
+            .passengers_of(Ent::Id(mob))
+            .into_iter()
+            .filter_map(|e| match e {
+                Ent::Guest(c) if Some(c) != self.lan_acting => Some(c),
+                _ => None,
+            })
+            .collect();
         if !guests.is_empty()
             && let Some(mut host) = self.lan.take()
         {

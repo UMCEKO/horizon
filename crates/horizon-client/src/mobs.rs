@@ -1779,7 +1779,6 @@ pub struct Seen {
     /// `Cat.isLying` or `isRelaxStateOne`.
     pub lying: bool,
     /// A player rides it (`Mob.rider`); the mobs in the table are `MobWorld`'s.
-    pub player_rider: bool,
     /// `Attributes.KNOCKBACK_RESISTANCE`.
     pub knockback_resistance: f64,
     /// The active effects, without namespace (`slowness`, `poison`...).
@@ -1900,7 +1899,6 @@ impl Mob {
             sitting: m.extra.sitting,
             silent: m.silent,
             lying: m.species() == Species::Cat && (m.extra.flag || m.extra.relax_one),
-            player_rider: m.rider.is_some(),
             knockback_resistance: m.attrs.knockback_resistance,
             effects: m
                 .extra

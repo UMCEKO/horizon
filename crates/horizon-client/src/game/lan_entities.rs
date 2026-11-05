@@ -74,37 +74,35 @@ fn stand_poses(a: &horizon_client::entities::ArmorStand) -> Vec<(u8, i32, Value)
 }
 
 impl Game<'_> {
-    /// Who rides what (`Entity.getPassengers`): mobs on mobs, and the
-    /// host in its boat or minecart.
+    /// Who rides what (`Entity.getPassengers`): the level's table in network ids; `guests` are the
+    /// players' (connection, entity id).
     pub(super) fn lan_riding(
         &self,
         host_entity: Option<i32>,
         guests: &[(u32, i32)],
         riding: &mut Riding,
     ) {
+        use horizon_client::riding::Ent;
         riding.clear();
-        // The server's players in their boats and minecarts.
-        for &(vehicle, guest) in guests {
-            riding.add(vehicle as i32, guest);
-        }
         let removed: std::collections::HashSet<u32> = self
             .mobs
             .iter()
             .filter(|m| m.removed)
             .map(|m| m.id)
             .collect();
-        for (rider, vehicle) in self.riding_table.borrow().riders_in_order() {
-            if let (
-                horizon_client::riding::Ent::Id(rider),
-                horizon_client::riding::Ent::Id(vehicle),
-            ) = (rider, vehicle)
-                && !removed.contains(&rider)
-            {
-                riding.add(vehicle as i32, rider as i32);
+        let table = self.riding_table.borrow();
+        for vehicle in table.members() {
+            let Ent::Id(vehicle) = vehicle else { continue };
+            for &rider in table.passengers_of(Ent::Id(vehicle)) {
+                let id = match rider {
+                    Ent::Id(rider) => (!removed.contains(&rider)).then_some(rider as i32),
+                    Ent::Host => host_entity,
+                    Ent::Guest(c) => guests.iter().find(|g| g.0 == c).map(|g| g.1),
+                };
+                if let Some(id) = id {
+                    riding.add(vehicle as i32, id);
+                }
             }
-        }
-        if let (Some(host), Some(vehicle)) = (host_entity, self.vehicle()) {
-            riding.add(vehicle as i32, host);
         }
     }
 

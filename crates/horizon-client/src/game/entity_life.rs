@@ -35,7 +35,6 @@ pub(in crate::game) enum Removal {
     Killed,
     Discarded,
     UnloadedToChunk,
-    #[allow(dead_code)] // No native site ports PlayerList.remove's vehicle yet.
     UnloadedWithPlayer,
     ChangedDimension,
 }

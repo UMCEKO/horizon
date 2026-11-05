@@ -73,18 +73,18 @@ impl Game<'_> {
             // doPlayerRide.
             let id = self.mobs[index].id;
             self.break_leash(id, true, false);
-            let was_empty = self.mobs[index].rider.is_none();
+            let was_empty = !self.is_vehicle(Ent::Id(id));
             // addPassenger: the rider is not standing on top, so no still
             // timeout.
             self.mobs[index].extra.counter = 0;
             self.yaw = self.mobs[index].yaw;
-            self.set_vehicle(Some(id));
-            self.mount.reset_jump();
-            if was_empty {
-                let down = happy_ghast::goggles(true, &self.mobs[index]);
-                let _ = self.handle_mob_events(vec![down]);
+            if self.start_riding(self.acting_ent(), Ent::Id(id), false, true) {
+                self.mount.reset_jump();
+                if was_empty {
+                    let down = happy_ghast::goggles(true, &self.mobs[index]);
+                    let _ = self.handle_mob_events(vec![down]);
+                }
             }
-            self.trigger_player("minecraft:started_riding");
             return true;
         }
         false

@@ -3327,6 +3327,8 @@ pub struct Level {
     /// The vehicle the player rides, by UUID (`ServerPlayer.saveParentVehicle`'s
     /// "RootVehicle"), so the ride comes back on the next login.
     pub root_vehicle: Option<[i32; 4]>,
+    /// The root vehicle's whole tree, saved with the player when it leaves a vehicle only it rides.
+    pub root_vehicle_tree: Option<Tag>,
     /// The player compound as loaded, for fields Horizon does not model
     /// (ender chest, effects, abilities, recipe book, attributes, ...).
     pub player_extra: Option<Tag>,
@@ -3853,11 +3855,11 @@ impl Level {
         if let Some(vehicle) = self.root_vehicle
             && p.get("RootVehicle").is_none()
         {
-            put(
-                &mut p,
-                "RootVehicle",
-                Tag::compound([("Attach", uuid_tag(vehicle))]),
-            );
+            let mut root = vec![("Attach", uuid_tag(vehicle))];
+            if let Some(tree) = self.root_vehicle_tree.clone() {
+                root.push(("Entity", tree));
+            }
+            put(&mut p, "RootVehicle", Tag::compound(root));
         }
         p
     }

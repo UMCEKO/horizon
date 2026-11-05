@@ -2,7 +2,9 @@
 //! server threads and the play-state hub, feeds it the world's entities each
 //! tick and turns what the guests do into gameplay. A world that is not open
 //! costs one `Option` check per tick.
+use super::entity_life::Removal;
 use super::{Game, shield::OFFHAND_SLOT};
+use horizon_client::riding::Ent;
 use horizon_client::{
     Result,
     items::ItemStack,
@@ -1305,15 +1307,84 @@ impl Game<'_> {
     /// server's owner with the world (`save_game`), anyone else in their file.
     pub(super) fn save_guest(&mut self, host: &LanHost, guest: &horizon_client::lan::guest::Guest) {
         // The vehicle the guest rides, for the file that names it.
-        let vehicle = self.root_vehicle_uuid(guest.vehicle);
+        let vehicle =
+            self.root_vehicle_uuid(self.vehicle_of(Ent::Guest(guest.conn)).and_then(Ent::id));
+        self.save_guest_riding(host, guest, vehicle, None);
+    }
+    /// `save_guest` with the vehicle the file names and, when the player leaves it alone, its tree.
+    fn save_guest_riding(
+        &mut self,
+        host: &LanHost,
+        guest: &horizon_client::lan::guest::Guest,
+        vehicle: Option<[i32; 4]>,
+        tree: Option<horizon_world::nbt::Tag>,
+    ) {
         if host.owner.as_ref().is_some_and(|o| o.uuid == guest.uuid) {
             if guest.placed {
                 playerdata::store(guest, &mut self.level, vehicle);
+                self.level.root_vehicle_tree = tree;
             }
         } else {
-            playerdata::save(guest, &self.world_root, vehicle);
+            playerdata::save(guest, &self.world_root, vehicle, tree);
         }
         self.save_guest_records(host, guest);
+    }
+    /// `PlayerList.remove` for a guest that logs out: the file is saved, then a vehicle only it rides
+    /// leaves with it (`UNLOADED_WITH_PLAYER`) and any other gets the player off.
+    fn log_out_riding(&mut self, host: &mut LanHost, guest: &horizon_client::lan::guest::Guest) {
+        let me = Ent::Guest(guest.conn);
+        let back = self.dim;
+        let theirs = super::Dim::from_id(&guest.dimension);
+        if theirs != back && self.enter_level(Some(host), theirs).is_err() {
+            self.save_guest(host, guest);
+            return;
+        }
+        if !self.is_passenger(me) {
+            self.save_guest(host, guest);
+        } else {
+            let root = self.root_vehicle(me);
+            let alone = self
+                .riding_table
+                .borrow()
+                .exactly_one_player_passenger(root);
+            let direct = self.vehicle_of(me).and_then(Ent::id);
+            let tree = root
+                .id()
+                .filter(|_| alone)
+                .and_then(|id| self.vehicle_tree(id));
+            match tree {
+                Some(tree) => {
+                    let vehicle = self.root_vehicle_uuid(direct);
+                    self.save_guest_riding(host, guest, vehicle, Some(tree));
+                }
+                None => self.save_guest_riding(host, guest, None, None),
+            }
+            if alone {
+                self.leave_vehicle_in_place(me);
+                if let Ent::Id(root) = root {
+                    let mut gone = vec![root];
+                    gone.extend(
+                        self.riding_table
+                            .borrow()
+                            .indirect_passengers(Ent::Id(root))
+                            .into_iter()
+                            .filter_map(Ent::id),
+                    );
+                    for id in gone {
+                        if let Some(kind) = self.kind_of_entity(id) {
+                            self.level_remove(kind, id, Removal::UnloadedWithPlayer);
+                        }
+                    }
+                }
+            } else {
+                self.leave_vehicle_in_place(me);
+            }
+        }
+        if theirs != back
+            && let Err(e) = self.enter_level(Some(host), back)
+        {
+            log::error!("could not reopen {}: {e}", back.id());
+        }
     }
     /// `ServerPlayer.loadAndSpawnParentVehicle`: a guest whose file names the
     /// vehicle it rode rides it again, once the vehicle is in the world.
@@ -1331,7 +1402,7 @@ impl Game<'_> {
                     (g.position[2].floor() as i32).div_euclid(16),
                 );
                 g.placed
-                    && g.vehicle.is_none()
+                    && !self.is_passenger(Ent::Guest(g.conn))
                     && g.dimension == self.dim.id()
                     && g.sent_chunks.contains(&chunk)
             })
@@ -1345,8 +1416,10 @@ impl Game<'_> {
             if let Some(horizon_world::nbt::Tag::Compound(p)) = &mut g.saved {
                 p.remove(&"RootVehicle".into());
             }
-            g.vehicle = Some(id);
+            let conn = g.conn;
             g.saved_vehicle = None;
+            self.start_riding(Ent::Guest(conn), Ent::Id(id), true, false);
+            let g = &mut host.hub.guests[i];
             // Pair the stationary restored entities before their passenger packet.
             g.moved = true;
         }
@@ -1429,13 +1502,11 @@ impl Game<'_> {
         else {
             return;
         };
-        let riding = self.lan.as_ref().and_then(|h| {
-            h.hub
-                .guests
-                .iter()
-                .find(|g| g.uuid == uuid && g.placed)
-                .and_then(|g| g.vehicle)
-        });
+        let riding = self
+            .lan
+            .as_ref()
+            .and_then(|h| h.hub.guests.iter().find(|g| g.uuid == uuid && g.placed))
+            .and_then(|g| self.vehicle_of(Ent::Guest(g.conn)).and_then(Ent::id));
         // The vehicle the owner rides, by the UUID it is saved with.
         let vehicle = self.root_vehicle_uuid(riding);
         let Some(host) = &self.lan else {
@@ -1639,12 +1710,21 @@ impl Game<'_> {
         let state = self.lan_host_state(&host);
         // An animal whose rider left the game (or the level) stops taking
         // its input.
-        let vehicle = self.vehicle();
+        let driven: Vec<u32> = {
+            let table = self.riding_table.borrow();
+            self.mobs
+                .iter()
+                .filter(|m| {
+                    table
+                        .passengers_of(Ent::Id(m.id))
+                        .iter()
+                        .any(|e| e.is_player())
+                })
+                .map(|m| m.id)
+                .collect()
+        };
         for m in &mut self.mobs {
-            if m.rider.is_some()
-                && vehicle != Some(m.id)
-                && !host.hub.guests.iter().any(|g| g.vehicle == Some(m.id))
-            {
+            if m.rider.is_some() && !driven.contains(&m.id) {
                 m.rider = None;
             }
         }
@@ -1661,7 +1741,7 @@ impl Game<'_> {
                     .hub
                     .guests
                     .iter()
-                    .filter_map(|g| Some((g.vehicle?, g.entity_id)))
+                    .map(|g| (g.conn, g.entity_id))
                     .collect();
                 self.lan_riding(host_entity, &guests, &mut host.hub.riding);
                 self.lan_entities(host_entity, &host.mob_players, &mut host.hub, &mut states);
@@ -1713,6 +1793,7 @@ impl Game<'_> {
                     collision: Some(self.collision),
                     border: &self.border,
                     streaming: Some(&self.streaming),
+                    riding: &self.riding_table,
                 };
                 host.hub.movement_checks = (
                     self.ui.rules.bool("player_movement_check"),
@@ -1820,7 +1901,7 @@ impl Game<'_> {
                         if guest.placed {
                             host.award_leave_game(guest.conn);
                         }
-                        self.save_guest(&host, &guest);
+                        self.log_out_riding(&mut host, &guest);
                         host.models.remove(&guest.conn);
                         host.play.remove(&guest.conn);
                         self.guest_combat.remove(&guest.conn);
@@ -1993,6 +2074,7 @@ impl Game<'_> {
             collision: Some(self.collision),
             border: &self.border,
             streaming: Some(&self.streaming),
+            riding: &self.riding_table,
         };
         host.hub.place_new_player(conn, &mut ctx);
         if elsewhere && let Err(e) = self.enter_level(Some(host), back) {
@@ -2387,7 +2469,7 @@ impl Game<'_> {
                 g.motion
                     .as_ref()
                     .is_some_and(|motion| motion.fluids.was_touching_water),
-                g.vehicle.is_some(),
+                self.is_passenger(Ent::Guest(g.conn)),
             );
             // CrossbowItem.isCharged: the held crossbow's projectiles.
             m.extra.charged = g

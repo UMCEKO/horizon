@@ -2,6 +2,7 @@
 //! `Llama.handleEating` (wheat and hay), chests, carpets, shearing a carpet
 //! off and riding.
 use super::Game;
+use horizon_client::riding::Ent;
 use horizon_client::{
     items::ItemStack,
     mobs::{equine, llama},
@@ -76,7 +77,7 @@ impl Game<'_> {
             return false;
         }
         let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
-        let (baby, tamed, vehicle) = (m.is_baby(), m.extra.tame, m.rider.is_some());
+        let (baby, tamed, vehicle) = (m.is_baby(), m.extra.tame, self.is_vehicle(Ent::Id(m.id)));
         let open_inventory = !baby && tamed && sneaking;
         if !vehicle && !open_inventory && !item.is_empty() {
             if self.mobs[index].kind.food.iter().any(|f| f == item) {
@@ -136,9 +137,9 @@ impl Game<'_> {
         m.extra.counter = 0;
         self.yaw = m.yaw;
         let id = m.id;
-        self.set_vehicle(Some(id));
-        self.mount.reset_jump();
-        self.trigger_player("minecraft:started_riding");
+        if self.start_riding(self.acting_ent(), Ent::Id(id), false, true) {
+            self.mount.reset_jump();
+        }
         true
     }
     fn is_led_by_trader(&self, index: usize) -> bool {
