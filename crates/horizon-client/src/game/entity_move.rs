@@ -915,6 +915,35 @@ impl Game<'_> {
                 self.crystals.insert(i, crystal);
                 true
             }
+            Target::Bolt(id) => {
+                let Some(i) = self.bolts.iter().position(|b| b.id == id) else {
+                    return false;
+                };
+                let mut bolt = self.bolts.remove(i);
+                // A lightning bolt holds no motion, and its box has no size.
+                let mut position = Vec3::new(bolt.at[0], bolt.at[1], bolt.at[2]);
+                let mut velocity = Vec3::ZERO;
+                let body = BodyRef {
+                    id,
+                    size: [0.0, 0.0],
+                    removed: bolt.removed,
+                    position: &mut position,
+                    velocity: &mut velocity,
+                    moving: &mut bolt.moving,
+                    sync: None,
+                    no_physics: false,
+                    step_height: 0.0,
+                    gravity: 0.0,
+                    air_drag: 0.98,
+                    emission: MovementEmission::All,
+                    fall: FallRule::Entity,
+                    steered: false,
+                };
+                self.move_body(body, mover, delta);
+                bolt.at = [position.x, position.y, position.z];
+                self.bolts.insert(i, bolt);
+                true
+            }
             _ => false,
         }
     }
@@ -1177,5 +1206,26 @@ mod tests {
         let crystal = &game.crystals[0];
         assert_eq!(crystal.position.x, 3.0);
         assert!(crystal.moving.collision.horizontal);
+    }
+
+    #[test]
+    fn a_lightning_bolt_moves_by_the_delta() {
+        let Some(mut game) = flat_game() else { return };
+        game.next_entity += 1;
+        let id = game.next_entity;
+        game.bolts.push(super::super::lightning::Bolt::new(
+            id,
+            [0.5, 62.0, 0.5],
+            1,
+            0,
+            true,
+            [0; 4],
+        ));
+        assert!(game.entity_move(
+            Target::Bolt(id),
+            MoverType::SelfMovement,
+            Vec3::new(2.0, 0.0, 1.0)
+        ));
+        assert_eq!(game.bolts[0].at, [2.5, 62.0, 1.5]);
     }
 }

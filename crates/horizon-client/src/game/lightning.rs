@@ -36,6 +36,7 @@ pub(super) struct Bolt {
     /// The player who channelled it (`LightningBolt.cause`): `Some(None)` for
     /// the host, `Some(Some(conn))` for a guest.
     pub cause: Option<Option<u32>>,
+    pub moving: horizon_world::entity_move::MoveState,
 }
 impl Bolt {
     pub(super) fn new(
@@ -61,6 +62,7 @@ impl Bolt {
             spared: Vec::new(),
             fires: 0,
             cause: None,
+            moving: Default::default(),
         }
     }
 }
