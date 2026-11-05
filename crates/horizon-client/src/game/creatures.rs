@@ -3578,11 +3578,11 @@ impl Game<'_> {
         }
     }
     /// `Level.isRainingAt` for arrows.
-    fn arrow_rain(&self) -> impl Fn(BlockPos) -> bool + '_ {
+    pub(super) fn arrow_rain(&self) -> impl Fn(BlockPos) -> bool + '_ {
         move |p: BlockPos| self.raining_at(p)
     }
     /// The level as arrows see it.
-    fn arrow_scene<'s>(
+    pub(super) fn arrow_scene<'s>(
         &'s self,
         rain: &'s dyn Fn(BlockPos) -> bool,
     ) -> horizon_client::arrows::ArrowScene<'s, 's> {

@@ -135,6 +135,7 @@ pub struct Projectile {
     pub touching_water: bool,
     /// Removed during a crossing of a loop that lent its vector: skipped, then dropped.
     pub removed: bool,
+    pub moving: horizon_world::entity_move::MoveState,
 }
 /// What a projectile struck this tick.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -222,6 +223,7 @@ impl Projectile {
             needs_sync: false,
             touching_water: false,
             removed: false,
+            moving: Default::default(),
             arrow: kind_is_arrow.then(|| {
                 // Entity.random: seeded unpredictably, the position stands in.
                 Box::new(crate::arrows::ArrowState::new(
@@ -350,7 +352,8 @@ impl Projectile {
                 | ProjectileKind::WitherSkull { .. }
         )
     }
-    fn gravity(&self) -> f64 {
+    /// `getGravity()`.
+    pub fn gravity(&self) -> f64 {
         match self.kind {
             ProjectileKind::Arrow { .. } | ProjectileKind::Trident => 0.05,
             ProjectileKind::SmallFireball
@@ -359,6 +362,18 @@ impl Projectile {
             ProjectileKind::LlamaSpit => 0.06,
             ProjectileKind::Potion { .. } => 0.05,
             _ => 0.03,
+        }
+    }
+    /// `getAirDrag()`: arrows, tridents, throwables and llama spit keep 0.99.
+    pub fn air_drag(&self) -> f32 {
+        match self.kind {
+            ProjectileKind::SmallFireball
+            | ProjectileKind::LargeFireball { .. }
+            | ProjectileKind::WindCharge
+            | ProjectileKind::BreezeWindCharge
+            | ProjectileKind::ShulkerBullet { .. }
+            | ProjectileKind::WitherSkull { .. } => 0.98,
+            _ => 0.99,
         }
     }
     /// Projectile.shoot: normalized direction plus triangular noise, times speed.

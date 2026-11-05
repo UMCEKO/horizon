@@ -1955,8 +1955,8 @@ pub fn arrow_to_nbt(
         position: p.position,
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
-        on_ground: false,
-        fall_distance: a.fall_distance,
+        on_ground: p.moving.ground.on_ground,
+        fall_distance: p.moving.fall_distance,
     };
     let mut tag = base.tag(raw);
     for (key, value) in [
@@ -2019,6 +2019,7 @@ pub fn arrow_from_nbt(
     p.velocity = motion(tag);
     [p.yaw, p.pitch] = rotation(tag);
     p.left_owner = flag(tag, "LeftOwner");
+    p.moving = move_state(tag);
     let a = p.arrow.as_mut()?;
     a.life = number(tag.get("life")).unwrap_or(0) as i16 as i32;
     a.shake = (number(tag.get("shake")).unwrap_or(0) as i8 as u8).into();
@@ -2027,7 +2028,6 @@ pub fn arrow_from_nbt(
     a.pierce = number(tag.get("PierceLevel")).unwrap_or(0) as u8;
     a.has_been_shot = flag(tag, "HasBeenShot");
     a.fire_ticks = number(tag.get("Fire")).unwrap_or(0) as i16 as i32;
-    a.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
     a.pickup_item = item;
     a.fired_from_weapon = tag.get("weapon").and_then(item_from_nbt);
     p.stuck = a.in_ground;

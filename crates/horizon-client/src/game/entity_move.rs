@@ -1,7 +1,10 @@
 //! `Entity.move` for the kinds without a port of their own, in vanilla's order through `move_entity`.
 use super::commands::Target;
 use super::*;
-use horizon_client::{Result, collisions::SceneCollisions, landing::SceneSound, riding::Ent};
+use horizon_client::{
+    Result, collisions::SceneCollisions, landing::SceneSound, projectiles::ProjectileKind,
+    riding::Ent,
+};
 use horizon_core::{
     geometry::{Aabb, Direction, VoxelShape, traverse_blocks},
     position::BlockPos,
@@ -759,6 +762,42 @@ impl Game<'_> {
                 self.orbs.insert(i, orb);
                 true
             }
+            Target::Projectile(id) => {
+                let Some(i) = self.creatures.projectiles.iter().position(|p| p.id == id) else {
+                    return false;
+                };
+                let mut p = self.creatures.projectiles.remove(i);
+                let arrow = p.arrow.is_some();
+                let (gravity, air_drag) = (p.gravity(), p.air_drag());
+                let body = BodyRef {
+                    id,
+                    size: BodyRef::size_of(p.bounds()),
+                    removed: p.removed,
+                    position: &mut p.position,
+                    velocity: &mut p.velocity,
+                    moving: &mut p.moving,
+                    sync: Some(&mut p.needs_sync),
+                    no_physics: matches!(p.kind, ProjectileKind::ShulkerBullet { .. })
+                        || p.arrow.as_ref().is_some_and(|a| a.no_physics),
+                    step_height: 0.0,
+                    gravity,
+                    air_drag,
+                    emission: if arrow {
+                        MovementEmission::None
+                    } else {
+                        MovementEmission::All
+                    },
+                    fall: FallRule::Entity,
+                    steered: false,
+                };
+                self.move_body(body, mover, delta);
+                if arrow && mover != MoverType::SelfMovement {
+                    let rain = self.arrow_rain();
+                    horizon_client::arrows::after_move(&mut p, &self.arrow_scene(&rain));
+                }
+                self.creatures.projectiles.insert(i, p);
+                true
+            }
             _ => false,
         }
     }
@@ -776,6 +815,7 @@ mod tests {
     use super::super::crossing_tests::flat_game;
     use super::*;
     use horizon_client::entities::ExperienceOrb;
+    use horizon_client::projectiles::Projectile;
 
     fn orb(game: &mut Game<'_>, at: Vec3) -> u32 {
         game.next_entity += 1;
@@ -832,5 +872,61 @@ mod tests {
         assert_eq!(orb.position.y, 61.0);
         assert!(orb.moving.ground.on_ground && orb.moving.collision.below);
         assert_eq!(orb.moving.fall_distance, 0.0);
+    }
+
+    fn arrow_stuck_in_the_air(game: &mut Game<'_>) -> u32 {
+        game.next_entity += 1;
+        let id = game.next_entity;
+        let mut p = Projectile::new(
+            ProjectileKind::Arrow {
+                base_damage: 2.0,
+                critical: false,
+                effect: None,
+            },
+            Vec3::new(0.5, 63.0, 0.5),
+            None,
+        );
+        p.id = id;
+        p.arrow.as_mut().unwrap().in_ground = true;
+        p.stuck = true;
+        game.creatures.projectiles.push(p);
+        id
+    }
+
+    #[test]
+    fn an_arrow_moved_by_a_piston_starts_falling() {
+        let Some(mut game) = flat_game() else { return };
+        let id = arrow_stuck_in_the_air(&mut game);
+        assert!(game.entity_move(
+            Target::Projectile(id),
+            MoverType::Piston,
+            Vec3::new(0.1, 0.0, 0.0)
+        ));
+        let arrow = game
+            .creatures
+            .projectiles
+            .iter()
+            .find(|p| p.id == id)
+            .unwrap();
+        assert!(!arrow.arrow.as_ref().unwrap().in_ground && !arrow.stuck);
+        assert!((arrow.position.x - 0.6).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn an_arrow_moved_by_itself_stays_in_its_block() {
+        let Some(mut game) = flat_game() else { return };
+        let id = arrow_stuck_in_the_air(&mut game);
+        game.entity_move(
+            Target::Projectile(id),
+            MoverType::SelfMovement,
+            Vec3::new(0.1, 0.0, 0.0),
+        );
+        let arrow = game
+            .creatures
+            .projectiles
+            .iter()
+            .find(|p| p.id == id)
+            .unwrap();
+        assert!(arrow.arrow.as_ref().unwrap().in_ground);
     }
 }
