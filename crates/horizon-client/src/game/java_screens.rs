@@ -4,6 +4,31 @@
 
 use super::*;
 
+/// The draw steps of a container screen, in vanilla's order; ids are wire values shared with `ShellLeaves.java`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+#[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+pub(in crate::game) enum Leaf {
+    Start,
+    Background,
+    Effects,
+    Widgets,
+    Labels,
+    HighlightBack,
+    Slots,
+    HighlightFront,
+    RecipeBook,
+    Carried,
+    Tooltip,
+    Deferred,
+    Extra,
+    BookTooltip,
+}
+
+/// Two recorded segments per `Leaf`.
+#[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+const SEGMENTS: usize = 28;
+
 #[cfg(feature = "java-mods")]
 pub(in crate::game) mod live {
     use super::*;
@@ -56,8 +81,10 @@ pub(in crate::game) mod live {
     #[derive(Default)]
     struct Shell {
         open: bool,
-        /// Under native's screen, after its background, the mods' widgets, after its slots, on top.
-        segments: [Vec<u8>; 5],
+        /// Two per `Leaf`: the gap after it (what mods drew), then its own content when Java drew it.
+        segments: [Vec<u8>; SEGMENTS],
+        /// Bit per `Leaf`: Java drew that step, native skips its own.
+        routed: u32,
         animating: bool,
         /// The cursor of the last recording, in GUI pixels.
         drawn_at: Option<(f32, f32)>,
@@ -311,20 +338,23 @@ pub(in crate::game) mod live {
         Some(found)
     }
 
+    /// A shell's segments and the steps Java drew.
+    type Recording = ([Vec<u8>; SEGMENTS], u32);
+
     /// A shell's segments as a status (`counted`) or a `ShellReply` writes them.
-    fn read_segments(reply: &mut In, counted: bool) -> Option<[Vec<u8>; 5]> {
-        if counted && reply.int()? != 5 {
+    fn read_segments(reply: &mut In, counted: bool) -> Option<[Vec<u8>; SEGMENTS]> {
+        if counted && reply.int()? != SEGMENTS as i32 {
             return None;
         }
-        let mut segments: [Vec<u8>; 5] = Default::default();
+        let mut segments: [Vec<u8>; SEGMENTS] = Default::default();
         for segment in &mut segments {
             *segment = reply.bytes()?.to_vec();
         }
         Some(segments)
     }
 
-    /// A status's end: whether the creative tabs wait, the open shell kind, its fresh recording if any, whether it animates.
-    fn read_shell_tail(reply: &mut In) -> Option<(bool, i32, Option<[Vec<u8>; 5]>, bool)> {
+    /// A status's end: whether the creative tabs wait, the open shell kind, its fresh recording if any, the steps Java drew, whether it animates.
+    fn read_shell_tail(reply: &mut In) -> Option<(bool, i32, Option<Recording>, bool)> {
         let tabs_ready = reply.bool()?;
         let shell = reply.int()?;
         let segments = if reply.bool()? {
@@ -332,7 +362,40 @@ pub(in crate::game) mod live {
         } else {
             None
         };
-        Some((tabs_ready, shell, segments, reply.bool()?))
+        let routed = reply.int()? as u32;
+        Some((
+            tabs_ready,
+            shell,
+            segments.map(|segments| (segments, routed)),
+            reply.bool()?,
+        ))
+    }
+
+    /// A `ShellReply`: who took the input, the fresh recording if any, whether it animates.
+    fn read_shell_reply(reply: &mut In) -> Option<(ShellOwner, Option<Recording>, bool)> {
+        let owner = match reply.byte()? {
+            0 => ShellOwner::Event,
+            1 => ShellOwner::Widget,
+            2 => ShellOwner::Native,
+            _ => ShellOwner::None,
+        };
+        let segments = if reply.bool()? {
+            Some(read_segments(reply, false)?)
+        } else {
+            None
+        };
+        let routed = reply.int()? as u32;
+        let animating = reply.bool()?;
+        Some((owner, segments.map(|s| (s, routed)), animating))
+    }
+
+    /// Whether native draws a step and whether Java's own content for it is painted, as the steps Java drew say.
+    fn leaf_draws(routed: u32, leaf: Leaf) -> (bool, bool) {
+        let java = routed & (1 << leaf as u32) != 0;
+        match leaf {
+            Leaf::Widgets => (true, true),
+            _ => (!java, java),
+        }
     }
 
     /// True once per run, and only with `HORIZON_JAVA_DEBUG`.
@@ -876,17 +939,18 @@ pub(in crate::game) mod live {
                 }
                 if (shell == 1) != c.shell.open && std::env::var_os("HORIZON_JAVA_DEBUG").is_some()
                 {
-                    let sizes = segments.as_ref().map(|s| s.each_ref().map(Vec::len));
+                    let sizes = segments.as_ref().map(|s| s.0.each_ref().map(Vec::len));
                     log::info!(
-                        "Horizon: Java shell {} {sizes:?}",
+                        "Horizon: Java shell 1 {} {sizes:?}",
                         if shell == 1 { "opened" } else { "closed" }
                     );
                 }
                 c.shell.open = shell == 1;
                 c.shell.opening = false;
                 c.shell.animating = shell_animating;
-                if let Some(segments) = segments {
+                if let Some((segments, routed)) = segments {
                     c.shell.segments = segments;
+                    c.shell.routed = routed;
                     c.shell.fresh = true;
                 }
                 shell == 0 && matches!(c.sent.native_screen, Some((true, _, 1)))
@@ -1670,20 +1734,14 @@ pub(in crate::game) mod live {
 
         /// Applies a `ShellReply`: its recording, its animation; returns who took the input.
         fn java_shell_apply(&self, reply: &mut In) -> Option<ShellOwner> {
-            let owner = match reply.byte()? {
-                0 => ShellOwner::Event,
-                1 => ShellOwner::Widget,
-                2 => ShellOwner::Native,
-                _ => ShellOwner::None,
-            };
-            let segments = reply.bool()?.then(|| read_segments(reply, false)).flatten();
-            let animating = reply.bool()?;
+            let (owner, recording, animating) = read_shell_reply(reply)?;
             let at = self.cursor;
             CLIENT.with_borrow_mut(|c| {
                 c.shell.animating = animating;
                 c.shell.drawn_at = Some(at);
-                if let Some(segments) = segments {
+                if let Some((segments, routed)) = recording {
                     c.shell.segments = segments;
+                    c.shell.routed = routed;
                 }
             });
             Some(owner)
@@ -1724,20 +1782,42 @@ pub(in crate::game) mod live {
             }
         }
 
-        /// One of the open shell's five recorded segments, painted between native's layers; no Java call.
-        pub(in crate::game) fn draw_java_shell(&mut self, batch: &mut HudBatch, segment: usize) {
-            let frame = CLIENT.with_borrow(|c| {
-                if c.shell.open {
-                    c.shell.segments[segment].clone()
-                } else {
-                    Vec::new()
-                }
-            });
+        fn paint_shell_segment(&mut self, batch: &mut HudBatch, index: usize) {
+            let frame = CLIENT.with_borrow(|c| c.shell.segments[index].clone());
             if frame.len() > 4 {
                 paint_frame(batch, &self.gui.atlas, &frame, |batch, reply| {
                     self.java_screen_item(batch, reply)
                 });
             }
+        }
+
+        /// Before the first step: what mods drew in `Render.Pre`.
+        pub(in crate::game) fn shell_start(&mut self, batch: &mut HudBatch) {
+            if CLIENT.with_borrow(|c| c.shell.open) {
+                self.paint_shell_segment(batch, Leaf::Start as usize * 2);
+            }
+        }
+
+        /// Native's own step, or Java's when Java drew it; then what mods drew after it.
+        pub(in crate::game) fn shell_leaf(
+            &mut self,
+            batch: &mut HudBatch,
+            leaf: Leaf,
+            native: impl FnOnce(&mut Self, &mut HudBatch),
+        ) {
+            if !CLIENT.with_borrow(|c| c.shell.open) {
+                return native(self, batch);
+            }
+            let index = leaf as usize * 2;
+            let (drawn_by_native, drawn_by_java) =
+                leaf_draws(CLIENT.with_borrow(|c| c.shell.routed), leaf);
+            if drawn_by_native {
+                native(self, batch);
+            }
+            if drawn_by_java {
+                self.paint_shell_segment(batch, index + 1);
+            }
+            self.paint_shell_segment(batch, index);
         }
 
         /// Input over a shell: Java's screen events and mods' widgets first, in vanilla's order; native acts only when this says `Native`.
@@ -1986,39 +2066,81 @@ pub(in crate::game) mod live {
             );
         }
 
+        fn segments_of(sizes: &[(usize, u8)]) -> Out {
+            let mut out = Out::default();
+            for i in 0..SEGMENTS {
+                match sizes.iter().find(|(at, _)| *at == i) {
+                    Some((_, n)) => out.bytes(&vec![0u8; usize::from(*n)]),
+                    None => out.bytes(&[]),
+                }
+            }
+            out
+        }
+
         #[test]
-        fn a_status_with_a_shell_reads_its_kind_and_segments_back() {
+        fn a_status_with_a_shell_reads_its_kind_segments_and_routed_back() {
             let mut out = Out::default();
             out.bool(true);
             out.int(1);
             out.bool(true);
-            out.int(5);
-            for segment in [&[1u8, 2][..], &[], &[3], &[], &[]] {
-                out.bytes(segment);
-            }
+            out.int(SEGMENTS as i32);
+            out.0.extend(segments_of(&[(1, 2), (7, 1)]).0);
+            out.int(1 << 10);
             out.bool(true);
-            let (tabs, shell, segments, animating) = read_shell_tail(&mut In(&out.0)).unwrap();
+            let (tabs, shell, recording, animating) = read_shell_tail(&mut In(&out.0)).unwrap();
             assert!(tabs && animating);
             assert_eq!(shell, 1);
-            let segments = segments.unwrap();
-            assert_eq!(segments.each_ref().map(Vec::len), [2, 0, 1, 0, 0]);
+            let (segments, routed) = recording.unwrap();
+            assert_eq!(routed, 1 << Leaf::Tooltip as u32);
+            let sizes = segments.each_ref().map(Vec::len);
+            assert_eq!((sizes[1], sizes[7], sizes[0]), (2, 1, 0));
             let mut none = Out::default();
             none.bool(false);
             none.int(0);
             none.bool(false);
+            none.int(0);
             none.bool(false);
-            let (_, shell, segments, animating) = read_shell_tail(&mut In(&none.0)).unwrap();
-            assert!(shell == 0 && segments.is_none() && !animating);
+            let (_, shell, recording, animating) = read_shell_tail(&mut In(&none.0)).unwrap();
+            assert!(shell == 0 && recording.is_none() && !animating);
         }
 
         #[test]
-        fn a_shell_reply_has_no_segment_count() {
+        fn a_status_with_the_old_segment_count_is_refused() {
             let mut out = Out::default();
-            for segment in [&[9u8][..], &[], &[], &[], &[7, 7]] {
-                out.bytes(segment);
-            }
-            let segments = read_segments(&mut In(&out.0), false).unwrap();
-            assert_eq!(segments.each_ref().map(Vec::len), [1, 0, 0, 0, 2]);
+            out.bool(false);
+            out.int(1);
+            out.bool(true);
+            out.int(5);
+            assert!(read_shell_tail(&mut In(&out.0)).is_none());
+        }
+
+        #[test]
+        fn a_shell_reply_has_no_segment_count_and_may_carry_no_recording() {
+            let mut out = Out::default();
+            out.0.push(2);
+            out.bool(true);
+            out.0.extend(segments_of(&[(0, 1), (27, 2)]).0);
+            out.int(0);
+            out.bool(false);
+            let (owner, recording, animating) = read_shell_reply(&mut In(&out.0)).unwrap();
+            assert_eq!((owner, animating), (ShellOwner::Native, false));
+            let sizes = recording.unwrap().0.each_ref().map(Vec::len);
+            assert_eq!((sizes[0], sizes[27]), (1, 2));
+            let mut quiet = Out::default();
+            quiet.0.push(3);
+            quiet.bool(false);
+            quiet.int(0);
+            quiet.bool(true);
+            let (owner, recording, animating) = read_shell_reply(&mut In(&quiet.0)).unwrap();
+            assert!(owner == ShellOwner::None && recording.is_none() && animating);
+        }
+
+        #[test]
+        fn a_step_java_drew_is_not_drawn_by_native_and_widgets_are_both() {
+            let routed = 1 << Leaf::Tooltip as u32 | 1 << Leaf::Widgets as u32;
+            assert_eq!(leaf_draws(routed, Leaf::Tooltip), (false, true));
+            assert_eq!(leaf_draws(routed, Leaf::Slots), (true, false));
+            assert_eq!(leaf_draws(0, Leaf::Widgets), (true, true));
         }
 
         #[test]
@@ -2389,7 +2511,15 @@ impl Game<'_> {
         false
     }
     pub(super) fn java_shell_frame(&mut self) {}
-    pub(super) fn draw_java_shell(&mut self, _batch: &mut HudBatch, _segment: usize) {}
+    pub(super) fn shell_start(&mut self, _batch: &mut HudBatch) {}
+    pub(super) fn shell_leaf(
+        &mut self,
+        batch: &mut HudBatch,
+        _leaf: Leaf,
+        native: impl FnOnce(&mut Self, &mut HudBatch),
+    ) {
+        native(self, batch);
+    }
     pub(super) fn java_shell_mouse(&mut self, _button: MouseButton, _pressed: bool) -> bool {
         true
     }

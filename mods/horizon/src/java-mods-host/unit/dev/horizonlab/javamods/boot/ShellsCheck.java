@@ -13,16 +13,21 @@ public final class ShellsCheck {
         if (Shells.wanted(bus)) throw new AssertionError("an empty bus");
         bus.addListener(ScreenEvent.Render.Post.class, event -> {});
         if (Shells.wanted(bus)) throw new AssertionError("a listener of Horizon's own class");
-        byte[][] a = {{1}, {2}, {3}, {4}, {5}};
-        byte[][] b = {{1}, {2}, {3}, {4}, {6}};
+        byte[][] a = new byte[Shells.SEGMENTS][];
+        byte[][] b = new byte[Shells.SEGMENTS][];
+        for (int i = 0; i < Shells.SEGMENTS; i++) {
+            a[i] = new byte[] {(byte) i};
+            b[i] = new byte[] {(byte) (i == 27 ? 99 : i)};
+        }
         Shells.last = new byte[Shells.SEGMENTS][];
-        if (!Shells.noteRecorded(a, 0) || !Shells.animating) throw new AssertionError("a first recording changes");
-        if (Shells.noteRecorded(a.clone(), 0) || !Shells.animating) throw new AssertionError("alike with no real time passed keeps animating");
-        if (Shells.noteRecorded(a.clone(), 1) || Shells.animating) throw new AssertionError("alike after real time ends it");
-        if (!Shells.noteRecorded(b, 1) || !Shells.animating) throw new AssertionError("a differing one restarts it");
+        if (!Shells.noteRecorded(a, 0, 0) || !Shells.animating) throw new AssertionError("a first recording changes");
+        if (Shells.noteRecorded(a.clone(), 0, 0) || !Shells.animating) throw new AssertionError("alike with no real time passed keeps animating");
+        if (Shells.noteRecorded(a.clone(), 0, 1) || Shells.animating) throw new AssertionError("alike after real time ends it");
+        if (!Shells.noteRecorded(b, 0, 1) || !Shells.animating) throw new AssertionError("a differing one restarts it");
+        if (!Shells.noteRecorded(b.clone(), 1 << 10, 1)) throw new AssertionError("a differing routed set changes it");
         var written = new java.io.ByteArrayOutputStream();
         Shells.write(new java.io.DataOutputStream(written), a, true, true);
-        if (written.size() != 1 + 4 + 5 * 5) throw new AssertionError("a counted write " + written.size());
+        if (written.size() != 1 + 4 + 28 * 5 + 4) throw new AssertionError("a counted write " + written.size());
         System.out.println("ShellsCheck ok");
     }
 }

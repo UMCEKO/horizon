@@ -1008,7 +1008,7 @@ public final class ClientBridge {
         if (minecraft.gui.screen().width != guiWidth || minecraft.gui.screen().height != guiHeight) minecraft.gui.screen().resize(guiWidth, guiHeight);
         var segments = Shells.record(minecraft, (int) minecraft.mouseHandler.getScaledXPos(minecraft.getWindow()), (int) minecraft.mouseHandler.getScaledYPos(minecraft.getWindow()), partial);
         if (segments == null) return;
-        shellChanged = Shells.noteRecorded(segments, timer(minecraft).getRealtimeDeltaTicks());
+        shellChanged = Shells.noteRecorded(segments, Shells.routed, timer(minecraft).getRealtimeDeltaTicks());
         shellSegments = segments;
     }
 

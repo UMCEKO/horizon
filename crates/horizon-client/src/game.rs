@@ -145,6 +145,7 @@ mod java_models;
 #[cfg(feature = "java-mods")]
 mod java_mods;
 mod java_screens;
+use java_screens::Leaf;
 #[cfg(feature = "java-mods")]
 mod java_shapes;
 #[cfg(feature = "java-mods")]
@@ -7672,9 +7673,10 @@ impl Game<'_> {
         }
         let (ox, oy) = self.inventory_origin(batch);
         self.java_shell_frame();
-        self.draw_java_shell(batch, 0);
-        {
-            let atlas = &self.gui.atlas;
+        self.shell_start(batch);
+        let mut labels = None;
+        self.shell_leaf(batch, Leaf::Background, |this, batch| {
+            let atlas = &this.gui.atlas;
             batch.fill(
                 atlas,
                 0.0,
@@ -7700,14 +7702,13 @@ impl Game<'_> {
                     batch.rect_uv(dx, dy, w, h, r, u32::MAX);
                 }
             };
-            let grey = rgba(64, 64, 64, 255);
-            match self
+            match this
                 .container
-                .and_then(|k| self.world.block_entities.get(&k))
+                .and_then(|k| this.world.block_entities.get(&k))
             {
-                Some(_) if self.draw_native_screen(batch, ox, oy) => {}
-                Some(BlockEntity::Chest(_)) if self.draw_machine_screen(batch, ox, oy) => {}
-                Some(BlockEntity::Chest(_)) => self.draw_chest_screen(batch, ox, oy),
+                Some(_) if this.draw_native_screen(batch, ox, oy) => {}
+                Some(BlockEntity::Chest(_)) if this.draw_machine_screen(batch, ox, oy) => {}
+                Some(BlockEntity::Chest(_)) => this.draw_chest_screen(batch, ox, oy),
                 Some(BlockEntity::Furnace(f)) => {
                     let (tex, key, fallback) = match f.kind {
                         horizon_client::containers::FurnaceKind::Furnace => {
@@ -7723,24 +7724,7 @@ impl Game<'_> {
                         }
                     };
                     part(batch, tex, 0.0, 0.0, 176.0, 166.0, ox, oy);
-                    // A server's furnace menu has the title it was given.
-                    let title = self.remote_menu_title().unwrap_or_else(|| {
-                        horizon_client::text::Text::literal(
-                            self.container_title(self.translate(key, fallback)),
-                        )
-                        .resolve_legacy()
-                    });
-                    let tw = atlas.font.width_text(&title);
-                    batch.text_styled(
-                        atlas,
-                        &title,
-                        ox + (176.0 - tw) / 2.0,
-                        oy + 6.0,
-                        grey,
-                        false,
-                    );
-                    let inventory = self.translate("container.inventory", "Inventory");
-                    batch.text(atlas, &inventory, ox + 8.0, oy + 72.0, grey, false);
+                    labels = Some(Some((key, fallback)));
                     if f.lit_remaining > 0 {
                         // AbstractFurnaceScreen: flame height ceil(lit * 13) + 1.
                         let total = if f.lit_total == 0 { 200 } else { f.lit_total };
@@ -7771,7 +7755,7 @@ impl Game<'_> {
                     }
                 }
                 Some(BlockEntity::Brewing(_)) => {}
-                Some(BlockEntity::Crafter(_)) => self.draw_crafter_screen(batch, ox, oy),
+                Some(BlockEntity::Crafter(_)) => this.draw_crafter_screen(batch, ox, oy),
                 Some(
                     BlockEntity::Sign(_)
                     | BlockEntity::Jukebox(_)
@@ -7799,51 +7783,106 @@ impl Game<'_> {
                     | BlockEntity::TestBlock(_)
                     | BlockEntity::TestInstanceBlock(_),
                 ) => {}
-                None if self.mount_active() => self.draw_mount_background(batch, ox, oy),
+                None if this.mount_active() => this.draw_mount_background(batch, ox, oy),
                 None => {
-                    let texture = if self.craft_size == 3 {
+                    let texture = if this.craft_size == 3 {
                         "gui/container/crafting_table"
                     } else {
                         "gui/container/inventory"
                     };
                     part(batch, texture, 0.0, 0.0, 176.0, 166.0, ox, oy);
-                    let title = self.translate("container.crafting", "Crafting");
-                    let tx = if self.craft_size == 3 { 29.0 } else { 97.0 };
-                    batch.text(atlas, &title, ox + tx, oy + 6.0, grey, false);
-                    if self.craft_size == 3 {
-                        let inventory = self.translate("container.inventory", "Inventory");
-                        batch.text(atlas, &inventory, ox + 8.0, oy + 72.0, grey, false);
-                    }
+                    labels = Some(None);
                 }
             }
+            if this.container.is_none() && this.craft_size != 3 && !this.mount_active() {
+                this.draw_inventory_player(batch, ox, oy);
+            }
+        });
+        self.shell_leaf(batch, Leaf::Effects, |this, batch| {
+            if this.container.is_none() && this.craft_size == 2 && !this.mount_active() {
+                this.draw_inventory_effects(batch, (ox, oy), 176);
+            }
+        });
+        self.shell_leaf(batch, Leaf::Widgets, |this, batch| {
+            this.draw_sort_buttons(batch, ox, oy);
+            this.draw_recipe_book_button(batch);
+        });
+        self.shell_leaf(batch, Leaf::Labels, |this, batch| {
+            this.draw_inventory_labels(batch, ox, oy, labels);
+        });
+        self.shell_leaf(batch, Leaf::HighlightBack, |_, _| {});
+        self.shell_leaf(batch, Leaf::Slots, |this, batch| {
+            this.draw_inventory_slots(batch, ox, oy);
+        });
+        self.shell_leaf(batch, Leaf::HighlightFront, |this, batch| {
+            if let Some(slot) = this.slot_at(batch, this.cursor.0, this.cursor.1) {
+                let (sx, sy) = this.slot_position(slot);
+                batch.fill(
+                    &this.gui.atlas,
+                    ox + sx,
+                    oy + sy,
+                    16.0,
+                    16.0,
+                    rgba(255, 255, 255, 128),
+                );
+            }
+        });
+        self.shell_leaf(batch, Leaf::Extra, |_, _| {});
+        let mut book_tooltip = None;
+        self.shell_leaf(batch, Leaf::RecipeBook, |this, batch| {
+            book_tooltip = this.draw_recipe_book_panel(batch);
+        });
+        self.shell_leaf(batch, Leaf::Carried, |this, batch| this.draw_carried(batch));
+        self.shell_leaf(batch, Leaf::Tooltip, |this, batch| {
+            this.draw_slot_tooltip(batch);
+            this.draw_native_screen_tooltip(batch);
+        });
+        self.shell_leaf(batch, Leaf::BookTooltip, |this, batch| {
+            this.draw_recipe_book_tooltip(batch, book_tooltip);
+        });
+        self.shell_leaf(batch, Leaf::Deferred, |_, _| {});
+    }
+    /// The titles `extractLabels` draws: a furnace's by its name key (a server's menu has the title it was given), or the crafting grid's.
+    fn draw_inventory_labels(
+        &self,
+        batch: &mut HudBatch,
+        ox: f32,
+        oy: f32,
+        labels: Option<Option<(&str, &str)>>,
+    ) {
+        let atlas = &self.gui.atlas;
+        let grey = rgba(64, 64, 64, 255);
+        match labels {
+            Some(Some((key, fallback))) => {
+                let title = self.remote_menu_title().unwrap_or_else(|| {
+                    horizon_client::text::Text::literal(
+                        self.container_title(self.translate(key, fallback)),
+                    )
+                    .resolve_legacy()
+                });
+                let tw = atlas.font.width_text(&title);
+                batch.text_styled(
+                    atlas,
+                    &title,
+                    ox + (176.0 - tw) / 2.0,
+                    oy + 6.0,
+                    grey,
+                    false,
+                );
+                let inventory = self.translate("container.inventory", "Inventory");
+                batch.text(atlas, &inventory, ox + 8.0, oy + 72.0, grey, false);
+            }
+            Some(None) => {
+                let title = self.translate("container.crafting", "Crafting");
+                let tx = if self.craft_size == 3 { 29.0 } else { 97.0 };
+                batch.text(atlas, &title, ox + tx, oy + 6.0, grey, false);
+                if self.craft_size == 3 {
+                    let inventory = self.translate("container.inventory", "Inventory");
+                    batch.text(atlas, &inventory, ox + 8.0, oy + 72.0, grey, false);
+                }
+            }
+            None => {}
         }
-        self.draw_java_shell(batch, 1);
-        if self.container.is_none() && self.craft_size != 3 && !self.mount_active() {
-            self.draw_inventory_player(batch, ox, oy);
-        }
-        self.draw_inventory_slots(batch, ox, oy);
-        self.draw_sort_buttons(batch, ox, oy);
-        self.draw_recipe_book(batch);
-        self.draw_java_shell(batch, 2);
-        if let Some(slot) = self.slot_at(batch, self.cursor.0, self.cursor.1) {
-            let (sx, sy) = self.slot_position(slot);
-            batch.fill(
-                &self.gui.atlas,
-                ox + sx,
-                oy + sy,
-                16.0,
-                16.0,
-                rgba(255, 255, 255, 128),
-            );
-        }
-        self.draw_java_shell(batch, 3);
-        self.draw_carried(batch);
-        self.draw_slot_tooltip(batch);
-        self.draw_native_screen_tooltip(batch);
-        if self.container.is_none() && self.craft_size == 2 && !self.mount_active() {
-            self.draw_inventory_effects(batch, (ox, oy), 176);
-        }
-        self.draw_java_shell(batch, 4);
     }
     /// `AbstractContainerScreen` keeps `isQuickCrafting` and the drag it
     /// belongs to on the screen. Horizon keeps both on `Game` (`inv_clicks`,
