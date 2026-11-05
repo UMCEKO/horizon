@@ -742,7 +742,11 @@ impl Entry {
         }
         .and_then(|reply| reply.l())
         .ok()?;
-        env.convert_byte_array(JByteArray::from(reply)).ok()
+        let reply = JByteArray::from(reply);
+        let bytes = env.convert_byte_array(&reply).ok();
+        // A permanently attached thread has no Java frame to free it.
+        let _ = env.delete_local_ref(reply);
+        bytes
     }
 }
 
