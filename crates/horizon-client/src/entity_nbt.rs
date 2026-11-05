@@ -87,6 +87,13 @@ fn effect_from_details(id: &'static str, tag: &Tag) -> crate::mobs::effect::MobE
 fn flag(tag: &Tag, key: &str) -> bool {
     number(tag.get(key)).unwrap_or(0) != 0
 }
+/// `OnGround` and `fall_distance`, as the base tag names them.
+fn move_state(tag: &Tag) -> horizon_world::entity_move::MoveState {
+    let mut state = horizon_world::entity_move::MoveState::default();
+    state.ground.on_ground = flag(tag, "OnGround");
+    state.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
+    state
+}
 /// `Entity.saveWithoutId` fields every entity has, over the loaded compound.
 struct Base<'a> {
     id: &'a str,
@@ -1889,8 +1896,8 @@ pub fn orb_to_nbt(o: &ExperienceOrb, uuid: [i32; 4]) -> Tag {
         position: o.position,
         motion: o.velocity,
         rotation: [0.0, 0.0],
-        on_ground: o.on_ground,
-        fall_distance: 0.0,
+        on_ground: o.moving.ground.on_ground,
+        fall_distance: o.moving.fall_distance,
     };
     let mut tag = base.tag(None);
     for (key, value) in [
@@ -1916,7 +1923,7 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
         velocity: motion(tag),
         value: number(tag.get("Value")).unwrap_or(1).max(1) as u32,
         age: number(tag.get("Age")).unwrap_or(0).max(0) as u32,
-        on_ground: flag(tag, "OnGround"),
+        moving: move_state(tag),
         count,
         ticks: 0,
         removed: false,
@@ -2838,7 +2845,7 @@ mod tests {
             velocity: Vec3::ZERO,
             value: 7,
             age: 3,
-            on_ground: false,
+            moving: Default::default(),
             count: 3,
             ticks: 0,
         };

@@ -518,7 +518,7 @@ pub struct ExperienceOrb {
     pub velocity: Vec3,
     pub value: u32,
     pub age: u32,
-    pub on_ground: bool,
+    pub moving: horizon_world::entity_move::MoveState,
     /// `ExperienceOrb.count`: orbs merged into this one; each pickup gives
     /// `value` once and takes one off.
     pub count: u32,
@@ -624,16 +624,16 @@ impl ExperienceOrb {
         };
         let wanted = self.velocity;
         let moved = scene
-            .resolve(bounds, wanted, 0.0, self.on_ground)
+            .resolve(bounds, wanted, 0.0, self.moving.ground.on_ground)
             .unwrap_or(Vec3::ZERO);
         self.position = Vec3::new(
             self.position.x + moved.x,
             self.position.y + moved.y,
             self.position.z + moved.z,
         );
-        self.on_ground = wanted.y < 0.0 && moved.y != wanted.y;
+        self.moving.ground.on_ground = wanted.y < 0.0 && moved.y != wanted.y;
         let mut friction = 0.98;
-        if self.on_ground {
+        if self.moving.ground.on_ground {
             let below = world.block(
                 self.position.x.floor() as i32,
                 (self.position.y - 1.0).floor() as i32,
@@ -646,7 +646,7 @@ impl ExperienceOrb {
             self.velocity.y * 0.98,
             self.velocity.z * friction,
         );
-        if self.on_ground {
+        if self.moving.ground.on_ground {
             self.velocity.y *= -0.9;
         }
         self.age += 1;

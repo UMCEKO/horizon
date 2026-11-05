@@ -88,6 +88,8 @@ mod crossing;
 #[cfg(test)]
 mod crossing_tests;
 mod entity_life;
+#[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+mod entity_move;
 use entity_life::{Kind, NewEntity, Origin, Removal};
 pub(crate) mod cushions;
 mod debug_keys;
@@ -11711,7 +11713,7 @@ impl Game<'_> {
             ),
             value,
             age: 0,
-            on_ground: false,
+            moving: Default::default(),
             count: 1,
             ticks: 0,
         };

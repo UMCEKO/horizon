@@ -872,6 +872,25 @@ impl Game<'_> {
         }
     }
 
+    /// `Entity.move` asked by Java for the entity `id`: false when it moved nothing.
+    pub(super) fn java_move(&mut self, id: u32, mover: i32, delta: [f64; 3]) -> bool {
+        let Some(target) = self.java_target(id) else {
+            return false;
+        };
+        let mover = match mover {
+            0 => horizon_world::entity_move::MoverType::SelfMovement,
+            1 => horizon_world::entity_move::MoverType::Player,
+            2 => horizon_world::entity_move::MoverType::Piston,
+            3 => horizon_world::entity_move::MoverType::ShulkerBox,
+            _ => horizon_world::entity_move::MoverType::Shulker,
+        };
+        let moved = self.entity_move(target, mover, Vec3::new(delta[0], delta[1], delta[2]));
+        if !moved {
+            log::warn!("Horizon: Entity.move of {target:?} has no port yet");
+        }
+        moved
+    }
+
     pub(super) fn java_set_motion(&mut self, id: u32, v: [f64; 3], add: bool) -> bool {
         let Some(t) = self.java_target(id) else {
             return false;
@@ -1247,7 +1266,7 @@ impl Game<'_> {
                 .orbs
                 .iter()
                 .find(|o| o.id == id)
-                .map(|o| (o.velocity, o.on_ground)),
+                .map(|o| (o.velocity, o.moving.ground.on_ground)),
             Target::Boat(id) => self
                 .boats
                 .iter()

@@ -261,7 +261,13 @@ fn orbs_in_a_crossing_are_in_place_added_ones_wait_and_removed_ones_are_skipped(
             velocity: Vec3::ZERO,
             value: 1,
             age: 0,
-            on_ground: true,
+            moving: horizon_world::entity_move::MoveState {
+                ground: horizon_world::ground_support::GroundState {
+                    on_ground: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
             count: 1,
             ticks: 0,
             removed: false,

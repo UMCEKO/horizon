@@ -245,6 +245,14 @@ horizon_java_host::java_bridges! { table for Game<'static> {
         motion(game, id, [x, y, z], true);
     }
 
+    "net/minecraft/world/entity/Entity".move
+    "(Lnet/minecraft/world/entity/MoverType;Lnet/minecraft/world/phys/Vec3;)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
+    fn entity_move(game, id: Ent, mover: i32, delta: Point) -> () {
+        if game.java_move(id.0, mover, delta.0) {
+            after(game, id, POSITION | MOTION | FLAGS);
+        }
+    }
+
     "net/minecraft/world/entity/Entity".setPos
     "(DDD)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
     fn entity_set_pos(game, id: Ent, x: f64, y: f64, z: f64) -> () {

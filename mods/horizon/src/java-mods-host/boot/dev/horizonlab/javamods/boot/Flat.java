@@ -39,6 +39,10 @@ public final class Flat {
         return reason.ordinal();
     }
 
+    public static int raw(net.minecraft.world.entity.MoverType type) {
+        return type.ordinal();
+    }
+
     public static int raw(net.minecraft.world.level.pathfinder.PathType type) {
         return type.ordinal();
     }

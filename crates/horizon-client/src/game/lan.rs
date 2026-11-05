@@ -1668,7 +1668,7 @@ impl Game<'_> {
         for o in &self.orbs {
             let e = out.add(o.id as i32, entity_uuid(o.id), "minecraft:experience_orb");
             e.position = [o.position.x, o.position.y, o.position.z];
-            e.on_ground = o.on_ground;
+            e.on_ground = o.moving.ground.on_ground;
             e.velocity = [o.velocity.x, o.velocity.y, o.velocity.z];
             // ExperienceOrb.DATA_VALUE.
             e.meta
