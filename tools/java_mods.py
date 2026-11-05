@@ -55,10 +55,22 @@ def java_home():
     return re.search(r'java\.home = (.+)', settings).group(1).strip()
 
 
+def mixinextras(classpath):
+    """The MixinExtras jar NeoForge's universal jar nests, taken out once so the test mod compiles against it."""
+    out = JARS / 'mixinextras.jar'
+    if not out.is_file():
+        universal = next(jar for jar in classpath.split(':') if jar.endswith('-universal.jar'))
+        with zipfile.ZipFile(universal) as z:
+            nested = next(n for n in z.namelist() if n.startswith('META-INF/jarjar/mixinextras'))
+            out.write_bytes(z.read(nested))
+    return str(out)
+
+
 def build(java_only=False):
     JARS.mkdir(parents=True, exist_ok=True)
     # Against the client, which holds the server's classes too.
-    cp = ':'.join(jar for jar in oracle.client_classpath(oracle.client()[0]).split(':') if 'installertools' not in jar)
+    classpath = oracle.client_classpath(oracle.client()[0])
+    cp = ':'.join(jar for jar in classpath.split(':') if 'installertools' not in jar) + ':' + mixinextras(classpath)
     host_classes = str(JARS / 'classes' / 'host')
     for name, jar, extra in (('host', HOST_JAR, ''), ('plugin', PLUGIN_JAR, host_classes), ('boot', BOOT_JAR, host_classes), ('testmod', TEST_JAR, '')):
         classes = JARS / 'classes' / name
@@ -320,6 +332,18 @@ def bridges(args):
         for slot in (2, 8, 3):
             send(f'select {slot}')
             send('wait 3')
+        # A body route: with slot 9 selected the test mod's getFreeSlot reports slot 0 full, so the stack lands in slot 2.
+        send('command clear @s')
+        send('select 9')
+        send('wait 3')
+        send('give minecraft:stone 1')
+        send('wait 3')
+        held = json.loads(send('inventory'))
+        held = held.get('inventory', held)['hotbar']
+        if 'stone' in json.dumps(held[0]) or 'stone' not in json.dumps(held[1]):
+            wrong.append('route_body_free_slot')
+        send('select 3')
+        send('wait 3')
         send('command kill @e[type=item]')
         # Outside the checked stretches: an entity the player's client tracks.
         send(f'command summon minecraft:armor_stand {base[0] + 40} {y} {z - 12} {{NoGravity:1b}}')
@@ -458,7 +482,7 @@ def bridges(args):
     session(args, drive)
     checks = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     shutil.copy(Path(args.scratch) / 'ctl.log', Path(args.scratch) / 'first-session.log')
-    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail') if (name, 'ok') not in checks)
+    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java') if (name, 'ok') not in checks)
     session(args, again)
     second = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks += [(name + ' (second session)', result) for name, result in second]
@@ -529,7 +553,7 @@ def java_args(desc):
 
 
 BRIDGES_DIR = oracle.ROOT / 'crates' / 'horizon-client' / 'src' / 'game' / 'java_bridges'
-BRIDGE_ENTRY = re.compile(r'"([\w/$]+)"\.(\S+)\s+"(\([^"]*)"(?:\s+if\s+"([\w/$]+)")?\s*=>\s*fn\s+(\w+)\(\s*\w+\s*((?:,\s*\w+:\s*\w+\s*)*),?\s*\)\s*->\s*([\w()]+)')
+BRIDGE_ENTRY = re.compile(r'"([\w/$]+)"\.(\S+)\s+"(\([^"]*)"(?:\s+if\s+"(@?[\w/$.]+)")?\s*=>\s*fn\s+(\w+)\(\s*\w+\s*((?:,\s*\w+:\s*\w+\s*)*),?\s*\)\s*->\s*([\w()]+)')
 
 
 def unbridged_writers(analysis):
@@ -595,7 +619,7 @@ def check_bridges(args=None):
             if owner not in classes or (method, desc) not in classes[owner][2]:
                 errors.append(f'{where}: no {owner}.{method}{desc}')
                 continue
-            if guard and not extends(guard, owner):
+            if guard and not guard.startswith('@') and not extends(guard, owner):
                 errors.append(f'{where}: {guard} is not a {owner}')
             args, ret = java_args(desc)
             types = [t.split(':')[1].strip() for t in params.split(',') if t.strip()]
