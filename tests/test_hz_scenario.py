@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools import hz_scenario as hs
 
@@ -223,6 +224,39 @@ class InstallTests(unittest.TestCase):
             self.assertTrue((homes / 'horizon' / 'saves' / 'W' / 'level.dat').is_file())
             self.assertFalse((homes / 'horizon' / 'logs' / 'latest.log').exists())
             self.assertTrue((scratch / 'libraries').is_symlink())
+
+
+HISTO = ''' num     #instances         #bytes  class name (module)
+-------------------------------------------------------
+   1:       1150435      157681488  [B (java.base@25.0.4.1)
+  40646:             1             16  yalter.mousetweaks.neoforge.MouseTweaksNeo$$Lambda/0x00000000181c9460 (mousetweaks@2.31)
+Total      11002079      534824632
+'''
+METASPACE = '''Total Usage - 1757 loaders, 64799 classes (1618 shared):
+  Non-Class: 10699 chunks,   195.41 MB capacity,  195.28 MB (>99%) committed,   194.07 MB (>99%) used,     1.2 MB ( <1%) free
+       Both: 15022 chunks,   238.93 MB capacity,  238.62 MB (>99%) committed,   236.51 MB ( 99%) used,     2.10 MB ( <1%) free,     0 bytes (  0%) waste , deallocated: 696 blocks with 83.68 KB
+'''
+
+
+class HeapTests(Base):
+    def test_histogram_total_and_metaspace_used(self):
+        self.assertEqual(hs.histogram_total(HISTO), 534824632)
+        self.assertEqual(hs.metaspace_used(METASPACE), int(236.51 * (1 << 20)))
+        self.assertIsNone(hs.histogram_total('nothing'))
+        self.assertIsNone(hs.metaspace_used('nothing'))
+
+    def test_the_check_compares_both_limits(self):
+        self.ctl.java, self.ctl.marker = '/jdk', 'm'
+        outputs = {'GC.class_histogram': HISTO, 'VM.metaspace': METASPACE}
+        with mock.patch.object(hs, 'game_pid', return_value=7), mock.patch.object(hs, 'jcmd', side_effect=lambda java, pid, command: outputs[command]):
+            ok = hs.read_java_heap(self.ctl, {'max_live_mb': 600, 'max_metaspace_mb': 260})
+            low = hs.read_java_heap(self.ctl, {'max_live_mb': 450, 'max_metaspace_mb': 260})
+        self.assertEqual(ok, (True, {'max_live_mb': 600, 'max_metaspace_mb': 260}, {'live_mb': 510, 'metaspace_mb': 237}))
+        self.assertFalse(low[0])
+
+    def test_no_game_process_fails(self):
+        with mock.patch.object(hs, 'game_pid', return_value=None):
+            self.assertFalse(hs.read_java_heap(self.ctl, {'max_live_mb': 1})[0])
 
 
 if __name__ == '__main__':
