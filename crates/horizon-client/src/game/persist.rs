@@ -44,6 +44,13 @@ pub struct EntityMemory {
     restored: HashSet<[i32; 4]>,
 }
 
+/// What `spawn_node` made of a compound.
+enum Node {
+    Spawned(u32),
+    Kept(Tag),
+    Lost,
+}
+
 fn anon_key(kind: &str, p: Vec3) -> (String, [u64; 3]) {
     (
         kind.to_owned(),
@@ -261,24 +268,69 @@ impl Game<'_> {
         }
     }
     /// `EntityType.loadEntityRecursive`: the entity, then each of its `Passengers` boarding it by force.
-    pub(super) fn spawn_tree(
-        &mut self,
-        mut tag: Tag,
-        origin: Origin,
-        key: (i32, i32),
-    ) -> Option<u32> {
+    pub(super) fn spawn_tree(&mut self, tag: Tag, origin: Origin, key: (i32, i32)) -> Option<u32> {
+        match self.spawn_node(tag, origin, key) {
+            Node::Spawned(id) => Some(id),
+            Node::Kept(tag) => {
+                self.persist.unknown.entry(key).or_default().push(tag);
+                None
+            }
+            Node::Lost => None,
+        }
+    }
+    /// One compound with its passengers: what no loader can spawn comes back to be kept with its subtree.
+    fn spawn_node(&mut self, mut tag: Tag, origin: Origin, key: (i32, i32)) -> Node {
         let passengers = take_passengers(&mut tag);
-        let root = self.spawn_one(tag, origin, key);
+        let anon = entity_nbt::kind(&tag)
+            .zip(entity_nbt::position(&tag))
+            .map(|(k, at)| anon_key(&k, at));
+        let mut unknown = None;
+        let root = self.spawn_one(tag, origin, &mut unknown);
+        if let Some(mut tag) = unknown {
+            if !passengers.is_empty()
+                && let Tag::Compound(c) = &mut tag
+            {
+                c.insert("Passengers".into(), Tag::List(passengers));
+            }
+            return Node::Kept(tag);
+        }
+        let mut kept = Vec::new();
         for p in passengers {
-            let child = self.spawn_tree(p, origin, key);
-            if let (Some(root), Some(child)) = (root, child) {
-                self.start_riding(Ent::Id(child), Ent::Id(root), true, false);
+            let mob = entity_nbt::kind(&p).is_some_and(|k| self.res.mob_types().contains_key(&k));
+            match self.spawn_node(p.clone(), origin, key) {
+                Node::Spawned(child) => {
+                    if let Some(root) = root {
+                        self.start_riding(Ent::Id(child), Ent::Id(root), true, false);
+                    }
+                }
+                Node::Kept(t) => kept.push(t),
+                Node::Lost if !mob => kept.push(p),
+                Node::Lost => {}
             }
         }
-        root
+        if kept.is_empty() {
+            return root.map_or(Node::Lost, Node::Spawned);
+        }
+        let Some(root) = root else {
+            self.persist.unknown.entry(key).or_default().extend(kept);
+            return Node::Lost;
+        };
+        let raw = match self.persist.raw.get_mut(&root) {
+            Some(raw) => Some(raw),
+            None => anon.and_then(|k| self.persist.anon.get_mut(&k).map(|(_, _, raw)| raw)),
+        };
+        if let Some(Tag::Compound(c)) = raw {
+            match c.get_mut(&"Passengers".into()) {
+                Some(Tag::List(l)) => l.extend(kept),
+                _ => {
+                    c.insert("Passengers".into(), Tag::List(kept));
+                }
+            }
+        }
+        Node::Spawned(root)
     }
     /// The entity of one compound, passengers left out, by its kind's loader.
-    fn spawn_one(&mut self, tag: Tag, origin: Origin, key: (i32, i32)) -> Option<u32> {
+    fn spawn_one(&mut self, tag: Tag, origin: Origin, unknown: &mut Option<Tag>) -> Option<u32> {
         let player_uuid = self.level.player_uuid;
         let kind = entity_nbt::kind(&tag).unwrap_or_default();
         let uuid = entity_nbt::uuid(&tag);
@@ -554,7 +606,7 @@ impl Game<'_> {
                     }
                     None
                 } else {
-                    self.persist.unknown.entry(key).or_default().push(tag);
+                    *unknown = Some(tag);
                     None
                 }
             }
@@ -563,7 +615,7 @@ impl Game<'_> {
                 self.load_other(tag, &kind, origin)
             }
             _ => {
-                self.persist.unknown.entry(key).or_default().push(tag);
+                *unknown = Some(tag);
                 None
             }
         }

@@ -1582,4 +1582,38 @@ mod tests {
         game.summon("cow", Some([20.5, 61.0, 20.5]), false).unwrap();
         assert_eq!(joins(&log), vec![Origin::FromDisk, Origin::Fresh]);
     }
+
+    #[test]
+    fn passengers_no_loader_can_spawn_are_saved_under_their_vehicle() {
+        use horizon_world::nbt::Tag;
+        let Some(mut game) = flat_game() else { return };
+        game.summon("pig", Some([2.5, 61.0, 2.5]), false).unwrap();
+        let keys = std::collections::HashSet::from([(0, 0)]);
+        let mut pig = game
+            .entity_chunks(&keys, true)
+            .into_iter()
+            .flat_map(|(_, tags)| tags)
+            .next()
+            .expect("the pig was saved");
+        let alien = Tag::compound([("id", Tag::String("modded:thing".into()))]);
+        let bad_item = Tag::compound([("id", Tag::String("minecraft:item".into()))]);
+        if let Tag::Compound(c) = &mut pig {
+            c.insert(
+                "Passengers".into(),
+                Tag::List(vec![alien.clone(), bad_item.clone()]),
+            );
+        }
+        game.world.loaded_entities.push(((0, 0), vec![pig]));
+        game.spawn_loaded_entities(Origin::FromDisk);
+        let saved: Vec<Tag> = game
+            .entity_chunks(&keys, true)
+            .into_iter()
+            .flat_map(|(_, tags)| tags)
+            .collect();
+        assert_eq!(saved.len(), 1, "no standalone copy of a passenger");
+        let Some(Tag::List(list)) = saved[0].get("Passengers") else {
+            panic!("the passengers were lost");
+        };
+        assert_eq!(list, &vec![alien, bad_item]);
+    }
 }
