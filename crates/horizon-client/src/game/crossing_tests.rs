@@ -24,10 +24,10 @@ pub(super) fn flat_game() -> Option<Game<'static>> {
     .ok()??;
     options.execution_role = execution_role::ExecutionRole::IntegratedServer;
     options.dedicated = Some(Vec::new());
-    options.server_thread = false;
     let settings = Settings::default();
     let loaded = load_resources(
         root.clone(),
+        None,
         &root,
         &settings,
         Instant::now(),
@@ -212,6 +212,14 @@ fn items_in_a_crossing_are_in_place_added_ones_wait_and_removed_ones_are_skipped
             bob_offset: 0.0,
             ticks: 0,
             removed: false,
+            rotation: [0.0, 0.0],
+            join: Default::default(),
+            no_gravity: false,
+            needs_sync: false,
+            stuck: Vec3::ZERO,
+            was_touching_water: false,
+            vertical_collision: false,
+            horizontal_collision: false,
         });
         game.next_entity
     };
@@ -262,6 +270,10 @@ fn orbs_in_a_crossing_are_in_place_added_ones_wait_and_removed_ones_are_skipped(
             count: 1,
             ticks: 0,
             removed: false,
+            rotation: [0.0, 0.0],
+            join: Default::default(),
+            no_gravity: false,
+            health: 5,
         });
         game.next_entity
     };

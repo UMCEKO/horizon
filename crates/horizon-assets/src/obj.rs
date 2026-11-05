@@ -1,4 +1,4 @@
-//! Wavefront OBJ and MTL text, as `neoforge:obj` models use them.
+//! Wavefront OBJ and MTL text, as obj-loader models use them.
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq)]

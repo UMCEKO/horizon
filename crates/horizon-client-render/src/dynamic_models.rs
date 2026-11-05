@@ -229,6 +229,7 @@ fn to_face(
         quad: model,
         layer,
         tint: None,
+        fusion: None,
     }
 }
 

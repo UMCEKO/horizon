@@ -196,7 +196,16 @@ horizon_java_host::java_bridges! { table for Game<'static> {
         let dimension = game.dim.id();
         let uniform = sx == sy && sx == sz && randomization == 0 && !limiter && !always;
         if uniform {
-            game.lan_send_particles(dimension, &options, state, at, [dx, dy, dz], sx, count);
+            game.lan_send_particles(super::super::lan_particles::QueuedParticle {
+                dimension,
+                options,
+                state,
+                at,
+                spread: [dx, dy, dz],
+                speed: [sx; 3],
+                count,
+                randomization: 0,
+            });
         } else if let (Some(particle), Some(host)) = (game.network_particle(&options, state), game.lan.as_ref()) {
             let limit: f64 = if limiter { 512.0 } else { 32.0 };
             let body = C::LevelParticles(play::LevelParticles {

@@ -699,6 +699,7 @@ pub(in crate::game) mod live {
                     color,
                     depth: 0.0,
                     glint_uv: [0.0, 0.0],
+                    text: 0,
                 });
             }
         }

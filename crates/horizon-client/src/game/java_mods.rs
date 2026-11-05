@@ -514,7 +514,14 @@ impl Game<'_> {
             | Target::Cart(id)
             | Target::Other(id)
             | Target::Crystal(id)
-            | Target::Dragon(id) => Some(id),
+            | Target::Dragon(id)
+            | Target::Fangs(id)
+            | Target::Tnt(id)
+            | Target::Falling(id)
+            | Target::Rocket(id)
+            | Target::Trident(id)
+            | Target::Spawner(id)
+            | Target::Cloud(id) => Some(id),
         }
     }
 
@@ -675,10 +682,12 @@ impl Game<'_> {
 
     /// Java made a block entity: its place in the chunk, which saves it and gives it its turn to tick.
     pub(in crate::game) fn java_adopt_block_entity(&mut self, pos: BlockPos, id: String) {
-        let entity = BlockEntity::Mod(Box::new(horizon_client::containers::ModBlockEntity {
-            id,
-            ..Default::default()
-        }));
+        let entity = BlockEntity::Mod(Box::new(horizon_client::containers::ModBlockEntity::new(
+            horizon_client::containers::ModBlockEntityFields {
+                id,
+                ..Default::default()
+            },
+        )));
         let key = (pos.x, pos.y, pos.z);
         self.world.block_entities.release_for_java(&key);
         self.world.block_entities.insert(key, entity);

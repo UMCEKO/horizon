@@ -11,6 +11,7 @@ use horizon_core::geometry::{Direction, ShapeOp, VoxelShape};
 use std::{
     collections::{BTreeMap, HashMap},
     io,
+    sync::Arc,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,14 +40,28 @@ struct State {
 }
 /// Prepared face geometry and a bounded cache shared across state pairs. Geometry
 /// is deduplicated by the imported immutable shape, not copied for every state.
-/// A clone shares the tables and copies only the cache: each mesh worker has one.
+/// A clone (each meshing worker keeps one, with its own cache) shares the states
+/// and faces, which never change once made.
 #[derive(Clone)]
 pub struct FaceVisibility {
-    states: std::sync::Arc<[State]>,
-    faces: std::sync::Arc<[VoxelShape]>,
+    states: Arc<[State]>,
+    faces: Arc<[VoxelShape]>,
     cache: HashMap<(u32, u32), bool>,
 }
 impl FaceVisibility {
+    /// No state's faces, for a server, which draws nothing: every lookup
+    /// answers "unknown render state".
+    pub fn empty() -> Self {
+        Self {
+            states: Arc::new([]),
+            faces: Arc::new([VoxelShape::empty(), VoxelShape::block()]),
+            cache: HashMap::new(),
+        }
+    }
+    /// [`Self::empty`]: no state is known.
+    pub fn is_empty(&self) -> bool {
+        self.states.is_empty()
+    }
     pub fn new(
         occlusion: &CachedCollisionRegistry<'_>,
         definitions: &BTreeMap<String, RenderDefinition>,
@@ -213,5 +228,30 @@ impl FaceVisibility {
         }
         self.cache.insert(key, visible);
         Ok(visible)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A server's empty visibility knows no state: lookups fail instead of
+    /// panicking.
+    #[test]
+    fn empty_visibility_knows_no_state() {
+        let mut visibility = FaceVisibility::empty();
+        assert!(visibility.is_empty());
+        let stone = BlockStateId(1);
+        assert!(visibility.occlusion_face(stone, Direction::Up).is_none());
+        assert!(
+            visibility
+                .skip_rendering(stone, stone, Direction::Up, true)
+                .is_err()
+        );
+        assert!(
+            visibility
+                .should_render_face(stone, stone, Direction::Up, true)
+                .is_err()
+        );
     }
 }

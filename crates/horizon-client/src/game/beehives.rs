@@ -157,8 +157,18 @@ impl Game<'_> {
         self.world
             .block_entities
             .put(key, BlockEntity::Beehive(hive));
-        if stored && let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
-            m.removed = true;
+        if stored {
+            let kind = self.mobs[i].kind.id.clone();
+            let block = self
+                .res
+                .facts()
+                .get(self.world.block(at[0], at[1], at[2]))
+                .name
+                .clone();
+            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
+                m.removed = true;
+            }
+            self.native_entity_enter_block(mob, &kind, at, &block);
         }
     }
     /// `BeehiveBlockEntity.emptyAllLivingFromHive` with no player about.
@@ -269,8 +279,8 @@ impl Game<'_> {
             }
             self.post_block_game_event("minecraft:fluid_pickup", pos, self.sculk_actor(), None);
         }
-        self.stats.add("used", &held.item, 1);
-        let smokey = beehive::smokey(&self.mob_world(&self.mob_shared(), &[]), pos);
+        self.award_stat("used", &held.item, 1);
+        let smokey = beehive::smokey(&self.mob_world_base(&[]), pos);
         let key = (pos[0], pos[1], pos[2]);
         if !smokey
             && matches!(self.world.block_entities.get(&key), Some(BlockEntity::Beehive(h)) if !h.bees.is_empty())

@@ -65,7 +65,9 @@ pub struct CuboidModel {
     pub textures: BTreeMap<String, TextureSlot>,
     pub elements: Option<Vec<Option<Element>>>,
     pub display: Option<ItemTransforms>,
-    /// NeoForge's `visibility`: an obj object or composite child name to shown; absent is shown.
+    /// NeoForge's `render_type`, without a `minecraft:` prefix.
+    pub render_type: Option<String>,
+    /// A model's `visibility`: an obj object or composite child name to shown; absent is shown.
     pub visibility: BTreeMap<String, bool>,
     /// NeoForge's root `transform` of all this model's geometry.
     pub root_transform: Option<crate::root_transform::RootTransform>,
@@ -168,6 +170,63 @@ impl BakedQuadData {
         })
     }
 }
+/// NeoForge's `neoforge_data` of an element or a face; a face's keys win.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NeoforgeData {
+    pub block_light: Option<u8>,
+    pub sky_light: Option<u8>,
+    /// ARGB.
+    pub color: Option<i32>,
+    pub ambient_occlusion: Option<bool>,
+}
+impl NeoforgeData {
+    /// `self` over `base`, key by key.
+    pub fn over(self, base: Self) -> Self {
+        Self {
+            block_light: self.block_light.or(base.block_light),
+            sky_light: self.sky_light.or(base.sky_light),
+            color: self.color.or(base.color),
+            ambient_occlusion: self.ambient_occlusion.or(base.ambient_occlusion),
+        }
+    }
+    fn decode(raw: &RawValue) -> Result<Self> {
+        let obj = object(raw)?;
+        let light = |key: &str| -> Result<Option<u8>> {
+            Ok(obj
+                .get(key)
+                .map(|r| integer(r))
+                .transpose()?
+                .map(|v| v.clamp(0, 15) as u8))
+        };
+        // Some mods spell both lights as one `light_emission`.
+        let emission = light("light_emission")?;
+        let color = match obj.get("color") {
+            Some(raw) if raw.get().starts_with('"') => {
+                let text = string(raw)?;
+                let text = text.trim();
+                let hex = text
+                    .strip_prefix('#')
+                    .or_else(|| text.strip_prefix("0x"))
+                    .or_else(|| text.strip_prefix("0X"));
+                match hex {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok().map(|v| v as i32),
+                    None => text.parse::<u32>().ok().map(|v| v as i32),
+                }
+            }
+            Some(raw) => Some(integer(raw)?),
+            None => None,
+        };
+        Ok(Self {
+            block_light: light("block_light")?.or(emission),
+            sky_light: light("sky_light")?.or(emission),
+            color,
+            ambient_occlusion: obj
+                .get("ambient_occlusion")
+                .map(|r| boolean(r))
+                .transpose()?,
+        })
+    }
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct Element {
     pub from: [f32; 3],
@@ -176,6 +235,7 @@ pub struct Element {
     pub rotation: Option<ElementRotation>,
     pub shade_direction_override: Option<Direction>,
     pub light_emission: u8,
+    pub neoforge_data: Option<NeoforgeData>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Face {
@@ -185,6 +245,9 @@ pub struct Face {
     pub uv: Option<[f32; 4]>,
     /// Normalized counterclockwise quadrants, in the range 0..4.
     pub rotation: u8,
+    /// A face-level `light_emission`, which wins over its element's.
+    pub light_emission: Option<u8>,
+    pub neoforge_data: Option<NeoforgeData>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Axis {
@@ -293,12 +356,12 @@ impl CuboidModel {
             .get("display")
             .map(|r| ItemTransforms::decode(r))
             .transpose()?;
-        let mut visibility = BTreeMap::new();
-        if let Some(raw) = obj.get("visibility") {
-            for (key, raw) in object(raw)? {
-                visibility.insert(key, boolean(raw)?);
-            }
-        }
+        let render_type = obj
+            .get("render_type")
+            .filter(|raw| raw.get().starts_with('"'))
+            .map(|raw| string(raw))
+            .transpose()?
+            .map(|name| name.strip_prefix("minecraft:").unwrap_or(&name).to_owned());
         let root_transform = obj
             .get("transform")
             .filter(|raw| raw.get() != "null")
@@ -312,12 +375,11 @@ impl CuboidModel {
             textures,
             elements,
             display,
-            visibility,
+            render_type,
+            visibility: visibility(&obj)?,
             root_transform,
         })
     }
-}
-impl CuboidModel {
     /// The models this one needs besides itself: its parent and its composite children's parents.
     pub fn referenced_models(&self) -> Vec<String> {
         let mut names: Vec<String> = self.parent.iter().cloned().collect();
@@ -328,6 +390,15 @@ impl CuboidModel {
         }
         names
     }
+}
+fn visibility(obj: &Object<'_>) -> Result<BTreeMap<String, bool>> {
+    let mut visibility = BTreeMap::new();
+    if let Some(raw) = obj.get("visibility") {
+        for (key, raw) in object(raw)? {
+            visibility.insert(key, boolean(raw)?);
+        }
+    }
+    Ok(visibility)
 }
 impl Loader {
     fn decode(raw: &RawValue, obj: &Object<'_>) -> Result<Self> {
@@ -340,15 +411,9 @@ impl Loader {
                         children.push((name, Arc::new(CuboidModel::decode(raw)?)));
                     }
                 }
-                let mut visibility = BTreeMap::new();
-                if let Some(raw) = obj.get("visibility") {
-                    for (key, raw) in object(raw)? {
-                        visibility.insert(key, boolean(raw)?);
-                    }
-                }
                 Ok(Self::Composite {
                     children,
-                    visibility,
+                    visibility: visibility(obj)?,
                 })
             }
             "neoforge:obj" => {
@@ -463,6 +528,10 @@ impl Element {
             rotation,
             shade_direction_override,
             light_emission: light_emission as u8,
+            neoforge_data: obj
+                .get("neoforge_data")
+                .map(|r| NeoforgeData::decode(r))
+                .transpose()?,
         })
     }
 }
@@ -496,6 +565,15 @@ impl Face {
             texture,
             uv,
             rotation: (rotation / 90) as u8,
+            light_emission: obj
+                .get("light_emission")
+                .map(|r| integer(r))
+                .transpose()?
+                .map(|v| v.clamp(0, 15) as u8),
+            neoforge_data: obj
+                .get("neoforge_data")
+                .map(|r| NeoforgeData::decode(r))
+                .transpose()?,
         })
     }
 }

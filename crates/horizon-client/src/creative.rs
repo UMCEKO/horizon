@@ -86,6 +86,11 @@ impl Tab {
             contains: None,
         }
     }
+    /// A content export's page (NeoForge's paging): the right-hand tabs show on every page.
+    fn on_content_page(mut self, page: usize) -> Self {
+        self.page = (!self.aligned_right).then_some(page);
+        self
+    }
     /// The tab without its stacks.
     fn header(&self) -> Self {
         Self {
@@ -300,6 +305,11 @@ pub struct Creative {
     /// ItemPickerMenu.items: what the grid shows, filled when the tab or the
     /// search changes (selectTab, refreshSearchResults), not on every frame.
     shown: Mutex<Option<Shown>>,
+    /// SessionSearchTrees.creativeByNameSearch: the lower-cased tooltip lines
+    /// of every search item in one language (keyed by the `itemGroup.search`
+    /// string), built on the first search and kept until the language or the
+    /// item list changes.
+    lines_cache: Mutex<Option<(String, Arc<[Vec<String>]>)>>,
 }
 /// The grid's stacks for one tab, search text and language.
 struct Shown {
@@ -501,7 +511,8 @@ impl Creative {
                     t["row"] == "TOP",
                     t["column"].as_u64().unwrap_or(0) as u32,
                     kind,
-                ),
+                )
+                .on_content_page(t["page"].as_u64().unwrap_or(0) as usize),
                 category: kind == "CATEGORY",
                 operator,
             });
@@ -579,6 +590,7 @@ impl Creative {
             other: None,
             set_aside: None,
             shown: Mutex::new(None),
+            lines_cache: Mutex::new(None),
         };
         creative.rebuild();
         creative
@@ -604,6 +616,7 @@ impl Creative {
                 })
             })
             .collect();
+        *self.lines_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
         (self.search_items, self.search_index) = self
             .exported_search
             .iter()
@@ -672,7 +685,13 @@ impl Creative {
     }
     /// Pages of tabs (one with the export's).
     pub fn pages(&self) -> usize {
-        self.pages
+        let paged = self
+            .tabs
+            .iter()
+            .filter_map(|t| t.page)
+            .max()
+            .map_or(1, |p| p + 1);
+        self.pages.max(paged)
     }
     pub fn page(&self) -> usize {
         self.page
@@ -683,7 +702,7 @@ impl Creative {
     /// The real screen's `<` and `>`: they stop at the ends, and the selected tab stays selected.
     pub fn turn_page(&mut self, next: bool) {
         self.page = if next {
-            (self.page + 1).min(self.pages - 1)
+            (self.page + 1).min(self.pages() - 1)
         } else {
             self.page.saturating_sub(1)
         };
@@ -745,11 +764,13 @@ impl Creative {
         &self.tabs[self.selected.min(self.tabs.len() - 1)]
     }
     /// selectTab: a different tab empties the search box; the scrollbar goes to the top.
+    /// A tab on another page shows that page.
     pub fn select(&mut self, tab: usize) {
         if tab != self.selected {
             self.search.set_value("");
         }
         self.selected = tab;
+        self.show_page_of(tab);
         self.scroll = 0.0;
         if self.tab().has_search_box() {
             self.search.focused = true;
@@ -780,12 +801,69 @@ impl Creative {
     /// the name tree, both over vanilla's suffix arrays (substring matches,
     /// results in the tab's order).
     pub fn search_results(&self, term: &str, names: &Names) -> Vec<usize> {
+        let english = Self::english(names);
+        let local = if term.is_empty() || term.starts_with('#') {
+            Arc::from([])
+        } else if english && self.search_index.iter().all(|e| !e.lines.is_empty()) {
+            // The exported English lines are the whole index.
+            Arc::from([])
+        } else {
+            let language = names.display_get("itemGroup.search").unwrap_or_default();
+            let mut cache = self.lines_cache.lock().unwrap_or_else(|e| e.into_inner());
+            match cache.as_ref().filter(|(l, _)| *l == language) {
+                Some((_, lines)) => lines.clone(),
+                None => {
+                    let lines =
+                        Self::localized_lines(self.search_items.iter(), &|k| names.display_get(k));
+                    *cache = Some((language, lines.clone()));
+                    lines
+                }
+            }
+        };
         Self::matches(
             self.search_index.len(),
             &|i| &self.search_items[i],
             &|i| &self.search_index[i],
             term,
             names,
+            &local,
+            english,
+        )
+    }
+    /// Whether the selected language is English, whose lines the export holds.
+    fn english(names: &Names) -> bool {
+        names.display_get("itemGroup.search").as_deref() == names.get("itemGroup.search")
+    }
+    /// Every stack's tooltip lines through `translate`, lower-cased.
+    fn localized_lines<'a>(
+        stacks: impl Iterator<Item = &'a ItemStack>,
+        translate: &dyn Fn(&str) -> Option<String>,
+    ) -> Arc<[Vec<String>]> {
+        stacks
+            .map(|s| {
+                crate::item_tooltip::lines(s, None, translate)
+                    .iter()
+                    .map(|l| java_lower(l))
+                    .collect()
+            })
+            .collect()
+    }
+    #[cfg(test)]
+    fn search_results_in(
+        &self,
+        term: &str,
+        names: &Names,
+        local: &[Vec<String>],
+        english: bool,
+    ) -> Vec<usize> {
+        Self::matches(
+            self.search_index.len(),
+            &|i| &self.search_items[i],
+            &|i| &self.search_index[i],
+            term,
+            names,
+            local,
+            english,
         )
     }
     fn matches<'a>(
@@ -794,6 +872,8 @@ impl Creative {
         index: &dyn Fn(usize) -> &'a SearchEntry,
         term: &str,
         names: &Names,
+        local: &[Vec<String>],
+        english: bool,
     ) -> Vec<usize> {
         let all = 0..len;
         if term.is_empty() {
@@ -816,17 +896,13 @@ impl Creative {
                 })
                 .collect();
         }
-        // FullTextSearchTree: tooltip lines, and the item id after a colon.
-        // The export's lines are English (they come from the vanilla jars);
-        // the hover name in the selected language is matched too, so a
-        // localized search finds the item. It is the whole name (a tipped
-        // arrow's potion, the ominous banner), as the first line is.
+        // FullTextSearchTree: the creative tooltip lines in the selected
+        // language, and the item id after a colon. The export's lines are
+        // English (they come from the vanilla jars), so they stand in only
+        // while the language is English; otherwise every line (name, lore,
+        // effects, ...) is rebuilt through the language, as vanilla's
+        // getTooltipLines does.
         let text = java_lower(term);
-        let localized = |i: usize| {
-            java_lower(&crate::item_tooltip::name_line(stack(i), &|k| {
-                names.display_get(k)
-            }))
-        };
         all.filter(|&i| {
             let e = index(i);
             let fallback;
@@ -836,16 +912,17 @@ impl Creative {
             } else {
                 &e.lines
             };
+            let exported = english || e.lines.is_empty();
+            let local = local.get(i).map_or(&[][..], Vec::as_slice);
+            let hit = |t: &str| {
+                (exported && any(lines.iter().map(String::as_str), t))
+                    || any(local.iter().map(String::as_str), t)
+            };
             match text.split_once(':') {
-                None => {
-                    any(lines.iter().map(String::as_str), &text) || localized(i).contains(&text)
-                }
+                None => hit(&text),
                 Some((ns, path)) => {
                     let (ns, path) = (java_trim(ns), java_trim(path));
-                    e.namespace.contains(ns)
-                        && (e.path.contains(path)
-                            || any(lines.iter().map(String::as_str), path)
-                            || localized(i).contains(path))
+                    e.namespace.contains(ns) && (e.path.contains(path) || hit(path))
                 }
             }
         })
@@ -875,12 +952,22 @@ impl Creative {
                 .map(|i| self.search_items[i].clone())
                 .collect()
         } else if let Some(contains) = self.tab().contains.as_ref().filter(|_| !search.is_empty()) {
+            let english = Self::english(names);
+            let local = if search.starts_with('#')
+                || english && contains.iter().all(|(_, e)| !e.lines.is_empty())
+            {
+                Arc::from([])
+            } else {
+                Self::localized_lines(contains.iter().map(|c| &c.0), &|k| names.display_get(k))
+            };
             Self::matches(
                 contains.len(),
                 &|i| &contains[i].0,
                 &|i| &contains[i].1,
                 search,
                 names,
+                &local,
+                english,
             )
             .into_iter()
             .map(|i| contains[i].0.clone())
@@ -1682,13 +1769,31 @@ mod tests {
                 ("item.minecraft.wooden_hoe".to_owned(), "木锄".to_owned()),
             ]),
         };
-        let q = |s: &str| c.search_results(s, &names);
+        let tr = |k: &str| names.get(k).map(str::to_owned);
+        let local = Creative::localized_lines(c.search_items.iter(), &tr);
+        let q = |s: &str| c.search_results_in(s, &names, &local, false);
         assert_eq!(q("铁砧"), [0]);
         assert_eq!(q("木锄"), [2]);
-        // The English tooltip lines the export indexed still match.
-        assert_eq!(q("anvil"), [0]);
+        // Only the selected language's lines count outside English.
+        assert!(q("anvil").is_empty());
+        assert_eq!(c.search_results_in("anvil", &names, &local, true), [0]);
         // A colon's path searches the display name too.
         assert_eq!(q("minecraft:铁砧"), [0]);
+    }
+
+    #[test]
+    fn search_matches_every_localized_tooltip_line() {
+        // Vanilla's FullTextSearchTree indexes the selected language's
+        // tooltip lines; the export's English lines do not apply.
+        let c = creative(0);
+        let names = Names::default();
+        let ru: HashMap<&str, &str> = HashMap::from([("item.minecraft.anvil", "Наковальня")]);
+        let tr = |k: &str| ru.get(k).map(|v| (*v).to_owned());
+        let local = Creative::localized_lines(c.search_items.iter(), &tr);
+        let q = |s: &str, english| c.search_results_in(s, &names, &local, english);
+        assert_eq!(q("наков", false), [0]);
+        assert!(q("anvil", false).is_empty());
+        assert_eq!(q("anvil", true), [0]);
     }
 
     #[test]

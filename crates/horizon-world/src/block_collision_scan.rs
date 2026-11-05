@@ -48,6 +48,23 @@ pub trait BlockCollisionWorld {
     fn may_reach_out(&mut self, _chunk: Self::Chunk, _section_y: i32) -> Result<bool, Self::Error> {
         Ok(true)
     }
+    /// Whether every block of the chunk's section `section_y` has an empty collision shape under
+    /// every context (all air): true lets the scan pass that section's cells without reading
+    /// them. False, the default, reads every cell.
+    fn section_is_empty(
+        &mut self,
+        _chunk: Self::Chunk,
+        _section_y: i32,
+    ) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
+    /// Whether a chunk `collision_chunk` reports missing stays missing for the whole scan, and
+    /// asking again has no effect: true lets the scan pass the rest of a row in that chunk
+    /// without asking. False, the default, asks at every cell of a missing chunk, as vanilla's
+    /// `BlockCollisions` does.
+    fn missing_chunks_stay_missing(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug)]
@@ -79,6 +96,52 @@ pub struct BlockCollisionHit {
     pub shape: VoxelShape,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum CellError {
+    InvalidBounds,
+    TooLarge,
+}
+
+/// The cursor a scan of `bounds` walks: its padded start, the box's extents in
+/// cells and the cell count. `new` and [`scan_cells`] share it, so a caller
+/// that sizes a budget from a box counts exactly what the scan will visit.
+fn cells(bounds: Aabb) -> Result<(BlockPos, [i32; 3], usize), CellError> {
+    let min = bounds.min_position();
+    let max = bounds.max_position();
+    if !min.is_finite() || !max.is_finite() {
+        return Err(CellError::InvalidBounds);
+    }
+    let start = BlockPos::containing(Vec3::new(min.x - 1.0e-7, min.y - 1.0e-7, min.z - 1.0e-7))
+        .offset(-1, -1, -1);
+    let end = BlockPos::containing(Vec3::new(max.x + 1.0e-7, max.y + 1.0e-7, max.z + 1.0e-7))
+        .offset(1, 1, 1);
+    let sizes = [
+        end.x.wrapping_sub(start.x).wrapping_add(1),
+        end.y.wrapping_sub(start.y).wrapping_add(1),
+        end.z.wrapping_sub(start.z).wrapping_add(1),
+    ];
+    if sizes.iter().any(|size| *size <= 0) {
+        return Err(CellError::TooLarge);
+    }
+    let count = sizes
+        .into_iter()
+        .try_fold(1u64, |n, size| {
+            n.checked_mul(size as u64).filter(|n| *n <= i32::MAX as u64)
+        })
+        .ok_or(CellError::TooLarge)? as usize;
+    Ok((start, sizes, count))
+}
+
+/// The cells a scan of `bounds` visits, or `None` for a box `new` refuses
+/// (`InvalidBounds`, `TooLarge`): the most a budget can usefully be.
+pub fn scan_cells(bounds: Aabb) -> Option<usize> {
+    cells(bounds).ok().map(|(_, _, count)| count)
+}
+
+/// Sections whose `may_reach_out` a scan remembers: 2 x 2 columns by two
+/// sections holds every section of a box up to 16 blocks on each side.
+const REACH_SECTIONS: usize = 8;
+
 pub struct BlockCollisionScan<'w, 'c, W: BlockCollisionWorld> {
     world: &'w mut W,
     context: CollisionContext<'c>,
@@ -95,8 +158,17 @@ pub struct BlockCollisionScan<'w, 'c, W: BlockCollisionWorld> {
     count: usize,
     budget: usize,
     chunk: Option<(ChunkPos, W::Chunk)>,
-    /// `may_reach_out` of the last section an outer cell was in.
-    reach: Option<(ChunkPos, i32, bool)>,
+    /// `may_reach_out` of the last sections outer cells were in, replaced
+    /// in turn. A box across a chunk border goes back and forth between
+    /// two columns on every row, so one remembered section is asked again
+    /// at each crossing.
+    reach: [Option<(ChunkPos, i32, bool)>; REACH_SECTIONS],
+    reach_next: usize,
+    /// `section_is_empty` of the last sections the scan entered, kept as `reach` is.
+    empty: [Option<(ChunkPos, i32, bool)>; REACH_SECTIONS],
+    empty_next: usize,
+    /// `missing_chunks_stay_missing`, asked once.
+    missing_stays: bool,
     failed: bool,
 }
 impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
@@ -110,29 +182,11 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
         only_suffocating: bool,
         candidate_budget: usize,
     ) -> Result<Self, CollisionScanError<W::Error>> {
-        let min = bounds.min_position();
-        let max = bounds.max_position();
-        if !min.is_finite() || !max.is_finite() {
-            return Err(CollisionScanError::InvalidBounds);
-        }
-        let start = BlockPos::containing(Vec3::new(min.x - 1.0e-7, min.y - 1.0e-7, min.z - 1.0e-7))
-            .offset(-1, -1, -1);
-        let end = BlockPos::containing(Vec3::new(max.x + 1.0e-7, max.y + 1.0e-7, max.z + 1.0e-7))
-            .offset(1, 1, 1);
-        let sizes = [
-            end.x.wrapping_sub(start.x).wrapping_add(1),
-            end.y.wrapping_sub(start.y).wrapping_add(1),
-            end.z.wrapping_sub(start.z).wrapping_add(1),
-        ];
-        if sizes.iter().any(|size| *size <= 0) {
-            return Err(CollisionScanError::TooLarge);
-        }
-        let count = sizes
-            .into_iter()
-            .try_fold(1u64, |n, size| {
-                n.checked_mul(size as u64).filter(|n| *n <= i32::MAX as u64)
-            })
-            .ok_or(CollisionScanError::TooLarge)? as usize;
+        let (start, sizes, count) = cells(bounds).map_err(|error| match error {
+            CellError::InvalidBounds => CollisionScanError::InvalidBounds,
+            CellError::TooLarge => CollisionScanError::TooLarge,
+        })?;
+        let missing_stays = world.missing_chunks_stay_missing();
         Ok(Self {
             world,
             context,
@@ -146,9 +200,45 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
             count,
             budget: candidate_budget,
             chunk: None,
-            reach: None,
+            reach: [None; REACH_SECTIONS],
+            reach_next: 0,
+            empty: [None; REACH_SECTIONS],
+            empty_next: 0,
+            missing_stays,
             failed: false,
         })
+    }
+
+    /// The cells after the current one (cell `x` of its row, block x `block_x`) that are in the
+    /// same row and chunk, never more than the budget has left: what can be passed at once.
+    fn rest_in_chunk(&self, x: usize, block_x: i32) -> usize {
+        (self.sizes[0] - 1 - x)
+            .min(15 - (block_x & 15) as usize)
+            .min(self.budget.saturating_sub(self.index))
+    }
+
+    /// `section_is_empty`, asked once per section the scan enters.
+    fn section_is_empty(
+        &mut self,
+        at: ChunkPos,
+        chunk: W::Chunk,
+        section_y: i32,
+    ) -> Result<bool, CollisionScanError<W::Error>> {
+        if let Some(&(_, _, empty)) = self
+            .empty
+            .iter()
+            .flatten()
+            .find(|(c, y, _)| *c == at && *y == section_y)
+        {
+            return Ok(empty);
+        }
+        let empty = self
+            .world
+            .section_is_empty(chunk, section_y)
+            .map_err(CollisionScanError::World)?;
+        self.empty[self.empty_next] = Some((at, section_y, empty));
+        self.empty_next = (self.empty_next + 1) % REACH_SECTIONS;
+        Ok(empty)
     }
 
     /// Move the cursor `n` cells further along its row; `n` must not pass
@@ -211,22 +301,43 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
                 }
             };
             let Some(chunk) = chunk else {
+                // A chunk that stays missing has nothing in the rest of the row's cells in it:
+                // they are passed at once, as a section without blocks is below.
+                if self.missing_stays {
+                    let rest = self.rest_in_chunk(relative[0], p.x);
+                    self.skip(rest);
+                }
                 continue;
             };
+            // A section whose blocks have no collision shape gives nothing for any cell in it,
+            // inner or outer: the rest of the row in it is passed at once (never beyond the
+            // budget, which still ends the scan where it would have). A far move's sweep is
+            // mostly sky and chunks not loaded.
+            if self.section_is_empty(chunk_position, chunk, p.y >> 4)? {
+                let rest = self.rest_in_chunk(relative[0], p.x);
+                self.skip(rest);
+                continue;
+            }
             // An outer cell only counts for a block reaching out of its own
             // cell: most sections hold none, so their outer cells go unread
             // (the result is the same, with a fifth of the block reads for a
             // mob's box).
             if kind != 0 {
                 let section_y = p.y >> 4;
-                let reaches = match self.reach {
-                    Some((at, y, reaches)) if at == chunk_position && y == section_y => reaches,
-                    _ => {
+                let known = self
+                    .reach
+                    .iter()
+                    .flatten()
+                    .find(|(at, y, _)| *at == chunk_position && *y == section_y);
+                let reaches = match known {
+                    Some(&(_, _, reaches)) => reaches,
+                    None => {
                         let reaches = self
                             .world
                             .may_reach_out(chunk, section_y)
                             .map_err(CollisionScanError::World)?;
-                        self.reach = Some((chunk_position, section_y, reaches));
+                        self.reach[self.reach_next] = Some((chunk_position, section_y, reaches));
+                        self.reach_next = (self.reach_next + 1) % REACH_SECTIONS;
                         reaches
                     }
                 };
@@ -240,9 +351,7 @@ impl<'w, 'c, W: BlockCollisionWorld> BlockCollisionScan<'w, 'c, W> {
                         || relative[2] == 0
                         || relative[2] == depth - 1
                     {
-                        let rest = (width - 1 - relative[0])
-                            .min(15 - (p.x & 15) as usize)
-                            .min(self.budget.saturating_sub(self.index));
+                        let rest = self.rest_in_chunk(relative[0], p.x);
                         self.skip(rest);
                     }
                     continue;

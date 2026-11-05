@@ -22,6 +22,7 @@ ALLOWED = {
     ("entity_life.rs", "*"): "the one place that adds and removes",
     ("creatures.rs", "tick_creature_entities"): "puts back the mob vector the loop took",
     ("creatures.rs", "tick_projectiles"): "puts back the projectile vector the loop took",
+    ("entity.rs", "boat"): "a test fixture filling the lists",
 }
 ALLOWED_FILES = ("game_tests.rs", "command_harness.rs")
 

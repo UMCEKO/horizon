@@ -6,7 +6,10 @@
 //! system message it produced, as styled spans, with the results reported to
 //! the player's `CommandResultCallback`; `tick` advances the game; `settle`
 //! waits until the terrain and entities around the player are loaded;
-//! `portal` sends the player through the nether portal it stands in.
+//! `use_block` uses the main hand at a block top;
+//! `break` destroys a block as the server player; `portal` sends the player
+//! through the nether portal it stands in; `falling` counts physical falling
+//! blocks by dimension, block and gravity.
 use super::Game;
 use horizon_client::{Result, text::Text};
 use serde_json::{Value, json};
@@ -47,8 +50,27 @@ impl Game<'_> {
     /// boundary through Integrated::stop, including script and save failures.
     pub(super) fn wait_command_harness(&mut self) -> Result<()> {
         let server = self.integrated.take().ok_or("command harness: no server")?;
+        let client_config = std::env::var_os("HORIZON_HARNESS_CLIENT_CONFIG");
+        let mut wrote_config = false;
         while !server.stopped() {
             self.poll_stationary_client()?;
+            if !wrote_config
+                && let Some(path) = &client_config
+                && let Some(remote) = self.remote.as_ref().filter(|r| r.logged_in && r.joined)
+            {
+                std::fs::write(
+                    path,
+                    json!({
+                        "view_distance": remote.view_distance,
+                        "simulation_distance": remote.simulation_distance,
+                        "render_setting": self.settings.render_distance,
+                        "simulation_setting": self.settings.simulation_distance,
+                        "logged_in": remote.logged_in, "joined": remote.joined,
+                    })
+                    .to_string(),
+                )?;
+                wrote_config = true;
+            }
             std::thread::sleep(Duration::from_millis(2));
         }
         server.stop()
@@ -123,7 +145,7 @@ impl Game<'_> {
         })
     }
     /// Load terrain until the player stands in lit chunks.
-    fn harness_settle(&mut self, deadline: Instant) -> Result<()> {
+    fn harness_settle(&mut self, deadline: Instant, required: Option<&Value>) -> Result<()> {
         loop {
             self.update_world();
             if let Some(p) = &self.player {
@@ -133,8 +155,23 @@ impl Game<'_> {
                 );
                 // Finish requested terrain before inspecting it, so worker
                 // timing cannot change which command positions are loaded.
-                if !self.streaming.busy()
-                    && (-1..=1).all(|dz| (-1..=1).all(|dx| self.streaming.is_lit(cx + dx, cz + dz)))
+                if (std::env::var_os("HORIZON_HARNESS_TERRAIN_ONLY").is_some()
+                    || !self.streaming.busy())
+                    && required.and_then(Value::as_array).map_or_else(
+                        || {
+                            (-1..=1).all(|dz| {
+                                (-1..=1).all(|dx| self.streaming.is_lit(cx + dx, cz + dz))
+                            })
+                        },
+                        |chunks| {
+                            chunks.iter().all(|chunk| {
+                                chunk[0]
+                                    .as_i64()
+                                    .zip(chunk[1].as_i64())
+                                    .is_some_and(|(x, z)| self.streaming.is_lit(x as i32, z as i32))
+                            })
+                        },
+                    )
                 {
                     // The oracle's settle also waits for the entities saved
                     // in those chunks (areEntitiesActuallyLoadedAndTicking):
@@ -178,7 +215,7 @@ impl Game<'_> {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        self.harness_owner(|g| g.harness_settle(deadline))?;
+        self.harness_owner(|g| g.harness_settle(deadline, None))?;
         let mut out = String::new();
         for line in std::fs::read_to_string(script)?.lines() {
             if line.trim().is_empty() {
@@ -208,9 +245,106 @@ impl Game<'_> {
                         out.push('\n');
                     }
                 }
+                "server_distances" => {
+                    let state = self.harness_owner(|g| {
+                        let hub = &g.lan.as_ref().ok_or("no connected hub")?.hub;
+                        Ok([hub.config.view_distance, hub.config.simulation_distance])
+                    })?;
+                    out.push_str(
+                        &json!({"cmd": "#server_distances", "messages": [],
+                        "results": state.map(|n| json!([true, n]))})
+                        .to_string(),
+                    );
+                    out.push('\n');
+                }
+                "chunk_ready" => {
+                    let [x, z] =
+                        std::array::from_fn(|i| op["chunk"][i].as_i64().unwrap_or(0) as i32);
+                    let state = self.harness_owner(|g| {
+                        let resident = g.world.chunks.contains_key(&(x, z));
+                        Ok([
+                            resident,
+                            g.streaming.is_lit(x, z),
+                            resident
+                                && !g
+                                    .world
+                                    .loaded_entities
+                                    .iter()
+                                    .any(|(key, _)| *key == (x, z)),
+                        ])
+                    })?;
+                    out.push_str(
+                        &json!({"cmd": format!("#chunk_ready {x} {z}"), "messages": [],
+                        "results": state.map(|ready| json!([true, i32::from(ready)]))})
+                        .to_string(),
+                    );
+                    out.push('\n');
+                }
+                "wait_chunks" => {
+                    let targets: Vec<(i32, i32)> = op["chunks"]
+                        .as_array()
+                        .ok_or("missing chunks")?
+                        .iter()
+                        .map(|p| {
+                            (
+                                p[0].as_i64().unwrap_or(0) as i32,
+                                p[1].as_i64().unwrap_or(0) as i32,
+                            )
+                        })
+                        .collect();
+                    self.harness_owner(|g| {
+                        loop {
+                            g.update_world();
+                            g.spawn_loaded_entities(super::entity_life::Origin::FromDisk);
+                            if targets.iter().all(|&(x, z)| {
+                                g.world.chunks.contains_key(&(x, z))
+                                    && g.streaming.is_lit(x, z)
+                                    && !g
+                                        .world
+                                        .loaded_entities
+                                        .iter()
+                                        .any(|(key, _)| *key == (x, z))
+                            }) {
+                                break;
+                            }
+                            if Instant::now() > deadline {
+                                return Err("initial target readiness timed out".into());
+                            }
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        Ok(())
+                    })?;
+                }
+                "weather_state" => {
+                    // Saved state guards, separate from effective-weather predicates.
+                    let state = self.harness_owner(|g| {
+                        let w = g.world.weather;
+                        Ok([
+                            i32::from(w.raining),
+                            i32::from(w.thundering),
+                            w.clear_time,
+                            w.rain_time,
+                            w.thunder_time,
+                        ])
+                    })?;
+                    let record = json!({
+                        "cmd": format!("#weather_state {}", op["label"].as_str().unwrap_or("")),
+                        "messages": [],
+                        "results": state.iter().map(|value| json!([true, value])).collect::<Vec<_>>(),
+                    });
+                    out.push_str(&record.to_string());
+                    out.push('\n');
+                }
+                "mobs" => {
+                    // Observe authoritative AI state without a control-socket race.
+                    let record = self.harness_owner(|g| Ok(g.control_mobs(128.0)))?;
+                    out.push_str(&record.to_string());
+                    out.push('\n');
+                }
                 "tick" => {
                     self.chat_capture = Some(Vec::new());
-                    for _ in 0..op["n"].as_u64().unwrap_or(1) {
+                    let paced_start = Instant::now();
+                    for i in 0..op["n"].as_u64().unwrap_or(1) {
                         // The oracle's profile resolver answers at once; the
                         // game's asks the services (none here: they refuse at
                         // once) on a thread, which a tick can outrun.
@@ -221,6 +355,19 @@ impl Game<'_> {
                             std::thread::sleep(Duration::from_millis(1));
                         }
                         self.tick_server(false)?;
+                        if let Some(ms) = op["pace_ms"].as_u64() {
+                            std::thread::sleep(
+                                Duration::from_millis(ms * (i + 1))
+                                    .saturating_sub(paced_start.elapsed()),
+                            );
+                        }
+                    }
+                    if op["pace_ms"].is_number() {
+                        eprintln!(
+                            "harness paced wait: {} ticks, {} ms",
+                            op["n"],
+                            paced_start.elapsed().as_millis()
+                        );
                     }
                     let messages = self.chat_capture.take().unwrap_or_default();
                     if op["record"].as_bool() == Some(true) {
@@ -242,9 +389,141 @@ impl Game<'_> {
                         }
                         std::thread::sleep(Duration::from_millis(2));
                     }
-                    self.harness_owner(|g| g.harness_settle(deadline))?;
+                    self.harness_owner(|g| g.harness_settle(deadline, op.get("required_chunks")))?;
+                }
+                "use_item" => {
+                    // Exercise the connected owner's normal server packet route.
+                    let sequence = op["sequence"].as_i64().unwrap_or(0) as i32;
+                    let yaw = op["yaw"].as_f64().unwrap_or(0.0) as f32;
+                    let pitch = op["pitch"].as_f64().unwrap_or(0.0) as f32;
+                    let owner = self
+                        .serving
+                        .as_ref()
+                        .ok_or("command harness: no server")?
+                        .owner;
+                    self.in_owner_level(|g| -> Result<()> {
+                        let conn = g
+                            .lan
+                            .as_ref()
+                            .and_then(|h| {
+                                h.hub
+                                    .guests
+                                    .iter()
+                                    .find(|guest| guest.uuid == owner && guest.placed)
+                                    .map(|guest| guest.conn)
+                            })
+                            .ok_or("command harness: owner is not connected")?;
+                        let mut host = g.lan.take().ok_or("command harness: no hub")?;
+                        g.lan_guest_packet(
+                            &mut host,
+                            conn,
+                            horizon_protocol::packets::play::Serverbound::UseItem(
+                                horizon_protocol::packets::play::UseItem {
+                                    hand: 0,
+                                    yaw,
+                                    pitch,
+                                    sequence,
+                                },
+                            ),
+                        );
+                        let ack = host
+                            .hub
+                            .guest(conn)
+                            .is_some_and(|g| g.ack_up_to.get() >= sequence);
+                        g.lan = Some(host);
+                        if !ack {
+                            return Err("command harness: UseItem was not acknowledged".into());
+                        }
+                        Ok(())
+                    })?;
+                }
+                "use_block" => {
+                    // Exercise the connected owner's normal server packet route.
+                    let pos = std::array::from_fn(|i| op["pos"][i].as_i64().unwrap_or(0) as i32);
+                    let face = op["face"].as_i64().unwrap_or(1) as i32;
+                    let owner = self
+                        .serving
+                        .as_ref()
+                        .ok_or("command harness: no server")?
+                        .owner;
+                    self.in_owner_level(|g| -> Result<()> {
+                        let conn = g
+                            .lan
+                            .as_ref()
+                            .and_then(|h| {
+                                h.hub
+                                    .guests
+                                    .iter()
+                                    .find(|guest| guest.uuid == owner && guest.placed)
+                                    .map(|guest| guest.conn)
+                            })
+                            .ok_or("command harness: owner is not connected")?;
+                        let mut host = g.lan.take().ok_or("command harness: no hub")?;
+                        g.lan_guest_packet(
+                            &mut host,
+                            conn,
+                            horizon_protocol::packets::play::Serverbound::UseItemOn(
+                                horizon_protocol::packets::play::UseItemOn {
+                                    hand: 0,
+                                    pos,
+                                    face,
+                                    cursor: [0.5, 1.0, 0.5],
+                                    inside: false,
+                                    world_border: false,
+                                    sequence: 0,
+                                },
+                            ),
+                        );
+                        g.lan = Some(host);
+                        Ok(())
+                    })?;
+                }
+                "break" => {
+                    let pos = std::array::from_fn(|i| op["pos"][i].as_i64().unwrap_or(0) as i32);
+                    self.harness_owner(|g| g.break_block(pos))?;
                 }
                 "portal" => self.harness_portal()?,
+                "destroy_progress" => {
+                    let pos = std::array::from_fn(|i| op["pos"][i].as_i64().unwrap_or(0) as i32);
+                    let bits = self.harness_owner(|g| {
+                        if let Some(player) = g.player.as_mut() {
+                            player.ground.on_ground = true;
+                        }
+                        Ok(g.destroy_progress(pos).to_bits())
+                    })?;
+                    let record = json!({
+                        "cmd": "#destroy_progress",
+                        "messages": [],
+                        "results": [[true, bits]],
+                    });
+                    out.push_str(&record.to_string());
+                    out.push('\n');
+                }
+                "falling" => {
+                    // Physical falling blocks are not command-selector targets
+                    // yet. Inspect the actual level rather than that unrelated gap.
+                    let dimension = op["dimension"].as_str().unwrap_or("minecraft:overworld");
+                    let block = op["block"].as_str().unwrap_or("minecraft:sand");
+                    let no_gravity = op["no_gravity"].as_bool().unwrap_or(false);
+                    let back = self.dim;
+                    self.enter_level(None, super::Dim::from_id(dimension))?;
+                    let facts = self.res.facts();
+                    let matches = |f: &super::FallingBlock| {
+                        &*facts.get(f.state).name == block && f.no_gravity == no_gravity
+                    };
+                    let count = self.falling.iter().filter(|f| matches(f)).count();
+                    if op["discard"].as_bool() == Some(true) {
+                        self.falling.retain(|f| !matches(f));
+                    }
+                    self.enter_level(None, back)?;
+                    let record = json!({
+                        "cmd": format!("#falling {dimension} {block} {no_gravity}"),
+                        "messages": [],
+                        "results": [[true, count]],
+                    });
+                    out.push_str(&record.to_string());
+                    out.push('\n');
+                }
                 other => return Err(format!("command harness: unknown op {other}").into()),
             }
         }

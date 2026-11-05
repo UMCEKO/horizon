@@ -70,6 +70,10 @@ pub struct PackedStorage {
 }
 
 impl PackedStorage {
+    /// The heap bytes of the packed words (`horizon-ctl memory`).
+    pub fn heap_bytes(&self) -> usize {
+        self.words.capacity() * std::mem::size_of::<u64>()
+    }
     pub fn new(bits: u8, len: usize) -> Result<Self, StorageError> {
         let per_word = Self::per_word(bits)?;
         Self::from_words(bits, len, vec![0; len.div_ceil(per_word)])
@@ -146,6 +150,7 @@ impl PackedStorage {
     /// Reads `index` without a bounds check. Callers use this once they hold a
     /// slice length or a section index they have already validated.
     /// `index` must be less than `len`.
+    #[inline]
     pub fn read(&self, index: usize) -> u32 {
         debug_assert!(index < self.len);
         let (word, shift) = self.slot(index);
@@ -155,6 +160,7 @@ impl PackedStorage {
     /// Writes `value` at `index` without revalidating either. `index` must be
     /// less than `len` and `value` must fit `bits`, which holds for a section
     /// palette index from the same container. Returns the previous value.
+    #[inline]
     pub fn write(&mut self, index: usize, value: u32) -> u32 {
         debug_assert!(index < self.len && u64::from(value) <= self.mask);
         let (word, shift) = self.slot(index);
@@ -190,6 +196,16 @@ impl PackedStorage {
         Ok(())
     }
 
+    /// [`unpack`](Self::unpack) into `out` (the first `len` slots), without allocating.
+    pub fn unpack_into(&self, out: &mut [u32]) {
+        let mut i = 0;
+        for &word in &self.words {
+            for slot in 0..self.per_word.min(self.len - i) {
+                out[i] = ((word >> (slot * usize::from(self.bits))) & self.mask) as u32;
+                i += 1;
+            }
+        }
+    }
     pub fn unpack(&self) -> Vec<u32> {
         let mut values = Vec::with_capacity(self.len);
         for &word in &self.words {
