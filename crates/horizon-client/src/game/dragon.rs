@@ -304,6 +304,7 @@ pub(super) struct Dragon {
     /// A crystal destroyed while it held its pattern (taken on its next tick).
     strafe_request: Option<StrafeRequest>,
     random: LegacyRandom,
+    pub moving: horizon_world::entity_move::MoveState,
 }
 /// A player in the fight: the window's own player, or a guest by
 /// connection (a LAN or server player).
@@ -430,6 +431,7 @@ impl Dragon {
             nearest_crystal: None,
             strafe_request: None,
             random: LegacyRandom::new(seed),
+            moving: Default::default(),
         }
     }
     /// DragonFlightHistory.record.

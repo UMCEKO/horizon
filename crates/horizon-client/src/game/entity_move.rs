@@ -986,6 +986,32 @@ impl Game<'_> {
                 self.others.insert(i, other);
                 true
             }
+            Target::Dragon(id) => {
+                let Some(mut dragon) = self.dragon.take_if(|d| d.id == id) else {
+                    return false;
+                };
+                // Its flight is its own tick's: nothing here carries a motion for it.
+                let mut velocity = Vec3::ZERO;
+                let body = BodyRef {
+                    id,
+                    size: [16.0, 8.0],
+                    removed: false,
+                    position: &mut dragon.position,
+                    velocity: &mut velocity,
+                    moving: &mut dragon.moving,
+                    sync: None,
+                    no_physics: true,
+                    step_height: 0.0,
+                    gravity: 0.08,
+                    air_drag: 0.98,
+                    emission: MovementEmission::All,
+                    fall: FallRule::Living,
+                    steered: false,
+                };
+                self.move_body(body, mover, delta);
+                self.dragon = Some(dragon);
+                true
+            }
             _ => false,
         }
     }
@@ -1292,5 +1318,20 @@ mod tests {
         let other = game.others.iter().find(|o| o.id == id).unwrap();
         assert!(other.moving.ground.on_ground);
         assert_eq!(other.position.y, 61.0);
+    }
+
+    #[test]
+    fn the_dragon_moves_through_blocks() {
+        let Some(mut game) = flat_game() else { return };
+        game.spawn_remote_dragon(900, [0.5, 61.0, 0.5], 0.0);
+        let id = game.dragon.as_ref().unwrap().id;
+        assert!(game.entity_move(
+            Target::Dragon(id),
+            MoverType::SelfMovement,
+            Vec3::new(0.0, -3.0, 0.0)
+        ));
+        let dragon = game.dragon.as_ref().unwrap();
+        assert_eq!(dragon.position.y, 58.0);
+        assert!(!dragon.moving.collision.vertical);
     }
 }
