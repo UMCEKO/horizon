@@ -128,7 +128,13 @@ impl Game<'_> {
                 .into_iter()
                 .filter_map(|(_, vehicle)| vehicle.id())
                 .collect(),
-            None => self.mobs.iter().filter_map(|o| o.extra.mount).collect(),
+            None => self
+                .riding_table
+                .borrow()
+                .riders_in_order()
+                .into_iter()
+                .filter_map(|(_, vehicle)| vehicle.id())
+                .collect(),
         };
         for (m, name, player) in named.chain(players) {
             if !m.alive() {

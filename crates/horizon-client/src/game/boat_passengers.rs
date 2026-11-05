@@ -8,7 +8,7 @@ use super::{
     Game,
     boats::Boat,
     lan_mobs::guest_bounds,
-    vehicle_rules::{Rider, Seat, Vehicle},
+    vehicle_rules::{Seat, Vehicle},
 };
 use horizon_client::riding::Ent;
 use horizon_client::{
@@ -18,25 +18,6 @@ use horizon_client::{
 };
 use horizon_core::geometry::{Aabb, Vec3};
 
-/// `Entity.boardingCooldown` once a mob leaves its boat.
-pub(super) const BOARDING_COOLDOWN: i32 = 60;
-
-/// `Entity.isVehicle`: a player or a mob rides it.
-fn carries(m: &Mob) -> bool {
-    m.rider.is_some() || m.extra.rider.is_some()
-}
-/// `isPushable`, as `pushableBy` and `canVehicleCollide` ask it:
-/// `Mob::pushable` plus the shulkers it leaves out (they take no push, but
-/// count), less a ridden horse (`AbstractHorse.isPushable`).
-fn pushable(m: &Mob) -> bool {
-    !m.removed
-        && (m.pushable() || m.species() == Species::Shulker && m.alive())
-        && !(equine::is_equine(m.species()) && carries(m))
-}
-/// Whether `Entity.push` moves the mob: it is pushable and carries no one.
-fn moved_by_push(m: &Mob) -> bool {
-    !m.removed && m.pushable() && !carries(m)
-}
 /// `Entity.push(Entity)`: the push `other` gets from `this` (which takes the
 /// opposite one), or None when they stand on nearly the same spot.
 pub(super) fn push_impulse(this: Vec3, other: Vec3) -> Option<Vec3> {
@@ -63,6 +44,22 @@ pub(super) fn boat_pushes(boat: Aabb, other: Aabb, other_is_boat: bool) -> bool 
 }
 
 impl Game<'_> {
+    /// `Entity.isVehicle`: a player or a mob rides it.
+    fn carries(&self, m: &Mob) -> bool {
+        m.rider.is_some() || self.is_vehicle(Ent::Id(m.id))
+    }
+    /// `isPushable`, as `pushableBy` and `canVehicleCollide` ask it:
+    /// `Mob::pushable` plus the shulkers it leaves out (they take no push, but
+    /// count), less a ridden horse (`AbstractHorse.isPushable`).
+    fn pushable(&self, m: &Mob) -> bool {
+        !m.removed
+            && (m.pushable() || m.species() == Species::Shulker && m.alive())
+            && !(equine::is_equine(m.species()) && self.carries(m))
+    }
+    /// Whether `Entity.push` moves the mob: it is pushable and carries no one.
+    fn moved_by_push(&self, m: &Mob) -> bool {
+        !m.removed && m.pushable() && !self.carries(m)
+    }
     /// The players in boat `id`: the window's player (or the server player
     /// acting as it) and the server's other players.
     pub(super) fn boat_players(&self, id: u32) -> usize {
@@ -85,11 +82,10 @@ impl Game<'_> {
                 .map(|(j, _)| j)
                 .collect();
         }
-        (0..self.mobs.len())
-            .filter(|&j| {
-                let m = &self.mobs[j];
-                m.extra.mount == Some(id) && !m.removed && m.alive()
-            })
+        self.passengers_of(Ent::Id(id))
+            .into_iter()
+            .filter_map(|p| self.mobs.iter().position(|m| Some(m.id) == p.id()))
+            .filter(|&j| !self.mobs[j].removed && self.mobs[j].alive())
             .collect()
     }
     /// A client's mobs in boat `id` with their seats (`getPassengers().indexOf`), in the
@@ -151,19 +147,12 @@ impl Game<'_> {
     }
     /// `getRootVehicle` of mob `j`: the mob or boat at the bottom of what it
     /// rides, None when it rides nothing.
-    fn mob_root_vehicle(&self, mut j: usize) -> Option<u32> {
-        let mut root = None;
-        for _ in 0..8 {
-            let Some(v) = self.mobs[j].extra.mount else {
-                break;
-            };
-            root = Some(v);
-            match self.mobs.iter().position(|m| m.id == v) {
-                Some(k) => j = k,
-                None => break,
-            }
+    fn mob_root_vehicle(&self, j: usize) -> Option<u32> {
+        let e = Ent::Id(self.mobs[j].id);
+        match self.root_vehicle(e) {
+            root if root == e => None,
+            root => root.id(),
         }
-        root
     }
     /// The players outside boat `id` that push and block it (living, not
     /// spectators), with the window player's team.
@@ -197,9 +186,9 @@ impl Game<'_> {
         let mut out: Vec<Aabb> = (0..self.mobs.len())
             .filter(|&j| {
                 let m = &self.mobs[j];
-                pushable(m)
+                self.pushable(m)
                     && m.bounds().intersects(area)
-                    && (m.extra.mount.is_none() || self.mob_root_vehicle(j) != Some(id))
+                    && (!self.is_passenger(Ent::Id(m.id)) || self.mob_root_vehicle(j) != Some(id))
             })
             .map(|j| self.mobs[j].bounds())
             .collect();
@@ -245,14 +234,14 @@ impl Game<'_> {
         let mut count = self.boat_passengers(id);
         // getControllingPassenger is a player: one rides it (players sit first).
         let pick_up = self.boat_players(id) == 0;
-        // canAddPassenger, which startRiding asks after the checks below.
-        let room = !self.boats[i].under_water();
         // (mob, touched by the boat's sweep, its own pushEntities reaches the boat)
         let teams = self.mob_teams();
         let mobs: Vec<(usize, bool, bool)> = (0..self.mobs.len())
             .filter_map(|j| {
                 let m = &self.mobs[j];
-                if !pushable(m) || m.extra.mount.is_some() && self.mob_root_vehicle(j) == Some(id) {
+                if !self.pushable(m)
+                    || self.is_passenger(Ent::Id(m.id)) && self.mob_root_vehicle(j) == Some(id)
+                {
                     return None;
                 }
                 let mb = m.bounds();
@@ -285,7 +274,7 @@ impl Game<'_> {
                 let m = &self.mobs[j];
                 let boards = pick_up
                     && count < max
-                    && m.extra.mount.is_none()
+                    && !self.is_passenger(Ent::Id(m.id))
                     && m.width() < super::boats::WIDTH as f32
                     && !self
                         .res
@@ -295,15 +284,9 @@ impl Game<'_> {
                     // startRiding fails quietly (no push) while the mob's
                     // boarding cooldown runs (Entity.canRide) or the boat
                     // is under water.
-                    if room && m.extra.boarding_cooldown <= 0 {
-                        let m = &mut self.mobs[j];
-                        m.extra.mount = Some(id);
-                        m.extra.passenger = true;
-                        m.ai.nav.stop();
-                        let mob = m.id;
+                    let mob = m.id;
+                    if self.start_riding(Ent::Id(mob), Ent::Id(id), false, true) {
                         count += 1;
-                        // Mob.startRiding drops its lead.
-                        self.break_leash(mob, true, false);
                     }
                     continue;
                 }
@@ -359,7 +342,7 @@ impl Game<'_> {
             let cid = self.carts[c].id;
             let ridden = self.vehicle() == Some(cid)
                 || guest_carts.contains(&cid)
-                || self.mobs.iter().any(|m| m.extra.mount == Some(cid));
+                || self.is_vehicle(Ent::Id(cid));
             if !ridden {
                 self.carts[c].velocity = self.carts[c].velocity.add_vector(v);
             }
@@ -378,8 +361,8 @@ impl Game<'_> {
             let b = &mut self.boats[i];
             b.velocity = b.velocity.subtract(v);
         }
-        let m = &mut self.mobs[j];
-        if moved_by_push(m) {
+        if self.moved_by_push(&self.mobs[j]) {
+            let m = &mut self.mobs[j];
             m.velocity = m.velocity.add_vector(v);
             m.needs_sync = true;
         }
@@ -435,9 +418,6 @@ impl Game<'_> {
                 m.velocity = Vec3::ZERO;
                 m.fall_distance = 0.0;
                 m.on_ground = false;
-                if self.remote.is_none() {
-                    m.extra.passenger = true;
-                }
                 m.ai.nav.stop();
                 let Some((body, previous_body)) = facing else {
                     continue;
@@ -452,27 +432,6 @@ impl Game<'_> {
                 let d = wrap_degrees(body - m.head_yaw);
                 m.head_yaw += d - d.clamp(-limit, limit);
             }
-        }
-    }
-    /// `ejectPassengers` for the mobs in boat `i`: each gets out where
-    /// `getDismountLocationForPassenger` puts it (beside the boat when it
-    /// broke: `LivingEntity.dismountVehicle`) and can't board for a while.
-    pub(super) fn eject_boat_mobs(&mut self, i: usize, broken: bool) {
-        let b = &self.boats[i];
-        let (id, y) = (b.id, b.position.y);
-        for j in self.boat_mobs(id) {
-            let m = &self.mobs[j];
-            let at = if broken {
-                Vec3::new(m.position.x, m.position.y.max(y), m.position.z)
-            } else {
-                self.dismount_location(Vehicle::Boat(i), &Rider::mob(m)).0
-            };
-            let m = &mut self.mobs[j];
-            m.extra.mount = None;
-            m.extra.passenger = false;
-            m.extra.boarding_cooldown = BOARDING_COOLDOWN;
-            m.position = at;
-            m.previous = at;
         }
     }
 }

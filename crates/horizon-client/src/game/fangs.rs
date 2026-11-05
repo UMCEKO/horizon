@@ -141,19 +141,25 @@ impl Game<'_> {
             .collect();
         // A missing owner hurts everyone (`currentOwner == null`).
         let owner_known = illagers.contains(&f.owner);
+        let table = self.riding_table.borrow();
         for m in &mut self.mobs {
             let ally = owner_known
                 && (illager(m.species())
                     || m.species() == Species::Vex
                         && illagers.contains(&(m.extra.counter2 as u32)));
             if m.id != f.owner && !ally && m.alive() && m.bounds().intersects(b) {
-                m.damage(
+                let ride = horizon_client::mobs::anim::Ride {
+                    is_passenger: table.is_passenger(horizon_client::riding::Ent::Id(m.id)),
+                    is_ridden: table.is_vehicle(horizon_client::riding::Ent::Id(m.id)),
+                };
+                m.damage_riding(
                     6.0,
                     horizon_client::mobs::Damage {
                         kind: horizon_client::mobs::DamageKind::Magic,
                         attacker: Some(horizon_client::mobs::Who::Mob(f.owner)),
                         from: Some(f.pos),
                     },
+                    ride,
                 );
             }
         }

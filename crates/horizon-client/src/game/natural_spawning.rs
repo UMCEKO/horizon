@@ -554,7 +554,10 @@ impl<'a> Game<'a> {
                     ],
                     is_mob: true,
                     persistent: m.persistent
-                        || horizon_client::mobs::ai::requires_custom_persistence(m),
+                        || horizon_client::mobs::ai::requires_custom_persistence(
+                            m,
+                            self.is_passenger(horizon_client::riding::Ent::Id(m.id)),
+                        ),
                 })
                 .collect();
             let players = players

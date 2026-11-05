@@ -723,7 +723,7 @@ impl Game<'_> {
     pub(super) fn mob_can_use_portal(&self, m: &horizon_client::mobs::Mob) -> bool {
         use horizon_client::mobs::Species;
         m.alive()
-            && m.extra.mount.is_none()
+            && !self.is_passenger(horizon_client::riding::Ent::Id(m.id))
             && self.vehicle() != Some(m.id)
             && (!self.guest_rides(m.id) || self.carries_riders())
             && m.species() != Species::Wither
@@ -736,7 +736,7 @@ impl Game<'_> {
         }
         self.carries_riders()
             && self.vehicle() != Some(id)
-            && !self.mobs.iter().any(|m| m.extra.mount == Some(id))
+            && !self.is_vehicle(horizon_client::riding::Ent::Id(id))
     }
     /// Whether a vehicle can take the server players riding it through a
     /// portal: only a server moves players between its levels. Elsewhere a
@@ -774,7 +774,7 @@ impl Game<'_> {
     fn vehicle_occupied(&self, id: u32) -> bool {
         self.vehicle() == Some(id)
             || self.ridden_by_guest(id)
-            || self.mobs.iter().any(|m| m.extra.mount == Some(id))
+            || self.is_vehicle(horizon_client::riding::Ent::Id(id))
     }
     /// `NetherPortalBlock.entityInside` and `EndPortalBlock.entityInside`
     /// for the items, mobs and empty boats and minecarts that moved this
@@ -951,10 +951,9 @@ impl Game<'_> {
             while k < gone.len() {
                 let v = gone[k];
                 gone.extend(
-                    self.mobs
-                        .iter()
-                        .filter(|m| m.extra.mount == Some(v))
-                        .map(|m| m.id),
+                    self.passengers_of(horizon_client::riding::Ent::Id(v))
+                        .into_iter()
+                        .filter_map(horizon_client::riding::Ent::id),
                 );
                 k += 1;
             }

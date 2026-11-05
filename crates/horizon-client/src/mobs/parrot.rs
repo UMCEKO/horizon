@@ -197,8 +197,8 @@ pub fn register(m: &mut Mob) {
 /// falls on the ground or a shoulder, `flapping` restarts at 1 in the air and
 /// decays, and `flap` turns by it. A client runs it for the parrots it only
 /// displays.
-pub fn flap(m: &mut Mob) {
-    let grounded = m.on_ground || m.extra.mount.is_some();
+pub fn flap(m: &mut Mob, passenger: bool) {
+    let grounded = m.on_ground || passenger;
     let a = &mut m.anim;
     a.flap_o = a.flap;
     a.flap_speed_o = a.flap_speed;
@@ -212,8 +212,8 @@ pub fn flap(m: &mut Mob) {
 
 /// `Parrot.calculateFlapping`, after the rest of `aiStep`: the wings, and a
 /// parrot falling through the air glides down at 0.6 of the speed.
-pub fn calculate_flapping(m: &mut Mob) {
-    flap(m);
+pub fn calculate_flapping(m: &mut Mob, passenger: bool) {
+    flap(m, passenger);
     if !m.on_ground && m.velocity.y < 0.0 {
         m.velocity.y *= 0.6;
     }
@@ -318,7 +318,7 @@ mod tests {
         let mut m = parrot();
         m.on_ground = false;
         m.velocity = Vec3::new(0.1, -0.5, 0.0);
-        calculate_flapping(&mut m);
+        calculate_flapping(&mut m, false);
         assert!((m.velocity.y + 0.3).abs() < 1.0e-12);
         assert_eq!(m.velocity.x, 0.1);
         assert_eq!(m.anim.flap_speed, 1.0);
@@ -326,17 +326,15 @@ mod tests {
         assert_eq!(m.anim.flap, 1.8);
         // Rising is not slowed.
         m.velocity = Vec3::new(0.0, 0.2, 0.0);
-        calculate_flapping(&mut m);
+        calculate_flapping(&mut m, false);
         assert_eq!(m.velocity.y, 0.2);
         assert_eq!(m.anim.flap_o, 1.8);
         // On a shoulder (a passenger), flapSpeed falls by 0.3 a tick.
-        m.extra.mount = Some(7);
-        calculate_flapping(&mut m);
+        calculate_flapping(&mut m, true);
         assert!((m.anim.flap_speed - 0.7).abs() < 1.0e-6);
-        m.extra.mount = None;
         m.on_ground = true;
         m.velocity = Vec3::new(0.0, -0.0784, 0.0);
-        calculate_flapping(&mut m);
+        calculate_flapping(&mut m, false);
         assert!((m.anim.flap_speed - 0.4).abs() < 1.0e-6);
         assert_eq!(m.velocity.y, -0.0784, "no glide on the ground");
     }

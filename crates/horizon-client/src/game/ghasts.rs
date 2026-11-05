@@ -5,6 +5,7 @@ use super::Game;
 use horizon_client::{
     items::ItemStack,
     mobs::{MobEvent, happy_ghast},
+    riding::Ent,
 };
 use horizon_core::geometry::Aabb;
 use horizon_world::registry::BlockStateId;
@@ -89,18 +90,23 @@ impl Game<'_> {
         false
     }
     /// `HappyGhast.removePassenger`.
-    pub(super) fn dismount_happy_ghast(&mut self, id: u32) {
+    pub(super) fn happy_ghast_passenger_left(&mut self, id: u32) {
         // removePassenger: held still for half a second, and with no one
         // aboard the ghast forgets its home.
+        let empty = !self.is_vehicle(Ent::Id(id));
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
             m.extra.counter = 10;
-            m.ai.home = None;
+            if empty {
+                m.ai.home = None;
+            }
         }
         let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
             return;
         };
-        let up: MobEvent = happy_ghast::goggles(false, m);
-        let _ = self.handle_mob_events(vec![up]);
+        if empty {
+            let up: MobEvent = happy_ghast::goggles(false, m);
+            let _ = self.handle_mob_events(vec![up]);
+        }
     }
     /// `DriedGhastBlock.spawnGhastling`: a ghastling facing the way the block did.
     pub(super) fn spawn_ghastling(&mut self, pos: [i32; 3], state: BlockStateId) {

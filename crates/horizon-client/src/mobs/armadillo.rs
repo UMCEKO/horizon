@@ -182,14 +182,13 @@ pub fn set_state(m: &mut Mob, state: u8) {
         a.in_state_ticks = 0;
     }
 }
+/// `isPassenger() || isVehicle()`.
+fn ridden(m: &Mob, w: &MobWorld) -> bool {
+    w.is_passenger(m.id) || w.is_vehicle(m.id)
+}
 /// `Armadillo.canStayRolledUp`.
-fn can_stay_rolled_up(m: &Mob) -> bool {
-    !m.ai.panicking
-        && !m.fluids.in_water
-        && !m.fluids.in_lava
-        && m.extra.leash.is_none()
-        && m.extra.mount.is_none()
-        && m.extra.rider.is_none()
+fn can_stay_rolled_up(m: &Mob, riding: bool) -> bool {
+    !m.ai.panicking && !m.fluids.in_water && !m.fluids.in_lava && m.extra.leash.is_none() && !riding
 }
 /// `Entity.playSound(sound)`.
 fn play(m: &Mob, events: &mut Vec<MobEvent>, sound: &'static str) {
@@ -230,14 +229,14 @@ pub fn reduce_damage(m: &Mob, amount: f32) -> f32 {
 }
 /// `Armadillo.actuallyHurt`: a hit by a living thing curls it up (and keeps
 /// the danger in mind for 80 ticks), a hit by fire and the like unrolls it.
-pub fn after_hurt(m: &mut Mob, source: &Damage) {
+pub fn after_hurt(m: &mut Mob, source: &Damage, ride: super::anim::Ride) {
     if m.no_ai || m.health <= 0.0 {
         return;
     }
     let mut events = Vec::new();
     if source.attacker.is_some() {
         m.extra.armadillo.danger = 80;
-        if can_stay_rolled_up(m) {
+        if can_stay_rolled_up(m, ride.is_passenger || ride.is_ridden) {
             roll_up(m, &mut events);
         }
     } else if environmental(source.kind) {
@@ -327,7 +326,7 @@ pub fn server_ai_step(m: &mut Mob, cx: &mut Cx) {
     a.sensor -= 1;
     if a.sensor <= 0 {
         a.sensor = 5;
-        if !can_stay_rolled_up(m) {
+        if !can_stay_rolled_up(m, ridden(m, cx.w)) {
             m.extra.armadillo.danger = 0;
         } else if scared_by_someone(m, cx.w) {
             m.extra.armadillo.danger = 80;
@@ -343,7 +342,7 @@ pub fn server_ai_step(m: &mut Mob, cx: &mut Cx) {
         roll_up(m, events);
     }
     if m.extra.armadillo.ball_up {
-        ball_up_tick(m, events);
+        ball_up_tick(m, cx.w, events);
     }
     let a = &mut m.extra.armadillo;
     a.panic_activity = a.danger > 0 && !m.ai.panicking;
@@ -352,11 +351,11 @@ fn liquid(m: &Mob) -> bool {
     m.fluids.in_water || m.fluids.in_lava
 }
 /// `ArmadilloBallUp.tickOrStop`.
-fn ball_up_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
+fn ball_up_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if !scared(m) {
         // canStillUse is false: stop.
         m.extra.armadillo.ball_up = false;
-        if !can_stay_rolled_up(m) {
+        if !can_stay_rolled_up(m, ridden(m, w)) {
             roll_out(m, events);
         }
         return;
@@ -589,7 +588,7 @@ mod tests {
         // keeps the danger in mind for 80 ticks, so the model shows the
         // shell instead of the armadillo (#2759).
         let mut m = armadillo();
-        after_hurt(&mut m, &Damage::player([0.0, 0.0, 0.0]));
+        after_hurt(&mut m, &Damage::player([0.0, 0.0, 0.0]), Default::default());
         assert_eq!(state(&m), ROLLING);
         // Armadillo.rollUp: the roll sound.
         assert!(

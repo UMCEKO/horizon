@@ -976,11 +976,14 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     events.append(&mut m.outbox);
     // Mob.baseTick: ambient sounds.
     if m.alive() {
+        if std::mem::take(&mut m.ambient_reset) {
+            m.ambient_timer = -m.ambient_interval(w.is_vehicle(m.id) || m.rider.is_some());
+        }
         let roll = m.random.next_int_bound(1000).unwrap_or(999);
         let t = m.ambient_timer;
         m.ambient_timer += 1;
         if roll < t {
-            m.ambient_timer = -m.ambient_interval();
+            m.ambient_timer = -m.ambient_interval(w.is_vehicle(m.id) || m.rider.is_some());
             play_ambient(m, w, events);
         }
     }
@@ -1313,18 +1316,6 @@ fn on_climbable(m: &Mob, w: &MobWorld) -> bool {
     );
     w.has_tag("minecraft:climbable", w.block_name(x, y, z))
 }
-/// `Entity.getRootVehicle` of the mob `id` riding `vehicle`: the bottom of
-/// its stack of vehicles (itself when it rides nothing).
-fn root_vehicle(w: &MobWorld, id: u32, vehicle: Option<u32>) -> u32 {
-    let (mut root, mut next) = (id, vehicle);
-    // A stack of riders is short; the bound only guards a broken loop.
-    for _ in 0..16 {
-        let Some(v) = next else { break };
-        root = v;
-        next = w.seen(v).and_then(|s| s.vehicle);
-    }
-    root
-}
 /// LivingEntity.pushEntities: every pushable entity overlapping the box is
 /// pushed apart from this one (`doPush(e)` = `e.push(this)`); pushes of other
 /// mobs are `Push` events their tick picks up.
@@ -1350,11 +1341,11 @@ fn push_entities(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     {
         targets.push((Who::Player, p.position, p.passenger, false));
     }
-    let root = root_vehicle(w, m.id, m.extra.mount);
+    let root = w.root_vehicle(m.id);
     for o in w.others_near(bounds) {
         if o.id != m.id && o.alive && o.pushable && o.bounds.intersects(bounds) {
-            let same = root_vehicle(w, o.id, o.vehicle) == root;
-            targets.push((Who::Mob(o.id), o.position, o.passenger, same));
+            let same = w.root_vehicle(o.id) == root;
+            targets.push((Who::Mob(o.id), o.position, w.is_passenger(o.id), same));
         }
     }
     // EntitySelector.pushableBy(this): the teams' collision rules.
@@ -1635,7 +1626,7 @@ fn species_ai_step(
         }
         Species::Nautilus | Species::ZombieNautilus => super::nautilus::ai_step(m, w, events),
         Species::Chicken => farm::chicken_ai_step(m, w, events),
-        Species::Parrot => super::parrot::calculate_flapping(m),
+        Species::Parrot => super::parrot::calculate_flapping(m, w.is_passenger(m.id)),
         Species::Armadillo => super::armadillo::tick(m),
         Species::Frog => super::frog::tick(m),
         Species::Goat => super::goat::tick(m),
@@ -1663,8 +1654,8 @@ pub fn despawn_check(m: &mut Mob, w: &MobWorld) -> bool {
 /// mob, a raider in a raid, an enderman carrying a block, a tame nautilus, a
 /// sulfur cube holding a block or let out of a bucket. The spawn caps do not
 /// count these mobs either (`NaturalSpawner.createState`).
-pub fn requires_custom_persistence(m: &Mob) -> bool {
-    super::riders::keeps_alive(m)
+pub fn requires_custom_persistence(m: &Mob, passenger: bool) -> bool {
+    passenger
         || m.extra.leash.is_some()
         || super::raider::state(m).is_some_and(|s| s.raid_id.is_some())
         || m.species() == Species::Enderman && m.extra.carried.is_some()
@@ -1687,7 +1678,7 @@ fn check_despawn(m: &mut Mob, w: &MobWorld) -> bool {
         return true;
     };
     let d = m.distance_sqr(p);
-    let persistent = m.persistent || requires_custom_persistence(m);
+    let persistent = m.persistent || requires_custom_persistence(m, w.is_passenger(m.id));
     // removeWhenFarAway: animals, villagers, golems, patrols and raiders,
     // zombie villagers being cured and ridden mobs stay.
     let creature = m.kind.category == "creature";
@@ -1695,7 +1686,7 @@ fn check_despawn(m: &mut Mob, w: &MobWorld) -> bool {
         || creature && m.kind.flags.animal && !m.extra.jockey
         || super::raider::keeps_alive(m, d)
         || super::zombie_villager::keeps_alive(m)
-        || super::riders::keeps_alive(m));
+        || super::riders::keeps_alive(m, w));
     // MobCategory.getDespawnDistance / getNoDespawnDistance
     let despawn = if m.kind.category == "water_ambient" {
         64.0
@@ -2073,7 +2064,7 @@ pub fn walk_target_value(m: &Mob, w: &MobWorld, p: [i32; 3]) -> f32 {
     0.0
 }
 /// Species damage filters (LivingEntity.hurtServer overrides).
-pub fn accepts_damage(m: &mut Mob, source: &Damage, _amount: f32) -> bool {
+pub fn accepts_damage(m: &mut Mob, source: &Damage, _amount: f32, passenger: bool) -> bool {
     match m.species() {
         // Allay.hurtServer: its liked player cannot hurt it.
         Species::Allay if m.extra.tame && source.attacker == Some(Who::Player) => false,
@@ -2100,7 +2091,7 @@ pub fn accepts_damage(m: &mut Mob, source: &Damage, _amount: f32) -> bool {
             super::hostile::silverfish_hurt(m, source);
             true
         }
-        Species::Enderman => super::enderman::on_damage(m, source),
+        Species::Enderman => super::enderman::on_damage(m, source, passenger),
         Species::WitherSkeleton | Species::Blaze | Species::MagmaCube | Species::Strider
             if source.is_fire() =>
         {
@@ -2110,11 +2101,11 @@ pub fn accepts_damage(m: &mut Mob, source: &Damage, _amount: f32) -> bool {
     }
 }
 /// Reactions after taking damage (sounds, anger).
-pub fn after_hurt(m: &mut Mob, source: &Damage) {
+pub fn after_hurt(m: &mut Mob, source: &Damage, ride: super::anim::Ride) {
     m.ai.no_action_time = 0;
     match m.species() {
         Species::Enderman => super::enderman::after_hurt(m, source),
-        Species::Armadillo => super::armadillo::after_hurt(m, source),
+        Species::Armadillo => super::armadillo::after_hurt(m, source, ride),
         Species::Shulker => super::shulker::after_hurt(m),
         Species::Warden => super::warden::hurt(m, source),
         Species::Wolf => super::tame::after_hurt(m, source),
@@ -2678,7 +2669,7 @@ mod poison_effect_tests {
 #[cfg(test)]
 mod same_vehicle_push_tests {
     use super::*;
-    use crate::mobs::world::with_test_world;
+    use crate::mobs::world::{with_test_riding, with_test_world};
 
     /// `Entity.push(Entity)` returns at once for `isPassengerOfSameVehicle`
     /// (the same `getRootVehicle`): a camel and the husk on its back, seated
@@ -2695,10 +2686,8 @@ mod same_vehicle_push_tests {
                 let mob = |id: u32, name: &str, at: Vec3| {
                     Mob::new(id, std::sync::Arc::new(types.types[name].clone()), at, 0.0)
                 };
-                let mut camel = mob(1, "minecraft:camel", Vec3::new(0.5, 64.0, 0.5));
-                let mut husk = mob(2, "minecraft:husk", Vec3::new(0.5, 65.5, 1.0));
-                camel.extra.rider = Some(husk.id);
-                husk.extra.mount = Some(camel.id);
+                let camel = mob(1, "minecraft:camel", Vec3::new(0.5, 64.0, 0.5));
+                let husk = mob(2, "minecraft:husk", Vec3::new(0.5, 65.5, 1.0));
                 riders.push(husk.seen(None));
                 if zombie_too {
                     riders.push(mob(3, "minecraft:zombie", Vec3::new(0.5, 64.0, 0.0)).seen(None));
@@ -2707,7 +2696,9 @@ mod same_vehicle_push_tests {
             });
             let mut camel = out?;
             let mut events = Vec::new();
-            with_test_world(&riders, |w, _| push_entities(&mut camel, w, &mut events));
+            with_test_riding(&riders, &[(2, 1)], |w, _| {
+                push_entities(&mut camel, w, &mut events)
+            });
             let pushed: Vec<u32> = events
                 .iter()
                 .filter_map(|e| match e {

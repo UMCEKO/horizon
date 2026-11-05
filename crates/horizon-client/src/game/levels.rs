@@ -72,6 +72,7 @@ pub(super) struct Parked {
     dropped: Vec<ItemEntity>,
     orbs: Vec<ExperienceOrb>,
     persist: persist::EntityMemory,
+    riding_table: std::cell::RefCell<horizon_client::riding::Riding>,
     lectern_pulses: Vec<((i32, i32, i32), i32)>,
     lid_openers: HashMap<(i32, i32, i32), i32>,
     lan_events: Vec<(i32, [i32; 3], i32, Option<u32>)>,
@@ -188,6 +189,7 @@ impl Game<'_> {
             dropped: Vec::new(),
             orbs: Vec::new(),
             persist: Default::default(),
+            riding_table: Default::default(),
             lectern_pulses: Vec::new(),
             lid_openers: HashMap::new(),
             lan_events: Vec::new(),
@@ -242,6 +244,7 @@ impl Game<'_> {
         swap(&mut self.dropped, &mut p.dropped);
         swap(&mut self.orbs, &mut p.orbs);
         swap(&mut self.persist, &mut p.persist);
+        swap(&mut self.riding_table, &mut p.riding_table);
         swap(&mut self.lectern_pulses, &mut p.lectern_pulses);
         swap(&mut self.lid_openers, &mut p.lid_openers);
         swap(&mut self.lan_events, &mut p.lan_events);

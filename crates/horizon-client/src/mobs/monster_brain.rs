@@ -868,7 +868,7 @@ impl B {
                 {
                     return false;
                 }
-                let stuck = m.extra.mount.is_some()
+                let stuck = cx.w.is_passenger(m.id)
                     || m.fluids.in_water
                     || m.has_effect("minecraft:levitation");
                 if !stuck {

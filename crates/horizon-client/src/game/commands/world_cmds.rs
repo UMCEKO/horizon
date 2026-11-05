@@ -1,6 +1,7 @@
 //! `/recipe`, `/damage`, `/rotate`, `/swing`, `/playsound`, `/stopsound`,
 //! `/particle`, `/attribute`, `/ride` and `/spreadplayers`.
 use super::{Arg, Context, Game, R, Target, err};
+use horizon_client::riding::Ent;
 use horizon_client::{
     mobs::{Damage, DamageKind, Who},
     scoreboard_cmd::{Holder, Tracker},
@@ -1170,7 +1171,7 @@ impl Game<'_> {
             let vehicle_name = self.target_name(v);
             match target {
                 Target::Player => self.dismount_mount(),
-                Target::Mob(rider) => self.dismount_mob(rider),
+                Target::Mob(rider) => self.stop_riding(Ent::Id(rider)),
                 _ => {}
             }
             self.feedback(Text::translate(
@@ -1222,8 +1223,8 @@ impl Game<'_> {
             ));
         }
         if let Some(rider) = rider {
-            // Entity.startRiding.
-            self.mount_mob(rider, mob_id);
+            // RideCommand.mount: rider.startRiding(vehicle, true, true).
+            self.start_riding(Ent::Id(rider), Ent::Id(mob_id), true, true);
             self.feedback(Text::translate(
                 "commands.ride.mount.success",
                 &[name, vehicle_name],
@@ -1249,7 +1250,7 @@ impl Game<'_> {
     pub(super) fn ride_vehicle(&self, t: Target) -> Option<Target> {
         let id = match t {
             Target::Player => return self.vehicle().map(Target::Mob),
-            Target::Mob(id) => self.mobs.iter().find(|m| m.id == id)?.extra.mount?,
+            Target::Mob(id) => self.mob_vehicle(id)?,
             _ => return None,
         };
         Some(if self.boats.iter().any(|b| b.id == id) {
@@ -1258,35 +1259,6 @@ impl Game<'_> {
             Target::Mob(id)
         })
     }
-    /// LivingEntity.stopRiding for a mob: off its vehicle
-    /// (Entity.removePassenger), then to where the vehicle lets it out
-    /// (LivingEntity.dismountVehicle).
-    pub(in crate::game) fn dismount_mob(&mut self, rider: u32) {
-        let Some(i) = self.mobs.iter().position(|m| m.id == rider) else {
-            return;
-        };
-        let Some(v) = self.mobs[i].extra.mount.take() else {
-            return;
-        };
-        let rider = super::super::vehicle_rules::Rider::mob(&self.mobs[i]);
-        let at = if let Some(b) = self.boats.iter().position(|b| b.id == v) {
-            self.dismount_location(super::super::vehicle_rules::Vehicle::Boat(b), &rider)
-                .0
-        } else if let Some(m) = self.mobs.iter_mut().find(|m| m.id == v) {
-            m.extra.rider = None;
-            // Entity.getDismountLocationForPassenger: on top of the vehicle.
-            let p = m.position;
-            horizon_core::geometry::Vec3::new(p.x, p.y + f64::from(m.height()), p.z)
-        } else {
-            self.mobs[i].position
-        };
-        let m = &mut self.mobs[i];
-        m.extra.passenger = false;
-        m.extra.boarding_cooldown = super::super::boat_passengers::BOARDING_COOLDOWN;
-        m.position = at;
-        m.previous = at;
-    }
-
     // ---- /spreadplayers -----------------------------------------------------------------------
 
     pub(super) fn cmd_spreadplayers(&mut self, ctx: &Context) -> R<i32> {

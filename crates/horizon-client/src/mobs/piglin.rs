@@ -287,7 +287,7 @@ pub fn brain_step(m: &mut Mob, cx: &mut Cx) {
     // The ride activity's behaviours.
     if m.species() == Species::Piglin && m.extra.piglin.activity == Activity::Ride {
         mount(m, cx);
-        dismount_or_skip_mounting(m, cx.w);
+        dismount_or_skip_mounting(m, cx.w, cx.events);
     }
     update_activity(m, cx.w, cx.events);
 }
@@ -309,7 +309,7 @@ fn update_activity(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     // A baby that rides a baby but has no ride target (any more) gets off.
     if m.species() == Species::Piglin && m.extra.piglin.ride.is_none() && is_baby_riding_baby(m, w)
     {
-        dismount(m, w);
+        dismount(m, w, events);
     }
 }
 /// `PiglinAi.isBabyRidingBaby`: a baby piglin on a baby piglin or a baby
@@ -318,8 +318,7 @@ fn is_baby_riding_baby(m: &Mob, w: &MobWorld) -> bool {
     if !m.is_baby() {
         return false;
     }
-    m.extra
-        .mount
+    w.vehicle_id(m.id)
         .and_then(|id| w.seen(id))
         .is_some_and(|v| v.baby && matches!(v.species, Species::Piglin | Species::Hoglin))
 }
@@ -470,7 +469,7 @@ fn block_of(at: Vec3) -> [i32; 3] {
 /// it ends once the target's block is a block away (`reachedTarget`) and aims
 /// again when that block has moved more than 2 blocks.
 fn mount(m: &mut Mob, cx: &mut Cx) {
-    if m.extra.mount.is_some() {
+    if cx.w.is_passenger(m.id) {
         return;
     }
     let Some(ride) = m.extra.piglin.ride else {
@@ -522,39 +521,51 @@ fn aim_at_ride_target(m: &mut Mob, cx: &mut Cx, at: Vec3) {
 /// or not alive any more, when it was hurt recently, or when it is a piglin
 /// that is not riding anything itself. (`wasHurtRecently` of the mob it rides
 /// is `HURT_BY` in that mob's brain, which a hoglin's does not have.)
-fn wants_to_stop_riding(m: &Mob, vehicle: &Seen) -> bool {
+fn wants_to_stop_riding(m: &Mob, vehicle: &Seen, w: &MobWorld) -> bool {
     !vehicle.baby
         || !vehicle.alive
         || m.extra.piglin.hurt
         || vehicle.hurt_recently
-        || (vehicle.species == Species::Piglin && !vehicle.passenger)
+        || (vehicle.species == Species::Piglin && !w.is_passenger(vehicle.id))
 }
 /// `DismountOrSkipMounting.create(8, wantsToStopRiding)`: the vehicle it sits
 /// on, or else the ride target, stays only while it is alive, closer than 8
 /// blocks and the piglin does not want off it; if not, the piglin gets off
 /// and forgets the ride target. A vehicle gone from the level counts as dead.
-fn dismount_or_skip_mounting(m: &mut Mob, w: &MobWorld) {
-    let Some(vehicle) = m.extra.mount.or(m.extra.piglin.ride.map(|r| r.vehicle)) else {
+fn dismount_or_skip_mounting(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    let Some(vehicle) = w
+        .vehicle_id(m.id)
+        .or(m.extra.piglin.ride.map(|r| r.vehicle))
+    else {
         return;
     };
     let keep = match w.seen(vehicle) {
-        Some(s) => s.alive && m.distance_sqr(s.position) < 64.0 && !wants_to_stop_riding(m, s),
+        Some(s) => s.alive && m.distance_sqr(s.position) < 64.0 && !wants_to_stop_riding(m, s, w),
         None => false,
     };
     if keep {
         return;
     }
-    dismount(m, w);
+    dismount(m, w, events);
     m.extra.piglin.ride = None;
 }
 /// `LivingEntity.stopRiding`: get off the vehicle, onto the spot
 /// `Animal.getDismountLocationForPassenger` finds beside it.
-fn dismount(m: &mut Mob, w: &MobWorld) {
-    let Some(vehicle) = m.extra.mount else { return };
-    let at = w
-        .seen(vehicle)
-        .map(|s| super::riders::dismount_location(w, s, m.width(), m.height()));
-    super::riders::stop_riding(m, at);
+fn dismount(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    let Some(vehicle) = w.vehicle_id(m.id) else {
+        return;
+    };
+    let seen = w.seen(vehicle);
+    let at = seen.map(|s| super::riders::dismount_location(w, s, m.width(), m.height()));
+    let from = seen.map(|s| [s.position.x, s.position.y, s.position.z]);
+    w.stop_riding(m.id);
+    if let Some(at) = at {
+        m.position = at;
+        m.previous = at;
+    }
+    if let Some(at) = from {
+        events.push(MobEvent::Dismounted { rider: m.id, at });
+    }
 }
 /// `HoglinAi.piglinsOutnumberHoglins`: an adult hoglin counts itself and
 /// sees more adult piglins than hoglins.

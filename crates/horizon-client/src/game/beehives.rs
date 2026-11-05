@@ -53,7 +53,7 @@ impl HiveHost for GameHive<'_, '_> {
         if uuid.is_some_and(|u| self.game.restored_vehicle(u).is_some()) {
             return None;
         }
-        let read = self.game.read_mob(tag.clone(), None, uuid)?;
+        let read = self.game.read_mob(tag.clone(), uuid)?;
         let id = read.mob.id;
         self.game.remember(id, uuid, read.tag);
         Some(read.mob)
@@ -147,7 +147,9 @@ impl Game<'_> {
             self.break_leash(mob, true, false);
             self.mobs[i].extra.leash = None;
         }
-        self.mobs[i].extra.mount = None;
+        // BeehiveBlockEntity.addOccupant: stopRiding, ejectPassengers.
+        self.stop_riding(horizon_client::riding::Ent::Id(mob));
+        self.eject_passengers(horizon_client::riding::Ent::Id(mob));
         let tag = self.mob_tree_nbt(i);
         let flower = bee::get(&self.mobs[i]).and_then(|b| b.flower);
         let Some(BlockEntity::Beehive(mut hive)) = self.world.block_entities.take(&key) else {

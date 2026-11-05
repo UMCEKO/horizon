@@ -1201,7 +1201,7 @@ impl B {
                 {
                     return false;
                 }
-                if !can_sniff(m) {
+                if !can_sniff(m, cx.w) {
                     return false;
                 }
                 t.begin(cx.lr, cx.now);
@@ -1229,7 +1229,7 @@ impl B {
                 {
                     return false;
                 }
-                if !can_sniff(m) {
+                if !can_sniff(m, cx.w) {
                     return false;
                 }
                 t.begin(cx.lr, cx.now);
@@ -1261,7 +1261,7 @@ impl B {
                 {
                     return false;
                 }
-                if m.is_baby() || !can_sniff(m) {
+                if m.is_baby() || !can_sniff(m, cx.w) {
                     return false;
                 }
                 t.begin(cx.lr, cx.now);
@@ -1674,7 +1674,7 @@ impl B {
                 }
             }
             B::Searching(t) => {
-                let still = if !can_sniff(m) {
+                let still = if !can_sniff(m, cx.w) {
                     transition(m, cx, sniffer::IDLING);
                     false
                 } else {
@@ -1693,7 +1693,7 @@ impl B {
                 }
             }
             B::Sniffing(t) => {
-                if t.timed_out(now) || !can_sniff(m) {
+                if t.timed_out(now) || !can_sniff(m, cx.w) {
                     self.do_stop(m, cx);
                 }
             }
@@ -1799,7 +1799,7 @@ impl B {
             }
             B::Searching(t) => {
                 t.running = false;
-                if can_dig(m, cx.w) && can_sniff(m) {
+                if can_dig(m, cx.w) && can_sniff(m, cx.w) {
                     mem(m).sniffer_digging.set(true);
                 }
                 let mm = mem(m);
@@ -1994,13 +1994,13 @@ fn reset_sniffing(m: &mut Mob, cx: &mut Bx) {
     transition(m, cx, sniffer::IDLING);
 }
 /// `Sniffer.canSniff`.
-fn can_sniff(m: &Mob) -> bool {
+fn can_sniff(m: &Mob, w: &MobWorld) -> bool {
     !is_tempted(m)
         && !is_panicking(m)
         && !m.fluids.in_water
         && m.extra.in_love <= 0
         && m.on_ground
-        && !m.extra.passenger
+        && !w.is_passenger(m.id)
         && m.extra.leash.is_none()
 }
 /// `Sniffer.canDig(BlockPos)`: diggable, unexplored and reachable.
@@ -2018,7 +2018,7 @@ fn can_dig(m: &mut Mob, w: &MobWorld) -> bool {
         || m.is_baby()
         || m.fluids.in_water
         || !m.on_ground
-        || m.extra.passenger
+        || w.is_passenger(m.id)
     {
         return false;
     }

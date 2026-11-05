@@ -189,12 +189,12 @@ pub fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
 }
 /// Whether a hit teleports the enderman away instead of hurting it: any
 /// projectile, unless it rides something (`!isPassenger()`).
-pub fn dodges(m: &Mob, source: &Damage) -> bool {
-    source.is_projectile() && !m.extra.passenger
+pub fn dodges(source: &Damage, passenger: bool) -> bool {
+    source.is_projectile() && !passenger
 }
 /// Enderman.hurtServer: projectiles miss (teleport away), others may teleport.
-pub fn on_damage(m: &mut Mob, source: &Damage) -> bool {
-    if dodges(m, source) {
+pub fn on_damage(m: &mut Mob, source: &Damage, passenger: bool) -> bool {
+    if dodges(source, passenger) {
         // repeatedlyTryToTeleport is applied by the next AI step.
         m.extra.counter2 = 64;
         return false;
@@ -507,16 +507,15 @@ mod tests {
     fn projectiles_hit_a_seated_enderman() {
         for kind in [DamageKind::Arrow, DamageKind::Thrown, DamageKind::Fireball] {
             let mut free = enderman();
-            assert!(!on_damage(&mut free, &Damage::of(kind)), "{kind:?}");
+            assert!(!on_damage(&mut free, &Damage::of(kind), false), "{kind:?}");
             assert_eq!(free.extra.counter2, 64);
             // The arrow handler keeps the arrow flying when the enderman dodges.
-            assert!(dodges(&free, &Damage::of(kind)), "{kind:?}");
+            assert!(dodges(&Damage::of(kind), false), "{kind:?}");
 
             let mut seated = enderman();
-            seated.extra.passenger = true;
-            assert!(on_damage(&mut seated, &Damage::of(kind)), "{kind:?}");
+            assert!(on_damage(&mut seated, &Damage::of(kind), true), "{kind:?}");
             assert_eq!(seated.extra.counter2, 0, "no teleport while seated");
-            assert!(!dodges(&seated, &Damage::of(kind)), "{kind:?}");
+            assert!(!dodges(&Damage::of(kind), true), "{kind:?}");
         }
     }
     /// Enderman.dropCustomDeathLoot (#3513): a killed enderman drops the

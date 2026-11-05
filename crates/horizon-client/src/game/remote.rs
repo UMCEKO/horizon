@@ -5219,7 +5219,10 @@ impl Game<'_> {
             // on-ground flag and the shoulder it sits on (the glide is the
             // server's).
             if m.species() == horizon_client::mobs::Species::Parrot {
-                horizon_client::mobs::parrot::flap(m);
+                let passenger = r
+                    .passengers
+                    .is_passenger(horizon_client::riding::Ent::Id(m.id));
+                horizon_client::mobs::parrot::flap(m, passenger);
             }
             // LivingEntity.updatingUsingItem: the ticks the item has been
             // used before this one. Another player's use particles; a mob's
@@ -5265,7 +5268,10 @@ impl Game<'_> {
             if player {
                 remote_player_head_turn(m);
                 // LivingEntity.tick: the glide count, wings and swim amount.
-                m.tick_avatar_pose(m.fluids.in_water);
+                let passenger = r
+                    .passengers
+                    .is_passenger(horizon_client::riding::Ent::Id(m.id));
+                m.tick_avatar_pose(m.fluids.in_water, passenger);
             } else if m.alive() {
                 m.body_rotation_tick();
             }

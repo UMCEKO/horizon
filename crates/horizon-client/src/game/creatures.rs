@@ -5,6 +5,7 @@
 use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use super::{Dim, Game, dispenser, view_vector};
 use horizon_assets::item_model::DisplayContext;
+use horizon_client::riding::Ent;
 use horizon_client::{
     Result,
     arrows::EntityHit,
@@ -480,11 +481,13 @@ impl Game<'_> {
         from: &Mob,
         kind: &str,
         params: horizon_client::mobs::conversion::Params,
+        vehicle: Option<u32>,
+        rider: Option<Ent>,
     ) -> Option<u32> {
         let t = self.res.mob_types().get(kind).cloned()?;
         self.next_entity += 1;
         let mut mob = Mob::new(self.next_entity, t, from.position, from.yaw);
-        let vehicle = horizon_client::mobs::conversion::single(from, &mut mob, params);
+        horizon_client::mobs::conversion::single(from, &mut mob, params);
         if matches!(from.species(), Species::Zombie | Species::Husk) {
             let at = [from.position.x, from.position.y, from.position.z];
             let special = self.local_difficulty(at).special();
@@ -498,18 +501,14 @@ impl Game<'_> {
         let added = self.level_add(NewEntity::Mob(mob), Origin::Fresh, None);
         // ConversionType.SINGLE: the first passenger gets off and boards the new mob, which
         // boards the vehicle the old one rode (`startRiding(vehicle, false, false)`).
-        let riders: Vec<u32> = self
-            .mobs
-            .iter()
-            .filter(|rider| rider.extra.mount == Some(from.id))
-            .map(|rider| rider.id)
-            .collect();
         if added.is_some() {
-            for rider in riders {
-                self.mount_mob(rider, id);
+            if let Some(rider) = rider {
+                self.stop_riding(rider);
+                self.riding_table.borrow_mut().clear_cooldown(rider);
+                self.start_riding(rider, Ent::Id(id), false, true);
             }
             if let Some(vehicle) = vehicle {
-                self.mount_mob(id, vehicle);
+                self.start_riding(Ent::Id(id), Ent::Id(vehicle), false, false);
             }
         }
         added
@@ -697,6 +696,7 @@ impl Game<'_> {
             items: Some(self.items()),
             lid_openers: &self.lid_openers,
             difficulty: shared.difficulty,
+            riding: &self.riding_table,
         }
     }
     /// What the generator finalizes this level's structure mobs with.
@@ -1075,7 +1075,7 @@ impl Game<'_> {
             self.lan_entity_event(id as i32, 60, at);
             self.death_poof(at, width, height);
         }
-        self.sync_riders();
+        self.tick_passengers();
         self.tick_skeleton_traps();
         self.tick_apparition();
         self.guardian_bubbles();
@@ -1342,9 +1342,9 @@ impl Game<'_> {
                 direct,
             }
         });
-        let vehicle = m
-            .extra
-            .mount
+        let vehicle = self
+            .vehicle_of(Ent::Id(m.id))
+            .and_then(Ent::id)
             .and_then(|id| self.mobs.iter().find(|o| o.id == id))
             .map(|o| LootEntity::new(&o.kind.id));
         let death = drops::Death {
@@ -1405,8 +1405,9 @@ impl Game<'_> {
         let mut killed = false;
         let mut hurt = false;
         let mut infested = false;
+        let ride = self.mob_ride(target);
         if let Some(t) = self.mobs.iter_mut().find(|m| m.id == target) {
-            let hit = t.damage(amount, source);
+            let hit = t.damage_riding(amount, source, ride);
             hurt = hit;
             if hit {
                 killed = !t.alive();
@@ -1949,8 +1950,14 @@ impl Game<'_> {
                         self.apply_setup(id, &setup);
                     }
                 }
-                MobEvent::Convert { from, kind, params } => {
-                    self.convert_to(&from, kind, params);
+                MobEvent::Convert {
+                    from,
+                    kind,
+                    params,
+                    vehicle,
+                    rider,
+                } => {
+                    self.convert_to(&from, kind, params, vehicle, rider);
                 }
                 MobEvent::DropItem { item, count, at } => {
                     self.spawn_item(
@@ -2253,8 +2260,13 @@ impl Game<'_> {
                         horizon_client::mobs::piglin::receive_retreat(m, from, at);
                     }
                 }
+                // Mount.create: `startRiding(vehicle)`.
                 MobEvent::StartRiding { rider, vehicle } => {
-                    horizon_client::mobs::riders::start_riding(&mut self.mobs, rider, vehicle);
+                    self.start_riding(Ent::Id(rider), Ent::Id(vehicle), false, true);
+                }
+                MobEvent::Dismounted { rider, at } => {
+                    let ctx = self.who_context(Some(Who::Mob(rider)), None);
+                    self.post_game_event("minecraft:entity_dismount", at, ctx);
                 }
                 // Applied after the fish's tick (`apply_brain_events`).
                 MobEvent::StartFollowing { .. } | MobEvent::SchoolSize { .. } => {}
@@ -3798,11 +3810,13 @@ impl Game<'_> {
                         [p.previous.x, p.previous.y, p.previous.z],
                         "minecraft:trident",
                     ),
-                    Who::Mob(id) => self
-                        .mobs
-                        .iter_mut()
-                        .find(|m| m.id == id)
-                        .is_some_and(|m| m.damage(amount, source)),
+                    Who::Mob(id) => {
+                        let ride = self.mob_ride(id);
+                        self.mobs
+                            .iter_mut()
+                            .find(|m| m.id == id)
+                            .is_some_and(|m| m.damage_riding(amount, source, ride))
+                    }
                 };
                 let outcome = if hurt {
                     EntityHit::Hurt
@@ -3840,15 +3854,19 @@ impl Game<'_> {
                         hurt
                     }
                     Who::Mob(id) => {
+                        let ride = self.mob_ride(id);
                         let hurt = self
                             .mobs
                             .iter_mut()
                             .find(|m| m.id == id)
-                            .is_some_and(|m| m.damage(amount, source));
+                            .is_some_and(|m| m.damage_riding(amount, source, ride));
                         dodged = !hurt
                             && self.mobs.iter().find(|m| m.id == id).is_some_and(|m| {
                                 m.species() == Species::Enderman
-                                    && horizon_client::mobs::enderman::dodges(m, &source)
+                                    && horizon_client::mobs::enderman::dodges(
+                                        &source,
+                                        ride.is_passenger,
+                                    )
                             });
                         if p.owner == Some(Who::Player) {
                             self.last_hurt_by_player.insert(id, self.lan_acting);
@@ -3984,6 +4002,7 @@ impl Game<'_> {
                 if let Hit::Entity {
                     who: Who::Mob(id), ..
                 } = hit
+                    && let ride = self.mob_ride(id)
                     && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
                 {
                     // Snowball.onHitEntity: 3 damage to blazes, 0 otherwise.
@@ -3992,7 +4011,7 @@ impl Game<'_> {
                     } else {
                         0.0
                     };
-                    m.damage(amount, source);
+                    m.damage_riding(amount, source, ride);
                 }
                 self.thrown_break_event(p.id, atp);
                 self.item_burst(atp, "minecraft:snowball");
@@ -4084,12 +4103,13 @@ impl Game<'_> {
                         }
                     }
                     Who::Mob(id) => {
+                        let ride = self.mob_ride(id);
                         let hurt = self.mobs.iter_mut().find(|m| m.id == id).is_some_and(|m| {
                             let remaining = m.fire_ticks;
                             if !m.kind.flags.fire_immune {
                                 m.ignite_for_ticks(100);
                             }
-                            let hurt = m.damage(5.0, source);
+                            let hurt = m.damage_riding(5.0, source, ride);
                             if !hurt {
                                 m.fire_ticks = remaining;
                             }
@@ -4131,11 +4151,12 @@ impl Game<'_> {
                             );
                         }
                         Who::Mob(id) => {
+                            let ride = self.mob_ride(id);
                             if self
                                 .mobs
                                 .iter_mut()
                                 .find(|m| m.id == id)
-                                .is_some_and(|m| m.damage(6.0, source))
+                                .is_some_and(|m| m.damage_riding(6.0, source, ride))
                             {
                                 self.player_hurt_mob(p, id);
                             }
@@ -4259,8 +4280,9 @@ impl Game<'_> {
                     }
                 }
                 Who::Mob(id) => {
+                    let ride = self.mob_ride(id);
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
-                        && m.damage(4.0, source)
+                        && m.damage_riding(4.0, source, ride)
                     {
                         m.add_effect("minecraft:levitation", 200, 0);
                         // Shulker.hurtServer: a shulker hit by a bullet.
@@ -6204,7 +6226,9 @@ mod pearl_tests {
             }
         }
         let lid_openers = std::collections::HashMap::new();
+        let riding = std::cell::RefCell::new(horizon_client::riding::Riding::default());
         let w = MobWorld {
+            riding: &riding,
             teams: Default::default(),
             world: &world,
             registry,

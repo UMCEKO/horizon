@@ -2387,6 +2387,7 @@ impl Game<'_> {
                 g.motion
                     .as_ref()
                     .is_some_and(|motion| motion.fluids.was_touching_water),
+                g.vehicle.is_some(),
             );
             // CrossbowItem.isCharged: the held crossbow's projectiles.
             m.extra.charged = g

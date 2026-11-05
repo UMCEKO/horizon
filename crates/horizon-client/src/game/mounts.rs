@@ -6,6 +6,7 @@ use super::{
     Game,
     vehicle_rules::{Rider, Seat, Vehicle},
 };
+use horizon_client::riding::Ent;
 use horizon_client::{
     hud::HudBatch,
     items::ItemStack,
@@ -129,10 +130,11 @@ impl Game<'_> {
         // passengers themselves.
         let id = m.id;
         if !matches!(species, Species::Camel | Species::CamelHusk)
-            && self
-                .mobs
-                .iter()
-                .any(|p| p.extra.mount == Some(id) && !p.removed && p.alive())
+            && self.passengers_of(Ent::Id(id)).into_iter().any(|p| {
+                self.mobs
+                    .iter()
+                    .any(|o| Some(o.id) == p.id() && !o.removed && o.alive())
+            })
         {
             return false;
         }
@@ -419,7 +421,7 @@ impl Game<'_> {
         };
         self.mobs[i].rider = None;
         if self.mobs[i].species() == Species::HappyGhast {
-            self.dismount_happy_ghast(id);
+            self.happy_ghast_passenger_left(id);
         }
         let Some(p) = self.player.as_ref() else {
             return;
@@ -481,8 +483,8 @@ impl Game<'_> {
             }
             // `LivingEntity.stabAttack`: `target.stopRiding()`.
             MobEvent::StabDismount { target } => match target {
-                Who::Player => self.stop_riding(),
-                Who::Mob(id) => self.dismount_mob(id),
+                Who::Player => self.dismount_player(),
+                Who::Mob(id) => self.stop_riding(Ent::Id(id)),
             },
             _ => {}
         }
@@ -511,17 +513,13 @@ impl Game<'_> {
             }
             self.lan = Some(host);
         }
-        let rider = self
-            .mobs
-            .iter()
-            .find(|m| m.id == mob)
-            .and_then(|m| m.extra.rider);
-        if let Some(rider) = rider
-            && let Some(r) = self.mobs.iter_mut().find(|m| m.id == rider)
-        {
-            let mut events = Vec::new();
-            r.cause_fall_damage_from(distance, modifier, &mut events);
-            let _ = self.handle_mob_events(events);
+        for rider in self.passengers_of(Ent::Id(mob)) {
+            let ridden = self.is_vehicle(rider);
+            if let Some(r) = self.mobs.iter_mut().find(|m| Some(m.id) == rider.id()) {
+                let mut events = Vec::new();
+                r.cause_fall_damage_from(distance, modifier, ridden, &mut events);
+                let _ = self.handle_mob_events(events);
+            }
         }
     }
     /// The player this game runs (the local one, or the server player it acts

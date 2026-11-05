@@ -471,8 +471,8 @@ horizon_java_host::java_bridges! { table for Game<'static> {
 
     "net/minecraft/world/entity/Entity".startRiding
     "(Lnet/minecraft/world/entity/Entity;ZZ)Z" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
-    fn entity_start_riding(game, id: Ent, vehicle: Ent, _force: bool, _events: bool) -> bool {
-        let rode = game.java_ride(id.0, vehicle.0);
+    fn entity_start_riding(game, id: Ent, vehicle: Ent, force: bool, events: bool) -> bool {
+        let rode = game.java_ride(id.0, vehicle.0, force, events);
         if rode {
             after(game, id, RIDING | POSITION);
             after(game, vehicle, RIDING);

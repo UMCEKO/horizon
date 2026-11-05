@@ -783,7 +783,6 @@ pub struct Extra {
     /// player raises; a cat or ocelot dashing (`Cat/Ocelot.customServerAiStep`),
     /// which `LivingEntity.setSprinting`'s speed modifier makes faster.
     pub sprinting: bool,
-    pub passenger: bool,
     /// AgeableMob.age: negative while a baby (a tadpole counts up to 24000).
     pub age: i32,
     /// `AgeLocked` (tadpoles fed a slime ball... and ageable mobs).
@@ -951,13 +950,6 @@ pub struct Extra {
     /// The sniffer's and the ghastling's brain.
     pub animal_brain: Option<Box<animal_brain::Brain>>,
     pub axolotl: axolotl::Animation,
-    /// The mob or boat this one rides, and the mob riding it (`getVehicle`,
-    /// `getFirstPassenger`).
-    pub mount: Option<u32>,
-    pub rider: Option<u32>,
-    /// `Entity.boardingCooldown`: ticks after leaving a boat before a boat
-    /// can pick this mob up again.
-    pub boarding_cooldown: i32,
     /// A chicken carrying a zombie (`IsChickenJockey`).
     pub jockey: bool,
     /// A skeleton horse waiting to spring its trap, and how long it has waited.
@@ -1070,6 +1062,8 @@ pub struct Mob {
     pub swell: i32,
     pub previous_swell: i32,
     pub ambient_timer: i32,
+    /// `resetAmbientSoundTime` asked outside a turn: the next turn sets the timer, which reads the ride.
+    pub ambient_reset: bool,
     pub fall_distance: f64,
     /// `Entity.stuckSpeedMultiplier`: the next move is scaled by it.
     pub stuck_multiplier: Vec3,
@@ -1267,6 +1261,12 @@ pub enum MobEvent {
         source: u32,
         state: horizon_world::registry::BlockStateId,
     },
+    /// `Entity.removeVehicle` in a mob's own turn (a piglin getting off): `entity_dismount`
+    /// at the vehicle it left.
+    Dismounted {
+        rider: u32,
+        at: [f64; 3],
+    },
     AttackPlayer(f32, [f64; 3]),
     /// `Bee.doHurtTarget` on a player: a sting that lands leaves its stinger
     /// in them and poisons them for `poison_ticks` (none on easy).
@@ -1409,6 +1409,9 @@ pub enum MobEvent {
         from: Box<Mob>,
         kind: &'static str,
         params: conversion::Params,
+        /// What `from` rode and who rode it when it turned: the new mob takes both over.
+        vehicle: Option<u32>,
+        rider: Option<crate::riding::Ent>,
     },
     DropItem {
         item: Arc<str>,
@@ -1750,10 +1753,6 @@ pub struct Seen {
     pub active_raid: bool,
     /// A copper golem's `openedChestPos` (`ContainerUser.hasContainerOpen`).
     pub opened_chest: Option<[i32; 3]>,
-    /// `isPassenger`.
-    pub passenger: bool,
-    /// The vehicle it rides (`getVehicle`): a mob's or a boat's id.
-    pub vehicle: Option<u32>,
     /// A villager's reputation of the player (`getPlayerReputation`).
     pub player_rep: i32,
     /// `isPushable` and pushed by others (`Entity.push(Entity)` moves it).
@@ -1780,8 +1779,8 @@ pub struct Seen {
     pub silent: bool,
     /// `Cat.isLying` or `isRelaxStateOne`.
     pub lying: bool,
-    /// `Entity.isVehicle` or `isPassenger`.
-    pub ridden: bool,
+    /// A player rides it (`Mob.rider`); the mobs in the table are `MobWorld`'s.
+    pub player_rider: bool,
     /// `Attributes.KNOCKBACK_RESISTANCE`.
     pub knockback_resistance: f64,
     /// The active effects, without namespace (`slowness`, `poison`...).
@@ -1882,8 +1881,6 @@ impl Mob {
             hurt_by: m.ai.last_hurt_by.map(|w| (w, m.ai.last_hurt_by_time)),
             active_raid: raider::has_active_raid(m),
             opened_chest: m.extra.opened_chest,
-            passenger: m.extra.mount.is_some(),
-            vehicle: m.extra.mount,
             player_rep: match (villager, player) {
                 (true, Some(uuid)) => villager::ext(m).map_or(0, |e| e.gossips.reputation(uuid)),
                 _ => 0,
@@ -1904,7 +1901,7 @@ impl Mob {
             sitting: m.extra.sitting,
             silent: m.silent,
             lying: m.species() == Species::Cat && (m.extra.flag || m.extra.relax_one),
-            ridden: m.rider.is_some() || m.extra.rider.is_some() || m.extra.mount.is_some(),
+            player_rider: m.rider.is_some(),
             knockback_resistance: m.attrs.knockback_resistance,
             effects: m
                 .extra
@@ -2036,10 +2033,6 @@ pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: us
                 if let Some(m) = mobs.iter_mut().find(|m| m.id == mob) {
                     piglin::receive_retreat(m, from, at);
                 }
-                events.remove(i);
-            }
-            MobEvent::StartRiding { rider, vehicle } => {
-                riders::start_riding(mobs, rider, vehicle);
                 events.remove(i);
             }
             MobEvent::StartFollowing { fish, leader } => {
@@ -2199,6 +2192,8 @@ pub struct MobWorld<'a> {
     pub items: Option<&'a crate::items::Items>,
     /// `ChestBlockEntity.getOpenCount`: the players with each chest open.
     pub lid_openers: &'a HashMap<(i32, i32, i32), i32>,
+    /// Who rides whom in this level, live at each mob's turn.
+    pub riding: &'a std::cell::RefCell<crate::riding::Riding>,
 }
 /// `Entity.getTeam` of the player and of the mobs on a team.
 #[derive(Clone, Debug, Default)]
@@ -2274,6 +2269,7 @@ impl Mob {
             previous_swell: 0,
             // Mob.ambientSoundTime starts at 0.
             ambient_timer: 0,
+            ambient_reset: false,
             fall_distance: 0.0,
             stuck_multiplier: Vec3::ZERO,
             piston: Default::default(),
@@ -2428,7 +2424,13 @@ impl Mob {
         .fold((0.0, 0.0), |(a, t), (x, y)| (a + x, t + y))
     }
     pub fn damage(&mut self, amount: f32, source: Damage) -> bool {
-        self.damage_with(amount, source, None)
+        self.damage_with(amount, source, None, anim::Ride::default())
+    }
+    /// `damage` of a mob with its ride from the riding table: an enderman hit by a
+    /// projectile only teleports away when it is no passenger, and an armadillo
+    /// curls up only when it is neither.
+    pub fn damage_riding(&mut self, amount: f32, source: Damage, ride: anim::Ride) -> bool {
+        self.damage_with(amount, source, None, ride)
     }
     /// `damage` by a source with a weapon: `armor_effectiveness` runs the
     /// weapon's armor-effectiveness enchantments (breach) over the armor fraction.
@@ -2437,6 +2439,7 @@ impl Mob {
         amount: f32,
         source: Damage,
         armor_effectiveness: Option<&mut dyn FnMut(f32) -> f32>,
+        ride: anim::Ride,
     ) -> bool {
         axolotl::before_damage(self, amount, &source);
         raider::note_hurt(self);
@@ -2455,7 +2458,7 @@ impl Mob {
         if source.is_fire() && (self.kind.flags.fire_immune) && !reflected {
             return false;
         }
-        if !ai::accepts_damage(self, &source, amount) {
+        if !ai::accepts_damage(self, &source, amount, ride.is_passenger) {
             return false;
         }
         // IronGolem.hurtServer: the crack level before the damage, compared after.
@@ -2515,7 +2518,7 @@ impl Mob {
             });
             self.knockback(f64::from(0.4f32), dx, dz);
         }
-        ai::after_hurt(self, &source);
+        ai::after_hurt(self, &source, ride);
         if self.health <= 0.0 {
             self.health = 0.0;
         }
@@ -2530,7 +2533,7 @@ impl Mob {
                 ai::voice_sounds(self)[if dead { 2 } else { 1 }]
             };
             if !dead {
-                self.ambient_timer = -self.ambient_interval();
+                self.ambient_reset = true;
             }
             if !sound.is_empty() {
                 let pitch = self.voice_pitch();
@@ -2824,8 +2827,7 @@ impl Mob {
     }
     /// `Mob.getAmbientSoundInterval`; `HappyGhast` waits six times as long
     /// while it carries a passenger.
-    pub fn ambient_interval(&self) -> i32 {
-        let ridden = self.rider.is_some() || self.extra.rider.is_some();
+    pub fn ambient_interval(&self, ridden: bool) -> i32 {
         if self.species() == Species::HappyGhast && ridden {
             self.kind.ambient_interval * 6
         } else {
@@ -3183,7 +3185,7 @@ impl Mob {
     /// The part of `LivingEntity.tick` and `aiStep` that animates another
     /// player from its synched pose and flags: the glide count, the wings
     /// (`elytraAnimationState`) and the swim amount (`updateSwimAmount`).
-    pub fn tick_avatar_pose(&mut self, in_water: bool) {
+    pub fn tick_avatar_pose(&mut self, in_water: bool, passenger: bool) {
         let (p, v) = (self.previous, self.velocity);
         let on_ground_alive = self.on_ground && self.alive();
         let e = &mut self.extra;
@@ -3201,7 +3203,7 @@ impl Mob {
         // player was before this tick's move), RemotePlayer.aiStep's
         // updateBob and rideTick's resetBob.
         e.avatar.tick([p.x, p.y, p.z]);
-        if e.passenger {
+        if passenger {
             e.avatar.reset_bob();
         } else {
             let swimming = e.synced_pose == 3;

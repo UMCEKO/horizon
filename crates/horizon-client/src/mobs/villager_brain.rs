@@ -2360,7 +2360,7 @@ impl B {
                 r
             }
             B::SleepInBed { t, next_ok } => {
-                if m.extra.mount.is_some() {
+                if cx.w.is_passenger(m.id) {
                     return false;
                 }
                 let mm = mem(m);

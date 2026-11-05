@@ -311,6 +311,7 @@ impl Game<'_> {
         let push = f64::from(0.2f32);
         let tags = &self.res.stations().enchantments.entity_tags;
         let immune = tags.get("minecraft:not_affected_by_geysers");
+        let table = self.riding_table.borrow();
         for mob in self
             .mobs
             .iter_mut()
@@ -320,7 +321,7 @@ impl Game<'_> {
             if mob.velocity.y > -0.5 && mob.fall_distance > 1.0 {
                 mob.fall_distance = 1.0;
             }
-            if !mob.extra.passenger
+            if !table.is_passenger(horizon_client::riding::Ent::Id(mob.id))
                 && !immune.is_some_and(|t| t.contains(&mob.kind.id))
                 && mob.velocity.y < limit
             {

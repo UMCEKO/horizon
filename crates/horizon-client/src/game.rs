@@ -2296,6 +2296,8 @@ struct Game<'a> {
     /// The overworld's last `sky_darken` and its inputs (time, rain, thunder).
     sky_darken_memo: std::cell::Cell<Option<((i64, u32, u32), i32)>>,
     persist: persist::EntityMemory,
+    /// Who rides whom in the level in place: `Entity.vehicle` and `passengers`, written by `game/passengers.rs` only.
+    riding_table: std::cell::RefCell<horizon_client::riding::Riding>,
     /// Connected to a server: the world comes from the network (game/remote.rs).
     remote: Option<remote::Remote>,
     /// This world is open to the network (game/lan.rs).
@@ -16047,6 +16049,7 @@ impl<'a> Game<'a> {
             native_lifecycle: Default::default(),
             sky_darken_memo: Default::default(),
             persist: Default::default(),
+            riding_table: Default::default(),
             remote: None,
             lan: None,
             integrated: None,

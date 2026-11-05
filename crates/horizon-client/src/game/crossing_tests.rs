@@ -1,6 +1,8 @@
 //! The crossing points of the native entity loops (SPEC-1a), run on a server `Game` over a flat world.
 use super::crossing::CrossPoint;
+use super::entity_life::{Kind, Removal};
 use super::*;
+use horizon_client::riding::Ent;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -302,20 +304,28 @@ fn a_converted_mob_keeps_its_vehicle_and_its_passenger() {
     let pig = game.spawn_mob("pig", [2.5, 61.0, 2.5], true).unwrap();
     let zombie = game.spawn_mob("zombie", [2.5, 62.0, 2.5], true).unwrap();
     let skeleton = game.spawn_mob("skeleton", [2.5, 63.0, 2.5], true).unwrap();
-    game.mount_mob(zombie, pig);
-    game.mount_mob(skeleton, zombie);
-    let at = game.mobs.iter().position(|m| m.id == zombie).unwrap();
-    let from = game.mobs.remove(at);
+    assert!(game.start_riding(Ent::Id(zombie), Ent::Id(pig), false, false));
+    assert!(game.start_riding(Ent::Id(skeleton), Ent::Id(zombie), false, false));
+    let from = game.mobs.iter().find(|m| m.id == zombie).unwrap().clone();
+    let (vehicle, rider) = (
+        game.mob_vehicle(zombie),
+        game.first_passenger(Ent::Id(zombie)),
+    );
+    game.level_remove(Kind::Mob, zombie, Removal::Discarded);
     let drowned = game
         .convert_to(
             &from,
             "minecraft:drowned",
             horizon_client::mobs::conversion::Params::KEEP_ALL,
+            vehicle,
+            rider,
         )
         .unwrap();
-    let find = |game: &Game<'_>, id| game.mobs.iter().find(|m| m.id == id).unwrap().extra.clone();
-    assert_eq!(find(&game, drowned).mount, Some(pig));
-    assert_eq!(find(&game, skeleton).mount, Some(drowned));
-    assert_eq!(find(&game, pig).rider, Some(drowned));
-    assert_eq!(find(&game, drowned).rider, Some(skeleton));
+    assert_eq!(game.mob_vehicle(drowned), Some(pig));
+    assert_eq!(game.mob_vehicle(skeleton), Some(drowned));
+    assert_eq!(game.first_passenger(Ent::Id(pig)), Some(Ent::Id(drowned)));
+    assert_eq!(
+        game.first_passenger(Ent::Id(drowned)),
+        Some(Ent::Id(skeleton))
+    );
 }

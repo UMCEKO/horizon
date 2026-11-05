@@ -1390,7 +1390,7 @@ impl Game<'_> {
             }
             Target::Player => {
                 // ServerPlayer.teleport: removeVehicle before placing the player.
-                self.stop_riding();
+                self.dismount_player();
                 // A server's player teleported within their level is placed
                 // there at once: the arrival they were waiting for elsewhere
                 // in it (whose chunks lose their tickets) is abandoned.

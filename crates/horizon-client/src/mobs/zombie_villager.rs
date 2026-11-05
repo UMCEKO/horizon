@@ -192,7 +192,9 @@ mod tests {
         let air = registry.default_state("minecraft:air").unwrap();
         let world = crate::world::World::new(air, 0);
         let lid_openers = std::collections::HashMap::new();
+        let riding = std::cell::RefCell::new(crate::riding::Riding::default());
         let w = MobWorld {
+            riding: &riding,
             teams: Default::default(),
             world: &world,
             registry,

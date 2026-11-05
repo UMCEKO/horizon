@@ -335,7 +335,7 @@ impl Game<'_> {
         }
         // `Entity.startRiding`: a passenger first gets off what it rides
         // (`stopRiding`), so a seated player moves to this cushion.
-        self.stop_riding();
+        self.dismount_player();
         self.set_vehicle(Some(id));
         let p = self.cushions[i].position;
         self.audio.play(

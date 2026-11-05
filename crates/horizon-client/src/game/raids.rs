@@ -5,6 +5,7 @@
 use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use super::{Dim, Game};
 use horizon_client::mobs::villager as mobs_villager;
+use horizon_client::riding::Ent;
 use horizon_client::{
     effects::{EffectInstance, OmenTick},
     mobs::{
@@ -683,7 +684,7 @@ impl Game<'_> {
                 && let Some(rider) = self.spawn_raider(kind, pos, raid_id, wave, false, odds)
             {
                 // Raid.spawnGroup: ridingRaider.startRiding(raider, false, false).
-                self.mount_mob(rider, id);
+                self.start_riding(Ent::Id(rider), Ent::Id(id), false, false);
             }
         }
     }
@@ -773,7 +774,7 @@ impl Game<'_> {
             if let (Some(id), true) = (s.raid_id, s.patrol_leader) {
                 leaders.insert((id, s.wave));
             }
-            if let Some(v) = m.extra.mount {
+            if let Some(v) = self.vehicle_of(Ent::Id(m.id)).and_then(Ent::id) {
                 ridden.insert(v);
             }
             positions.push((m.id, m.position, s.active_raid));

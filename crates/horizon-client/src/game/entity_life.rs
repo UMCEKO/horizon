@@ -1,5 +1,6 @@
 //! Where native entities enter and leave a level, as `PersistentEntitySectionManager.addEntity` and `Entity.setRemoved` do.
 use super::*;
+use horizon_client::riding::Ent;
 use horizon_world::nbt::Tag;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +38,13 @@ pub(in crate::game) enum Removal {
     #[allow(dead_code)] // No native site ports PlayerList.remove's vehicle yet.
     UnloadedWithPlayer,
     ChangedDimension,
+}
+
+impl Removal {
+    /// `RemovalReason.shouldDestroy`.
+    pub(in crate::game) fn destroys(self) -> bool {
+        matches!(self, Self::Killed | Self::Discarded)
+    }
 }
 
 pub(in crate::game) enum NewEntity {
@@ -167,6 +175,7 @@ impl Game<'_> {
 
     /// `Entity.remove(reason)` of the entity `id`; false when it isn't in the level.
     pub(in crate::game) fn level_remove(&mut self, kind: Kind, id: u32, why: Removal) -> bool {
+        self.riding_removed(Ent::Id(id), why);
         let lent = self.lent();
         macro_rules! take {
             ($vec:expr, $lent:expr) => {{
@@ -244,6 +253,7 @@ impl Game<'_> {
             Kind::Bolt => self.bolts.clear(),
         }
         for id in ids {
+            self.riding_forget(Ent::Id(id));
             self.note_touched(Some(id));
             self.java_hook_entity_left(kind, id, why);
         }
@@ -281,6 +291,9 @@ impl Game<'_> {
         if kind == Kind::Mob {
             self.note_touched(Some(id));
         }
-        self.lend(lent, |g| g.java_hook_entity_left(kind, id, why));
+        self.lend(lent, |g| {
+            g.riding_removed(Ent::Id(id), why);
+            g.java_hook_entity_left(kind, id, why);
+        });
     }
 }

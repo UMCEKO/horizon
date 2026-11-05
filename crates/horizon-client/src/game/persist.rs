@@ -3,6 +3,7 @@
 //! scheduled block/fluid ticks (chunk `block_ticks`/`fluid_ticks`).
 use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use super::{FallingBlock, Game, Mob};
+use horizon_client::riding::Ent;
 use horizon_client::{
     Result,
     chunk::Chunk,
@@ -536,16 +537,11 @@ impl Game<'_> {
         if let Some(id) = uuid.and_then(|u| self.restored_vehicle(u)) {
             return Some(id);
         }
-        let read = self.read_mob(tag, mount, uuid)?;
-        self.add_read_mob(read, origin)
+        let read = self.read_mob(tag, uuid)?;
+        self.add_read_mob(read, origin, mount)
     }
     /// A saved mob made, not yet in the level (`EntityType.loadEntityRecursive`).
-    pub(super) fn read_mob(
-        &mut self,
-        tag: Tag,
-        mount: Option<u32>,
-        uuid: Option<[i32; 4]>,
-    ) -> Option<ReadMob> {
+    pub(super) fn read_mob(&mut self, tag: Tag, uuid: Option<[i32; 4]>) -> Option<ReadMob> {
         self.next_entity += 1;
         // Structure mobs that generation left to finish: saves from before
         // they were finalized at placement, or a placement that could not.
@@ -565,8 +561,6 @@ impl Game<'_> {
         if m.extra.anger > 0 && m.extra.angry_at.is_some() {
             m.ai.target = Some(horizon_client::mobs::Who::Player);
         }
-        m.extra.mount = mount;
-        m.extra.passenger = mount.is_some();
         if finalize {
             let facts = self.biome_facts(
                 m.position.x.floor() as i32,
@@ -599,7 +593,7 @@ impl Game<'_> {
         })
     }
     /// The join of a mob `read_mob` made, then its riders.
-    fn add_read_mob(&mut self, read: ReadMob, origin: Origin) -> Option<u32> {
+    fn add_read_mob(&mut self, read: ReadMob, origin: Origin, mount: Option<u32>) -> Option<u32> {
         let ReadMob {
             mob,
             uuid,
@@ -613,12 +607,12 @@ impl Game<'_> {
         if finalize {
             self.enchant_spawn_equipment(id);
         }
+        // EntityType.loadEntityRecursive: the child boards its vehicle by force, without events.
+        if let Some(vehicle) = mount {
+            self.start_riding(Ent::Id(id), Ent::Id(vehicle), true, false);
+        }
         for rider in riders {
-            if let Some(r) = self.load_mob(rider, Some(id), origin)
-                && let Some(v) = self.mobs.iter_mut().find(|m| m.id == id)
-            {
-                v.extra.rider = Some(r);
-            }
+            self.load_mob(rider, Some(id), origin);
         }
         Some(id)
     }
@@ -648,8 +642,11 @@ impl Game<'_> {
     /// The mobs riding entity `id` under `tag`'s `Passengers`, after the
     /// passengers it kept from loading.
     fn put_mob_passengers(&mut self, tag: &mut Tag, id: u32) {
-        let riders: Vec<usize> = (0..self.mobs.len())
-            .filter(|&j| self.mobs[j].extra.mount == Some(id) && self.mobs[j].alive())
+        let riders: Vec<usize> = self
+            .passengers_of(Ent::Id(id))
+            .into_iter()
+            .filter_map(|p| self.mobs.iter().position(|m| Some(m.id) == p.id()))
+            .filter(|&j| self.mobs[j].alive())
             .collect();
         let riders: Vec<Tag> = riders.into_iter().map(|j| self.mob_tree_nbt(j)).collect();
         if let Tag::Compound(c) = tag {
@@ -725,13 +722,11 @@ impl Game<'_> {
     }
     /// The root of a stack of riders (`Entity.getRootVehicle`).
     fn mob_root(&self, mut i: usize) -> usize {
-        for _ in 0..8 {
-            let Some(v) = self.mobs[i].extra.mount else {
-                break;
-            };
-            let Some(j) = self.mobs.iter().position(|m| m.id == v) else {
-                break;
-            };
+        while let Some(j) = self
+            .vehicle_of(Ent::Id(self.mobs[i].id))
+            .and_then(Ent::id)
+            .and_then(|v| self.mobs.iter().position(|m| m.id == v))
+        {
             i = j;
         }
         i
@@ -968,9 +963,9 @@ impl Game<'_> {
         let mobs: Vec<usize> = (0..self.mobs.len())
             .filter(|&i| {
                 self.mob_root(i) == i
-                    && self.mobs[i]
-                        .extra
-                        .mount
+                    && self
+                        .vehicle_of(Ent::Id(self.mobs[i].id))
+                        .and_then(Ent::id)
                         .is_none_or(|v| self.boats.iter().all(|b| b.id != v))
                     && keys.contains(&chunk_of(self.mobs[i].position))
                     && self.mobs[i].alive()
@@ -1305,7 +1300,7 @@ impl Game<'_> {
             let leaving: HashSet<u32> = (0..self.mobs.len())
                 .filter(|&i| {
                     let r = self.mob_root(i);
-                    match self.mobs[r].extra.mount {
+                    match self.vehicle_of(Ent::Id(self.mobs[r].id)).and_then(Ent::id) {
                         Some(v) if removed.contains(&v) => true,
                         Some(v) if self.boats.iter().any(|b| b.id == v) => false,
                         _ => gone(self.mobs[r].position),

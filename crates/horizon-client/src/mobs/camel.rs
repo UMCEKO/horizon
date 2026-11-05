@@ -269,7 +269,7 @@ impl Goal for CamelPanic {
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         // CamelHusk.isMobControlled: not with a mob on its back either.
         m.rider.is_none()
-            && !(m.species() == super::Species::CamelHusk && m.extra.rider.is_some())
+            && !(m.species() == super::Species::CamelHusk && cx.w.is_vehicle(m.id))
             && self.0.can_use(m, cx)
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
@@ -447,7 +447,10 @@ pub fn anim(
 mod tests {
     use super::*;
     use crate::mobs::{Anim, Brain, Flags, MobType, Part, Species};
-    use crate::mobs::{leash::Holder, world::with_test_world};
+    use crate::mobs::{
+        leash::Holder,
+        world::{with_test_riding, with_test_world},
+    };
     use horizon_core::geometry::Vec3;
     use serde_json::json;
     use std::sync::Arc;
@@ -470,22 +473,20 @@ mod tests {
                 };
                 let mut m = mob(1, "minecraft:camel");
                 if let Some(name) = rider {
-                    let mut r = mob(2, name);
-                    r.extra.mount = Some(m.id);
-                    m.extra.rider = Some(r.id);
-                    seen.push(r.seen(None));
+                    seen.push(mob(2, name).seen(None));
                 }
                 if leashed {
                     m.extra.leash = Some(Holder::Mob(3));
                 }
                 camel = Some(m);
             });
+            let links: Vec<(u32, u32)> = rider.map(|_| (2, 1)).into_iter().collect();
             let mut m = camel?;
             m.age = 1000;
             m.extra.egg_time = 0;
             m.on_ground = true;
             let mut started = false;
-            with_test_world(&seen, |w, _| {
+            with_test_riding(&seen, &links, |w, _| {
                 let mut lr = horizon_core::random::LegacyRandom::new(0);
                 let mut events = Vec::new();
                 let mut cx = Cx {

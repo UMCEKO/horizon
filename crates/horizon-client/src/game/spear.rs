@@ -8,6 +8,7 @@
 //! players around as entity event 2. A left click jabs instead
 //! (`PiercingWeapon.attack`), which Lunge turns into a dash.
 use super::{Game, view_vector};
+use horizon_client::riding::Ent;
 pub(super) use horizon_client::spear::hits_in_reach;
 use horizon_client::{
     attack_strength::delay,
@@ -67,9 +68,9 @@ impl Game<'_> {
     /// vehicle's (`KineticWeapon.getMotion`).
     fn mob_speed(&self, index: usize) -> Vec3 {
         let mut mob = &self.mobs[index];
-        while let Some(vehicle) = mob
-            .extra
-            .mount
+        while let Some(vehicle) = self
+            .vehicle_of(Ent::Id(mob.id))
+            .and_then(Ent::id)
             .and_then(|v| self.mobs.iter().find(|m| m.id == v))
         {
             mob = vehicle;
@@ -231,9 +232,9 @@ impl Game<'_> {
             // ...and the attacker stops sprinting.
             self.stop_sprint_after_extra_knockback();
         }
-        let dismounted = dismounts && self.mobs[index].extra.mount.is_some();
+        let dismounted = dismounts && self.mob_vehicle(id).is_some();
         if dismounted {
-            self.dismount_mob(id);
+            self.stop_riding(Ent::Id(id));
         }
         if !hurt && !deals_knockback && !dismounted {
             return false;

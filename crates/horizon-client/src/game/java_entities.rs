@@ -6,6 +6,7 @@ use super::*;
 use commands::Target;
 use horizon_client::entity_nbt;
 use horizon_client::projectiles::ProjectileKind;
+use horizon_client::riding::Ent;
 use horizon_client::save::{float, number, random_uuid, text};
 use horizon_java_host::wire::{In, Out};
 use horizon_world::nbt::Tag;
@@ -458,12 +459,11 @@ impl Game<'_> {
             death: Some(m.death_time),
             crouching: m.extra.crouching,
             sprinting: m.extra.sprinting,
-            vehicle: m.extra.mount.unwrap_or(0),
+            vehicle: self.mob_vehicle(id).unwrap_or(0),
             passengers: self
-                .mobs
-                .iter()
-                .filter(|r| r.extra.mount == Some(id))
-                .map(|r| r.id)
+                .passengers_of(Ent::Id(id))
+                .into_iter()
+                .filter_map(Ent::id)
                 .collect(),
             malus: m
                 .ai
@@ -1133,32 +1133,24 @@ impl Game<'_> {
         true
     }
 
-    pub(super) fn java_ride(&mut self, rider: u32, vehicle: u32) -> bool {
-        if rider == vehicle
-            || !self.mobs.iter().any(|m| m.id == rider)
-            || !self.mobs.iter().any(|m| m.id == vehicle)
-        {
+    pub(super) fn java_ride(
+        &mut self,
+        rider: u32,
+        vehicle: u32,
+        force: bool,
+        events: bool,
+    ) -> bool {
+        if !self.mobs.iter().any(|m| m.id == rider) {
             return false;
         }
-        // Entity.startRiding between two mobs.
-        self.mount_mob(rider, vehicle);
-        true
+        self.start_riding(Ent::Id(rider), Ent::Id(vehicle), force, events)
     }
 
     pub(super) fn java_dismount(&mut self, rider: u32) -> bool {
-        let Some(m) = self.mobs.iter().find(|m| m.id == rider) else {
+        if !self.mobs.iter().any(|m| m.id == rider) {
             return false;
-        };
-        let Some(vehicle) = m.extra.mount else {
-            return true;
-        };
-        for m in &mut self.mobs {
-            if m.id == rider {
-                m.extra.mount = None;
-            } else if m.id == vehicle {
-                m.extra.rider = None;
-            }
         }
+        self.stop_riding(Ent::Id(rider));
         true
     }
 
@@ -1220,7 +1212,7 @@ impl Game<'_> {
     }
 
     pub(super) fn java_vehicle_of(&self, id: u32) -> Option<u32> {
-        self.mobs.iter().find(|m| m.id == id)?.extra.mount
+        self.mob_vehicle(id)
     }
 
     /// `Entity.getKnownMovement` and `onGround` of a projectile's source.

@@ -7,15 +7,14 @@ use super::{
     Mob, MobWorld, Seen, Species, attachments,
     goals::{JUMP, LOOK, MOVE},
 };
+use crate::riding::Ent;
 use horizon_core::geometry::{Aabb, Vec3, trig};
 use horizon_world::nbt::{Compound, Tag};
 
 /// The goal flags a controlling passenger takes from its vehicle.
 const CONTROLLED: u8 = MOVE | JUMP | LOOK;
-/// `Entity.removePassenger`: a passenger that got off cannot board for 60 ticks.
-const BOARDING_COOLDOWN: i32 = 60;
 /// `Piglin.startRiding`: how many baby piglins stack on one hoglin.
-const MAX_PASSENGERS_ON_ONE_HOGLIN: i32 = 3;
+pub const MAX_PASSENGERS_ON_ONE_HOGLIN: i32 = 3;
 
 /// `getPassengerAttachmentPoint` of a mob vehicle for its passenger number
 /// `index`, turned by `yaw`: the kind's override, else `getClamped(PASSENGER,
@@ -82,85 +81,6 @@ pub fn ride_position(at: Vec3, passenger: [f64; 3], vehicle: [f64; 3]) -> Vec3 {
     )
 }
 
-/// `Entity.startRiding`: the link it makes, `rider` on `vehicle` as its first
-/// passenger (`addPassenger`).
-pub fn link(mobs: &mut [Mob], rider: u32, vehicle: u32) {
-    if rider == vehicle {
-        return;
-    }
-    if let Some(m) = mobs.iter_mut().find(|m| m.id == rider) {
-        m.extra.mount = Some(vehicle);
-        m.extra.passenger = true;
-    }
-    if let Some(m) = mobs.iter_mut().find(|m| m.id == vehicle) {
-        m.extra.rider = Some(rider);
-    }
-}
-/// `Piglin.getTopPassenger`: down the chain of first passengers from
-/// `vehicle`, stopping at the `counter`th seat.
-fn top_passenger(mobs: &[Mob], vehicle: u32, counter: i32) -> u32 {
-    let first = mobs
-        .iter()
-        .find(|m| m.id == vehicle)
-        .and_then(|m| m.extra.rider);
-    match first {
-        Some(passenger) if counter != 1 => top_passenger(mobs, passenger, counter - 1),
-        _ => vehicle,
-    }
-}
-/// `Piglin.startRiding` over `Entity.startRiding` for two mobs: a baby piglin
-/// that boards a hoglin sits on the top of up to three piglins stacked on it.
-/// Not the vehicle it is on already, nor one it carries itself, and only
-/// after its boarding cooldown, onto a vehicle with no passenger
-/// (`canRide`, `canAddPassenger`). Returns whether it boarded.
-pub fn start_riding(mobs: &mut [Mob], rider: u32, vehicle: u32) -> bool {
-    let Some(r) = mobs.iter().find(|m| m.id == rider) else {
-        return false;
-    };
-    let on_hoglin = mobs
-        .iter()
-        .any(|m| m.id == vehicle && m.species() == Species::Hoglin);
-    let vehicle = if r.species() == Species::Piglin && r.is_baby() && on_hoglin {
-        top_passenger(mobs, vehicle, MAX_PASSENGERS_ON_ONE_HOGLIN)
-    } else {
-        vehicle
-    };
-    if rider == vehicle || r.extra.mount == Some(vehicle) {
-        return false;
-    }
-    // Nothing that rides the rider (through any number of vehicles) can be
-    // its vehicle.
-    let mut up = Some(vehicle);
-    while let Some(v) = up {
-        up = mobs.iter().find(|m| m.id == v).and_then(|m| m.extra.mount);
-        if up == Some(rider) {
-            return false;
-        }
-    }
-    let Some(v) = mobs.iter().find(|m| m.id == vehicle) else {
-        return false;
-    };
-    if r.extra.boarding_cooldown > 0 || v.extra.rider.is_some() || v.rider.is_some() {
-        return false;
-    }
-    link(mobs, rider, vehicle);
-    true
-}
-/// `LivingEntity.stopRiding` for the mob itself: it leaves its vehicle (which
-/// forgets it when the riders are next synced), cannot board again for 60
-/// ticks (`Entity.removePassenger`) and is set down at `at`, where
-/// `dismountVehicle` puts it (`dismountTo`), or stays where it is.
-pub fn stop_riding(m: &mut Mob, at: Option<Vec3>) {
-    if m.extra.mount.take().is_none() {
-        return;
-    }
-    m.extra.passenger = false;
-    m.extra.boarding_cooldown = BOARDING_COOLDOWN;
-    if let Some(at) = at {
-        m.position = at;
-        m.previous = at;
-    }
-}
 /// `Animal.getDismountLocationForPassenger` for a standing passenger of
 /// `width` by `height`: on the floor of the first block around the
 /// vehicle's, going right, left, behind right, behind left, ahead right,
@@ -242,7 +162,7 @@ fn ranged(s: Species) -> bool {
 /// movement goals and carries it toward the target (melee riders to contact,
 /// archers to a shooting distance). Without a target the vehicle wanders.
 pub fn drive(m: &mut Mob, w: &MobWorld) {
-    let Some(rider) = m.extra.rider else {
+    let Some(rider) = w.first_passenger(m.id).and_then(Ent::id) else {
         m.ai.goals.disabled &= !CONTROLLED;
         return;
     };
@@ -302,14 +222,14 @@ pub fn controlling_passenger(v: &Mob, first: First) -> bool {
 }
 /// `Mob.getControllingPassenger` for a mob on its back.
 pub fn mob_controlled(m: &Mob, w: &MobWorld) -> bool {
-    m.extra
-        .rider
+    w.first_passenger(m.id)
+        .and_then(Ent::id)
         .and_then(|r| w.seen(r))
         .is_some_and(|r| controlling_passenger(m, First::Mob(r.species)))
 }
 /// `Mob.requiresCustomPersistence`: a passenger never despawns.
-pub fn keeps_alive(m: &Mob) -> bool {
-    m.extra.mount.is_some()
+pub fn keeps_alive(m: &Mob, w: &MobWorld) -> bool {
+    w.is_passenger(m.id)
 }
 
 /// `IsChickenJockey`, `SkeletonTrap` and `SkeletonTrapTime`.

@@ -262,12 +262,12 @@ fn variant(m: &Mob, regs: &SpawnRegistries, v: &mut Vec<String>) {
     }
 }
 
-fn describe(m: &Mob, all: &[Mob], regs: &SpawnRegistries) -> String {
+fn describe(m: &Mob, all: &[Mob], regs: &SpawnRegistries, rides: &[(u32, u32)]) -> String {
     let mut t = vec![m.kind.id.clone()];
-    let vehicle = m
-        .extra
-        .mount
-        .and_then(|v| all.iter().position(|o| o.id == v))
+    let vehicle = rides
+        .iter()
+        .find(|(rider, _)| *rider == m.id)
+        .and_then(|&(_, v)| all.iter().position(|o| o.id == v))
         .map_or("-".to_owned(), |i| i.to_string());
     t.push(format!("veh={vehicle}"));
     if finalize::ageable(m.species()) {
@@ -523,19 +523,11 @@ pub fn main() -> horizon_client::Result<()> {
             }
         }
         // The caller links what the finalizer reports: the rider boards, and is the first one on its vehicle.
-        for (rider, vehicle) in rides {
-            if let Some(m) = all.iter_mut().find(|m| m.id == rider) {
-                m.extra.mount = Some(vehicle);
-                m.extra.passenger = true;
-            }
-            if let Some(v) = all.iter_mut().find(|m| m.id == vehicle)
-                && v.extra.rider.is_none()
-            {
-                v.extra.rider = Some(rider);
-            }
-        }
         all.sort_by_key(|m| m.id);
-        let mut parts: Vec<String> = all.iter().map(|m| describe(m, &all, &registries)).collect();
+        let mut parts: Vec<String> = all
+            .iter()
+            .map(|m| describe(m, &all, &registries, &rides))
+            .collect();
         for m in &mut all {
             parts.push(format!("rng {}", m.random.next_long()));
         }

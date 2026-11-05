@@ -650,7 +650,8 @@ impl Mob {
         if self.on_ground {
             if self.fall_distance > 0.0 {
                 self.trample_farmland(w, events);
-                self.cause_fall_damage(events);
+                let ridden = w.is_vehicle(self.id) || self.rider.is_some();
+                self.cause_fall_damage(ridden, events);
             }
             self.fall_distance = 0.0;
         }
@@ -715,7 +716,7 @@ impl Mob {
     /// Entity.applyMovementEmissionAndPlaySound: walked distance, footsteps
     /// and swimming sounds.
     fn movement_emission(&mut self, w: &MobWorld, moved: Vec3, events: &mut Vec<MobEvent>) {
-        if !super::ai::emits_movement(self) || self.extra.mount.is_some() {
+        if !super::ai::emits_movement(self) || w.is_passenger(self.id) {
             return;
         }
         let full = (moved.length() * f64::from(0.6_f32)) as f32;
@@ -893,8 +894,8 @@ impl Mob {
     }
     /// The landing of `check_fall_damage`: the whole fall, with no block
     /// softening it.
-    fn cause_fall_damage(&mut self, events: &mut Vec<MobEvent>) {
-        self.cause_fall_damage_from(self.fall_distance, 1.0, events);
+    fn cause_fall_damage(&mut self, ridden: bool, events: &mut Vec<MobEvent>) {
+        self.cause_fall_damage_from(self.fall_distance, 1.0, ridden, events);
     }
     /// `LivingEntity.causeFallDamage`: a fall of `distance` blocks at `modifier`
     /// (its own landing, or a vehicle's passed on by `propagateFallToPassengers`)
@@ -905,6 +906,7 @@ impl Mob {
         &mut self,
         distance: f64,
         modifier: f32,
+        ridden: bool,
         events: &mut Vec<MobEvent>,
     ) {
         // Breeze.causeFallDamage: a landing from higher than three blocks.
@@ -949,7 +951,7 @@ impl Mob {
         }
         // LivingEntity.causeFallDamage lets the riders fall first.
         if !horse {
-            self.fall_to_passengers(distance, modifier, events);
+            self.fall_to_passengers(ridden, distance, modifier, events);
         }
         if damage > 0.0 {
             // Llama.causeFallDamage: only a fall of six blocks or more hurts the
@@ -972,15 +974,21 @@ impl Mob {
             }
             self.damage(damage as f32, super::Damage::fall());
             if horse {
-                self.fall_to_passengers(distance, modifier, events);
+                self.fall_to_passengers(ridden, distance, modifier, events);
             }
         }
     }
     /// `Entity.propagateFallToPassengers`: the game gives the fall to each
     /// passenger (`causeFallDamage`), a mob or a player, for this mob is
     /// borrowed here.
-    fn fall_to_passengers(&self, distance: f64, modifier: f32, events: &mut Vec<MobEvent>) {
-        if self.rider.is_some() || self.extra.rider.is_some() {
+    fn fall_to_passengers(
+        &self,
+        ridden: bool,
+        distance: f64,
+        modifier: f32,
+        events: &mut Vec<MobEvent>,
+    ) {
+        if ridden {
             events.push(MobEvent::FallToPassengers {
                 mob: self.id,
                 distance,

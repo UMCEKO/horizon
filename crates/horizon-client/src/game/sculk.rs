@@ -1706,16 +1706,7 @@ impl Game<'_> {
     }
 
     fn tick_mob_sculk_events(&mut self) {
-        let snapshot: Vec<(
-            u32,
-            [f64; 3],
-            bool,
-            bool,
-            Species,
-            Option<i64>,
-            Option<u32>,
-            u32,
-        )> = self
+        let snapshot: Vec<(u32, [f64; 3], bool, bool, Species, Option<i64>, u32)> = self
             .mobs
             .iter()
             .filter(|m| m.alive())
@@ -1727,18 +1718,14 @@ impl Game<'_> {
                     m.fluids.in_water,
                     m.species(),
                     m.last_damage.map(|(_, t)| t),
-                    m.extra.mount,
                     m.age,
                 )
             })
             .collect();
-        for (id, at, on_ground, in_water, species, damaged, vehicle, age) in snapshot {
+        for (id, at, on_ground, in_water, species, damaged, age) in snapshot {
             if on_ground {
                 self.step_on_redstone_ore(at, false, false);
             }
-            // A mob first seen already riding raised its event when it spawned.
-            let seen = self.sculk.steps.contains_key(&Who::Mob(id));
-            self.mount_events(Who::Mob(id), vehicle, seen);
             let emits = !matches!(species, Species::Shulker);
             if emits {
                 let warden = species == Species::Warden;
@@ -1784,7 +1771,7 @@ impl Game<'_> {
         });
     }
     /// Where the vehicle `id` stands: a mob, boat, minecart or cushion.
-    fn vehicle_position(&self, id: u32) -> Option<[f64; 3]> {
+    pub(super) fn vehicle_position(&self, id: u32) -> Option<[f64; 3]> {
         let p = if let Some(m) = self.mobs.iter().find(|m| m.id == id) {
             m.position
         } else if let Some(b) = self.boats.iter().find(|b| b.id == id) {

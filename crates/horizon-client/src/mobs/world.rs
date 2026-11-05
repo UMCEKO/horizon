@@ -2,6 +2,7 @@
 //! sight (`ClipContext.Block.COLLIDER`), sky visibility, light-dependent
 //! values and the positions of other entities.
 use super::{MobWorld, Seen, Who, data};
+use crate::riding::Ent;
 use crate::{
     blocks::{BlockFacts, Fluid},
     collisions::SceneCollisions,
@@ -286,7 +287,7 @@ impl MobWorld<'_> {
                 can_be_seen_as_enemy: !s.playing_dead,
                 is_player: false,
                 creative: false,
-                passenger: s.passenger,
+                passenger: self.is_passenger(id),
             }),
         }
     }
@@ -301,6 +302,40 @@ impl MobWorld<'_> {
         near.into_iter()
             .map(|i| &self.others[i as usize])
             .chain(all.into_iter().flatten())
+    }
+    /// `Entity.getVehicle` of mob `id`.
+    pub fn vehicle_id(&self, id: u32) -> Option<u32> {
+        self.riding
+            .borrow()
+            .vehicle_of(Ent::Id(id))
+            .and_then(Ent::id)
+    }
+    /// `Entity.getFirstPassenger` of mob `id`.
+    pub fn first_passenger(&self, id: u32) -> Option<Ent> {
+        self.riding.borrow().first_passenger(Ent::Id(id))
+    }
+    /// `Entity.getPassengers` of mob `id`.
+    pub fn passengers_of(&self, id: u32) -> Vec<Ent> {
+        self.riding.borrow().passengers_of(Ent::Id(id)).to_vec()
+    }
+    /// `Entity.isPassenger`.
+    pub fn is_passenger(&self, id: u32) -> bool {
+        self.riding.borrow().is_passenger(Ent::Id(id))
+    }
+    /// `Entity.isVehicle`.
+    pub fn is_vehicle(&self, id: u32) -> bool {
+        self.riding.borrow().is_vehicle(Ent::Id(id))
+    }
+    /// `Entity.getRootVehicle`.
+    pub fn root_vehicle(&self, id: u32) -> Ent {
+        self.riding.borrow().root_vehicle(Ent::Id(id))
+    }
+    /// `Entity.stopRiding`'s unlink, in the turn of the mob that gets off: the vehicle it left.
+    pub fn stop_riding(&self, id: u32) -> Option<u32> {
+        self.riding
+            .borrow_mut()
+            .unlink(Ent::Id(id))
+            .and_then(Ent::id)
     }
     pub fn seen(&self, id: u32) -> Option<&Seen> {
         match self.others_index {
@@ -395,6 +430,15 @@ pub(crate) fn with_test_world(
     others: &[Seen],
     f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
 ) -> bool {
+    with_test_riding(others, &[], f)
+}
+/// [`with_test_world`] with `(rider, vehicle)` mob pairs linked in its riding table.
+#[cfg(test)]
+pub(crate) fn with_test_riding(
+    others: &[Seen],
+    links: &[(u32, u32)],
+    f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
+) -> bool {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../.local/horizon-client")
         .join(horizon_core::VANILLA_VERSION);
@@ -419,7 +463,12 @@ pub(crate) fn with_test_world(
     let air = registry.default_state("minecraft:air").unwrap();
     let world = crate::world::World::new(air, 0);
     let lid_openers = std::collections::HashMap::new();
+    let riding = std::cell::RefCell::new(crate::riding::Riding::default());
+    for &(rider, vehicle) in links {
+        riding.borrow_mut().link(Ent::Id(rider), Ent::Id(vehicle));
+    }
     let w = MobWorld {
+        riding: &riding,
         teams: Default::default(),
         world: &world,
         registry,

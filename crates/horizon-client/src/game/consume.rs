@@ -219,7 +219,7 @@ impl Game<'_> {
         }
     }
     /// `LivingEntity.stopRiding`.
-    pub(super) fn stop_riding(&mut self) {
+    pub(super) fn dismount_player(&mut self) {
         let Some(id) = self.vehicle() else {
             return;
         };
@@ -305,7 +305,7 @@ impl TeleportConsumeWorld for Teleporter<'_, '_> {
         Ok(self.0.vehicle().is_some())
     }
     fn stop_riding(&mut self) -> Result<(), Infallible> {
-        self.0.stop_riding();
+        self.0.dismount_player();
         Ok(())
     }
     fn position(&mut self) -> Result<Vec3, Infallible> {

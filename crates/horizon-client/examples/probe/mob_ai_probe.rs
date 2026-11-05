@@ -1141,6 +1141,7 @@ pub fn main() -> horizon_client::Result<()> {
         }
         // No player has a chest open in the scenarios.
         let lid_openers = std::collections::HashMap::new();
+        let riding = std::cell::RefCell::new(horizon_client::riding::Riding::default());
         // The MobWorld every step sees, over a snapshot of the mobs.
         macro_rules! mob_world {
             ($snapshot:expr) => {
@@ -1148,6 +1149,7 @@ pub fn main() -> horizon_client::Result<()> {
             };
             ($snapshot:expr, $grid:expr) => {
                 MobWorld {
+                    riding: &riding,
                     teams: Default::default(),
                     world: &world,
                     registry,

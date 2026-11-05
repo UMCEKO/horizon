@@ -1608,10 +1608,9 @@ impl Game<'_> {
             while k < gone.len() {
                 let v = gone[k];
                 gone.extend(
-                    self.mobs
-                        .iter()
-                        .filter(|m| m.extra.mount == Some(v))
-                        .map(|m| m.id),
+                    self.passengers_of(horizon_client::riding::Ent::Id(v))
+                        .into_iter()
+                        .filter_map(horizon_client::riding::Ent::id),
                 );
                 k += 1;
             }

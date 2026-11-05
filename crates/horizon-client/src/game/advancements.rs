@@ -459,9 +459,9 @@ impl Game<'_> {
             position: [b.position.x, b.position.y, b.position.z],
             on_ground: b.on_ground,
             passengers: self
-                .mobs
-                .iter()
-                .filter(|m| m.extra.mount == Some(b.id))
+                .passengers_of(horizon_client::riding::Ent::Id(b.id))
+                .into_iter()
+                .filter_map(|p| self.mobs.iter().find(|m| Some(m.id) == p.id()))
                 .map(|m| self.mob_entity(m))
                 .chain(self.rider_entity(b.id))
                 .collect(),
@@ -512,9 +512,9 @@ impl Game<'_> {
                 .into_iter()
                 .collect(),
             passengers: self
-                .mobs
-                .iter()
-                .filter(|r| r.extra.mount == Some(m.id))
+                .passengers_of(horizon_client::riding::Ent::Id(m.id))
+                .into_iter()
+                .filter_map(|p| self.mobs.iter().find(|r| Some(r.id) == p.id()))
                 .map(|r| self.mob_entity(r))
                 .chain(self.rider_entity(m.id))
                 .collect(),

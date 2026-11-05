@@ -146,6 +146,7 @@ impl Game<'_> {
         if hurts || extinguishes {
             let source =
                 Damage::indirect_magic(by_player.then_some(Who::Player), [at.x, at.y, at.z]);
+            let table = self.riding_table.borrow();
             for m in self.mobs.iter_mut().filter(|m| !m.removed) {
                 // WATER_SENSITIVE_OR_ON_FIRE.
                 let sensitive = m.kind.flags.water_sensitive;
@@ -157,7 +158,11 @@ impl Game<'_> {
                 }
                 if hurts && sensitive {
                     let invulnerable = m.invulnerable_flag;
-                    m.damage(1.0, source);
+                    let ride = horizon_client::mobs::anim::Ride {
+                        is_passenger: table.is_passenger(horizon_client::riding::Ent::Id(m.id)),
+                        is_ridden: table.is_vehicle(horizon_client::riding::Ent::Id(m.id)),
+                    };
+                    m.damage_riding(1.0, source, ride);
                     // `Enderman.hurtServer` for a thrown potion: the hit is
                     // `Enderman.hurtWithCleanWater`, then
                     // `Enderman.repeatedlyTryToTeleport`, which does nothing
@@ -166,7 +171,7 @@ impl Game<'_> {
                     if m.species() == Species::Enderman
                         && !invulnerable
                         && m.alive()
-                        && !m.extra.passenger
+                        && !table.is_passenger(horizon_client::riding::Ent::Id(m.id))
                     {
                         m.extra.counter2 = 64;
                     }

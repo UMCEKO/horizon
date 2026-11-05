@@ -4,6 +4,7 @@
 //! saving and `AbstractBoatRenderer` with animated paddles.
 use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use super::{Game, Keys, entity_culling::at, view_vector};
+use horizon_client::riding::Ent;
 use horizon_client::{
     blocks::Fluid,
     collisions::{EntityCollisions, SceneCollisions},
@@ -583,7 +584,8 @@ impl Game<'_> {
                 continue;
             }
             if self.boats[i].out_of_control >= 60.0 {
-                self.eject_boat_mobs(i, false);
+                let boat = Ent::Id(self.boats[i].id);
+                self.eject_passengers(boat);
             }
             self.boat_contacts(i);
         }
@@ -874,7 +876,6 @@ impl Game<'_> {
         b.damage += damage * 10.0;
         let destroyed = creative || b.damage > 40.0;
         if destroyed {
-            self.eject_boat_mobs(i, true);
             let b = self.boats[i].clone();
             self.level_remove(Kind::Boat, b.id, Removal::Discarded);
             let at = [b.position.x, b.position.y, b.position.z];

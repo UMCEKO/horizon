@@ -87,9 +87,20 @@ impl Game<'_> {
         for &(vehicle, guest) in guests {
             riding.add(vehicle as i32, guest);
         }
-        for m in self.mobs.iter().filter(|m| !m.removed) {
-            if let Some(vehicle) = m.extra.mount {
-                riding.add(vehicle as i32, m.id as i32);
+        let removed: std::collections::HashSet<u32> = self
+            .mobs
+            .iter()
+            .filter(|m| m.removed)
+            .map(|m| m.id)
+            .collect();
+        for (rider, vehicle) in self.riding_table.borrow().riders_in_order() {
+            if let (
+                horizon_client::riding::Ent::Id(rider),
+                horizon_client::riding::Ent::Id(vehicle),
+            ) = (rider, vehicle)
+                && !removed.contains(&rider)
+            {
+                riding.add(vehicle as i32, rider as i32);
             }
         }
         if let (Some(host), Some(vehicle)) = (host_entity, self.vehicle()) {

@@ -1,6 +1,6 @@
 //! `Entity.vehicle` and `Entity.passengers` of one level: who rides whom,
 //! for every kind of entity, players included (`Entity.java` 2441 to 2600).
-use crate::fast_hash::{FxHashMap, FxHashSet};
+use crate::fast_hash::FxHashMap;
 
 /// `Entity.removePassenger`: how long a rider that got off cannot board.
 pub const BOARDING_COOLDOWN: i32 = 60;
@@ -31,7 +31,6 @@ pub struct Riding {
     vehicle: FxHashMap<Ent, Ent>,
     passengers: FxHashMap<Ent, Vec<Ent>>,
     boarding_cooldown: FxHashMap<Ent, i32>,
-    changed: FxHashSet<Ent>,
 }
 
 impl Riding {
@@ -95,6 +94,10 @@ impl Riding {
     pub fn boarding_cooldown(&self, e: Ent) -> i32 {
         self.boarding_cooldown.get(&e).copied().unwrap_or(0)
     }
+    /// `Entity.boardingCooldown = 0`.
+    pub fn clear_cooldown(&mut self, e: Ent) {
+        self.boarding_cooldown.remove(&e);
+    }
 
     /// Whether `v` or anything it rides is `r`: `startRiding`'s loop test.
     pub fn rides_through(&self, v: Ent, r: Ent) -> bool {
@@ -119,7 +122,6 @@ impl Riding {
         } else {
             list.push(r);
         }
-        self.changed.insert(v);
     }
     /// `removeVehicle`'s unlink: the old vehicle, with the boarding cooldown set.
     pub fn unlink(&mut self, r: Ent) -> Option<Ent> {
@@ -131,7 +133,6 @@ impl Riding {
             }
         }
         self.boarding_cooldown.insert(r, BOARDING_COOLDOWN);
-        self.changed.insert(v);
         Some(v)
     }
     /// `Entity.baseTick`: every cooldown counts down once.
@@ -182,28 +183,20 @@ impl Riding {
     }
     /// Forget `e` entirely, as the table of a level that no longer holds it.
     pub fn forget(&mut self, e: Ent) {
-        if let Some(v) = self.vehicle.remove(&e) {
-            if let Some(list) = self.passengers.get_mut(&v) {
-                list.retain(|p| *p != e);
-                if list.is_empty() {
-                    self.passengers.remove(&v);
-                }
+        if let Some(v) = self.vehicle.remove(&e)
+            && let Some(list) = self.passengers.get_mut(&v)
+        {
+            list.retain(|p| *p != e);
+            if list.is_empty() {
+                self.passengers.remove(&v);
             }
-            self.changed.insert(v);
         }
         if let Some(list) = self.passengers.remove(&e) {
             for p in list {
                 self.vehicle.remove(&p);
             }
-            self.changed.insert(e);
         }
         self.boarding_cooldown.remove(&e);
-    }
-    /// Vehicles whose passenger list changed since the last call.
-    pub fn take_changed(&mut self) -> Vec<Ent> {
-        let mut v: Vec<Ent> = self.changed.drain().collect();
-        v.sort_unstable();
-        v
     }
     /// Every rider with its vehicle, roots first (`tickPassenger` order).
     pub fn riders_in_order(&self) -> Vec<(Ent, Ent)> {

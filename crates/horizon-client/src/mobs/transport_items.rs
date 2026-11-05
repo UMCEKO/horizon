@@ -467,7 +467,7 @@ impl Transport {
         let bx = m.position.x.floor() as i32;
         let by = m.position.y.floor() as i32;
         let bz = m.position.z.floor() as i32;
-        let (h, v): (i32, i32) = if m.extra.mount.is_some() {
+        let (h, v): (i32, i32) = if w.is_passenger(m.id) {
             (1, 1)
         } else {
             (32, 8)
