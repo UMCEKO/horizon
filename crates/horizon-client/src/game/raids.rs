@@ -682,6 +682,7 @@ impl Game<'_> {
             if let Some(kind) = sp.rider
                 && let Some(rider) = self.spawn_raider(kind, pos, raid_id, wave, false, odds)
             {
+                // Raid.spawnGroup: ridingRaider.startRiding(raider, false, false).
                 self.mount_mob(rider, id);
             }
         }

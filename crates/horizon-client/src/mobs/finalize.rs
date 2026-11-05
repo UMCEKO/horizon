@@ -118,9 +118,9 @@ pub trait FinalizeLevel {
     /// The first chicken (in entity order) whose box meets `bounds` and
     /// that is not being ridden (`Zombie.finalizeSpawn`'s chicken jockeys).
     fn free_chicken(&self, bounds: Aabb) -> Option<u32>;
-    /// A chicken found by `free_chicken` carries the zombie `rider`
-    /// (`setChickenJockey(true)` and `startRiding`).
-    fn ride_chicken(&mut self, chicken: u32, rider: u32);
+    /// A chicken found by `free_chicken` becomes a chicken jockey
+    /// (`Chicken.setChickenJockey(true)`).
+    fn make_chicken_jockey(&mut self, chicken: u32);
     /// `getGameTime`.
     fn game_time(&self) -> i64;
     /// `SpecialDates.isHalloween`.
@@ -386,9 +386,11 @@ pub struct Ctx<'a, L: FinalizeLevel + ?Sized, R: RandomSource> {
     pub random: &'a mut R,
     pub difficulty: LocalDifficulty,
     pub data: &'a SpawnData<'a>,
-    /// Jockeys and mounts made along the way, finalized, with their riding
-    /// links set (`Extra::mount` / `Extra::rider`).
+    /// Jockeys and mounts made along the way, finalized.
     pub created: Vec<Mob>,
+    /// Who rides whom (rider id, vehicle id), in the order vanilla's `startRiding` calls come: the
+    /// caller links them.
+    pub rides: Vec<(u32, u32)>,
     /// The rider as it was when its new chicken was added to the level, before
     /// its equipment and attributes: what a generated chunk keeps of it
     /// (`ProtoChunk.addEntity` saves the chicken with its passenger then).
@@ -1261,19 +1263,9 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
         j.head_pitch = 0.0;
         Some(j)
     }
-    /// `startRiding`: the rider leaves the vehicle it was on.
-    fn ride(&mut self, rider: &mut Mob, vehicle: &mut Mob) {
-        if let Some(old) = rider.extra.mount
-            && let Some(v) = self.created.iter_mut().find(|c| c.id == old)
-            && v.extra.rider == Some(rider.id)
-        {
-            v.extra.rider = None;
-        }
-        rider.extra.mount = Some(vehicle.id);
-        rider.extra.passenger = true;
-        if vehicle.extra.rider.is_none() {
-            vehicle.extra.rider = Some(rider.id);
-        }
+    /// `startRiding`: reported to the caller, which links the pair.
+    fn ride(&mut self, rider: &Mob, vehicle: &Mob) {
+        self.rides.push((rider.id, vehicle.id));
     }
 
     // ---- the classes --------------------------------------------------
@@ -1300,9 +1292,9 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
                             .bounds()
                             .inflate(horizon_core::geometry::Vec3::new(5.0, 3.0, 5.0));
                         if let Some(chicken) = self.level.free_chicken(search) {
-                            self.level.ride_chicken(chicken, m.id);
-                            m.extra.mount = Some(chicken);
-                            m.extra.passenger = true;
+                            self.level.make_chicken_jockey(chicken);
+                            // Zombie.finalizeSpawn: this.startRiding(chicken, false, false).
+                            self.rides.push((m.id, chicken));
                         }
                     } else if f64::from(self.float()) < 0.05
                         && let Some(mut chicken) =
@@ -1310,7 +1302,8 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
                     {
                         self.finalize(&mut chicken, Reason::Jockey, None);
                         chicken.extra.jockey = true;
-                        self.ride(m, &mut chicken);
+                        // Zombie.finalizeSpawn: this.startRiding(chicken, false, false).
+                        self.ride(m, &chicken);
                         self.jockey_rider = Some(m.clone());
                         self.created.push(chicken);
                     }
@@ -1374,12 +1367,14 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
                         camel.position = m.position;
                         camel.previous = m.position;
                         self.finalize(&mut camel, reason, None);
-                        self.ride(m, &mut camel);
+                        // Husk.finalizeSpawn: this.startRiding(camelHusk, true, true).
+                        self.ride(m, &camel);
                         if let Some(mut parched) =
                             self.create("minecraft:parched", Reason::Natural, m)
                         {
                             self.finalize(&mut parched, reason, None);
-                            self.ride(&mut parched, &mut camel);
+                            // Husk.finalizeSpawn: parched.startRiding(camelHusk, false, false).
+                            self.ride(&parched, &camel);
                             self.created.push(camel);
                             self.created.push(parched);
                         } else {
@@ -1415,7 +1410,8 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
                 nautilus.persistent = true;
             }
             self.finalize(&mut nautilus, reason, None);
-            self.ride(m, &mut nautilus);
+            // Drowned.finalizeSpawn: this.startRiding(zombieNautilus, false, false).
+            self.ride(m, &nautilus);
             self.created.push(nautilus);
         }
         g
@@ -1437,7 +1433,8 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
             && let Some(mut skeleton) = self.create("minecraft:skeleton", Reason::Jockey, m)
         {
             self.finalize(&mut skeleton, reason, None);
-            self.ride(&mut skeleton, m);
+            // Spider.finalizeSpawn: skeleton.startRiding(this, false, false).
+            self.ride(&skeleton, m);
             self.created.push(skeleton);
         }
         if g.is_none() {
@@ -1538,6 +1535,7 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
         jockey.position = m.position;
         jockey.yaw = m.yaw;
         self.finalize(jockey, Reason::Jockey, g);
+        // Strider.spawnJockey: jockey.startRiding(this, true, false).
         self.ride(jockey, m);
         Group::Ageable(Ageable::chance(0.0))
     }
@@ -1765,7 +1763,8 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
                 {
                     self.finalize(&mut zombie, reason, None);
                     set_item(&mut zombie, MAINHAND, "minecraft:iron_spear");
-                    self.ride(&mut zombie, m);
+                    // ZombieHorse.finalizeSpawn: zombie.startRiding(this, false, false).
+                    self.ride(&zombie, m);
                     self.created.push(zombie);
                 }
                 self.horse(m, g)

@@ -317,18 +317,21 @@ impl Game<'_> {
                 if self.world.random.next_float() < CHICKEN_JOCKEY_ODDS {
                     if let Some(chicken) = self.free_chicken_near(at) {
                         self.make_chicken_jockey(chicken);
+                        // Zombie.finalizeSpawn: this.startRiding(chicken, false, false).
                         self.mount_mob(id, chicken);
                     }
                 } else if self.world.random.next_float() < CHICKEN_JOCKEY_ODDS
                     && let Some(chicken) = self.spawn_mob("minecraft:chicken", at, false)
                 {
                     self.make_chicken_jockey(chicken);
+                    // Zombie.finalizeSpawn: this.startRiding(chicken, false, false).
                     self.mount_mob(id, chicken);
                 }
             }
             // Spider.finalizeSpawn: one in a hundred carries a skeleton.
             Species::Spider if self.world.random.next_int_bound(100).unwrap_or(1) == 0 => {
                 if let Some(skeleton) = self.spawn_mob("minecraft:skeleton", at, false) {
+                    // Spider.finalizeSpawn: skeleton.startRiding(this, false, false).
                     self.mount_mob(skeleton, id);
                 }
             }
@@ -347,6 +350,7 @@ impl Game<'_> {
                     if let Some(z) = self.mobs.iter_mut().find(|m| m.id == zombie) {
                         z.extra.set_main_hand(Some("minecraft:iron_spear".into()));
                     }
+                    // ZombieHorse.finalizeSpawn: zombie.startRiding(this, false, false).
                     self.mount_mob(zombie, id);
                 }
             }
@@ -381,6 +385,7 @@ impl Game<'_> {
         let Some(camel) = self.spawn_mob("minecraft:camel_husk", at, false) else {
             return;
         };
+        // Husk.finalizeSpawn: this.startRiding(camelHusk, true, true).
         self.mount_mob(id, camel);
         let _ = self.spawn_mob("minecraft:parched", at, false);
     }
@@ -411,6 +416,7 @@ impl Game<'_> {
             return;
         }
         if let Some(n) = self.spawn_mob("minecraft:zombie_nautilus", at, false) {
+            // Drowned.finalizeSpawn: this.startRiding(zombieNautilus, false, false).
             self.mount_mob(id, n);
         }
     }
@@ -451,6 +457,7 @@ impl Game<'_> {
                 if let Some(s) = self.mobs.iter_mut().find(|m| m.id == id) {
                     s.extra.saddled = true;
                 }
+                // Strider.spawnJockey: jockey.startRiding(this, true, false).
                 self.mount_mob(piglin, id);
             }
         } else if self.world.random.next_int_bound(10).unwrap_or(1) == 0
@@ -459,6 +466,7 @@ impl Game<'_> {
             if let Some(b) = self.mobs.iter_mut().find(|m| m.id == baby) {
                 b.extra.age = -24000;
             }
+            // Strider.spawnJockey: jockey.startRiding(this, true, false).
             self.mount_mob(baby, id);
         }
     }
@@ -509,6 +517,7 @@ impl Game<'_> {
         let Some(skeleton) = self.trap_skeleton(at) else {
             return;
         };
+        // SkeletonTrapGoal.tick: skeleton.startRiding(horse), force false with events.
         self.mount_mob(skeleton, id);
         for _ in 0..3 {
             let Some(other) = self.spawn_mob("minecraft:skeleton_horse", at, true) else {
@@ -525,6 +534,7 @@ impl Game<'_> {
                 h.velocity = Vec3::new(h.velocity.x + dx, h.velocity.y, h.velocity.z + dz);
             }
             if let Some(rider) = self.trap_skeleton(at) {
+                // SkeletonTrapGoal.tick: otherSkeleton.startRiding(otherHorse), force false with events.
                 self.mount_mob(rider, other);
             }
         }

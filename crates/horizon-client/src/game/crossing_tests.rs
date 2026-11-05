@@ -295,3 +295,27 @@ fn orbs_in_a_crossing_are_in_place_added_ones_wait_and_removed_ones_are_skipped(
     game.tick_experience();
     assert_eq!(age(&game, id), Some(1));
 }
+
+#[test]
+fn a_converted_mob_keeps_its_vehicle_and_its_passenger() {
+    let Some(mut game) = flat_game() else { return };
+    let pig = game.spawn_mob("pig", [2.5, 61.0, 2.5], true).unwrap();
+    let zombie = game.spawn_mob("zombie", [2.5, 62.0, 2.5], true).unwrap();
+    let skeleton = game.spawn_mob("skeleton", [2.5, 63.0, 2.5], true).unwrap();
+    game.mount_mob(zombie, pig);
+    game.mount_mob(skeleton, zombie);
+    let at = game.mobs.iter().position(|m| m.id == zombie).unwrap();
+    let from = game.mobs.remove(at);
+    let drowned = game
+        .convert_to(
+            &from,
+            "minecraft:drowned",
+            horizon_client::mobs::conversion::Params::KEEP_ALL,
+        )
+        .unwrap();
+    let find = |game: &Game<'_>, id| game.mobs.iter().find(|m| m.id == id).unwrap().extra.clone();
+    assert_eq!(find(&game, drowned).mount, Some(pig));
+    assert_eq!(find(&game, skeleton).mount, Some(drowned));
+    assert_eq!(find(&game, pig).rider, Some(drowned));
+    assert_eq!(find(&game, drowned).rider, Some(skeleton));
+}

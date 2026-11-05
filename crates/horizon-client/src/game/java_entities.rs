@@ -1140,6 +1140,7 @@ impl Game<'_> {
         {
             return false;
         }
+        // Entity.startRiding between two mobs.
         self.mount_mob(rider, vehicle);
         true
     }

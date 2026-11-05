@@ -23,9 +23,11 @@ impl Params {
 /// `ConversionType.SINGLE.convert` and `ConversionType.convertCommon`: `to`
 /// is a fresh mob (`EntityType.create(level, CONVERSION)`, no spawn
 /// finalization) that takes `from`'s place, motion, ride, lead, equipment,
-/// effects, age, name and flags. Its health stays its own type's.
-pub fn single(from: &Mob, to: &mut Mob, params: Params) {
-    // copyPosition, setDeltaMovement and the old mob's vehicle.
+/// effects, age, name and flags. Its health stays its own type's. Returns the
+/// vehicle `from` rode, which `to` boards (`to.startRiding(vehicle, false, false)`):
+/// the caller links it.
+pub fn single(from: &Mob, to: &mut Mob, params: Params) -> Option<u32> {
+    // copyPosition and setDeltaMovement.
     to.position = from.position;
     to.previous = from.position;
     to.yaw = from.yaw;
@@ -35,8 +37,6 @@ pub fn single(from: &Mob, to: &mut Mob, params: Params) {
     to.head_pitch = from.head_pitch;
     to.previous_head_pitch = from.head_pitch;
     to.velocity = from.velocity;
-    to.extra.mount = from.extra.mount;
-    to.extra.passenger = from.extra.passenger;
     if params.keep_equipment {
         // Every slot, copyAndClear, and setDropChance from the old mob.
         to.extra.set_main_hand(from.extra.main_hand.clone());
@@ -89,6 +89,7 @@ pub fn single(from: &Mob, to: &mut Mob, params: Params) {
     if super::doors::is_zombie(from.species()) && super::doors::is_zombie(to.species()) {
         super::doors::set_can_break_doors(to, from.extra.can_break_doors);
     }
+    from.extra.mount
 }
 
 #[cfg(test)]
@@ -120,7 +121,7 @@ mod tests {
             s.extra.mount = Some(7);
             s.extra.passenger = true;
             let mut st = mob(2, "minecraft:stray");
-            single(&s, &mut st, Params::KEEP_ALL);
+            assert_eq!(single(&s, &mut st, Params::KEEP_ALL), Some(7));
             assert_eq!(st.custom_name.as_deref(), Some("Frosty"));
             assert!(st.no_ai);
             assert_eq!(st.yaw, 90.0);
@@ -136,12 +137,12 @@ mod tests {
                 st.extra.leash,
                 Some(crate::mobs::leash::Holder::Knot([3, 71, -3]))
             );
-            assert_eq!(st.extra.mount, Some(7));
+            assert_eq!(st.extra.mount, None);
             // Health is the new type's own, not copied.
             assert_eq!(st.health, mob(3, "minecraft:stray").health);
             // Without keepEquipment the gear stays behind.
             let mut bare = mob(4, "minecraft:stray");
-            single(
+            let _ = single(
                 &s,
                 &mut bare,
                 Params {

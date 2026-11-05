@@ -484,7 +484,7 @@ impl Game<'_> {
         let t = self.res.mob_types().get(kind).cloned()?;
         self.next_entity += 1;
         let mut mob = Mob::new(self.next_entity, t, from.position, from.yaw);
-        horizon_client::mobs::conversion::single(from, &mut mob, params);
+        let vehicle = horizon_client::mobs::conversion::single(from, &mut mob, params);
         if matches!(from.species(), Species::Zombie | Species::Husk) {
             let at = [from.position.x, from.position.y, from.position.z];
             let special = self.local_difficulty(at).special();
@@ -495,13 +495,24 @@ impl Game<'_> {
             );
         }
         let id = mob.id;
-        // ConversionType.SINGLE: the passengers get off and board the new mob.
-        for rider in self.mobs.iter_mut() {
-            if rider.extra.mount == Some(from.id) {
-                rider.extra.mount = Some(id);
+        let added = self.level_add(NewEntity::Mob(mob), Origin::Fresh, None);
+        // ConversionType.SINGLE: the first passenger gets off and boards the new mob, which
+        // boards the vehicle the old one rode (`startRiding(vehicle, false, false)`).
+        let riders: Vec<u32> = self
+            .mobs
+            .iter()
+            .filter(|rider| rider.extra.mount == Some(from.id))
+            .map(|rider| rider.id)
+            .collect();
+        if added.is_some() {
+            for rider in riders {
+                self.mount_mob(rider, id);
+            }
+            if let Some(vehicle) = vehicle {
+                self.mount_mob(id, vehicle);
             }
         }
-        self.level_add(NewEntity::Mob(mob), Origin::Fresh, None)
+        added
     }
     /// The `summon` command: spawn a mob in front of the player or at a position.
     pub(super) fn summon(&mut self, kind: &str, at: Option<[f64; 3]>, baby: bool) -> Result<u32> {

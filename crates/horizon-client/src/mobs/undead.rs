@@ -1253,7 +1253,7 @@ mod conversion_tests {
         match event {
             MobEvent::Convert { from, kind, params } => {
                 let mut m = new(kind, from.position, from.yaw);
-                crate::mobs::conversion::single(from, &mut m, *params);
+                let _ = crate::mobs::conversion::single(from, &mut m, *params);
                 Some(m)
             }
             MobEvent::SpawnKind { kind, at, setup } => {

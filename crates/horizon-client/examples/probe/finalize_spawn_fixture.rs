@@ -42,7 +42,7 @@ struct Level<'a> {
     created: usize,
     /// The level's entities that can carry a zombie: (id, bounds, ridden).
     chickens: Vec<(u32, Aabb, bool)>,
-    rides: Vec<(u32, u32)>,
+    jockeys: Vec<u32>,
 }
 impl FinalizeLevel for Level<'_> {
     fn biome(&self, _pos: [i32; 3]) -> String {
@@ -88,11 +88,11 @@ impl FinalizeLevel for Level<'_> {
             .find(|(_, b, ridden)| !ridden && b.intersects(bounds))
             .map(|c| c.0)
     }
-    fn ride_chicken(&mut self, chicken: u32, rider: u32) {
+    fn make_chicken_jockey(&mut self, chicken: u32) {
         if let Some(c) = self.chickens.iter_mut().find(|c| c.0 == chicken) {
             c.2 = true;
         }
-        self.rides.push((chicken, rider));
+        self.jockeys.push(chicken);
     }
     fn game_time(&self) -> i64 {
         self.time
@@ -479,7 +479,7 @@ pub fn main() -> horizon_client::Result<()> {
             eseed: get("eseed", "0").parse().unwrap_or(0),
             created: 0,
             chickens: Vec::new(),
-            rides: Vec::new(),
+            jockeys: Vec::new(),
         };
         let mut all: Vec<Mob> = Vec::new();
         let chickens: usize = get("chickens", "0").parse().unwrap_or(0);
@@ -495,6 +495,7 @@ pub fn main() -> horizon_client::Result<()> {
         let pack: usize = get("pack", "1").parse().unwrap_or(1);
         let mut random = LegacyRandom::new(get("seed", "0").parse().unwrap_or(0));
         let mut group = None;
+        let mut rides: Vec<(u32, u32)> = Vec::new();
         for _ in 0..pack {
             let Some(mut mob) = level.create(&kind, reason) else {
                 break;
@@ -507,17 +508,30 @@ pub fn main() -> horizon_client::Result<()> {
                 difficulty,
                 data: &data,
                 created: Vec::new(),
+                rides: Vec::new(),
                 jockey_rider: None,
             };
             group = finalize::finalize(&mut cx, &mut mob, reason, group);
             let created = std::mem::take(&mut cx.created);
+            rides.extend(std::mem::take(&mut cx.rides));
             all.push(mob);
             all.extend(created);
         }
-        for (chicken, rider) in std::mem::take(&mut level.rides) {
+        for chicken in std::mem::take(&mut level.jockeys) {
             if let Some(c) = all.iter_mut().find(|m| m.id == chicken) {
                 c.extra.jockey = true;
-                c.extra.rider = Some(rider);
+            }
+        }
+        // The caller links what the finalizer reports: the rider boards, and is the first one on its vehicle.
+        for (rider, vehicle) in rides {
+            if let Some(m) = all.iter_mut().find(|m| m.id == rider) {
+                m.extra.mount = Some(vehicle);
+                m.extra.passenger = true;
+            }
+            if let Some(v) = all.iter_mut().find(|m| m.id == vehicle)
+                && v.extra.rider.is_none()
+            {
+                v.extra.rider = Some(rider);
             }
         }
         all.sort_by_key(|m| m.id);

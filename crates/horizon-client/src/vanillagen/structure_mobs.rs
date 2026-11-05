@@ -116,7 +116,7 @@ impl FinalizeLevel for Level<'_> {
     fn free_chicken(&self, _: Aabb) -> Option<u32> {
         None
     }
-    fn ride_chicken(&mut self, _: u32, _: u32) {}
+    fn make_chicken_jockey(&mut self, _: u32) {}
     fn game_time(&self) -> i64 {
         self.day_time
     }
@@ -142,13 +142,14 @@ fn run<R: RandomSource>(
     m: &mut Mob,
     reason: Reason,
     group: &mut Option<Group>,
-) -> Vec<Mob> {
+) -> (Vec<Mob>, Vec<(u32, u32)>) {
     let mut cx = Ctx {
         level,
         random,
         difficulty,
         data,
         created: Vec::new(),
+        rides: Vec::new(),
         jockey_rider: None,
     };
     *group = cx.finalize(m, reason, group.take());
@@ -156,11 +157,20 @@ fn run<R: RandomSource>(
         debug_assert_eq!(rider.id, m.id);
         *m = rider;
     }
-    cx.created
+    (cx.created, cx.rides)
+}
+
+/// The vehicle a rider ends up on: the last `startRiding` it made.
+fn vehicle_of(rides: &[(u32, u32)], rider: u32) -> Option<u32> {
+    rides
+        .iter()
+        .rev()
+        .find(|(r, _)| *r == rider)
+        .map(|&(_, v)| v)
 }
 
 /// The saved compound of mob `i` with the mobs riding it under `Passengers`.
-fn tree(mobs: &[(Mob, Option<Tag>)], i: usize, dimension: &str) -> Compound {
+fn tree(mobs: &[(Mob, Option<Tag>)], rides: &[(u32, u32)], i: usize, dimension: &str) -> Compound {
     let (m, raw) = &mobs[i];
     let Tag::Compound(mut c) = entity_nbt::mob_to_nbt(m, [0; 4], raw.as_ref()) else {
         return Compound::new();
@@ -180,8 +190,8 @@ fn tree(mobs: &[(Mob, Option<Tag>)], i: usize, dimension: &str) -> Compound {
     }
     entity_nbt::put_brain(&mut c, m, dimension);
     let riders: Vec<Tag> = (0..mobs.len())
-        .filter(|&j| mobs[j].0.extra.mount == Some(m.id))
-        .map(|j| Tag::Compound(tree(mobs, j, dimension)))
+        .filter(|&j| vehicle_of(rides, mobs[j].0.id) == Some(m.id))
+        .map(|j| Tag::Compound(tree(mobs, rides, j, dimension)))
         .collect();
     if !riders.is_empty() {
         c.insert("Passengers".into(), Tag::List(riders));
@@ -289,7 +299,7 @@ impl StructureMobFinalizer {
             camel_husk_size: data.camel_husk,
         };
         let any = random.as_any();
-        let created = if let Some(r) = any.downcast_mut::<LegacyRandom>() {
+        let (created, rides) = if let Some(r) = any.downcast_mut::<LegacyRandom>() {
             run(&mut level, r, difficulty, &spawn, &mut m, reason, group)
         } else if let Some(r) = any.downcast_mut::<XoroshiroRandom>() {
             run(&mut level, r, difficulty, &spawn, &mut m, reason, group)
@@ -301,9 +311,9 @@ impl StructureMobFinalizer {
         mobs.extend(created.into_iter().map(|c| (c, None)));
         let root = mobs
             .iter()
-            .position(|(m, _)| m.extra.mount.is_none())
+            .position(|(m, _)| vehicle_of(&rides, m.id).is_none())
             .unwrap_or(0);
-        Some(tree(&mobs, root, &self.dimension))
+        Some(tree(&mobs, &rides, root, &self.dimension))
     }
 }
 
