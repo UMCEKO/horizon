@@ -797,6 +797,12 @@ impl Game<'_> {
     pub(super) fn mount_jumping(&self) -> bool {
         self.mount.jump_scale > 0.0 || self.mount.jump_ticks < 0
     }
+    /// `Hud.getVehicleMaxHearts` of the ridden mob (0 = none).
+    pub(super) fn mount_hearts(&self) -> i32 {
+        self.mount_index().map_or(0, |i| {
+            horizon_client::hud_layout::vehicle_max_hearts(self.mobs[i].attrs.max_health)
+        })
+    }
     /// `Hud.extractVehicleHealth` (a native mod's `minecraft:vehicle_health`
     /// layer, only while riding a mount). Returns the mount's heart count
     /// (`getVehicleMaxHearts`).

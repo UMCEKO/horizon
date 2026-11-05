@@ -2047,9 +2047,7 @@ impl Game<'_> {
                         return;
                     }
                 }
-                let g = &mut host.hub.guests[gi];
-                let changed = g.selected != p.slot as usize;
-                g.selected = p.slot as usize;
+                let changed = old_slot != p.slot as usize;
                 if let Some(play) = host.play.get_mut(&conn)
                     && changed
                     && play
@@ -2058,6 +2056,8 @@ impl Game<'_> {
                 {
                     play.using = None;
                 }
+                // Inventory.setSelectedSlot, through the route a Java mod may take.
+                self.as_guest(host, conn, |g| g.set_selected_slot(i32::from(p.slot)));
             }
             // ServerGamePacketListenerImpl.handlePunch: the main hand swings
             // with the held item's attack animation (mining, attacking, a
@@ -2762,12 +2762,12 @@ impl Game<'_> {
             if cancel {
                 return None;
             }
-            horizon_client::pick_item::pick(
-                &mut g.inventory[..36],
-                &mut g.selected,
-                &stack,
-                infinite,
-            );
+            match horizon_client::pick_item::find_slot_matching_item(&g.inventory[..36], &stack) {
+                Some(slot) if slot < 9 => g.set_selected_slot(slot as i32),
+                Some(slot) => g.pick_slot(slot as i32),
+                None if infinite => g.add_and_pick_item(&stack),
+                None => {}
+            }
             Some(())
         });
         if picked.flatten().is_some()

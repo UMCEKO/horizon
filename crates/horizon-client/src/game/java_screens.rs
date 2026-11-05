@@ -4,6 +4,66 @@
 
 use super::*;
 
+/// The draw steps of a container screen, in vanilla's order; ids are wire values shared with `ShellLeaves.java`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+#[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+pub(in crate::game) enum Leaf {
+    Start,
+    Background,
+    Effects,
+    Widgets,
+    Labels,
+    HighlightBack,
+    Slots,
+    HighlightFront,
+    RecipeBook,
+    Carried,
+    Tooltip,
+    Deferred,
+    Extra,
+    BookTooltip,
+}
+
+/// The HUD layers of `VanillaGuiLayers`, in vanilla's order; ids are wire values shared with `HudLayers.java`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+#[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+pub(in crate::game) enum HudLayer {
+    CameraOverlays,
+    Crosshair,
+    AfterCameraDecorations,
+    Hotbar,
+    PlayerHealth,
+    ArmorLevel,
+    FoodLevel,
+    VehicleHealth,
+    AirLevel,
+    ContextualInfoBarBackground,
+    ExperienceLevel,
+    ContextualInfoBar,
+    SelectedItemName,
+    SpectatorTooltip,
+    Effects,
+    BossOverlay,
+    SleepOverlay,
+    DemoOverlay,
+    ScoreboardSidebar,
+    OverlayMessage,
+    Title,
+    Chat,
+    TabList,
+    SubtitleOverlay,
+}
+
+/// One segment before the first layer, then two per layer.
+#[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+const HUD_SEGMENTS: usize = 49;
+
+/// Two recorded segments per `Leaf`.
+#[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+const SEGMENTS: usize = 28;
+
 #[cfg(feature = "java-mods")]
 pub(in crate::game) mod live {
     use super::*;
@@ -29,12 +89,14 @@ pub(in crate::game) mod live {
         open: bool,
         shapes: i32,
         /// The mods' HUD layers as the Java client last recorded them, drawn every frame until it records another.
-        hud: Vec<u8>,
+        hud: HudRecording,
         /// The Java client says the HUD is changing: each frame is recorded with its own timing until two alike.
         hud_animating: bool,
         /// A tick's status was applied this frame: its recording is this frame's, so no frame recording follows.
         recorded: bool,
         hud_frames: (u32, u128),
+        /// The selected hotbar slot the HUD recording was asked for, while Java draws the hotbar layer.
+        hud_selected: usize,
         states: bool,
         /// Input the world took since the last tick, in order, as `events` reads it.
         queue: Vec<u8>,
@@ -56,8 +118,10 @@ pub(in crate::game) mod live {
     #[derive(Default)]
     struct Shell {
         open: bool,
-        /// Under native's screen, after its background, the mods' widgets, after its slots, on top.
-        segments: [Vec<u8>; 5],
+        /// Two per `Leaf`: the gap after it (what mods drew), then its own content when Java drew it.
+        segments: [Vec<u8>; SEGMENTS],
+        /// Bit per `Leaf`: Java drew that step, native skips its own.
+        routed: u32,
         animating: bool,
         /// The cursor of the last recording, in GUI pixels.
         drawn_at: Option<(f32, f32)>,
@@ -311,20 +375,61 @@ pub(in crate::game) mod live {
         Some(found)
     }
 
-    /// A shell's segments as a status (`counted`) or a `ShellReply` writes them.
-    fn read_segments(reply: &mut In, counted: bool) -> Option<[Vec<u8>; 5]> {
-        if counted && reply.int()? != 5 {
+    /// The HUD as the Java client recorded it: a segment before layer 0, then per layer its own content and the gap after it, the layers a mod cancelled and the ones Java drew.
+    struct HudRecording {
+        segments: [Vec<u8>; HUD_SEGMENTS],
+        cancelled: u32,
+        drawn: u32,
+    }
+
+    impl Default for HudRecording {
+        fn default() -> Self {
+            Self {
+                segments: std::array::from_fn(|_| Vec::new()),
+                cancelled: 0,
+                drawn: 0,
+            }
+        }
+    }
+
+    /// A HUD recording as the Java client writes it: `int n` segments, then `int cancelled`, `int drawn`.
+    fn read_hud(bytes: &[u8]) -> Option<HudRecording> {
+        let mut reply = In(bytes);
+        if reply.int()? != HUD_SEGMENTS as i32 {
             return None;
         }
-        let mut segments: [Vec<u8>; 5] = Default::default();
+        let mut hud = HudRecording::default();
+        for segment in &mut hud.segments {
+            *segment = reply.bytes()?.to_vec();
+        }
+        hud.cancelled = reply.int()? as u32;
+        hud.drawn = reply.int()? as u32;
+        Some(hud)
+    }
+
+    /// Whether native draws a vanilla layer and whether Java's own content for it is painted: a cancelled layer is neither, a layer Java drew is Java's.
+    fn hud_layer_draws(cancelled: u32, drawn: u32, layer: HudLayer) -> (bool, bool) {
+        let bit = 1u32 << layer as u32;
+        (cancelled & bit == 0 && drawn & bit == 0, drawn & bit != 0)
+    }
+
+    /// A shell's segments and the steps Java drew.
+    type Recording = ([Vec<u8>; SEGMENTS], u32);
+
+    /// A shell's segments as a status (`counted`) or a `ShellReply` writes them.
+    fn read_segments(reply: &mut In, counted: bool) -> Option<[Vec<u8>; SEGMENTS]> {
+        if counted && reply.int()? != SEGMENTS as i32 {
+            return None;
+        }
+        let mut segments: [Vec<u8>; SEGMENTS] = Default::default();
         for segment in &mut segments {
             *segment = reply.bytes()?.to_vec();
         }
         Some(segments)
     }
 
-    /// A status's end: whether the creative tabs wait, the open shell kind, its fresh recording if any, whether it animates.
-    fn read_shell_tail(reply: &mut In) -> Option<(bool, i32, Option<[Vec<u8>; 5]>, bool)> {
+    /// A status's end: whether the creative tabs wait, the open shell kind, its fresh recording if any, the steps Java drew, whether it animates.
+    fn read_shell_tail(reply: &mut In) -> Option<(bool, i32, Option<Recording>, bool)> {
         let tabs_ready = reply.bool()?;
         let shell = reply.int()?;
         let segments = if reply.bool()? {
@@ -332,7 +437,40 @@ pub(in crate::game) mod live {
         } else {
             None
         };
-        Some((tabs_ready, shell, segments, reply.bool()?))
+        let routed = reply.int()? as u32;
+        Some((
+            tabs_ready,
+            shell,
+            segments.map(|segments| (segments, routed)),
+            reply.bool()?,
+        ))
+    }
+
+    /// A `ShellReply`: who took the input, the fresh recording if any, whether it animates.
+    fn read_shell_reply(reply: &mut In) -> Option<(ShellOwner, Option<Recording>, bool)> {
+        let owner = match reply.byte()? {
+            0 => ShellOwner::Event,
+            1 => ShellOwner::Widget,
+            2 => ShellOwner::Native,
+            _ => ShellOwner::None,
+        };
+        let segments = if reply.bool()? {
+            Some(read_segments(reply, false)?)
+        } else {
+            None
+        };
+        let routed = reply.int()? as u32;
+        let animating = reply.bool()?;
+        Some((owner, segments.map(|s| (s, routed)), animating))
+    }
+
+    /// Whether native draws a step and whether Java's own content for it is painted, as the steps Java drew say.
+    fn leaf_draws(routed: u32, leaf: Leaf) -> (bool, bool) {
+        let java = routed & (1 << leaf as u32) != 0;
+        match leaf {
+            Leaf::Widgets => (true, true),
+            _ => (!java, java),
+        }
     }
 
     /// True once per run, and only with `HORIZON_JAVA_DEBUG`.
@@ -809,7 +947,7 @@ pub(in crate::game) mod live {
             c.hud_frames.0 += 1;
             c.hud_frames.1 += spent;
             if let Some(frame) = frame {
-                c.hud = frame;
+                c.hud = read_hud(&frame).unwrap_or_default();
             }
             if !animating {
                 c.hud_animating = false;
@@ -873,21 +1011,22 @@ pub(in crate::game) mod live {
                 c.shapes = shapes;
                 c.open = open;
                 if let Some(hud) = hud {
-                    c.hud = hud;
+                    c.hud = read_hud(&hud).unwrap_or_default();
                 }
                 if (shell == 1) != c.shell.open && std::env::var_os("HORIZON_JAVA_DEBUG").is_some()
                 {
-                    let sizes = segments.as_ref().map(|s| s.each_ref().map(Vec::len));
+                    let sizes = segments.as_ref().map(|s| s.0.each_ref().map(Vec::len));
                     log::info!(
-                        "Horizon: Java shell {} {sizes:?}",
+                        "Horizon: Java shell 1 {} {sizes:?}",
                         if shell == 1 { "opened" } else { "closed" }
                     );
                 }
                 c.shell.open = shell == 1;
                 c.shell.opening = false;
                 c.shell.animating = shell_animating;
-                if let Some(segments) = segments {
+                if let Some((segments, routed)) = segments {
                     c.shell.segments = segments;
+                    c.shell.routed = routed;
                     c.shell.fresh = true;
                 }
                 shell == 0 && matches!(c.sent.native_screen, Some((true, _, 1)))
@@ -1223,7 +1362,7 @@ pub(in crate::game) mod live {
             {
                 return;
             }
-            let advances = self.gui.atlas.font.advances();
+            let advances = trimmed_advances(self.gui.atlas.font.advances());
             let mut out = Out::default();
             out.text(&self.settings.language);
             out.int(advances.len() as i32);
@@ -1254,7 +1393,7 @@ pub(in crate::game) mod live {
                 c.states = false;
                 c.armed = false;
                 c.told.clear();
-                c.hud.clear();
+                c.hud = HudRecording::default();
                 c.hud_animating = false;
                 c.shell = Shell::default();
                 c.owed = 0;
@@ -1557,8 +1696,14 @@ pub(in crate::game) mod live {
                 self.java_client_collect(false);
             }
             let busy = java_client_busy();
-            let (animating, recorded) =
-                CLIENT.with_borrow_mut(|c| (c.hud_animating, std::mem::take(&mut c.recorded)));
+            let selected = self.selected;
+            let (animating, recorded) = CLIENT.with_borrow_mut(|c| {
+                let hotbar_drawn = c.hud.drawn & (1 << HudLayer::Hotbar as u32) != 0;
+                let moved =
+                    hotbar_drawn && std::mem::replace(&mut c.hud_selected, selected) != selected;
+                c.hud_selected = selected;
+                (c.hud_animating || moved, std::mem::take(&mut c.recorded))
+            });
             let hud =
                 hud_frame_wanted(animating, recorded, busy).then(|| self.java_hud_frame_request());
             let world = self.java_world_frame_request(busy);
@@ -1570,15 +1715,41 @@ pub(in crate::game) mod live {
             }
         }
 
-        /// The mods' HUD layers and `RenderGuiEvent`s as the Java client recorded them after its last tick.
-        pub(in crate::game) fn draw_java_hud(&mut self, batch: &mut HudBatch) {
-            let hud = CLIENT.with_borrow(|c| c.hud.clone());
-            if hud.is_empty() {
-                return;
+        /// What mods drew before the first layer.
+        pub(in crate::game) fn hud_start(&mut self, batch: &mut HudBatch) {
+            self.paint_hud_segment(batch, 0);
+        }
+
+        /// The layers a mod cancelled, as the Java client last recorded them.
+        pub(in crate::game) fn java_hud_cancelled(&self) -> u32 {
+            CLIENT.with_borrow(|c| c.hud.cancelled)
+        }
+
+        fn paint_hud_segment(&mut self, batch: &mut HudBatch, index: usize) {
+            let frame = CLIENT.with_borrow(|c| c.hud.segments[index].clone());
+            if frame.len() > 4 {
+                paint_frame(batch, &self.gui.atlas, &frame, |batch, reply| {
+                    self.java_screen_item(batch, reply)
+                });
             }
-            paint_frame(batch, &self.gui.atlas, &hud, |batch, reply| {
-                self.java_screen_item(batch, reply)
-            });
+        }
+
+        /// Native's vanilla layer, unless a mod cancelled it or Java drew it; then what mods drew after it.
+        pub(in crate::game) fn hud_layer(
+            &mut self,
+            batch: &mut HudBatch,
+            layer: HudLayer,
+            native: impl FnOnce(&mut Self, &mut HudBatch),
+        ) {
+            let (cancelled, drawn) = CLIENT.with_borrow(|c| (c.hud.cancelled, c.hud.drawn));
+            let (drawn_by_native, drawn_by_java) = hud_layer_draws(cancelled, drawn, layer);
+            let index = layer as usize * 2;
+            if drawn_by_java {
+                self.paint_hud_segment(batch, index + 1);
+            } else if drawn_by_native {
+                native(self, batch);
+            }
+            self.paint_hud_segment(batch, index + 2);
         }
 
         /// The open Java screen asked for the menu blur this frame.
@@ -1671,20 +1842,14 @@ pub(in crate::game) mod live {
 
         /// Applies a `ShellReply`: its recording, its animation; returns who took the input.
         fn java_shell_apply(&self, reply: &mut In) -> Option<ShellOwner> {
-            let owner = match reply.byte()? {
-                0 => ShellOwner::Event,
-                1 => ShellOwner::Widget,
-                2 => ShellOwner::Native,
-                _ => ShellOwner::None,
-            };
-            let segments = reply.bool()?.then(|| read_segments(reply, false)).flatten();
-            let animating = reply.bool()?;
+            let (owner, recording, animating) = read_shell_reply(reply)?;
             let at = self.cursor;
             CLIENT.with_borrow_mut(|c| {
                 c.shell.animating = animating;
                 c.shell.drawn_at = Some(at);
-                if let Some(segments) = segments {
+                if let Some((segments, routed)) = recording {
                     c.shell.segments = segments;
+                    c.shell.routed = routed;
                 }
             });
             Some(owner)
@@ -1725,20 +1890,42 @@ pub(in crate::game) mod live {
             }
         }
 
-        /// One of the open shell's five recorded segments, painted between native's layers; no Java call.
-        pub(in crate::game) fn draw_java_shell(&mut self, batch: &mut HudBatch, segment: usize) {
-            let frame = CLIENT.with_borrow(|c| {
-                if c.shell.open {
-                    c.shell.segments[segment].clone()
-                } else {
-                    Vec::new()
-                }
-            });
+        fn paint_shell_segment(&mut self, batch: &mut HudBatch, index: usize) {
+            let frame = CLIENT.with_borrow(|c| c.shell.segments[index].clone());
             if frame.len() > 4 {
                 paint_frame(batch, &self.gui.atlas, &frame, |batch, reply| {
                     self.java_screen_item(batch, reply)
                 });
             }
+        }
+
+        /// Before the first step: what mods drew in `Render.Pre`.
+        pub(in crate::game) fn shell_start(&mut self, batch: &mut HudBatch) {
+            if CLIENT.with_borrow(|c| c.shell.open) {
+                self.paint_shell_segment(batch, Leaf::Start as usize * 2);
+            }
+        }
+
+        /// Native's own step, or Java's when Java drew it; then what mods drew after it.
+        pub(in crate::game) fn shell_leaf(
+            &mut self,
+            batch: &mut HudBatch,
+            leaf: Leaf,
+            native: impl FnOnce(&mut Self, &mut HudBatch),
+        ) {
+            if !CLIENT.with_borrow(|c| c.shell.open) {
+                return native(self, batch);
+            }
+            let index = leaf as usize * 2;
+            let (drawn_by_native, drawn_by_java) =
+                leaf_draws(CLIENT.with_borrow(|c| c.shell.routed), leaf);
+            if drawn_by_native {
+                native(self, batch);
+            }
+            if drawn_by_java {
+                self.paint_shell_segment(batch, index + 1);
+            }
+            self.paint_shell_segment(batch, index);
         }
 
         /// Input over a shell: Java's screen events and mods' widgets first, in vanilla's order; native acts only when this says `Native`.
@@ -1966,8 +2153,32 @@ pub(in crate::game) mod live {
         }
     }
 
+    /// The advance Java's font answers for a code point past the table's end.
+    const JAVA_MISSING_ADVANCE: f32 = 6.0;
+
+    /// The table up to the last code point whose advance Java wouldn't answer by itself.
+    fn trimmed_advances(mut advances: Vec<f32>) -> Vec<f32> {
+        let keep = advances
+            .iter()
+            .rposition(|a| *a != JAVA_MISSING_ADVANCE)
+            .map_or(0, |last| last + 1);
+        advances.truncate(keep);
+        advances
+    }
+
     #[cfg(test)]
     mod tests {
+        #[test]
+        fn the_font_table_ends_at_the_last_code_point_java_cannot_guess() {
+            let mut table = vec![6.0; 0x11_0000];
+            table[0x41] = 5.0;
+            table[0xFFFD] = 7.0;
+            let trimmed = super::trimmed_advances(table);
+            assert_eq!(trimmed.len(), 0xFFFE);
+            assert_eq!(trimmed[0xFFFD], 7.0);
+            assert!(super::trimmed_advances(vec![6.0; 8]).is_empty());
+        }
+
         #[test]
         fn a_key_input_lays_out_name_action_modifiers_keycode() {
             let mut out = Out::default();
@@ -1987,39 +2198,135 @@ pub(in crate::game) mod live {
             );
         }
 
+        fn segments_of(sizes: &[(usize, u8)]) -> Out {
+            let mut out = Out::default();
+            for i in 0..SEGMENTS {
+                match sizes.iter().find(|(at, _)| *at == i) {
+                    Some((_, n)) => out.bytes(&vec![0u8; usize::from(*n)]),
+                    None => out.bytes(&[]),
+                }
+            }
+            out
+        }
+
         #[test]
-        fn a_status_with_a_shell_reads_its_kind_and_segments_back() {
+        fn a_status_with_a_shell_reads_its_kind_segments_and_routed_back() {
             let mut out = Out::default();
             out.bool(true);
             out.int(1);
             out.bool(true);
-            out.int(5);
-            for segment in [&[1u8, 2][..], &[], &[3], &[], &[]] {
-                out.bytes(segment);
-            }
+            out.int(SEGMENTS as i32);
+            out.0.extend(segments_of(&[(1, 2), (7, 1)]).0);
+            out.int(1 << 10);
             out.bool(true);
-            let (tabs, shell, segments, animating) = read_shell_tail(&mut In(&out.0)).unwrap();
+            let (tabs, shell, recording, animating) = read_shell_tail(&mut In(&out.0)).unwrap();
             assert!(tabs && animating);
             assert_eq!(shell, 1);
-            let segments = segments.unwrap();
-            assert_eq!(segments.each_ref().map(Vec::len), [2, 0, 1, 0, 0]);
+            let (segments, routed) = recording.unwrap();
+            assert_eq!(routed, 1 << Leaf::Tooltip as u32);
+            let sizes = segments.each_ref().map(Vec::len);
+            assert_eq!((sizes[1], sizes[7], sizes[0]), (2, 1, 0));
             let mut none = Out::default();
             none.bool(false);
             none.int(0);
             none.bool(false);
+            none.int(0);
             none.bool(false);
-            let (_, shell, segments, animating) = read_shell_tail(&mut In(&none.0)).unwrap();
-            assert!(shell == 0 && segments.is_none() && !animating);
+            let (_, shell, recording, animating) = read_shell_tail(&mut In(&none.0)).unwrap();
+            assert!(shell == 0 && recording.is_none() && !animating);
         }
 
         #[test]
-        fn a_shell_reply_has_no_segment_count() {
+        fn a_status_with_the_old_segment_count_is_refused() {
             let mut out = Out::default();
-            for segment in [&[9u8][..], &[], &[], &[], &[7, 7]] {
-                out.bytes(segment);
-            }
-            let segments = read_segments(&mut In(&out.0), false).unwrap();
-            assert_eq!(segments.each_ref().map(Vec::len), [1, 0, 0, 0, 2]);
+            out.bool(false);
+            out.int(1);
+            out.bool(true);
+            out.int(5);
+            assert!(read_shell_tail(&mut In(&out.0)).is_none());
+        }
+
+        #[test]
+        fn a_shell_reply_has_no_segment_count_and_may_carry_no_recording() {
+            let mut out = Out::default();
+            out.0.push(2);
+            out.bool(true);
+            out.0.extend(segments_of(&[(0, 1), (27, 2)]).0);
+            out.int(0);
+            out.bool(false);
+            let (owner, recording, animating) = read_shell_reply(&mut In(&out.0)).unwrap();
+            assert_eq!((owner, animating), (ShellOwner::Native, false));
+            let sizes = recording.unwrap().0.each_ref().map(Vec::len);
+            assert_eq!((sizes[0], sizes[27]), (1, 2));
+            let mut quiet = Out::default();
+            quiet.0.push(3);
+            quiet.bool(false);
+            quiet.int(0);
+            quiet.bool(true);
+            let (owner, recording, animating) = read_shell_reply(&mut In(&quiet.0)).unwrap();
+            assert!(owner == ShellOwner::None && recording.is_none() && animating);
+        }
+
+        fn hud_blob(filled: &[(usize, u8)], cancelled: i32, drawn: i32) -> Out {
+            let mut out = Out::default();
+            out.int(HUD_SEGMENTS as i32);
+            out.0.extend(
+                {
+                    let mut all = Out::default();
+                    for i in 0..HUD_SEGMENTS {
+                        match filled.iter().find(|(at, _)| *at == i) {
+                            Some((_, n)) => all.bytes(&vec![0u8; usize::from(*n)]),
+                            None => all.bytes(&[]),
+                        }
+                    }
+                    all
+                }
+                .0,
+            );
+            out.int(cancelled);
+            out.int(drawn);
+            out
+        }
+
+        #[test]
+        fn the_49_segment_hud_blob_and_its_two_masks_read_back() {
+            let blob = hud_blob(&[(4, 3), (9, 5)], 1 << 5, 1 << 4);
+            let hud = read_hud(&blob.0).unwrap();
+            let sizes = hud.segments.each_ref().map(Vec::len);
+            assert_eq!((sizes[4], sizes[9], sizes[0]), (3, 5, 0));
+            assert_eq!(hud.cancelled, 1 << HudLayer::ArmorLevel as u32);
+            assert_eq!(hud.drawn, 1 << HudLayer::PlayerHealth as u32);
+            let mut old = Out::default();
+            old.int(5);
+            assert!(read_hud(&old.0).is_none());
+        }
+
+        #[test]
+        fn a_cancelled_layer_skips_native_and_a_drawn_one_is_javas() {
+            let (cancelled, drawn) = (
+                1 << HudLayer::FoodLevel as u32,
+                1 << HudLayer::Hotbar as u32,
+            );
+            assert_eq!(
+                hud_layer_draws(cancelled, drawn, HudLayer::FoodLevel),
+                (false, false)
+            );
+            assert_eq!(
+                hud_layer_draws(cancelled, drawn, HudLayer::Hotbar),
+                (false, true)
+            );
+            assert_eq!(
+                hud_layer_draws(cancelled, drawn, HudLayer::Chat),
+                (true, false)
+            );
+        }
+
+        #[test]
+        fn a_step_java_drew_is_not_drawn_by_native_and_widgets_are_both() {
+            let routed = 1 << Leaf::Tooltip as u32 | 1 << Leaf::Widgets as u32;
+            assert_eq!(leaf_draws(routed, Leaf::Tooltip), (false, true));
+            assert_eq!(leaf_draws(routed, Leaf::Slots), (true, false));
+            assert_eq!(leaf_draws(0, Leaf::Widgets), (true, true));
         }
 
         #[test]
@@ -2359,7 +2666,18 @@ impl Game<'_> {
     pub(super) fn java_screen_blurred(&self) -> bool {
         false
     }
-    pub(super) fn draw_java_hud(&mut self, _batch: &mut HudBatch) {}
+    pub(super) fn hud_start(&mut self, _batch: &mut HudBatch) {}
+    pub(super) fn java_hud_cancelled(&self) -> u32 {
+        0
+    }
+    pub(super) fn hud_layer(
+        &mut self,
+        batch: &mut HudBatch,
+        _layer: HudLayer,
+        native: impl FnOnce(&mut Self, &mut HudBatch),
+    ) {
+        native(self, batch);
+    }
     pub(super) fn java_screen_click(&mut self, _button: MouseButton, _pressed: bool) {}
     pub(super) fn java_screen_moved(&mut self) {}
     pub(super) fn java_screen_scroll(&mut self, _x: f64, _y: f64) {}
@@ -2390,7 +2708,15 @@ impl Game<'_> {
         false
     }
     pub(super) fn java_shell_frame(&mut self) {}
-    pub(super) fn draw_java_shell(&mut self, _batch: &mut HudBatch, _segment: usize) {}
+    pub(super) fn shell_start(&mut self, _batch: &mut HudBatch) {}
+    pub(super) fn shell_leaf(
+        &mut self,
+        batch: &mut HudBatch,
+        _leaf: Leaf,
+        native: impl FnOnce(&mut Self, &mut HudBatch),
+    ) {
+        native(self, batch);
+    }
     pub(super) fn java_shell_mouse(&mut self, _button: MouseButton, _pressed: bool) -> bool {
         true
     }

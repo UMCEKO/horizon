@@ -49,6 +49,9 @@ fn pack_files(world_tables: &Option<WorldTables>) -> horizon_world::loot::PackOv
     }
 }
 
+mod java_routing;
+#[allow(unused_imports)]
+use java_routing::{Recv, route};
 mod advancements;
 mod advancements_screen;
 mod agent;
@@ -155,6 +158,7 @@ mod input_trace;
 mod integrated;
 mod interaction_shapes;
 mod interactions;
+mod inventory;
 mod item_areas;
 mod item_draw;
 mod item_particles;
@@ -175,6 +179,7 @@ mod java_models;
 #[cfg(feature = "java-mods")]
 mod java_mods;
 mod java_screens;
+use java_screens::{HudLayer, Leaf};
 #[cfg(feature = "java-mods")]
 mod java_shapes;
 #[cfg(feature = "java-mods")]
@@ -3370,11 +3375,33 @@ fn death_drops(
 
 /// `Inventory.add` on a player's 36 slots (hotbar first) and off hand,
 /// `max` the stack's own maximum: onto equal stacks first
-/// (`getSlotWithRemainingSpace`: the selected slot, the off hand, then the
-/// hotbar and the main inventory), then into empty slots of the inventory
+/// ([`inventory_stack_onto`]), then into empty slots of the inventory
 /// (`getFreeSlot`, never the off hand). What does not fit stays in `stack`;
 /// true when some of it is left.
 fn inventory_add(
+    inventory: &mut [Option<ItemStack>],
+    offhand: &mut Option<ItemStack>,
+    selected: usize,
+    max: u32,
+    stack: &mut ItemStack,
+) -> bool {
+    if !inventory_stack_onto(inventory, offhand, selected, max, stack) {
+        return false;
+    }
+    while let Some(i) =
+        horizon_client::pick_item::free_slot_in(&inventory[..inventory.len().min(36)])
+    {
+        if !inventory_fill_free(inventory, i, max, stack) {
+            return false;
+        }
+    }
+    true
+}
+
+/// `Inventory.add`'s first half, `getSlotWithRemainingSpace`: onto equal
+/// stacks in the selected slot, the off hand, then the hotbar and the main
+/// inventory; true when some of `stack` is left.
+fn inventory_stack_onto(
     inventory: &mut [Option<ItemStack>],
     offhand: &mut Option<ItemStack>,
     selected: usize,
@@ -3402,20 +3429,24 @@ fn inventory_add(
             }
         }
     }
-    for slot in inventory.iter_mut().take(36) {
-        if slot.is_none() {
-            let moved = stack.count.min(max);
-            *slot = Some(ItemStack {
-                count: moved,
-                ..stack.clone()
-            });
-            stack.count -= moved;
-            if stack.count == 0 {
-                return false;
-            }
-        }
-    }
     true
+}
+
+/// Puts up to `max` of `stack` into the empty slot `i` (`getFreeSlot`'s
+/// answer); true when some of `stack` is left.
+fn inventory_fill_free(
+    inventory: &mut [Option<ItemStack>],
+    i: usize,
+    max: u32,
+    stack: &mut ItemStack,
+) -> bool {
+    let moved = stack.count.min(max);
+    inventory[i] = Some(ItemStack {
+        count: moved,
+        ..stack.clone()
+    });
+    stack.count -= moved;
+    stack.count > 0
 }
 
 fn facing_offset(facing: &str) -> [i32; 3] {
@@ -3913,13 +3944,16 @@ impl Game<'_> {
             .get(&stack.item)
             .map_or(64, |i| i.max_stack);
         let before = stack.count;
-        let left = inventory_add(
+        let mut left = inventory_stack_onto(
             &mut self.inventory,
             &mut self.offhand,
             self.selected,
             max,
             &mut stack,
         );
+        while left && let Ok(i) = usize::try_from(self.free_slot()) {
+            left = inventory_fill_free(&mut self.inventory, i, max, &mut stack);
+        }
         if stack.count < before {
             self.tutorial_get_item(tutorial_item.as_ref());
         }
@@ -8862,88 +8896,87 @@ impl Game<'_> {
         }
         // Hud.extractRenderState: F1 (keyToggleGui) hides camera overlays, the
         // crosshair, hotbar, effects, bars, sidebar, action bar, titles and chat;
-        // the sleep overlay, debug screen and open screens still draw.
+        // the sleep overlay, debug screen and open screens still draw. The layers
+        // come in VanillaGuiLayers order, each followed by what Java mods drew after
+        // it; native mods' layers (`gui_layer`) sit inside each one.
         let spectator = self.spectator();
         let (wi, hi) = (w as i32, h as i32);
         let show_hud = !self.ui.hide_gui;
+        let cancelled = self.java_hud_cancelled();
+        let off = |layer: HudLayer| cancelled & (1 << layer as u32) != 0;
         // max(Hud.leftHeight, Hud.rightHeight) after the bars: the item name and
         // the action bar sit above it.
         let mut bar_height = 39;
         if show_hud {
-            self.draw_spyglass(&mut batch);
+            self.hud_start(&mut batch);
+            self.hud_layer(&mut batch, HudLayer::CameraOverlays, |this, batch| {
+                this.draw_spyglass(batch)
+            });
             // Hud.extractCrosshair / extractItemHotbar / extractPlayerHealth /
             // extractVehicleHealth and the experience bar, laid out by hud_layout.
             let indicator = self.settings.attack_indicator;
             let delay = horizon_client::attack_strength::delay(self.main_hand_attack_speed());
             let strength = self.hand_strength.scale(0.0, self.main_hand_attack_speed());
-            // The 3D crosshair (F3) takes the 2D one's place.
-            // Hud.extractCrosshair: a spectator only sees it over something to open.
-            if self.camera_type.first_person()
-                && (!spectator || self.spectator_crosshair())
-                && !self.debug_crosshair()
-            {
-                let attack = (indicator == 1).then_some(strength);
-                let full = attack.is_some_and(|a| {
-                    hud_layout::full_attack_indicator(a, delay, self.crosshair_living())
-                });
-                let draws = hud_layout::crosshair(wi, hi, attack, full);
-                self.gui_layer("minecraft:crosshair", &mut batch, |g, batch| {
-                    // The custom crosshair takes the sprite's place (the first draw); the
-                    // attack indicator stays.
-                    if g.custom_crosshair() {
-                        g.draw_custom_crosshair(batch, wi, hi);
-                        hud_layout::paint(batch, &g.gui.atlas, &draws[1..]);
+            self.hud_layer(&mut batch, HudLayer::Crosshair, |this, batch| {
+                // The 3D crosshair (F3) takes the 2D one's place.
+                // Hud.extractCrosshair: a spectator only sees it over something to open.
+                if this.camera_type.first_person()
+                    && (!spectator || this.spectator_crosshair())
+                    && !this.debug_crosshair()
+                {
+                    let attack = (indicator == 1).then_some(strength);
+                    let full = attack.is_some_and(|a| {
+                        hud_layout::full_attack_indicator(a, delay, this.crosshair_living())
+                    });
+                    let draws = hud_layout::crosshair(wi, hi, attack, full);
+                    this.gui_layer("minecraft:crosshair", batch, |g, batch| {
+                        // The custom crosshair takes the sprite's place (the first draw); the
+                        // attack indicator stays.
+                        if g.custom_crosshair() {
+                            g.draw_custom_crosshair(batch, wi, hi);
+                            hud_layout::paint(batch, &g.gui.atlas, &draws[1..]);
+                        } else {
+                            hud_layout::paint(batch, &g.gui.atlas, &draws);
+                        }
+                    });
+                }
+            });
+            self.hud_layer(&mut batch, HudLayer::AfterCameraDecorations, |_, _| {});
+            self.hud_layer(&mut batch, HudLayer::Hotbar, |this, batch| {
+                this.gui_layer("minecraft:hotbar", batch, |g, batch| {
+                    if spectator {
+                        g.draw_spectator_hotbar(batch);
                     } else {
+                        let partial = g.clock.fraction() as f32;
+                        let inputs = hud_layout::HotbarInputs {
+                            selected: g.selected as i32,
+                            right_handed: !g.settings.main_hand_left,
+                            offhand: g.offhand.is_some(),
+                            slots: std::array::from_fn(|i| {
+                                g.inventory[i]
+                                    .as_ref()
+                                    .map(|_| (f32::from(g.hotbar_pop[i]) - partial).max(0.0))
+                            }),
+                            offhand_pop: (f32::from(g.hotbar_pop[9]) - partial).max(0.0),
+                            attack: (indicator == 2).then_some(strength),
+                        };
+                        let draws = hud_layout::hotbar(wi, hi, &inputs);
                         hud_layout::paint(batch, &g.gui.atlas, &draws);
-                    }
-                });
-            }
-            self.gui_layer("minecraft:hotbar", &mut batch, |g, batch| {
-                if spectator {
-                    g.draw_spectator_hotbar(batch);
-                } else {
-                    let partial = g.clock.fraction() as f32;
-                    let inputs = hud_layout::HotbarInputs {
-                        selected: g.selected as i32,
-                        right_handed: !g.settings.main_hand_left,
-                        offhand: g.offhand.is_some(),
-                        slots: std::array::from_fn(|i| {
-                            g.inventory[i]
-                                .as_ref()
-                                .map(|_| (f32::from(g.hotbar_pop[i]) - partial).max(0.0))
-                        }),
-                        offhand_pop: (f32::from(g.hotbar_pop[9]) - partial).max(0.0),
-                        attack: (indicator == 2).then_some(strength),
-                    };
-                    let draws = hud_layout::hotbar(wi, hi, &inputs);
-                    hud_layout::paint(batch, &g.gui.atlas, &draws);
-                    for d in &draws {
-                        if let hud_layout::GuiDraw::Item { slot, x, y, .. } = *d {
-                            let stack = if slot == 40 {
-                                g.offhand.as_ref()
-                            } else {
-                                g.inventory[slot as usize].as_ref()
-                            };
-                            if let Some(stack) = stack {
-                                g.draw_item(batch, stack, x as f32, y as f32);
+                        for d in &draws {
+                            if let hud_layout::GuiDraw::Item { slot, x, y, .. } = *d {
+                                let stack = if slot == 40 {
+                                    g.offhand.as_ref()
+                                } else {
+                                    g.inventory[slot as usize].as_ref()
+                                };
+                                if let Some(stack) = stack {
+                                    g.draw_item(batch, stack, x as f32, y as f32);
+                                }
                             }
                         }
                     }
-                }
+                });
             });
-            self.gui_layer("minecraft:effects", &mut batch, |g, batch| {
-                // The PvP & HUD effects widget takes the icons' place.
-                if !g.pvp_effects_shown() {
-                    g.draw_effect_icons(batch);
-                }
-            });
-            // Hud: the action bar and titles draw over the hotbar (nextStratum).
-            self.gui_layer("minecraft:boss_overlay", &mut batch, |g, batch| {
-                g.draw_boss_bars(batch);
-            });
-            self.draw_extras(&mut batch);
-        }
-        if show_hud {
             // Hud.nextContextualInfoState: the jump bar, the experience bar or
             // the locator bar above the hotbar.
             let has_experience = !self.creative && !spectator;
@@ -8955,52 +8988,17 @@ impl Game<'_> {
                 self.experience_recent(),
             );
             use horizon_client::locator_bar::ContextualBar;
-            // The mount's hearts.
-            let vehicle_hearts = if spectator {
-                0
-            } else {
-                self.draw_mount_hud(&mut batch, wi, hi)
-            };
+            let vehicle_hearts = if spectator { 0 } else { self.mount_hearts() };
             // Without the survival bars only the mount's hearts raise it.
-            bar_height = 39 + 10 * ((vehicle_hearts + 9) / 10);
-            // The one bar above the hotbar: the mount's jump bar, the locator
-            // bar (with its background) or the experience bar, with the level
-            // number that a survival player always has.
-            self.gui_layer("minecraft:contextual_info_bar", &mut batch, |g, batch| {
-                if contextual == ContextualBar::JumpableVehicle {
-                    g.draw_jump_bar(batch, wi, hi);
-                }
-                if contextual == ContextualBar::Locator {
-                    let (sprite, [x, y, w, h]) = horizon_client::locator_bar::background(wi, hi);
-                    horizon_client::ui::nine_slice(
-                        batch,
-                        &g.gui.atlas,
-                        sprite,
-                        x as f32,
-                        y as f32,
-                        w as f32,
-                        h as f32,
-                        u32::MAX,
-                    );
-                }
-                if has_experience && g.player.is_some() {
-                    let atlas = &g.gui.atlas;
-                    let width = |s: &str| HudBatch::text_width(atlas, s) as i32;
-                    let draws = hud_layout::experience(
-                        wi,
-                        hi,
-                        g.experience.progress,
-                        g.experience.level,
-                        contextual == ContextualBar::Experience,
-                        &width,
-                    );
-                    hud_layout::paint(batch, atlas, &draws);
-                }
-                if contextual == ContextualBar::Locator {
-                    let draws = g.locator_bar_draws(wi, hi);
-                    hud_layout::paint(batch, &g.gui.atlas, &draws);
-                }
-            });
+            bar_height = 39
+                + if off(HudLayer::VehicleHealth) {
+                    0
+                } else {
+                    10 * ((vehicle_hearts + 9) / 10)
+                };
+            // The survival rows, or every row a native mod's health HUD draws instead.
+            let mut bars = None;
+            let mut native_rows = None;
             if !self.creative
                 && !spectator
                 && let Some(p) = &mut self.player
@@ -9039,21 +9037,11 @@ impl Game<'_> {
                     max_air: 300,
                     under_water,
                     vehicle_hearts,
+                    cancelled,
                 };
                 let at = [p.position.x, p.position.y, p.position.z];
-                // The native mods' health HUD (`native_health_hud`): a mod
-                // that answers draws every row instead.
-                let mut native_health_hud = None;
-                self.native_health_hud(&inputs, wi, hi, &mut native_health_hud);
-                let draws = match native_health_hud {
-                    Some(draws) => draws,
-                    None => self.health_hud.layout(&inputs, wi, hi),
-                };
-                // The rows draw in one pass here, so a mod's `player_health`
-                // layer stands for the armor, food and air rows too.
-                self.gui_layer("minecraft:player_health", &mut batch, |g, batch| {
-                    hud_layout::paint(batch, &g.gui.atlas, &draws);
-                });
+                self.native_health_hud(&inputs, wi, hi, &mut native_rows);
+                bars = Some(self.health_hud.layout(&inputs, wi, hi));
                 bar_height = self
                     .health_hud
                     .left_height
@@ -9071,51 +9059,186 @@ impl Game<'_> {
                     self.audio.capture = capture;
                 }
             }
-            if !spectator {
-                self.gui_layer("minecraft:selected_item_name", &mut batch, |g, batch| {
-                    g.draw_selected_name(batch, bar_height, !g.creative);
-                });
+            // A native mod's `player_health` layer stands for the armor, food and air rows too.
+            let mut rows_canceled = false;
+            if bars.is_some() {
+                self.native_gui_layer_pre(
+                    "minecraft:player_health",
+                    &mut batch,
+                    &mut rows_canceled,
+                );
             }
+            let row =
+                |this: &Self,
+                 batch: &mut HudBatch,
+                 pick: fn(&hud_layout::BarDraws) -> &[hud_layout::GuiDraw]| {
+                    if rows_canceled || native_rows.is_some() {
+                        return;
+                    }
+                    if let Some(bars) = &bars {
+                        hud_layout::paint(batch, &this.gui.atlas, pick(bars));
+                    }
+                };
+            self.hud_layer(&mut batch, HudLayer::PlayerHealth, |this, batch| {
+                if !rows_canceled && let Some(draws) = &native_rows {
+                    hud_layout::paint(batch, &this.gui.atlas, draws);
+                }
+                row(this, batch, hud_layout::BarDraws::health);
+            });
+            self.hud_layer(&mut batch, HudLayer::ArmorLevel, |this, batch| {
+                row(this, batch, hud_layout::BarDraws::armor)
+            });
+            self.hud_layer(&mut batch, HudLayer::FoodLevel, |this, batch| {
+                row(this, batch, hud_layout::BarDraws::food)
+            });
+            self.hud_layer(&mut batch, HudLayer::VehicleHealth, |this, batch| {
+                if vehicle_hearts > 0 {
+                    this.draw_mount_hud(batch, wi, hi);
+                }
+            });
+            self.hud_layer(&mut batch, HudLayer::AirLevel, |this, batch| {
+                row(this, batch, hud_layout::BarDraws::air)
+            });
+            if bars.is_some() {
+                self.native_gui_layer_post("minecraft:player_health", &mut batch);
+            }
+            // The one bar above the hotbar: the mount's jump bar, the locator
+            // bar (with its background) or the experience bar, with the level
+            // number that a survival player always has.
+            let mut bar_canceled = false;
+            self.native_gui_layer_pre(
+                "minecraft:contextual_info_bar",
+                &mut batch,
+                &mut bar_canceled,
+            );
+            self.hud_layer(
+                &mut batch,
+                HudLayer::ContextualInfoBarBackground,
+                |this, batch| {
+                    if !bar_canceled && contextual == ContextualBar::Locator {
+                        let (sprite, [x, y, w, h]) =
+                            horizon_client::locator_bar::background(wi, hi);
+                        horizon_client::ui::nine_slice(
+                            batch,
+                            &this.gui.atlas,
+                            sprite,
+                            x as f32,
+                            y as f32,
+                            w as f32,
+                            h as f32,
+                            u32::MAX,
+                        );
+                    }
+                },
+            );
+            self.hud_layer(&mut batch, HudLayer::ExperienceLevel, |this, batch| {
+                if !bar_canceled && has_experience && this.player.is_some() {
+                    let atlas = &this.gui.atlas;
+                    let width = |s: &str| HudBatch::text_width(atlas, s) as i32;
+                    let draws = hud_layout::experience(
+                        wi,
+                        hi,
+                        this.experience.progress,
+                        this.experience.level,
+                        contextual == ContextualBar::Experience,
+                        &width,
+                    );
+                    hud_layout::paint(batch, atlas, &draws);
+                }
+            });
+            self.hud_layer(&mut batch, HudLayer::ContextualInfoBar, |this, batch| {
+                if bar_canceled {
+                    return;
+                }
+                if contextual == ContextualBar::Locator {
+                    let draws = this.locator_bar_draws(wi, hi);
+                    hud_layout::paint(batch, &this.gui.atlas, &draws);
+                }
+                if contextual == ContextualBar::JumpableVehicle && !spectator {
+                    this.draw_jump_bar(batch, wi, hi);
+                }
+            });
+            self.native_gui_layer_post("minecraft:contextual_info_bar", &mut batch);
+            self.hud_layer(&mut batch, HudLayer::SelectedItemName, |this, batch| {
+                if !spectator {
+                    this.gui_layer("minecraft:selected_item_name", batch, |g, batch| {
+                        g.draw_selected_name(batch, bar_height, !g.creative);
+                    });
+                }
+            });
+            self.hud_layer(&mut batch, HudLayer::SpectatorTooltip, |_, _| {});
+            self.hud_layer(&mut batch, HudLayer::Effects, |this, batch| {
+                this.gui_layer("minecraft:effects", batch, |g, batch| {
+                    // The PvP & HUD effects widget takes the icons' place.
+                    if !g.pvp_effects_shown() {
+                        g.draw_effect_icons(batch);
+                    }
+                });
+            });
+            // Hud: the action bar and titles draw over the hotbar (nextStratum).
+            self.hud_layer(&mut batch, HudLayer::BossOverlay, |this, batch| {
+                this.gui_layer("minecraft:boss_overlay", batch, |g, batch| {
+                    g.draw_boss_bars(batch);
+                });
+            });
+            self.draw_extras(&mut batch);
         }
         // Hud.extractSleepOverlay: over all health/food bars, under titles and chat.
-        let draws = hud_overlays::sleep_overlay(wi, hi, self.sleep_timer as i32);
-        self.gui_layer("minecraft:sleep_overlay", &mut batch, |g, batch| {
-            hud_layout::paint(batch, &g.gui.atlas, &draws);
-        });
+        let sleep = |this: &mut Self, batch: &mut HudBatch| {
+            let draws = hud_overlays::sleep_overlay(wi, hi, this.sleep_timer as i32);
+            this.gui_layer("minecraft:sleep_overlay", batch, |g, batch| {
+                hud_layout::paint(batch, &g.gui.atlas, &draws);
+            });
+        };
         if show_hud {
-            self.gui_layer("minecraft:overlay_message", &mut batch, |g, batch| {
-                g.draw_overlay_message(batch, bar_height);
+            self.hud_layer(&mut batch, HudLayer::SleepOverlay, sleep);
+            self.hud_layer(&mut batch, HudLayer::DemoOverlay, |_, _| {});
+            self.hud_layer(&mut batch, HudLayer::ScoreboardSidebar, |this, batch| {
+                this.gui_layer("minecraft:scoreboard_sidebar", batch, |g, batch| {
+                    g.draw_scoreboard(batch);
+                });
             });
-            self.gui_layer("minecraft:title", &mut batch, |g, batch| {
-                g.draw_title(batch);
+            self.hud_layer(&mut batch, HudLayer::OverlayMessage, |this, batch| {
+                this.gui_layer("minecraft:overlay_message", batch, |g, batch| {
+                    g.draw_overlay_message(batch, bar_height);
+                });
+                if let Some((text, at)) = &this.message
+                    && at.elapsed() < Duration::from_secs(3)
+                {
+                    let atlas = &this.gui.atlas;
+                    let tw = HudBatch::text_width(atlas, text);
+                    batch.text(atlas, text, (w - tw) / 2.0, h - 59.0, u32::MAX, true);
+                }
             });
-            self.gui_layer("minecraft:scoreboard_sidebar", &mut batch, |g, batch| {
-                g.draw_scoreboard(batch);
+            self.hud_layer(&mut batch, HudLayer::Title, |this, batch| {
+                this.gui_layer("minecraft:title", batch, |g, batch| g.draw_title(batch));
             });
-            self.gui_layer("minecraft:subtitle_overlay", &mut batch, |g, batch| {
-                g.draw_subtitles(batch);
+            // The chat screen draws the focused chat itself.
+            self.hud_layer(&mut batch, HudLayer::Chat, |this, batch| {
+                if this.screen != Screen::Chat {
+                    this.gui_layer("minecraft:chat", batch, |g, batch| g.draw_chat(batch));
+                } else {
+                    this.draw_chat(batch);
+                }
             });
-        }
-        let atlas = &self.gui.atlas;
-        if show_hud
-            && let Some((text, at)) = &self.message
-            && at.elapsed() < Duration::from_secs(3)
-        {
-            let tw = HudBatch::text_width(atlas, text);
-            batch.text(atlas, text, (w - tw) / 2.0, h - 59.0, u32::MAX, true);
-        }
-        // The chat screen draws the focused chat itself; F1 hides the rest.
-        if show_hud && self.screen != Screen::Chat {
-            self.gui_layer("minecraft:chat", &mut batch, |g, batch| g.draw_chat(batch));
-            self.gui_layer("minecraft:tab_list", &mut batch, |g, batch| {
-                g.draw_tab_list(batch);
+            self.hud_layer(&mut batch, HudLayer::TabList, |this, batch| {
+                if this.screen != Screen::Chat {
+                    this.gui_layer("minecraft:tab_list", batch, |g, batch| {
+                        g.draw_tab_list(batch);
+                    });
+                } else {
+                    this.draw_tab_list(batch);
+                }
+            });
+            self.hud_layer(&mut batch, HudLayer::SubtitleOverlay, |this, batch| {
+                this.gui_layer("minecraft:subtitle_overlay", batch, |g, batch| {
+                    g.draw_subtitles(batch);
+                });
             });
         } else {
+            sleep(self, &mut batch);
             self.draw_chat(&mut batch);
             self.draw_tab_list(&mut batch);
-        }
-        if show_hud {
-            self.draw_java_hud(&mut batch);
         }
         // Screen.extractBlurredBackground blurs the world and HUD, while the
         // screen's background, widgets, toasts and debug overlay stay sharp.
@@ -9587,9 +9710,10 @@ impl Game<'_> {
         }
         let (ox, oy) = self.inventory_origin(batch);
         self.java_shell_frame();
-        self.draw_java_shell(batch, 0);
-        {
-            let atlas = &self.gui.atlas;
+        self.shell_start(batch);
+        let mut labels = None;
+        self.shell_leaf(batch, Leaf::Background, |this, batch| {
+            let atlas = &this.gui.atlas;
             batch.fill(
                 atlas,
                 0.0,
@@ -9615,14 +9739,13 @@ impl Game<'_> {
                     batch.rect_uv(dx, dy, w, h, r, u32::MAX);
                 }
             };
-            let grey = rgba(64, 64, 64, 255);
-            match self
+            match this
                 .container
-                .and_then(|k| self.world.block_entities.get(&k))
+                .and_then(|k| this.world.block_entities.get(&k))
             {
-                Some(_) if self.draw_native_screen(batch, ox, oy) => {}
-                Some(BlockEntity::Chest(_)) if self.draw_machine_screen(batch, ox, oy) => {}
-                Some(BlockEntity::Chest(_)) => self.draw_chest_screen(batch, ox, oy),
+                Some(_) if this.draw_native_screen(batch, ox, oy) => {}
+                Some(BlockEntity::Chest(_)) if this.draw_machine_screen(batch, ox, oy) => {}
+                Some(BlockEntity::Chest(_)) => this.draw_chest_screen(batch, ox, oy),
                 Some(BlockEntity::Furnace(f)) => {
                     let (tex, key, fallback) = match f.kind {
                         horizon_client::containers::FurnaceKind::Furnace => {
@@ -9638,25 +9761,7 @@ impl Game<'_> {
                         }
                     };
                     part(batch, tex, 0.0, 0.0, 176.0, 166.0, ox, oy);
-                    // A server's furnace menu has the title it was given.
-                    let title = self.remote_menu_title().unwrap_or_else(|| {
-                        horizon_client::text::Text::literal(
-                            self.container_title(self.translate(key, fallback)),
-                        )
-                        .resolve_legacy()
-                    });
-                    screen_info::name_container(|| title.plain());
-                    let tw = atlas.font.width_text(&title);
-                    batch.text_styled(
-                        atlas,
-                        &title,
-                        ox + (176.0 - tw) / 2.0,
-                        oy + 6.0,
-                        grey,
-                        false,
-                    );
-                    let inventory = self.translate("container.inventory", "Inventory");
-                    batch.text(atlas, &inventory, ox + 8.0, oy + 72.0, grey, false);
+                    labels = Some(Some((key, fallback)));
                     if f.lit_remaining > 0 {
                         // AbstractFurnaceScreen: flame height ceil(lit * 13) + 1.
                         let total = if f.lit_total == 0 { 200 } else { f.lit_total };
@@ -9687,7 +9792,7 @@ impl Game<'_> {
                     }
                 }
                 Some(BlockEntity::Brewing(_)) => {}
-                Some(BlockEntity::Crafter(_)) => self.draw_crafter_screen(batch, ox, oy),
+                Some(BlockEntity::Crafter(_)) => this.draw_crafter_screen(batch, ox, oy),
                 Some(
                     BlockEntity::Sign(_)
                     | BlockEntity::Jukebox(_)
@@ -9715,49 +9820,104 @@ impl Game<'_> {
                     | BlockEntity::TestBlock(_)
                     | BlockEntity::TestInstanceBlock(_),
                 ) => {}
-                None if self.mount_active() => self.draw_mount_background(batch, ox, oy),
+                None if this.mount_active() => this.draw_mount_background(batch, ox, oy),
                 None => {
-                    let texture = if self.craft_size == 3 {
+                    let texture = if this.craft_size == 3 {
                         "gui/container/crafting_table"
                     } else {
                         "gui/container/inventory"
                     };
                     part(batch, texture, 0.0, 0.0, 176.0, 166.0, ox, oy);
-                    let title = self.translate("container.crafting", "Crafting");
-                    screen_info::name_container(|| title.clone());
-                    let tx = if self.craft_size == 3 { 29.0 } else { 97.0 };
-                    batch.text(atlas, &title, ox + tx, oy + 6.0, grey, false);
-                    if self.craft_size == 3 {
-                        let inventory = self.translate("container.inventory", "Inventory");
-                        batch.text(atlas, &inventory, ox + 8.0, oy + 72.0, grey, false);
-                    }
+                    labels = Some(None);
                 }
             }
+            if this.container.is_none() && this.craft_size != 3 && !this.mount_active() {
+                this.draw_inventory_player(batch, ox, oy);
+            }
+        });
+        let mut effect_tip = None;
+        self.shell_leaf(batch, Leaf::Effects, |this, batch| {
+            if this.container.is_none() && this.craft_size == 2 && !this.mount_active() {
+                effect_tip = this.draw_inventory_effects(batch, (ox, oy), 176);
+            }
+        });
+        self.shell_leaf(batch, Leaf::Widgets, |this, batch| {
+            this.draw_sort_buttons(batch, ox, oy);
+            this.draw_recipe_book_button(batch);
+        });
+        self.shell_leaf(batch, Leaf::Labels, |this, batch| {
+            this.draw_inventory_labels(batch, ox, oy, labels);
+        });
+        self.shell_leaf(batch, Leaf::HighlightBack, |this, batch| {
+            this.draw_hovered_slot_highlight(batch, false, ox, oy);
+        });
+        self.shell_leaf(batch, Leaf::Slots, |this, batch| {
+            this.draw_inventory_slots(batch, ox, oy);
+        });
+        self.shell_leaf(batch, Leaf::HighlightFront, |this, batch| {
+            this.draw_hovered_slot_highlight(batch, true, ox, oy);
+        });
+        self.shell_leaf(batch, Leaf::Extra, |_, _| {});
+        let mut book_tooltip = None;
+        self.shell_leaf(batch, Leaf::RecipeBook, |this, batch| {
+            book_tooltip = this.draw_recipe_book_panel(batch);
+        });
+        self.shell_leaf(batch, Leaf::Carried, |this, batch| this.draw_carried(batch));
+        self.shell_leaf(batch, Leaf::Tooltip, |this, batch| {
+            this.draw_slot_tooltip(batch);
+            this.draw_native_screen_tooltip(batch);
+            if let Some(lines) = effect_tip {
+                this.draw_tooltip_lines(batch, &lines, this.cursor.0, this.cursor.1);
+            }
+        });
+        self.shell_leaf(batch, Leaf::BookTooltip, |this, batch| {
+            this.draw_recipe_book_tooltip(batch, book_tooltip);
+        });
+        self.shell_leaf(batch, Leaf::Deferred, |_, _| {});
+    }
+    /// The titles `extractLabels` draws: a furnace's by its name key (a server's menu has the title it was given), or the crafting grid's.
+    fn draw_inventory_labels(
+        &self,
+        batch: &mut HudBatch,
+        ox: f32,
+        oy: f32,
+        labels: Option<Option<(&str, &str)>>,
+    ) {
+        let atlas = &self.gui.atlas;
+        let grey = rgba(64, 64, 64, 255);
+        match labels {
+            Some(Some((key, fallback))) => {
+                let title = self.remote_menu_title().unwrap_or_else(|| {
+                    horizon_client::text::Text::literal(
+                        self.container_title(self.translate(key, fallback)),
+                    )
+                    .resolve_legacy()
+                });
+                screen_info::name_container(|| title.plain());
+                let tw = atlas.font.width_text(&title);
+                batch.text_styled(
+                    atlas,
+                    &title,
+                    ox + (176.0 - tw) / 2.0,
+                    oy + 6.0,
+                    grey,
+                    false,
+                );
+                let inventory = self.translate("container.inventory", "Inventory");
+                batch.text(atlas, &inventory, ox + 8.0, oy + 72.0, grey, false);
+            }
+            Some(None) => {
+                let title = self.translate("container.crafting", "Crafting");
+                screen_info::name_container(|| title.clone());
+                let tx = if self.craft_size == 3 { 29.0 } else { 97.0 };
+                batch.text(atlas, &title, ox + tx, oy + 6.0, grey, false);
+                if self.craft_size == 3 {
+                    let inventory = self.translate("container.inventory", "Inventory");
+                    batch.text(atlas, &inventory, ox + 8.0, oy + 72.0, grey, false);
+                }
+            }
+            None => {}
         }
-        self.draw_java_shell(batch, 1);
-        if self.container.is_none() && self.craft_size != 3 && !self.mount_active() {
-            self.draw_inventory_player(batch, ox, oy);
-        }
-        self.draw_hovered_slot_highlight(batch, false, ox, oy);
-        self.draw_inventory_slots(batch, ox, oy);
-        self.draw_hovered_slot_highlight(batch, true, ox, oy);
-        self.draw_sort_buttons(batch, ox, oy);
-        self.draw_recipe_book(batch);
-        self.draw_java_shell(batch, 2);
-        self.draw_java_shell(batch, 3);
-        let effect_tip = if self.container.is_none() && self.craft_size == 2 && !self.mount_active()
-        {
-            self.draw_inventory_effects(batch, (ox, oy), 176)
-        } else {
-            None
-        };
-        self.draw_carried(batch);
-        self.draw_slot_tooltip(batch);
-        self.draw_native_screen_tooltip(batch);
-        if let Some(lines) = effect_tip {
-            self.draw_tooltip_lines(batch, &lines, self.cursor.0, self.cursor.1);
-        }
-        self.draw_java_shell(batch, 4);
     }
     /// `AbstractContainerScreen` keeps `isQuickCrafting` and the drag it
     /// belongs to on the screen. Horizon keeps both on `Game` (`inv_clicks`,

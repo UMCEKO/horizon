@@ -310,7 +310,7 @@ impl Game<'_> {
         })));
     }
 
-    fn java_use_request(&mut self) -> Option<Vec<u8>> {
+    pub(in crate::game) fn java_use_request(&mut self) -> Option<Vec<u8>> {
         let position = self.player.as_ref()?.position;
         let [a, b, c, d] = self.acting_uuid();
         let mut out = Out::default();

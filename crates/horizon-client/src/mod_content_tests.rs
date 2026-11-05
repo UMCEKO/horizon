@@ -84,6 +84,7 @@ fn creative_tabs_keep_vanilla_items_missing_from_search() {
     };
     let plan = Plan {
         blocks: Vec::new(),
+        skipped: Vec::new(),
         items: Vec::new(),
         component_types: Vec::new(),
         vanilla_items: tab.items.iter().cloned().collect(),
@@ -253,6 +254,59 @@ fn block_items_take_their_declared_numbers() {
         items["m:machine"],
         serde_json::json!({"minecraft:max_stack_size": 1, "minecraft:rarity": "rare"})
     );
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+/// A fluid declared with an item whose template (lava) has none is left out and reported; the rest of the content is built.
+#[test]
+fn a_block_with_an_itemless_template_is_left_out_and_the_rest_built() {
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-fluid-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let base = scratch.join("base");
+    fs::create_dir_all(&base).unwrap();
+    fs::write(
+        base.join("facts.json"),
+        r#"{"states": [["minecraft:lava"], ["minecraft:stone"]],
+            "defaults": {"minecraft:lava": 0, "minecraft:stone": 1}}"#,
+    )
+    .unwrap();
+    fs::write(
+        base.join("gameplay-facts.json"),
+        r#"{"states": [{"item":"minecraft:air"}, {"item":"minecraft:stone"}]}"#,
+    )
+    .unwrap();
+    let blood = folder_mod(
+        &scratch.join("blood"),
+        &[
+            ("horizon-mod.toml", &manifest("blood", "")),
+            (
+                "data/blood/horizon/block/blood.json",
+                r#"{"template":"minecraft:lava"}"#,
+            ),
+        ],
+    );
+    let machine = folder_mod(
+        &scratch.join("m"),
+        &[
+            ("horizon-mod.toml", &manifest("m", "")),
+            (
+                "data/m/horizon/block/machine.json",
+                r#"{"template":"minecraft:stone"}"#,
+            ),
+        ],
+    );
+    let mods = vec![blood, machine];
+    let plan = Plan::new(&base, &mods).unwrap();
+    assert_eq!(plan.skipped.len(), 1, "{:?}", plan.skipped);
+    assert!(
+        plan.skipped[0].starts_with("blood:blood: template minecraft:lava has no item"),
+        "{:?}",
+        plan.skipped
+    );
+    let built: Vec<&str> = plan.blocks.iter().map(|b| b.decl.id.as_str()).collect();
+    assert_eq!(built, ["m:machine"]);
+    assert_eq!(plan.blocks[0].rename.first, 2);
+    assert_eq!(plan.items.len(), 1);
     let _ = fs::remove_dir_all(&scratch);
 }
 
@@ -775,8 +829,11 @@ fn refuses_unknown_templates_and_vanilla_ids() {
     let _ = fs::remove_dir_all(&scratch);
     let mut m = ruby_mod(&scratch.join("ruby"));
     m.content.blocks[0].template = "minecraft:not_a_block".into();
-    let e = build(&base, std::slice::from_ref(&m), &scratch.join("out")).unwrap_err();
-    assert!(e.to_string().contains("is not a block"), "{e}");
+    let warnings = build(&base, std::slice::from_ref(&m), &scratch.join("out")).unwrap();
+    assert!(
+        warnings.iter().any(|w| w.contains("is not a block")),
+        "{warnings:?}"
+    );
     m.content.blocks[0].template = "minecraft:iron_block".into();
     let stew = m
         .content
@@ -2268,7 +2325,14 @@ fn content_block_default_state_is_validated_and_overlaid() {
                     Some(&J::Num(id.into()))
                 );
             }
-            (Err(e), None) => assert!(e.to_string().contains("testmod:test"), "{e}"),
+            (Ok(plan), None) => {
+                assert!(plan.blocks.is_empty());
+                assert!(
+                    plan.skipped[0].contains("testmod:test"),
+                    "{:?}",
+                    plan.skipped
+                );
+            }
             _ => panic!("unexpected result for {declaration}"),
         }
     }
@@ -2288,11 +2352,14 @@ fn content_block_default_state_is_validated_and_overlaid() {
             ),
         ],
     );
-    let error = match Plan::new(&base, &[m]) {
-        Err(e) => e.to_string(),
-        Ok(_) => panic!("duplicate states accepted"),
-    };
-    assert!(error.contains("matches 2 states"), "{error}");
+    let mods = [m];
+    let plan = Plan::new(&base, &mods).unwrap();
+    assert!(plan.blocks.is_empty());
+    assert!(
+        plan.skipped[0].contains("matches 2 states"),
+        "{:?}",
+        plan.skipped
+    );
     fs::remove_dir_all(scratch).unwrap();
 }
 
@@ -2315,11 +2382,13 @@ fn shapes_reject_unknown_or_missing_template_values() {
             ],
         );
         let mods = [m];
-        let e = match Plan::new(&base, &mods) {
-            Ok(_) => panic!("accepted {declaration}"),
-            Err(e) => e.to_string(),
-        };
-        assert!(e.contains("shapetest:rod"), "{e}");
+        let plan = Plan::new(&base, &mods).unwrap();
+        assert!(plan.blocks.is_empty(), "accepted {declaration}");
+        assert!(
+            plan.skipped[0].contains("shapetest:rod"),
+            "{:?}",
+            plan.skipped
+        );
     }
     fs::remove_dir_all(scratch).unwrap();
 }
@@ -2978,7 +3047,7 @@ fn collision_only_preserves_outline_and_shape_typos_are_errors() {
     {
         let declaration = format!(r#"{{"template":"minecraft:test","collision_shapes":{table}}}"#);
         let (base, mods) = block_base(&format!("collision-typo-{index}"), &[&declaration]);
-        assert!(Plan::new(&base, &mods).is_err(), "{table}");
+        assert!(refused(&base, &mods).is_some(), "{table}");
         fs::remove_dir_all(base.parent().unwrap()).unwrap();
     }
 }
@@ -3354,7 +3423,7 @@ fn replaced_state_properties_copy_the_matching_template_state() {
           "state_properties":{"powered":{"type":"boolean"}},"default_state":{"lit":"true"}}"#,
     ] {
         let (base, mods) = block_base_of("replace-refused", &[bad], &facts);
-        let e = Plan::new(&base, &mods).err().expect(bad);
+        let e = refused(&base, &mods).expect(bad);
         assert!(e.to_string().contains("testmod:test"), "{e}");
         fs::remove_dir_all(base.parent().unwrap()).unwrap();
     }
@@ -3370,10 +3439,8 @@ fn content_block_state_properties_are_validated() {
         "block-shadow",
         &[r#"{"template":"minecraft:test","state_properties":{"axis":{"type":"boolean"}}}"#],
     );
-    let error = match Plan::new(&base, &mods) {
-        Err(e) => e.to_string(),
-        Ok(_) => panic!("a shadowed template property was accepted"),
-    };
+    let error = refused(&base, &mods)
+        .unwrap_or_else(|| panic!("a shadowed template property was accepted"));
     assert!(error.contains("axis is already on"), "{error}");
     fs::remove_dir_all(&base).unwrap();
     fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
@@ -3384,10 +3451,8 @@ fn content_block_state_properties_are_validated() {
         &[r#"{"template":"minecraft:test",
              "state_properties":{"lit":{"type":"boolean"}},"default_state":{"lit":"maybe"}}"#],
     );
-    let error = match Plan::new(&base, &mods) {
-        Err(e) => e.to_string(),
-        Ok(_) => panic!("a default outside a property's values was accepted"),
-    };
+    let error = refused(&base, &mods)
+        .unwrap_or_else(|| panic!("a default outside a property's values was accepted"));
     assert!(error.contains("is not one of its values"), "{error}");
     fs::remove_dir_all(&base).unwrap();
     fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
@@ -3402,10 +3467,8 @@ fn content_block_state_properties_are_validated() {
         declared.join(",")
     );
     let (base, mods) = block_base("block-too-many", &[&declaration]);
-    let error = match Plan::new(&base, &mods) {
-        Err(e) => e.to_string(),
-        Ok(_) => panic!("more states than a world holds were accepted"),
-    };
+    let error = refused(&base, &mods)
+        .unwrap_or_else(|| panic!("more states than a world holds were accepted"));
     assert!(
         error.contains("more than the") && error.contains("world can hold"),
         "{error}"
@@ -4696,4 +4759,12 @@ fn a_symlink_file_is_copied_through() {
     assert!(!fs::symlink_metadata(&at).unwrap().file_type().is_symlink());
     assert_eq!(fs::read(&at).unwrap(), b"real");
     let _ = fs::remove_dir_all(&scratch);
+}
+
+/// Why a plan refuses a declaration: its error, or the first block it left out.
+fn refused(base: &Path, mods: &[ContentMod]) -> Option<String> {
+    match Plan::new(base, mods) {
+        Err(e) => Some(e.to_string()),
+        Ok(plan) => plan.skipped.first().cloned(),
+    }
 }

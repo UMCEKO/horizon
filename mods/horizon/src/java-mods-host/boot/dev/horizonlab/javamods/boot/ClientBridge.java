@@ -101,6 +101,7 @@ public final class ClientBridge {
         WorldFrame.decide();
         NativeSounds.decide();
         Shells.install();
+        HudLayers.install(net.neoforged.neoforge.common.NeoForge.EVENT_BUS);
         CreativeTabs.install();
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.LOWEST, true,
                 net.neoforged.neoforge.client.event.InputEvent.MouseScrollingEvent.class, event -> scrollCanceled = event.isCanceled());
@@ -179,7 +180,7 @@ public final class ClientBridge {
         OPS.put("client_leave", in -> leave());
         OPS.put("client_models_probe", in -> modelsProbe());
         OPS.put("client_resources", in -> ClientResources.export());
-        OPS.put("client_baked", in -> ClientResources.baked());
+        OPS.put("client_baked", in -> ClientResources.baked(java.nio.file.Path.of(new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8))));
         OPS.put("client_keys", in -> ModKeyMappings.export());
         OPS.put("client_keys_apply", in -> ModKeyMappings.apply(in));
         OPS.put("client_models_take", in -> Minecraft.getInstance().level == null ? new byte[0] : ClientModels.take(Minecraft.getInstance().level));
@@ -546,14 +547,21 @@ public final class ClientBridge {
     /** The recording of the mods' HUD layers with the timer's frame timing. */
     private static byte[] record(Minecraft minecraft, net.minecraft.client.DeltaTracker delta) throws IOException {
         var recorder = new Recorder();
-        if (minecraft.player != null && minecraft.level != null) {
-            int x = (int) minecraft.mouseHandler.getScaledXPos(minecraft.getWindow());
-            int y = (int) minecraft.mouseHandler.getScaledYPos(minecraft.getWindow());
-            var graphics = new GuiGraphicsExtractor(minecraft, recorder, x, y);
-            minecraft.gui.hud.extractRenderState(graphics, delta);
-            graphics.extractDeferredElements(x, y, delta.getGameTimeDeltaPartialTick(false));
+        var hud = minecraft.gui.hud;
+        HudLayers.begin(recorder, () -> hud.leftHeight, () -> hud.rightHeight);
+        try {
+            if (minecraft.player != null && minecraft.level != null) {
+                int x = (int) minecraft.mouseHandler.getScaledXPos(minecraft.getWindow());
+                int y = (int) minecraft.mouseHandler.getScaledYPos(minecraft.getWindow());
+                var graphics = new GuiGraphicsExtractor(minecraft, recorder, x, y);
+                hud.extractRenderState(graphics, delta);
+                graphics.extractDeferredElements(x, y, delta.getGameTimeDeltaPartialTick(false));
+            }
+        } catch (Throwable t) {
+            HudLayers.finish();
+            throw t;
         }
-        return recorder.bytes();
+        return HudLayers.finish();
     }
 
     /** True while the HUD is changing: the window also records frames with their own timing, between the tick's recordings. */
@@ -1008,7 +1016,7 @@ public final class ClientBridge {
         if (minecraft.gui.screen().width != guiWidth || minecraft.gui.screen().height != guiHeight) minecraft.gui.screen().resize(guiWidth, guiHeight);
         var segments = Shells.record(minecraft, (int) minecraft.mouseHandler.getScaledXPos(minecraft.getWindow()), (int) minecraft.mouseHandler.getScaledYPos(minecraft.getWindow()), partial);
         if (segments == null) return;
-        shellChanged = Shells.noteRecorded(segments, timer(minecraft).getRealtimeDeltaTicks());
+        shellChanged = Shells.noteRecorded(segments, Shells.routed, timer(minecraft).getRealtimeDeltaTicks());
         shellSegments = segments;
     }
 

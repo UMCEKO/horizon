@@ -1170,8 +1170,8 @@ impl Game<'_> {
 
     // ---- drawing ----
 
-    /// The book button, ghost recipe and the open book.
-    pub(super) fn draw_recipe_book(&mut self, batch: &mut HudBatch) {
+    /// The book button, a widget of the screen.
+    pub(super) fn draw_recipe_book_button(&mut self, batch: &mut HudBatch) {
         let Some(book_type) = self.active_book() else {
             return;
         };
@@ -1193,12 +1193,35 @@ impl Game<'_> {
             bx,
             by,
         );
+    }
+    /// The ghost recipe and the open book; returns the book's hover tooltip, drawn by its own step.
+    pub(super) fn draw_recipe_book_panel(
+        &mut self,
+        batch: &mut HudBatch,
+    ) -> Option<Vec<(horizon_client::text::Text, u32)>> {
+        let book_type = self.active_book()?;
         self.draw_ghost(batch, book_type);
-        if self.book_open(book_type) {
+        let (ox, _) = self.inventory_origin(batch);
+        let (bx, by) = self.book_button_pos(book_type, ox, batch);
+        let tooltip = if self.book_open(book_type) {
             self.refresh_book_view(book_type);
-            self.draw_book_panel(batch, book_type);
-        }
+            self.draw_book_panel(batch, book_type)
+        } else {
+            None
+        };
         self.narrate_recipe_book(batch, book_type, [bx, by, 20.0, 18.0]);
+        tooltip
+    }
+    /// `RecipeBookComponent.extractTooltip`.
+    pub(super) fn draw_recipe_book_tooltip(
+        &mut self,
+        batch: &mut HudBatch,
+        tooltip: Option<Vec<(horizon_client::text::Text, u32)>>,
+    ) {
+        if let Some(lines) = tooltip {
+            let cursor = self.cursor;
+            self.draw_tooltip_lines(batch, &lines, cursor.0, cursor.1);
+        }
     }
     /// `AbstractRecipeBookScreen`'s narratables: the book button (an
     /// `ImageButton` without a message) and the `RecipeBookComponent`, which
@@ -1336,9 +1359,13 @@ impl Game<'_> {
             .find(|g| g.slot == slot && !g.items.is_empty())?;
         Some(ghost.items[self.swap_index() % ghost.items.len()].clone())
     }
-    /// `RecipeBookComponent.extractRenderState` and `extractTooltip`, laid
-    /// out by `horizon_client::recipe_book_screen`.
-    fn draw_book_panel(&mut self, batch: &mut HudBatch, book_type: BookType) {
+    /// `RecipeBookComponent.extractRenderState`, laid out by
+    /// `horizon_client::recipe_book_screen`; returns its tooltip.
+    fn draw_book_panel(
+        &mut self,
+        batch: &mut HudBatch,
+        book_type: BookType,
+    ) -> Option<Vec<(horizon_client::text::Text, u32)>> {
         let (xo, yo) = self.book_origin(batch);
         let cursor = self.cursor;
         let atlas = &self.gui.atlas;
@@ -1454,9 +1481,7 @@ impl Game<'_> {
         }
         self.recipe_ui.tab_anim.retain(|e| e.1 > 0.0);
         self.recipe_ui.button_anim.retain(|e| e.1 > 0.0);
-        if let Some(lines) = tooltip {
-            self.draw_tooltip_lines(batch, &lines, cursor.0, cursor.1);
-        }
+        tooltip
     }
     /// Paints recipe book calls; returns the first tooltip set (vanilla keeps
     /// the first one a frame asks for).

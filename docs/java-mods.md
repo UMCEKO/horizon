@@ -191,7 +191,7 @@ no JVM, which is the baseline to measure against. `HORIZON_JAVA_MODS_DIR=DIR` bu
 runs) from `DIR` instead of `.local/java-mods`, to try a Java change without touching the jars other runs use.
 
 The JVM's memory is set in `create_vm` (`MEMORY` in `crates/horizon-java-host/src/lib.rs`), as a pack's launcher sets it: a
-640 MB heap, before the run's own arguments, so a `jvm -Xmx...` line in
+640 MB heap with compact object headers (`-XX:+UseCompactObjectHeaders`, JEP 519: about 8% less live heap), before the run's own arguments, so a `jvm -Xmx...` line in
 `horizon-java.args` or `HORIZON_JAVA_OPTS` overrides it. Measured with Mekanism and AE2 on a fresh world: about 270 MB of
 live heap, 140 MB of metaspace and 1.0 GB for the whole JVM. Without a cap G1 grew the heap to 2.4 GB while the server's
 data packs loaded: mods' jars are zip packs, and vanilla's `FilePackResources.listResources` walks every entry of the jar on

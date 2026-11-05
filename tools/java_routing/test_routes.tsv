@@ -1,0 +1,3 @@
+# routes the test mod patches that no reference pack lists
+net/minecraft/world/entity/player/Inventory#setSelectedSlot(I)V
+net/minecraft/world/entity/player/Inventory#getFreeSlot()I

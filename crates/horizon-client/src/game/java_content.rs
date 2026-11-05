@@ -12,11 +12,12 @@ use std::{
 };
 
 /// Bumped when carry writes something else from the same facts.
-const GENERATION: u32 = 2;
+const GENERATION: u32 = 3;
 const DONE: &str = "done";
 const FACTS_HASH: &str = "facts.sha256";
 const KEYS: &str = "keys.tsv";
 const ENTITIES: &str = "entities.bin";
+const ROUTES: &str = "routes.bin";
 const ENTITY_TYPES: &str = "entity-types.bin";
 
 static CARRIED: OnceLock<Vec<PathBuf>> = OnceLock::new();
@@ -134,12 +135,14 @@ fn verify(run: &Path, resources: &Path, at: &Path, next: &Path) {
     };
     refresh_keys(&host.keys(), &at.join(KEYS));
     refresh_file(&host.entity_facts(), &at.join(ENTITIES));
+    refresh_file(&host.routes_file(), &at.join(ROUTES));
     let cached = fs::read_to_string(at.join(FACTS_HASH)).unwrap_or_default();
     if live == cached.trim() {
         let _ = fs::remove_file(host.facts());
         let _ = fs::remove_file(host.baked());
         let _ = fs::remove_file(host.keys());
         let _ = fs::remove_file(host.entity_facts());
+        let _ = fs::remove_file(host.routes_file());
         return;
     }
     let warning = "Horizon: WARNING: the Java mods registered other blocks or items than the cached content was built from; this run's tables don't match them, and the next launch uses rebuilt ones";
@@ -185,6 +188,11 @@ fn generate(
         if analysed.exists() {
             fs::copy(&analysed, partial.join(ENTITIES))
                 .map_err(|e| format!("{}: {e}", analysed.display()))?;
+        }
+        let routed = host.routes_file();
+        if routed.exists() {
+            fs::copy(&routed, partial.join(ROUTES))
+                .map_err(|e| format!("{}: {e}", routed.display()))?;
         }
     }
     fs::write(partial.join(FACTS_HASH), boot_hash(&kept, &kept_baked)?)
@@ -367,6 +375,10 @@ fn fingerprint_of(
     {
         hash.update(b"analysis\n");
         hash.update(fs::read(analysis).unwrap_or_default());
+        hash.update(b"routing\n");
+        hash.update(
+            fs::read(Path::new(analysis).with_file_name("routing.json")).unwrap_or_default(),
+        );
     }
     for config in configs {
         hash.update(config);

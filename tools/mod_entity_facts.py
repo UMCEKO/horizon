@@ -251,37 +251,44 @@ def subjects(listeners):
 # State groups of the methods mod code calls
 
 GROUP_NAMES = {
-    'identity': 'getId setId getUUID getType typeHolder hashCode is',
-    'name': 'getName getDisplayName hasCustomName getCustomName setCustomName setCustomNameVisible',
+    'identity': 'getId setId getUUID getType typeHolder hashCode is equals asLivingEntity setUUID',
+    'name': 'getName getDisplayName hasCustomName getCustomName setCustomName setCustomNameVisible entityTags',
     'position': ('blockPosition getBoundingBox getBbHeight getBbWidth getBlockY getEyePosition getLookAngle getViewVector getLightProbePosition getEyeY getOnPos getX getY getZ '
                  'getXRot getYRot getYHeadRot oldPosition position setPos setXRot setYRot setYBodyRot setYHeadRot setOldPos setOldPosAndRot snapTo absSnapTo teleport '
-                 'teleportTo distanceTo distanceToSqr makeBoundingBox'),
-    'motion': 'getDeltaMovement setDeltaMovement move knockback shootFromRotation',
-    'health': 'thunderHit getHealth setHealth getMaxHealth isAlive getAbsorptionAmount hurt hurtServer actuallyHurt isInvulnerableTo isInvulnerableToBase',
-    'effects': 'getActiveEffects',
+                 'teleportTo distanceTo distanceToSqr makeBoundingBox getDimensions getDirection BlockAttachedEntity#getPos canCoexist getEyeHeight getVisualRotationYInDegrees setInitialPos setStartPos syncPacketPositionCodec'),
+    'motion': 'getDeltaMovement setDeltaMovement move knockback shootFromRotation lerpMotion onInsideBubbleColumn resetFallDistance makeStuckInBlock',
+    'health': 'thunderHit getHealth setHealth getMaxHealth isAlive getAbsorptionAmount hurt hurtServer actuallyHurt isInvulnerableTo isInvulnerableToBase getInvulnerableTime isInvulnerable markHurt getLastHurtByMob heal',
+    'effects': 'getActiveEffects addEffect getEffect hasEffect removeAllEffects',
     'air': 'getAirSupply setAirSupply getMaxAirSupply',
-    'equipment': ('getItemBySlot hasItemInSlot getMainHandItem getOffhandItem getItemBlockingWith getUsedItemHand releaseUsingItem setItemSlot getBodyArmorItem getMainArm'),
+    'equipment': ('getItemBySlot hasItemInSlot getMainHandItem getOffhandItem getItemBlockingWith getUsedItemHand releaseUsingItem setItemSlot getBodyArmorItem getMainArm getUseItem getUseItemRemainingTicks stopUsingItem setItemInHand setDropChance getItemInHand'),
     'fire': 'isOnFire getRemainingFireTicks setRemainingFireTicks igniteForSeconds igniteForTicks fireImmune',
     'flags': ('onGround getPose isInWater isInvisible isInvisibleTo isSpectator isPickable isFullyFrozen setSilent getFluidInteraction shouldTakeDrowningDamage '
-              'canBeRiddenUnderFluidType canDrownInFluidType'),
-    'item': 'ItemEntity#getItem ItemFrame#getItem setItem hasPickUpDelay setPickUpDelay setNoPickUpDelay setDefaultPickUpDelay ItemEntity#setTarget makeFakeItem',
-    'riding': 'getVehicle getPassengers getIndirectPassengers hasPassenger isPassenger getControllingPassenger startRiding stopRiding',
-    'removal': 'isRemoved remove discard setRemoved',
+              'canBeRiddenUnderFluidType canDrownInFluidType isCrouching isShiftKeyDown isSprinting isNoGravity setNoGravity isInLava isFallFlying setOnGround'),
+    'item': 'ItemEntity#getItem ItemFrame#getItem setItem hasPickUpDelay setPickUpDelay setNoPickUpDelay setDefaultPickUpDelay ItemEntity#setTarget makeFakeItem getFrameItemStack dropItem ItemFrame#getRotation ItemFrame#setRotation setThrower setUnlimitedLifetime',
+    'riding': 'getVehicle getPassengers getIndirectPassengers hasPassenger isPassenger getControllingPassenger startRiding stopRiding getRootVehicle getControlledVehicle isVehicle ejectPassengers onPassengerTurned showVehicleHealth dropLeash getLeashHolder isLeashed setLeashedTo',
+    'removal': 'isRemoved remove discard setRemoved kill',
     'species': ('Entity#get Sheep#getColor Sheep#setColor isSheared isBaby isAgeLocked getAge getTicksLeftUntilAdult isInLove isSitting isInSittingPose isAngry isCamelSitting isConverting '
                 'isCreepy isPlayingDead isPowered isSaddled isScreamingGoat hasLeftHorn hasRightHorn hasNectar getCarriedBlock getMarkings getState getStrength getSwelling '
                 'getVariant getVillagerData getWeatherState getOffers getSize isSleeping getDescription getSpawner setBaseDamage setFuse getFuse setBlockState getBlockState '
-                'getItemStack getOwner setOwner setDamage setVisualOnly'),
+                'getItemStack getOwner setOwner setDamage setVisualOnly ExperienceOrb#getValue ExperienceOrb#setValue getEntityData AbstractMinecartContainer#getItem getContainerLootTable getContainerLootTableSeed setLootTable getStingerCount setStingerCount getSpawnType getOwnerReference isOrderedToSit setTamed isDancing setDancing startConverting stopSleeping getCurrentRaid'),
     'attributes': 'getAttribute getAttributeBaseValue getAttributeValue getAttributes getArmorValue',
     'ai': 'setNoActionTime getNavigation getBrain getLookControl getPathfindingMalus setPathfindingMalus getMaxHeadXRot',
-    'java': 'getData setData getCapability syncData',
+    'all': 'save load',
+    'java': 'getData setData getCapability syncData hasData removeData getPersistentData getExistingDataOrNull',
     'pure': ('level registryAccess damageSources getRandom gameEvent playSound canTeleport canUsePortal canHitEntity updateFluidInteraction getLootTable getPickResult '
              'getParts isMultipartEntity shearOffAllLeashConnections tick baseTick explode onHit onHitBlock registerGoals readAdditionalSaveData addAdditionalSaveData '
              'defineSynchedData populateDefaultEquipmentSlots triggerOnDeathMobEffects sendEffectToPassengers refreshDirtyAttributes take spawnLingeringCloud getArrow '
-             'getSoundSource onAddedToLevel onRemovedFromLevel onClientRemoval'),
+             'getSoundSource onAddedToLevel onRemovedFromLevel onClientRemoval Container#getContainerSize MinecartChest#getContainerSize setChanged getPistonPushReaction spawnAtLocation startSeenByPlayer getRemoveItemSound getRotateItemSound onEquippedItemBroken playAmbientSound'),
 }
 GROUPS = {name: group for group, names in GROUP_NAMES.items() for name in names.split()}
-EXTRA_WRITERS = ('move', 'shootFromRotation', 'releaseUsingItem', 'makeFakeItem', 'actuallyHurt', 'thunderHit')
-NOT_WRITERS = ('addAdditionalSaveData', 'removeWhenFarAway', 'hurtServerCheck')
+EXTRA_WRITERS = ('makeStuckInBlock', 'ejectPassengers', 'dropItem', 'dropLeash', 'load', 'lerpMotion', 'markHurt', 'onInsideBubbleColumn', 'onPassengerTurned', 'startConverting',
+                 'stopSleeping', 'stopUsingItem', 'syncPacketPositionCodec', 'move', 'shootFromRotation', 'releaseUsingItem', 'makeFakeItem', 'actuallyHurt', 'thunderHit')
+NOT_WRITERS = ('setChanged', 'addAdditionalSaveData', 'removeWhenFarAway', 'hurtServerCheck')
+
+
+def carried(group):
+    """The state groups a method of this group needs in a view: `all` (whole-entity save and load) needs every one."""
+    return STATE_GROUPS if group == 'all' else (group,)
 
 
 def classify(owner, name):
@@ -494,7 +501,7 @@ def hook_closure(hier, key, events=None, unclassified=None):
                             unclassified[f'{ekey.split("#")[0]}#{cname}'] = 'neoforge'
                         else:
                             if hit[0] not in UNCARRIED:
-                                reads.add(hit[0])
+                                reads.update(carried(hit[0]))
                             if hit[1]:
                                 writes[(ekey, callee, hit[0])] = True
                 elif callee.startswith(FOLLOWED) and not callee.startswith(NOT_FOLLOWED):
@@ -604,7 +611,7 @@ def analyse(classes, archives, hier, entries, result):
                     else:
                         group, write = hit
                         if group not in UNCARRIED:
-                            reads[owner].add(group)
+                            reads[owner].update(carried(group))
                         if write:
                             writers.setdefault((key, owner, group), set()).add(mod)
             if 'code' in m and CAPS_EVENT.encode() in raw:

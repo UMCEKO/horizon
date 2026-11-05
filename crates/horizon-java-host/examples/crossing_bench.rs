@@ -47,6 +47,34 @@ extern "system" fn back(_env: JNIEnv, _class: JClass, tag: jint) -> jint {
         .map_or(-1, i32::from_be_bytes)
 }
 
+/// The JVM's used heap in MB after a full GC, seen from the calling thread.
+fn live_mb(host: &Host) -> f64 {
+    let mut env = host.vm().attach_current_thread_permanently().unwrap();
+    env.call_static_method("java/lang/System", "gc", "()V", &[])
+        .unwrap();
+    let rt = env
+        .call_static_method(
+            "java/lang/Runtime",
+            "getRuntime",
+            "()Ljava/lang/Runtime;",
+            &[],
+        )
+        .unwrap()
+        .l()
+        .unwrap();
+    let total = env
+        .call_method(&rt, "totalMemory", "()J", &[])
+        .unwrap()
+        .j()
+        .unwrap();
+    let free = env
+        .call_method(&rt, "freeMemory", "()J", &[])
+        .unwrap()
+        .j()
+        .unwrap();
+    (total - free) as f64 / 1048576.0
+}
+
 fn median(options: &Options, n: usize, mut f: impl FnMut()) -> f64 {
     for _ in 0..n / 4 {
         f();
@@ -198,6 +226,23 @@ fn main() {
                     std::hint::black_box(host.request("bench_nested", &[0, 0, 0, 1, 0, 0, 0, 2]));
                 }),
             );
+            let route = |out: &mut horizon_java_host::wire::Out| {
+                out.int(0);
+                out.0.push(2);
+            };
+            report(
+                "bench_route (static no-op)",
+                median(&options, options.n, || {
+                    std::hint::black_box(
+                        host.call_with("bench_route", route, |reply| reply.byte()),
+                    );
+                }),
+            );
+            check(
+                host.call_with("bench_route", route, |reply| reply.byte()) == Some(0),
+                "a route op answers status 0",
+                &mut failures,
+            );
             let big = (1i32 << 20).to_be_bytes();
             report(
                 "overflow reply 1 MB",
@@ -261,6 +306,19 @@ fn main() {
                 host.request("bench_big", &big)
                     .is_some_and(|r| r.len() == 1 << 20),
                 "a 1 MB reply arrives whole",
+                &mut failures,
+            );
+            let huge = (17i32 << 20).to_be_bytes();
+            // The first one sizes this thread's reply buffer on the Java side; only the growth after it is a leak.
+            std::hint::black_box(host.request("bench_big", &huge));
+            let before = live_mb(host);
+            for _ in 0..8 {
+                std::hint::black_box(host.request("bench_big", &huge));
+            }
+            let grown = live_mb(host) - before;
+            check(
+                grown < 8.0,
+                &format!("8 overflowing replies of 17 MB leave the heap {grown:.1} MB higher"),
                 &mut failures,
             );
             let long = vec![9u8; 200_000];

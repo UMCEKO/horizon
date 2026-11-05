@@ -292,5 +292,20 @@ class Bytecode(unittest.TestCase):
         self.assertEqual(ef.slot_of_last('(La/B;)V', False), 1)
 
 
+class Classify(unittest.TestCase):
+    def test_methods_mods_call_on_the_showcase_pack_have_groups(self):
+        for owner, name, want in (('net/minecraft/world/entity/Entity', 'makeStuckInBlock', ('motion', True)),
+                                  ('net/minecraft/world/entity/Entity', 'getPersistentData', ('java', False)),
+                                  ('net/minecraft/world/entity/decoration/ItemFrame', 'setRotation', ('item', True)),
+                                  ('net/minecraft/world/entity/vehicle/minecart/AbstractMinecartContainer', 'getItem', ('species', False)),
+                                  ('net/minecraft/world/entity/vehicle/minecart/AbstractMinecartContainer', 'setChanged', ('pure', False)),
+                                  ('net/minecraft/world/entity/Entity', 'load', ('all', True))):
+            self.assertEqual(ef.classify(owner, name), want, name)
+
+    def test_whole_entity_save_and_load_need_every_group(self):
+        self.assertEqual(ef.carried('all'), ef.STATE_GROUPS)
+        self.assertEqual(ef.carried('air'), ('air',))
+
+
 if __name__ == '__main__':
     unittest.main()

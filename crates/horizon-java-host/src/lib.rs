@@ -3,6 +3,7 @@
 pub mod bridge;
 pub mod entity_facts;
 pub mod profile;
+pub mod routes;
 pub mod shapes;
 pub mod values_bench;
 pub mod wire;
@@ -37,7 +38,7 @@ extern "system" fn n_on_event(mut env: JNIEnv, _c: JClass, s: JString) {
 }
 
 /// The embedded JVM's memory, as a pack's launcher sets it: Rust holds the world, so Java keeps only mods' state (`docs/java-mods.md`).
-pub const MEMORY: &[&str] = &["-Xmx640m"];
+pub const MEMORY: &[&str] = &["-Xmx640m", "-XX:+UseCompactObjectHeaders"];
 
 /// The platform's classpath separator; the `cp` line of the args file uses it too.
 const CP_SEP: char = if cfg!(windows) { ';' } else { ':' };
@@ -103,6 +104,11 @@ pub fn register_natives(env: &mut JNIEnv) {
             name: "shapeFree".into(),
             sig: "(J)V".into(),
             fn_ptr: shapes::n_shape_free as *mut c_void,
+        },
+        NativeMethod {
+            name: "earlyNative".into(),
+            sig: "()Z".into(),
+            fn_ptr: bridge::n_route_early as *mut c_void,
         },
         NativeMethod {
             name: "link".into(),
@@ -343,11 +349,8 @@ fn boot(run_dir: &str) -> Result<Host, String> {
         .ok_or("the mods' items didn't list")?;
     host.items = Items::read(&list).ok_or("the mods' item list ended early")?;
     host.client_resources = host.request("client_resources", &[]).unwrap_or_default();
-    let baked = host.request("client_baked", &[]).unwrap_or_default();
-    if !baked.is_empty() {
-        std::fs::write(host.baked(), baked)
-            .map_err(|e| format!("{}: {e}", host.baked().display()))?;
-    }
+    let baked = host.baked();
+    host.request("client_baked", baked.to_string_lossy().as_bytes());
     let keys = host.request("client_keys", &[]).unwrap_or_default();
     if !keys.is_empty() {
         std::fs::write(host.keys(), keys).map_err(|e| format!("{}: {e}", host.keys().display()))?;
@@ -359,6 +362,12 @@ fn boot(run_dir: &str) -> Result<Host, String> {
         );
         std::fs::write(host.entity_facts(), analysed)
             .map_err(|e| format!("{}: {e}", host.entity_facts().display()))?;
+    }
+    let routed = host.request("routes_bin", &[]).unwrap_or_default();
+    if !routed.is_empty() {
+        routes::set(routes::Routes::read(&routed).map_err(|e| format!("routes.bin: {e}"))?);
+        std::fs::write(host.routes_file(), routed)
+            .map_err(|e| format!("{}: {e}", host.routes_file().display()))?;
     }
     println!(
         "Horizon: Java mods ready in {exported:.1}s (mods {booted:.1}s, data {:.1}s, facts {:.1}s), {} items",
@@ -428,6 +437,11 @@ impl Host {
     /// Where the boot writes `entities.bin`, the install's entity analysis confirmed against the booted mods (absent without an analysis).
     pub fn entity_facts(&self) -> PathBuf {
         self.facts.with_extension("entities.bin")
+    }
+
+    /// Where the boot writes `routes.bin`, the install's routing confirmed against the booted mods (absent without an analysis).
+    pub fn routes_file(&self) -> PathBuf {
+        self.facts.with_extension("routes.bin")
     }
 
     /// Loads the entity types' classes, once the first server has started: from `cached` when it exists, else built by Java on a view level and kept there.
@@ -664,7 +678,7 @@ impl Host {
             let _ = env.exception_clear();
             return None;
         }
-        match n {
+        let result = match n {
             // SAFETY: Java wrote `n` bytes to the arena's start, and a request nested in `read` uses the next level's.
             1.. => read(unsafe { std::slice::from_raw_parts(address, n as usize) }),
             OVERFLOW => {
@@ -675,7 +689,21 @@ impl Host {
                 read(&reply)
             }
             _ => None,
-        }
+        };
+        self.shrink(&mut env, level);
+        result
+    }
+
+    /// Gives back a large arena of this level once its request is read, so one big call doesn't pin native memory for the thread's life.
+    fn shrink(&self, env: &mut JNIEnv, level: usize) {
+        CROSSING.with_borrow_mut(|c| {
+            if let Some(slot) = c.arenas.get_mut(level)
+                && capacity_after(slot.capacity) != slot.capacity
+                && let Some(small) = self.entry.new_arena(env, ARENA)
+            {
+                *slot = small;
+            }
+        });
     }
 }
 
@@ -745,7 +773,11 @@ impl Entry {
         }
         .and_then(|reply| reply.l())
         .ok()?;
-        env.convert_byte_array(JByteArray::from(reply)).ok()
+        let reply = JByteArray::from(reply);
+        let bytes = env.convert_byte_array(&reply).ok();
+        // A permanently attached thread has no Java frame to free it.
+        let _ = env.delete_local_ref(reply);
+        bytes
     }
 }
 
@@ -773,6 +805,18 @@ thread_local! {
         RefCell::new(Crossing { arenas: Vec::new(), scratch: Vec::new(), attached: None })
     };
     static DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Arenas up to this size are kept for reuse; a larger one is replaced by a default one after its request.
+const ARENA_KEEP: usize = 1 << 20;
+
+/// What a held arena of `capacity` shrinks to once its request is done.
+fn capacity_after(capacity: usize) -> usize {
+    if capacity > ARENA_KEEP {
+        ARENA
+    } else {
+        capacity
+    }
 }
 
 /// An arena's size for a request or reply of `need` bytes: a power of two, so growth is rare.
@@ -826,6 +870,9 @@ mod tests {
         assert_eq!(capacity_for(ARENA + 1), ARENA * 2);
         assert_eq!(capacity_for(1 << 20), 1 << 20);
         assert_eq!(capacity_for((1 << 20) + 1), 1 << 21);
+        assert!(capacity_after(capacity_for(10 << 20)) <= 1 << 20);
+        assert_eq!(capacity_after(capacity_for(1 << 20)), 1 << 20);
+        assert_eq!(capacity_after(capacity_for(1000)), ARENA);
     }
 
     #[test]
