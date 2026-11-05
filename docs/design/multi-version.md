@@ -80,6 +80,11 @@ pub const ZOMBIE_FIRE_CHANCE: Versioned<f32> = versions! {
 pinned version named in its own arm. Adding an older version needs no edit where it behaves like the newest arm
 covering it; where it doesn't, the arm splits (`V26_2 => …, ..=V26_1_2 => …`).
 
+**Editor support is a requirement.** Version names are real constants, `versions!` arms are real expressions and
+`#[versioned]` passes bodies through with their spans, so completion, hover and go-to-definition work everywhere
+code is typed; arm targets resolve to the copies. On unfinished input both macros emit the item unchanged plus a
+`compile_error!`, so the editor keeps working mid-edit. A rust-analyzer fixture test guards this.
+
 ## What stays shared
 
 Everything else: the renderer, chunk storage, meshing, light, streaming, the world generator's machinery, entity
