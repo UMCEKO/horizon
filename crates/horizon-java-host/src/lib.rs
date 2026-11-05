@@ -3,6 +3,7 @@
 pub mod bridge;
 pub mod entity_facts;
 pub mod profile;
+pub mod routes;
 pub mod shapes;
 pub mod values_bench;
 pub mod wire;
@@ -103,6 +104,11 @@ pub fn register_natives(env: &mut JNIEnv) {
             name: "shapeFree".into(),
             sig: "(J)V".into(),
             fn_ptr: shapes::n_shape_free as *mut c_void,
+        },
+        NativeMethod {
+            name: "earlyNative".into(),
+            sig: "()Z".into(),
+            fn_ptr: bridge::n_route_early as *mut c_void,
         },
         NativeMethod {
             name: "link".into(),
@@ -360,6 +366,12 @@ fn boot(run_dir: &str) -> Result<Host, String> {
         std::fs::write(host.entity_facts(), analysed)
             .map_err(|e| format!("{}: {e}", host.entity_facts().display()))?;
     }
+    let routed = host.request("routes_bin", &[]).unwrap_or_default();
+    if !routed.is_empty() {
+        routes::set(routes::Routes::read(&routed).map_err(|e| format!("routes.bin: {e}"))?);
+        std::fs::write(host.routes_file(), routed)
+            .map_err(|e| format!("{}: {e}", host.routes_file().display()))?;
+    }
     println!(
         "Horizon: Java mods ready in {exported:.1}s (mods {booted:.1}s, data {:.1}s, facts {:.1}s), {} items",
         prepared - booted,
@@ -428,6 +440,11 @@ impl Host {
     /// Where the boot writes `entities.bin`, the install's entity analysis confirmed against the booted mods (absent without an analysis).
     pub fn entity_facts(&self) -> PathBuf {
         self.facts.with_extension("entities.bin")
+    }
+
+    /// Where the boot writes `routes.bin`, the install's routing confirmed against the booted mods (absent without an analysis).
+    pub fn routes_file(&self) -> PathBuf {
+        self.facts.with_extension("routes.bin")
     }
 
     /// Loads the entity types' classes, once the first server has started: from `cached` when it exists, else built by Java on a view level and kept there.

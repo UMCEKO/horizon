@@ -86,7 +86,7 @@ def build(java_only=False):
 def unit():
     """The host's Java unit checks (`unit/**/*Check.java`): plain JVMs over the built classes, no boot."""
     cp = ':'.join(jar for jar in oracle.client_classpath(oracle.client()[0]).split(':') if 'installertools' not in jar)
-    built = f"{JARS / 'classes' / 'boot'}:{JARS / 'classes' / 'host'}"
+    built = f"{JARS / 'classes' / 'boot'}:{JARS / 'classes' / 'host'}:{JARS / 'classes' / 'plugin'}"
     classes = JARS / 'classes' / 'unit'
     shutil.rmtree(classes, ignore_errors=True)
     classes.mkdir(parents=True)

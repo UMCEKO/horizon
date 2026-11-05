@@ -76,6 +76,7 @@ public final class Boot {
         if (FMLEnvironment.getDist().isClient()) Animate.route();
         SoundOwners.load();
         EntityFacts.confirm();
+        Routing.confirm();
         Runtime.getRuntime().addShutdownHook(new Thread(Boot::exiting, "Horizon exit report"));
         Host.gameLoader = Boot.class.getClassLoader();
         Host.serverGroup = net.neoforged.fml.util.thread.SidedThreadGroups.SERVER;
