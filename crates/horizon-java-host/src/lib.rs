@@ -795,7 +795,11 @@ const ARENA_KEEP: usize = 1 << 20;
 
 /// What a held arena of `capacity` shrinks to once its request is done.
 fn capacity_after(capacity: usize) -> usize {
-    if capacity > ARENA_KEEP { ARENA } else { capacity }
+    if capacity > ARENA_KEEP {
+        ARENA
+    } else {
+        capacity
+    }
 }
 
 /// An arena's size for a request or reply of `need` bytes: a power of two, so growth is rare.
