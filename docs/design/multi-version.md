@@ -20,10 +20,10 @@ it is; obfuscated versions (before 26.1); world downgrades.
 
 ## How versions coexist
 
-**The version is chosen once, at startup.** The launcher passes it as `HORIZON_MC_VERSION` (unset means the pin).
-The game reads it into a `VersionProfile` in `horizon-core`, a `OnceLock` set before anything else runs: the
-version's facts (protocol, data version, pack formats) and its order among the supported versions. There is no
-other way to ask which version runs; changing version means restarting the game.
+**The version is chosen when the game is compiled.** A build reads `HORIZON_MC_VERSION` (unset means the pin) into a
+`const MC: McVersion` in `horizon-core`, with that version's facts (protocol, data version, pack formats). Each
+supported version is its own binary; the launcher installs and starts the one an instance needs. Nothing asks
+the version at runtime, so a 26.3 build is the same machine code it would be without multi-version support.
 
 **Prepared data per version.** `horizon-prepare` already builds `.local/horizon-client/26.3` from the player's own
 26.3 install. It builds `horizon-client/26.2` the same way from the player's own 26.2 install. Registries, tags,
@@ -52,8 +52,10 @@ pub(super) fn hurt_entities(level: &mut Level) {
 }
 ```
 
-- `#[versioned]` picks the function once at startup from `VersionProfile` (a dispatch table, not a branch per call),
-  so the 26.3 body never contains another version's code.
+- `#[versioned]` expands to the selected arm only: in a 26.3 build, the function exactly as written; in a 26.2
+  build, a direct, inlinable call to the copy. No wrapper, table or branch exists in any build.
+- Copies are compiled and type-checked in every build, and only called in their own version's, so the editor and
+  26.3 CI cover them; the linker drops them from other builds.
 - A copy is a child module of the file it replaces (`explosion.rs` declares `mod v26_2;`), so it reaches the parent's
   private helpers and nothing else can call it. Callers never change: they call the 26.3 fn, which routes.
 - Deleting a version deletes its `v26_2.rs` files, their `mod` lines and their `..=V26_2 =>` arms.
@@ -67,7 +69,7 @@ pub(super) fn hurt_entities(level: &mut Level) {
   `research-lock.json` (the pin, then older versions newest first), never a parse of the version string.
 
 **Protocol tables per version.** Packet ids, registry ids and entity-data layouts differ between versions. They come
-from generated tables per version, selected through `VersionProfile` when the connection starts, not from `if`s in
+from generated tables per version, selected by the build's version, not from `if`s in
 codecs. Packets whose fields changed get a codec per version range.
 
 **Data first.** A constant, threshold or table that differs becomes a per-version value, never an `if`:
@@ -93,8 +95,8 @@ code is typed; arm targets resolve to the copies. On unfinished input both macro
 
 Everything else: the renderer, chunk storage, meshing, light, streaming, the world generator's machinery, entity
 physics, the server thread, LAN and the dedicated server, the launcher, the UI and mods. An older version is the same
-engine running different data, plus per-version copies of the functions whose logic differs. There is one branch, one build and one
-binary per platform.
+engine running different data, plus per-version copies of the functions whose logic differs. There is one branch; each supported version is
+one build, one binary per platform.
 
 ## What it costs a 26.3-only player
 
@@ -103,10 +105,10 @@ Nothing:
 - **No download, no extra data.** Older versions are never bundled. The first time a player picks 26.2 in the
   launcher, it prepares 26.2 from that version's own install in the player's Minecraft launcher, as it prepares
   26.3 today. Horizon still never downloads the game.
-- **No allocation, thread or file read** when the version is the pin. Per-version tables for older versions are
-  only loaded when that version is selected.
-- **No change to the 26.3 code path.** Every 26.3 function keeps its body byte-identical to main (checked, below);
-  the version is chosen once at startup, never branched on per call.
+- **No allocation, thread, file read or branch.** Older versions' arms and tables are not in a 26.3 binary's code
+  path at all.
+- **No change to the 26.3 code path.** Every 26.3 function keeps its body byte-identical to main, and CI compares
+  the 26.3 build's generated code for versioned functions and their callers against main (below).
 - **No new choice.** The picker only offers versions the player has installed; 26.3 stays the default.
 
 ## How 26.3 stays safe
@@ -114,6 +116,10 @@ Nothing:
 - **26.3 harnesses unchanged and passing.** A backport PR never edits a 26.3 harness's expected output.
 - **26.3 bodies unchanged.** `version_lint.py --pinned-unchanged` checks in CI that a backport PR adds only
   `#[versioned]` lines and `v<version>/` modules, and every `#[versioned]` fn's body matches `origin/main`.
+- **Same machine code.** CI builds the 26.3 binary from the branch and from `origin/main` and compares the
+  generated code of every versioned function and its callers, plus a tick benchmark; any difference fails the PR.
+- **Per-version CI.** Older versions build as their own binaries (their own target folder), and only harnesses that
+  declare a version run on that build.
 - **Version-constant lint.** `tools/version_lint.py` flags protocol and data version numbers, pack formats, version
   strings, `.local/.../26.3` paths, tables in registry order and numeric id constants written outside the generated
   `version.rs`, the older-server adapter and the datafixer. It lands with a baseline of what main has today, so it
@@ -197,7 +203,7 @@ of ~20 batches measures how often the reviewer disagrees, and the table is tight
   *done* when it has no `unreviewed` or `todo` rows and every harness that declares it passes.
 - **Tier 2: 26.1.2,** the same way. Rows whose 26.1.2 body is the same as 26.2's take 26.2's verdict and code.
 
-Each tier lands as small batch PRs and is usable on its own. The game's `VersionProfile`, the protocol tables and
+Each tier lands as small batch PRs and is usable on its own. The per-version builds and releases, the protocol tables and
 the launcher's picker are product PRs of Tier 1, each with its own issue.
 
 ### Tooling PRs
