@@ -97,6 +97,10 @@ public final class Routing {
         var edgeFlags = new boolean[ordered.size()];
         boolean server = !net.neoforged.fml.loading.FMLEnvironment.getDist().isClient();
         int id = 0, on = 0, dropped = 0;
+        var modOf = new java.util.HashMap<String, String>();
+        for (var r : ordered.values()) {
+            for (JsonElement c : r.getAsJsonArray("changes")) modOf.put(c.getAsJsonObject().get("mixin").getAsString(), c.getAsJsonObject().get("mod").getAsString());
+        }
         for (var e : ordered.entrySet()) {
             String key = e.getKey();
             JsonObject route = e.getValue();
@@ -123,6 +127,10 @@ public final class Routing {
                     dropped++;
                     System.err.println("Horizon: route " + key + ": " + change.get("mod").getAsString() + " " + mixin + "." + handler + " didn't apply (a config plugin, require = 0 or an unloaded target)");
                 }
+            }
+            if (type != null) {
+                var clash = contradiction(key, name, MethodType.fromMethodDescriptorString(desc, loader).parameterCount(), declaredNamed(type, name) > 1, route.getAsJsonArray("changes"), shapes(type), modOf);
+                if (clash != null) throw new IllegalStateException(clash);
             }
             boolean live = applied > 0;
             if (live) {
@@ -164,6 +172,94 @@ public final class Routing {
     /** Whether the mixin's handler is merged into the target: Mixin's own applied list is empty by the time the boot looks, but the merged method names its mixin. A predicted mixin that is not applied is off, not an error: plugins, require = 0 and unloaded targets leave mixins out. */
     static boolean applied(List<String[]> merged, String mixin) {
         return merged.stream().anyMatch(m -> mixin.equals(m[1]));
+    }
+
+    /** A merged handler as it stands in the target class: the annotation Mixin kept names what it injects into and where. */
+    record Applied(String name, String mixin, String kind, List<String> at, boolean argsOnly, int params, List<String> targets) {}
+
+    private static int declaredNamed(Class<?> type, String name) {
+        int n = 0;
+        for (Method m : type.getDeclaredMethods()) if (m.getName().equals(name)) n++;
+        return n;
+    }
+
+    /** The merged handlers of `type` whose injection annotation is readable; one without it can't contradict anything. */
+    static List<Applied> shapes(Class<?> type) {
+        var out = new ArrayList<Applied>();
+        for (Method m : type.getDeclaredMethods()) {
+            var from = m.getAnnotation(org.spongepowered.asm.mixin.transformer.meta.MixinMerged.class);
+            if (from == null) continue;
+            for (var a : m.getAnnotations()) {
+                try {
+                    var kind = snake(a.annotationType().getSimpleName());
+                    var targets = a.annotationType().getMethod("method").invoke(a);
+                    if (!(targets instanceof String[] names)) continue;
+                    var at = new ArrayList<String>();
+                    var raw = a.annotationType().getMethod("at").invoke(a);
+                    for (Object one : raw instanceof Object[] many ? many : new Object[] {raw}) {
+                        at.add((String) one.getClass().getMethod("value").invoke(one));
+                    }
+                    boolean argsOnly = false;
+                    try {
+                        argsOnly = (boolean) a.annotationType().getMethod("argsOnly").invoke(a);
+                    } catch (NoSuchMethodException none) {
+                        // only ModifyVariable has it
+                    }
+                    out.add(new Applied(m.getName(), from.mixin(), kind, at, argsOnly, m.getParameterCount(), List.of(names)));
+                } catch (ReflectiveOperationException | LinkageError | ClassCastException unreadable) {
+                    // not an injector annotation
+                }
+            }
+        }
+        return out;
+    }
+
+    private static String snake(String simple) {
+        return simple.replaceAll("([a-z])([A-Z])", "$1_$2").toLowerCase(java.util.Locale.ROOT);
+    }
+
+    /** Whether the change only surrounds the method's body (true), reaches into it (false), or can't be told from what the analysis kept (null). */
+    static Boolean edge(String kind, List<String> at, boolean locals) {
+        var firsts = at.stream().map(a -> a.contains("(") ? a.substring(0, a.indexOf('(')) : a).toList();
+        return switch (kind) {
+            case "inject" -> !firsts.isEmpty() && firsts.stream().allMatch(a -> a.equals("HEAD") || a.equals("RETURN") || a.equals("TAIL")) && !locals;
+            case "modify_return_value" -> firsts.stream().allMatch(a -> a.equals("RETURN"));
+            case "wrap_method" -> true;
+            case "modify_variable" -> null;
+            default -> false;
+        };
+    }
+
+    /** What the merged handlers say against the analysis for one route: a mixin that applied unpredicted, or one whose kind isn't the predicted kind. Null when they agree. */
+    static String contradiction(String key, String name, int targetParams, boolean overloaded, JsonArray changes, List<Applied> applied, java.util.Map<String, String> modOf) {
+        String desc = key.substring(key.indexOf('('));
+        for (var a : applied) {
+            if (a.targets().stream().noneMatch(t -> targets(t, name, desc))) continue;
+            if (overloaded && a.targets().stream().noneMatch(t -> t.contains("("))) continue;
+            JsonObject change = null;
+            for (JsonElement c : changes) {
+                var one = c.getAsJsonObject();
+                var handler = one.get("handler").getAsString();
+                if (one.get("mixin").getAsString().equals(a.mixin()) && (a.name().equals(handler) || a.name().endsWith("$" + handler))) change = one;
+            }
+            if (change == null) {
+                return "route " + key + ": " + modOf.getOrDefault(a.mixin(), "unknown mod") + " " + a.mixin() + "." + a.name() + " applied but the analysis didn't predict it";
+            }
+            if (change.has("lambda")) continue;
+            var ats = new ArrayList<String>();
+            for (JsonElement t : change.getAsJsonArray("at")) ats.add(t.getAsString());
+            Boolean predicted = edge(change.get("kind").getAsString(), ats, change.get("locals").getAsBoolean());
+            Boolean actual = edge(a.kind(), a.at(), a.kind().equals("inject") && a.params() > targetParams + 1);
+            if (predicted != null && actual != null && !predicted.equals(actual)) {
+                return "route " + key + ": " + change.get("mod").getAsString() + " " + a.mixin() + "." + change.get("handler").getAsString() + " applied as " + (actual ? "edge" : "body") + " but was predicted " + (predicted ? "edge" : "body");
+            }
+        }
+        return null;
+    }
+
+    private static boolean targets(String target, String name, String desc) {
+        String bare = target.substring(target.indexOf(';') + 1);
+        return bare.contains("(") ? bare.equals(name + desc) : bare.equals(name);
     }
 
     private static MethodHandle handle(Class<?> owner, String key, String name, String desc, boolean isStatic, ClassLoader loader) throws Exception {
