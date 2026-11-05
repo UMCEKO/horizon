@@ -248,6 +248,14 @@ mod tests {
         assert_eq!(t.passengers_of(v), &[Ent::Host, Ent::Id(2), Ent::Guest(7)]);
     }
     #[test]
+    fn a_rider_boarding_twice_ends_on_the_last_vehicle() {
+        let mut t = Riding::default();
+        assert!(t.start_riding_forced(Ent::Id(2), Ent::Id(1)));
+        assert!(t.start_riding_forced(Ent::Id(2), Ent::Id(3)));
+        assert_eq!(t.vehicle_of(Ent::Id(2)), Some(Ent::Id(3)));
+        assert!(t.passengers_of(Ent::Id(1)).is_empty());
+    }
+    #[test]
     fn client_links_append() {
         let mut t = Riding::client();
         let v = Ent::Id(1);

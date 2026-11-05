@@ -5,6 +5,7 @@
 //! oracle's format.
 //!
 //! usage: finalize_spawn_fixture RESOURCES INPUT OUTPUT HALLOWEEN
+use horizon_client::riding::{Ent, Riding};
 use horizon_client::{
     assets::Assets,
     blocks::BlockFacts,
@@ -262,12 +263,12 @@ fn variant(m: &Mob, regs: &SpawnRegistries, v: &mut Vec<String>) {
     }
 }
 
-fn describe(m: &Mob, all: &[Mob], regs: &SpawnRegistries, rides: &[(u32, u32)]) -> String {
+fn describe(m: &Mob, all: &[Mob], regs: &SpawnRegistries, riding: &Riding) -> String {
     let mut t = vec![m.kind.id.clone()];
-    let vehicle = rides
-        .iter()
-        .find(|(rider, _)| *rider == m.id)
-        .and_then(|&(_, v)| all.iter().position(|o| o.id == v))
+    let vehicle = riding
+        .vehicle_of(Ent::Id(m.id))
+        .and_then(Ent::id)
+        .and_then(|v| all.iter().position(|o| o.id == v))
         .map_or("-".to_owned(), |i| i.to_string());
     t.push(format!("veh={vehicle}"));
     if finalize::ageable(m.species()) {
@@ -523,10 +524,14 @@ pub fn main() -> horizon_client::Result<()> {
             }
         }
         // The caller links what the finalizer reports: the rider boards, and is the first one on its vehicle.
+        let mut riding = Riding::default();
+        for &(rider, vehicle) in &rides {
+            riding.start_riding_forced(Ent::Id(rider), Ent::Id(vehicle));
+        }
         all.sort_by_key(|m| m.id);
         let mut parts: Vec<String> = all
             .iter()
-            .map(|m| describe(m, &all, &registries, &rides))
+            .map(|m| describe(m, &all, &registries, &riding))
             .collect();
         for m in &mut all {
             parts.push(format!("rng {}", m.random.next_long()));
