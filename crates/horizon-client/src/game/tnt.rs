@@ -64,21 +64,18 @@ impl PrimedTnt {
             ),
         )
     }
-    pub(super) fn tick(
+    /// `Entity.move` of the TNT by `wanted`: the blocks stop it, and each blocked axis loses its motion.
+    pub(super) fn move_by(
         &mut self,
         world: &horizon_client::world::World,
         collision: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
-        assets: &horizon_client::assets::Assets,
-        facts: &horizon_client::blocks::BlockFacts,
-    ) -> Result<()> {
-        self.previous = self.position;
-        self.velocity.y -= 0.04;
+        wanted: Vec3,
+    ) {
         let mut scene = SceneCollisions {
             world,
             binding: collision,
             subject: None,
         };
-        let wanted = self.velocity;
         let moved = scene
             .resolve(self.bounds(), wanted, 0.0, self.on_ground)
             .unwrap_or(Vec3::ZERO);
@@ -97,6 +94,17 @@ impl PrimedTnt {
         if moved.y != wanted.y {
             self.velocity.y = 0.0;
         }
+    }
+    pub(super) fn tick(
+        &mut self,
+        world: &horizon_client::world::World,
+        collision: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
+        assets: &horizon_client::assets::Assets,
+        facts: &horizon_client::blocks::BlockFacts,
+    ) -> Result<()> {
+        self.previous = self.position;
+        self.velocity.y -= 0.04;
+        self.move_by(world, collision, self.velocity);
         self.velocity = Vec3::new(
             self.velocity.x * 0.98,
             self.velocity.y * 0.98,

@@ -1013,6 +1013,20 @@ impl Game<'_> {
                 self.dragon = Some(dragon);
                 true
             }
+            Target::Item(id) => {
+                let Some(item) = self.dropped.iter_mut().find(|i| i.id == id) else {
+                    return false;
+                };
+                item.move_by(&self.world, self.res.facts(), self.collision, delta, false);
+                true
+            }
+            Target::Tnt(id) => {
+                let Some(tnt) = self.tnts.iter_mut().find(|t| t.id == id) else {
+                    return false;
+                };
+                tnt.move_by(&self.world, self.collision, delta);
+                true
+            }
             Target::Cart(id) => {
                 let Some(i) = self.carts.iter().position(|c| c.id == id) else {
                     return false;
@@ -1406,5 +1420,37 @@ mod tests {
         );
         assert_eq!(game.carts[0].position.y, 61.0);
         assert!(game.carts[0].on_ground);
+    }
+
+    #[test]
+    fn a_dropped_item_and_a_primed_tnt_moved_down_land() {
+        let Some(mut game) = flat_game() else { return };
+        game.spawn_item(
+            horizon_client::items::ItemStack::new("minecraft:stick", 1),
+            [0.5, 63.0, 0.5],
+            [0.0; 3],
+            10,
+        );
+        let item = game.dropped[0].id;
+        game.next_entity += 1;
+        let tnt = game.next_entity;
+        game.tnts.push(super::tnt::PrimedTnt::new(
+            tnt,
+            Vec3::new(3.5, 63.0, 0.5),
+            Vec3::ZERO,
+            80,
+            game.pack
+                .assets
+                .registry
+                .default_state("minecraft:tnt")
+                .unwrap(),
+        ));
+        for target in [Target::Item(item), Target::Tnt(tnt)] {
+            assert!(game.entity_move(target, MoverType::SelfMovement, Vec3::new(0.0, -5.0, 0.0)));
+        }
+        assert!(game.dropped[0].on_ground);
+        assert_eq!(game.dropped[0].position.y, 61.0);
+        assert!(game.tnts[0].on_ground);
+        assert_eq!(game.tnts[0].position.y, 61.0);
     }
 }

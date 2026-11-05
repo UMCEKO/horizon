@@ -218,6 +218,53 @@ impl ItemEntity {
             _ => Vec3::new(v.x, v.y, push),
         };
     }
+    /// `Entity.move` of the item by `wanted`: resolved against the blocks (or straight through with
+    /// `no_physics`, the ground as it was), the blocked axes' motion lost or bounced, the honey slide.
+    pub fn move_by(
+        &mut self,
+        world: &World,
+        facts: &BlockFacts,
+        collision: &BlockCollisionRegistry<'_>,
+        wanted: Vec3,
+        no_physics: bool,
+    ) {
+        let mut scene = SceneCollisions {
+            world,
+            binding: collision,
+            subject: None,
+        };
+        // Entity.move with noPhysics: straight through, the ground as it was.
+        let moved = if no_physics {
+            wanted
+        } else {
+            scene
+                .resolve(self.bounds(), wanted, 0.0, self.on_ground)
+                .unwrap_or(Vec3::ZERO)
+        };
+        self.position = Vec3::new(
+            self.position.x + moved.x,
+            self.position.y + moved.y,
+            self.position.z + moved.z,
+        );
+        if !no_physics {
+            self.on_ground = wanted.y < 0.0 && moved.y != wanted.y;
+        }
+        if moved.x != wanted.x {
+            self.velocity.x = 0.0;
+        }
+        if moved.z != wanted.z {
+            self.velocity.z = 0.0;
+        }
+        if moved.y != wanted.y {
+            // Entity.move restitutes instead of zeroing Y. A slime block
+            // (or a moving piston carrying one) bounces a dropped item;
+            // MovingPistonBlock itself has no bounceRestitution.
+            let slime = item_support_is_slime(world, facts, self.position);
+            self.velocity.y = item_vertical_collision_velocity(wanted.y, slime);
+        }
+        // Entity.move -> applyEffectsFromBlocks: HoneyBlock.entityInside.
+        self.apply_honey_slide(world, facts);
+    }
     /// Returns false when the item should be removed. `no_physics`: the item
     /// moves through blocks this tick ([`ItemEntity::inside_block`]).
     pub fn tick(
@@ -254,43 +301,8 @@ impl ItemEntity {
         }
         let horizontal = self.velocity.x * self.velocity.x + self.velocity.z * self.velocity.z;
         if !self.on_ground || horizontal > 1.0e-5 || (self.age + self.id).is_multiple_of(4) {
-            let mut scene = SceneCollisions {
-                world,
-                binding: collision,
-                subject: None,
-            };
             let wanted = self.velocity;
-            // Entity.move with noPhysics: straight through, the ground as it was.
-            let moved = if no_physics {
-                wanted
-            } else {
-                scene
-                    .resolve(self.bounds(), wanted, 0.0, self.on_ground)
-                    .unwrap_or(Vec3::ZERO)
-            };
-            self.position = Vec3::new(
-                self.position.x + moved.x,
-                self.position.y + moved.y,
-                self.position.z + moved.z,
-            );
-            if !no_physics {
-                self.on_ground = wanted.y < 0.0 && moved.y != wanted.y;
-            }
-            if moved.x != wanted.x {
-                self.velocity.x = 0.0;
-            }
-            if moved.z != wanted.z {
-                self.velocity.z = 0.0;
-            }
-            if moved.y != wanted.y {
-                // Entity.move restitutes instead of zeroing Y. A slime block
-                // (or a moving piston carrying one) bounces a dropped item;
-                // MovingPistonBlock itself has no bounceRestitution.
-                let slime = item_support_is_slime(world, facts, self.position);
-                self.velocity.y = item_vertical_collision_velocity(wanted.y, slime);
-            }
-            // Entity.move -> applyEffectsFromBlocks: HoneyBlock.entityInside.
-            self.apply_honey_slide(world, facts);
+            self.move_by(world, facts, collision, wanted, no_physics);
             let mut friction = 0.98;
             if self.on_ground {
                 let below = world.block(
