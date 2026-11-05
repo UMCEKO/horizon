@@ -142,8 +142,12 @@ final class ClientLoader {
         set(minecraft, "singleplayerServer", server);
     }
 
-    /** The player's language, with English under it as the game stacks them, for the client and the server in this JVM alike. */
+    private static volatile String reloaded;
+
+    /** The player's language, with English under it as the game stacks them, for the client and the server in this JVM alike; the resource reload's own load stays when it was for this code. */
     static void language(String code) {
+        var manager = Minecraft.getInstance().getLanguageManager();
+        if (code.equals(reloaded) && code.equals(manager.getSelected()) && (code.equals("en_us") || manager.getLanguage(code) != null)) return;
         try {
             var current = net.minecraft.client.resources.language.LanguageManager.class.getDeclaredField("currentCode");
             current.setAccessible(true);
@@ -154,6 +158,7 @@ final class ClientLoader {
         var stack = code.equals("en_us") ? java.util.List.of("en_us") : java.util.List.of("en_us", code);
         var resources = Minecraft.getInstance().getResourceManager();
         net.minecraft.locale.Language.inject(net.minecraft.client.resources.language.ClientLanguage.loadFrom(resources, stack, false));
+        reloaded = null;
     }
 
     private static void set(Class<?> owner, Object target, String field, Object value) throws ReflectiveOperationException {
@@ -209,6 +214,7 @@ final class ClientLoader {
         repository.reload();
         minecraft.options.loadSelectedResourcePacks(repository);
         var languages = new net.minecraft.client.resources.language.LanguageManager(minecraft, minecraft.options.languageCode, language -> {
+            reloaded = minecraft.options.languageCode;
             if (minecraft.player != null) minecraft.player.connection.updateSearchTrees();
         });
         set(minecraft, "languageManager", languages);
