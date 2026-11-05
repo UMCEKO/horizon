@@ -483,6 +483,7 @@ impl Game<'_> {
                 self.seat_on_mob(i, j, n, false);
             }
         }
+        self.position_plain_riders();
         // Displays and interaction boxes riding anything the client tracks,
         // as NPC plugins put a name over a head or a model's bones on a
         // pivot: `Entity.rideTick` -> `positionRider`, the vehicle's passenger
@@ -1161,5 +1162,106 @@ mod tests {
         assert_eq!(game.parent_vehicle_save(Ent::Guest(3)), (None, None));
         game.stop_riding(Ent::Guest(3));
         assert_eq!(game.parent_vehicle_save(Ent::Guest(3)), (None, None));
+    }
+
+    fn add_stand(game: &mut Game<'_>, at: [f64; 3]) -> u32 {
+        game.next_entity += 1;
+        let id = game.next_entity;
+        let stand =
+            horizon_client::entities::ArmorStand::new(id, Vec3::new(at[0], at[1], at[2]), 0.0);
+        game.level_add(
+            super::super::entity_life::NewEntity::Stand(stand),
+            super::super::entity_life::Origin::Fresh,
+            None,
+        );
+        id
+    }
+
+    #[test]
+    fn an_armor_stand_on_a_pig_sits_at_the_pigs_point() {
+        let Some(mut game) = flat_game() else { return };
+        let pig = spawn(&mut game, "pig", [2.5, 61.0, 2.5]);
+        let stand = add_stand(&mut game, [9.5, 70.0, 9.5]);
+        assert!(game.start_riding(Ent::Id(stand), Ent::Id(pig), true, false));
+        game.tick_passengers();
+        let m = game.mobs.iter().find(|m| m.id == pig).unwrap();
+        let [x, y, z] = riders::passenger_attachment(m, 0, m.yaw, false);
+        let want = Vec3::new(m.position.x + x, m.position.y + y, m.position.z + z);
+        let got = game
+            .armor_stands
+            .iter()
+            .find(|a| a.id == stand)
+            .unwrap()
+            .position;
+        assert!(
+            (got.x - want.x).abs() < 1e-9 && (got.y - want.y).abs() < 1e-9,
+            "{got:?} {want:?}"
+        );
+        assert!((got.z - want.z).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_rider_has_zero_velocity_before_its_tick() {
+        let Some(mut game) = flat_game() else { return };
+        let pig = spawn(&mut game, "pig", [2.5, 61.0, 2.5]);
+        let rider = add_stand(&mut game, [2.5, 61.0, 2.5]);
+        let free = add_stand(&mut game, [6.5, 61.0, 6.5]);
+        for s in &mut game.armor_stands {
+            s.velocity = Vec3::new(1.0, 2.0, 3.0);
+        }
+        assert!(game.start_riding(Ent::Id(rider), Ent::Id(pig), true, false));
+        game.zero_rider_motion();
+        let v = |game: &Game<'_>, id| {
+            game.armor_stands
+                .iter()
+                .find(|a| a.id == id)
+                .unwrap()
+                .velocity
+        };
+        assert_eq!(v(&game, rider), Vec3::ZERO);
+        assert_eq!(v(&game, free), Vec3::new(1.0, 2.0, 3.0));
+    }
+
+    #[test]
+    fn a_tnt_riding_a_cart_keeps_its_fuse() {
+        let Some(mut game) = flat_game() else { return };
+        game.next_entity += 1;
+        let cart_id = game.next_entity;
+        let cart = super::super::minecarts::Minecart::new(
+            cart_id,
+            super::super::minecarts::CartKind::Rideable,
+            Vec3::new(4.5, 61.0, 4.5),
+        );
+        game.level_add(
+            super::super::entity_life::NewEntity::Cart(cart),
+            super::super::entity_life::Origin::Fresh,
+            None,
+        );
+        game.next_entity += 1;
+        let tnt_id = game.next_entity;
+        let air = game.res.facts().air;
+        let tnt = super::super::tnt::PrimedTnt::new(
+            tnt_id,
+            Vec3::new(9.5, 70.0, 9.5),
+            Vec3::new(0.0, 0.2, 0.0),
+            80,
+            air,
+        );
+        game.level_add(
+            super::super::entity_life::NewEntity::Tnt(tnt),
+            super::super::entity_life::Origin::Fresh,
+            None,
+        );
+        assert!(game.start_riding(Ent::Id(tnt_id), Ent::Id(cart_id), true, false));
+        game.zero_rider_motion();
+        game.tick_tnt().unwrap();
+        assert_eq!(game.tnts.iter().find(|t| t.id == tnt_id).unwrap().fuse, 79);
+        game.tick_passengers();
+        let at = game.tnts.iter().find(|t| t.id == tnt_id).unwrap().position;
+        assert!((at.x - 4.5).abs() < 1e-9 && (at.z - 4.5).abs() < 1e-9);
+        assert!(
+            (at.y - (61.0 + super::super::minecarts::PASSENGER_HEIGHT)).abs() < 1e-9,
+            "{at:?}"
+        );
     }
 }

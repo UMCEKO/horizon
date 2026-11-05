@@ -244,6 +244,7 @@ mod remote_vehicles;
 mod render_control;
 mod render_tick;
 mod respawn_anchor;
+mod rider_kinds;
 mod saves_control;
 mod saving;
 mod scoreboard;
@@ -6578,6 +6579,7 @@ impl Game<'_> {
             horizon_client::spans::time("tick_blocks", || self.tick_blocks())?;
         }
         if running {
+            self.zero_rider_motion();
             horizon_client::spans::time("tick_paintings", || self.tick_paintings());
             horizon_client::spans::time("tick_item_frames", || self.tick_item_frames());
             horizon_client::spans::time("tick_armor_stands", || self.tick_armor_stands());

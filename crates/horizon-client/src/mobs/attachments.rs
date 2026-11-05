@@ -56,7 +56,7 @@ fn turned(p: [f64; 3], yaw: f32) -> [f64; 3] {
 
 impl Attachments {
     /// A dimensions object (`width`, `height`, `fixed`, `attachments`) of `entity-types.json`.
-    fn parse(v: &Value) -> Option<Self> {
+    pub fn parse(v: &Value) -> Option<Self> {
         let a = v.get("attachments")?;
         let passenger: Vec<[f64; 3]> = a
             .get("passenger")?
