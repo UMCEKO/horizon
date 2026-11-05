@@ -352,7 +352,7 @@ fn describe(m: &Mob, all: &[Mob], regs: &SpawnRegistries, riding: &Riding) -> St
         .extra
         .effects
         .iter()
-        .map(|(e, d, a)| format!("{e}:{a}:{d}"))
+        .map(|e| format!("{}:{}:{}", e.id, e.amplifier, e.ticks))
         .collect();
     fx.sort();
     t.push(format!(
