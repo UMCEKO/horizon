@@ -119,13 +119,11 @@ public final class Routing {
                 mods.add(change.get("mod").getAsString());
                 var mixin = change.get("mixin").getAsString();
                 var handler = change.get("handler").getAsString();
-                boolean here = applying.contains(mixin) && mergedName(merged(owner, handler), mixin) != null;
-                if (here) {
+                if (applied(applying, type == null ? List.of() : merged(owner, handler), mixin)) {
                     applied++;
-                } else if (type != null && !change.get("conditional").getAsBoolean()) {
-                    throw new IllegalStateException("route " + key + ": " + mixin + "." + handler + " didn't apply");
                 } else {
                     dropped++;
+                    System.err.println("Horizon: route " + key + ": " + change.get("mod").getAsString() + " " + mixin + "." + handler + " didn't apply (a config plugin, require = 0 or an unloaded target)");
                 }
             }
             boolean live = applied > 0;
@@ -163,6 +161,11 @@ public final class Routing {
         edges = edgeFlags;
         bin = bytes.toByteArray();
         System.err.println("Horizon: routes: " + on + " on, " + (ordered.size() - on) + " off, " + dropped + " changes dropped, confirmed in " + (System.nanoTime() - began) / 1_000_000 + " ms");
+    }
+
+    /** Predicted but not applied is not an error: Mixin lets a mixin stay out (plugins, require = 0, an unloaded target), and its route is then off. */
+    static boolean applied(java.util.Set<String> applying, List<String[]> merged, String mixin) {
+        return applying.contains(mixin) && mergedName(merged, mixin) != null;
     }
 
     private static java.util.Set<String> appliedMixins(String owner) {
