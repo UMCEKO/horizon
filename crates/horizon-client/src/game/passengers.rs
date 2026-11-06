@@ -555,7 +555,7 @@ impl Game<'_> {
             .collect();
         if let Some(r) = self.remote.as_ref() {
             // Roots first, so a rider of a rider is placed after its vehicle.
-            let pairs: Vec<(usize, usize, usize)> = r
+            let pairs: Vec<(usize, usize, usize, usize)> = r
                 .passengers
                 .riders_in_order()
                 .into_iter()
@@ -563,20 +563,22 @@ impl Game<'_> {
                     let (Ent::Id(rider_id), Ent::Id(vehicle_id)) = (rider, vehicle) else {
                         return None;
                     };
-                    let n = r
-                        .passengers
-                        .passengers_of(vehicle)
-                        .iter()
-                        .position(|&p| p == rider)?;
-                    Some((*index.get(&rider_id)?, *index.get(&vehicle_id)?, n))
+                    let all = r.passengers.passengers_of(vehicle);
+                    let n = all.iter().position(|&p| p == rider)?;
+                    Some((
+                        *index.get(&rider_id)?,
+                        *index.get(&vehicle_id)?,
+                        n,
+                        all.len(),
+                    ))
                 })
                 .collect();
-            for (i, j, n) in pairs {
-                self.seat_on_mob(i, j, n, true);
+            for (i, j, n, count) in pairs {
+                self.seat_on_mob(i, j, n, count, true);
             }
         } else {
             // Roots first, so a rider of a rider is placed after its vehicle.
-            let pairs: Vec<(usize, usize, usize)> = {
+            let pairs: Vec<(usize, usize, usize, usize)> = {
                 let table = self.riding_table.borrow();
                 table
                     .riders_in_order()
@@ -585,16 +587,19 @@ impl Game<'_> {
                         let (Ent::Id(rider_id), Ent::Id(vehicle_id)) = (rider, vehicle) else {
                             return None;
                         };
-                        let n = table
-                            .passengers_of(vehicle)
-                            .iter()
-                            .position(|&p| p == rider)?;
-                        Some((*index.get(&rider_id)?, *index.get(&vehicle_id)?, n))
+                        let all = table.passengers_of(vehicle);
+                        let n = all.iter().position(|&p| p == rider)?;
+                        Some((
+                            *index.get(&rider_id)?,
+                            *index.get(&vehicle_id)?,
+                            n,
+                            all.len(),
+                        ))
                     })
                     .collect()
             };
-            for (i, j, n) in pairs {
-                self.seat_on_mob(i, j, n, false);
+            for (i, j, n, count) in pairs {
+                self.seat_on_mob(i, j, n, count, false);
             }
         }
         self.position_plain_riders();
@@ -652,10 +657,15 @@ impl Game<'_> {
             }
         }
     }
-    /// `Entity.positionRider` of mob `i` on mob `j`, as its passenger number `n`.
-    fn seat_on_mob(&mut self, i: usize, j: usize, n: usize, client: bool) {
+    /// `Entity.positionRider` of mob `i` on mob `j`, as its passenger number `n` of `count`.
+    fn seat_on_mob(&mut self, i: usize, j: usize, n: usize, count: usize, client: bool) {
+        let seat = riders::Seat {
+            index: n,
+            count,
+            animal: horizon_client::mobs::drops::is_animal(self.mobs[i].species()),
+        };
         let vehicle = &self.mobs[j];
-        let attach = |yaw| riders::passenger_attachment(vehicle, n, yaw, client);
+        let attach = |yaw| riders::passenger_attachment(vehicle, seat, yaw, client);
         let (pos, prev) = (vehicle.position, vehicle.previous);
         let (yaw, prev_yaw) = (vehicle.yaw, vehicle.previous_yaw);
         let (at, prev_at) = (attach(yaw), attach(prev_yaw));
@@ -688,7 +698,8 @@ impl Game<'_> {
         };
         if let Some(&j) = index.get(&vehicle) {
             let v = &self.mobs[j];
-            let attachment = riders::passenger_attachment(v, 0, v.yaw, self.remote.is_some());
+            let attachment =
+                riders::passenger_attachment(v, riders::Seat::DRIVER, v.yaw, self.remote.is_some());
             let at = riders::ride_position(v.position, attachment, [0.0; 3]);
             return Some(glam::DVec3::new(at.x, at.y, at.z));
         }
@@ -1039,6 +1050,33 @@ mod tests {
         assert_eq!(game.passengers_of(pig), vec![zombie]);
     }
 
+    /// `Camel.getPassengerAttachmentPoint`: with two aboard the driver sits
+    /// 0.5 ahead of the middle and the second 0.7 behind it, an `Animal` 0.2
+    /// further ahead (0.5 behind), along the camel's facing.
+    #[test]
+    fn a_camels_second_passenger_sits_behind_the_driver() {
+        let Some(mut game) = flat_game() else { return };
+        let ahead = |game: &Game<'_>, camel: u32, rider: u32| {
+            let c = game.mobs.iter().find(|m| m.id == camel).unwrap();
+            let a = f64::from(-c.yaw).to_radians();
+            let r = at(game, rider);
+            (r.x - c.position.x) * a.sin() + (r.z - c.position.z) * a.cos()
+        };
+        for (second, behind) in [("pig", -0.5), ("zombie", -0.7)] {
+            let camel = spawn(&mut game, "camel", [2.5, 61.0, 2.5]);
+            let driver = spawn(&mut game, "husk", [2.5, 61.0, 2.5]);
+            let other = spawn(&mut game, second, [2.5, 61.0, 2.5]);
+            assert!(game.start_riding(Ent::Id(driver), Ent::Id(camel), true, false));
+            assert!(game.start_riding(Ent::Id(other), Ent::Id(camel), true, false));
+            game.tick_passengers();
+            assert!((ahead(&game, camel, driver) - 0.5).abs() < 1e-6, "{second}");
+            assert!(
+                (ahead(&game, camel, other) - behind).abs() < 1e-6,
+                "{second}"
+            );
+        }
+    }
+
     #[test]
     fn force_skips_can_ride_and_can_add() {
         let Some(mut game) = flat_game() else { return };
@@ -1317,7 +1355,7 @@ mod tests {
         assert!(game.start_riding(Ent::Id(stand), Ent::Id(pig), true, false));
         game.tick_passengers();
         let m = game.mobs.iter().find(|m| m.id == pig).unwrap();
-        let [x, y, z] = riders::passenger_attachment(m, 0, m.yaw, false);
+        let [x, y, z] = riders::passenger_attachment(m, riders::Seat::DRIVER, m.yaw, false);
         let want = Vec3::new(m.position.x + x, m.position.y + y, m.position.z + z);
         let got = game
             .armor_stands

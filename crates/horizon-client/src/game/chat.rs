@@ -866,6 +866,25 @@ impl Game<'_> {
     pub(super) fn chat_abilities(&self) -> ChatAbilities {
         ChatAbilities::new(ChatVisibility::from_option(self.settings.chat_visibility))
     }
+    /// `ServerPlayer.sendOverlayMessage` of the acting player, `content` a
+    /// component's saved form: a server's client gets it as a packet, this
+    /// game's own player on its HUD.
+    pub(super) fn send_overlay_message(&mut self, content: horizon_world::nbt::Tag) {
+        if self.lan_acting.is_some() {
+            self.guest_packets
+                .push(super::lan_actions::Outgoing::Packet(
+                    horizon_protocol::packets::play::Clientbound::SystemChat(
+                        horizon_protocol::packets::play::SystemChat {
+                            content,
+                            overlay: true,
+                        },
+                    ),
+                ));
+        } else if self.options.dedicated.is_none() {
+            self.titles
+                .set_overlay(super::remote::remote_text(&content), false);
+        }
+    }
     /// A chat message from the game (ChatComponent.addServerSystemMessage).
     pub(super) fn system_message(&mut self, text: Text) {
         if let Some(capture) = self.chat_capture.as_mut() {

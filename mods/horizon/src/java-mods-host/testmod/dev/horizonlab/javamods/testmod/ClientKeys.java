@@ -19,6 +19,7 @@ final class ClientKeys {
     private static final KeyMapping KEY = new KeyMapping("key.horizon_java_test.probe", KeyConflictContext.IN_GAME, KeyModifier.NONE,
             K, KeyMapping.Category.register(Identifier.parse("horizon_java_test:keys")));
     private static boolean wasDown;
+    private static boolean hadScreen;
 
     static void register(IEventBus bus) {
         bus.addListener((RegisterKeyMappingsEvent event) -> event.register(KEY));
@@ -29,6 +30,12 @@ final class ClientKeys {
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.level == null) return;
         boolean down = InputConstants.isKeyDown(KEY.getKey().getValue());
+        boolean screenNow = minecraft.gui.screen() != null;
+        if (down && wasDown && hadScreen && !screenNow && KEY.getKey().equals(K)) {
+            // `Gui.setScreen(null)` grabs the mouse, whose `KeyMapping.setAll` presses what was held through the screen.
+            Checks.check("key_held_through_a_native_screen_is_down", KEY::isDown);
+        }
+        hadScreen = screenNow;
         if (down && !wasDown && !KEY.getKey().equals(K)) {
             Checks.check("mod_key_follows_the_rebind", () -> KEY.isDown() && !KEY.isUnbound() && KEY.getKeyModifier() == KeyModifier.NONE);
         } else if (down && !wasDown) {

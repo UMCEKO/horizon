@@ -136,8 +136,8 @@ JVM exports while it boots, never by asking Java later:
 - Worldgen features and ore spawns from mods' Java code. Their data-driven ones come through `carry`.
 - An effect a mod registers has no Horizon effect, so it stays in Java's view (logged). Experience and stacks still come back as copies after a call, since mod code changes stacks in place rather than through setters. Only the acting player's view writes through; a mod changing another player's view outside that player's call is lost.
 - A mod's entries in a namespace no jar's mod id names (or in `minecraft`) aren't carried, as content mods declare blocks and items under their own id only, and a jar with several mods carries under the first one's id.
-- Game rules and the world border are vanilla's defaults in Java. Other players have no views, only the acting one. Bridged calls act on the acting player's dimension.
-- A mod's redirect inside a bridged method doesn't run, since the method's Java body doesn't. An action bar message arrives as a chat line. `setBlock`'s update limit is ignored.
+- Game rules, the world border and the scoreboard are vanilla's defaults in Java (an empty scoreboard: Horizon's teams and objectives don't reach it). Other players have no views, only the acting one. Bridged calls act on the acting player's dimension.
+- A mod's redirect inside a bridged method doesn't run, since the method's Java body doesn't. `setBlock`'s update limit is ignored.
 - The game finds NeoForge through dev variables, not a `java-mods` folder.
 
 ## Playing with Java mods

@@ -348,6 +348,12 @@ public final class GameBridge {
         return EntityViews.spawn(entity);
     }
 
+    /** A component in `Flat.raw(Component)`'s wrapper. */
+    static net.minecraft.network.chat.Component component(byte[] nbt) throws IOException {
+        var tag = NbtIo.read(new DataInputStream(new ByteArrayInputStream(nbt)), NbtAccounter.unlimitedHeap());
+        return net.minecraft.network.chat.ComponentSerialization.CODEC.parse(registries.createSerializationContext(NbtOps.INSTANCE), tag.get("text")).getOrThrow();
+    }
+
     static ItemStack decode(byte[] nbt) throws IOException {
         Tag tag = NbtIo.read(new DataInputStream(new ByteArrayInputStream(nbt)), NbtAccounter.unlimitedHeap());
         return ItemStack.CODEC.parse(registries.createSerializationContext(NbtOps.INSTANCE), tag).getOrThrow();

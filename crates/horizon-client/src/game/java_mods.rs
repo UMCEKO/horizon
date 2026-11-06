@@ -704,6 +704,8 @@ impl Game<'_> {
             return;
         }
         self.java_bind_states();
+        // ChunkMap.scheduleUnload: a leaving column is out of the visible map before its save and unload.
+        UNLOADING.set(gone);
         let joined: horizon_client::fast_hash::FxHashSet<(i32, i32)> = if behind {
             self.world.chunks.keys().copied().collect()
         } else {
@@ -745,6 +747,7 @@ impl Game<'_> {
             out.int(chunk.z);
         }
         let reply = self.java_request("chunks_changed", &out.0);
+        UNLOADING.take();
         let Some(reply) = reply else {
             return;
         };
@@ -1114,6 +1117,14 @@ thread_local! {
     static BLOCK_EVENTS: std::cell::RefCell<Vec<BlockEvent>> = const { std::cell::RefCell::new(Vec::new()) };
     static WIRE_OUT: std::cell::RefCell<Vec<(u128, Vec<u8>)>> = const { std::cell::RefCell::new(Vec::new()) };
     static PUMPED_UNLOADS: std::cell::RefCell<Vec<Arc<horizon_client::chunk::Chunk>>> = const { std::cell::RefCell::new(Vec::new()) };
+    static UNLOADING: std::cell::RefCell<horizon_client::fast_hash::FxHashSet<(i32, i32)>> = std::cell::RefCell::default();
+}
+
+impl Game<'_> {
+    /// Whether Java sees this column loaded: Horizon holds it and it isn't being unloaded.
+    pub(in crate::game) fn java_column_loaded(&self, x: i32, z: i32) -> bool {
+        self.world.chunks.contains_key(&(x, z)) && !UNLOADING.with_borrow(|u| u.contains(&(x, z)))
+    }
 }
 
 /// Columns a Java mod's `getChunk` unloaded while it waited, for `update_world` to save and drop.

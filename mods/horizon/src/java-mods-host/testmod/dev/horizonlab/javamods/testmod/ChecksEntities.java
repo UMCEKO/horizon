@@ -6,6 +6,7 @@ import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.LightningBolt;
 import net.minecraft.world.entity.item.PrimedTnt;
+import net.minecraft.world.entity.vehicle.minecart.Minecart;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.entity.animal.chicken.Chicken;
 import net.minecraft.world.entity.item.ItemEntity;
@@ -50,6 +51,23 @@ final class ChecksEntities {
         spawned = chicken;
         tntAndLightning(level, area);
         itemHurt(level, area);
+        vehicleHurt(level, area);
+    }
+
+    private static Minecart dented;
+
+    /** `VehicleEntity.hurtServer`: a hit adds ten times its damage and past 40 the vehicle breaks; the damage wears off one a tick. */
+    private static void vehicleHurt(Level level, BlockPos area) {
+        var sl = (ServerLevel) level;
+        var cart = EntityTypes.MINECART.create(level, EntitySpawnReason.COMMAND);
+        cart.setPos(area.getX() + 2.5, area.getY() + 1, area.getZ() + 6.5);
+        level.addFreshEntity(cart);
+        Checks.check("vehicle_hurt_breaks_past_40", () -> cart.hurtServer(sl, level.damageSources().generic(), 3F) && sl.getEntity(cart.getId()) == cart
+                && cart.hurtServer(sl, level.damageSources().generic(), 2F) && sl.getEntity(cart.getId()) == null);
+        dented = EntityTypes.MINECART.create(level, EntitySpawnReason.COMMAND);
+        dented.setPos(area.getX() + 2.5, area.getY() + 1, area.getZ() + 8.5);
+        level.addFreshEntity(dented);
+        dented.hurtServer(sl, level.damageSources().generic(), 3F);
     }
 
     private static void tntAndLightning(Level level, BlockPos area) {
@@ -132,6 +150,8 @@ final class ChecksEntities {
         chicken.getPersistentData().putInt("horizon_java_test", 7);
         chicken.setDeltaMovement(0, 0.5, 0);
         Checks.check("delta_movement_writes_through", () -> ((net.minecraft.server.level.ServerLevel) level).getEntity(chicken.getId()) == chicken && chicken.getDeltaMovement().y == 0.5);
+        // 30 from the first call less a tick's wear, plus 11, stays at 40 or below only if the native cart took the first hit.
+        if (dented != null) Checks.check("vehicle_damage_wears_off_natively", () -> dented.hurtServer((ServerLevel) level, level.damageSources().generic(), 1.1F) && ((ServerLevel) level).getEntity(dented.getId()) == dented);
         if (fused != null) Checks.check("tnt_fuse_ticks_natively", () -> ((ServerLevel) level).getEntity(fused.getId()) == fused && fused.getFuse() < 600);
         if (bystander != null) Checks.check("visual_bolt_hurts_nobody", () -> ((ServerLevel) level).getEntity(bystander.getId()) == bystander && bystander.getHealth() == bystander.getMaxHealth());
         if (doomed != null) {

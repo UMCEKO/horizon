@@ -74,6 +74,23 @@ class Lint(unittest.TestCase):
         text = jr.gates_tsv(jr.scan_text(GOOD, 'f.rs'), [(KEY, 'seam: a.rs:1'), (KEY, 'seam: b.rs:2')])
         self.assertIn('\tgame\t2\n', text)
 
+    def test_an_installs_ungated_route_fails_the_lint(self):
+        live = {'routes': {'a/B#live()V': {'kind': 'body', 'family': 'static', 'tail': False, 'returns': 1, 'changes': [{'mod': 'lootr'}]}}}
+        packs = jr.merge_packs(PACK, jr.routing_packs(live))
+        self.assertTrue(any(e.startswith('a/B#live()V: unrouted') for e in problems(GOOD, packs)))
+        self.assertEqual([], problems(GOOD, packs, deferred=[('a/B#live()V', 'client: phase C')]))
+        self.assertEqual(PACK[KEY]['mods'], jr.merge_packs(PACK, {})[KEY]['mods'])
+
+    def test_lint_reads_each_install_routing_it_is_given(self):
+        import json
+        import tempfile
+        with tempfile.NamedTemporaryFile('w', suffix='.json') as f:
+            json.dump({'routes': {'a/B#live()V': {'kind': 'body', 'family': 'static', 'tail': False, 'returns': 1, 'changes': [{'mod': 'm'}]}}}, f)
+            f.flush()
+            args = type('A', (), {'ledger': False, 'routing': [f.name]})()
+            self.assertEqual(1, jr.cmd_lint(args))
+        self.assertEqual(0, jr.cmd_lint(type('A', (), {'ledger': False, 'routing': None})()))
+
     def test_the_parser_reads_the_body_fn_across_strings(self):
         gate = jr.scan_text(GOOD, 'f.rs')[0]
         self.assertEqual(('set_selected_slot', 'set_selected_slot_body', True, True), (gate['fn'], gate['body'], gate['first'], gate['game']))

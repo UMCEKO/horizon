@@ -6,6 +6,7 @@
 //! host, and every world change they cause reaches all players through the
 //! block log, the level events and the entity tracker.
 use super::entity_life::{Kind, Removal};
+use super::java_routing::route;
 use super::{
     Dim, Game, GuestUse, Hit, InteractTarget, Mining, Screen,
     building_players::{BuildingPlayer, BuildingPlayers},
@@ -1346,6 +1347,37 @@ impl Game<'_> {
         !cancel
     }
 
+    /// `BaseContainerBlockEntity.sendChestLockedNotifications`: the acting
+    /// player's action bar names the locked container, and everyone near hears it.
+    pub(in crate::game) fn send_chest_locked_notifications(
+        &mut self,
+        at: [f64; 3],
+        name: &horizon_world::nbt::Tag,
+    ) {
+        route!(
+            self,
+            "net/minecraft/world/level/block/entity/BaseContainerBlockEntity#sendChestLockedNotifications(Lnet/minecraft/world/phys/Vec3;Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/network/chat/Component;)V",
+            super::java_routing::Recv::Static,
+            (
+                at,
+                self.java_player_arg(),
+                super::java_routing::ComponentArg(name)
+            )
+        );
+        self.send_chest_locked_notifications_body(at, name);
+    }
+
+    /// `BaseContainerBlockEntity.sendChestLockedNotifications`'s body.
+    pub(in crate::game) fn send_chest_locked_notifications_body(
+        &mut self,
+        at: [f64; 3],
+        name: &horizon_world::nbt::Tag,
+    ) {
+        self.send_overlay_message(horizon_client::containers::locked_message(name));
+        self.audio
+            .play("minecraft:block.chest.locked", Some(at), 1.0, 1.0);
+    }
+
     /// Hand a container the guest opened over (ServerPlayer.openMenu);
     /// false when it is not one a guest can open.
     fn lan_open_container(&mut self, host: &mut LanHost, conn: u32, pos: (i32, i32, i32)) -> bool {
@@ -1472,13 +1504,6 @@ impl Game<'_> {
             locked |= check;
         }
         if locked {
-            host.hub.send_to(
-                conn,
-                &C::SystemChat(play::SystemChat {
-                    content: horizon_client::containers::locked_message(&title),
-                    overlay: true,
-                }),
-            );
             // `ChestBlock`: the double chest sounds between its halves, from
             // the first one's centre plus half a block toward the other.
             let at = match &slots {
@@ -1494,15 +1519,13 @@ impl Game<'_> {
                 ],
                 _ => [0.0; 3],
             };
-            let source = horizon_client::settings::sound_source("minecraft:block.chest.locked");
-            host.hub.sound(
-                "minecraft:block.chest.locked",
-                at,
-                1.0,
-                1.0,
-                source as i32,
-                None,
-            );
+            if self.lan_acting == Some(conn) {
+                self.send_chest_locked_notifications(at, &title);
+            } else {
+                self.as_guest(host, conn, |g| {
+                    g.send_chest_locked_notifications(at, &title)
+                });
+            }
             return false;
         }
         // A mod menu type only for a client that has it: as
@@ -6378,5 +6401,43 @@ mod respawn_world_point_tests {
         drop(host);
         drop(game);
         std::fs::remove_dir_all(scratch).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod locked_container_tests {
+    use super::super::crossing_tests::flat_game;
+    use horizon_protocol::packets::play::Clientbound as C;
+
+    /// `BaseContainerBlockEntity.sendChestLockedNotifications`: the acting
+    /// player's action bar says `container.isLocked` with the container's
+    /// name, and `block.chest.locked` sounds at the given place for everyone.
+    #[test]
+    fn a_locked_container_tells_its_opener_and_sounds_where_it_is() {
+        let Some(mut game) = flat_game() else { return };
+        let name = horizon_protocol::text::translatable("container.chest", &[]);
+        game.lan_acting = Some(7);
+        game.audio.capture = Some(Vec::new());
+        game.send_chest_locked_notifications([2.5, 61.5, 3.0], &name);
+        let overlays: Vec<_> = game
+            .guest_packets
+            .iter()
+            .filter_map(|p| match p {
+                super::Outgoing::Packet(C::SystemChat(chat)) if chat.overlay => Some(&chat.content),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            overlays,
+            [&horizon_client::containers::locked_message(&name)]
+        );
+        let sounds = game.audio.capture.take().unwrap();
+        assert!(
+            sounds.iter().any(
+                |s| s.event == "minecraft:block.chest.locked" && s.position == [2.5, 61.5, 3.0]
+            ),
+            "{:?}",
+            sounds.iter().map(|s| &s.event).collect::<Vec<_>>()
+        );
     }
 }

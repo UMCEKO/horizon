@@ -348,6 +348,9 @@ public final class Routing {
     }
 
     private static final String SUPPORTED_RETURNS = "VZIJFD";
+    /** The object arguments native writes: a `Player` is the acting player, filled as for a player receiver. */
+    private static final java.util.Set<Class<?>> READABLE = java.util.Set.of(net.minecraft.core.BlockPos.class, String.class, net.minecraft.world.item.ItemStack.class,
+            net.minecraft.world.phys.Vec3.class, net.minecraft.network.chat.Component.class, net.minecraft.world.entity.player.Player.class);
 
     private static void run(String key, String owner, String desc, boolean isStatic, MethodHandle handle, Crossing.In in, Crossing.Out out) throws Exception {
         byte recv = in.readByte();
@@ -355,7 +358,7 @@ public final class Routing {
         char ret = desc.charAt(desc.indexOf(')') + 1);
         String unreadable = SUPPORTED_RETURNS.indexOf(ret) < 0 ? "return type " + desc.substring(desc.indexOf(')') + 1) : null;
         for (var type : types) {
-            if (unreadable == null && !type.isPrimitive() && type != net.minecraft.core.BlockPos.class && type != String.class && type != net.minecraft.world.item.ItemStack.class) unreadable = type.getName();
+            if (unreadable == null && !type.isPrimitive() && !READABLE.contains(type)) unreadable = type.getName();
             if (unreadable == null && type == void.class || type == byte.class || type == short.class || type == char.class) unreadable = type.getName();
         }
         if (unreadable != null || handle == null) {
@@ -389,6 +392,9 @@ public final class Routing {
             else if (type == boolean.class) args.add(in.readBoolean());
             else if (type == String.class) args.add(in.text());
             else if (type == net.minecraft.world.item.ItemStack.class) args.add(GameBridge.decode(in.readNBytes(in.readInt())));
+            else if (type == net.minecraft.world.phys.Vec3.class) args.add(new net.minecraft.world.phys.Vec3(in.readDouble(), in.readDouble(), in.readDouble()));
+            else if (type == net.minecraft.network.chat.Component.class) args.add(GameBridge.component(in.readNBytes(in.readInt())));
+            else if (type == net.minecraft.world.entity.player.Player.class) args.add(GameBridge.fill(in, false).player());
             else args.add(net.minecraft.core.BlockPos.of(in.readLong()));
         }
         long started = Profile.ON ? System.nanoTime() : 0;

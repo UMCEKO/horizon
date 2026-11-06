@@ -144,7 +144,12 @@ impl Game<'_> {
             return None;
         }
         let at = m.position;
-        let offset = horizon_client::mobs::riders::passenger_attachment(m, 0, m.yaw, false)[1];
+        let offset = horizon_client::mobs::riders::passenger_attachment(
+            m,
+            horizon_client::mobs::riders::Seat::DRIVER,
+            m.yaw,
+            false,
+        )[1];
         self.damage_held_tool();
         self.mobs[index].set_saddle(None);
         let context = self.who_context(Some(Who::Player), None);

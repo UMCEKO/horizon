@@ -415,6 +415,15 @@ def bridges(args):
         send('wait 3')
         send('key k up')
         send('wait 3')
+        # A key held while chat closes is down after it, as KeyMapping.setAll leaves it.
+        send('key t tap')
+        send('wait 5')
+        send('key k down')
+        send('wait 3')
+        send('key escape tap')
+        send('wait 3')
+        send('key k up')
+        send('wait 3')
         # The window's rebind of a mod's key reaches its own KeyMapping: the mapping follows the new key.
         send('options-set key_key.horizon_java_test.probe key.keyboard.j')
         send('wait 3')
@@ -482,7 +491,7 @@ def bridges(args):
     session(args, drive)
     checks = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     shutil.copy(Path(args.scratch) / 'ctl.log', Path(args.scratch) / 'first-session.log')
-    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java') if (name, 'ok') not in checks)
+    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java') if (name, 'ok') not in checks)
     session(args, again)
     second = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks += [(name + ' (second session)', result) for name, result in second]
