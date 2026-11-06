@@ -1373,7 +1373,7 @@ impl Game<'_> {
         at: [f64; 3],
         name: &horizon_world::nbt::Tag,
     ) {
-        self.send_overlay_message(horizon_client::containers::locked_message(name));
+        self.send_overlay_tag(horizon_client::containers::locked_message(name));
         self.audio
             .play("minecraft:block.chest.locked", Some(at), 1.0, 1.0);
     }

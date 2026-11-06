@@ -142,7 +142,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
         let tag = horizon_world::nbt::read_named(&message.0, Default::default());
         if let Ok((root, _)) = tag && let Some(text) = root.tag.get("text") {
             if overlay {
-                game.send_overlay_message(text.clone());
+                game.send_overlay_tag(text.clone());
             } else {
                 game.system_message(remote::remote_text(text));
             }

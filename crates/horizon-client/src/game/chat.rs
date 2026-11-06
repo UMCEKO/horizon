@@ -869,7 +869,7 @@ impl Game<'_> {
     /// `ServerPlayer.sendOverlayMessage` of the acting player, `content` a
     /// component's saved form: a server's client gets it as a packet, this
     /// game's own player on its HUD.
-    pub(super) fn send_overlay_message(&mut self, content: horizon_world::nbt::Tag) {
+    pub(super) fn send_overlay_tag(&mut self, content: horizon_world::nbt::Tag) {
         if self.lan_acting.is_some() {
             self.guest_packets
                 .push(super::lan_actions::Outgoing::Packet(
