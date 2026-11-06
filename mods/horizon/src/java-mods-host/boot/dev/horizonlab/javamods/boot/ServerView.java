@@ -18,6 +18,7 @@ import net.minecraft.network.protocol.PacketFlow;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.RegistryLayer;
 import net.minecraft.server.ReloadableServerResources;
+import net.minecraft.server.ServerScoreboard;
 import net.minecraft.server.ServerTickRateManager;
 import net.minecraft.server.Services;
 import net.minecraft.server.players.CachedUserNameToIdResolver;
@@ -110,6 +111,8 @@ final class ServerView {
         set(MinecraftServer.class, server, "clockManager", clockManager);
         clockManager.init(server);
         set(MinecraftServer.class, server, "gameRules", new GameRules(WorldDataConfiguration.DEFAULT.enabledFeatures()));
+        // `MinecraftServer`'s field initializer: `Entity.getTeam` (a wither's constructor names itself) reads it.
+        set(MinecraftServer.class, server, "scoreboard", new ServerScoreboard(server));
         PlayerList players = GameBridge.construct(viewClass(client ? "net.minecraft.client.server.IntegratedPlayerList" : "net.minecraft.server.dedicated.DedicatedPlayerList", PlayerList.class), Object.class.getDeclaredConstructor());
         set(PlayerList.class, players, "server", server);
         var playing = new ArrayList<ServerPlayer>();

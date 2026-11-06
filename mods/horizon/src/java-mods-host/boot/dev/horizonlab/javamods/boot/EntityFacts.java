@@ -24,6 +24,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntitySpawnReason;
+import net.minecraft.world.entity.EntitySpawnRequest;
 import net.minecraft.world.entity.EntityType;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.registries.NeoForgeRegistries;
@@ -368,7 +369,7 @@ public final class EntityFacts {
             EntityType<?> type = entry.getValue();
             Entity entity;
             try {
-                entity = type.create(level, EntitySpawnReason.LOAD);
+                entity = instance(type, level);
             } catch (Throwable t) {
                 throw new IllegalStateException("entity facts: " + entry.getKey().identifier() + " can't be built on a view level", t);
             }
@@ -389,6 +390,11 @@ public final class EntityFacts {
             for (String c : e.getValue()) text(out, c);
         }
         return bytes.toByteArray();
+    }
+
+    /** One instance whatever the world allows (difficulty, features), as a saved entity loads: the facts are cached across worlds. */
+    static Entity instance(EntityType<?> type, net.minecraft.world.level.Level level) {
+        return type.create(level, new EntitySpawnRequest(EntitySpawnReason.LOAD, true));
     }
 
     static List<String> chain(Class<?> type) {
