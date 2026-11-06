@@ -668,7 +668,7 @@ mod tests {
                 vehicle.position = Vec3::new(4.5, 200.0, 4.5);
                 vehicle.extra.model_scale = scale;
                 vehicle.extra.age = age;
-                let attachment = passenger_attachment(&vehicle, 0, vehicle.yaw, false);
+                let attachment = passenger_attachment(&vehicle, Seat::DRIVER, vehicle.yaw, false);
                 assert_eq!(attachment, [0.0, expected, 0.0], "age={age}, scale={scale}");
                 let offset = vehicle_attachment(&rider, vehicle.width())[1];
                 assert_eq!(offset, 0.0);
