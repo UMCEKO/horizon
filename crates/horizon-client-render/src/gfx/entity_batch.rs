@@ -14,9 +14,10 @@ use super::Vertex;
 /// material after those: the render types vanilla gives an `OitPipelineSet`
 /// (translucent, emissive, eyes and breeze wind entity models). Off, the tag is
 /// ignored and they stay in the first one, in their order.
+/// Two native world-canvas text materials follow it, NORMAL then POLYGON_OFFSET.
 ///
-/// Last come quads mods draw after translucent terrain (39), and those that also write depth (40).
-const MATERIALS: usize = 12;
+/// Last come quads mods draw after translucent terrain (41), and those that also write depth (42).
+const MATERIALS: usize = 14;
 /// A bit of `Vertex::layer`, above the overlay (low 16 bits) and the HDR tier
 /// (bits 16 to 23): the quad's render type has an `OitPipelineSet`
 /// (`RenderTypes.entityTranslucent`, `entityTranslucentEmissive`, `eyes`,
@@ -53,11 +54,15 @@ pub const TRANSLUCENT_GLINT_ITEM_OVERLAY: u32 = 33;
 /// The overlay of text in `Font.DisplayMode.POLYGON_OFFSET` (text displays):
 /// drawn like an ordinary entity, pulled toward the camera.
 pub const TEXT_POLYGON_OFFSET_OVERLAY: u32 = 35;
+/// A native world canvas, drawn after particles with normal text depth/culling.
+pub const WORLD_TEXT_OVERLAY: u32 = 39;
+/// The front of its eight-offset outlined text, using POLYGON_OFFSET.
+pub const WORLD_TEXT_POLYGON_OFFSET_OVERLAY: u32 = 40;
 /// The overlay of quads a mod draws once translucent terrain is down (blended, in its own
 /// `RenderLevelStageEvent.AfterTranslucentBlocks` or later): depth tested, drawn like translucent items.
-pub const MOD_AFTER_TRANSLUCENT_OVERLAY: u32 = 39;
+pub const MOD_AFTER_TRANSLUCENT_OVERLAY: u32 = 41;
 /// The same for a pipeline that writes depth (`DepthStencilState.writeDepth`): drawn with the entity pipeline.
-pub const MOD_AFTER_TRANSLUCENT_DEPTH_OVERLAY: u32 = 40;
+pub const MOD_AFTER_TRANSLUCENT_DEPTH_OVERLAY: u32 = 42;
 /// The overlay of an enchanted armour layer's glint (`ARMOR_ENTITY_GLINT_TEXTURING`, read in entity.wgsl).
 pub const ARMOR_GLINT: u32 = 36;
 
@@ -68,6 +73,8 @@ fn material(layer: u32, oit: bool) -> usize {
         return 9;
     }
     match layer & 0xffff {
+        WORLD_TEXT_OVERLAY => 10,
+        WORLD_TEXT_POLYGON_OFFSET_OVERLAY => 11,
         TEXT_POLYGON_OFFSET_OVERLAY => 1,
         11 => 2,
         12 => 3,
@@ -76,8 +83,8 @@ fn material(layer: u32, oit: bool) -> usize {
         SHADOW_OVERLAY => 6,
         TRANSLUCENT_PARTICLE_OVERLAY => 7,
         TRANSLUCENT_ITEM_OVERLAY | TRANSLUCENT_GLINT_ITEM_OVERLAY => 8,
-        MOD_AFTER_TRANSLUCENT_OVERLAY => 10,
-        MOD_AFTER_TRANSLUCENT_DEPTH_OVERLAY => 11,
+        MOD_AFTER_TRANSLUCENT_OVERLAY => 12,
+        MOD_AFTER_TRANSLUCENT_DEPTH_OVERLAY => 13,
         _ => 0,
     }
 }
@@ -129,7 +136,7 @@ impl EntityBatch {
         self.combined.clear();
         self.combined
             .reserve(entity_vertices + additive.len() + hand.len() + see_through.len());
-        for runs in &self.runs {
+        for runs in &self.runs[..10] {
             for &(first, count) in runs {
                 self.combined
                     .extend_from_slice(&entities[first * 4..(first + count) * 4]);
@@ -152,6 +159,27 @@ impl EntityBatch {
                 }
             }
         }
+        // RenderType.text sorts alpha-blended quads from far to near. Keep
+        // both world-canvas layers after existing materials (including eyes
+        // moved out of additive); front text uses polygon offset.
+        for runs in &self.runs[10..] {
+            let start = self.combined.len();
+            for &(first, count) in runs {
+                self.combined
+                    .extend_from_slice(&entities[first * 4..(first + count) * 4]);
+            }
+            self.combined[start..]
+                .as_chunks_mut::<4>()
+                .0
+                .sort_by(|a, b| {
+                    let distance = |q: &[Vertex; 4]| {
+                        (0..3)
+                            .map(|i| ((q[0].pos[i] + q[2].pos[i]) * 0.5).powi(2))
+                            .sum::<f32>()
+                    };
+                    distance(b).total_cmp(&distance(a))
+                });
+        }
         if self.moved_additive == 0 {
             self.combined.extend_from_slice(additive);
         } else {
@@ -171,6 +199,41 @@ impl EntityBatch {
 mod tests {
     use super::*;
     use std::{hint::black_box, time::Instant};
+    #[test]
+    fn world_canvas_sorts_after_oit_eyes_before_frame_tails() {
+        let quad = |layer, x| {
+            [Vertex {
+                layer,
+                pos: [x, 0.0, 0.0],
+                ..geometry(1, false)[0]
+            }; 4]
+        };
+        let entities: Vec<_> = [
+            (0, 1.0),
+            (35, 2.0),
+            (OIT_ENTITY, 3.0),
+            (WORLD_TEXT_OVERLAY, 4.0),
+            (WORLD_TEXT_OVERLAY, 5.0),
+            (WORLD_TEXT_POLYGON_OFFSET_OVERLAY, 6.0),
+        ]
+        .into_iter()
+        .flat_map(|(layer, x)| quad(layer, x))
+        .collect();
+        let additive: Vec<_> = [(OIT_ENTITY | 2, 7.0), (2, 8.0)]
+            .into_iter()
+            .flat_map(|(layer, x)| quad(layer, x))
+            .collect();
+        let mut batch = EntityBatch::default();
+        assert_eq!(
+            batch.update(&entities, &additive, &quad(0, 9.0), &quad(0, 10.0), true),
+            [1, 1, 0, 0, 0, 0, 0, 0, 0, 2, 2, 1, 0, 0]
+        );
+        let positions: Vec<_> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
+        assert_eq!(
+            positions,
+            [1.0, 2.0, 3.0, 7.0, 5.0, 4.0, 6.0, 8.0, 9.0, 10.0]
+        );
+    }
 
     // Retain the original implementation as the equivalence/benchmark oracle.
     fn baseline(
@@ -260,6 +323,8 @@ mod tests {
             MOD_AFTER_TRANSLUCENT_DEPTH_OVERLAY,
             DRAGON_RAYS_OVERLAY,
             DISSOLVE_OVERLAY,
+            WORLD_TEXT_OVERLAY,
+            WORLD_TEXT_POLYGON_OFFSET_OVERLAY,
         ];
         let unique: std::collections::HashSet<_> = codes.iter().collect();
         assert_eq!(unique.len(), codes.len());
@@ -270,11 +335,11 @@ mod tests {
                 MOD_AFTER_TRANSLUCENT_OVERLAY,
                 MOD_AFTER_TRANSLUCENT_DEPTH_OVERLAY
             ),
-            (36, 39, 40)
+            (36, 41, 42)
         );
         assert_eq!(material(ARMOR_GLINT, false), 0);
-        assert_eq!(material(MOD_AFTER_TRANSLUCENT_OVERLAY, false), 10);
-        assert_eq!(material(MOD_AFTER_TRANSLUCENT_DEPTH_OVERLAY, false), 11);
+        assert_eq!(material(MOD_AFTER_TRANSLUCENT_OVERLAY, false), 12);
+        assert_eq!(material(MOD_AFTER_TRANSLUCENT_DEPTH_OVERLAY, false), 13);
     }
 
     #[test]
@@ -309,12 +374,12 @@ mod tests {
         let mut batch = EntityBatch::default();
         // Off: the tag changes nothing, the quads keep their place.
         let counts = batch.update(&entities, &[], &[], &[], false);
-        assert_eq!(counts, [4, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(counts, [4, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
         let xs: Vec<f32> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(xs, [0.0, 1.0, 2.0, 4.0, 3.0]);
         // On: the tagged quads come last, in order.
         let counts = batch.update(&entities, &[], &[], &[], true);
-        assert_eq!(counts, [2, 0, 0, 0, 0, 0, 1, 0, 0, 2, 0, 0]);
+        assert_eq!(counts, [2, 0, 0, 0, 0, 0, 1, 0, 0, 2, 0, 0, 0, 0]);
         let xs: Vec<f32> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(xs, [0.0, 2.0, 3.0, 1.0, 4.0]);
     }

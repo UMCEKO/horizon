@@ -104,6 +104,16 @@ impl SceneSound {
             _ => None,
         }
     }
+    /// `HoneyBlock.fallOn`: `entity.playSound` of the slide, and of the block's
+    /// own fall sound when the landing still hurts. A player's `playSound`
+    /// skips that player; their client plays the same event itself.
+    pub fn honey_landing_sound(self) -> Option<&'static str> {
+        match self {
+            Self::Block(LandingSound::HoneySlide) => Some("minecraft:block.honey_block.slide"),
+            Self::Block(LandingSound::HoneyFall) => Some("minecraft:block.honey_block.fall"),
+            _ => None,
+        }
+    }
     fn name(self) -> &'static str {
         match self {
             Self::SmallFall => "small",
@@ -117,6 +127,16 @@ impl SceneSound {
         }
     }
 }
+/// `HoneyBlock.showParticles`: a slide (entity event 53) sheds 5 honey-block
+/// crumbs, a landing (entity event 54) sheds 10.
+pub fn honey_particle_count(event: i8) -> Option<u32> {
+    match event {
+        53 => Some(5),
+        54 => Some(10),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum FallEvent {
     Particles {
@@ -144,6 +164,9 @@ pub enum FallEvent {
     Broadcast(u8),
     Write {
         position: BlockPos,
+        /// The block it replaced, so a mod that cancels the change
+        /// (`native_entity_change_block_v2`) can have it put back.
+        from: BlockStateId,
         state: BlockStateId,
         flags: u32,
     },
@@ -221,6 +244,7 @@ impl FallEvent {
                 position,
                 state,
                 flags,
+                ..
             } => format!("write {} {} {}", p(position), state.0, flags),
             Self::Destroy {
                 position, drops, ..
@@ -567,9 +591,11 @@ impl BlockLandingWorld for MotionWorld<'_, '_, '_> {
         Ok(true)
     }
     fn set_block(&mut self, position: BlockPos, state: BlockStateId, flags: u32) -> Result<bool> {
+        let from = self.scene.block(position.x, position.y, position.z);
         self.scene.set(position.x, position.y, position.z, state)?;
         self.fall_event(FallEvent::Write {
             position,
+            from,
             state,
             flags,
         });
@@ -782,5 +808,24 @@ mod tests {
             None
         );
         assert_eq!(SceneSound::BigFall.block_sound(), None);
+    }
+
+    /// `HoneyBlock.fallOn` plays the slide, then the block's fall sound when
+    /// the landing hurts. `showSlideParticles` is entity event 53 (5 crumbs);
+    /// `showJumpParticles` is entity event 54 (10).
+    #[test]
+    fn a_honey_landing_names_its_sounds_and_particle_counts() {
+        assert_eq!(
+            SceneSound::Block(LandingSound::HoneySlide).honey_landing_sound(),
+            Some("minecraft:block.honey_block.slide")
+        );
+        assert_eq!(
+            SceneSound::Block(LandingSound::HoneyFall).honey_landing_sound(),
+            Some("minecraft:block.honey_block.fall")
+        );
+        assert_eq!(SceneSound::SmallFall.honey_landing_sound(), None);
+        assert_eq!(honey_particle_count(53), Some(5));
+        assert_eq!(honey_particle_count(54), Some(10));
+        assert_eq!(honey_particle_count(46), None);
     }
 }

@@ -156,7 +156,7 @@ impl Game<'_> {
         if !host.item_entity_code(&stack.item) {
             return false;
         }
-        let Some((index, _)) = self.mob_hit() else {
+        let Some((index, ..)) = self.mob_hit() else {
             return false;
         };
         let mut out = Out::default();
@@ -371,7 +371,7 @@ impl Game<'_> {
         out.double(position.z);
         out.float(self.yaw);
         out.float(self.pitch);
-        out.bool(self.keys.contains(&KeyCode::ShiftLeft));
+        out.bool(self.keys.held(horizon_client::actions::Action::Sneak));
         out.int(self.mode as i32);
         out.int(matches!(self.hand, Hand::Off) as i32);
         out.int(self.selected as i32);

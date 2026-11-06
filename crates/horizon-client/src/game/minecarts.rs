@@ -6,6 +6,7 @@
 //! rail-following render with the display block.
 use super::entity_life::{Kind, NewEntity, Origin, Removal};
 use super::{Game, Hit, InteractTarget, Keys, entity::Entity};
+use horizon_client::actions::Action;
 use horizon_client::entity_rules::EntityRules;
 use horizon_client::riding::Ent;
 use horizon_client::{
@@ -199,6 +200,24 @@ fn display_offset(c: &Minecart) -> f64 {
     c.custom_offset
         .map_or_else(|| default_display_offset(c.kind), f64::from)
 }
+
+/// World-space envelope of the cart model and its optional displayed block,
+/// based on the same root position and display offset used by the renderer.
+fn cart_render_bounds(position: Vec3, offset: f64, has_display: bool) -> Aabb {
+    let (bottom, top) = if has_display {
+        let display_shift = 0.75 * (offset - 8.0) / 16.0;
+        (
+            (position.y - 0.5).min(position.y + 0.375 - 0.4 + display_shift),
+            (position.y + 0.9).max(position.y + 0.375 + 0.4 + display_shift + 0.9),
+        )
+    } else {
+        (position.y - 0.5, position.y + 0.9)
+    };
+    Aabb::new(
+        Vec3::new(position.x - 1.0, bottom, position.z - 1.0),
+        Vec3::new(position.x + 1.0, top, position.z + 1.0),
+    )
+}
 /// A display state that is air shows nothing.
 fn shown_unless_air(
     state: Option<BlockStateId>,
@@ -228,7 +247,7 @@ fn cart_at(carts: &[Minecart], id: u32, hint: usize) -> Option<usize> {
 }
 /// `AbstractMinecart.push(entity)` for a non-cart `entity` at `feet`:
 /// the push the cart loses (the entity gets a quarter of it back).
-fn cart_push_from(feet: Vec3, cart: Vec3) -> Option<(f64, f64)> {
+pub(super) fn cart_push_from(feet: Vec3, cart: Vec3) -> Option<(f64, f64)> {
     let (xa, za) = (feet.x - cart.x, feet.z - cart.z);
     let dd = xa * xa + za * za;
     if dd < f64::from(1.0e-4f32) {
@@ -555,6 +574,7 @@ impl Game<'_> {
         // turns nearly all of them away: it is tested first, before a mob's
         // pushable state, and only the boxes kept are collected.
         let close = |b: &Aabb| b.intersects(near);
+        let reach = self.vehicle_mob_reach();
         let mut boxes: Vec<Aabb> = self
             .carts
             .iter()
@@ -570,10 +590,12 @@ impl Game<'_> {
             .chain(
                 self.mobs
                     .iter()
-                    .filter(|m| !m.removed && self.vehicle_of(Ent::Id(m.id)) != Some(Ent::Id(c.id)))
+                    .filter(|m| reach.is_none_or(|r| r.may_meet(m, near)))
                     .map(|m| (m, m.bounds()))
                     .filter(|(m, b)| {
                         close(b)
+                            && !m.removed
+                            && self.vehicle_of(Ent::Id(m.id)) != Some(Ent::Id(c.id))
                             && (m.pushable()
                                 || m.species() == horizon_client::mobs::Species::Shulker
                                     && m.alive())
@@ -1716,6 +1738,11 @@ impl Game<'_> {
     }
     /// Every cart but the ridden one (which ticks with its rider).
     pub(super) fn tick_carts(&mut self) {
+        self.vehicles_ticking(true);
+        self.tick_carts_now();
+        self.vehicles_ticking(false);
+    }
+    fn tick_carts_now(&mut self) {
         self.push_carts();
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
@@ -1932,9 +1959,19 @@ impl Game<'_> {
             );
             self.native_vehicle_create(kind, at);
         }
+        // MinecartItem.useOn: ENTITY_PLACE at the rail, by the player, with the block under it.
+        let below = self.world.block(hit.pos[0], hit.pos[1] - 1, hit.pos[2]);
+        self.post_block_game_event(
+            "minecraft:entity_place",
+            hit.pos,
+            self.sculk_actor(),
+            Some(below),
+        );
         if !self.creative {
             self.consume_held();
         }
+        // ItemStack.useOn counts the use.
+        self.award_stat("used", &stack.item, 1);
         self.swing_arm();
         true
     }
@@ -2009,7 +2046,7 @@ impl Game<'_> {
         if target.is_none() && !self.before_block(d) {
             return false;
         }
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
+        let sneaking = self.keys.held(Action::Sneak);
         let held = self.held().cloned();
         match self.carts[i].kind {
             CartKind::Rideable => {
@@ -2094,7 +2131,13 @@ impl Game<'_> {
             return;
         }
         self.store_cart_items(key);
-        self.world.block_entities.remove(&key);
+        let guest_viewers = self
+            .lan
+            .as_ref()
+            .is_some_and(|host| Self::vehicle_has_other_viewers(None, &host.hub.guests, None, key));
+        if !guest_viewers {
+            self.world.block_entities.remove(&key);
+        }
     }
     /// A chest or hopper minecart or a chest boat is about to be removed
     /// (`Containers.dropContents` / `AbstractChestBoat.remove`): what an open
@@ -2411,7 +2454,6 @@ impl Game<'_> {
         // edge, scaled by the view scale.
         let range = (WIDTH + HEIGHT + WIDTH) / 3.0 * 64.0 * self.view_scale();
         for c in &self.carts {
-            let entity_start = out.len();
             let Some(model) = self.cart_models.models.get(&c.kind) else {
                 continue;
             };
@@ -2471,6 +2513,17 @@ impl Game<'_> {
                     pitch = (d.y.atan() * 73.0) as f32;
                 }
             }
+            let render_position = Vec3::new(x + offset.x, y + offset.y, z + offset.z);
+            let has_display = shown.as_ref().is_some_and(Option::is_some)
+                || (shown.is_none() && self.display_state(c).is_some());
+            let culling = self.entity_cull_decision_in_bounds(
+                c,
+                cart_render_bounds(render_position, display_offset(c), has_display),
+            );
+            if culling.hides_entity() {
+                continue;
+            }
+            let entity_start = out.len();
             // The per-entity jitter (offsetSeed) that keeps stacked carts from z-fighting.
             let seed = i64::from(c.id).wrapping_mul(493_286_711);
             let seed = seed
@@ -2547,7 +2600,7 @@ impl Game<'_> {
             let m = base * glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0));
             let poses = Poses::new(model);
             horizon_client::mobs::render::draw(model, m, &poses, uv, 0xFFFF_FFFF, packed, 0, out);
-            self.cull_entity_vertices(out, entity_start);
+            self.finish_entity_occlusion(culling, c, out, entity_start);
         }
     }
     /// The model of a block drawn by its block-entity renderer, as a chest
@@ -2580,6 +2633,7 @@ impl Game<'_> {
             skull: &|_| None,
             glyph: &|c| self.gui.atlas.glyph_cell(c),
             glyphs: self.gui.atlas.font.epoch(),
+            dynamic_visible: None,
         };
         self.res
             .block_entity_render()

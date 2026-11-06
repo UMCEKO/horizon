@@ -621,6 +621,33 @@ mod tests {
             1.312_500_059_604_645
         ));
     }
+    /// `Pig.getDefaultDimensions`: BABY_DIMENSIONS overrides PASSENGER.
+    #[test]
+    fn a_baby_pig_uses_its_own_passenger_attachment() {
+        let Some(types) = types() else { return };
+        let rider = mob(&types, "pig", false);
+        for (scale, baby_y, adult_y) in [
+            (0.0, 0.5, 0.868_749_976_158_142_1),
+            (1.0, 0.5, 0.868_749_976_158_142_1),
+            (2.0, 1.0, 1.737_499_952_316_284_2),
+        ] {
+            for (age, expected) in [(-24000, baby_y), (-1, baby_y), (0, adult_y), (42, adult_y)] {
+                let mut vehicle = mob(&types, "pig", false);
+                vehicle.position = Vec3::new(4.5, 200.0, 4.5);
+                vehicle.extra.model_scale = scale;
+                vehicle.extra.age = age;
+                let attachment = passenger_attachment(&vehicle, 0, vehicle.yaw, false);
+                assert_eq!(attachment, [0.0, expected, 0.0], "age={age}, scale={scale}");
+                let offset = vehicle_attachment(&rider, vehicle.width())[1];
+                assert_eq!(offset, 0.0);
+                assert_eq!(
+                    seat(attachment, offset, vehicle.position, vehicle.yaw),
+                    Vec3::new(4.5, 200.0 + expected, 4.5)
+                );
+            }
+        }
+    }
+
     #[test]
     fn archers_keep_their_distance_and_brawlers_close_in() {
         assert!(ranged(Species::Skeleton) && ranged(Species::Pillager));

@@ -2,6 +2,7 @@
 //! `Llama.handleEating` (wheat and hay), chests, carpets, shearing a carpet
 //! off and riding.
 use super::Game;
+use horizon_client::actions::Action;
 use horizon_client::riding::Ent;
 use horizon_client::{
     items::ItemStack,
@@ -79,7 +80,7 @@ impl Game<'_> {
         if !m.alive() || Some(m.id) == self.vehicle() {
             return false;
         }
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
+        let sneaking = self.keys.held(Action::Sneak);
         let (baby, tamed, vehicle) = (m.is_baby(), m.extra.tame, self.is_vehicle(Ent::Id(m.id)));
         let open_inventory = !baby && tamed && sneaking;
         if !vehicle && !open_inventory && !item.is_empty() {

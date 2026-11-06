@@ -406,7 +406,7 @@ impl Game<'_> {
     }
 
     /// `PrimedTnt.owner` as the UUID Java names it by: a mob's, or the player who lit it.
-    fn tnt_owner_uuid(
+    fn java_tnt_owner_uuid(
         &self,
         owner: Option<horizon_client::mobs::Who>,
         guest: Option<u32>,
@@ -444,7 +444,7 @@ impl Game<'_> {
                                 },
                             ),
                             power: t.power,
-                            owner: self.tnt_owner_uuid(t.owner, t.guest),
+                            owner: self.java_tnt_owner_uuid(t.owner, t.guest),
                         }),
                     ..Overlay::default()
                 };
@@ -598,6 +598,7 @@ impl Game<'_> {
                         uuid,
                         raw(self, m.id).as_ref(),
                         Some(self.pack.assets.registry),
+                        |other| self.persist.uuid_of(other),
                     ),
                     horizon_client::command::args::normalize(&m.kind.id),
                 )
@@ -683,7 +684,7 @@ impl Game<'_> {
             NewEntity::Tnt(t) => {
                 let uuid = self.uuid_for(t.id);
                 let state = self.state_to_nbt(t.block_state.unwrap_or(self.tnt_default_state()));
-                let owner = self.tnt_owner_uuid(t.owner, t.guest);
+                let owner = self.java_tnt_owner_uuid(t.owner, t.guest);
                 (
                     entity_nbt::primed_tnt_to_nbt(
                         &entity_nbt::TntNbt {

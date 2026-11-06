@@ -901,7 +901,7 @@ enum Cmd {
     /// minecraft-dir PATH, server-dir PATH ("default" resets a folder), install-new-versions
     /// on|off, prune-old-versions on|off (delete old versions after an install, keeping the
     /// selected one, the ones instances use and the newest few), keep-versions N (how many of the
-    /// newest to keep; "default" is 2), opening-animation on|off, proxy http://host:port
+    /// newest to keep; "default" is 2), opening-animation on|off, proxy http://host:port|socks5://host:port
     /// ("default" removes it), while-playing stay|minimize|hide (what the window does while the game runs), language
     /// system|en|fr|ru|de|zh|es|uk|pl (the window's language; system follows the computer's), accent
     /// violet|blue|teal|green|amber|red|pink|#rrggbb|DEGREES (a named accent, any colour, or any
@@ -1270,7 +1270,8 @@ fn json(value: serde_json::Value) {
 }
 
 /// Runs a game process in this terminal and reports how it ended.
-fn attached(mut cmd: Command) -> Result<(), String> {
+fn attached(cmd: Command) -> Result<(), String> {
+    let (mut cmd, _runtime) = backend::prepare_command(cmd)?;
     let status = cmd
         .status()
         .map_err(|e| format!("Could not start {:?}: {e}", cmd.get_program()))?;
@@ -1319,7 +1320,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                 } else {
                     " "
                 };
-                let state = if !backend::is_prepared(tag) {
+                let state = if !backend::check_prepared(tag) {
                     "not prepared"
                 } else if backend::has_sounds(tag) {
                     "prepared"
@@ -1350,9 +1351,9 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
             let tag = backend::install_tag(&tag, false, progress(label))?;
             if as_json {
                 json(
-                    serde_json::json!({ "installed": tag, "prepared": backend::is_prepared(&tag) }),
+                    serde_json::json!({ "installed": tag, "prepared": backend::check_prepared(&tag) }),
                 );
-            } else if backend::is_prepared(&tag) {
+            } else if backend::check_prepared(&tag) {
                 println!(
                     "Installed {tag}. It is prepared already, from another installed version."
                 );
@@ -1400,7 +1401,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                     // The instance's version is never looked at here: the newest installed
                     // release or Nightly, or that one with `--update` (never a native build).
                     None => native_mods::base_for(None, &backend::installed(), update)
-                        .ok_or_else(|| tr("No version is installed yet."))?,
+                        .ok_or_else(backend::no_version_installed)?,
                 };
                 let built = native_mods::build_server(
                     &base,
@@ -1442,7 +1443,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                 None => {
                     let plays = target.resolve_version(None).ok();
                     native_mods::base_for(plays.as_deref(), &backend::installed(), update)
-                        .ok_or("No version is installed yet.")?
+                        .ok_or_else(backend::no_version_installed)?
                 }
             };
             let folder = match folder {
@@ -1482,7 +1483,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                 return Err("An imported build is unsigned: Horizon can't check where it came from. If you trust it, pass --trust-unsigned.".into());
             }
             let tag = build_import::import(&path, version.as_deref())?;
-            let prepared = backend::is_prepared(&tag);
+            let prepared = backend::check_prepared(&tag);
             if as_json {
                 json(serde_json::json!({ "imported": tag, "prepared": prepared }));
             } else if prepared {
@@ -2123,7 +2124,7 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                     );
                 }
                 if !accounts.has_owner(account::store()) {
-                    println!("{}.", account::NEEDS_OWNER);
+                    println!("{} {}", account::NoOwner, tr(backend::SIGN_IN_HINT));
                 }
             }
         }
@@ -2555,9 +2556,9 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
         .as_ref()
         .and_then(|i| i.java.as_ref())
         .map(|j| j.target());
-    let home = match (&action, instance) {
+    let home = match (&action, &instance) {
         (ModsCmd::Search { .. }, _) | (_, None) => backend::game_home(),
-        (_, Some(i)) => i.home,
+        (_, Some(i)) => i.home.clone(),
     };
     let entry_json = |e: &installed::Entry| serde_json::to_value(e).unwrap_or_default();
     let line = |label: &str, f: f32| progress(label.to_string())(f);
@@ -2653,7 +2654,7 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                         "id": p.id, "slug": p.slug, "title": p.title, "summary": p.summary,
                         "author": p.author, "downloads": p.downloads, "page": p.page,
                         "license": p.license, "support": support.label(), "reason": support.reason(),
-                        "about": if p.source == SourceId::Horizon { horizon::trust_and_capabilities(&p.id) } else { Vec::new() },
+                        "about": if p.source == SourceId::Horizon { horizon::trust_and_capabilities(&p.id, instance.as_ref()) } else { Vec::new() },
                     })
                 }).collect());
             } else {
@@ -2664,7 +2665,7 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                     let support = p.support();
                     if p.source == SourceId::Horizon {
                         println!("{}  ({})  {}\n  {}", p.title, p.slug, p.author, p.summary);
-                        for line in horizon::trust_and_capabilities(&p.id) {
+                        for line in horizon::trust_and_capabilities(&p.id, instance.as_ref()) {
                             println!("  {line}");
                         }
                         continue;
@@ -2798,7 +2799,7 @@ fn mods(action: ModsCmd, as_json: bool) -> Result<(), String> {
                 let log = &|line: String| eprintln!("{line}");
                 let resources = backend::resolve_version(None)
                     .ok()
-                    .filter(|t| backend::is_prepared(t))
+                    .filter(|t| backend::check_prepared(t))
                     .map(|t| backend::resources(&t));
                 let pack = modpacks::import_and_port(&file, resources.as_deref(), log)?;
                 println!("{} ({})", modpacks::outcome(&pack), pack.summary());
@@ -3373,11 +3374,14 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
                     ))
                 }
             };
-            let made = other_launchers::import(
-                f,
-                new_name.as_deref().unwrap_or(&f.name),
-                minecraft.as_deref(),
-            )?;
+            let target = new_name.as_deref().unwrap_or(&f.name);
+            let made = other_launchers::import(f, target, minecraft.as_deref()).map_err(|e| {
+                if e == instances::name_taken(target.trim()) {
+                    instances::name_taken_with_flag(target.trim())
+                } else {
+                    e
+                }
+            })?;
             let unsupported = other_launchers::loader(f).is_none();
             if let Some(l) = f.loader.as_ref().filter(|_| unsupported && !as_json) {
                 println!(
@@ -3865,7 +3869,7 @@ fn modpack(action: ModpackCmd, as_json: bool) -> Result<(), String> {
         } => {
             let tag = backend::resolve_version(version.as_deref()).ok();
             let resources = tag
-                .filter(|t| backend::is_prepared(t))
+                .filter(|t| backend::check_prepared(t))
                 .map(|t| backend::resources(&t));
             show(&modpacks::port(
                 &work(&pack)?,

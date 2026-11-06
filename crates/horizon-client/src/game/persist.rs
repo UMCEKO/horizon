@@ -9,7 +9,7 @@ use horizon_client::{
     entity_nbt,
     mobs::Who,
     riding::Ent,
-    save::{ChunkExtras, random_uuid, text, uuid_text},
+    save::{ChunkExtras, random_uuid, text, uuid_from_text, uuid_text},
     scoreboard::Scoreboard,
 };
 use horizon_core::{
@@ -53,6 +53,15 @@ pub struct EntityMemory {
     /// increasing order), type, and whether the last leave sweep saw it.
     /// Only filled while a mod is loaded.
     pub(super) live: Vec<(u32, String, bool)>,
+}
+impl EntityMemory {
+    /// The UUID entity `id` was loaded or saved with: what a save writes for a
+    /// field naming that entity (`entity_nbt::mob_to_nbt`'s `uuid_of`). `None`
+    /// for one that has none yet, so no reference is written rather than a
+    /// made-up UUID nothing would answer for.
+    pub(super) fn uuid_of(&self, id: u32) -> Option<[i32; 4]> {
+        self.uuids.get(&id).copied()
+    }
 }
 
 /// The key that marks a compound queued with the chunk loads as a fresh add
@@ -1324,6 +1333,7 @@ impl Game<'_> {
             uuid,
             self.persist.raw.get(&id),
             Some(self.pack.assets.registry),
+            |other| self.persist.uuid_of(other),
         );
         if horizon_client::mobs::camel::is_camel(self.mobs[i].species())
             && let Tag::Compound(c) = &mut tag
@@ -1444,13 +1454,24 @@ impl Game<'_> {
             join_saved_team(&mut self.score.board, &name, tag);
         }
     }
+    /// The entity a UUID read back from a save names, while it is in the level:
+    /// the player, or a mob loaded or saved with that UUID. `None` for nothing
+    /// loaded (an entity that is not here, or one `Who` cannot carry) - never
+    /// some other entity as a stand-in.
+    pub(super) fn who_by_uuid(&self, uuid: [i32; 4]) -> Option<Who> {
+        let player = if self.player.is_some() {
+            self.level.player_uuid
+        } else {
+            None
+        };
+        entity_nbt::who_by_uuid(&self.persist.uuids, &self.mobs, player, uuid)
+    }
     /// The mob that was loaded or saved with a UUID.
     pub(super) fn mob_by_uuid(&self, uuid: [i32; 4]) -> Option<u32> {
-        self.persist
-            .uuids
-            .iter()
-            .find(|(id, u)| **u == uuid && self.mobs.iter().any(|m| m.id == **id))
-            .map(|(id, _)| *id)
+        match self.who_by_uuid(uuid) {
+            Some(Who::Mob(id)) => Some(id),
+            _ => None,
+        }
     }
     /// A mob's UUID, made up for new ones.
     pub(super) fn mob_uuid(&mut self, id: u32) -> [i32; 4] {
@@ -1822,13 +1843,56 @@ impl Game<'_> {
             self.save.save_entities_later(chunks)
         }
     }
-    pub(super) fn prune_entity_memory(&mut self) {
+    /// The ids of every entity in the level now.
+    fn live_entity_ids(&self) -> HashSet<u32> {
         use super::entity::{Entity as _, entity_lists_of, for_each_entity};
-        // Forget entities that no longer exist.
         let mut alive: HashSet<u32> = self.entity_ids_off_walk().collect();
         for_each_entity!(entity_lists_of!(self), entity => {
             alive.insert(entity.id());
         });
+        alive
+    }
+    /// `ServerLevel.EntityCallbacks.onDestroyed` → `Scoreboard.entityRemoved`
+    /// for every kind of entity, not only the mobs `score_entity_removed`
+    /// covers as they die: an item picked up or killed, an expired cloud, a
+    /// discarded projectile leaves the board and its team. Unloaded and
+    /// travelling entities leave `persist.uuids` first (`forget_entity`,
+    /// `detach_entity`), so they keep their scores, as vanilla's do. Once a
+    /// tick, so a command in the same tick still sees them; nothing to do
+    /// while no entity holds a score or a team.
+    pub(super) fn score_destroyed_entities(&mut self) {
+        let board = &self.score.board;
+        let held: HashSet<[i32; 4]> = board
+            .scores
+            .keys()
+            .map(String::as_str)
+            .chain(board.team_members())
+            .filter(|holder| holder.len() == 36)
+            .filter_map(uuid_from_text)
+            .collect();
+        if held.is_empty() {
+            return;
+        }
+        let candidates: Vec<(u32, [i32; 4])> = self
+            .persist
+            .uuids
+            .iter()
+            .filter(|(_, uuid)| held.contains(*uuid))
+            .map(|(&id, &uuid)| (id, uuid))
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let alive = self.live_entity_ids();
+        for (id, uuid) in candidates {
+            if !alive.contains(&id) {
+                self.score.board.entity_removed(&uuid_text(uuid));
+            }
+        }
+    }
+    pub(super) fn prune_entity_memory(&mut self) {
+        // Forget entities that no longer exist.
+        let alive = self.live_entity_ids();
         for (id, uuid) in &self.persist.uuids {
             if !alive.contains(id) {
                 self.entity_attachments.remove(uuid);
@@ -1993,23 +2057,9 @@ impl Game<'_> {
         i: usize,
         keys: &HashSet<ChunkKey>,
     ) -> Option<(ChunkKey, Tag)> {
-        let (id, at) = (self.tnts[i].id, self.tnts[i].position);
-        keys.contains(&chunk_of(at)).then(|| {
-            let uuid = self.uuid_for(id);
-            let t = &self.tnts[i];
-            let tag = entity_nbt::tnt_to_nbt(
-                t.position,
-                t.velocity,
-                t.on_ground,
-                t.fuse,
-                t.power,
-                t.block_state_nbt(self.pack.assets.registry),
-                t.rotation,
-                uuid,
-                self.persist.raw.get(&id),
-            );
-            (chunk_of(at), tag)
-        })
+        let at = self.tnts[i].position;
+        keys.contains(&chunk_of(at))
+            .then(|| (chunk_of(at), self.tnt_nbt(i)))
     }
     pub(super) fn save_boat(
         &mut self,

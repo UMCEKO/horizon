@@ -2032,7 +2032,7 @@ pub(in crate::game) mod live {
 
         /// The modifier bits of `InputWithModifiers`: SDL's left and right of each.
         fn java_modifiers(&self) -> i32 {
-            let bit = |key, value| if self.keys.contains(&key) { value } else { 0 };
+            let bit = |key, value| if self.keys.raw(&key) { value } else { 0 };
             bit(KeyCode::ShiftLeft, 1)
                 | bit(KeyCode::ShiftRight, 2)
                 | bit(KeyCode::ControlLeft, 64)

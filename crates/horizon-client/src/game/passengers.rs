@@ -14,7 +14,6 @@ use horizon_client::{
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use std::collections::HashMap;
-use winit::keyboard::KeyCode;
 
 /// `Zombie.finalizeSpawn`: a baby zombie takes a chicken one time in twenty,
 /// and another one time in twenty of the rest.
@@ -228,8 +227,9 @@ impl Game<'_> {
             return false;
         }
         // Entity.canRide: not crouching (the acting player's sneak key), and not just off a vehicle.
-        let crouching =
-            r.is_player() && r == self.acting_ent() && self.keys.contains(&KeyCode::ShiftLeft);
+        let crouching = r.is_player()
+            && r == self.acting_ent()
+            && self.keys.held(horizon_client::actions::Action::Sneak);
         let can_ride = !crouching
             && self.riding_table.borrow().boarding_cooldown(r) <= 0
             && !self.never_rides(r);
@@ -801,8 +801,7 @@ impl Game<'_> {
         }
     }
     /// `Husk.finalizeSpawn`: where a camel husk fits, one natural husk in ten
-    /// takes an iron spear and rides one (with a parched; Horizon seats one
-    /// rider, so the parched stands beside it).
+    /// takes an iron spear and rides one, with a parched in its second seat.
     fn spawn_camel_husk_jockey(&mut self, id: u32, at: [f64; 3]) {
         let (bx, by, bz) = (at[0].floor(), at[1].floor(), at[2].floor());
         let room = {
@@ -824,7 +823,10 @@ impl Game<'_> {
         };
         // Husk.finalizeSpawn: this.startRiding(camelHusk, true, true).
         self.start_riding(Ent::Id(id), Ent::Id(camel), true, true);
-        let _ = self.spawn_mob("minecraft:parched", at, false);
+        // Then parched.startRiding(camelHusk, false, false): the camel's second seat.
+        if let Some(parched) = self.spawn_mob("minecraft:parched", at, false) {
+            self.start_riding(Ent::Id(parched), Ent::Id(camel), false, false);
+        }
     }
     /// `Drowned.finalizeSpawn`: half the natural drowned holding a trident,
     /// outside the rivers and oceans that breed more drowned, ride a zombie
@@ -1211,10 +1213,10 @@ mod tests {
     fn a_sneaking_player_cannot_board() {
         let Some(mut game) = flat_game() else { return };
         let pig = Ent::Id(spawn(&mut game, "pig", [2.5, 61.0, 2.5]));
-        game.keys.insert(KeyCode::ShiftLeft);
+        game.keys.insert(winit::keyboard::KeyCode::ShiftLeft);
         assert!(!game.start_riding(Ent::Host, pig, false, true));
         assert!(!game.is_passenger(Ent::Host));
-        game.keys.remove(&KeyCode::ShiftLeft);
+        game.keys.remove(&winit::keyboard::KeyCode::ShiftLeft);
         assert!(game.start_riding(Ent::Host, pig, false, true));
     }
 
@@ -1255,6 +1257,7 @@ mod tests {
             yaw: 0.0,
             color: 0,
             check_interval: 0,
+            custom_name: None,
         };
         game.level_add(
             super::super::entity_life::NewEntity::Cushion(cushion),
@@ -1265,10 +1268,10 @@ mod tests {
         let second = Ent::Id(spawn(&mut game, "zombie", [2.5, 61.0, 2.5]));
         assert!(game.start_riding(first, Ent::Id(id), false, false));
         assert!(!game.start_riding(second, Ent::Id(id), false, false));
-        game.keys.insert(KeyCode::ShiftLeft);
+        game.keys.insert(winit::keyboard::KeyCode::ShiftLeft);
         game.stop_riding(first);
         assert!(!game.start_riding(Ent::Host, Ent::Id(id), false, false));
-        game.keys.remove(&KeyCode::ShiftLeft);
+        game.keys.remove(&winit::keyboard::KeyCode::ShiftLeft);
         assert!(game.start_riding(Ent::Host, Ent::Id(id), false, false));
     }
 
