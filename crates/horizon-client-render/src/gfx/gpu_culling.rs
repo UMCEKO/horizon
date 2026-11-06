@@ -858,7 +858,7 @@ struct BoxTest {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     group: Option<wgpu::BindGroup>,
-    phase2: [wgpu::ComputePipeline; 3],
+    phase2: [wgpu::ComputePipeline; 4],
 }
 
 impl BoxTest {
@@ -950,7 +950,7 @@ impl BoxTest {
             bind_group_layouts: &compute_layouts,
             ..Default::default()
         });
-        let phase2 = ["count2", "scan2", "scatter2"].map(|entry| {
+        let phase2 = ["count2", "scan2", "bases2", "scatter2"].map(|entry| {
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("GPU culling phase 2"),
                 layout: Some(&compute_layout),
@@ -995,7 +995,7 @@ impl BoxTest {
 /// is switched on, dropped when it is switched off.
 pub(super) struct GpuCulling {
     /// `gpu_culling.wgsl`'s entry points: apply, cull, scan, scatter.
-    pipelines: [wgpu::ComputePipeline; 4],
+    pipelines: [wgpu::ComputePipeline; 5],
     layout: wgpu::BindGroupLayout,
     params: wgpu::Buffer,
     sections: Grown,
@@ -1027,6 +1027,7 @@ pub(super) struct GpuCulling {
     ids: u32,
     n_updates: u32,
     pass_pages: u32,
+    pass_slots: u32,
     /// This frame's updates and table words, kept for their room.
     scratch: Vec<Update>,
     words: Vec<u32>,
@@ -1089,7 +1090,7 @@ impl GpuCulling {
             bind_group_layouts: &[Some(&layout)],
             ..Default::default()
         });
-        let pipelines = ["apply", "cull", "scan", "scatter"].map(|entry| {
+        let pipelines = ["apply", "cull", "scan", "bases", "scatter"].map(|entry| {
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("GPU culling"),
                 layout: Some(&pipeline_layout),
@@ -1190,6 +1191,7 @@ impl GpuCulling {
             ids: 0,
             n_updates: 0,
             pass_pages: 1,
+            pass_slots: 1,
             scratch: Vec::new(),
             words: Vec::new(),
             readbacks,
@@ -1271,10 +1273,12 @@ impl GpuCulling {
         // page in both phases, then where the test exists the boxes to test.
         let blocks = u64::from(ids.div_ceil(WORKGROUP));
         let phase1_end = STATS + 2 * u64::from(pass_pages) + blocks * slots;
-        let tests_at = phase1_end + blocks * slots;
+        let counts_end = phase1_end + blocks * slots;
+        // Each slot's base in both phases follows; `scan` writes them, so they are never cleared.
+        let tests_at = counts_end + 2 * slots;
         let count_words = match self.test {
             Some(_) => tests_at + u64::from(ids),
-            None => phase1_end,
+            None => tests_at,
         };
         for (buffer, bytes) in [
             (&mut self.updates, self.scratch.len() as u64 * Update::BYTES),
@@ -1379,7 +1383,11 @@ impl GpuCulling {
         uploads.buffer(encoder, &self.params, 0, bytemuck::bytes_of(&params));
         // A frame that occludes reads phase 2's blocks too; the boxes to test
         // are written before they are read.
-        let cleared = if self.occluding { tests_at } else { phase1_end };
+        let cleared = if self.occluding {
+            counts_end
+        } else {
+            phase1_end
+        };
         encoder.clear_buffer(&self.counts.buffer, 0, Some(cleared * 4));
         if self.group.is_none() {
             self.group = Some(self.bind(device));
@@ -1399,6 +1407,7 @@ impl GpuCulling {
         self.ids = ids;
         self.n_updates = params.updates;
         self.pass_pages = pass_pages;
+        self.pass_slots = slots as u32;
         Some(Prepared::Gpu)
     }
 
@@ -1437,7 +1446,7 @@ impl GpuCulling {
             timestamp_writes: timing.and_then(|t| t.compute_writes("GPU culling")),
         });
         pass.set_bind_group(0, group, &[]);
-        let [apply, cull, scan, scatter] = &self.pipelines;
+        let [apply, cull, scan, bases, scatter] = &self.pipelines;
         if self.n_updates > 0 {
             pass.set_pipeline(apply);
             pass.dispatch_workgroups(self.n_updates.div_ceil(WORKGROUP), 1, 1);
@@ -1446,7 +1455,9 @@ impl GpuCulling {
         pass.set_pipeline(cull);
         pass.dispatch_workgroups(blocks.min(ROW), blocks.div_ceil(ROW), 1);
         pass.set_pipeline(scan);
-        pass.dispatch_workgroups(self.pass_pages, 1, 1);
+        pass.dispatch_workgroups(self.pass_slots, 1, 1);
+        pass.set_pipeline(bases);
+        pass.dispatch_workgroups(self.pass_pages.div_ceil(WORKGROUP), 1, 1);
         pass.set_pipeline(scatter);
         pass.dispatch_workgroups(blocks.min(ROW), blocks.div_ceil(ROW), 1);
     }
@@ -1528,12 +1539,14 @@ impl GpuCulling {
             timestamp_writes: timing.and_then(|t| t.compute_writes("GPU culling phase 2")),
         });
         pass.set_bind_group(0, group, &[]);
-        let [count2, scan2, scatter2] = &test.phase2;
+        let [count2, scan2, bases2, scatter2] = &test.phase2;
         let blocks = self.ids.div_ceil(WORKGROUP);
         pass.set_pipeline(count2);
         pass.dispatch_workgroups(blocks.min(ROW), blocks.div_ceil(ROW), 1);
         pass.set_pipeline(scan2);
-        pass.dispatch_workgroups(self.pass_pages, 1, 1);
+        pass.dispatch_workgroups(self.pass_slots, 1, 1);
+        pass.set_pipeline(bases2);
+        pass.dispatch_workgroups(self.pass_pages.div_ceil(WORKGROUP), 1, 1);
         pass.set_pipeline(scatter2);
         pass.dispatch_workgroups(blocks.min(ROW), blocks.div_ceil(ROW), 1);
     }

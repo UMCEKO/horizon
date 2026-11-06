@@ -95,7 +95,14 @@ fn count2(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_ind
 
 @compute @workgroup_size(256)
 fn scan2(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
-    scan_page(group.x, lane, 1u);
+    scan_slot(group.x, lane, 1u);
+}
+
+@compute @workgroup_size(64)
+fn bases2(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if gid.x < params.pages {
+        page_bases(gid.x, 1u);
+    }
 }
 
 @compute @workgroup_size(64)
