@@ -48,12 +48,15 @@
 //! The pass `apply`s the records that changed, then `cull` keeps the sections
 //! in view, writes their runs and counts their draws per page and block of ids,
 //! `scan` turns the counts into where each block's draws start, and `scatter`
-//! writes every block's draws there in id order, each section's in its runs'.
-//! Appended with atomics alone, a page's draws would come in the order the GPU
-//! happens to schedule them, and where faces of two sections meet at exactly
-//! the same depth the later draw keeps the pixel, so such pixels would flicker;
-//! in id order they differ from the CPU's front-to-back order only there, and
-//! stay put.
+//! writes every block's draws there, band by band of distance (a section wide
+//! to `FINE`, then the CPU's 64 blocks), nearest first, in id order within a band and
+//! each section's in its runs' order. Ids alone follow no distance once
+//! sections come and go, and drawn far before near the depth test rejects few
+//! hidden fragments: about a quarter more GPU time on a Radeon after a few
+//! hundred blocks of travel. Appended with atomics alone, a page's draws would
+//! come in the order the GPU happens to schedule them, and where faces of two
+//! sections meet at exactly the same depth the later draw keeps the pixel, so
+//! such pixels would flicker; in a fixed order they stay put.
 //!
 //! This is not `cull` (occlusion culling, `HORIZON_GPU_CULL`), which tests the
 //! CPU's lists against phase 1's depth: frames drawn from here leave it off.
@@ -277,6 +280,8 @@ struct Params {
     /// With `OCCLUDE`: the frame's stamp (never 0), where the boxes to test
     /// start in `counts`, in words, 0, 0.
     occl: [u32; 4],
+    /// The camera's section y (from the level's bottom), the distance bands (`bands`), 0, 0.
+    order: [i32; 4],
     /// The world pass's view projection, which the test draws its boxes with.
     view_proj: [[f32; 4]; 4],
 }
@@ -313,6 +318,25 @@ const EYE: u32 = 4;
 /// and it tests every box (cull.rs's probe frame).
 const OCCLUDE: u32 = 8;
 const PROBE: u32 = 16;
+/// Sections within `FINE` of the camera's get a band each, where most overdraw is; past it bands are `BAND` wide, page_runs.rs's 64 blocks.
+const FINE: i64 = 16;
+const BAND: i64 = 4;
+
+/// The band of a section `d` whole sections from the camera's (the shader's `band`).
+fn band_at(d: i64) -> u32 {
+    (if d < FINE {
+        d
+    } else {
+        FINE + (d - FINE) / BAND
+    }) as u32
+}
+
+/// The distance bands a kept section can fall in: none is farther than `radius` columns and `height` sections.
+fn bands(radius: i32, height: i32) -> u32 {
+    let (r, h) = (i64::from(radius.max(0)), i64::from(height.max(0)));
+    band_at((2 * r * r + h * h).isqrt()) + 1
+}
+
 /// Ids per block (the shader's `BLOCK`), and the workgroup of the passes over ids.
 const WORKGROUP: u32 = 64;
 /// Workgroups along x when there are more (the shader's `ROW`).
@@ -482,6 +506,9 @@ fn tables(input: &FrameInputs<'_>, words: &mut Vec<u32>) -> Option<Params> {
         return None;
     }
     let w = w.map(|w| w as i32);
+    // Clamped so that the shader's distances stay in i32; past it every section is in the last band.
+    let cam_y = ((input.camera.y - f64::from(input.min_y)) / 16.0).floor();
+    let cam_y = cam_y.clamp(-4096.0, f64::from(height) + 4096.0) as i32;
     Some(Params {
         signs,
         near: radius,
@@ -492,6 +519,7 @@ fn tables(input: &FrameInputs<'_>, words: &mut Vec<u32>) -> Option<Params> {
         w: [[w[0], w[1], w[2], w[3]], [w[4], w[5], 0, 0]],
         flags: if input.eye.is_some() { EYE } else { 0 },
         eyes,
+        order: [cam_y, bands(radius, height) as i32, 0, 0],
         ..Default::default()
     })
 }
@@ -1236,13 +1264,14 @@ impl GpuCulling {
         let planes = tables(input, &mut self.words);
         let regions = self.words.len() as u32;
         let pass_pages = self.records.page_sections.len().max(1) as u32;
+        let slots = u64::from(pass_pages) * planes.as_ref().map_or(1, |p| p.order[1] as u64);
         // A region has room for every draw of every record on its page.
         let total = RUNS * self.records.page_sections.iter().sum::<u32>();
         // The statistics, each page's count in both phases, each block's per
         // page in both phases, then where the test exists the boxes to test.
         let blocks = u64::from(ids.div_ceil(WORKGROUP));
-        let phase1_end = STATS + u64::from(pass_pages) * (2 + blocks);
-        let tests_at = phase1_end + u64::from(pass_pages) * blocks;
+        let phase1_end = STATS + 2 * u64::from(pass_pages) + blocks * slots;
+        let tests_at = phase1_end + blocks * slots;
         let count_words = match self.test {
             Some(_) => tests_at + u64::from(ids),
             None => phase1_end,
@@ -2107,6 +2136,7 @@ mod tests {
             ("flags", offset_of!(Params, flags)),
             ("eyes", offset_of!(Params, eyes)),
             ("occl", offset_of!(Params, occl)),
+            ("order", offset_of!(Params, order)),
             ("view_proj", offset_of!(Params, view_proj)),
         ] {
             assert!(members.contains(&(name.into(), offset)), "Params.{name}");
@@ -2128,7 +2158,7 @@ mod tests {
         ];
         assert_eq!(layout("Update"), (size_of::<Update>(), named(&id)));
         assert_eq!((size_of::<Record>(), size_of::<Update>()), (80, 96));
-        assert_eq!(size_of::<Params>(), 208);
+        assert_eq!(size_of::<Params>(), 224);
         let constant = |name: &str| {
             let (_, c) = module
                 .constants
@@ -2154,6 +2184,8 @@ mod tests {
             ("FADING", u64::from(FADING)),
             ("EYE", u64::from(EYE)),
             ("RUN_WORDS", RUN_WORDS),
+            ("FINE", FINE as u64),
+            ("BAND", BAND as u64),
         ] {
             assert_eq!(constant(name), value, "{name}");
         }
@@ -2785,8 +2817,8 @@ mod tests {
     /// quads that can face the eye, the runs a CPU frame draws
     /// (`facing_runs`), or of all of them where a frame has no eye, from its
     /// page and the run's first vertex, with the instance the CPU path gives a
-    /// whole section, every page's draws in id order and each section's in its
-    /// runs' order. Its buckets by facing side are drawn at random; one case
+    /// whole section, every page's draws by distance band, nearest first, then in
+    /// id order and each section's in its runs' order. Its buckets by facing side are drawn at random; one case
     /// puts the camera on a section's corner, its eye a subnormal float past it
     /// along x and on +0 and -0 along y and z, with a quad in each of its side
     /// buckets and every threshold 0: a CPU frame draws the +X one alone, and
@@ -2808,6 +2840,17 @@ mod tests {
     #[test]
     fn the_gpu_draws_what_the_integer_test_keeps() {
         on_each_device(draws_match);
+    }
+
+    /// The shader's `band` of the section at `key`.
+    fn band_of(params: &Params, key: SectionKey) -> u32 {
+        let d = [
+            key.0 - params.cam_x,
+            key.1 - params.order[0],
+            key.2 - params.cam_z,
+        ];
+        let d2: i64 = d.iter().map(|&v| i64::from(v) * i64::from(v)).sum();
+        band_at(d2.isqrt()).min(params.order[1] as u32 - 1)
     }
 
     fn draws_match(device: &wgpu::Device, queue: &Queue) {
@@ -2834,6 +2877,7 @@ mod tests {
         // was drawn.
         let (mut eyed, mut hidden, mut several) = (0, 0, 0);
         let (mut edge, mut edge_drawn) = (None, false);
+        let mut bands_drawn = std::collections::BTreeSet::new();
         for case in 0..25 {
             let radius = [2, 5, 9][case % 3];
             let at_edge = case == 24;
@@ -3080,13 +3124,12 @@ mod tests {
                 );
                 let mut last = None;
                 for d in draws[first as usize * 5..][..count as usize * 5].chunks(5) {
-                    // In id order and each section's in its runs' order, the
-                    // same every frame.
-                    assert!(
-                        last < Some((d[4], d[3])),
-                        "case {case}, page {page}: out of order"
-                    );
-                    last = Some((d[4], d[3]));
+                    // Nearest band first, then id order and each section's runs' order: the same every frame.
+                    let key = held[&d[4]].0.0;
+                    let order = (band_of(&params, key), d[4], d[3]);
+                    bands_drawn.insert(order.0);
+                    assert!(last < Some(order), "case {case}, page {page}: out of order");
+                    last = Some(order);
                     assert_eq!([d[1], d[2]], [1, 0], "case {case}: one instance, index 0");
                     let instance = &origins[d[4] as usize * 4..][..4];
                     let instance: [u32; 4] = instance.try_into().unwrap();
@@ -3124,6 +3167,12 @@ mod tests {
             "of {eyed} from an eye, {hidden} with a bucket left out, {several} in three runs"
         );
         assert!(edge_drawn, "the bucket at the section's edge");
+        // Fine bands near and coarse ones past them.
+        let coarse = bands_drawn.iter().any(|&b| i64::from(b) > FINE);
+        assert!(
+            bands_drawn.len() > 8 && coarse,
+            "draws in bands {bands_drawn:?}"
+        );
         assert!(culled > 2_000, "{culled} within the distance left out");
         assert!(faded * 10 > compared, "{faded} fading of {compared} drawn");
         assert!(
