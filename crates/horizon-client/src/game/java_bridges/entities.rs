@@ -221,6 +221,14 @@ horizon_java_host::java_bridges! { table for Game<'static> {
         hurt(game, id, &source, amount)
     }
 
+    "net/minecraft/world/entity/vehicle/VehicleEntity".hurtServer
+    "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/damagesource/DamageSource;F)Z" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
+    fn vehicle_hurt_server(game, id: Ent, _level: Skip, source: Source, amount: f32) -> bool {
+        let hurt = game.java_hurt_vehicle(id.0, &source, amount);
+        after(game, id, REMOVAL);
+        hurt
+    }
+
     "net/minecraft/world/entity/Entity".setDeltaMovement
     "(Lnet/minecraft/world/phys/Vec3;)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
     fn entity_set_motion(game, id: Ent, v: Point) -> () {

@@ -85,7 +85,6 @@ net/minecraft/world/entity/monster/zombie/ZombieVillager#setVillagerData	needs-e
 net/minecraft/world/entity/npc/villager/AbstractVillager#getOffers	needs-entity-view	mobs and vehicles arrive with entity views
 net/minecraft/world/entity/projectile/arrow/AbstractArrow#<init>	java-object	a constructor of a real Java object
 net/minecraft/world/entity/vehicle/DismountHelper#findSafeDismountLocation	needs-entity-view	mobs and vehicles arrive with entity views
-net/minecraft/world/entity/vehicle/VehicleEntity#hurtServer	needs-entity-view	mobs and vehicles arrive with entity views
 net/minecraft/world/entity/vehicle/boat/AbstractBoat#canAddPassenger	needs-entity-view	mobs and vehicles arrive with entity views
 net/minecraft/world/entity/vehicle/boat/AbstractBoat#checkInWater	needs-entity-view	mobs and vehicles arrive with entity views
 net/minecraft/world/entity/vehicle/boat/AbstractBoat#getDismountLocationForPassenger	needs-entity-view	mobs and vehicles arrive with entity views

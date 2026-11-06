@@ -1179,6 +1179,34 @@ impl Game<'_> {
         }
     }
 
+    /// `VehicleEntity.hurtServer` on a boat or minecart: true, as vanilla answers for any hit it takes.
+    pub(super) fn java_hurt_vehicle(
+        &mut self,
+        id: u32,
+        source: &horizon_java_host::bridge::Source,
+        amount: f32,
+    ) -> bool {
+        // MinecartTNT.damageSourceIgnitesTnt.
+        let tags = &self.stations().enchantments.damage_tags;
+        let tagged = |tag: &str| tags.get(tag).is_some_and(|t| t.contains(&source.kind));
+        let ignites = tagged("minecraft:is_fire") || tagged("minecraft:is_explosion");
+        match self.java_target(id) {
+            Some(Target::Boat(bid)) => {
+                if let Some(i) = self.boats.iter().position(|b| b.id == bid) {
+                    self.hurt_boat(i, amount, source.creative);
+                }
+                true
+            }
+            Some(Target::Cart(cid)) => {
+                if let Some(i) = self.carts.iter().position(|c| c.id == cid) {
+                    self.hurt_cart(i, amount, source.creative, ignites);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn java_knockback(&mut self, id: u32, power: f64, x: f64, z: f64) -> bool {
         match self.mobs.iter_mut().find(|m| m.id == id) {
             Some(m) => {
