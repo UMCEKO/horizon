@@ -33,7 +33,7 @@ public final class RoutingArgsCheck {
         stackData.write(tag);
         var stackIn = Crossing.In.of(stack.toByteArray());
         if (!java.util.Arrays.equals(stackIn.readNBytes(stackIn.readInt()), tag) || stackIn.available() != 0) throw new AssertionError("a stack is a length and its tag");
-        // a static no-op route answers status 0 and an empty effects block
+        // a static no-op route answers status 0 and an empty sound list
         var request = new java.io.ByteArrayOutputStream();
         var write = new java.io.DataOutputStream(request);
         write.writeInt(0);
@@ -41,7 +41,7 @@ public final class RoutingArgsCheck {
         var reply = new Crossing.Out();
         Routing.benchCall(Crossing.In.of(request.toByteArray()), reply);
         byte[] bytes = reply.toByteArray();
-        if (bytes[0] != 0 || bytes.length != 1 + 16) throw new AssertionError("status 0, then four empty effect counts: " + bytes.length);
+        if (bytes[0] != 0 || bytes.length != 1 + 4) throw new AssertionError("status 0, then an empty sound count: " + bytes.length);
         System.out.println("RoutingArgsCheck ok");
     }
 }
