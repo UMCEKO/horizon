@@ -784,4 +784,86 @@ mod tests {
             other => panic!("{other:?}"),
         }
     }
+
+    /// `handleSetEntityPassengersPacket` skips an unknown vehicle and unknown passengers.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn passengers_come_only_from_entities_the_client_knows() {
+        use super::super::{
+            Audio, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
+        };
+        use horizon_client::motion::PlayerMotion;
+        use horizon_protocol::{
+            connection::Pipe,
+            packets::play::{AddEntity, Clientbound},
+        };
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!("no menu handoff"),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = ExecutionRole::Client;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let (client, _server) = Pipe::pair();
+        game.connect_local(client, "SeatTest").unwrap();
+        game.remote.as_mut().unwrap().entity_id = 1;
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.0, 100.0, 0.0)).unwrap());
+        let builtin = game.remote.as_ref().unwrap().builtin.clone();
+        let add = |id: i32, name: &str| {
+            let kind = builtin
+                .get("minecraft:entity_type")
+                .unwrap()
+                .id(name)
+                .unwrap();
+            Clientbound::AddEntity(AddEntity {
+                id,
+                uuid: id as u128,
+                kind,
+                position: [0.0, 100.0, 0.0],
+                velocity: [0.0; 3],
+                pitch: 0,
+                yaw: 0,
+                head_yaw: 0,
+                data: 0,
+            })
+        };
+        game.remote_set_passengers(3, &[1]);
+        assert_eq!(game.vehicle(), None, "unknown vehicle");
+        game.handle_packet(add(3, "minecraft:oak_boat")).unwrap();
+        game.boats.push(super::super::boats::Boat::new(
+            3,
+            "oak".into(),
+            Vec3::new(0.0, 100.0, 0.0),
+            0.0,
+        ));
+        game.remote_set_passengers(3, &[2, 1]);
+        assert!(game.controls_boat(3), "unknown passenger 2 is skipped");
+        game.remote_set_passengers(3, &[]);
+        game.handle_packet(add(2, "minecraft:player")).unwrap();
+        game.remote_set_passengers(3, &[2, 1]);
+        assert!(!game.controls_boat(3), "the other player is first");
+        assert!(!game.hands_busy());
+        game.remote_set_passengers(3, &[1, 2]);
+        assert!(game.controls_boat(3), "the local player is first");
+    }
 }

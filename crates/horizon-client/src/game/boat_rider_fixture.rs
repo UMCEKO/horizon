@@ -2,7 +2,10 @@
 use super::{Game, Keys, boats::Boat};
 use horizon_client::{Result, held::Source, motion::PlayerMotion};
 use horizon_core::geometry::Vec3;
-use horizon_protocol::{connection::Pipe, packets::play::Serverbound};
+use horizon_protocol::{
+    connection::Pipe,
+    packets::play::{AddEntity, Clientbound, Serverbound},
+};
 use serde::Deserialize;
 use serde_json::json;
 use std::path::Path;
@@ -16,6 +19,7 @@ struct Case {
     spin: f32,
     keys: [bool; 4],
     event: i8,
+    mob: bool,
 }
 impl Game<'_> {
     pub(super) fn run_boat_rider_fixture(&mut self, directory: &Path) -> Result<()> {
@@ -26,8 +30,38 @@ impl Game<'_> {
         self.remote.as_mut().unwrap().entity_id = 1;
         self.player = Some(PlayerMotion::new(self.motion, Vec3::new(0.0, 100.0, 0.0))?);
 
+        let builtin = self.remote.as_ref().unwrap().builtin.clone();
+        let kind = |name: &str| {
+            builtin
+                .get("minecraft:entity_type")
+                .unwrap()
+                .id(name)
+                .unwrap()
+        };
+        let add = |id: i32, name: &str| {
+            Clientbound::AddEntity(AddEntity {
+                id,
+                uuid: id as u128,
+                kind: kind(name),
+                position: [0.0, 100.0, 0.0],
+                velocity: [0.0; 3],
+                pitch: 0,
+                yaw: 0,
+                head_yaw: 0,
+                data: 0,
+            })
+        };
+        self.handle_packet(add(3, "minecraft:oak_boat"))?;
+
         let mut output = Vec::new();
         for case in cases {
+            self.remote_set_passengers(3, &[]);
+            let second = if case.mob {
+                "minecraft:zombie"
+            } else {
+                "minecraft:player"
+            };
+            self.handle_packet(add(2, second))?;
             self.boats.clear();
             let mut b = Boat::new(3, "oak".into(), Vec3::new(0.0, 100.0, 0.0), 0.0);
             let [x, y, z] = case.velocity;
