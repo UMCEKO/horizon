@@ -6,7 +6,7 @@ use super::super::java_entities::{
 };
 use super::*;
 use horizon_client::projectiles::ProjectileKind;
-use horizon_java_host::bridge::Ent;
+use horizon_java_host::bridge::{Ent, EntUuid};
 use horizon_world::nbt::Tag;
 
 fn removal_of(ordinal: i32) -> Removal {
@@ -514,7 +514,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
 
     "net/minecraft/world/entity/projectile/Projectile".setOwner
     "(Lnet/minecraft/world/entity/Entity;)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
-    fn projectile_set_owner(game, id: Ent, owner: Ent) -> () {
+    fn projectile_set_owner(game, id: Ent, owner: EntUuid) -> () {
         if game.java_set_owner(id.0, owner.0) {
             after(game, id, SPECIES);
         }

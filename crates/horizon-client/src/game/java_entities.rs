@@ -5,8 +5,7 @@ use super::java_mods::{read_tag, write_tag};
 use super::*;
 use commands::Target;
 use horizon_client::entity_nbt;
-use horizon_client::mobs::Who;
-use horizon_client::projectiles::ProjectileKind;
+use horizon_client::projectiles::{Owner, ProjectileKind};
 use horizon_client::riding::Ent;
 use horizon_client::save::{float, number, random_uuid, text};
 use horizon_java_host::wire::{In, Out};
@@ -77,8 +76,10 @@ enum SpeciesData {
         flashes: i32,
         seed: i64,
     },
-    Arrow {
-        base_damage: f64,
+    Projectile {
+        /// `AbstractArrow.baseDamage`, for arrows and tridents only.
+        base_damage: Option<f64>,
+        owner: Option<[i32; 4]>,
     },
 }
 
@@ -309,7 +310,17 @@ fn write_groups(out: &mut Out, tag: &Tag, over: &Overlay, shape: Shape, mask: u3
                 out.int(*flashes);
                 out.long(*seed);
             }
-            SpeciesData::Arrow { base_damage } => out.double(*base_damage),
+            SpeciesData::Projectile { base_damage, owner } => {
+                if let Some(damage) = base_damage {
+                    out.double(*damage);
+                }
+                let uuid = owner.and_then(|o| uuid_longs(Some(&Tag::IntArray(o.to_vec()))));
+                out.bool(uuid.is_some());
+                if let Some((hi, lo)) = uuid {
+                    out.long(hi);
+                    out.long(lo);
+                }
+            }
         }
     }
     if mask & AI != 0 {
@@ -460,12 +471,13 @@ impl Game<'_> {
                         .projectiles
                         .iter()
                         .find(|p| p.id == id)
-                        .map_or(SpeciesData::None, |p| match p.kind {
-                            ProjectileKind::Arrow { base_damage, .. } => {
-                                SpeciesData::Arrow { base_damage }
-                            }
-                            ProjectileKind::Trident => SpeciesData::Arrow { base_damage: 2.0 },
-                            _ => SpeciesData::None,
+                        .map_or(SpeciesData::None, |p| SpeciesData::Projectile {
+                            base_damage: match p.kind {
+                                ProjectileKind::Arrow { base_damage, .. } => Some(base_damage),
+                                ProjectileKind::Trident => Some(2.0),
+                                _ => None,
+                            },
+                            owner: p.owner.and(p.owner_uuid),
                         }),
                     ..Overlay::default()
                 };
@@ -1313,33 +1325,15 @@ impl Game<'_> {
         }
     }
 
-    /// `Projectile.setOwner(owner)`: the player or mob owner `owner` names (0 for none); another kind of owner has no place in a projectile yet.
-    pub(super) fn java_set_owner(&mut self, id: u32, owner: u32) -> bool {
-        let who = if owner == 0 {
-            Some((None, None))
-        } else if self.network_entity_id(Target::Player) == Some(owner as i32) {
-            Some((Some(Who::Player), None))
-        } else if let Some(g) = self
-            .lan
-            .as_ref()
-            .and_then(|h| h.hub.guests.iter().find(|g| g.entity_id == owner as i32))
-        {
-            Some((Some(Who::Player), Some(g.conn)))
-        } else if self.mobs.iter().any(|m| m.id == owner) {
-            Some((Some(Who::Mob(owner)), None))
-        } else {
-            None
-        };
-        let (Some((who, guest)), Some(p)) = (
-            who,
-            self.creatures.projectiles.iter_mut().find(|p| p.id == id),
-        ) else {
+    /// `Projectile.setOwner(owner)`: vanilla keeps only `EntityReference.of(owner)`, the owner's UUID (None for null).
+    pub(super) fn java_set_owner(&mut self, id: u32, uuid: Option<[i32; 4]>) -> bool {
+        let owner = uuid.map(|u| self.resolve_owner(Owner::Unloaded(u)));
+        let Some(p) = self.creatures.projectiles.iter_mut().find(|p| p.id == id) else {
             return false;
         };
-        p.owner = who;
-        p.guest = guest;
+        (p.owner, p.owner_uuid) = (owner, uuid);
         if let Some(a) = p.arrow.as_mut() {
-            a.set_owner(who);
+            a.set_owner(owner.and_then(Owner::target));
         }
         p.needs_sync = true;
         true
@@ -1572,7 +1566,10 @@ mod tests {
         let mut out = Out::default();
         let over = Overlay {
             malus: vec![(9, 0.0), (16, 8.0)],
-            species: SpeciesData::Arrow { base_damage: 7.0 },
+            species: SpeciesData::Projectile {
+                base_damage: Some(7.0),
+                owner: Some([0, 3, 0, 4]),
+            },
             ..Overlay::default()
         };
         write_groups(
@@ -1584,6 +1581,10 @@ mod tests {
         );
         let mut r = In(&out.0);
         assert_eq!(r.double(), Some(7.0));
+        assert_eq!(
+            (r.bool(), r.long(), r.long()),
+            (Some(true), Some(3), Some(4))
+        );
         assert_eq!(r.int(), Some(2));
         assert_eq!((r.byte(), r.float()), (Some(9), Some(0.0)));
         assert_eq!((r.byte(), r.float()), (Some(16), Some(8.0)));

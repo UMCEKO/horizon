@@ -6,6 +6,7 @@
 //! another player lands the same way.
 use super::{Game, lan::LanHost, lan_mobs::guest_bounds, mace::Spared};
 use horizon_client::enchant::EffectContext;
+use horizon_client::projectiles::Owner;
 
 use horizon_client::{
     Result,
@@ -201,7 +202,7 @@ impl Game<'_> {
 
     /// The player a player's projectile hit, when it hit one.
     pub(super) fn projectile_pvp_victim(&self, p: &Projectile, hit: Hit) -> Option<Victim> {
-        if p.owner != Some(Who::Player) || !meets_players(&p.kind) {
+        if !p.owner.is_some_and(Owner::is_player) || !meets_players(&p.kind) {
             return None;
         }
         let Hit::Entity { who, .. } = hit else {
@@ -237,7 +238,7 @@ impl Game<'_> {
             return self.projectile_hit(p, hit);
         };
         let team_of = |game: &Self, name: &str| game.score.board.players_team(name).cloned();
-        let attacker = match p.guest {
+        let attacker = match p.owner.and_then(Owner::guest) {
             Some(conn) => host.hub.guest(conn).and_then(|g| team_of(self, &g.name)),
             None => self.player_team().cloned(),
         };
@@ -250,7 +251,7 @@ impl Game<'_> {
             who: Who::Player,
             at,
         };
-        let shooter = self.player_attacker(&host, p.guest);
+        let shooter = self.player_attacker(&host, p.owner.and_then(Owner::guest));
         let result = match victim {
             Victim::Guest(conn) => self.guest_hit_by(&mut host, conn, |g| {
                 g.combat.refuse_player_hit = refused;

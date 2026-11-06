@@ -19,6 +19,8 @@ pub struct Bridge {
     pub guard: &'static str,
     pub native: &'static str,
     pub args: Vec<&'static str>,
+    /// The `Flat` method that flattens each argument, `raw` for most.
+    pub flats: Vec<&'static str>,
     pub ret: &'static str,
     /// The native is the method's body for a route stub, not the method's whole.
     pub route: bool,
@@ -38,7 +40,17 @@ impl Bridge {
             self.desc,
             self.guard,
             self.native,
-            self.args.join(","),
+            self.args
+                .iter()
+                .enumerate()
+                .map(
+                    |(i, raw)| match self.flats.get(i).copied().unwrap_or("raw") {
+                        "raw" => (*raw).to_owned(),
+                        flat => format!("{flat}:{raw}"),
+                    }
+                )
+                .collect::<Vec<_>>()
+                .join(","),
             self.ret,
             if self.route { "route" } else { "" }
         )
@@ -175,10 +187,11 @@ pub fn enter<G: 'static, R: Ret>(
     }
 }
 
-/// A native's argument: `RAW` is its JNI type; `Flat.raw` flattens Java objects to it.
+/// A native's argument: `RAW` is its JNI type; `Flat.raw` (or the `Flat` method `FLAT` names) flattens Java objects to it.
 pub trait Arg: Sized {
     type Raw;
     const RAW: &'static str;
+    const FLAT: &'static str = "raw";
     fn from_raw(env: &mut JNIEnv, raw: Self::Raw) -> Self;
 }
 pub trait Ret {
@@ -430,6 +443,21 @@ impl Arg for Ent {
     }
 }
 
+/// An entity, by `Entity.getUUID` (`Flat.rawUuid`), for what vanilla keeps as an `EntityReference`; None for null.
+#[derive(Clone, Copy)]
+pub struct EntUuid(pub Option<[i32; 4]>);
+impl Arg for EntUuid {
+    type Raw = jstring;
+    const RAW: &'static str = "Ljava/lang/String;";
+    const FLAT: &'static str = "rawUuid";
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    fn from_raw(env: &mut JNIEnv, raw: jstring) -> EntUuid {
+        let Text(text) = Text::from_raw(env, raw);
+        let bits = u128::from_str_radix(&text.replace('-', ""), 16).ok();
+        EntUuid(bits.map(|v| [96, 64, 32, 0].map(|shift| (v >> shift) as u32 as i32)))
+    }
+}
+
 /// `BlockPos`, by `BlockPos.asLong`.
 pub struct Pos(pub BlockPos);
 impl Arg for Pos {
@@ -568,6 +596,7 @@ macro_rules! java_bridges {
                 guard: { let guard = ""; $(let guard = $guard;)? guard },
                 native: stringify!($name),
                 args: vec![$(<$ty as $crate::bridge::Arg>::RAW),*],
+                flats: vec![$(<$ty as $crate::bridge::Arg>::FLAT),*],
                 ret: <$ret as $crate::bridge::Ret>::RAW,
                 route: { let route = false; $(let _ = stringify!($route); let route = true;)? route },
                 pointer: $name as *mut std::ffi::c_void,
@@ -588,6 +617,7 @@ mod tests {
             guard,
             native: "entity_discard",
             args: vec![Ent::RAW],
+            flats: vec![Ent::FLAT],
             ret: <() as Ret>::RAW,
             route: false,
             pointer: std::ptr::null_mut(),

@@ -199,6 +199,73 @@ fn potion_sprite(item: &str) -> &'static str {
         "item/splash_potion"
     }
 }
+/// `Projectile.owner`: any entity of the level, a player included, or the UUID of one not found yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Owner {
+    /// The host (`None`) or a guest, by connection.
+    Player { guest: Option<u32> },
+    /// Any other entity of the level, by id.
+    Entity(u32),
+    /// An `EntityReference` no loaded entity answers yet.
+    Unloaded([i32; 4]),
+}
+impl From<Who> for Owner {
+    fn from(who: Who) -> Owner {
+        match who {
+            Who::Player => Owner::Player { guest: None },
+            Who::Mob(id) => Owner::Entity(id),
+        }
+    }
+}
+impl Owner {
+    /// The `Who` the hit and damage code takes: the player whose turn it is, or a mob.
+    pub fn who(self, acting: Option<u32>, is_mob: impl Fn(u32) -> bool) -> Option<Who> {
+        match self {
+            Owner::Player { guest } => (guest == acting).then_some(Who::Player),
+            Owner::Entity(id) => is_mob(id).then_some(Who::Mob(id)),
+            Owner::Unloaded(_) => None,
+        }
+    }
+    /// The owner among a tick's targets, where any player is `Who::Player` and an entity is `Who::Mob`.
+    pub fn target(self) -> Option<Who> {
+        match self {
+            Owner::Player { .. } => Some(Who::Player),
+            Owner::Entity(id) => Some(Who::Mob(id)),
+            Owner::Unloaded(_) => None,
+        }
+    }
+    /// `EntityReference.getEntity`: an unloaded owner turns live once `player` (the guest's connection, None for the host) or `entity` knows its UUID.
+    pub fn resolve(
+        self,
+        player: impl FnOnce([i32; 4]) -> Option<Option<u32>>,
+        entity: impl FnOnce([i32; 4]) -> Option<u32>,
+    ) -> Owner {
+        let Owner::Unloaded(uuid) = self else {
+            return self;
+        };
+        if let Some(guest) = player(uuid) {
+            return Owner::Player { guest };
+        }
+        entity(uuid).map_or(self, Owner::Entity)
+    }
+    /// `setLastHurtByPlayer` for a hit this owner made: the shooter, whoever's turn it is now.
+    pub fn credited_player(self) -> Option<Option<u32>> {
+        match self {
+            Owner::Player { guest } => Some(guest),
+            _ => None,
+        }
+    }
+    pub fn is_player(self) -> bool {
+        matches!(self, Owner::Player { .. })
+    }
+    /// The guest a player's projectile belongs to.
+    pub fn guest(self) -> Option<u32> {
+        match self {
+            Owner::Player { guest } => guest,
+            _ => None,
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct Projectile {
     /// When it joined its list ([`crate::join_seq`]); set by the list, not by the spawn site.
@@ -206,13 +273,10 @@ pub struct Projectile {
     /// The entity id a server tracks it by (0 until it is tracked).
     pub id: u32,
     pub kind: ProjectileKind,
-    pub owner: Option<Who>,
+    pub owner: Option<Owner>,
     /// `Projectile.owner`'s UUID, kept while the owner is away (a guest who
     /// left, a mob not loaded): what its save writes as `Owner`.
     pub owner_uuid: Option<[i32; 4]>,
-    /// On a server, the guest (by connection) who shot it: `Who::Player`
-    /// then means them, not the host.
-    pub guest: Option<u32>,
     pub position: Vec3,
     pub previous: Vec3,
     pub velocity: Vec3,
@@ -398,9 +462,8 @@ impl Projectile {
             join: Default::default(),
             id: 0,
             kind,
-            owner,
+            owner: owner.map(Owner::from),
             owner_uuid: None,
-            guest: None,
             position,
             previous: position,
             velocity: Vec3::ZERO,
@@ -946,7 +1009,7 @@ impl Projectile {
         let end = block.map_or(to, |b| b.0);
         let mut best: Option<(Who, Vec3, f64)> = None;
         for (who, b) in w.targets() {
-            if Some(*who) == self.owner && !self.left_owner {
+            if Some(*who) == self.owner.and_then(Owner::target) && !self.left_owner {
                 continue;
             }
             if let Some(at) = b.inflate(Vec3::new(0.3, 0.3, 0.3)).clip(from, end) {
@@ -960,7 +1023,7 @@ impl Projectile {
             let owner_box = w
                 .targets()
                 .iter()
-                .find(|(who, _)| Some(*who) == self.owner)
+                .find(|(who, _)| Some(*who) == self.owner.and_then(Owner::target))
                 .map(|(_, b)| *b);
             self.left_owner =
                 owner_box.is_none_or(|b| !b.inflate(Vec3::new(1.0, 1.0, 1.0)).contains(from));
@@ -1136,7 +1199,7 @@ impl Projectile {
         // ProjectileUtil.getEntityHitResult: boxes inflated by 0.3 along the path.
         let mut best: Option<(Who, Vec3, f64)> = None;
         for (who, b) in w.targets() {
-            if Some(*who) == self.owner && !self.left_owner {
+            if Some(*who) == self.owner.and_then(Owner::target) && !self.left_owner {
                 continue;
             }
             let inflated = b.inflate(Vec3::new(0.3, 0.3, 0.3));
@@ -1152,7 +1215,7 @@ impl Projectile {
             let owner_box = w
                 .targets()
                 .iter()
-                .find(|(who, _)| Some(*who) == self.owner)
+                .find(|(who, _)| Some(*who) == self.owner.and_then(Owner::target))
                 .map(|(_, b)| *b);
             self.left_owner = owner_box
                 .is_none_or(|b| !b.inflate(Vec3::new(1.0, 1.0, 1.0)).contains(self.position));
@@ -1283,6 +1346,42 @@ impl Projectile {
 mod tests {
     use super::*;
     use horizon_core::random::LegacyRandom;
+
+    #[test]
+    fn an_owner_round_trips_through_save_as_its_uuid() {
+        let kind = ProjectileKind::Arrow {
+            base_damage: 2.0,
+            critical: false,
+            effect: None,
+        };
+        let mut p = Projectile::new(kind, Vec3::new(0.5, 70.0, 0.5), None);
+        (p.owner, p.owner_uuid) = (Some(Owner::Entity(5)), Some([1, 2, 3, 4]));
+        let tag = crate::entity_nbt::arrow_to_nbt(&p, [9; 4], p.owner_uuid, None, None).unwrap();
+        assert_eq!(crate::entity_nbt::owner_uuid(&tag), Some([1, 2, 3, 4]));
+        let (back, _) = crate::entity_nbt::arrow_from_nbt(&tag, Some([7; 4]), |_| None).unwrap();
+        assert_eq!(back.owner, Some(Owner::Unloaded([1, 2, 3, 4])));
+        assert_eq!(back.owner_uuid, Some([1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn a_guests_arrow_credits_the_guest_after_its_turn() {
+        let owner = Owner::Player { guest: Some(2) };
+        assert_eq!(owner.credited_player(), Some(Some(2)));
+        assert_eq!(owner.who(None, |_| true), None);
+        assert_eq!(owner.who(Some(2), |_| true), Some(Who::Player));
+        assert_eq!(Owner::Entity(4).credited_player(), None);
+    }
+
+    #[test]
+    fn an_unloaded_owner_resolves_when_it_loads() {
+        let away = Owner::Unloaded([1, 2, 3, 4]);
+        assert_eq!(away.resolve(|_| None, |_| None), away);
+        let stand = |u: [i32; 4]| (u == [1, 2, 3, 4]).then_some(11);
+        assert_eq!(away.resolve(|_| None, stand), Owner::Entity(11));
+        let guest = |u: [i32; 4]| (u == [1, 2, 3, 4]).then_some(Some(3));
+        assert_eq!(away.resolve(guest, stand), Owner::Player { guest: Some(3) });
+        assert_eq!(Owner::Entity(6).resolve(guest, stand), Owner::Entity(6));
+    }
 
     struct Empty(Vec<(Who, Aabb)>);
     impl ProjectileWorld for Empty {

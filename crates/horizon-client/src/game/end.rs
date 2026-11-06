@@ -11,7 +11,6 @@ use horizon_client::{
     environment::Environment,
     items::ItemStack,
     mesher::Vertex,
-    mobs::Who,
     particles::{ParticleOptions, ParticleType},
     projectiles::{Projectile, ProjectileKind},
     vanillagen::VanillaTerrain,
@@ -1402,17 +1401,17 @@ impl Game<'_> {
             }
         }
         // A pearl's move this tick, from where it started it.
-        let pearls: Vec<(u32, Option<Who>, Option<u32>, BlockPos)> = self
+        let pearls: Vec<(u32, Option<horizon_client::projectiles::Owner>, BlockPos)> = self
             .creatures
             .projectiles
             .iter()
             .filter_map(|p| {
                 let pos = horizon_client::end_gateway::pearl_gateway(p, |b| is_gateway(self, b))?;
-                Some((p.id, p.owner, p.guest, pos))
+                Some((p.id, p.owner, pos))
             })
             .collect();
-        for (id, owner, guest, pos) in pearls {
-            if owner == Some(Who::Player) {
+        for (id, owner, pos) in pearls {
+            if let Some(horizon_client::projectiles::Owner::Player { guest }) = owner {
                 self.pearl_owner_in_gateway(guest, pos);
             }
             inside.push((id, pos));

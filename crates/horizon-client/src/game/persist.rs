@@ -1837,24 +1837,9 @@ impl Game<'_> {
         self.persist.uuids.retain(|id, _| alive.contains(id));
         self.persist.raw.retain(|id, _| alive.contains(id));
     }
-    /// A loaded projectile's `Owner`: a connected guest, else a mob by UUID.
+    /// A loaded projectile's `Owner`, live if its player or entity is here.
     fn claim_owner(&self, p: &mut horizon_client::projectiles::Projectile) {
-        let Some(uuid) = p.owner_uuid else {
-            return;
-        };
-        let guest = self.lan.as_ref().and_then(|host| {
-            let ints = horizon_client::lan::playerdata::uuid_ints;
-            host.hub
-                .guests
-                .iter()
-                .find(|g| ints(g.uuid) == uuid)
-                .map(|g| g.conn)
-        });
-        if guest.is_some() {
-            (p.owner, p.guest) = (Some(Who::Player), guest);
-        } else if p.owner.is_none() {
-            p.owner = self.mob_by_uuid(uuid).map(Who::Mob);
-        }
+        p.owner = p.owner.map(|o| self.resolve_owner(o));
     }
     /// Save and remove the entities of chunks that unloaded.
     pub(super) fn unload_entities(&mut self, unloaded: &[Arc<Chunk>]) {

@@ -55,6 +55,11 @@ public final class Flat {
         return color.getId();
     }
 
+    /** An entity by its UUID, as text (empty for none): what vanilla keeps in an `EntityReference`. */
+    public static String rawUuid(net.minecraft.world.entity.Entity entity) {
+        return entity == null ? "" : entity.getUUID().toString();
+    }
+
     /** A UUID as text, empty for none. */
     public static String raw(java.util.UUID id) {
         return id == null ? "" : id.toString();

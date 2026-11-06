@@ -11,6 +11,7 @@ import dev.horizonlab.javamods.boot.mixin.MobAccess;
 import dev.horizonlab.javamods.boot.mixin.LightningBoltAccess;
 import dev.horizonlab.javamods.boot.mixin.LivingDataAccess;
 import dev.horizonlab.javamods.boot.mixin.PrimedTntAccess;
+import dev.horizonlab.javamods.boot.mixin.ProjectileAccess;
 import dev.horizonlab.javamods.boot.mixin.SheepDataAccess;
 import dev.horizonlab.javamods.boot.mixin.SynchedAccess;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
@@ -51,6 +52,7 @@ import net.minecraft.world.entity.LightningBolt;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.item.PrimedTnt;
 import net.minecraft.world.level.pathfinder.PathType;
+import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.entity.projectile.arrow.AbstractArrow;
 import net.minecraft.world.entity.animal.sheep.Sheep;
 import net.minecraft.world.entity.item.ItemEntity;
@@ -340,8 +342,10 @@ public final class EntityViews implements LevelEntityGetter<Entity> {
                 bolts.horizon$life(life);
                 bolts.horizon$flashes(flashes);
                 bolt.seed = seed;
-            } else if (entity instanceof AbstractArrow arrow) {
-                ((AbstractArrowAccess) arrow).horizon$baseDamage(in.readDouble());
+            } else if (entity instanceof Projectile projectile) {
+                if (projectile instanceof AbstractArrow arrow) ((AbstractArrowAccess) arrow).horizon$baseDamage(in.readDouble());
+                UUID owner = in.readBoolean() ? new UUID(in.readLong(), in.readLong()) : null;
+                ((ProjectileAccess) projectile).horizon$owner(owner == null ? null : EntityReference.of(owner));
             }
         }
         if ((mask & AI) != 0) {
