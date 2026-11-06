@@ -12,7 +12,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     "net/minecraft/world/level/Level".isLoaded
     "(Lnet/minecraft/core/BlockPos;)Z" if "net/minecraft/server/level/ServerLevel" =>
     fn level_is_loaded(game, pos: Pos) -> bool {
-        game.world.chunks.contains_key(&(pos.0.x >> 4, pos.0.z >> 4))
+        game.java_column_loaded(pos.0.x >> 4, pos.0.z >> 4)
     }
 
     "net/minecraft/server/level/ServerLevel".shouldTickBlocksAt
@@ -25,7 +25,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     "(J)Z" =>
     fn chunk_cache_is_position_ticking(game, chunk: i64) -> bool {
         let (x, z) = (chunk as i32, (chunk >> 32) as i32);
-        game.tickets.levels().block_ticking(x, z) && game.world.chunks.contains_key(&(x, z))
+        game.tickets.levels().block_ticking(x, z) && game.java_column_loaded(x, z)
     }
 
     "dev/horizonlab/javamods/boot/ChunkViews".load

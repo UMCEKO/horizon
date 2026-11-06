@@ -9,6 +9,7 @@ import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.phys.AABB;
@@ -52,6 +53,17 @@ final class ChecksChunks {
             int places = Battery.places;
             level.setBlock(at, battery, 3);
             return Battery.places == places + 1 && level.getBlockEntity(at) instanceof Battery.Entity;
+        });
+        Checks.check("a removed block entity leaves its chunk", () -> {
+            BlockPos spot = at.north(2);
+            level.setBlock(spot, battery, 3);
+            BlockEntity entity = level.getBlockEntity(spot);
+            if (!(entity instanceof Battery.Entity)) return false;
+            entity.setRemoved();
+            // `LevelChunk.getBlockEntity`: a removed one is dropped and answers null, not loaded again.
+            boolean gone = level.getBlockEntity(spot) == null;
+            level.setBlock(spot, Blocks.AIR.defaultBlockState(), 3);
+            return gone;
         });
         Checks.check("neighborChanged hears its neighbour", () -> {
             // `Level.markAndNotifyBlock` names the block that was there.

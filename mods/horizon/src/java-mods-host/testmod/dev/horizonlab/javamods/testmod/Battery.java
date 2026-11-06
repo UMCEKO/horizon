@@ -133,6 +133,19 @@ public final class Battery extends BaseEntityBlock {
         @Override
         public void onChunkUnloaded() {
             unloads++;
+            unloading = true;
+        }
+
+        private boolean unloading;
+
+        /** `ChunkMap.scheduleUnload` hides the chunk before `clearAllBlockEntities`: a neighbour lookup in `setRemoved` must not reach it. */
+        @Override
+        public void setRemoved() {
+            super.setRemoved();
+            if (!unloading || !(level instanceof ServerLevel server)) return;
+            unloading = false;
+            BlockPos at = getBlockPos();
+            Checks.check("a leaving chunk is out of reach as its block entities go", () -> !server.hasChunkAt(at) && server.getChunkSource().getChunkNow(at.getX() >> 4, at.getZ() >> 4) == null);
         }
 
         static void tick(Level level, BlockPos pos, BlockState state, Entity entity) {

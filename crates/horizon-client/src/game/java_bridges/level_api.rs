@@ -76,7 +76,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     "net/minecraft/world/level/LevelAccessor".hasChunk
     "(II)Z" if "net/minecraft/server/level/ServerLevel" =>
     fn level_has_chunk(game, x: i32, z: i32) -> bool {
-        game.world.chunks.contains_key(&(x, z))
+        game.java_column_loaded(x, z)
     }
 
     "net/minecraft/world/level/BlockAndLightGetter".getBrightness

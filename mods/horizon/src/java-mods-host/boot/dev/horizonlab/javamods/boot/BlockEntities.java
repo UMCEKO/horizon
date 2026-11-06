@@ -82,11 +82,17 @@ public final class BlockEntities {
         Clients.joined(level, entity);
     }
 
+    /** `LevelChunk.getBlockEntity` with `IMMEDIATE`: a removed one leaves the map and answers null, never reloaded from Horizon's record. */
     public static BlockEntity get(ServerLevel level, BlockPos pos) {
         var held = held(level);
         long key = pos.asLong();
         BlockEntity entity = held.get(key);
-        if (entity != null && !entity.isRemoved()) return entity;
+        if (entity != null) {
+            if (!entity.isRemoved()) return entity;
+            held.remove(key);
+            VANILLA.remove(entity);
+            return null;
+        }
         BlockState state = level.getBlockState(pos);
         if (!state.hasBlockEntity()) return null;
         fetch(key);
@@ -206,7 +212,7 @@ public final class BlockEntities {
         else if (!refreshing) write(level, entity);
     }
 
-    /** `ChunkMap.save` of the chunk's unsaved block entities, then `ServerLevel.unload`'s `clearAllBlockEntities`; the chunk's own record of them goes with Horizon's unload. */
+    /** `ChunkMap.save` of the chunk's unsaved block entities, then `ServerLevel.unload`'s `clearAllBlockEntities` (every one removed, then the map cleared); the chunk's own record of them goes with Horizon's unload. */
     static void unload(ServerLevel level, int x, int z, List<CompoundTag> saved) {
         long chunk = ChunkPos.pack(x, z);
         var held = held(level);
@@ -227,10 +233,10 @@ public final class BlockEntities {
                 t.printStackTrace();
             }
         }
+        for (BlockEntity entity : here) entity.setRemoved();
         for (BlockEntity entity : here) {
-            entity.setRemoved();
             VANILLA.remove(entity);
-            held.remove(entity.getBlockPos().asLong());
+            held.remove(entity.getBlockPos().asLong(), entity);
         }
     }
 
