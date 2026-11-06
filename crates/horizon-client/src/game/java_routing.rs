@@ -14,13 +14,14 @@ macro_rules! route_gate {
     ($game:expr, $key:literal, $recv:expr, ($($arg:expr),* $(,)?)) => {
         {
             static GATE: $crate::game::java_routing::Gate = $crate::game::java_routing::Gate::new($key);
-            if let Some(id) = GATE.admitted(&$recv)
-                && let Some(value) = $game.route_call(id, $recv, |out| {
-                    let _ = &out;
-                    $( $crate::game::java_routing::RouteArg::put(&$arg, out); )*
-                })
-            {
-                return value;
+            if let Some(id) = GATE.admitted(&$recv) {
+                // Written before the call, so an argument may read the game.
+                #[allow(unused_mut)]
+                let mut args = horizon_java_host::wire::Out::default();
+                $( $crate::game::java_routing::RouteArg::put(&$arg, &mut args); )*
+                if let Some(value) = $game.route_call(id, $recv, |out| out.0.extend_from_slice(&args.0)) {
+                    return value;
+                }
             }
         }
     };
@@ -42,6 +43,14 @@ macro_rules! gui_route {
 #[allow(unused_imports)]
 pub(in crate::game) use {gui_route, route_gate as route};
 
+/// A routed `Component` argument: its saved form.
+#[allow(dead_code)]
+pub(in crate::game) struct ComponentArg<'a>(pub &'a horizon_world::nbt::Tag);
+
+/// A routed `Player` argument: the acting player, as a call fills its view.
+#[allow(dead_code)]
+pub(in crate::game) struct PlayerArg(pub Option<Vec<u8>>);
+
 #[cfg(feature = "java-mods")]
 pub(in crate::game) mod route {
     #[allow(dead_code)]
@@ -60,6 +69,14 @@ pub(in crate::game) mod route {
 
 #[cfg(feature = "java-mods")]
 pub(in crate::game) use gate::{Gate, RouteArg};
+
+#[cfg(feature = "java-mods")]
+impl crate::game::Game<'_> {
+    /// The acting player as a routed `Player` argument.
+    pub(in crate::game) fn java_player_arg(&mut self) -> PlayerArg {
+        PlayerArg(self.java_use_request())
+    }
+}
 
 #[cfg(feature = "java-mods")]
 mod gate {
@@ -148,6 +165,32 @@ mod gate {
     impl RouteArg for String {
         fn put(&self, out: &mut Out) {
             out.text(self);
+        }
+    }
+    /// A `Vec3`.
+    impl RouteArg for [f64; 3] {
+        fn put(&self, out: &mut Out) {
+            for v in self {
+                out.double(*v);
+            }
+        }
+    }
+    impl RouteArg for super::ComponentArg<'_> {
+        fn put(&self, out: &mut Out) {
+            // `Flat.raw(Component)`'s wrapper, which Java unwraps the same way.
+            let mut map = horizon_world::nbt::Compound::new();
+            map.insert("text".into(), self.0.clone());
+            let tag = crate::game::java_mods::write_tag(horizon_world::nbt::Tag::Compound(map));
+            out.bytes(&tag.expect("a component encodes as NBT"));
+        }
+    }
+    impl RouteArg for super::PlayerArg {
+        fn put(&self, out: &mut Out) {
+            let fill = self
+                .0
+                .as_ref()
+                .expect("a routed Player argument needs the acting player");
+            out.0.extend_from_slice(fill);
         }
     }
     impl RouteArg for &horizon_client::items::ItemStack {
@@ -333,6 +376,23 @@ mod gate {
             let tag = crate::game::java_mods::read_tag(reply.bytes().unwrap()).unwrap();
             let back = horizon_client::save::item_from_nbt(&tag).unwrap();
             assert_eq!((back.item, back.count), (stack.item, 3));
+            assert!(reply.bytes().is_none());
+        }
+
+        #[test]
+        fn a_vec3_and_a_component_go_as_java_reads_them() {
+            let name = horizon_world::nbt::Tag::String("container.chest".into());
+            let mut out = Out::default();
+            RouteArg::put(&[1.5, -2.0, 0.25], &mut out);
+            RouteArg::put(&super::super::ComponentArg(&name), &mut out);
+            let mut reply = In(&out.0);
+            assert_eq!(
+                [reply.double(), reply.double(), reply.double()],
+                [Some(1.5), Some(-2.0), Some(0.25)]
+            );
+            // `GameBridge.component` reads `Flat.raw(Component)`'s wrapper.
+            let tag = crate::game::java_mods::read_tag(reply.bytes().unwrap()).unwrap();
+            assert_eq!(tag.get("text"), Some(&name));
             assert!(reply.bytes().is_none());
         }
 

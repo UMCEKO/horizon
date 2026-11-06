@@ -2,7 +2,9 @@
 """W12's gates: which vanilla methods native routes to Java's merged method, checked against the routes reference packs need.
 
   gates [--check]     write mods/horizon/src/java-mods-host/boot/res/route_gates.tsv from the `route!` and `gui_route!` sites
-  lint [--ledger]     every reference-pack route is gated or deferred with a fixed reason; every gate is well placed
+  lint [--ledger] [--routing F]...
+                      every reference-pack route, and every route of each install's routing.json, is gated or deferred
+                      with a fixed reason; every gate is well placed
   report --routing F  a table of an install's routes and what covers each
 """
 import argparse
@@ -26,7 +28,7 @@ GUI_ROUTE = re.compile(r'(?<![\w!])gui_route!\(\s*"([^"]+)"')
 FN = re.compile(r'\bfn\s+(\w+)')
 IMPL = re.compile(r'^[ \t]*(?:unsafe\s+)?impl\b[^\n{]*', re.M)
 BODY_CALL = re.compile(r'\s*(?:return\s+)?self\.(\w+)\(')
-REASON = re.compile(r'^(worldgen: W10|client: phase C|view: (entity|block_entity|scoreboard|save_stream|connection)|seam: lift|seam: \S+:\d+|special: (animate|item_code|sounds)|verdict: undecided)')
+REASON = re.compile(r'^(worldgen: W10|client: phase C|view: (entity|block_entity|scoreboard|save_stream|connection)|seam: lift|seam: \S+:\d+|special: (animate|item_code|sounds|screens)|verdict: undecided)')
 PARTIAL = re.compile(r'^seam: \S+:\d+')
 
 
@@ -162,6 +164,20 @@ def read_packs(directory=PACKS):
             key, kind, family, tail, returns, mods = row[:6]
             packs.setdefault(key, {'kind': kind, 'family': family, 'tail': tail == '1', 'returns': int(returns), 'mods': set()})['mods'].update(mods.split(','))
     return packs
+
+
+def routing_packs(routing):
+    """{key: {kind, family, tail, returns, mods}} of an install's routing.json, as read_packs gives a reference pack's."""
+    return {key: {'kind': r['kind'], 'family': r['family'], 'tail': bool(r['tail']), 'returns': int(r['returns']),
+                  'mods': {c['mod'] for c in r['changes']}} for key, r in routing['routes'].items()}
+
+
+def merge_packs(packs, more):
+    """`packs` with `more`'s routes added; a key both name keeps the first's shape and both mod sets."""
+    merged = {key: {**pack, 'mods': set(pack['mods'])} for key, pack in packs.items()}
+    for key, pack in more.items():
+        merged.setdefault(key, {**pack, 'mods': set()})['mods'].update(pack['mods'])
+    return merged
 
 
 def read_deferred(path=DEFERRED):
@@ -337,12 +353,15 @@ def cmd_gates(args):
 
 def cmd_lint(args):
     gates, packs, deferred, test_routes, bridges, gui_keys = gather()
+    routings = [json.loads(Path(path).read_text()) for path in args.routing or []]
+    for routing in routings:
+        packs = merge_packs(packs, routing_packs(routing))
     errors = lint(gates, packs, deferred, test_routes, bridges, gui_keys)
     if args.ledger:
         if not LEDGER.is_file():
             print(f'no port ledger at {LEDGER.relative_to(ROOT)}: skipping the ledger checks')
         else:
-            routing = json.loads(Path(args.routing).read_text()) if args.routing else None
+            routing = {'routes': {k: v for r in routings for k, v in r['routes'].items()}} if routings else None
             more, notes = ledger_lint(gates, packs, deferred, json.loads(LEDGER.read_text()), routing)
             errors += more
             for note in notes:
@@ -365,7 +384,7 @@ def main(argv=None):
     p.set_defaults(run=cmd_gates)
     p = sub.add_parser('lint')
     p.add_argument('--ledger', action='store_true')
-    p.add_argument('--routing', help='an install\'s routing.json, for the super-call check')
+    p.add_argument('--routing', action='append', help='an install\'s routing.json (repeatable): its routes must be gated or deferred too')
     p.set_defaults(run=cmd_lint)
     p = sub.add_parser('report')
     p.add_argument('--routing', required=True)

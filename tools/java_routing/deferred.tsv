@@ -6,6 +6,7 @@ net/minecraft/client/KeyMapping#isDown()Z	client: phase C
 net/minecraft/client/KeyMapping#matches(Lnet/minecraft/client/input/KeyEvent;)Z	client: phase C
 net/minecraft/client/KeyMapping#matchesMouse(Lnet/minecraft/client/input/MouseButtonEvent;)Z	client: phase C
 net/minecraft/client/KeyMapping#same(Lnet/minecraft/client/KeyMapping;)Z	client: phase C
+net/minecraft/client/KeyMapping#setAll()V	special: screens
 net/minecraft/client/KeyboardHandler#keyPress(JILnet/minecraft/client/input/KeyEvent;)V	client: phase C
 net/minecraft/client/Minecraft#<init>(Lnet/minecraft/client/main/GameConfig;)V	client: phase C
 net/minecraft/client/Minecraft#continueAttack(Z)V	client: phase C

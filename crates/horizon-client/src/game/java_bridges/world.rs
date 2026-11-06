@@ -138,10 +138,14 @@ horizon_java_host::java_bridges! { table for Game<'static> {
 
     "net/minecraft/server/level/ServerPlayer".sendSystemMessage
     "(Lnet/minecraft/network/chat/Component;Z)V" =>
-    fn player_system_message(game, message: Bytes, _overlay: bool) -> () {
+    fn player_system_message(game, message: Bytes, overlay: bool) -> () {
         let tag = horizon_world::nbt::read_named(&message.0, Default::default());
         if let Ok((root, _)) = tag && let Some(text) = root.tag.get("text") {
-            game.system_message(remote::remote_text(text));
+            if overlay {
+                game.send_overlay_message(text.clone());
+            } else {
+                game.system_message(remote::remote_text(text));
+            }
         }
     }
 
