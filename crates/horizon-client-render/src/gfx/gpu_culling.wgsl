@@ -4,8 +4,9 @@
 // and whose box is in the frustum, writes each one's origin and the runs of its
 // solid quads that can face the eye, a draw each, and counts them in its page
 // and distance band (`band`), per block of 64 ids. `scan`: one workgroup per
-// page turns the blocks' counts into where each block's draws start, band by
-// band, nearest first, and the page's count. `scatter`: each block writes its
+// slot (page and band) turns the blocks' counts into where each block's draws
+// start in it; `bases`: per page, where each band starts, nearest first, and
+// the page's count. `scatter`: each block writes its
 // sections' draws there, within a band in id order and each section's in its
 // runs' order, so a page's draws come front to back as the CPU's do (page_runs.rs:
 // the depth test then rejects hidden fragments early) and in the same order
@@ -459,23 +460,22 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 var<workgroup> partial: array<u32, 256>;
 
-// Entry `e` of `page`'s counts: band-major, nearest band first, blocks in id order.
-fn page_entry(page: u32, e: u32, blocks: u32, phase: u32) -> u32 {
-    return STATS + 2u * params.pages + (phase * params.pages + page) * bands() * blocks + e;
+// Where slot `slot`'s draws start in its page's region in `phase`: its total until `bases` runs.
+fn slot_base(slot: u32, phase: u32) -> u32 {
+    let blocks = (params.ids + BLOCK - 1u) / BLOCK;
+    let slots = params.pages * bands();
+    return STATS + 2u * params.pages + 2u * slots * blocks + phase * slots + slot;
 }
 
-// One workgroup per page: each lane sums a stretch of its entries, the lanes'
-// sums are scanned, and each entry's sum becomes where its block's draws in
-// that band start, in `phase` (`scan`, gpu_occlusion.wgsl `scan2`).
-fn scan_page(page: u32, lane: u32, phase: u32) {
+// One workgroup per slot (page and band): each block's count becomes where its draws start in the slot, in `phase`.
+fn scan_slot(slot: u32, lane: u32, phase: u32) {
     let blocks = (params.ids + BLOCK - 1u) / BLOCK;
-    let entries = blocks * bands();
-    let stretch = (entries + 255u) / 256u;
-    let first = min(lane * stretch, entries);
-    let last = min(first + stretch, entries);
+    let stretch = (blocks + 255u) / 256u;
+    let first = min(lane * stretch, blocks);
+    let last = min(first + stretch, blocks);
     var sum = 0u;
-    for (var e = first; e < last; e++) {
-        sum += atomicLoad(&counts[page_entry(page, e, blocks, phase)]);
+    for (var b = first; b < last; b++) {
+        sum += atomicLoad(&counts[block_count(b, slot, phase)]);
     }
     partial[lane] = sum;
     workgroupBarrier();
@@ -492,27 +492,45 @@ fn scan_page(page: u32, lane: u32, phase: u32) {
     if lane > 0u {
         start = partial[lane - 1u];
     }
-    for (var e = first; e < last; e++) {
-        let at = page_entry(page, e, blocks, phase);
+    for (var b = first; b < last; b++) {
+        let at = block_count(b, slot, phase);
         let count = atomicLoad(&counts[at]);
         atomicStore(&counts[at], start);
         start += count;
     }
     if lane == 255u {
-        // A region has room for every draw of its page's records; were one
-        // short, its draws past it go.
-        let total = min(partial[255], region(page).y);
-        atomicStore(&counts[page_count(page, phase)], total);
-        atomicAdd(&counts[DRAWS], total);
-        if phase == 1u {
-            atomicAdd(&counts[DRAWN2], total);
-        }
+        atomicStore(&counts[slot_base(slot, phase)], partial[255]);
+    }
+}
+
+// One invocation per page: its bands' totals become where each band starts, nearest first, then the page's count.
+fn page_bases(page: u32, phase: u32) {
+    var start = 0u;
+    for (var b = 0u; b < bands(); b++) {
+        let at = slot_base(page * bands() + b, phase);
+        let count = atomicLoad(&counts[at]);
+        atomicStore(&counts[at], start);
+        start += count;
+    }
+    // A region has room for every draw of its page's records; were one short, its draws past it go.
+    let total = min(start, region(page).y);
+    atomicStore(&counts[page_count(page, phase)], total);
+    atomicAdd(&counts[DRAWS], total);
+    if phase == 1u {
+        atomicAdd(&counts[DRAWN2], total);
     }
 }
 
 @compute @workgroup_size(256)
 fn scan(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
-    scan_page(group.x, lane, 0u);
+    scan_slot(group.x, lane, 0u);
+}
+
+@compute @workgroup_size(64)
+fn bases(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if gid.x < params.pages {
+        page_bases(gid.x, 0u);
+    }
 }
 
 var<workgroup> held: array<u32, 64>;
@@ -531,7 +549,7 @@ fn scatter_block(block: u32, lane: u32, phase: u32) {
         return;
     }
     let key = mine >> PAGE_SHIFT;
-    var slot = atomicLoad(&counts[block_count(block, key, phase)]);
+    var slot = atomicLoad(&counts[slot_base(key, phase)]) + atomicLoad(&counts[block_count(block, key, phase)]);
     for (var other = 0u; other < lane; other++) {
         // A section not drawn holds 0: no draws.
         if (held[other] >> PAGE_SHIFT) == key {
