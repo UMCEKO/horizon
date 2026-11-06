@@ -195,15 +195,11 @@ pub fn leash_offset(m: &Mob) -> [f64; 3] {
         f64::from(m.width() * 0.56),
     ]
 }
-/// `Camel.getPassengerAttachmentPoint` of the first (driver) seat, before
-/// the camel's yaw turns it: half a block ahead (scaled by `getAgeScale`, 0.6
-/// for a baby) at the body anchor, which sinks while the camel sits.
-pub fn passenger_attachment(m: &Mob) -> [f64; 3] {
-    passenger_attachment_at(m, 0, 1, false)
-}
 /// `Camel.getPassengerAttachmentPoint` for the passenger at `index` of `count`
-/// (`getPassengers().indexOf`): with more than one aboard the second seat is
-/// 0.7 behind the middle, and an `Animal` sits 0.2 further ahead.
+/// (`getPassengers().indexOf`), before the camel's yaw turns it: the driver
+/// half a block ahead (scaled by `getAgeScale`, 0.6 for a baby) at the body
+/// anchor, which sinks while the camel sits; with more than one aboard the
+/// second seat is 0.7 behind the middle, and an `Animal` sits 0.2 further ahead.
 pub fn passenger_attachment_at(m: &Mob, index: usize, count: usize, animal: bool) -> [f64; 3] {
     let scale = if m.is_baby() { 0.6 } else { 1.0 };
     let driver = index == 0;

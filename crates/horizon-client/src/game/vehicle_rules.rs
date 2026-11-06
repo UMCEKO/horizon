@@ -465,7 +465,12 @@ impl Game<'_> {
                 } else {
                     (m.position, m.yaw)
                 };
-                let attachment = riders::passenger_attachment(m, index, yaw, self.remote.is_some());
+                let place = riders::Seat {
+                    index,
+                    count,
+                    animal: seat.animal,
+                };
+                let attachment = riders::passenger_attachment(m, place, yaw, self.remote.is_some());
                 riders::ride_position(at, attachment, [0.0, seat.offset, 0.0])
             }
         }

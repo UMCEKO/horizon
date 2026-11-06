@@ -62,13 +62,22 @@ pub fn board_in_turn(
     v.id()
 }
 /// `getPassengerAttachmentPoint` of a mob vehicle for its passenger number
-/// `index`, turned by `yaw`: the kind's override, else `getClamped(PASSENGER,
-/// index, yaw)` of the box's attachments. `client` is set where the level is
-/// the client's (a `Strider` bobs its rider only there).
-pub fn passenger_attachment(v: &Mob, index: usize, yaw: f32, client: bool) -> [f64; 3] {
+/// `index` of `count` (`animal`: that passenger is an `Animal`), turned by
+/// `yaw`: the kind's override, else `getClamped(PASSENGER, index, yaw)` of the
+/// box's attachments. `client` is set where the level is the client's (a
+/// `Strider` bobs its rider only there).
+pub fn passenger_attachment(v: &Mob, seat: Seat, yaw: f32, client: bool) -> [f64; 3] {
+    let Seat {
+        index,
+        count,
+        animal,
+    } = seat;
     let species = v.species();
     if super::camel::is_camel(species) {
-        return rotated(super::camel::passenger_attachment(v), yaw);
+        return rotated(
+            super::camel::passenger_attachment_at(v, index, count, animal),
+            yaw,
+        );
     }
     if matches!(
         species,
@@ -92,6 +101,22 @@ pub fn passenger_attachment(v: &Mob, index: usize, yaw: f32, client: bool) -> [f
         at[1] += f64::from(offset * scale);
     }
     at
+}
+/// A passenger's place among its vehicle's (`getPassengers().indexOf`), how
+/// many ride it, and whether that passenger is an `Animal`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Seat {
+    pub index: usize,
+    pub count: usize,
+    pub animal: bool,
+}
+impl Seat {
+    /// The first passenger of one.
+    pub const DRIVER: Self = Self {
+        index: 0,
+        count: 1,
+        animal: false,
+    };
 }
 /// `getVehicleAttachmentPoint` of a rider that sits on a vehicle `vehicle_width`
 /// wide: how far below the vehicle's attachment point its feet hang.
@@ -554,7 +579,7 @@ mod tests {
         let Some(types) = types() else { return };
         let mut slime = mob(&types, "slime", false);
         crate::mobs::cube::set_size(&mut slime, 4);
-        let at = passenger_attachment(&slime, 0, 0.0, false);
+        let at = passenger_attachment(&slime, Seat::DRIVER, 0.0, false);
         assert!((at[1] - (f64::from(slime.height()) - 0.015625 * 4.0)).abs() < 1e-9);
     }
     /// An NPC plugin's enlarged fake player: the name it carries sits on the
@@ -572,11 +597,11 @@ mod tests {
         };
         let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
         assert!(close(
-            passenger_attachment(&npc(0.0), 0, 0.0, false)[1],
+            passenger_attachment(&npc(0.0), Seat::DRIVER, 0.0, false)[1],
             1.8
         ));
         assert!(close(
-            passenger_attachment(&npc(1.5), 0, 0.0, false)[1],
+            passenger_attachment(&npc(1.5), Seat::DRIVER, 0.0, false)[1],
             2.7
         ));
         assert!(close(vehicle_attachment(&npc(0.0), 1.375)[1], 0.6));
@@ -600,9 +625,15 @@ mod tests {
         let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
         let mut cow = mob(&types, "cow", false);
         // `EntityTypes.COW`: passengerAttachments(1.36875F).
-        assert!(close(passenger_attachment(&cow, 0, 0.0, false)[1], 1.36875));
+        assert!(close(
+            passenger_attachment(&cow, Seat::DRIVER, 0.0, false)[1],
+            1.36875
+        ));
         cow.extra.model_scale = 2.0;
-        assert!(close(passenger_attachment(&cow, 0, 0.0, false)[1], 2.7375));
+        assert!(close(
+            passenger_attachment(&cow, Seat::DRIVER, 0.0, false)[1],
+            2.7375
+        ));
     }
     /// The attachments are `EntityTypes` floats widened to double, and a
     /// zombie's seat (2.0125) is above its box (1.95).
@@ -612,12 +643,13 @@ mod tests {
         let close = |a: f64, b: f64| (a - b).abs() < 1e-12;
         let pig = mob(&types, "pig", false);
         assert!(close(
-            passenger_attachment(&pig, 0, 0.0, false)[1],
+            passenger_attachment(&pig, Seat::DRIVER, 0.0, false)[1],
             0.868_749_976_158_142_1
         ));
         let zombie = mob(&types, "zombie", false);
         assert!(close(
-            passenger_attachment(&zombie, 0, 0.0, false)[1] - vehicle_attachment(&zombie, 100.0)[1],
+            passenger_attachment(&zombie, Seat::DRIVER, 0.0, false)[1]
+                - vehicle_attachment(&zombie, 100.0)[1],
             1.312_500_059_604_645
         ));
     }
@@ -676,7 +708,17 @@ mod happy_ghast_seat_tests {
         let types = crate::mobs::MobTypes::load(&root).unwrap();
         let kind = std::sync::Arc::new(types.types["minecraft:happy_ghast"].clone());
         let ghast = Mob::new(1, kind, Vec3::ZERO, 0.0);
-        let seat = |i| passenger_attachment(&ghast, i, 0.0, false);
+        let seat = |index| {
+            passenger_attachment(
+                &ghast,
+                Seat {
+                    index,
+                    ..Seat::DRIVER
+                },
+                0.0,
+                false,
+            )
+        };
         assert_eq!(seat(0), [0.0, 4.0, 1.7]);
         let seats: Vec<_> = (0..4).map(seat).collect();
         for (i, a) in seats.iter().enumerate() {
