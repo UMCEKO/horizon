@@ -228,6 +228,8 @@ mod mob_looting;
 mod mob_sounds;
 mod mod_api_host;
 mod mod_browser;
+#[cfg(test)]
+mod model_copies_bench;
 pub(crate) mod mods;
 mod mount_menu;
 mod mounts;
