@@ -2796,15 +2796,17 @@ impl Game<'_> {
         }
         host = self.lan_flush_tracking(host);
         self.lan = Some(host);
-        // A blast from a guest's attack, and a mace's wind burst.
-        self.flush_lan_explosions();
-        let _ = self.flush_wind_bursts();
-        // A sweep attack's reach to the other players from a guest's attack.
-        self.flush_sweeps();
-        // A reeled-in hook pulling a player.
-        self.flush_hook_pulls();
-        // Particles a guest's turn sent (sweep attack, damage indicator, a hook's splashes).
-        self.flush_lan_particles();
+        horizon_client::spans::time("lan_flushes", || {
+            // A blast from a guest's attack, and a mace's wind burst.
+            self.flush_lan_explosions();
+            let _ = self.flush_wind_bursts();
+            // A sweep attack's reach to the other players from a guest's attack.
+            self.flush_sweeps();
+            // A reeled-in hook pulling a player.
+            self.flush_hook_pulls();
+            // Particles a guest's turn sent (sweep attack, damage indicator, a hook's splashes).
+            self.flush_lan_particles();
+        });
         let mut host = self
             .lan
             .take()
@@ -2817,7 +2819,7 @@ impl Game<'_> {
         self.lan_swings(&mut host);
         self.lan_update_streaming(&host);
         self.lan_guest_poses(&mut host);
-        self.lan_update_waypoints(&mut host);
+        horizon_client::spans::time("lan_waypoints", || self.lan_update_waypoints(&mut host));
         self.lan_sync_scoreboard(&mut host);
         self.lan_sync_border(&mut host);
         host.hub.anticheat_ping();
