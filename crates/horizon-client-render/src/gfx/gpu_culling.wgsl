@@ -1,8 +1,7 @@
-// GPU culling (gfx/gpu_culling.rs). `apply` writes the records that changed. `cull`: one invocation per section id keeps the sections whose column is within the render distance, that cave culling's graph reaches (occlusion.rs) and whose box is in the frustum, writes each one's origin and the runs of its solid quads that can face the eye, a draw each, and counts them in its page and distance band (`band`), per block of 64 ids. `scan`: one workgroup per slot (page and band) turns the blocks' counts into where each block's draws start in it; `bases`: per page, where each band starts, nearest first, and the page's count. `scatter`: each block writes its sections' draws there, within a band in id order and each section's in its runs' order, so a page's draws come front to back as the CPU's do (page_runs.rs: the depth test then rejects hidden fragments early) and in the same order every frame (atomics alone would order them as the GPU schedules, and where faces of two sections meet at the same depth the later draw keeps the pixel). Nothing here computes with floats: the origins are the CPU's bits, copied, the frustum test adds integers the CPU computed, and facing compares keys that order as the floats the CPU compares. `cull` leaves sections fading in or out to the CPU (`FADING`). Frames that occlude (`OCCLUDE`, gpu_occlusion.wgsl) draw in two phases, each in id order: `cull` leaves to phase 2 the sections whose box the last test did not see and lists the boxes to test; after the test, `count2`, `scan2` and `scatter2` write the draws of those it saw into the same regions. Which boxes count as seen untested (`near_or_big`) is float arithmetic of the shader's own: it only sorts sections between the phases, and doubt counts as seen.
+// GPU culling (gfx/gpu_culling.rs): apply, cull, scan, bases, scatter, then gpu_occlusion.wgsl's count2, scan2, bases2, scatter2; the module docs there say what each does.
 
 struct Params {
-    // Ids to test, records `apply` writes, the arena pages the counts and
-    // regions cover, and where the regions start in `tables`.
+    // Ids to test, records `apply` writes, the arena pages the counts and regions cover, and where the regions (GROUPS per page) start in `tables`.
     ids: u32,
     updates: u32,
     pages: u32,
@@ -30,7 +29,7 @@ struct Params {
     // Occlusion (OCCLUDE): this frame's stamp (never 0), where the boxes to
     // test start in `counts`, 0, 0.
     occl: vec4<u32>,
-    // The camera's section y (from the level's bottom), the distance bands, 0, 0.
+    // The camera's section y (from the level's bottom), the distance bands, and the bands where group 1 and group 2 start.
     order: vec4<i32>,
     // The world pass's view projection, TAA's jitter included (gfx.rs
     // `globals.view_proj`).
@@ -65,11 +64,10 @@ struct Update {
 // gpu_culling.rs `tables`: the origins' f32 bits along x, y and z (n of them);
 // per frustum plane its terms for those origins, n each; per plane and axis its
 // terms for the 32 box codes; with an eye (`EYE`), the keys of the eye less
-// each origin, n of them; then each page's region of `draws` (its first draw
-// and its size).
+// each origin, n of them; then each group's and page's region of `draws` (its first draw and its size).
 @group(0) @binding(2) var<storage, read> tables: array<u32>;
 @group(0) @binding(3) var<storage, read> updates: array<Update>;
-// The statistics (`STATS`), each page's draws in phase 1 and in phase 2, then per block of ids, page and band its draws in each phase (`cull`, `count2`), turned into where they start (`scan`, `scan2`), then the boxes to test (`cull`).
+// The statistics (`STATS`), each group's and page's draws in phase 1 and in phase 2, then per block of ids, page and band its draws in each phase (`cull`, `count2`), turned into where they start (`scan`, `scan2`), then the boxes to test (`cull`).
 @group(0) @binding(4) var<storage, read_write> counts: array<atomic<u32>>;
 // DrawIndexedIndirectArgs, five words each.
 @group(0) @binding(5) var<storage, read_write> draws: array<u32>;
@@ -138,6 +136,8 @@ const NEAR_DEPTH: f32 = 0.5;
 // gpu_culling.rs `FINE` and `BAND`: a band per section to 256 blocks, then page_runs.rs's 64 blocks.
 const FINE: u32 = 16u;
 const BAND: u32 = 4u;
+// gpu_culling.rs `GROUPS`: groups start at the bands in `params.order`.
+const GROUPS: u32 = 3u;
 
 fn bands() -> u32 {
     return u32(params.order.y);
@@ -158,9 +158,25 @@ fn band(key: vec3<i32>) -> u32 {
     return min(b, bands() - 1u);
 }
 
-// `page`'s count draw in `phase` (0: the first world pass; 1: after the test).
-fn page_count(page: u32, phase: u32) -> u32 {
-    return STATS + phase * params.pages + page;
+// The first band of group `g` (GROUPS: past the last band).
+fn group_start(g: u32) -> u32 {
+    if g == 0u {
+        return 0u;
+    }
+    if g >= GROUPS {
+        return bands();
+    }
+    return min(u32(select(params.order.z, params.order.w, g == 2u)), bands());
+}
+
+// The group of band `b`.
+fn group_of(b: u32) -> u32 {
+    return select(select(0u, 1u, b >= group_start(1u)), 2u, b >= group_start(2u));
+}
+
+// The count draw of `group` and `page` in `phase` (0: the first world pass; 1: after the test).
+fn page_count(group: u32, page: u32, phase: u32) -> u32 {
+    return STATS + (phase * GROUPS + group) * params.pages + page;
 }
 
 // `block`'s draw count in `slot` and `phase` (`cull`, `count2`), later its start (`scan`).
@@ -168,7 +184,7 @@ fn block_count(block: u32, slot: u32, phase: u32) -> u32 {
     let blocks = (params.ids + BLOCK - 1u) / BLOCK;
     let slots = params.pages * bands();
     // Each slot's blocks adjacent, so that `scan` reads a page's counts in one stretch.
-    return STATS + 2u * params.pages + (phase * slots + slot) * blocks + block;
+    return STATS + 2u * GROUPS * params.pages + (phase * slots + slot) * blocks + block;
 }
 
 // The id's first `runs` word, its flags cleared, if it draws in `phase` (in
@@ -187,9 +203,9 @@ fn drawn_in(id: u32, phase: u32) -> u32 {
     return w & ~(PHASE2 | TESTED);
 }
 
-// `page`'s region of `draws`: its first draw and its size.
-fn region(page: u32) -> vec2<u32> {
-    let at = params.regions + 2u * page;
+// The region of `draws` of `group` and `page`: its first draw and its size.
+fn region(group: u32, page: u32) -> vec2<u32> {
+    let at = params.regions + 2u * (group * params.pages + page);
     return vec2<u32>(tables[at], tables[at + 1u]);
 }
 
@@ -435,7 +451,7 @@ var<workgroup> partial: array<u32, 256>;
 fn slot_base(slot: u32, phase: u32) -> u32 {
     let blocks = (params.ids + BLOCK - 1u) / BLOCK;
     let slots = params.pages * bands();
-    return STATS + 2u * params.pages + 2u * slots * blocks + phase * slots + slot;
+    return STATS + 2u * GROUPS * params.pages + 2u * slots * blocks + phase * slots + slot;
 }
 
 // One workgroup per slot (page and band): each block's count becomes where its draws start in the slot, in `phase`.
@@ -474,21 +490,23 @@ fn scan_slot(slot: u32, lane: u32, phase: u32) {
     }
 }
 
-// One invocation per page: its bands' totals become where each band starts, nearest first, then the page's count.
+// One invocation per page: its bands' totals become where each band starts in its group's region, nearest first, then each group's count.
 fn page_bases(page: u32, phase: u32) {
-    var start = 0u;
-    for (var b = 0u; b < bands(); b++) {
-        let at = slot_base(page * bands() + b, phase);
-        let count = atomicLoad(&counts[at]);
-        atomicStore(&counts[at], start);
-        start += count;
-    }
-    // A region has room for every draw of its page's records; were one short, its draws past it go.
-    let total = min(start, region(page).y);
-    atomicStore(&counts[page_count(page, phase)], total);
-    atomicAdd(&counts[DRAWS], total);
-    if phase == 1u {
-        atomicAdd(&counts[DRAWN2], total);
+    for (var g = 0u; g < GROUPS; g++) {
+        var start = 0u;
+        for (var b = group_start(g); b < group_start(g + 1u); b++) {
+            let at = slot_base(page * bands() + b, phase);
+            let count = atomicLoad(&counts[at]);
+            atomicStore(&counts[at], start);
+            start += count;
+        }
+        // A region has room for every draw of its records; were one short, its draws past it go.
+        let total = min(start, region(g, page).y);
+        atomicStore(&counts[page_count(g, page, phase)], total);
+        atomicAdd(&counts[DRAWS], total);
+        if phase == 1u {
+            atomicAdd(&counts[DRAWN2], total);
+        }
     }
 }
 
@@ -525,7 +543,7 @@ fn scatter_block(block: u32, lane: u32, phase: u32) {
             slot += held[other] & 7u;
         }
     }
-    let r = region(key / bands());
+    let r = region(group_of(key % bands()), key / bands());
     let at = id * RUN_WORDS;
     let base = sections[id].a.x;
     for (var k = 0u; k < n; k++) {
