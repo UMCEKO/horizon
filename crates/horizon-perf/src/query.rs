@@ -226,13 +226,16 @@ pub fn query_ticks(cap: &Capture, opts: &QueryOpts) -> Vec<TickRow> {
             continue;
         }
         if let Some(th) = opts.to
-            && sh.t > th {
-                continue;
-            }
+            && sh.t > th
+        {
+            continue;
+        }
         if let Some(fr) = opts.from
-            && fr >= 0.0 && sh.t < fr {
-                continue;
-            }
+            && fr >= 0.0
+            && sh.t < fr
+        {
+            continue;
+        }
         rows.push(TickRow {
             id: tick_id(sh.counter),
             t: sh.t,
@@ -256,13 +259,16 @@ pub fn query_ticks(cap: &Capture, opts: &QueryOpts) -> Vec<TickRow> {
             continue;
         }
         if let Some(th) = opts.to
-            && ev.t > th {
-                continue;
-            }
+            && ev.t > th
+        {
+            continue;
+        }
         if let Some(fr) = opts.from
-            && fr >= 0.0 && ev.t < fr {
-                continue;
-            }
+            && fr >= 0.0
+            && ev.t < fr
+        {
+            continue;
+        }
         rows.push(TickRow {
             id: tick_id(ev.counter),
             t: ev.t,
@@ -312,13 +318,16 @@ pub fn series(cap: &Capture, field: &str, from: Option<f64>, to: Option<f64>) ->
         }
         for s in samples {
             if let Some(fr) = from
-                && fr >= 0.0 && s.t < fr {
-                    continue;
-                }
+                && fr >= 0.0
+                && s.t < fr
+            {
+                continue;
+            }
             if let Some(t) = to
-                && s.t > t {
-                    continue;
-                }
+                && s.t > t
+            {
+                continue;
+            }
             let v = match fname {
                 "mspt_p95" => s.mspt_p95.unwrap_or(0.0),
                 "mspt_p50" => s.mspt_p50.unwrap_or(0.0),
@@ -333,11 +342,12 @@ pub fn series(cap: &Capture, field: &str, from: Option<f64>, to: Option<f64>) ->
         }
         points.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap());
         if let Some(fr) = from
-            && fr < 0.0 {
-                let end = points.last().map(|p| p.t).unwrap_or(0.0);
-                let thr = end + fr;
-                points.retain(|p| p.t >= thr);
-            }
+            && fr < 0.0
+        {
+            let end = points.last().map(|p| p.t).unwrap_or(0.0);
+            let thr = end + fr;
+            points.retain(|p| p.t >= thr);
+        }
     }
     Series {
         field: field.to_string(),
