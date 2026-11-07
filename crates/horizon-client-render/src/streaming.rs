@@ -36,6 +36,8 @@ pub mod job_stats {
     static ENABLED: AtomicBool = AtomicBool::new(false);
     static NANOS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
     static COUNT: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
+    static UPDATES: AtomicU64 = AtomicU64::new(0);
+    static CAPS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
     pub fn enable(on: bool) {
         ENABLED.store(on, Ordering::Relaxed);
     }
@@ -45,6 +47,22 @@ pub mod job_stats {
     pub(super) fn add(kind: usize, nanos: u64) {
         NANOS[kind].fetch_add(nanos, Ordering::Relaxed);
         COUNT[kind].fetch_add(1, Ordering::Relaxed);
+    }
+    /// One `Streaming::update` with these in-flight caps (decoration, generation, light).
+    pub(super) fn update(caps: [usize; 3]) {
+        if enabled() {
+            UPDATES.fetch_add(1, Ordering::Relaxed);
+            for (cap, max) in caps.iter().zip(&CAPS) {
+                max.fetch_max(*cap as u64, Ordering::Relaxed);
+            }
+        }
+    }
+    /// The updates run and the largest decoration, generation and light caps since the last call; resets them.
+    pub fn take_updates() -> (u64, [u64; 3]) {
+        (
+            UPDATES.swap(0, Ordering::Relaxed),
+            std::array::from_fn(|i| CAPS[i].swap(0, Ordering::Relaxed)),
+        )
     }
     /// (kind, nanoseconds, count) since the last call; resets them.
     pub fn take() -> Vec<(&'static str, u64, u64)> {
@@ -1608,6 +1626,7 @@ impl Streaming {
         if self.paused {
             return (uploads, Vec::new());
         }
+        job_stats::update([self.workers * 2, self.workers * 3, self.workers * 4]);
         ExtraCover::refresh(&mut self.cover, &self.extra);
         // The sweeps below walk every loaded column and proto chunk. Run them
         // at once when the view moves and every eighth tick otherwise: a

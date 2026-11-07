@@ -19,7 +19,8 @@ The bots can run on another machine, so they don't take the server's CPU: `--bot
 `--bots-bin` naming horizon-bots there and `--connect` the address it reaches this machine at. `--nice 19`
 runs every server at the lowest priority (a shared machine). The explore bots fly as fast as each server
 sends them chunks, so a faster server gets more terrain to generate; `--explore-speed` slows them to a rate
-both servers keep up with, for equal work. After the runs, the work table compares the servers at each bot
+both servers keep up with, for equal work (`--spread` does not set it: its explorers also fly as fast as chunks
+come). After the runs, the work table compares the servers at each bot
 count: chunks sent and new chunks generated a second, against the busiest server's. A run whose work is more
 than 10 % apart isn't a fair comparison of its tick times.
 
@@ -408,6 +409,19 @@ def flag_count(directory):
     return len(log.read_text().splitlines()) if log.exists() else 0
 
 
+def horizon_report(directory, timeout=60):
+    """The newest `horizon-report` file the server wrote (waits for it), or None."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for path in sorted(directory.glob('**/reports/perf-*.json'), key=lambda p: p.stat().st_mtime, reverse=True):
+            try:
+                return json.loads(path.read_text())
+            except ValueError:
+                pass  # still being written
+        time.sleep(1)
+    return None
+
+
 def bots_command(args):
     """horizon-bots here, or through `--bots-via` (for example `ssh macmini`) on another machine."""
     if args.bots_via:
@@ -444,13 +458,15 @@ def run_once(kind, bots, behaviour, args, out):
         total = bots * args.join_every + args.warmup + args.seconds
         # The summary comes back on stdout after the per-second lines, so it works over ssh too.
         # No bots: the idle server, measured the same way.
+        # A pipe nobody reads fills up at ~1 000 chunks a second and blocks every bot at once.
+        bots_err = open(out / f'{name}-bots.err', 'w')
         bot_process = subprocess.Popen(['true'] if bots == 0 else [
              *bots_command(args), '--server', f'{args.connect}:{port}', '--bots', str(bots),
              '--behaviour', behaviour, '--join-every', str(args.join_every), '--seconds', str(int(total)),
              '--seed', str(args.seed), '--report', '-',
              *(['--explore-speed', str(args.explore_speed)] if args.explore_speed else []),
              *(['--height', '0', '--ground'] if args.ground else [])],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdout=subprocess.PIPE, stderr=bots_err, text=True)
         bot_lines = []
         threading.Thread(target=lambda: bot_lines.extend(bot_process.stdout), daemon=True).start()
         if args.spread and bots:
@@ -458,6 +474,8 @@ def run_once(kind, bots, behaviour, args, out):
         # All bots in, then the warm-up.
         time.sleep(bots * args.join_every + args.warmup)
         measure_start = time.time()
+        if args.horizon_report and kind == 'horizon':
+            server.console(f'horizon-report {min(args.seconds, 600)}')
         rss, cpu, ticks = [], [], []
         _, last_cpu = tree_usage(server.process.pid)
         last_time = time.time()
@@ -474,6 +492,11 @@ def run_once(kind, bots, behaviour, args, out):
                     ticks.append(t)
                 next_query = now + 5
         bot_process.wait(timeout=total + 120)
+        bots_err.close()
+        if args.horizon_report and kind == 'horizon':
+            # The chunk workers' cores by job kind, and how often streaming updated with what caps (S3).
+            r = horizon_report(directory) or {}
+            result['horizon_report'] = {k: r.get(k) for k in ('chunk_workers', 'streaming', 'cpu_cores_used', 'players')}
         time.sleep(0.5)
         measured, rest = [], []
         for line in list(bot_lines):
@@ -602,7 +625,12 @@ def main():
     parser.add_argument('--connect', default='127.0.0.1', help='the address the bots reach the server at')
     parser.add_argument('--pumpkin', type=Path, default=None, help='the Pumpkin binary (--servers pumpkin)')
     parser.add_argument('--spread', type=int, default=0,
-                        help='teleport every bot to a random spot in an N x N square (blocks) after it joins; 0: off')
+                        help='teleport every bot to a random spot in an N x N square (blocks) after it joins; 0: off. '
+                             'The explore bots keep their default speed (as fast as chunks come): the work grows '
+                             'with the server\'s chunk rate, so pass --explore-speed for a fixed workload')
+    parser.add_argument('--horizon-report', action='store_true',
+                        help="record Horizon's own `horizon-report` over the measured window and keep its chunk "
+                             'workers and streaming (updates, caps) in the result; it adds its small recording cost')
     parser.add_argument('--repeat', type=int, default=1,
                         help='rounds: every server and bot count once per round, the servers alternated')
     args = parser.parse_args()

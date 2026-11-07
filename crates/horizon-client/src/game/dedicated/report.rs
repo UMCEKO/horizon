@@ -54,6 +54,7 @@ impl Recording {
         tick_profile::want_spans(tick_profile::SPANS_REPORT, true);
         job_stats::enable(true);
         job_stats::take();
+        job_stats::take_updates();
         tick_profile::take();
         Self {
             seconds,
@@ -211,6 +212,18 @@ fn worker_jobs(jobs: &[(&'static str, u64, u64)], window_s: f64) -> Value {
     )
 }
 
+/// How often `Streaming::update` ran and the largest in-flight caps it used: a tick over 50 ms updates less
+/// than 20 times a second, which bounds what the chunk workers are given.
+fn streaming_updates(updates: u64, caps: [u64; 3], window_s: f64) -> Value {
+    json!({
+        "updates": updates,
+        "updates_per_second": round(updates as f64 / window_s.max(1e-9)),
+        "decoration_cap": caps[0],
+        "generation_cap": caps[1],
+        "light_cap": caps[2],
+    })
+}
+
 /// The players' network use over the window, from the wire bytes of the players on at both ends
 /// (in KiB a second: average, P50, P95, max), and what all players on at the end sent since the
 /// start (or since they joined).
@@ -363,6 +376,7 @@ impl Game<'_> {
         let costs = tick_profile::take();
         let mob_samples = costs.iter().map(|c| c.mob_ticks).sum();
         let jobs = job_stats::take();
+        let (updates, caps) = job_stats::take_updates();
         let cpu = horizon_bench::cpu_seconds(std::process::id())
             .zip(r.cpu_s)
             .map(|(end, start)| round((end - start) / window_s.max(1e-9)));
@@ -378,6 +392,7 @@ impl Game<'_> {
             "mob_costs": mob_costs(&costs, r.sampled_ticks),
             "mob_sampled_ticks": r.sampled_ticks,
             "chunk_workers": worker_jobs(&jobs, window_s),
+            "streaming": streaming_updates(updates, caps, window_s),
             "network": network(&r.wire_start, &self.wire_bytes(), window_s),
             "overhead": overhead(&r, mob_samples, span_ns, mob_ns),
             "players": players,
@@ -483,6 +498,13 @@ fn summary(r: &Value) -> String {
         .collect();
     if !workers.is_empty() {
         out += &format!("chunk workers: {}\n", workers.join(", "));
+    }
+    let st = &r["streaming"];
+    if st.is_object() {
+        out += &format!(
+            "streaming: {}/s updates, caps decorate {} generate {} light {}\n",
+            st["updates_per_second"], st["decoration_cap"], st["generation_cap"], st["light_cap"]
+        );
     }
     let net = &r["network"];
     if net.is_object() {
@@ -720,6 +742,27 @@ mod tests {
         assert_eq!(v[0]["jobs_per_second"], 100.0);
         assert_eq!(v[0]["ms_per_job"], 5.0);
         assert_eq!(v[1]["ms_per_job"], 0.5);
+    }
+
+    /// Updates are counted over the window; the caps are the largest seen, and the summary prints them.
+    #[test]
+    fn streaming_updates_give_a_rate_and_the_caps() {
+        let v = streaming_updates(270, [22, 33, 44], 60.0);
+        assert_eq!(v["updates"], 270);
+        assert_eq!(v["updates_per_second"], 4.5);
+        assert_eq!(
+            (
+                v["decoration_cap"].as_u64(),
+                v["generation_cap"].as_u64(),
+                v["light_cap"].as_u64()
+            ),
+            (Some(22), Some(33), Some(44))
+        );
+        let text = summary(&json!({ "streaming": v }));
+        assert!(
+            text.contains("streaming: 4.5/s updates, caps decorate 22 generate 33 light 44\n"),
+            "{text}"
+        );
     }
 
     /// The recording's cost: spans and mob samples a tick at their measured price, against MSPT.

@@ -1,10 +1,14 @@
+import json
+import os
+import tempfile
 import unittest
 
 import re
+from pathlib import Path
 
 from types import SimpleNamespace
 
-from tools.server_bench import DONE, PUMPKIN_READY, TICK_AVERAGE, TICK_PERCENTILES, pumpkin_config, spread_spots, work
+from tools.server_bench import DONE, horizon_report, PUMPKIN_READY, TICK_AVERAGE, TICK_PERCENTILES, pumpkin_config, spread_spots, work
 
 
 def run(server, bots, sent, new, waited=0.0, behaviour="mixed"):
@@ -117,6 +121,22 @@ class SpreadTest(unittest.TestCase):
         self.assertTrue(all(-50_000 <= x <= 50_001 and -50_000 <= z <= 50_001 for x, z in spots))
         self.assertEqual(spots, spread_spots(500, 100_000, 12345))
         self.assertNotEqual(spots, spread_spots(500, 100_000, 54321))
+
+class HorizonReportTest(unittest.TestCase):
+    def test_reads_the_newest_report_under_the_server_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reports = Path(tmp) / "world" / "reports"
+            reports.mkdir(parents=True)
+            old, new = reports / "perf-1.json", reports / "perf-2.json"
+            old.write_text(json.dumps({"streaming": {"updates": 1}}))
+            new.write_text(json.dumps({"streaming": {"updates": 270}}))
+            os.utime(old, (1, 1))
+            self.assertEqual(horizon_report(Path(tmp), timeout=1)["streaming"]["updates"], 270)
+
+    def test_none_when_the_server_wrote_no_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(horizon_report(Path(tmp), timeout=0.2))
+
 
 if __name__ == "__main__":
     unittest.main()
