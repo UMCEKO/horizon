@@ -1,0 +1,181 @@
+syntax = "proto3";
+
+package horizon.perf.v1;
+
+message Capture {
+  uint32 format = 1;
+  repeated Start start = 2;
+  repeated StringEntry strings = 3;
+  repeated HealthWindow history = 4;
+  repeated SlowEvent slow_history = 5;
+  repeated WorldSnapshot world = 6;
+  repeated Mark marks = 7;
+  repeated Warning warnings = 8;
+  repeated HealthSample health = 9;
+  repeated CounterDef counter_defs = 10;
+  repeated CounterSample counters = 11;
+  repeated SlowEvent slow = 12;
+  repeated SpanBlock span_blocks = 13;
+  repeated MemorySnapshot memory = 14;
+  repeated TimelineChunk timeline = 15;
+  repeated SpanSummary spans = 16;
+  repeated Workers workers = 17;
+  repeated SampleProfile samples = 18;
+  repeated GpuPasses gpu = 19;
+  repeated NetTraffic net = 20;
+  repeated BenchResult bench = 21;
+  repeated Attachment attachments = 22;
+  repeated Stop stop = 23;
+}
+
+enum Side { SIDE_UNSPECIFIED = 0; SIDE_CLIENT = 1; SIDE_SERVER = 2; }
+enum Unit { UNIT_UNSPECIFIED = 0; UNIT_TICK = 1; UNIT_FRAME = 2; }
+
+enum Kind { KIND_UNSPECIFIED = 0; KIND_DEDICATED = 1; KIND_INTEGRATED = 2; KIND_CLIENT = 3; }
+enum Trigger { TRIGGER_UNSPECIFIED = 0; TRIGGER_CONSOLE = 1; TRIGGER_CTL = 2; TRIGGER_KEY = 3; TRIGGER_ENV = 4; TRIGGER_BENCHMARK = 5; TRIGGER_REMOTE = 6; }
+enum WarningCode { WARNING_CODE_UNSPECIFIED = 0; }
+enum StopReason { STOP_REASON_UNSPECIFIED = 0; STOP_REASON_NORMAL = 1; STOP_REASON_WINDOW_CAP = 2; STOP_REASON_DISCONNECTED = 3; STOP_REASON_SHUTDOWN = 4; }
+
+message StringEntry { Side side = 1; uint32 id = 2; string text = 3; }
+
+message Start {
+  Side side = 1;
+  Kind kind = 2;
+  Trigger trigger = 3;
+  int64 started_unix_ms = 4;
+  double uptime_s = 5;
+  Build build = 6;
+  Machine machine = 7;
+  Options options = 8;
+  Settings settings = 9;
+  GameRules game_rules = 10;
+  HorizonOptions horizon_options = 11;
+  repeated Mod mods = 12;
+  bool same_process = 13;
+  uint32 players = 14;
+  uint64 world_fs_used_mb = 15;
+  uint64 world_fs_total_mb = 16;
+}
+message Build { string version = 1; string commit = 2; string profile = 3; string target = 4; repeated string features = 5; string symbols = 6; }
+message Machine { string os = 1; string os_version = 2; string arch = 3; string cpu = 4; uint32 cpu_threads = 5; uint32 cpu_cores = 6; uint64 ram_mb = 7; }
+message Options { uint32 hz = 1; uint32 threads = 2; uint64 ticks_over_ms = 3; double wall = 4; bool timeline = 5; string gpu = 6; bool samples = 7; }
+message Settings { }
+message GameRules { }
+message HorizonOptions { }
+message Mod { string id = 1; string version = 2; string kind = 3; string crate_name = 4; }
+
+message HealthSample {
+  Side side = 1;
+  double t = 2;
+  optional float tps = 3;
+  optional float mspt_avg = 4;
+  optional float mspt_p50 = 5;
+  optional float mspt_p95 = 6;
+  optional float mspt_max = 7;
+  optional float fps = 8;
+  optional float frame_ms_p50 = 9;
+  optional float frame_ms_p95 = 10;
+  optional float frame_ms_p99 = 11;
+  optional float frame_ms_max = 12;
+  optional float frame_cpu_ms_p50 = 13;
+  optional float frame_gpu_ms_p50 = 14;
+  float cpu_process_cores = 15;
+  float cpu_system_cores = 16;
+  float rss_mb = 17;
+  float physical_used_mb = 18;
+  float swap_used_mb = 19;
+  optional float allocator_commit_mb = 20;
+  optional float allocs_per_s = 21;
+  optional float alloc_mib_per_s = 22;
+  uint32 players = 23;
+  uint32 chunks = 24;
+  uint32 entities = 25;
+}
+
+message HealthWindow { Side side = 1; float step_s = 2; double t0 = 3; repeated HealthSample samples = 4; }
+
+message CounterDef { Side side = 1; uint32 id = 2; uint32 name = 3; repeated Label labels = 4; uint32 unit = 5; }
+message Label { uint32 key = 1; uint32 value = 2; }
+message CounterSample { Side side = 1; double t = 2; repeated uint32 ids = 3; repeated double values = 4; }
+
+message SlowEvent {
+  Side side = 1; double t = 2; Unit unit = 3; uint64 counter = 4; float wall_ms = 5; float cpu_ms = 6;
+  repeated SpanCost top = 7;
+}
+message SpanCost { uint32 name = 1; float wall_ms = 2; float cpu_ms = 3; uint32 depth = 4; }
+
+message SpanBlock {
+  Side side = 1; uint32 thread = 2; uint32 block = 3; double t0 = 4; float block_s = 5; uint32 units = 6;
+  repeated uint32 span = 7; repeated uint32 parent = 8;
+  repeated float wall_ms = 9; repeated float cpu_ms = 10; repeated uint32 seen = 11;
+}
+
+message TimelineChunk {
+  Side side = 1; uint32 thread = 2;
+  repeated uint32 name = 3; repeated uint64 start_us = 4; repeated uint32 dur_us = 5; repeated uint32 depth = 6;
+}
+
+message MemorySnapshot { Side side = 1; double t = 2; uint32 label = 3; repeated uint32 path = 4; repeated double value_mb = 5; }
+message Mark { Side side = 1; double t = 2; string name = 3; }
+message Warning { Side side = 1; double t = 2; WarningCode code = 3; repeated double args = 4; }
+
+message SpanSummary {
+  Side side = 1; uint32 thread = 2; Unit unit = 3; uint64 count = 4;
+  repeated SpanTotal spans = 5;
+  Histogram histogram = 6;
+  repeated WorstUnit worst = 7;
+}
+message SpanTotal { uint32 name = 1; uint32 parent = 2; uint32 depth = 3; float wall_ms = 4; float cpu_ms = 5; uint32 seen = 6; }
+message Histogram { repeated double edges_ms = 1; repeated uint64 counts = 2; }
+message WorstUnit { uint64 counter = 1; repeated SpanCost tree = 2; }
+
+message Workers { Side side = 1; repeated WorkerKind kinds = 2; }
+message WorkerKind { string kind = 1; uint32 jobs = 2; float cpu_cores = 3; float ms_per_job = 4; }
+
+message SampleProfile {
+  Side side = 1;
+  repeated SampleKind kinds = 2;
+  repeated SampledThread threads = 3;
+  float block_s = 4;
+  repeated BlockUnits block_units = 5;
+  Functions functions = 6;
+  Nodes nodes = 7;
+  Contexts contexts = 8;
+  Weights weights = 9;
+}
+message SampleKind { uint32 kind = 1; double period = 2; }
+message SampledThread { string name = 1; uint32 units = 2; uint32 slow_units = 3; Unit unit = 4; }
+message BlockUnits { uint32 thread = 1; repeated uint32 units = 2; }
+message Functions { repeated uint32 name = 1; repeated uint32 file = 2; repeated uint32 line = 3; repeated uint32 crate = 4; repeated uint64 addr = 5; }
+message Nodes { repeated uint32 parent = 1; repeated uint32 function = 2; repeated uint32 thread_root = 3; }
+message Contexts { repeated uint32 span = 1; repeated uint32 entity = 2; repeated uint32 block = 3; repeated uint32 dim = 4; repeated sint32 chunk_x = 5; repeated sint32 chunk_z = 6; }
+message Weights { repeated uint32 node = 1; repeated uint32 thread = 2; repeated uint32 kind = 3; repeated uint32 state = 4; repeated bool slow = 5; repeated uint32 context = 6; repeated uint32 block = 7; repeated uint64 count = 8; }
+
+message GpuPasses { Side side = 1; GpuDevice device = 2; repeated GpuPass passes = 3; repeated GpuCounter counters = 4; }
+message GpuDevice { string name = 1; string backend = 2; string driver = 3; }
+message GpuPass { string name = 1; double median_ms = 2; }
+message GpuCounter { string name = 1; double value = 2; }
+
+message NetTraffic { Side side = 1; float block_s = 2; repeated PlayerTraffic players = 3; }
+message PlayerTraffic { uint32 index = 1; double joined_t = 2; double left_t = 3; uint64 bytes_in = 4; uint64 bytes_out = 5; uint64 packets_in = 6; uint64 packets_out = 7; }
+
+message WorldSnapshot { Side side = 1; double t = 2; uint32 label = 3; repeated DimensionCounts dims = 4; repeated EntityCost entity_costs = 5; }
+message DimensionCounts { string dim = 1; uint32 chunks = 2; uint32 block_entities = 3; uint32 entities = 4; }
+message EntityCost { string entity = 1; string dim = 2; double ms_per_tick = 3; }
+
+message BenchResult { Side side = 1; string format = 2; string report_json = 3; string corpus_id = 4; }
+message Attachment { string name = 1; string media_type = 2; string body = 3; }
+
+message Stop {
+  Side side = 1; double t = 2; StopReason reason = 3;
+  Overhead overhead = 4;
+}
+message Overhead {
+  double spans_ms_per_tick = 1;
+  double spans_share = 2;
+  double sampler_share_of_thread = 3;
+  double writer_core_share = 4;
+  uint64 dropped_samples = 5;
+  uint64 dropped_messages = 6;
+  double timeline_stopped_t = 7;
+}

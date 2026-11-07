@@ -1,0 +1,18 @@
+[package]
+name = "horizon-perf-format"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[lib]
+name = "horizon_perf_format"
+path = "src/lib.rs"
+
+[dependencies]
+prost = "0.14"
+miniz_oxide = "0.9"
+crc32fast = "1.4"
+
+[build-dependencies]
+protox = "0.10"
+prost-build = "0.14"
