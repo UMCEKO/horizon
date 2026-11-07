@@ -615,6 +615,11 @@ fn tracked(cx: i32, cz: i32, r: i32, x: i32, z: i32) -> bool {
     dx * dx + dz * dz < i64::from(r) * i64::from(r)
 }
 
+/// Whether the column `(x, z)` lies in a square of [`Hub::tracked_squares`].
+fn in_square(s: &[i32; 4], x: i32, z: i32) -> bool {
+    (s[0]..=s[1]).contains(&x) && (s[2]..=s[3]).contains(&z)
+}
+
 /// The view's queue around a new centre: the queued chunks still tracked, then
 /// the tracked ones neither sent nor queued, closest first (a stable sort, so
 /// equally close chunks keep their order).
@@ -841,7 +846,7 @@ impl Hub {
             }
             return;
         }
-        let body = packet.encode();
+        let body: Arc<[u8]> = packet.encode().into();
         for g in self.guests.iter().filter(|g| g.placed) {
             g.sender.send(body.clone());
         }
@@ -849,7 +854,7 @@ impl Hub {
     /// [`Self::broadcast`] to the held players as well, which keep a picture of
     /// the players and the entities while they wait for their hand-over.
     pub fn broadcast_watching(&self, packet: &C) {
-        let body = packet.encode();
+        let body: Arc<[u8]> = packet.encode().into();
         for g in self.guests.iter().filter(|g| g.placed || g.held) {
             g.sender.send(body.clone());
         }
@@ -1020,7 +1025,7 @@ impl Hub {
     /// `PlayerList.broadcastAll(packet, dimension)`: the players in the
     /// level in place.
     pub fn broadcast_level(&self, packet: &C) {
-        let body = packet.encode();
+        let body: Arc<[u8]> = packet.encode().into();
         for g in self.guests.iter().filter(|g| self.watches(g)) {
             g.sender.send(body.clone());
         }
@@ -1028,13 +1033,15 @@ impl Hub {
     /// `DedicatedServer.sendLowDiskSpaceWarning`: the players with
     /// `PermissionLevel.ADMINS` (3) or more get `ClientboundLowDiskSpaceWarningPacket`.
     pub fn send_low_disk_space_warning(&self) {
-        let body = C::LowDiskSpaceWarning(horizon_protocol::packets::Empty).encode();
+        let body: Arc<[u8]> = C::LowDiskSpaceWarning(horizon_protocol::packets::Empty)
+            .encode()
+            .into();
         for g in self.guests.iter().filter(|g| g.placed && g.permission >= 3) {
             g.sender.send(body.clone());
         }
     }
     pub fn broadcast_except(&self, conn: u32, packet: &C) {
-        let body = packet.encode();
+        let body: Arc<[u8]> = packet.encode().into();
         for g in self.guests.iter().filter(|g| g.placed && g.conn != conn) {
             g.sender.send(body.clone());
         }
@@ -1049,11 +1056,12 @@ impl Hub {
     /// A system message for the guests `hears` picks by name
     /// (`PlayerList.broadcastSystemToTeam` and its kin).
     pub fn system_message_to(&self, content: Tag, hears: impl Fn(&str) -> bool) {
-        let body = C::SystemChat(play::SystemChat {
+        let body: Arc<[u8]> = C::SystemChat(play::SystemChat {
             content,
             overlay: false,
         })
-        .encode();
+        .encode()
+        .into();
         for g in self.guests.iter().filter(|g| g.placed && hears(&g.name)) {
             g.sender.send(body.clone());
         }
@@ -1061,11 +1069,12 @@ impl Hub {
     /// `ServerPlayer.sendSystemMessage` to the guest with `uuid`, in any
     /// dimension.
     pub fn system_message_to_player(&self, uuid: u128, content: Tag) {
-        let body = C::SystemChat(play::SystemChat {
+        let body: Arc<[u8]> = C::SystemChat(play::SystemChat {
             content,
             overlay: false,
         })
-        .encode();
+        .encode()
+        .into();
         for g in self.guests.iter().filter(|g| g.placed && g.uuid == uuid) {
             g.sender.send(body.clone());
         }
@@ -2804,8 +2813,9 @@ impl Hub {
         let mut encoded = self.encoder.bodies_with(&columns.chunks, world, &|x, z| {
             ctx.streaming.and_then(|s| s.proto_sections(x, z))
         });
-        let uses = &mut columns.uses;
+        let uses = &columns.uses;
         let chunks = &columns.chunks;
+        let mut shared: Vec<Option<Arc<[u8]>>> = vec![None; encoded.len()];
         for (i, taken, far, batch) in batches {
             let g = &mut self.guests[i];
             let size = batch.len();
@@ -2819,14 +2829,17 @@ impl Hub {
                         if memory {
                             super::handoff::offer(chunks[j]);
                         }
-                        uses[j] -= 1;
-                        if uses[j] == 0 {
-                            std::mem::take(&mut encoded[j])
-                        } else {
-                            encoded[j].clone()
+                        let column = &mut encoded[j];
+                        match uses[j] {
+                            1 => super::Body::Owned(std::mem::take(column)),
+                            _ => super::Body::Shared(
+                                shared[j]
+                                    .get_or_insert_with(|| std::mem::take(column).into())
+                                    .clone(),
+                            ),
                         }
                     }
-                    Body::Saved(body) => body.to_vec(),
+                    Body::Saved(body) => super::Body::Shared(body),
                 }));
                 g.send(&C::ChunkBatchFinished(play::ChunkBatchFinished {
                     size: size as i32,
@@ -3034,6 +3047,7 @@ impl Hub {
         let mut changes: Vec<_> = log.drain().collect();
         // One entry per column, so the order is the columns'.
         changes.sort_unstable_by_key(|&(column, _)| column);
+        let squares = self.tracked_squares();
         for ((x, z), sections) in changes {
             if let Some(far) = self.far.as_mut() {
                 far.changed(x, z);
@@ -3042,7 +3056,8 @@ impl Hub {
             let viewers: Vec<usize> = (0..self.guests.len())
                 .filter(|&i| {
                     let g = &self.guests[i];
-                    self.watches(g)
+                    in_square(&squares[i], x, z)
+                        && self.watches(g)
                         && tracked(g, x, z)
                         && (-1..=1).any(|dz| (-1..=1).any(|dx| !tracked(g, x + dx, z + dz)))
                 })
@@ -3053,11 +3068,31 @@ impl Hub {
             let Some(chunk) = world.chunks.get(&(x, z)) else {
                 continue;
             };
-            let body = self.encoder.light_update(chunk, sections);
+            let body: Arc<[u8]> = self.encoder.light_update(chunk, sections).into();
             for &i in &viewers {
                 self.guests[i].sender.send(body.clone());
             }
         }
+    }
+
+    /// Each guest's tracked square in chunks (min x, max x, min z, max z): `update_view` forgets
+    /// every sent column `tracked` leaves out, and `tracked` fits in the reach plus one.
+    fn tracked_squares(&self) -> Vec<[i32; 4]> {
+        self.guests
+            .iter()
+            .map(|g| match g.center {
+                Some((cx, cz)) => {
+                    let r = self.reach(g).saturating_add(1);
+                    [
+                        cx.saturating_sub(r),
+                        cx.saturating_add(r),
+                        cz.saturating_sub(r),
+                        cz.saturating_add(r),
+                    ]
+                }
+                None => [i32::MIN, i32::MAX, i32::MIN, i32::MAX],
+            })
+            .collect()
     }
 
     fn broadcast_block_changes(&mut self, world: &mut World) {
@@ -3091,6 +3126,7 @@ impl Hub {
                 .filter_map(|k| world.chunks.get(k).map(|c| &**c))
                 .collect();
             self.encoder.warm(&columns);
+            let squares = self.tracked_squares();
             for chunk in columns {
                 let key = (chunk.x, chunk.z);
                 if let Some(far) = self.far.as_mut() {
@@ -3098,13 +3134,15 @@ impl Hub {
                 }
                 let viewers: Vec<usize> = (0..self.guests.len())
                     .filter(|&i| {
-                        self.watches(&self.guests[i]) && self.guests[i].sent_chunks.contains(&key)
+                        in_square(&squares[i], key.0, key.1)
+                            && self.watches(&self.guests[i])
+                            && self.guests[i].sent_chunks.contains(&key)
                     })
                     .collect();
                 if viewers.is_empty() {
                     continue;
                 }
-                let body = self.encoder.body_in(chunk, world);
+                let body: Arc<[u8]> = self.encoder.body_in(chunk, world).into();
                 for &i in &viewers {
                     self.guests[i].sender.send(body.clone());
                 }
@@ -3148,6 +3186,7 @@ impl Hub {
         changes.dedup();
         // The prediction's replay excuses a client that hadn't seen a change near it.
         let recording = self.recording();
+        let squares = self.tracked_squares();
         // Group by section.
         let mut sections: std::collections::BTreeMap<(i32, i32, i32), Vec<(i32, i32, i32)>> =
             Default::default();
@@ -3163,7 +3202,9 @@ impl Hub {
             }
             let viewers: Vec<usize> = (0..self.guests.len())
                 .filter(|&i| {
-                    self.watches(&self.guests[i]) && self.guests[i].sent_chunks.contains(&(sx, sz))
+                    in_square(&squares[i], sx, sz)
+                        && self.watches(&self.guests[i])
+                        && self.guests[i].sent_chunks.contains(&(sx, sz))
                 })
                 .collect();
             if viewers.is_empty() {
@@ -3190,7 +3231,7 @@ impl Hub {
                         .collect(),
                 })
             };
-            let body = packet.encode();
+            let body: Arc<[u8]> = packet.encode().into();
             for &i in &viewers {
                 self.guests[i].sender.send(body.clone());
             }
@@ -3227,12 +3268,13 @@ impl Hub {
                 let Some(kind) = self.encoder.entity_type(state) else {
                     continue;
                 };
-                let body = C::BlockEntityData(play::BlockEntityData {
+                let body: Arc<[u8]> = C::BlockEntityData(play::BlockEntityData {
                     pos: [x, y, z],
                     kind,
                     tag,
                 })
-                .encode();
+                .encode()
+                .into();
                 for &i in &viewers {
                     self.guests[i].sender.send(body.clone());
                 }

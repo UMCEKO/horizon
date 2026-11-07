@@ -190,3 +190,22 @@ const GOLDEN_COMPRESSED: [(usize, u64); 4] = [
     (173, 1205002214307861980),
     (241029, 13738444853290308447),
 ];
+
+#[test]
+fn the_tracked_square_holds_every_column_the_player_tracks() {
+    let (mut hub, _) = hub_with_sync(SyncData::empty());
+    for view in 2..=16 {
+        hub.guests[0].view_distance = view;
+        hub.guests[0].center = Some((3, -4));
+        let squares = hub.tracked_squares();
+        for x in -25..=30 {
+            for z in -30..=25 {
+                if tracked(3, -4, view, x, z) {
+                    assert!(in_square(&squares[0], x, z), "view {view} at {x} {z}");
+                }
+            }
+        }
+    }
+    hub.guests[0].center = None;
+    assert!(in_square(&hub.tracked_squares()[0], i32::MAX, i32::MIN));
+}
