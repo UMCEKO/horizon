@@ -3383,6 +3383,8 @@ struct Game<'a> {
     native_commands_refresh: bool,
     /// Other players in the current guest turn, while its hub is borrowed out.
     lan_building_boxes: building_players::BuildingPlayers,
+    /// The hub a lazy `lan_building_boxes` reads, while a turn holds it still.
+    lan_hub_view: std::rc::Rc<horizon_threads::scoped::ScopedRef<lan::LanHost>>,
     /// A guest's `/save-all`: saved once their turn ends (`run_guest_command`),
     /// when their own state is back in their record.
     save_after_guest_turn: bool,
@@ -4864,10 +4866,10 @@ impl Game<'_> {
             })
             .collect();
         let guest_boxes = self.lan_block_trigger_boxes();
-        let building_player_boxes = self
-            .lan_acting
-            .is_some()
-            .then(|| self.lan_building_boxes.boxes(self.dim));
+        let building_player_boxes = self.lan_acting.is_some().then(|| {
+            self.lan_building_boxes
+                .boxes_with(self.dim, || self.turn_hub_players())
+        });
         let dimension = match self.dim {
             Dim::Overworld => LevelDimension::Overworld,
             Dim::Nether => LevelDimension::Nether,
@@ -20678,6 +20680,7 @@ impl<'a> Game<'a> {
             lan_acting: None,
             native_commands_refresh: false,
             lan_building_boxes: Default::default(),
+            lan_hub_view: Default::default(),
             save_after_guest_turn: false,
             player_attachments: Default::default(),
             guest_attachments: HashMap::new(),

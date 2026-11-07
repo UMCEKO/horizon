@@ -82,6 +82,15 @@ pub struct SentEffect {
 /// ServerGamePacketListenerImpl.CLIENT_LOADED_TIMEOUT_TIME.
 pub const CLIENT_LOADED_TIMEOUT: u8 = 60;
 
+/// What a swap into the guest's body found out, valid while its attributes keep that revision.
+#[derive(Default)]
+pub struct SwapCache {
+    /// The attribute revision, the creative flag and the entity and block interaction ranges.
+    pub reach: Option<(u64, bool, f64, f64)>,
+    /// The attribute revision and the bits of a health that `set_health` stores unclamped.
+    pub health: Option<(u64, u32)>,
+}
+
 pub struct Guest {
     pub conn: u32,
     /// The client's address (IP bans, `list`).
@@ -299,6 +308,7 @@ pub struct Guest {
     /// it any (`menu::NativeStore`).
     pub native_store: Option<super::menu::NativeStore>,
     pub health: f32,
+    pub swap_cache: SwapCache,
     /// The saved `AbsorptionAmount`, until the player's first body on the
     /// server takes it (the body holds the live amount).
     pub saved_absorption: Option<f32>,
@@ -543,6 +553,7 @@ impl Guest {
             native_menu: Vec::new(),
             native_store: None,
             health: 20.0,
+            swap_cache: SwapCache::default(),
             saved_absorption: None,
             food: 20,
             saturation: 5.0,
@@ -769,6 +780,17 @@ impl Guest {
     /// `Avatar.POSES` for the guest's pose, with its scale attribute: also for
     /// a pose the client has announced (gliding) before the body's own tick
     /// has taken it.
+    /// `motion.set_health(self.health)`, skipped while it would store what is stored.
+    pub fn sync_health(&mut self, motion: &mut PlayerMotion) {
+        let stored = |m: &PlayerMotion| m.health.data.get(m.health.ids.health).ok().map(f32::to_bits);
+        let (want, revision) = (self.health.to_bits(), motion.attributes.revision());
+        if stored(motion) == Some(want) && self.swap_cache.health == Some((revision, want)) {
+            return;
+        }
+        let _ = motion.set_health(self.health, false);
+        self.swap_cache.health =
+            (stored(motion) == Some(want)).then(|| (motion.attributes.revision(), want));
+    }
     pub fn dimensions(&self) -> Dimensions {
         let pose = self.pose();
         match &self.motion {
@@ -1772,6 +1794,58 @@ mod tests {
         // No body to take anything from: the default.
         let g = guest_at([0.5, 64.0, 0.5]);
         assert_eq!(g.respawn_health(&resources), 20.0);
+    }
+
+    fn stored_health(m: &PlayerMotion) -> f32 {
+        m.health.data.get(m.health.ids.health).unwrap()
+    }
+
+    #[test]
+    fn syncing_health_into_a_body_writes_only_what_would_change_it() {
+        let Some((_assets, resources)) = resources() else {
+            return;
+        };
+        let mut g = guest_at([0.5, 64.0, 0.5]);
+        let mut m = PlayerMotion::new(&resources, Vec3::new(0.5, 64.0, 0.5)).unwrap();
+        g.health = 15.0;
+        g.sync_health(&mut m);
+        assert_eq!(stored_health(&m), 15.0);
+        // Same record, same body: no second write.
+        m.events.clear();
+        g.sync_health(&mut m);
+        assert!(m.events.is_empty());
+        // The body's health moved (a hit between turns): the record wins again.
+        m.set_health(9.0, false).unwrap();
+        m.events.clear();
+        g.sync_health(&mut m);
+        assert_eq!(stored_health(&m), 15.0);
+        assert!(!m.events.is_empty());
+        // Max health under the record's health clamps it, though nothing else differs.
+        g.health = 10.0;
+        g.sync_health(&mut m);
+        set_base(&mut m, "minecraft:max_health", 5.0);
+        g.sync_health(&mut m);
+        assert_eq!(stored_health(&m), 5.0);
+        // A max that fits the record again lets it back in.
+        set_base(&mut m, "minecraft:max_health", 20.0);
+        g.sync_health(&mut m);
+        assert_eq!(stored_health(&m), 10.0);
+    }
+
+    #[test]
+    fn attribute_revisions_follow_edits_and_not_reads() {
+        let Some((_assets, resources)) = resources() else {
+            return;
+        };
+        let mut m = PlayerMotion::new(&resources, Vec3::new(0.5, 64.0, 0.5)).unwrap();
+        let other = PlayerMotion::new(&resources, Vec3::new(0.5, 64.0, 0.5)).unwrap();
+        let before = m.attributes.revision();
+        assert_ne!(before, other.attributes.revision());
+        assert_eq!(m.attribute("minecraft:max_health").unwrap(), 20.0);
+        assert_eq!(m.attributes.revision(), before);
+        set_base(&mut m, "minecraft:max_health", 30.0);
+        assert_ne!(m.attributes.revision(), before);
+        assert_eq!(m.attribute("minecraft:max_health").unwrap(), 30.0);
     }
 
     /// #3684: a glide the client announced (`START_FALL_FLYING`) is the

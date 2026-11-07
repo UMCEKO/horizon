@@ -9,7 +9,18 @@ use crate::{
     object_open_set::{ObjectKey, ObjectOpenSet},
     stored_effect_attributes::{self as stored, AttributeAccess},
 };
-use std::{convert::Infallible, sync::Arc};
+use std::{
+    convert::Infallible,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+
+fn next_revision() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
 
 #[derive(Clone)]
 pub struct Key {
@@ -295,6 +306,7 @@ impl Clone for Box<dyn Identities> {
 pub struct LiveAttributes<G> {
     map: AttributeMap<Key, Handle>,
     data: Data<G>,
+    revision: u64,
 }
 impl<G: FnMut() -> i32> LiveAttributes<G> {
     pub fn new(
@@ -325,7 +337,13 @@ impl<G: FnMut() -> i32> LiveAttributes<G> {
                 nodes: Vec::new(),
                 next_identity,
             },
+            revision: next_revision(),
         })
+    }
+    /// A number no other state of any `LiveAttributes` shares: it changes whenever an
+    /// instance, a base or a modifier can have changed, so a value read at one revision holds at it.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
     pub fn catalog(&self) -> &Arc<Catalog> {
         &self.data.catalog
@@ -343,6 +361,7 @@ impl<G: FnMut() -> i32> LiveAttributes<G> {
         self.map.instances.get(key)
     }
     pub fn get_instance(&mut self, key: Option<Key>) -> Result<Option<Handle>, Error> {
+        self.revision = next_revision();
         self.map
             .get_instance(key, |map, key| self.data.create(map, key))
     }
@@ -388,6 +407,7 @@ impl<G: FnMut() -> i32> LiveAttributes<G> {
             })
     }
     pub fn reset_base(&mut self, key: Option<Key>) -> Result<bool, Error> {
+        self.revision = next_revision();
         self.map.reset_base(key, &mut self.data)
     }
     pub fn instance(&self, handle: &Handle) -> Result<&Instance, Error> {
@@ -422,6 +442,7 @@ impl<G: FnMut() -> i32> LiveAttributes<G> {
         handle: &Handle,
         edit: impl FnOnce(&mut Instance, &mut Dirty<'_>) -> Result<R, AttributeError<Infallible>>,
     ) -> Result<R, Error> {
+        self.revision = next_revision();
         self.data.edit(&mut self.map, handle, edit)
     }
     pub fn add_effect_modifiers(
@@ -429,12 +450,14 @@ impl<G: FnMut() -> i32> LiveAttributes<G> {
         definitions: &mut Definitions<Key>,
         amplifier: i32,
     ) -> Result<(), effects::Error<Error>> {
+        self.revision = next_revision();
         stored::add(definitions, &mut self.map, &mut self.data, amplifier)
     }
     pub fn remove_effect_modifiers(
         &mut self,
         definitions: &mut Definitions<Key>,
     ) -> Result<(), effects::Error<Error>> {
+        self.revision = next_revision();
         stored::remove(definitions, &mut self.map, &mut self.data)
     }
 }
