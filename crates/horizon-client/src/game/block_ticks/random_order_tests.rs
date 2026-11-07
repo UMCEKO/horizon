@@ -33,11 +33,11 @@ fn chunks_random_tick_in_the_same_order_however_they_loaded() {
     let mut loaded: Vec<(i32, i32)> = (-8..=8)
         .flat_map(|x| (-8..=8).map(move |z| (x, z)))
         .collect();
-    let first = game_loading(&loaded);
+    let mut first = game_loading(&loaded);
     // The streaming workers finish in another order on another run.
     loaded.reverse();
     loaded.rotate_left(97);
-    let second = game_loading(&loaded);
+    let mut second = game_loading(&loaded);
 
     let (mut a, mut b) = (Vec::new(), Vec::new());
     first.random_tick_chunks(&mut a);

@@ -114,6 +114,7 @@ pub mod pregen;
 pub mod projectiles;
 pub mod raid;
 pub mod random_tick_sections;
+pub mod random_ticking_chunks;
 pub mod realms;
 pub mod recipe_book;
 pub mod recipe_book_screen;

@@ -56,6 +56,10 @@ pub struct ChunkMap {
     /// included) are resident; absent when none is. `surrounded` asks one
     /// map instead of nine every tick, for every ticking chunk.
     near: FxHashMap<Key, u8>,
+    /// Changes when a resident chunk's `lit` flips without a key change.
+    lit_revision: u64,
+    /// The resident chunks that still hold generation postprocessing marks.
+    marked: FxHashSet<Key>,
 }
 impl Default for ChunkMap {
     fn default() -> Self {
@@ -67,12 +71,31 @@ impl Default for ChunkMap {
             recent_deltas: VecDeque::new(),
             fresh: FxHashSet::default(),
             near: FxHashMap::default(),
+            lit_revision: revision,
+            marked: FxHashSet::default(),
         }
     }
 }
 impl ChunkMap {
     pub fn membership_revision(&self) -> u64 {
         self.revision
+    }
+    /// Together with `membership_revision`, names the keys and which of them
+    /// are lit: the writers of `Chunk::lit` on a resident chunk call
+    /// `note_lit_changed`, and `insert` notes a replacement that differs.
+    pub fn lit_revision(&self) -> u64 {
+        self.lit_revision
+    }
+    pub fn note_lit_changed(&mut self) {
+        self.lit_revision = next_revision();
+    }
+    /// The resident chunks whose `postprocess` marks are not taken yet.
+    pub fn marked(&self) -> &FxHashSet<Key> {
+        &self.marked
+    }
+    /// The marks of `key` were taken (`LevelChunk.postProcessGeneration`).
+    pub fn marks_taken(&mut self, key: &Key) {
+        self.marked.remove(key);
     }
     fn record_delta(&mut self, delta: ChunkMembershipDelta) {
         if self.recent_deltas.len() >= MAX_RECENT_DELTAS
@@ -127,20 +150,32 @@ impl ChunkMap {
         } else {
             self.fresh.remove(&key);
         }
+        if chunk.postprocess.is_empty() {
+            self.marked.remove(&key);
+        } else {
+            self.marked.insert(key);
+        }
+        let lit = chunk.lit;
         let previous = self.columns.insert(key, chunk);
-        if previous.is_none() {
-            for z in key.1 - 1..=key.1 + 1 {
-                for x in key.0 - 1..=key.0 + 1 {
-                    *self.near.entry((x, z)).or_insert(0) += 1;
+        match &previous {
+            None => {
+                for z in key.1 - 1..=key.1 + 1 {
+                    for x in key.0 - 1..=key.0 + 1 {
+                        *self.near.entry((x, z)).or_insert(0) += 1;
+                    }
                 }
+                self.revision = next_revision();
+                self.lit_revision = self.revision;
+                self.record_delta(ChunkMembershipDelta::Added(key));
             }
-            self.revision = next_revision();
-            self.record_delta(ChunkMembershipDelta::Added(key));
+            Some(old) if old.lit != lit => self.lit_revision = next_revision(),
+            Some(_) => {}
         }
         previous
     }
     pub fn remove(&mut self, key: &Key) -> Option<Arc<Chunk>> {
         self.fresh.remove(key);
+        self.marked.remove(key);
         let previous = self.columns.remove(key);
         if previous.is_some() {
             for z in key.1 - 1..=key.1 + 1 {
@@ -163,6 +198,7 @@ impl ChunkMap {
             self.columns.clear();
             self.fresh.clear();
             self.near.clear();
+            self.marked.clear();
             self.revision = next_revision();
             self.recent_deltas.clear();
             self.recent_deltas
@@ -264,6 +300,45 @@ mod tests {
         let cleared = map.membership_revision();
         map = ChunkMap::default();
         assert_ne!(cleared, map.membership_revision());
+    }
+
+    #[test]
+    fn marked_tracks_the_resident_chunks_holding_marks() {
+        let mut map = ChunkMap::default();
+        let mut with_marks = Chunk::empty(0, 0);
+        with_marks.postprocess.push([1, 2, 3]);
+        let with_marks = Arc::new(with_marks);
+        map.insert((0, 0), with_marks.clone());
+        map.insert((1, 0), Arc::new(Chunk::empty(1, 0)));
+        map.insert((2, 0), with_marks.clone());
+        let mut keys: Vec<_> = map.marked().iter().copied().collect();
+        keys.sort_unstable();
+        assert_eq!(keys, [(0, 0), (2, 0)]);
+        map.marks_taken(&(0, 0));
+        map.remove(&(2, 0));
+        assert!(map.marked().is_empty());
+        map.insert((0, 0), with_marks.clone());
+        map.insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        assert!(map.marked().is_empty());
+        map.insert((0, 0), with_marks);
+        map.clear();
+        assert!(map.marked().is_empty());
+    }
+
+    #[test]
+    fn lit_revision_moves_on_a_noted_flip_and_a_differing_replacement() {
+        let mut map = ChunkMap::default();
+        map.insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        let first = map.lit_revision();
+        map.insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        assert_eq!(first, map.lit_revision());
+        let mut lit = Chunk::empty(0, 0);
+        lit.lit = true;
+        map.insert((0, 0), Arc::new(lit));
+        assert_ne!(first, map.lit_revision());
+        let second = map.lit_revision();
+        map.note_lit_changed();
+        assert_ne!(second, map.lit_revision());
     }
 
     /// The deltas' kinds, checking the ring answers in revision order.

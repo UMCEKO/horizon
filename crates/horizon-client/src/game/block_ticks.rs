@@ -283,19 +283,13 @@ impl Game<'_> {
     /// blocks from one run of a world to the next (#15164). Chunk position
     /// order is the same every run; vanilla's exact order is its fastutil
     /// table's slot order, which follows that table's whole history.
-    pub(super) fn random_tick_chunks(&self, out: &mut Vec<(i32, i32)>) {
+    pub(super) fn random_tick_chunks(&mut self, out: &mut Vec<(i32, i32)>) {
         let levels = self.tickets.levels();
-        let bounds = levels.random_tick_bounds();
+        let list = self
+            .random_ticking
+            .sync(&self.world, &levels, self.tickets.revision());
         out.clear();
-        out.extend(self.world.chunks.keys().copied().filter(|&(x, z)| {
-            if let Some((min_x, min_z, max_x, max_z)) = bounds
-                && (x < min_x || x > max_x || z < min_z || z > max_z)
-            {
-                return false;
-            }
-            levels.random_ticking(x, z) && ticking_chunk(&self.world, x, z)
-        }));
-        out.sort_unstable();
+        out.extend_from_slice(list);
     }
     /// Track which chunks are ticking (Ticks needs chunk load/unload).
     pub(super) fn sync_tick_chunks(&mut self) {

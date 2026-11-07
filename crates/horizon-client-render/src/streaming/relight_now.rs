@@ -39,7 +39,11 @@ impl Streaming {
             if (first && !chunk.light_loaded) || !changed.is_empty() {
                 world.modified.insert((x, z));
             }
+            let newly_lit = !chunk.lit;
             chunk.lit = true;
+            if newly_lit {
+                world.chunks.note_lit_changed();
+            }
             if first {
                 for dz in -1..=1 {
                     for dx in -1..=1 {

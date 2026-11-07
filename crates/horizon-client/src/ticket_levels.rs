@@ -31,7 +31,12 @@
 //! Whoever the players are (the local player, LAN guests, a dedicated
 //! server's players), they count the same.
 use crate::fast_hash::FxHashMap;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
+static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
 
 /// `ChunkLevel`'s levels.
 pub const ENTITY_TICKING: u8 = 31;
@@ -251,6 +256,8 @@ pub struct PortalTicket {
 pub struct ChunkTickets {
     sources: Option<Sources>,
     levels: Levels,
+    /// Process-wide and new whenever `levels` changes; 0 is the default levels.
+    revision: u64,
     portal: Vec<PortalTicket>,
 }
 
@@ -294,6 +301,7 @@ impl ChunkTickets {
             None => Levels(None, None),
         };
         self.sources = sources;
+        self.revision = NEXT_REVISION.fetch_add(1, Ordering::Relaxed);
     }
 
     fn portal_matches(&self, sources: &Sources) -> bool {
@@ -306,6 +314,10 @@ impl ChunkTickets {
     }
     pub fn levels(&self) -> Levels {
         self.levels.clone()
+    }
+    /// Names the answers of `levels`: equal revisions, equal levels.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
     /// A level's tickets as `TicketStorage.activateAllDeactivatedTickets`
     /// leaves its saved `PORTAL` ones: each keeps its level and the ticks it

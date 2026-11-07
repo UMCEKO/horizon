@@ -497,6 +497,7 @@ use horizon_client::random_source;
 pub use advancements::AdvancementDisplay;
 use horizon_client::actions::Action as Mapping;
 use horizon_client::held::Source;
+use horizon_client::random_ticking_chunks::ticking_chunk;
 use horizon_client::spans::startup;
 use horizon_client::{
     Result,
@@ -2045,14 +2046,6 @@ fn equipment_modifier_applies(group: &str, slot: &str) -> bool {
         || (group == "hand" && (slot == "mainhand" || slot == "offhand"))
 }
 /// Ctrl+Q reads the physical keyboard, independently of sprint key mappings.
-/// A chunk whose ticking future can complete (`ChunkMap.prepareTickingChunk`):
-/// lit, with its neighbours loaded, as `postprocess_chunks` waits for.
-fn ticking_chunk(world: &World, x: i32, z: i32) -> bool {
-    let Some(center) = world.chunks.get(&(x, z)) else {
-        return false;
-    };
-    center.lit && world.chunks.surrounded((x, z))
-}
 /// `TicketStorage.canTicketExpire` for a `PORTAL` ticket: its chunk's holder is
 /// ready for saving once the futures of its level are done, the chunk lit and
 /// its neighbours loaded out to one chunk at a ticking level
@@ -2073,7 +2066,6 @@ fn portal_ticket_can_expire(
     world.chunks.get(&(x, z)).is_some_and(|c| c.lit)
         && (-r..=r).all(|dz| (-r..=r).all(|dx| world.chunks.contains_key(&(x + dx, z + dz))))
 }
-/// Key events carry the scancode's US-layout code, which ignores XKB options like
 /// `caps:swapescape`. For the keys whose meaning the keymap may remap, take the code
 /// from the keysym the keymap resolved instead. This includes function keys on
 /// remapped media rows; ordinary character bindings still use their physical key.
@@ -2634,6 +2626,7 @@ struct Game<'a> {
     block_ticks: Ticks,
     tick_scratch: TickScratch,
     tick_chunks: horizon_client::tick_chunk_membership::TickChunkMembership,
+    random_ticking: horizon_client::random_ticking_chunks::RandomTickingChunks,
     tickets: horizon_client::ticket_levels::ChunkTickets,
     random_tick_sections: horizon_client::random_tick_sections::RandomTickSections,
     level_events: Vec<LevelEvent>,
@@ -11824,6 +11817,7 @@ impl<'a> Game<'a> {
             block_ticks: Ticks::new(0),
             tick_scratch: TickScratch::default(),
             tick_chunks: Default::default(),
+            random_ticking: Default::default(),
             tickets: Default::default(),
             random_tick_sections: Default::default(),
             level_events: Vec::new(),

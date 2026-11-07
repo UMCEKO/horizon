@@ -48,6 +48,7 @@ pub(super) struct Parked {
     save: Arc<SaveDir>,
     block_ticks: Ticks,
     tick_chunks: TickChunkMembership,
+    random_ticking: horizon_client::random_ticking_chunks::RandomTickingChunks,
     tickets: ChunkTickets,
     random_tick_sections: RandomTickSections,
     level_events: Vec<LevelEvent>,
@@ -256,6 +257,7 @@ impl Game<'_> {
             save,
             block_ticks: Ticks::new(self.level.seed as i32),
             tick_chunks: Default::default(),
+            random_ticking: Default::default(),
             tickets,
             random_tick_sections: Default::default(),
             level_events: Vec::new(),
@@ -406,6 +408,7 @@ impl Game<'_> {
         swap(&mut self.save, &mut p.save);
         swap(&mut self.block_ticks, &mut p.block_ticks);
         swap(&mut self.tick_chunks, &mut p.tick_chunks);
+        swap(&mut self.random_ticking, &mut p.random_ticking);
         swap(&mut self.tickets, &mut p.tickets);
         swap(&mut self.random_tick_sections, &mut p.random_tick_sections);
         swap(&mut self.level_events, &mut p.level_events);
