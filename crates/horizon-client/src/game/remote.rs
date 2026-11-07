@@ -757,10 +757,8 @@ pub(super) struct Remote {
     clock_game_time: i64,
     /// `ClientChunkCache.Storage`'s view centre (ClientboundSetChunkCacheCenterPacket).
     chunk_center: (i32, i32),
-    /// Received events a frame left for the next one, in order, and when
-    /// the oldest of them first waited (`poll_remote`).
-    backlog: VecDeque<Received>,
-    backlog_since: Option<Instant>,
+    /// Events a frame left for the next one, in order, with when each was received (`poll_remote`).
+    backlog: VecDeque<(Instant, Received)>,
     /// `ClientboundTransferPacket`'s target: when the connection ends the
     /// game connects here, the stored cookies carried over (`TransferState`).
     transfer: Option<String>,
@@ -778,10 +776,28 @@ pub(super) struct Remote {
 /// time the player crossed a chunk border at 32 chunks; they decode on the
 /// chunk decoder's thread now, and the frame only inserts them.
 const CHUNK_PACKETS_PER_FRAME: Duration = Duration::from_millis(1);
-/// Events that have waited this long are all handled in the next frame,
-/// whatever inserting their columns costs, up to a column still decoding:
-/// the packets after a slow machine's chunks don't wait on its frames.
+/// A chunk packet that has waited this long is inserted whatever the frame's chunk budget.
 const BACKLOG_LIMIT: Duration = Duration::from_millis(50);
+
+/// Whether a chunk packet at the head of the queue may be inserted now.
+fn may_insert(head_age: Duration, spent: Duration) -> bool {
+    head_age >= BACKLOG_LIMIT || spent < CHUNK_PACKETS_PER_FRAME
+}
+
+/// The head of the queue, unless it is a chunk packet that `may_insert` holds back.
+fn pop_admitted<T>(
+    queue: &mut VecDeque<(Instant, T)>,
+    now: Instant,
+    spent: Duration,
+    is_chunk: impl Fn(&T) -> bool,
+) -> Option<(Instant, T)> {
+    let (stamp, item) = queue.front()?;
+    if is_chunk(item) && !may_insert(now.saturating_duration_since(*stamp), spent) {
+        return None;
+    }
+    queue.pop_front()
+}
+
 /// The open menu name of a server's horse inventory, then its chest's
 /// columns (the packet names no `MenuType`).
 const MOUNT_MENU: &str = "horizon:mount";
@@ -1225,7 +1241,6 @@ impl Game<'_> {
             clock_game_time: 0,
             chunk_center: (0, 0),
             backlog: VecDeque::new(),
-            backlog_since: None,
             server_links: Vec::new(),
             debug_query: Default::default(),
             transfer: None,
@@ -1917,12 +1932,7 @@ impl Game<'_> {
         Ok(())
     }
 
-    /// Process what the network thread received (once per frame, like the
-    /// client's packet processor), in order. Chunk packets get
-    /// `CHUNK_PACKETS_PER_FRAME`: once a frame has spent it, the events from
-    /// the next chunk packet on wait for the next frame, unless they have
-    /// already waited `BACKLOG_LIMIT`. A chunk packet still decoding holds
-    /// back what follows it.
+    /// Process what the network thread received, in order; chunk packets get `CHUNK_PACKETS_PER_FRAME` unless they waited `BACKLOG_LIMIT`.
     pub(super) fn poll_remote(&mut self) -> Result<()> {
         let Some(r) = self.remote.as_mut() else {
             return Ok(());
@@ -1930,8 +1940,9 @@ impl Game<'_> {
         let mut events = std::mem::take(&mut r.backlog);
         // Chunk packets start decoding now; the frame that reaches one in
         // order inserts its column.
+        let now = Instant::now();
         for event in r.session.poll() {
-            events.push_back(match event {
+            let received = match event {
                 Event::Packet(p) if matches!(*p, C::LevelChunkWithLight(_)) => {
                     match r.decoder.submit(r.chunk_format.clone(), p) {
                         None => Received::Chunk(r.chunk_format.clone()),
@@ -1939,16 +1950,16 @@ impl Game<'_> {
                     }
                 }
                 event => Received::Event(event),
-            });
+            };
+            events.push_back((now, received));
         }
-        let overdue = r
-            .backlog_since
-            .is_some_and(|since| since.elapsed() >= BACKLOG_LIMIT);
         let mut chunks = Duration::ZERO;
         // A run of ForgetLevelChunk (thousands when the server's view moves far: a
         // teleport at 32 chunks) is forgotten at once, before whatever follows it.
         let mut forgotten = horizon_client::fast_hash::FxHashSet::default();
-        while let Some(item) = events.pop_front() {
+        while let Some((stamp, item)) = pop_admitted(&mut events, now, chunks, |item| {
+            matches!(item, Received::Chunk(_))
+        }) {
             if let Received::Event(Event::Packet(packet)) = &item
                 && let C::ForgetLevelChunk(p) = &**packet
             {
@@ -1958,23 +1969,18 @@ impl Game<'_> {
             }
             self.forget_remote_columns(&mut forgotten);
             let chunk = matches!(item, Received::Chunk(_));
-            if chunk && !overdue && chunks >= CHUNK_PACKETS_PER_FRAME {
-                events.push_front(item);
-                break;
-            }
             let started = chunk.then(Instant::now);
             let event = match item {
                 Received::Event(event) => event,
                 Received::Chunk(format) => {
-                    // A column still decoding waits for the next frame, with
-                    // what came after it, overdue or not.
+                    // A column still decoding holds what came after it, however long it has waited.
                     let Some(next) = self.remote.as_ref().map(|r| r.decoder.next()) else {
                         break;
                     };
                     let (packet, column) = match next {
                         Next::Ready(decoded) => decoded,
                         Next::Decoding => {
-                            events.push_front(Received::Chunk(format));
+                            events.push_front((stamp, Received::Chunk(format)));
                             break;
                         }
                         Next::Lost => {
@@ -2160,11 +2166,6 @@ impl Game<'_> {
             self.forget_remote_columns(&mut forgotten);
         }
         if let Some(r) = self.remote.as_mut() {
-            r.backlog_since = if events.is_empty() {
-                None
-            } else {
-                Some(r.backlog_since.unwrap_or_else(Instant::now))
-            };
             r.backlog = events;
         }
         self.send_suggestion_request();
@@ -11269,12 +11270,69 @@ fn client_has_level(logged_in: bool, reconfiguring: Option<u64>) -> bool {
 mod tests {
     use super::{
         boat_interact_passes, client_has_level, hold_server_fire, item_frame_interact_passes,
-        keep_client_state, open_hash_order, remote_object_swings, remote_use_swings, shape_meets,
-        snap_target, synced_local_use,
+        keep_client_state, may_insert, open_hash_order, pop_admitted, remote_object_swings,
+        remote_use_swings, shape_meets, snap_target, synced_local_use,
+    };
+    use std::{
+        collections::VecDeque,
+        time::{Duration, Instant},
     };
 
     /// The vanilla 26.3 client's ServerboundContainerClickPacket for a shift-click from hotbar slot 37
     /// into slot 10 listed 37 first (wire stream harness, `inventory`). The key 0 always leads.
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    #[test]
+    fn a_chunk_runs_past_the_budget_only_once_it_has_waited_the_limit() {
+        assert!(may_insert(ms(0), ms(0)));
+        assert!(may_insert(ms(10), ms(0)));
+        assert!(!may_insert(ms(10), ms(1)));
+        assert!(!may_insert(ms(49), ms(5)));
+        assert!(may_insert(ms(50), ms(5)));
+        assert!(may_insert(ms(80), ms(5)));
+    }
+
+    // Drains `queue` the way `poll_remote` does: each chunk costs 1 ms of the budget.
+    fn drain(queue: &mut VecDeque<(Instant, bool)>, now: Instant, mut spent: Duration) -> usize {
+        let mut handled = 0;
+        while let Some((_, chunk)) = pop_admitted(queue, now, spent, |chunk| *chunk) {
+            if chunk {
+                spent += ms(1);
+            }
+            handled += 1;
+        }
+        handled
+    }
+
+    #[test]
+    fn a_frame_with_its_budget_spent_stops_at_the_first_young_chunk() {
+        let now = Instant::now();
+        let mut queue: VecDeque<_> = (0..10).map(|_| (now, true)).collect();
+        assert_eq!(drain(&mut queue, now, ms(1)), 0);
+        assert_eq!(queue.len(), 10);
+    }
+
+    #[test]
+    fn only_the_chunks_that_waited_the_limit_run_past_a_spent_budget() {
+        let now = Instant::now();
+        let old = now - ms(60);
+        let mut queue: VecDeque<_> = (0..10)
+            .map(|i| (if i < 3 { old } else { now }, true))
+            .collect();
+        assert_eq!(drain(&mut queue, now, ms(1)), 3);
+        assert_eq!(queue.len(), 7);
+    }
+
+    #[test]
+    fn a_non_chunk_event_passes_a_spent_budget_and_the_next_young_chunk_stops_the_frame() {
+        let now = Instant::now();
+        let mut queue: VecDeque<_> = [(now, false), (now, true), (now, false)].into();
+        assert_eq!(drain(&mut queue, now, ms(1)), 1);
+        assert_eq!(queue.len(), 2);
+    }
+
     #[test]
     fn changed_slots_go_out_in_the_order_vanilla_s_hash_map_iterates() {
         assert_eq!(open_hash_order(&[10, 37]), [37, 10]);
