@@ -38,7 +38,7 @@ mod sound_order;
 pub mod tracking;
 pub mod waypoints;
 
-pub use conn::{Holding, PlayerSender, flush_all};
+pub use conn::{Body, Holding, PlayerSender, flush_all};
 use horizon_protocol::packets::play;
 use horizon_protocol::{
     GAME_VERSION, PROTOCOL_VERSION, crypto::uuid_string, packets::configuration::ClientInformation,

@@ -1,5 +1,7 @@
 #[path = "hub/tests/sound_tests.rs"]
 mod sound_tests;
+#[path = "hub/tests/wire_tests.rs"]
+mod wire_tests;
 use super::*;
 use crate::fast_hash::FxHashSet;
 

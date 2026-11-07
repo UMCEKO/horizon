@@ -277,10 +277,46 @@ pub fn fake_wants_id(id: i32) -> bool {
     ]
     .contains(&id)
 }
+/// A packet body queued for a player: its own bytes, or bytes shared with the other players
+/// the same packet goes to.
+#[derive(Clone, Debug)]
+pub enum Body {
+    Owned(Vec<u8>),
+    Shared(Arc<[u8]>),
+}
+impl Body {
+    /// The bytes, copied only when shared.
+    pub fn into_vec(self) -> Vec<u8> {
+        match self {
+            Self::Owned(v) => v,
+            Self::Shared(a) => a.to_vec(),
+        }
+    }
+}
+impl std::ops::Deref for Body {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Owned(v) => v,
+            Self::Shared(a) => a,
+        }
+    }
+}
+impl From<Vec<u8>> for Body {
+    fn from(v: Vec<u8>) -> Self {
+        Self::Owned(v)
+    }
+}
+impl From<Arc<[u8]>> for Body {
+    fn from(a: Arc<[u8]>) -> Self {
+        Self::Shared(a)
+    }
+}
+
 /// A body about to be sent to `player`, past the hooks a mod asked for ([`WATCHED`]): None
 /// when one canceled it. Bytes that don't decode, and a packet no hook changed, go out as they
 /// were; a changed one is encoded again.
-fn outgoing(player: u128, body: Vec<u8>) -> Option<Vec<u8>> {
+fn outgoing(player: u128, body: Body) -> Option<Body> {
     let watched = WATCHED.load(Ordering::Relaxed);
     if watched == 0 {
         return Some(body);
@@ -289,7 +325,7 @@ fn outgoing(player: u128, body: Vec<u8>) -> Option<Vec<u8>> {
 }
 
 #[cold]
-fn watched_outgoing(player: u128, body: Vec<u8>, watched: u8) -> Option<Vec<u8>> {
+fn watched_outgoing(player: u128, body: Body, watched: u8) -> Option<Body> {
     let head = {
         let mut r = horizon_protocol::buf::Reader::new(&body);
         r.varint().ok().map(|id| (id, r.position()))
@@ -323,7 +359,7 @@ fn watched_outgoing(player: u128, body: Vec<u8>, watched: u8) -> Option<Vec<u8>>
     Some(if packet == sent {
         body
     } else {
-        packet.encode()
+        Body::Owned(packet.encode())
     })
 }
 
@@ -367,7 +403,7 @@ pub struct PlayerSender {
     pub undrained: Arc<Undrained>,
     /// The bytes of the bodies sent and not framed yet.
     pub pending: Arc<AtomicUsize>,
-    held: Arc<Mutex<Vec<Vec<u8>>>>,
+    held: Arc<Mutex<Vec<Body>>>,
     to: To,
     /// The connection's bytes on the wire (after compression and encryption), counted by its
     /// network thread: `horizon-report`'s network use per player. None for a test's channel.
@@ -425,10 +461,11 @@ impl PlayerSender {
             outbox.send(Vec::new(), Some(io_pool::End::Close));
         }
     }
-    fn held(&self) -> std::sync::MutexGuard<'_, Vec<Vec<u8>>> {
+    fn held(&self) -> std::sync::MutexGuard<'_, Vec<Body>> {
         self.held.lock().unwrap_or_else(PoisonError::into_inner)
     }
-    pub fn send(&self, body: Vec<u8>) {
+    pub fn send(&self, body: impl Into<Body>) {
+        let body = body.into();
         if self.fake.load(Ordering::Relaxed) && !fake_wants(&body) {
             return;
         }
@@ -441,7 +478,7 @@ impl PlayerSender {
         } else {
             self.flush();
             match &self.to {
-                To::Channel(tx) => drop(tx.send(Out::Packet(body))),
+                To::Channel(tx) => drop(tx.send(Out::Packet(body.into_vec()))),
                 To::Pool(outbox, _) => outbox.send(vec![body], None),
             }
         }
@@ -456,7 +493,7 @@ impl PlayerSender {
     }
     /// Several packets in order, as [`Self::send`] each: under one lock
     /// while the tick holds them.
-    pub fn send_many(&self, bodies: impl IntoIterator<Item = Vec<u8>>) {
+    pub fn send_many<B: Into<Body>>(&self, bodies: impl IntoIterator<Item = B>) {
         // A mod hearing what is sent (`outgoing`) does so outside the lock.
         if !HOLDING.get() || WATCHED.load(Ordering::Relaxed) != 0 || self.is_fake() {
             bodies.into_iter().for_each(|body| self.send(body));
@@ -464,6 +501,7 @@ impl PlayerSender {
         }
         let mut held = self.held();
         for body in bodies {
+            let body = body.into();
             self.pending.fetch_add(body.len(), Ordering::Relaxed);
             held.push(body);
         }
@@ -473,7 +511,7 @@ impl PlayerSender {
         let held = std::mem::take(&mut *self.held());
         if !held.is_empty() {
             match &self.to {
-                To::Channel(tx) => drop(tx.send(Out::Packets(held))),
+                To::Channel(tx) => drop(tx.send(Out::Packets(into_vecs(held)))),
                 To::Pool(outbox, _) => outbox.send(held, None),
             }
         }
@@ -487,10 +525,71 @@ impl PlayerSender {
             To::Pool(outbox, _) => {
                 let body = play::Clientbound::Disconnect(cfg::Disconnect { reason }).encode();
                 self.pending.fetch_add(body.len(), Ordering::Relaxed);
-                outbox.send(vec![body], Some(io_pool::End::Disconnect));
+                outbox.send(vec![body.into()], Some(io_pool::End::Disconnect));
             }
         }
     }
+}
+
+/// A sender over a real network thread and in-memory pipe, and the client's end of it.
+#[cfg(test)]
+pub(crate) fn wired_sender(threshold: Option<i32>) -> (PlayerSender, horizon_protocol::connection::Pipe) {
+    struct Quiet;
+    impl io_pool::Session for Quiet {
+        fn packet(&mut self, _: i32, _: Vec<u8>) -> io_pool::Verdict {
+            io_pool::Verdict::Go
+        }
+        fn tick(&mut self, _: Instant) -> Option<Vec<u8>> {
+            None
+        }
+        fn left(&mut self, _: String) {}
+        fn closed(&mut self) {}
+    }
+    let (client, server) = horizon_protocol::connection::Pipe::pair();
+    let mut connection = Connection::local(server);
+    if let Some(t) = threshold {
+        connection.set_compression(t);
+    }
+    let pending = Arc::new(AtomicUsize::new(0));
+    let outbox = io_pool::Outbox::new(pending.clone()).unwrap();
+    let watch = Arc::new(KeepAliveWatch {
+        start: Instant::now(),
+        alive: Arc::new(AtomicI64::new(-1)),
+    });
+    let sender = PlayerSender {
+        player: 0,
+        pending,
+        held: Arc::default(),
+        to: To::Pool(outbox.clone(), watch),
+        wire: None,
+    };
+    let (socket, reader, writer) = connection.detach();
+    io_pool::adopt(
+        socket,
+        (reader, writer),
+        outbox,
+        Box::new(Quiet),
+        Duration::from_secs(600),
+    );
+    (sender, client)
+}
+
+/// Everything the client end of a [`wired_sender`] receives until the connection ends.
+#[cfg(test)]
+pub(crate) fn drain_wire(mut client: horizon_protocol::connection::Pipe) -> Vec<u8> {
+    use std::io::Read;
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = client.read_to_end(&mut bytes);
+        let _ = tx.send(bytes);
+    });
+    rx.recv_timeout(Duration::from_secs(30)).unwrap()
+}
+
+/// A test channel's packets, which carry plain bytes.
+fn into_vecs(bodies: Vec<Body>) -> Vec<Vec<u8>> {
+    bodies.into_iter().map(Body::into_vec).collect()
 }
 
 /// Keep (or stop keeping) every play connection's packet ids and sizes on the network threads,
@@ -516,7 +615,7 @@ pub fn flush_all<'a>(senders: impl IntoIterator<Item = &'a PlayerSender>) {
             continue;
         }
         match &s.to {
-            To::Channel(tx) => drop(tx.send(Out::Packets(held))),
+            To::Channel(tx) => drop(tx.send(Out::Packets(into_vecs(held)))),
             To::Pool(outbox, _) => {
                 if let Some(worker) = outbox.push(held, None)
                     && !wake.iter().any(|w| Arc::ptr_eq(w, worker))
@@ -2573,5 +2672,67 @@ mod tests {
         let mut c = conn(1, Some(7));
         assert!(matches!(answer(&mut c, 8), Verdict::Go));
         assert_eq!(c.watch.alive.load(Ordering::Relaxed), -1);
+    }
+
+    /// What a connection's client has received once the sender disconnects it.
+    fn received(sender: &PlayerSender, client: horizon_protocol::connection::Pipe) -> Vec<u8> {
+        sender.disconnect(horizon_world::nbt::Tag::Byte(0));
+        drain_wire(client)
+    }
+
+    /// A body shared among connections frames to the bytes each would get from a copy of its own.
+    #[test]
+    fn a_shared_body_frames_like_owned_copies() {
+        let bodies: Vec<Vec<u8>> = [1usize, 63, 64, 300, 9000, 70_000]
+            .into_iter()
+            .enumerate()
+            .map(|(i, len)| {
+                let mut body = vec![0x20 + i as u8];
+                body.extend((0..len).map(|j| (j * 7 % 251) as u8));
+                body
+            })
+            .collect();
+        let disconnect = play::Clientbound::Disconnect(cfg::Disconnect {
+            reason: horizon_world::nbt::Tag::Byte(0),
+        })
+        .encode();
+        for threshold in [None, Some(64), Some(256)] {
+            let expected: Vec<u8> = bodies
+                .iter()
+                .chain([&disconnect])
+                .flat_map(|b| horizon_protocol::frame::encode(b, threshold.map(|t| t as usize)).unwrap())
+                .collect();
+            let shared: Vec<Arc<[u8]>> = bodies.iter().map(|b| Arc::from(b.as_slice())).collect();
+            let (owned, owned_client) = wired_sender(threshold);
+            let (first, first_client) = wired_sender(threshold);
+            let (second, second_client) = wired_sender(threshold);
+            bodies.iter().for_each(|b| owned.send(b.clone()));
+            shared.iter().for_each(|b| first.send(b.clone()));
+            let holding = Holding::start();
+            second.send_many(shared.iter().cloned());
+            drop(holding);
+            second.flush();
+            for (sender, client) in [(owned, owned_client), (first, first_client), (second, second_client)] {
+                assert!(received(&sender, client) == expected, "threshold {threshold:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_test_channel_gets_a_shared_body_as_bytes() {
+        let (tx, rx) = channel();
+        let sender = PlayerSender::new(tx, Arc::default());
+        let shared: Arc<[u8]> = Arc::from(&[7u8, 8][..]);
+        sender.send(shared.clone());
+        let holding = Holding::start();
+        sender.send_many([shared.clone(), shared]);
+        sender.send(vec![9]);
+        drop(holding);
+        sender.flush();
+        assert_eq!(
+            bodies(&rx),
+            [vec![vec![7, 8]], vec![vec![7, 8], vec![7, 8], vec![9]]]
+        );
+        assert_eq!(sender.pending.load(Ordering::Relaxed), 7);
     }
 }
