@@ -59,6 +59,18 @@ pub mod job_stats {
             .collect()
     }
 }
+/// Cap factor for an update `gap` after the last (1 to 16, one per 25 ms): a slow tick hands out the skipped updates' work.
+fn cap_scale(gap: std::time::Duration) -> usize {
+    (gap.as_millis() / 25).clamp(1, 16) as usize
+}
+/// The jobs kept in flight (decoration, generation, light) for `workers` at `scale`.
+fn inflight_caps(workers: usize, scale: usize) -> [usize; 3] {
+    [
+        workers * 2 * scale,
+        workers * 3 * scale,
+        workers * 4 * scale,
+    ]
+}
 /// A chunk under generation, opaque to the streamer.
 pub type Proto = Box<dyn std::any::Any + Send>;
 /// Chunk generation in vanilla's stages: a neighbour-independent proto chunk
@@ -477,6 +489,8 @@ pub struct Streaming {
     jobs: Registration,
     /// The workers its in-flight work is sized for.
     workers: usize,
+    /// When `update` last ran: the caps grow with the time since (`cap_scale`).
+    last_update: Option<std::time::Instant>,
     order: u64,
     /// Ticks since the columns and protos that fell out of range were swept.
     scan_age: u8,
@@ -1119,6 +1133,7 @@ impl Streaming {
             caches,
             jobs,
             workers,
+            last_update: None,
             order: 0,
             scan_age: 0,
             scan_area: ((i32::MIN, i32::MIN), i32::MIN),
@@ -1686,6 +1701,7 @@ impl Streaming {
     ) -> (Vec<((i32, i32, i32), SectionMesh)>, Vec<Arc<Chunk>>) {
         let mut uploads = Vec::new();
         if self.paused {
+            self.last_update = None;
             return (uploads, Vec::new());
         }
         let mut stale = Vec::new();
@@ -1700,6 +1716,12 @@ impl Streaming {
         ExtraCover::refresh(&mut self.cover, &self.extra);
         ForcedCover::refresh(&mut self.forced_cover, &self.forced, &self.mod_forced);
         self.cover_current = true;
+        let now = std::time::Instant::now();
+        let gap = self
+            .last_update
+            .replace(now)
+            .map(|t| now.saturating_duration_since(t));
+        let caps = inflight_caps(self.workers, gap.map_or(1, cap_scale));
         // The sweeps below walk every loaded column and proto chunk. Run them
         // at once when the view moves and every eighth tick otherwise: a
         // column can stay a little past the edge without anyone noticing.
@@ -1862,7 +1884,7 @@ impl Streaming {
         // Decorate chunks whose 3x3 proto neighbourhood is available, in
         // vanilla's order: decoration is order dependent where write regions
         // overlap (see `DecorationOrder`).
-        let workers = self.workers;
+        let [decorate_cap, generate_cap, light_cap] = caps;
         if self.decorates && self.order_area != Some((self.center, self.radius)) {
             let (decorated, chunks) = (&self.decorated, &world.chunks);
             // The render distance is the server view distance in singleplayer.
@@ -1889,7 +1911,7 @@ impl Streaming {
                     || generating.contains(&(x, z))
             });
         }
-        if self.decorates && self.decorating < workers * 2 {
+        if self.decorates && self.decorating < decorate_cap {
             let wants = |s: &Self, x: i32, z: i32| {
                 !s.decorated.contains(&(x, z))
                     && !world.chunks.contains_key(&(x, z))
@@ -1928,7 +1950,7 @@ impl Streaming {
             // took most of the thread that runs it while the world loaded.
             let waiting: std::cell::RefCell<FxHashMap<(i32, i32), bool>> = Default::default();
             while let Some(std::cmp::Reverse((_, x, z))) = wanted.pop() {
-                if self.decorating >= workers * 2 {
+                if self.decorating >= decorate_cap {
                     break;
                 }
                 if self.decoration_order.blocked(x, z, |nx, nz| {
@@ -1984,7 +2006,7 @@ impl Streaming {
                 self.submit(Some((x, z)), 1, Job::Decorate(x, z, region, finals));
             }
         }
-        self.schedule_generation(world, workers);
+        self.schedule_generation(world, generate_cap);
         // Lighting once all neighbours exist, nearest first and only as
         // much of it as the workers can chew. Vanilla's light engine also
         // hands a bounded queue to its workers and reschedules what did
@@ -2003,7 +2025,7 @@ impl Streaming {
         for key in gone.drain(..) {
             world.dirty_light.remove(&key);
         }
-        let room = (self.workers * 4).saturating_sub(self.lighting.len());
+        let room = light_cap.saturating_sub(self.lighting.len());
         nearest_first(&mut light, room);
         for (_, x, z) in light.drain(..) {
             let Some(region) = self.light_region(world, x, z) else {
@@ -2146,7 +2168,7 @@ impl Streaming {
         self.mesh_columns_scratch = columns;
         (uploads, removed)
     }
-    fn schedule_generation(&mut self, world: &World, workers: usize) {
+    fn schedule_generation(&mut self, world: &World, cap: usize) {
         let input = GenerationInputs {
             ranges: Ranges {
                 center: self.center,
@@ -2165,7 +2187,7 @@ impl Streaming {
             decorates: self.decorates,
             remote: self.remote,
         };
-        if let Some(wanted) = self.generation_scan.candidates(input, workers * 3) {
+        if let Some(wanted) = self.generation_scan.candidates(input, cap) {
             for (_, x, z) in wanted {
                 self.generating.insert((x, z));
                 self.submit(Some((x, z)), 0, Job::Generate(x, z));
@@ -3262,6 +3284,33 @@ mod tests {
             assert_eq!(popped, full_sort(&mut full, &wanted), "round {round}");
             assert_eq!(fast.ordered(), full.ordered(), "round {round}");
         }
+    }
+
+    #[test]
+    fn caps_grow_with_the_gap_between_updates() {
+        use std::time::Duration;
+        let ms = Duration::from_millis;
+        // Pumping between ticks (at most 5 ms apart), one tick of 50 ms (two updates' worth), and long ticks.
+        let cases = [
+            (ms(0), 1),
+            (ms(5), 1),
+            (ms(24), 1),
+            (ms(25), 1),
+            (ms(49), 1),
+            (ms(50), 2),
+            (ms(199), 7),
+            (ms(200), 8),
+            (ms(399), 15),
+            (ms(400), 16),
+            (Duration::from_secs(30), 16),
+        ];
+        for (gap, scale) in cases {
+            assert_eq!(cap_scale(gap), scale, "{gap:?}");
+        }
+        // 11 workers: today's 22 decorations, 33 generations and 44 lights at scale 1; eight times that at 200 ms.
+        assert_eq!(inflight_caps(11, cap_scale(ms(5))), [22, 33, 44]);
+        assert_eq!(inflight_caps(11, cap_scale(ms(200))), [176, 264, 352]);
+        assert_eq!(inflight_caps(1, 16), [32, 48, 64]);
     }
 
     #[test]
