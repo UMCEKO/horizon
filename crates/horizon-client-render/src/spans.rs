@@ -224,10 +224,7 @@ pub fn take_raw() -> Vec<Span> {
 pub fn take() -> Vec<Span> {
     merge(&take_raw())
 }
-/// What a frame spent its time in, from its spans as recorded ([`take_raw`]): the slowest of
-/// the outermost spans (summed by name, as a frame can tick several times), then the slowest
-/// span inside it while that one took at least half of it, and so on. The path of names
-/// (`tick/tick_mobs`) and the last one's milliseconds; `None` without spans.
+/// The step with most of a frame's CPU time, as a path (`tick/tick_mobs`) and its CPU ms; `None` without spans.
 pub fn culprit(raw: &[Span]) -> Option<(String, f32)> {
     // The spans directly inside each one: recorded just before it, one level deeper.
     let mut inside: Vec<Vec<usize>> = vec![Vec::new(); raw.len()];
@@ -246,10 +243,10 @@ pub fn culprit(raw: &[Span]) -> Option<(String, f32)> {
         for &i in group {
             match sums.iter_mut().find(|s| s.0 == raw[i].name) {
                 Some(sum) => {
-                    sum.1 += raw[i].ms;
+                    sum.1 += raw[i].cpu_ms;
                     sum.2.push(i);
                 }
-                None => sums.push((raw[i].name, raw[i].ms, vec![i])),
+                None => sums.push((raw[i].name, raw[i].cpu_ms, vec![i])),
             }
         }
         sums.into_iter().max_by(|a, b| a.1.total_cmp(&b.1))
@@ -267,6 +264,16 @@ pub fn culprit(raw: &[Span]) -> Option<(String, f32)> {
             _ => return Some((path, ms)),
         }
     }
+}
+/// [`culprit`], or `waited` and the frame's off-CPU ms when they exceed the culprit's CPU time.
+pub fn culprit_with_wait(raw: &[Span], frame_ms: f32, frame_cpu_ms: f32) -> Option<(String, f32)> {
+    let (path, cpu_ms) = culprit(raw)?;
+    let off_cpu = frame_ms - frame_cpu_ms;
+    Some(if off_cpu > cpu_ms {
+        ("waited".to_owned(), off_cpu)
+    } else {
+        (path, cpu_ms)
+    })
 }
 /// Spans summed by name, slowest first.
 pub fn merge(spans: &[Span]) -> Vec<Span> {
@@ -821,6 +828,34 @@ mod tests {
         ];
         assert_eq!(super::culprit(&spread), Some(("tick".to_owned(), 300.0)));
         assert_eq!(super::culprit(&[]), None);
+    }
+
+    /// A slow frame's culprit: the step with the most CPU time, or `waited` if the frame was off-CPU longer.
+    #[test]
+    fn a_frame_that_was_off_the_cpu_is_put_down_to_the_wait() {
+        let span = |name, ms, cpu_ms, depth| Span {
+            name,
+            ms,
+            cpu_ms,
+            depth,
+        };
+        let frame = [
+            span("entity_geometry", 6.0, 0.2, 0),
+            span("update_world", 2.0, 2.0, 0),
+        ];
+        assert_eq!(
+            super::culprit(&frame),
+            Some(("update_world".to_owned(), 2.0))
+        );
+        assert_eq!(
+            super::culprit_with_wait(&frame, 8.0, 7.0),
+            Some(("update_world".to_owned(), 2.0))
+        );
+        assert_eq!(
+            super::culprit_with_wait(&frame, 8.0, 2.5),
+            Some(("waited".to_owned(), 5.5))
+        );
+        assert_eq!(super::culprit_with_wait(&[], 8.0, 2.5), None);
     }
 
     /// Laps record the steps between them while spans are on, and nothing while off.

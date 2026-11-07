@@ -19676,10 +19676,9 @@ impl Game<'_> {
                     self.observe_fullscreen();
                     self.sync_ime();
                     let now = Instant::now();
-                    let frame_cpu = self
-                        .options
-                        .spikes
-                        .and_then(|_| horizon_client::spans::thread_cpu());
+                    let frame_cpu = horizon_client::spans::recording_here()
+                        .then(horizon_client::spans::thread_cpu)
+                        .flatten();
                     let elapsed = now.duration_since(self.previous);
                     let between = now.saturating_duration_since(self.frame_end);
                     self.frame_ticks = elapsed.as_secs_f32() * 20.0;
@@ -19774,6 +19773,9 @@ impl Game<'_> {
                     if horizon_client::spans::trace::due() {
                         horizon_client::spans::trace::stop();
                     }
+                    let frame_cpu_ms = frame_cpu
+                        .zip(horizon_client::spans::thread_cpu())
+                        .map(|(start, end)| (end - start).as_secs_f32() * 1000.0);
                     if let Some(threshold) = self.options.spikes
                         && let Some(r) = self.renderer.as_ref()
                     {
@@ -19784,11 +19786,15 @@ impl Game<'_> {
                         if cpu > threshold || between > threshold {
                             // The render thread's own CPU time in the frame:
                             // far below the wall time, the frame waited.
-                            let worked = horizon_client::spans::thread_cpu()
-                                .zip(frame_cpu)
-                                .map_or_else(String::new, |(end, start)| {
-                                    format!(", cpu {:.1} ms", (end - start).as_secs_f32() * 1000.0)
-                                });
+                            let worked = frame_cpu_ms.map_or_else(String::new, |cpu_ms| {
+                                let off = cpu - cpu_ms;
+                                let off = if off >= 1.0 {
+                                    format!(", off-CPU {off:.1} ms")
+                                } else {
+                                    String::new()
+                                };
+                                format!(", cpu {cpu_ms:.1} ms{off}")
+                            });
                             let gap = if between > threshold {
                                 format!(", {between:.1} ms before it")
                             } else {
@@ -19890,8 +19896,11 @@ impl Game<'_> {
                         if self.title.is_some() {
                             self.perf.title_shown();
                         } else if self.screen == Screen::Playing && self.player.is_some() {
-                            self.perf
-                                .frame(elapsed.as_secs_f32() * 1000.0, &frame_spans);
+                            self.perf.frame(
+                                elapsed.as_secs_f32() * 1000.0,
+                                &frame_spans,
+                                frame_cpu_ms,
+                            );
                             if startup::filling() {
                                 let mut fill: Vec<(&'static str, usize)> =
                                     self.streaming.stages().to_vec();

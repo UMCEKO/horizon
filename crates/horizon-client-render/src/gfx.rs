@@ -7341,6 +7341,7 @@ impl Renderer {
         self.land_frame();
         // Waiting for the previous frame (offscreen: at most two on the GPU), not work.
         let landed = landing.elapsed();
+        laps.lap("r_land");
         self.queue.take_waited();
         // World frames alone follow the shader pack: the game loads the picked one
         // before it draws one. Title frames draw no terrain and keep the layout

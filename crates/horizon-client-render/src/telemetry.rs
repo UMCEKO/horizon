@@ -251,13 +251,15 @@ impl Session {
         self.opening = None;
     }
 
-    /// A frame drawn while playing (not in menus or loading), with the spans the render thread
-    /// recorded in it ([`crate::spans::take_raw`]): a frame of `SLOW_FRAME_MS` or more counts
-    /// under the step it spent most of its time in ([`crate::spans::culprit`]).
-    pub fn frame(&mut self, ms: f32, spans: &[crate::spans::Span]) {
+    /// A frame drawn while playing; a slow one counts under its [`crate::spans::culprit_with_wait`].
+    pub fn frame(&mut self, ms: f32, spans: &[crate::spans::Span], cpu_ms: Option<f32>) {
         use horizon_telemetry::payload::{SLOW_FRAME_MS, SlowFrames};
         if ms >= SLOW_FRAME_MS {
-            let (mut path, span_ms) = crate::spans::culprit(spans).unwrap_or_default();
+            let culprit = match cpu_ms {
+                Some(cpu_ms) => crate::spans::culprit_with_wait(spans, ms, cpu_ms),
+                None => crate::spans::culprit(spans),
+            };
+            let (mut path, span_ms) = culprit.unwrap_or_default();
             // A path too long for the item keeps its last steps.
             while path.len() > SlowFrames::MAX_NAME
                 && let Some((_, rest)) = path.split_once('/')
@@ -505,10 +507,10 @@ mod tests {
         assert!(session.opening.is_some());
         session.cancel_world_opening();
         assert!(session.opening.is_none());
-        session.frame(16.0, &[]);
+        session.frame(16.0, &[], None);
         assert!(session.to_world_ms.is_none());
         session.world_opening();
-        session.frame(16.0, &[]);
+        session.frame(16.0, &[], None);
         assert!(session.to_world_ms.is_some());
     }
 
@@ -517,7 +519,7 @@ mod tests {
         let home = home("session");
         let mut session = Session::default();
         session.world_opening();
-        (0..2000).for_each(|_| session.frame(16.6, &[]));
+        (0..2000).for_each(|_| session.frame(16.6, &[], None));
         session.finish(&home, Settings::default());
         assert!(outbox::pending(&home).is_empty(), "33 s, and no consent");
         allow(
@@ -527,11 +529,11 @@ mod tests {
                 ..Choices::NONE
             },
         );
-        (0..2000).for_each(|_| session.frame(16.6, &[]));
+        (0..2000).for_each(|_| session.frame(16.6, &[], None));
         session.finish(&home, Settings::default());
         assert!(outbox::pending(&home).is_empty(), "33 s is too short");
         session.world_opening();
-        (0..4000).for_each(|_| session.frame(16.6, &[]));
+        (0..4000).for_each(|_| session.frame(16.6, &[], None));
         (0..1200).for_each(|_| session.tick(4.0));
         session.finish(
             &home,
@@ -565,12 +567,12 @@ mod tests {
             depth,
         };
         let mut session = Session::default();
-        (0..4000).for_each(|_| session.frame(16.6, &[span("tick", 10.0, 0)]));
+        (0..4000).for_each(|_| session.frame(16.6, &[span("tick", 10.0, 0)], None));
         let frozen = [span("r_uploads", 280.0, 1), span("renderer", 300.0, 0)];
-        session.frame(320.0, &frozen);
-        session.frame(900.0, &frozen);
-        session.frame(260.0, &[]);
-        session.frame(249.0, &frozen);
+        session.frame(320.0, &frozen, None);
+        session.frame(900.0, &frozen, None);
+        session.frame(260.0, &[], None);
+        session.frame(249.0, &frozen, None);
         let perf = session.summary(Settings::default()).unwrap();
         let seen: Vec<_> = perf
             .slow_frames
