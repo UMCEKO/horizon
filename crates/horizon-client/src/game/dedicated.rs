@@ -1660,11 +1660,24 @@ impl Game<'_> {
                 None => log("INFO", "No performance report is being recorded"),
             },
             "horizon-report" => {
-                let seconds = match rest.first().map(|s| s.parse::<u32>()) {
-                    None => Ok(60),
-                    Some(Ok(s)) if (1..=report::MAX_SECONDS).contains(&s) => Ok(s),
-                    Some(_) => Err(()),
-                };
+                let mut seconds = 60u32;
+                let mut no_samples = false;
+                let mut bad = false;
+                for w in &rest {
+                    if *w == "--no-samples" {
+                        no_samples = true;
+                    } else if let Ok(s) = w.parse::<u32>() {
+                        if (1..=report::MAX_SECONDS).contains(&s) {
+                            seconds = s;
+                        } else {
+                            bad = true;
+                        }
+                    } else {
+                        bad = true;
+                    }
+                }
+                let seconds = if bad { Err(()) } else { Ok(seconds) };
+                let _ = no_samples;
                 match (seconds, &state.report) {
                     (Err(()), _) => log(
                         "INFO",

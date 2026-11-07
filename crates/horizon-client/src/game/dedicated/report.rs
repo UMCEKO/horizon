@@ -21,6 +21,7 @@ use std::{
 
 /// The longest window a report records.
 pub(super) const MAX_SECONDS: u32 = 600;
+pub const PERF_UI_URL: &str = "https://horizon-perf.umceko.com/perf";
 /// The worst ticks a report lists with their spans.
 const WORST: usize = 10;
 /// The mob types (per level) a report lists with their cost.
@@ -392,6 +393,31 @@ impl Game<'_> {
             },
         });
         let text = summary(&report);
+        let health_samples = r
+            .ticks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| horizon_perf_format::HealthSample {
+                side: 2,
+                t: i as f64,
+                tps: Some((r.ticks.len() as f32) / (window_s.max(1e-9) as f32)),
+                mspt_avg: Some(t.wall_ms),
+                cpu_process_cores: 0.0,
+                cpu_system_cores: 0.0,
+                rss_mb: 0.0,
+                physical_used_mb: 0.0,
+                swap_used_mb: 0.0,
+                players: players as u32,
+                chunks: 0,
+                entities: 0,
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let window_s2 = window_s;
+        let started_unix_ms = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()) as u64;
         // The machine's description runs commands: off the tick.
         std::thread::spawn(move || {
             let mut report = report;
@@ -405,6 +431,45 @@ impl Game<'_> {
                     path.display()
                 ),
                 Err(e) => log::error!("Horizon: could not write the performance report: {e}"),
+            }
+            let capture = horizon_perf_format::Capture {
+                format: 1,
+                start: vec![horizon_perf_format::Start {
+                    side: 2,
+                    started_unix_ms: started_unix_ms as i64,
+                    trigger: 1,
+                    kind: 1,
+                    ..Default::default()
+                }],
+                history: vec![horizon_perf_format::HealthWindow {
+                    side: 2,
+                    step_s: 1.0,
+                    t0: 0.0,
+                    samples: health_samples.clone(),
+                }],
+                slow_history: Vec::new(),
+                health: health_samples,
+                counter_defs: Vec::new(),
+                counters: Vec::new(),
+                slow: Vec::new(),
+                stop: vec![horizon_perf_format::Stop {
+                    side: 2,
+                    t: window_s2,
+                    reason: 1,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            match write_hzperf(Path::new("reports"), &capture) {
+                Ok(path) => {
+                    retention(Path::new("reports"));
+                    log::info!(
+                        "Horizon: performance report written to {}\nOpen it at {} (the file stays on your computer)",
+                        path.display(),
+                        PERF_UI_URL
+                    );
+                }
+                Err(e) => log::error!("Horizon: could not write the performance capture: {e}"),
             }
         });
     }
@@ -580,6 +645,57 @@ fn write_report(dir: &Path, report: &Value, text: &str) -> std::io::Result<PathB
     std::fs::write(&path, serde_json::to_string_pretty(report)? + "\n")?;
     std::fs::write(path.with_extension("txt"), format!("{text}\n"))?;
     Ok(path)
+}
+
+pub fn write_hzperf(
+    dir: &Path,
+    capture: &horizon_perf_format::Capture,
+) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let stamp = chrono::Utc::now().format("%Y-%m-%d_%H-%M-%SZ");
+    let path = dir.join(format!("profile-{stamp}.hzperf"));
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use prost::Message;
+    use std::io::Write;
+    let bytes = capture.encode_to_vec();
+    let file = std::fs::File::create(&path)?;
+    let mut enc = GzEncoder::new(file, Compression::default());
+    enc.write_all(&bytes)?;
+    enc.finish()?;
+    Ok(path)
+}
+
+pub fn retention(dir: &Path) {
+    const KEEP: usize = 30;
+    const LIMIT: u64 = 1024 * 1024 * 1024;
+    let mut files: Vec<(PathBuf, u64, std::time::SystemTime)> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if !p.is_file() {
+                continue;
+            }
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if !name.starts_with("profile-") || !name.ends_with(".hzperf") {
+                continue;
+            }
+            let meta = match std::fs::metadata(&p) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            files.push((p, meta.len(), mtime));
+        }
+    }
+    files.sort_by_key(|f| f.2);
+    let mut total: u64 = files.iter().map(|f| f.1).sum();
+    let mut i = 0;
+    while i < files.len() && (files.len() - i > KEEP || total > LIMIT) {
+        let _ = std::fs::remove_file(&files[i].0);
+        total = total.saturating_sub(files[i].1);
+        i += 1;
+    }
 }
 
 #[cfg(test)]
