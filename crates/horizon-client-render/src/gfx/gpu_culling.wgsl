@@ -1,29 +1,4 @@
-// GPU culling (gfx/gpu_culling.rs). `apply` writes the records that changed.
-// `cull`: one invocation per section id keeps the sections whose column is
-// within the render distance, that cave culling's graph reaches (occlusion.rs)
-// and whose box is in the frustum, writes each one's origin and the runs of its
-// solid quads that can face the eye, a draw each, and counts them in its page
-// and distance band (`band`), per block of 64 ids. `scan`: one workgroup per
-// slot (page and band) turns the blocks' counts into where each block's draws
-// start in it; `bases`: per page, where each band starts, nearest first, and
-// the page's count. `scatter`: each block writes its
-// sections' draws there, within a band in id order and each section's in its
-// runs' order, so a page's draws come front to back as the CPU's do (page_runs.rs:
-// the depth test then rejects hidden fragments early) and in the same order
-// every frame (atomics alone would order them as the GPU schedules, and where
-// faces of two sections meet at the same depth the later draw keeps the
-// pixel). Nothing here computes
-// with floats: the origins are the CPU's bits, copied, the frustum test adds
-// integers the CPU computed, and facing compares keys that order as the floats
-// the CPU compares. `cull` leaves sections fading in or out to the CPU
-// (`FADING`).
-// Frames that occlude (`OCCLUDE`, gpu_occlusion.wgsl) draw in two phases, each
-// in id order: `cull` leaves to phase 2 the sections whose box the last test
-// did not see and lists the boxes to test; after the test, `count2`, `scan2`
-// and `scatter2` write the draws of those it saw into the same regions. Which
-// boxes count as seen untested (`near_or_big`) is float arithmetic of the
-// shader's own: it only sorts sections between the phases, and doubt counts as
-// seen.
+// GPU culling (gfx/gpu_culling.rs). `apply` writes the records that changed. `cull`: one invocation per section id keeps the sections whose column is within the render distance, that cave culling's graph reaches (occlusion.rs) and whose box is in the frustum, writes each one's origin and the runs of its solid quads that can face the eye, a draw each, and counts them in its page and distance band (`band`), per block of 64 ids. `scan`: one workgroup per slot (page and band) turns the blocks' counts into where each block's draws start in it; `bases`: per page, where each band starts, nearest first, and the page's count. `scatter`: each block writes its sections' draws there, within a band in id order and each section's in its runs' order, so a page's draws come front to back as the CPU's do (page_runs.rs: the depth test then rejects hidden fragments early) and in the same order every frame (atomics alone would order them as the GPU schedules, and where faces of two sections meet at the same depth the later draw keeps the pixel). Nothing here computes with floats: the origins are the CPU's bits, copied, the frustum test adds integers the CPU computed, and facing compares keys that order as the floats the CPU compares. `cull` leaves sections fading in or out to the CPU (`FADING`). Frames that occlude (`OCCLUDE`, gpu_occlusion.wgsl) draw in two phases, each in id order: `cull` leaves to phase 2 the sections whose box the last test did not see and lists the boxes to test; after the test, `count2`, `scan2` and `scatter2` write the draws of those it saw into the same regions. Which boxes count as seen untested (`near_or_big`) is float arithmetic of the shader's own: it only sorts sections between the phases, and doubt counts as seen.
 
 struct Params {
     // Ids to test, records `apply` writes, the arena pages the counts and
@@ -94,9 +69,7 @@ struct Update {
 // and its size).
 @group(0) @binding(2) var<storage, read> tables: array<u32>;
 @group(0) @binding(3) var<storage, read> updates: array<Update>;
-// The statistics (`STATS`), each page's draws in phase 1 and in phase 2, then
-// per block of ids, page and band its draws in each phase (`cull`, `count2`), turned
-// into where they start (`scan`, `scan2`), then the boxes to test (`cull`).
+// The statistics (`STATS`), each page's draws in phase 1 and in phase 2, then per block of ids, page and band its draws in each phase (`cull`, `count2`), turned into where they start (`scan`, `scan2`), then the boxes to test (`cull`).
 @group(0) @binding(4) var<storage, read_write> counts: array<atomic<u32>>;
 // DrawIndexedIndirectArgs, five words each.
 @group(0) @binding(5) var<storage, read_write> draws: array<u32>;
@@ -139,8 +112,7 @@ const FADING: u32 = 1u;
 // In `params.flags`: solid quads facing away from the eye are left out, its
 // keys in `tables` from `params.eyes`.
 const EYE: u32 = 4u;
-// Words per id in `runs`, and where its slot (page * bands + band) starts in the
-// first, its flags and draws (at most 4: gpu_culling.rs `RUNS`) below.
+// Words per id in `runs`: its slot (page * bands + band) first, then flags and up to 4 draws (`RUNS`).
 const RUN_WORDS: u32 = 11u;
 const PAGE_SHIFT: u32 = 5u;
 // In its first word: its box is tested this frame; it waits for phase 2.
@@ -191,8 +163,7 @@ fn page_count(page: u32, phase: u32) -> u32 {
     return STATS + phase * params.pages + page;
 }
 
-// The count of `block`'s draws in `slot` (page * bands + band) and `phase`
-// (`cull`, `count2`), then where they start (`scan`): phase 1's, then phase 2's.
+// `block`'s draw count in `slot` and `phase` (`cull`, `count2`), later its start (`scan`).
 fn block_count(block: u32, slot: u32, phase: u32) -> u32 {
     let blocks = (params.ids + BLOCK - 1u) / BLOCK;
     let slots = params.pages * bands();
@@ -535,9 +506,7 @@ fn bases(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 var<workgroup> held: array<u32, 64>;
 
-// One workgroup per block of ids: each section's draws go after those of the
-// block's earlier sections in its page and band, in its runs' order, in
-// `phase` (`scatter`, gpu_occlusion.wgsl `scatter2`).
+// One workgroup per block of ids: each section's draws go after those of the block's earlier sections in its page and band, in its runs' order, in `phase` (`scatter`, gpu_occlusion.wgsl `scatter2`).
 fn scatter_block(block: u32, lane: u32, phase: u32) {
     let id = block * BLOCK + lane;
     let mine = drawn_in(id, phase);
