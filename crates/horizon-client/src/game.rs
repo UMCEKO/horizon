@@ -291,6 +291,7 @@ mod particle_culling;
 mod passengers;
 mod persist;
 mod perspective;
+mod phase_players;
 mod pick_entity;
 mod pickups;
 mod piglins;
@@ -3333,6 +3334,8 @@ struct Game<'a> {
     lan_acting_name: Option<String>,
     /// Their UUID (`Player.getUUID`).
     lan_acting_uuid: Option<u128>,
+    /// A function ran: the block entity pass lists the players again.
+    players_changed: bool,
     /// Where the mods refused to prime TNT: the sound and game event the level
     /// queued right after the prime are dropped (`prime_tnt_event`).
     tnt_refused: Option<BlockPos>,
@@ -20473,6 +20476,7 @@ impl<'a> Game<'a> {
             guest_player_sounds: Vec::new(),
             lan_acting_name: None,
             lan_acting_uuid: None,
+            players_changed: false,
             tnt_refused: None,
             lan_acting_permission: None,
             lan_acting_entity: None,

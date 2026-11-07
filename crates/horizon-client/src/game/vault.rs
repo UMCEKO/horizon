@@ -2,7 +2,7 @@
 //! (`vault`), the block's state as it changes, the rewards it ejects, the
 //! keys players insert (`VaultBlock.useItemOn`) and the display item spinning
 //! inside (`VaultRenderer`).
-use super::Game;
+use super::{Game, phase_players::PhasePlayers};
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
     Result,
@@ -17,12 +17,11 @@ use horizon_core::random::LegacyRandom;
 
 type Pos = (i32, i32, i32);
 
-/// What a vault reads: the game time and the players. The players are listed
-/// at the first ask: a vault looks for them only when its state may change
-/// (`stateUpdatingResumesAt`, once a second), not at every tick.
+/// A vault's game time and players, listed at the first ask (`stateUpdatingResumesAt` asks once a second).
 struct Players<'g, 'a> {
     time: i64,
     game: &'g Game<'a>,
+    phase: Option<&'g PhasePlayers>,
     players: std::cell::OnceCell<Vec<VaultPlayer>>,
 }
 impl VaultLevel for Players<'_, '_> {
@@ -30,14 +29,24 @@ impl VaultLevel for Players<'_, '_> {
         self.time
     }
     fn players(&self) -> Vec<VaultPlayer> {
-        self.players
-            .get_or_init(|| self.game.vault_players())
-            .clone()
+        match self.phase {
+            Some(phase) => phase.vault(self.game).all().to_vec(),
+            None => self
+                .players
+                .get_or_init(|| self.game.vault_players())
+                .clone(),
+        }
+    }
+    fn players_near(&self, pos: [i32; 3], range: f64) -> Vec<VaultPlayer> {
+        match self.phase {
+            Some(phase) => phase.vault(self.game).near(pos, range),
+            None => self.players(),
+        }
     }
 }
 
 impl Game<'_> {
-    fn vault_players(&self) -> Vec<VaultPlayer> {
+    pub(super) fn vault_players(&self) -> Vec<VaultPlayer> {
         let host = self.player.as_ref().map(|p| VaultPlayer {
             uuid: self.acting_uuid(),
             block: [p.position.x, p.position.y, p.position.z].map(|v| v.floor() as i32),
@@ -73,6 +82,7 @@ impl Game<'_> {
     fn with_vault<T>(
         &mut self,
         key: Pos,
+        phase: Option<&PhasePlayers>,
         f: impl FnOnce(
             &mut Vault,
             &Players<'_, '_>,
@@ -89,12 +99,16 @@ impl Game<'_> {
         let players = Players {
             time: self.world.game_time,
             game: self,
+            phase,
             players: std::cell::OnceCell::new(),
         };
-        let loot = horizon_client::structure_blocks::loot_data(
-            &self.options.resources,
-            &self.pack_files(),
-        );
+        let loot = match phase {
+            Some(phase) => phase.loot(self).clone(),
+            None => horizon_client::structure_blocks::loot_data(
+                &self.options.resources,
+                &self.pack_files(),
+            ),
+        };
         let seed = self.level.seed;
         let mut events = Vec::new();
         let out = {
@@ -133,11 +147,15 @@ impl Game<'_> {
     }
     /// The server tick of the vault at `key`, then its client tick when there
     /// is a window.
-    pub(super) fn tick_vault(&mut self, key: Pos) -> Result<()> {
+    pub(super) fn tick_vault(&mut self, key: Pos, phase: &PhasePlayers) -> Result<()> {
         let pos = [key.0, key.1, key.2];
-        let ticked = self.with_vault(key, |v, l, random, state, ominous, roll, events| {
-            v.server_tick(l, random, pos, state, ominous, roll, events);
-        });
+        let ticked = self.with_vault(
+            key,
+            Some(phase),
+            |v, l, random, state, ominous, roll, events| {
+                v.server_tick(l, random, pos, state, ominous, roll, events);
+            },
+        );
         if let Some(result) = ticked {
             result?;
         }
@@ -155,6 +173,7 @@ impl Game<'_> {
         let player = self.acting_uuid();
         let used = self.with_vault(
             (pos[0], pos[1], pos[2]),
+            None,
             |v, l, random, state, ominous, roll, events| {
                 v.use_item_on(
                     l,
