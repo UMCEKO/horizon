@@ -4,8 +4,10 @@ use prost::Message;
 #[test]
 #[ignore]
 fn gen_fixture() {
-    let mut c = Capture::default();
-    c.format = 1;
+    let c = Capture {
+        format: 1,
+        ..Default::default()
+    };
     let bytes = c.encode_to_vec();
     let path = std::path::Path::new("tests/fixtures/v1.hzperf");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
