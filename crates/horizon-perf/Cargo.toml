@@ -11,6 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 horizon-perf-format = { path = "../horizon-perf-format" }
+horizon-mcp = { path = "../horizon-mcp" }
 prost = "0.14"
 miniz_oxide = "0.9"
 flate2 = { version = "1.1", default-features = false, features = ["miniz_oxide"] }
