@@ -256,8 +256,7 @@ pub const WATCH_ALL: u8 = 1;
 /// decoded for it.
 pub const WATCH_ENTITY_DATA: u8 = 2;
 
-/// A packet body queued for a player: its own bytes, or bytes shared with the other players
-/// the same packet goes to.
+/// A queued packet body: one player's own bytes, or bytes shared by every player the packet goes to.
 #[derive(Clone, Debug)]
 pub enum Body {
     Owned(Vec<u8>),
@@ -462,7 +461,9 @@ impl PlayerSender {
 
 /// A sender over a real network thread and in-memory pipe, and the client's end of it.
 #[cfg(test)]
-pub(crate) fn wired_sender(threshold: Option<i32>) -> (PlayerSender, horizon_protocol::connection::Pipe) {
+pub(crate) fn wired_sender(
+    threshold: Option<i32>,
+) -> (PlayerSender, horizon_protocol::connection::Pipe) {
     struct Quiet;
     impl io_pool::Session for Quiet {
         fn packet(&mut self, _: i32, _: Vec<u8>) -> io_pool::Verdict {
@@ -2404,7 +2405,9 @@ mod tests {
             let expected: Vec<u8> = bodies
                 .iter()
                 .chain([&disconnect])
-                .flat_map(|b| horizon_protocol::frame::encode(b, threshold.map(|t| t as usize)).unwrap())
+                .flat_map(|b| {
+                    horizon_protocol::frame::encode(b, threshold.map(|t| t as usize)).unwrap()
+                })
                 .collect();
             let shared: Vec<Arc<[u8]>> = bodies.iter().map(|b| Arc::from(b.as_slice())).collect();
             let (owned, owned_client) = wired_sender(threshold);
@@ -2416,8 +2419,15 @@ mod tests {
             second.send_many(shared.iter().cloned());
             drop(holding);
             second.flush();
-            for (sender, client) in [(owned, owned_client), (first, first_client), (second, second_client)] {
-                assert!(received(&sender, client) == expected, "threshold {threshold:?}");
+            for (sender, client) in [
+                (owned, owned_client),
+                (first, first_client),
+                (second, second_client),
+            ] {
+                assert!(
+                    received(&sender, client) == expected,
+                    "threshold {threshold:?}"
+                );
             }
         }
     }
