@@ -20,36 +20,44 @@ pub const PAGE_BYTES: u64 = 256 << 20;
 /// wgpu-core adds to vertex buffers; the device's own limit still applies.
 pub const LARGE_PAGE_BYTES: u64 = (1 << 31) - (1 << 20);
 
-/// Free vertex ranges: start -> length, never adjacent.
+/// Free vertex ranges: start -> length, never adjacent, and their total.
 #[derive(Debug, PartialEq)]
-struct FreeList(BTreeMap<u64, u64>);
+struct FreeList {
+    ranges: BTreeMap<u64, u64>,
+    free: u64,
+}
 
 impl FreeList {
     fn new(capacity: u64) -> Self {
-        Self(BTreeMap::from([(0, capacity)]))
+        Self {
+            ranges: BTreeMap::from([(0, capacity)]),
+            free: capacity,
+        }
     }
     /// First fit.
     fn take(&mut self, len: u64) -> Option<u64> {
-        let (&start, &free) = self.0.iter().find(|(_, l)| **l >= len)?;
-        self.0.remove(&start);
+        let (&start, &free) = self.ranges.iter().find(|(_, l)| **l >= len)?;
+        self.ranges.remove(&start);
         if free > len {
-            self.0.insert(start + len, free - len);
+            self.ranges.insert(start + len, free - len);
         }
+        self.free -= len;
         Some(start)
     }
     fn give(&mut self, start: u64, len: u64) {
+        self.free += len;
         let (mut start, mut len) = (start, len);
-        if let Some((&prev, &prev_len)) = self.0.range(..start).next_back()
+        if let Some((&prev, &prev_len)) = self.ranges.range(..start).next_back()
             && prev + prev_len == start
         {
-            self.0.remove(&prev);
+            self.ranges.remove(&prev);
             start = prev;
             len += prev_len;
         }
-        if let Some(next_len) = self.0.remove(&(start + len)) {
+        if let Some(next_len) = self.ranges.remove(&(start + len)) {
             len += next_len;
         }
-        self.0.insert(start, len);
+        self.ranges.insert(start, len);
     }
     /// `give` for many ranges: one merge of the sorted ranges into the list,
     /// where giving them one by one costs a few tree lookups each.
@@ -60,8 +68,9 @@ impl FreeList {
             }
             return;
         }
+        self.free += ranges.iter().map(|r| r.1).sum::<u64>();
         ranges.sort_unstable();
-        let mut free = std::mem::take(&mut self.0).into_iter().peekable();
+        let mut free = std::mem::take(&mut self.ranges).into_iter().peekable();
         let mut given = ranges.into_iter().peekable();
         let mut merged: Vec<(u64, u64)> = Vec::new();
         loop {
@@ -78,7 +87,7 @@ impl FreeList {
             }
         }
         // Sorted: the tree is built in one pass.
-        self.0 = merged.into_iter().collect();
+        self.ranges = merged.into_iter().collect();
     }
 }
 
@@ -98,7 +107,7 @@ struct Page {
 impl Page {
     /// Vertices in the page's free ranges.
     fn free_vertices(&self) -> u64 {
-        self.free.0.values().sum()
+        self.free.free
     }
 }
 
@@ -108,6 +117,38 @@ const COMPACT_MIN_FREE: u64 = 128 << 20;
 /// A page of at least this many bytes shrinks (`Arena::oversized`) when a page
 /// of its ranges in use halves it or is `PAGE_BYTES` smaller.
 const SHRINK_MIN_BYTES: u64 = 64 << 20;
+
+/// A spare buffer kept longer than this since it was asked for goes back (`Arena::trim`).
+const SPARE_KEEP: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The buffer the newest page grows into, made on a thread of its own (`Arena::prepare_growth`).
+struct Spare {
+    /// The newest page when asked, and its capacity in vertices.
+    page: u32,
+    from: u64,
+    /// Vertices the page grows to.
+    capacity: u64,
+    asked: std::time::Instant,
+    made: std::sync::mpsc::Receiver<Option<wgpu::Buffer>>,
+    ready: Option<wgpu::Buffer>,
+}
+
+impl Spare {
+    /// Moves a buffer the thread has made into `ready`; false when it failed to make one.
+    fn receive(&mut self) -> bool {
+        if self.ready.is_some() {
+            return true;
+        }
+        match self.made.try_recv() {
+            Ok(Some(buffer)) => {
+                self.ready = Some(buffer);
+                true
+            }
+            Ok(None) | Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+        }
+    }
+}
 
 /// Terrain vertices in pages of at most `page_limit` vertices (devices cap
 /// buffer sizes): a section's vertices sit in one page.
@@ -122,6 +163,9 @@ pub struct Arena {
     /// A page had to go to system memory (logged once).
     spilled: bool,
     sources_enabled: bool,
+    spare: Option<Spare>,
+    /// Pages a grow left, for the next `trim`.
+    retired: Vec<wgpu::Buffer>,
     /// Tests: GPU-local pages fail as if video memory were full.
     #[cfg(test)]
     video_memory_full: bool,
@@ -207,6 +251,8 @@ impl Arena {
             closing: None,
             spilled: false,
             sources_enabled: false,
+            spare: None,
+            retired: Vec::new(),
             #[cfg(test)]
             video_memory_full: false,
         }
@@ -271,7 +317,7 @@ impl Arena {
     /// submitted, most of a page just made or grown.
     pub fn binding(&self, page: u32) -> wgpu::BufferSlice<'_> {
         let p = self.pages[page as usize].as_ref().expect("live arena page");
-        let end = match p.free.0.last_key_value() {
+        let end = match p.free.ranges.last_key_value() {
             Some((&start, &len)) if start + len == p.capacity => start,
             _ => p.capacity,
         };
@@ -372,6 +418,7 @@ impl Arena {
         vertices: u64,
     ) -> Option<(u32, u64)> {
         let len = Self::span(vertices).min(self.page_limit);
+        self.prepare_growth(device);
         if let Some(found) = self.alloc_existing(len) {
             return Some(found);
         }
@@ -424,6 +471,76 @@ impl Arena {
             });
         self.pages[index] = Some(page);
         Some((index as u32, start))
+    }
+    /// Has the newest page's next buffer made on another thread from three quarters used, and drops one it no longer needs.
+    fn prepare_growth(&mut self, device: &wgpu::Device) {
+        let last = self.pages.len().checked_sub(1);
+        let newest = last.and_then(|i| self.pages[i].as_ref());
+        if let Some(spare) = &mut self.spare {
+            let made = spare.receive();
+            let fits = made
+                && newest.is_some_and(|p| {
+                    Some(spare.page as usize) == last
+                        && self.closing != Some(spare.page)
+                        && p.capacity == spare.from
+                        && p.free_vertices() * 2 <= p.capacity
+                });
+            if !fits {
+                self.retired.extend(self.spare.take().and_then(|s| s.ready));
+            }
+        }
+        #[cfg(test)]
+        if self.video_memory_full {
+            return;
+        }
+        let (Some(page), Some(last)) = (newest, last) else {
+            return;
+        };
+        if self.spare.is_some()
+            || page.capacity >= self.page_limit
+            || self.closing == Some(last as u32)
+            || page.free_vertices() * 4 > page.capacity
+        {
+            return;
+        }
+        let from = page.capacity;
+        let capacity = self
+            .grown(from, GRAIN)
+            .next_multiple_of(GRAIN)
+            .min(self.page_limit);
+        let usage = self.usage | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC;
+        let bytes = capacity * self.stride;
+        let device = device.clone();
+        let (tx, made) = std::sync::mpsc::channel();
+        let started = std::thread::Builder::new()
+            .name("Arena page".into())
+            .spawn(move || {
+                let _ = tx.send(try_create(&device, "Section buffer arena", bytes, usage));
+            });
+        if started.is_ok() {
+            self.spare = Some(Spare {
+                page: last as u32,
+                from,
+                capacity,
+                asked: std::time::Instant::now(),
+                made,
+                ready: None,
+            });
+        }
+    }
+    /// The made spare for `page` growing from `from` to `capacity` or more, and its capacity; none (a pending one stays) means create.
+    fn take_spare(&mut self, page: usize, from: u64, capacity: u64) -> Option<(wgpu::Buffer, u64)> {
+        let spare = self.spare.as_mut()?;
+        if spare.page as usize != page || spare.from != from || spare.capacity < capacity {
+            return None;
+        }
+        let capacity = spare.capacity;
+        let made = spare.receive();
+        let buffer = spare.ready.take();
+        if buffer.is_some() || !made {
+            self.spare = None;
+        }
+        Some((buffer?, capacity))
     }
     /// A range of `vertices` in a page that exists already and is not being
     /// emptied: never grows the arena.
@@ -630,8 +747,15 @@ impl Arena {
     ) -> bool {
         let capacity = capacity.next_multiple_of(GRAIN).min(self.page_limit);
         let spill = capacity * self.stride <= PAGE_BYTES;
-        let Some((buffer, host)) = self.create(device, capacity, spill) else {
-            return false;
+        let from = self.pages[page].as_ref().expect("live arena page").capacity;
+        let (buffer, host, capacity) = match self.take_spare(page, from, capacity) {
+            Some((buffer, capacity)) => (buffer, false, capacity),
+            None => {
+                let Some((buffer, host)) = self.create(device, capacity, spill) else {
+                    return false;
+                };
+                (buffer, host, capacity)
+            }
         };
         let sources = self
             .sources_enabled
@@ -645,21 +769,28 @@ impl Arena {
         }
         old.sources = sources;
         let previous = old.capacity;
-        old.buffer = buffer;
+        let left = std::mem::replace(&mut old.buffer, buffer);
+        self.retired.push(left);
+        let old = self.pages[page].as_mut().expect("live arena page");
         old.host = host;
         old.capacity = capacity;
         old.free.give(previous, capacity - previous);
         true
     }
-    /// Reclaim after an upload batch, so replacing a section can reuse its range. Gives back
-    /// the buffers of the pages it emptied, for a [`Graveyard`].
+    /// Reclaim after an upload batch: gives back the buffers of pages it emptied or a grow left, and a stale spare, for a [`Graveyard`].
     pub fn trim(&mut self) -> Vec<wgpu::Buffer> {
-        let mut released = Vec::new();
+        let mut released = std::mem::take(&mut self.retired);
+        if self
+            .spare
+            .as_ref()
+            .is_some_and(|s| s.asked.elapsed() >= SPARE_KEEP)
+        {
+            released.extend(self.spare.take().and_then(|s| s.ready));
+        }
         for page in &mut self.pages {
-            if page
-                .as_ref()
-                .is_some_and(|p| p.free.0.len() == 1 && p.free.0.get(&0) == Some(&p.capacity))
-                && let Some(p) = page.take()
+            if page.as_ref().is_some_and(|p| {
+                p.free.ranges.len() == 1 && p.free.ranges.get(&0) == Some(&p.capacity)
+            }) && let Some(p) = page.take()
             {
                 released.push(p.buffer);
             }
@@ -673,10 +804,33 @@ impl Arena {
         }
         released
     }
-    /// Drops every page; gives back their buffers, for a [`Graveyard`].
+    /// Drops every page; gives back their buffers and the spare's, for a [`Graveyard`].
     pub fn clear(&mut self) -> Vec<wgpu::Buffer> {
         self.closing = None;
-        self.pages.drain(..).flatten().map(|p| p.buffer).collect()
+        let spare = self.spare.take().and_then(|s| s.ready);
+        let pages = self.pages.drain(..).flatten().map(|p| p.buffer);
+        std::mem::take(&mut self.retired)
+            .into_iter()
+            .chain(spare)
+            .chain(pages)
+            .collect()
+    }
+    /// Tests: blocks until the pending spare is made.
+    #[cfg(test)]
+    fn wait_spare(&mut self) {
+        if let Some(spare) = &mut self.spare
+            && spare.ready.is_none()
+        {
+            spare.ready = spare.made.recv().ok().flatten();
+        }
+        if self.spare.as_ref().is_some_and(|s| s.ready.is_none()) {
+            self.spare = None;
+        }
+    }
+    /// Tests: whether a spare is asked for.
+    #[cfg(test)]
+    fn has_spare(&self) -> bool {
+        self.spare.is_some()
     }
 }
 
@@ -854,6 +1008,154 @@ mod tests {
         assert_eq!(read(&device, &queue, arena.buffer(page), next * 4), 9);
     }
 
+    /// A four-grain page of 4-byte vertices with `used` grains taken, one by one.
+    fn arena_with(device: &wgpu::Device, queue: &wgpu::Queue, used: u64) -> Arena {
+        let mut arena = Arena::new(device, 4, 4 * GRAIN, false);
+        for _ in 0..used {
+            alloc(&mut arena, device, queue, GRAIN).unwrap();
+        }
+        arena
+    }
+
+    #[test]
+    fn a_grow_takes_the_page_made_ahead() {
+        let Some((device, queue)) = device() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let mut arena = Arena::new(&device, 4, 4 * GRAIN, false);
+        let mut uploads = super::super::upload::Uploads::new(&device);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        // The fourth range is asked for at three quarters used.
+        let ranges: Vec<_> = (0..4)
+            .map(|_| arena.alloc(&device, &mut encoder, GRAIN).unwrap())
+            .collect();
+        assert!(arena.has_spare());
+        let (page, start) = ranges[0];
+        uploads.buffer(
+            &mut encoder,
+            arena.buffer(page),
+            start * 4,
+            &7u32.to_le_bytes(),
+        );
+        arena.wait_spare();
+        let made = arena.spare.as_ref().unwrap();
+        let (spare, capacity) = (made.ready.clone().unwrap(), made.capacity);
+        let before = arena.buffer(page).clone();
+        let (grown, next) = arena.alloc(&device, &mut encoder, GRAIN).unwrap();
+        assert_eq!(grown, page);
+        assert_eq!(arena.buffer(page), &spare);
+        assert_ne!(arena.buffer(page), &before);
+        assert_eq!(arena.bytes(), capacity * 4);
+        assert!(capacity > 4 * GRAIN);
+        assert!(!arena.has_spare());
+        uploads.buffer(
+            &mut encoder,
+            arena.buffer(page),
+            next * 4,
+            &9u32.to_le_bytes(),
+        );
+        uploads.finish(&encoder);
+        queue.submit([encoder.finish()]);
+        assert_eq!(read(&device, &queue, arena.buffer(page), start * 4), 7);
+        assert_eq!(read(&device, &queue, arena.buffer(page), next * 4), 9);
+    }
+
+    #[test]
+    fn the_page_a_grow_leaves_is_freed_later() {
+        let Some((device, queue)) = device() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let mut arena = arena_with(&device, &queue, 4);
+        let before = arena.buffer(0).clone();
+        alloc(&mut arena, &device, &queue, GRAIN).unwrap();
+        assert_ne!(arena.buffer(0), &before);
+        assert!(arena.trim().contains(&before));
+        assert!(arena.trim().is_empty());
+    }
+
+    #[test]
+    fn a_spare_that_no_longer_fits_is_given_back() {
+        let Some((device, queue)) = device() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let mut arena = Arena::new(&device, 4, 4 * GRAIN, false);
+        let ranges: Vec<_> = (0..4)
+            .map(|_| alloc(&mut arena, &device, &queue, GRAIN).unwrap())
+            .collect();
+        arena.wait_spare();
+        let spare = arena.spare.as_ref().unwrap().ready.clone().unwrap();
+        // One range in use of four: under half.
+        for &(page, start) in &ranges[1..] {
+            arena.release(page, start, GRAIN);
+        }
+        alloc(&mut arena, &device, &queue, GRAIN).unwrap();
+        assert!(!arena.has_spare());
+        assert!(arena.trim().contains(&spare));
+        // Full again: the grow makes its own page.
+        for _ in 0..2 {
+            alloc(&mut arena, &device, &queue, GRAIN).unwrap();
+        }
+        alloc(&mut arena, &device, &queue, GRAIN).unwrap();
+        assert_ne!(arena.buffer(0), &spare);
+        assert!(arena.bytes() > 4 * GRAIN * 4);
+    }
+
+    #[test]
+    fn no_spare_below_three_quarters() {
+        let Some((device, queue)) = device() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let mut arena = arena_with(&device, &queue, 2);
+        // The next range finds the page half used.
+        alloc(&mut arena, &device, &queue, GRAIN).unwrap();
+        assert!(!arena.has_spare());
+        // And the one after, three quarters.
+        alloc(&mut arena, &device, &queue, GRAIN).unwrap();
+        assert!(arena.has_spare());
+    }
+
+    #[test]
+    fn free_totals_match_the_ranges() {
+        let capacity = 1u64 << 30;
+        let mut free = FreeList::new(capacity);
+        let (mut taken, mut batches): (Vec<(u64, u64)>, u32) = (Vec::new(), 0);
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            state >> 33
+        };
+        for step in 0..3000 {
+            match next() % 8 {
+                0..=4 => {
+                    let len = GRAIN * (1 + next() % 9);
+                    taken.extend(free.take(len).map(|start| (start, len)));
+                }
+                5 if !taken.is_empty() => {
+                    let (start, len) = taken.swap_remove(next() as usize % taken.len());
+                    free.give(start, len);
+                }
+                6 if taken.len() > 100 => {
+                    let at = next() as usize % (taken.len() - 100);
+                    let batch: Vec<_> = taken.drain(at..at + 80).collect();
+                    free.give_all(batch);
+                    batches += 1;
+                }
+                _ => {}
+            }
+            let ranges: u64 = free.ranges.values().sum();
+            let held: u64 = taken.iter().map(|r| r.1).sum();
+            assert_eq!(free.free, ranges, "step {step}");
+            assert_eq!(free.free + held, capacity, "step {step}");
+        }
+        assert!(batches > 5, "{batches} batches of 80 ranges");
+    }
+
     /// Released together, every range of a page leaves it one free range (a far teleport
     /// empties the arena at once), while a page keeping some ranges frees only the others.
     #[test]
@@ -878,7 +1180,7 @@ mod tests {
             .collect();
         arena.release_all(released);
         let free = |page: u32| -> Vec<(u64, u64)> {
-            let free = &arena.pages[page as usize].as_ref().unwrap().free.0;
+            let free = &arena.pages[page as usize].as_ref().unwrap().free.ranges;
             free.iter().map(|(&start, &len)| (start, len)).collect()
         };
         assert_eq!(free(first), vec![(0, 4 * GRAIN)]);
@@ -1545,7 +1847,10 @@ mod tests {
         // `oversized` looks at the counts only: a small buffer stands in.
         let buffer = try_create(&device, "Stand-in page", 4, wgpu::BufferUsages::VERTEX).unwrap();
         let mut shrinks = |capacity: u64, used: u64, host: bool| {
-            let free = FreeList(BTreeMap::from([(used, capacity - used)]));
+            let free = FreeList {
+                ranges: BTreeMap::from([(used, capacity - used)]),
+                free: capacity - used,
+            };
             let buffer = buffer.clone();
             arena.pages = vec![Some(Page {
                 sources: None,
