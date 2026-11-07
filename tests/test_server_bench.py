@@ -4,7 +4,7 @@ import re
 
 from types import SimpleNamespace
 
-from tools.server_bench import DONE, PUMPKIN_READY, TICK_AVERAGE, TICK_PERCENTILES, pumpkin_config, work
+from tools.server_bench import DONE, PUMPKIN_READY, TICK_AVERAGE, TICK_PERCENTILES, pumpkin_config, spread_spots, work
 
 
 def run(server, bots, sent, new, waited=0.0, behaviour="mixed"):
@@ -108,6 +108,15 @@ class PumpkinConfigTests(unittest.TestCase):
         # Only its own section's keys change: Bedrock keeps its (it is off).
         self.assertIn('address = "0.0.0.0:19132"\nonline_mode = true', text)
 
+
+
+class SpreadTest(unittest.TestCase):
+    def test_spots_stay_in_the_square_and_repeat(self):
+        spots = spread_spots(500, 100_000, 12345)
+        self.assertEqual(len(spots), 500)
+        self.assertTrue(all(-50_000 <= x <= 50_001 and -50_000 <= z <= 50_001 for x, z in spots))
+        self.assertEqual(spots, spread_spots(500, 100_000, 12345))
+        self.assertNotEqual(spots, spread_spots(500, 100_000, 54321))
 
 if __name__ == "__main__":
     unittest.main()
