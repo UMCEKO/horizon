@@ -312,14 +312,11 @@ pub fn report(dir: &Path, words: &[String]) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(seconds + 60);
     while Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(500));
-        if let Some(text) = report_files(&reports)
+        if let Some(path) = report_files(&reports)
             .into_iter()
             .find(|p| !before.contains(p))
         {
-            let summary =
-                std::fs::read_to_string(&text).map_err(|e| format!("{}: {e}", text.display()))?;
-            print!("{summary}");
-            println!("Saved: {} (and the .json beside it)", text.display());
+            println!("Saved: {}", path.display());
             return Ok(());
         }
     }
@@ -338,10 +335,10 @@ fn report_files(dir: &Path) -> Vec<PathBuf> {
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
-            p.extension().is_some_and(|e| e == "txt")
+            p.extension().is_some_and(|e| e == "hzperf")
                 && p.file_name()
                     .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("perf-"))
+                    .is_some_and(|n| n.starts_with("profile-"))
         })
         .collect()
 }
