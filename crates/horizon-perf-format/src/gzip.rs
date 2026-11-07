@@ -59,7 +59,9 @@ impl GzipWriter {
                 &mut self.out_buf,
                 MZFlush::Sync,
             );
-            if let Err(e) = res.status && !matches!(e, miniz_oxide::MZError::Buf) {
+            if let Err(e) = res.status
+                && !matches!(e, miniz_oxide::MZError::Buf)
+            {
                 return Err(io::Error::other(format!("deflate sync: {e:?}")));
             }
             let bw = res.bytes_written;
@@ -76,7 +78,9 @@ impl GzipWriter {
         if bw > 0 {
             self.file.write_all(&self.out_buf[..bw])?;
         }
-        if let Err(e) = res.status && !matches!(e, miniz_oxide::MZError::Buf) {
+        if let Err(e) = res.status
+            && !matches!(e, miniz_oxide::MZError::Buf)
+        {
             return Err(io::Error::other(format!("deflate sync flush: {e:?}")));
         }
         self.file.flush()?;

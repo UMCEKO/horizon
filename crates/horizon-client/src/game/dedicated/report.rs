@@ -436,7 +436,7 @@ impl Game<'_> {
                 format: 1,
                 start: vec![horizon_perf_format::Start {
                     side: 2,
-                    started_unix_ms,
+                    started_unix_ms: started_unix_ms as i64,
                     trigger: 1,
                     kind: 1,
                     ..Default::default()
