@@ -1,5 +1,4 @@
-//! The locator bar against the frozen copy of the implementation before it ([`super::reference`]):
-//! random scenarios must produce the same bytes, in the same order, for every connection.
+//! Random scenarios must give the same bytes, in the same order, per connection as [`super::reference`].
 use super::{Body, Icon, PLAYER_RANGE, Player, Waypoints, reference};
 use horizon_protocol::packets::play::{
     Clientbound as C, TrackedWaypoint, WaypointId, WaypointTarget, waypoint_operation,
@@ -64,8 +63,16 @@ fn first_difference(new: &Sent, old: &Sent) -> String {
         let (a, b) = (new.get(conn), old.get(conn));
         if a != b {
             let (a, b) = (a.map_or(&[][..], |v| &v[..]), b.map_or(&[][..], |v| &v[..]));
-            let i = (0..a.len().max(b.len())).find(|&i| a.get(i) != b.get(i)).unwrap();
-            return format!("connection {conn}, packet {i} of {} and {}: {:?} against {:?}", a.len(), b.len(), a.get(i), b.get(i));
+            let i = (0..a.len().max(b.len()))
+                .find(|&i| a.get(i) != b.get(i))
+                .unwrap();
+            return format!(
+                "connection {conn}, packet {i} of {} and {}: {:?} against {:?}",
+                a.len(),
+                b.len(),
+                a.get(i),
+                b.get(i)
+            );
         }
     }
     String::new()
@@ -140,8 +147,7 @@ fn new_player(rng: &mut Rng, next: &mut u128, spread: f64, tall: bool) -> Player
     }
 }
 
-/// Players joining, leaving, respawning, changing level, hiding, changing team, mode, range and
-/// icon, the rule flipping, and walking, in two levels; both managers see the same ticks.
+/// Joins, leaves, respawns, level changes, hiding, team/mode/range/icon changes and walks, fed to both managers.
 pub fn scenario(seed: u64, count: usize, ticks: usize) -> Counts {
     let mut rng = Rng::new(seed);
     let spread = [20.0, 200.0, 2000.0][seed as usize % 3];
@@ -154,7 +160,10 @@ pub fn scenario(seed: u64, count: usize, ticks: usize) -> Counts {
         })
         .collect();
     let mut news = [Waypoints::default(), Waypoints::default()];
-    let mut olds = [reference::Waypoints::default(), reference::Waypoints::default()];
+    let mut olds = [
+        reference::Waypoints::default(),
+        reference::Waypoints::default(),
+    ];
     let mut rule = true;
     let mut counts = Counts::default();
     for tick in 0..ticks {
@@ -181,7 +190,8 @@ pub fn scenario(seed: u64, count: usize, ticks: usize) -> Counts {
                 p.position[0] += (rng.f() - 0.5) * step;
                 p.position[2] += (rng.f() - 0.5) * step;
                 if tall {
-                    p.position[1] = (p.position[1] + (rng.f() - 0.5) * step * 4.0).clamp(-64.0, 320.0);
+                    p.position[1] =
+                        (p.position[1] + (rng.f() - 0.5) * step * 4.0).clamp(-64.0, 320.0);
                 }
             }
             if rng.chance(0.01) {
@@ -192,7 +202,11 @@ pub fn scenario(seed: u64, count: usize, ticks: usize) -> Counts {
                 respawned.push(p.uuid);
             }
             if rng.chance(0.01) {
-                p.transmit_range = if p.transmit_range > 0.0 { 0.0 } else { PLAYER_RANGE };
+                p.transmit_range = if p.transmit_range > 0.0 {
+                    0.0
+                } else {
+                    PLAYER_RANGE
+                };
             }
             if rng.chance(0.004) {
                 p.transmit_range = [40.0, 150.0, 331.5, 332.5, 1000.0, -1.0][rng.n(6)];
@@ -204,7 +218,10 @@ pub fn scenario(seed: u64, count: usize, ticks: usize) -> Counts {
                 p.spectator = !p.spectator;
             }
             if rng.chance(0.005) {
-                p.team = p.team.is_none().then(|| ("t".into(), Some(rng.n(1000) as i32)));
+                p.team = p
+                    .team
+                    .is_none()
+                    .then(|| ("t".into(), Some(rng.n(1000) as i32)));
             }
             if rng.chance(0.004) {
                 p.icon = Icon {
@@ -251,7 +268,10 @@ pub fn scenario(seed: u64, count: usize, ticks: usize) -> Counts {
             );
         }
         if new_sent != old_sent {
-            panic!("seed {seed} tick {tick}: {}", first_difference(&new_sent, &old_sent));
+            panic!(
+                "seed {seed} tick {tick}: {}",
+                first_difference(&new_sent, &old_sent)
+            );
         }
     }
     counts
@@ -320,7 +340,10 @@ fn pair_at(distance: f64, transmit_range: f64, receive_range: f64) -> Counts {
         sent_by_new(&out, &mut a);
         let out = old.tick(&old_players, &[], true);
         sent_by_reference(&out, &mut b);
-        assert_eq!(a, b, "distance {distance} ranges {transmit_range} {receive_range}");
+        assert_eq!(
+            a, b,
+            "distance {distance} ranges {transmit_range} {receive_range}"
+        );
         counts.add(&out);
     }
     counts
@@ -342,13 +365,20 @@ fn matches_the_reference_at_the_edges_of_a_range_and_of_really_far() {
         }
     }
     for k in -400..=400 {
-        counts.merge(&pair_at(332.0 + f64::from(k) * 5.0e-6, PLAYER_RANGE, PLAYER_RANGE));
+        counts.merge(&pair_at(
+            332.0 + f64::from(k) * 5.0e-6,
+            PLAYER_RANGE,
+            PLAYER_RANGE,
+        ));
     }
     counts.merge(&pair_at(20.0, PLAYER_RANGE, PLAYER_RANGE));
     counts.merge(&pair_at(10.0, -5.0, PLAYER_RANGE));
     counts.merge(&pair_at(10.0, PLAYER_RANGE, -5.0));
     println!("edges: {counts:?}");
-    assert!(counts.azimuth > 100 && counts.block > 100 && counts.update > 0, "{counts:?}");
+    assert!(
+        counts.azimuth > 100 && counts.block > 100 && counts.update > 0,
+        "{counts:?}"
+    );
 }
 
 #[test]
@@ -367,8 +397,17 @@ fn one_body_serves_every_receiver_of_a_block_update() {
     };
     let mut w = Waypoints::default();
     w.tick(&[at(1, 0.5), at(2, 3.5), at(3, 6.5), at(4, 9.5)], &[], true);
-    let out = w.tick(&[at(1, 0.5), at(2, 3.5), at(3, 6.5), at(4, 10.5)], &[], true);
-    let [(a, Body::Shared(x)), (b, Body::Shared(y)), (c, Body::Shared(z))] = &out[..] else {
+    let out = w.tick(
+        &[at(1, 0.5), at(2, 3.5), at(3, 6.5), at(4, 10.5)],
+        &[],
+        true,
+    );
+    let [
+        (a, Body::Shared(x)),
+        (b, Body::Shared(y)),
+        (c, Body::Shared(z)),
+    ] = &out[..]
+    else {
         panic!("{out:?}");
     };
     assert_eq!([*a, *b, *c], [1, 2, 3]);

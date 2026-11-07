@@ -1,16 +1,12 @@
-//! A frozen copy of the locator bar as it was before the slot-indexed rewrite: the differential test's oracle.
-//! Only the types are its own (the style is a `String`) and `distance_to` sits here; the logic is verbatim.
+//! Frozen copy of the locator bar before the slot-indexed rewrite, logic verbatim: the differential test's oracle.
 use crate::fast_hash::FxHashMap as HashMap;
 use horizon_protocol::packets::play::{
     Clientbound as C, TrackedWaypoint, WaypointId, WaypointTarget, waypoint_operation,
 };
 
-/// `EntityAzimuthConnection.update`: half a degree.
 const AZIMUTH_STEP: f32 = 0.008_726_646;
-/// `WaypointTransmitter.REALLY_FAR_DISTANCE`.
 const REALLY_FAR: f32 = 332.0;
 
-/// Waypoint.Icon.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Icon {
     pub style: String,
@@ -26,25 +22,17 @@ impl Default for Icon {
     }
 }
 
-/// A player as the waypoint manager sees them this tick.
 #[derive(Clone, Debug)]
 pub struct Player {
     pub uuid: u128,
-    /// The connection that receives the player's locator bar (None: the host,
-    /// whose own game draws it).
     pub conn: Option<u32>,
     pub position: [f64; 3],
     pub spectator: bool,
-    /// `waypoint_transmit_range`: 0 while hidden.
     pub transmit_range: f64,
     pub receive_range: f64,
-    /// `Entity.firstTick`: the player has not ticked since joining.
     pub first_tick: bool,
-    /// The chunk view radius (`ChunkMap.getPlayerViewDistance`).
     pub view_distance: i32,
-    /// The player's team and its colour (`TeamColor.rgb`).
     pub team: Option<(String, Option<i32>)>,
-    /// The icon `/waypoint modify` set.
     pub icon: Icon,
 }
 
@@ -56,7 +44,6 @@ impl Player {
         let [x, _, z] = self.block();
         [x >> 4, z >> 4]
     }
-    /// `Entity.distanceTo`.
     fn distance_to(&self, other: &Player) -> f32 {
         let d2: f64 = (0..3)
             .map(|k| (self.position[k] - other.position[k]).powi(2))
@@ -78,37 +65,26 @@ struct Connection {
     icon: Icon,
 }
 
-/// What the manager remembers of a player between ticks.
 struct Memo {
     position: [f64; 3],
-    /// The centre of the player's ChunkTrackingView (`ChunkMap.move`).
     view_center: [i32; 2],
     transmitting: bool,
     team: Option<(String, Option<i32>)>,
 }
 
-/// ServerWaypointManager for one level.
 #[derive(Default)]
 pub struct Waypoints {
-    /// The transmitters, in the order they were tracked.
     waypoints: Vec<u128>,
-    /// The receivers, in the order they joined.
     players: Vec<u128>,
-    /// Connections by receiver, then source.
     connections: HashMap<u128, Vec<(u128, Connection)>>,
     memo: HashMap<u128, Memo>,
-    /// The `locator_bar` game rule as last seen.
     enabled: Option<bool>,
 }
 
-/// One tick's players, and the packets for their connections.
 struct Tick<'a> {
     players: HashMap<u128, &'a Player>,
-    /// The connections of the players in other levels: one who just left this level is
-    /// still told of the waypoints it loses (`removePlayer` disconnects them).
     away: &'a [(u128, u32)],
     view: HashMap<u128, ([i32; 2], i32)>,
-    /// Players a respawn replaced this tick: a new ServerPlayer, on its first tick.
     fresh: &'a [u128],
     enabled: bool,
     out: Vec<(u32, C)>,
@@ -147,7 +123,6 @@ impl<'a> Tick<'a> {
         };
         self.send(receiver, source, waypoint_operation::TRACK, &c.icon, target);
     }
-    /// `ClientboundTrackedWaypointPacket.removeWaypoint`: an empty waypoint with the null icon.
     fn disconnect(&mut self, receiver: u128, source: u128) {
         self.send(
             receiver,
@@ -157,7 +132,6 @@ impl<'a> Tick<'a> {
             WaypointTarget::Empty,
         );
     }
-    /// `ChunkTrackingView.isInViewDistance` of the receiver's view.
     fn chunk_visible(&self, [x, z]: [i32; 2], receiver: u128) -> bool {
         let Some(&([cx, cz], r)) = self.view.get(&receiver) else {
             return false;
@@ -166,7 +140,6 @@ impl<'a> Tick<'a> {
         let dz = i64::from(((z - cz).abs() - 1).max(0));
         dx * dx + dz * dz < i64::from(r) * i64::from(r)
     }
-    /// `WaypointTransmitter.doesSourceIgnoreReceiver`.
     fn ignores(&self, source: &Player, receiver: &Player) -> bool {
         if receiver.spectator {
             return false;
@@ -180,22 +153,17 @@ impl<'a> Tick<'a> {
     fn really_far(source: &Player, receiver: &Player) -> bool {
         source.distance_to(receiver) > REALLY_FAR
     }
-    /// `EntityAzimuthConnection`: the angle of the receiver seen from the source,
-    /// `Mth.atan2` of the offset turned clockwise.
     fn azimuth(source: &Player, receiver: &Player) -> f32 {
         let d = [0, 1, 2].map(|k| receiver.position[k] - source.position[k]);
         horizon_core::geometry::trig::atan2(d[0], -d[2]) as f32
     }
-    /// The source and the receiver, if both are in the level this tick.
     fn pair(&self, source: u128, receiver: u128) -> Option<(&'a Player, &'a Player)> {
         Some((*self.players.get(&source)?, *self.players.get(&receiver)?))
     }
-    /// `LivingEntity.makeWaypointConnectionWith`.
     fn make(&self, (s, r): (&Player, &Player)) -> Option<Connection> {
         if s.first_tick || self.fresh.contains(&s.uuid) || s.uuid == r.uuid || self.ignores(s, r) {
             return None;
         }
-        // Waypoint.Icon.cloneAndAssignStyle: the icon's colour, else the team's.
         let mut icon = s.icon.clone();
         if icon.color.is_none() {
             icon.color = s.team.as_ref().and_then(|t| t.1);
@@ -209,7 +177,6 @@ impl<'a> Tick<'a> {
         };
         Some(Connection { kind, icon })
     }
-    /// `Connection.isBroken` for each kind.
     fn broken(&self, c: &Connection, (s, r): (&Player, &Player)) -> bool {
         let receiver = r.uuid;
         match c.kind {
@@ -229,7 +196,6 @@ impl<'a> Tick<'a> {
             }
         }
     }
-    /// `Connection.update`: the packet when the waypoint moved.
     fn update(&mut self, c: &mut Connection, (s, r): (&Player, &Player)) {
         let target = match &mut c.kind {
             Kind::Block(last) => {
@@ -290,7 +256,6 @@ impl Waypoints {
         Some(row.remove(i).1)
     }
 
-    /// `createConnection`.
     fn create_connection(&mut self, t: &mut Tick, receiver: u128, source: u128) {
         if receiver == source || !t.enabled {
             return;
@@ -307,8 +272,6 @@ impl Waypoints {
             }
         }
     }
-    /// The receiver's connection to the source updated in its place
-    /// (`updateConnection`), or made if it has none (`createConnection`).
     fn update_or_create(&mut self, t: &mut Tick, receiver: u128, source: u128) {
         if receiver == source || !t.enabled {
             return;
@@ -320,7 +283,6 @@ impl Waypoints {
             return self.create_connection(t, receiver, source);
         };
         let c = &mut row[i].1;
-        // A connection to a player who isn't in the level is broken.
         let pair = t.pair(source, receiver);
         if let Some(pair) = pair
             && !t.broken(c, pair)
@@ -339,7 +301,6 @@ impl Waypoints {
             }
         }
     }
-    /// `trackWaypoint`.
     fn track(&mut self, t: &mut Tick, source: u128) {
         if !self.waypoints.contains(&source) {
             self.waypoints.push(source);
@@ -348,17 +309,14 @@ impl Waypoints {
             self.create_connection(t, receiver, source);
         }
     }
-    /// `updateWaypoint`.
     fn update_waypoint(&mut self, t: &mut Tick, source: u128) {
         if !self.waypoints.contains(&source) {
             return;
         }
-        // Connections change; the players don't.
         for k in 0..self.players.len() {
             self.update_or_create(t, self.players[k], source);
         }
     }
-    /// `untrackWaypoint`.
     fn untrack(&mut self, t: &mut Tick, source: u128) {
         for receiver in self.players.clone() {
             if self.take(receiver, source).is_some() {
@@ -367,7 +325,6 @@ impl Waypoints {
         }
         self.waypoints.retain(|w| *w != source);
     }
-    /// `addPlayer`.
     fn add_player(&mut self, t: &mut Tick, player: u128, transmitting: bool) {
         if !self.players.contains(&player) {
             self.players.push(player);
@@ -379,14 +336,11 @@ impl Waypoints {
             self.track(t, player);
         }
     }
-    /// `updatePlayer`.
     fn update_player(&mut self, t: &mut Tick, player: u128) {
-        // Connections change; the waypoints don't.
         for k in 0..self.waypoints.len() {
             self.update_or_create(t, player, self.waypoints[k]);
         }
     }
-    /// `removePlayer`.
     fn remove_player(&mut self, t: &mut Tick, player: u128) {
         for (source, _) in self.connections.remove(&player).unwrap_or_default() {
             t.disconnect(player, source);
@@ -394,7 +348,6 @@ impl Waypoints {
         self.untrack(t, player);
         self.players.retain(|p| *p != player);
     }
-    /// `breakAllConnections`.
     fn break_all(&mut self, t: &mut Tick) {
         for receiver in self.players.clone() {
             for (source, _) in self.connections.remove(&receiver).unwrap_or_default() {
@@ -404,7 +357,6 @@ impl Waypoints {
         self.connections.clear();
     }
 
-    /// Every connection as (receiver, source, what it holds), by receiver uuid and then in connection order.
     pub(super) fn dump(&self) -> Vec<(u128, u128, String)> {
         let mut dump = Vec::new();
         for (r, row) in &self.connections {
@@ -416,10 +368,6 @@ impl Waypoints {
         dump
     }
 
-    /// One tick: players who left, joined, moved, hid or changed team, and the
-    /// `locator_bar` game rule. `respawned` players are removed and added again,
-    /// as `PlayerList.respawn` replaces the ServerPlayer. Returns the packets for
-    /// each connection.
     pub fn tick(
         &mut self,
         players: &[Player],
@@ -429,8 +377,6 @@ impl Waypoints {
         self.tick_level(players, &[], respawned, locator_bar)
     }
 
-    /// [`Self::tick`] for one level of several: `away` are the connections of the players
-    /// in the other levels, for the untracks owed to one who has just left this one.
     pub fn tick_level(
         &mut self,
         players: &[Player],
@@ -446,15 +392,12 @@ impl Waypoints {
             enabled: locator_bar,
             out: Vec::new(),
         };
-        // Vanilla reads the rule when it connects; changing it breaks or remakes
-        // every connection (MinecraftServer.onGameRuleChanged).
         let was = self.enabled.replace(locator_bar);
         for (uuid, memo) in &self.memo {
             if let Some(p) = t.players.get(uuid) {
                 t.view.insert(*uuid, (memo.view_center, p.view_distance));
             }
         }
-        // Players who left, and the ServerPlayer a respawn replaced.
         let gone: Vec<u128> = self
             .players
             .iter()
@@ -468,7 +411,6 @@ impl Waypoints {
         if was == Some(true) && !locator_bar {
             self.break_all(&mut t);
         }
-        // Players who joined (PlayerList.placeNewPlayer: addPlayer).
         for p in players {
             if self.memo.contains_key(&p.uuid) {
                 continue;
@@ -498,7 +440,6 @@ impl Waypoints {
         }
         for p in players {
             let memo = &self.memo[&p.uuid];
-            // Entity.setPosRaw, then ServerChunkCache.move.
             if memo.position != p.position {
                 let moved_view = memo.view_center != p.chunk();
                 let transmitting = memo.transmitting;
@@ -519,7 +460,6 @@ impl Waypoints {
                     self.update_player(&mut t, p.uuid);
                 }
             }
-            // LivingEntity.onAttributeUpdated(WAYPOINT_TRANSMIT_RANGE).
             let transmitting = p.transmit_range > 0.0;
             if transmitting != self.memo[&p.uuid].transmitting {
                 self.memo.get_mut(&p.uuid).unwrap().transmitting = transmitting;
@@ -529,7 +469,6 @@ impl Waypoints {
                     self.untrack(&mut t, p.uuid);
                 }
             }
-            // ServerScoreboard: a team joined, left or recoloured remakes the connections.
             if p.team != self.memo[&p.uuid].team {
                 self.memo.get_mut(&p.uuid).unwrap().team = p.team.clone();
                 for receiver in self.players.clone() {

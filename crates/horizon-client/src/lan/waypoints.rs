@@ -208,8 +208,7 @@ impl Row {
     }
 }
 
-/// ServerWaypointManager for one level. Each player it has seen has a slot, and the
-/// rows, flags and memos are indexed by it; `slot_of` finds a slot by uuid.
+/// ServerWaypointManager for one level; rows, flags and memos are indexed by player slot (`slot_of`).
 #[derive(Default)]
 pub struct Waypoints {
     slot_of: HashMap<u128, u32>,
@@ -250,15 +249,13 @@ struct Tick<'a> {
 
 impl<'a> Tick<'a> {
     fn conn(&self, receiver: u32) -> Option<u32> {
-        self.pl[receiver as usize]
-            .and_then(|p| p.conn)
-            .or_else(|| {
-                let uuid = self.uuid_of[receiver as usize];
-                self.away
-                    .iter()
-                    .find(|(u, _)| *u == uuid)
-                    .map(|&(_, conn)| conn)
-            })
+        self.pl[receiver as usize].and_then(|p| p.conn).or_else(|| {
+            let uuid = self.uuid_of[receiver as usize];
+            self.away
+                .iter()
+                .find(|(u, _)| *u == uuid)
+                .map(|&(_, conn)| conn)
+        })
     }
     fn send(
         &mut self,
@@ -281,7 +278,8 @@ impl<'a> Tick<'a> {
         }
         let known = &mut self.encoded[source as usize];
         let hit = known.iter().find(|e| {
-            (e.operation, e.target, e.color) == (operation, target, icon.color) && e.style == icon.style
+            (e.operation, e.target, e.color) == (operation, target, icon.color)
+                && e.style == icon.style
         });
         if let Some(e) = hit {
             return Body::Shared(e.bytes.clone());
@@ -358,18 +356,11 @@ impl<'a> Tick<'a> {
     }
     /// The source and the receiver, if both are in the level this tick.
     fn pair(&self, source: u32, receiver: u32) -> Option<(&'a Player, &'a Player)> {
-        Some((
-            self.pl[source as usize]?,
-            self.pl[receiver as usize]?,
-        ))
+        Some((self.pl[source as usize]?, self.pl[receiver as usize]?))
     }
     /// `LivingEntity.makeWaypointConnectionWith`.
     fn make(&self, (s, r): (&Player, &Player), source: u32, receiver: u32) -> Option<Connection> {
-        if s.first_tick
-            || self.fresh[source as usize]
-            || s.uuid == r.uuid
-            || Self::ignores(s, r)
-        {
+        if s.first_tick || self.fresh[source as usize] || s.uuid == r.uuid || Self::ignores(s, r) {
             return None;
         }
         // Waypoint.Icon.cloneAndAssignStyle: the icon's colour, else the team's.
@@ -388,7 +379,13 @@ impl<'a> Tick<'a> {
         Some(Connection { kind, icon })
     }
     /// `Connection.isBroken` for each kind.
-    fn broken(&self, c: &Connection, (s, r): (&Player, &Player), source: u32, receiver: u32) -> bool {
+    fn broken(
+        &self,
+        c: &Connection,
+        (s, r): (&Player, &Player),
+        source: u32,
+        receiver: u32,
+    ) -> bool {
         match c.kind {
             Kind::Block(last) => {
                 let now = self.blk[source as usize];
@@ -477,9 +474,7 @@ impl Waypoints {
             }
         }
     }
-    /// The receiver's connection to the source updated in its place
-    /// (`updateConnection`), or made if it has none (`createConnection`). True if it
-    /// made one or moved a chunk connection: what an identical second call could still change.
+    /// `updateConnection`, else `createConnection`; true if it made one or moved a chunk connection.
     fn update_or_create(&mut self, t: &mut Tick, receiver: u32, source: u32) -> bool {
         if receiver == source || !t.enabled {
             return false;
