@@ -8,6 +8,7 @@ use prost::Message;
 pub use horizon_perf_format::*;
 
 pub mod follow;
+pub mod query;
 pub mod summary;
 
 pub const MAX_FORMAT: u32 = 1;
@@ -228,3 +229,4 @@ pub fn summary(cap: &horizon_perf_format::Capture) -> String {
 }
 
 pub use follow::Field;
+pub use query::*;
