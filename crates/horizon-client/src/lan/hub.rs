@@ -3075,8 +3075,7 @@ impl Hub {
         }
     }
 
-    /// Each guest's tracked square in chunks (min x, max x, min z, max z): `update_view` forgets
-    /// every sent column `tracked` leaves out, and `tracked` fits in the reach plus one.
+    /// Each guest's tracked chunk square (min x, max x, min z, max z): what `tracked` accepts, reach plus one.
     fn tracked_squares(&self) -> Vec<[i32; 4]> {
         self.guests
             .iter()

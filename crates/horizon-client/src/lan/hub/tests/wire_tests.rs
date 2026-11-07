@@ -26,8 +26,7 @@ fn guest(conn: u32, position: [f64; 3], sender: crate::lan::PlayerSender) -> Gue
     g
 }
 
-/// A level of lit columns with pseudo-random blocks, so that their bodies compress and pass the
-/// shared-frame size.
+/// Lit columns of pseudo-random blocks, so bodies compress and exceed the shared-frame size.
 fn level() -> World {
     let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
     let mut state = 12345u32;
@@ -52,15 +51,18 @@ fn mob(id: i32, kind: &str, at: [f64; 3], round: usize) -> EntityState {
         id,
         uuid: id as u128,
         kind: kind.into(),
-        position: [at[0] + round as f64 * 0.7, at[1], at[2] - round as f64 * 0.3],
+        position: [
+            at[0] + round as f64 * 0.7,
+            at[1],
+            at[2] - round as f64 * 0.3,
+        ],
         yaw: round as f32 * 11.0,
         head_yaw: round as f32 * 5.0,
         ..EntityState::default()
     }
 }
 
-/// The wire bytes of each guest after `rounds` of a scripted server: chunks, entity updates,
-/// broadcasts of every kind and block and light changes, then a disconnect.
+/// Each guest's wire bytes after a scripted server: chunks, entities, broadcasts, block and light changes, a disconnect.
 fn wire(threshold: Option<i32>) -> Vec<Vec<u8>> {
     let mut sync = SyncData::empty();
     sync.builtin.registries.insert(
@@ -145,7 +147,12 @@ fn wire(threshold: Option<i32>) -> Vec<Vec<u8>> {
         hub.system_message_to(Tag::String(JavaString::from("named")), |n| n != "Player3");
         hub.send_low_disk_space_warning();
         let log = world.block_log.get_or_insert_with(Vec::new);
-        log.extend([(1, 64, 1), (2, 64, 1), (20, 70, 20 + round as i32), (-40, 10, 3)]);
+        log.extend([
+            (1, 64, 1),
+            (2, 64, 1),
+            (20, 70, 20 + round as i32),
+            (-40, 10, 3),
+        ]);
         let light = world.light_log.get_or_insert_with(Default::default);
         light.insert((5, 5 - round as i32), crate::section_mask::SectionMask::ALL);
         light.insert((0, 0), crate::section_mask::SectionMask::single(3));
@@ -153,7 +160,9 @@ fn wire(threshold: Option<i32>) -> Vec<Vec<u8>> {
         drop(holding);
         crate::lan::flush_all(hub.guests.iter().map(|g| &g.sender));
     }
-    hub.broadcast(&C::RemoveEntities(play::RemoveEntities { ids: vec![50, 51] }));
+    hub.broadcast(&C::RemoveEntities(play::RemoveEntities {
+        ids: vec![50, 51],
+    }));
     for g in &hub.guests {
         g.sender.disconnect(Tag::Byte(0));
     }

@@ -1,7 +1,5 @@
 //! Keep captured level sounds between an emitter's pairing and removal.
-use super::{
-    Body, containers::captured_sound_range, entity::EntityState, guest::Guest, hub::Hub,
-};
+use super::{Body, containers::captured_sound_range, entity::EntityState, guest::Guest, hub::Hub};
 use crate::{audio::CapturedSound, fast_hash::FxHashSet};
 use horizon_protocol::{
     buf::Reader,
