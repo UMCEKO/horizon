@@ -326,6 +326,7 @@ pub struct Hub {
     pub config: HubConfig,
     pub encoder: ChunkEncoder,
     pub guests: Vec<Guest>,
+    conn_index: crate::fast_hash::FxHashMap<u32, u32>,
     pub(super) sync: Arc<SyncData>,
     pub ticks: u64,
     /// The next `Guest.vehicle_order`: a rider that boards later sits behind.
@@ -691,6 +692,7 @@ impl Hub {
             config,
             encoder,
             guests: Vec::new(),
+            conn_index: Default::default(),
             sync,
             ticks: 0,
             seat_order: 0,
@@ -750,11 +752,46 @@ impl Hub {
         }
     }
 
+    /// Rebuilds the conn index after `guests` changed order or length.
+    pub fn reindex(&mut self) {
+        self.conn_index.clear();
+        self.conn_index.reserve(self.guests.len());
+        for (i, g) in self.guests.iter().enumerate() {
+            self.conn_index.entry(g.conn).or_insert(i as u32);
+        }
+    }
+
+    /// The position of `conn` in `guests`: the index entry when it still names that conn, else the scan.
+    pub fn guest_index(&self, conn: u32) -> Option<usize> {
+        let hit = self
+            .conn_index
+            .get(&conn)
+            .map(|&i| i as usize)
+            .filter(|&i| self.guests.get(i).is_some_and(|g| g.conn == conn));
+        let found = hit.or_else(|| self.guests.iter().position(|g| g.conn == conn));
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            found,
+            self.guests.iter().position(|g| g.conn == conn),
+            "conn index disagrees with the scan for conn {conn}"
+        );
+        found
+    }
+
+    /// `guest_index`, repairing the entry when it was missing or stale.
+    pub fn guest_index_mut(&mut self, conn: u32) -> Option<usize> {
+        let i = self.guest_index(conn)?;
+        if self.conn_index.get(&conn) != Some(&(i as u32)) {
+            self.conn_index.insert(conn, i as u32);
+        }
+        Some(i)
+    }
+
     pub fn guest(&self, conn: u32) -> Option<&Guest> {
-        self.guests.iter().find(|g| g.conn == conn)
+        self.guest_index(conn).map(|i| &self.guests[i])
     }
     pub fn guest_mut(&mut self, conn: u32) -> Option<&mut Guest> {
-        self.guests.iter_mut().find(|g| g.conn == conn)
+        self.guest_index_mut(conn).map(|i| &mut self.guests[i])
     }
 
     /// The network id of a name in a built-in or synchronized registry.
@@ -1365,6 +1402,9 @@ impl Hub {
         guest.previous_position = ctx.spawn;
         guest.dimension = self.config.dimension.clone();
         self.guests.push(guest);
+        self.conn_index
+            .entry(conn)
+            .or_insert(self.guests.len() as u32 - 1);
         conn
     }
 
@@ -2236,6 +2276,7 @@ impl Hub {
     /// packets queued for its own level's pass.
     pub fn poll(&mut self, ctx: &mut TickCtx) -> Vec<HostEvent> {
         self.ticks += 1;
+        self.reindex();
         self.anticheat_tick(ctx.tick_rate);
         let mut events = std::mem::take(&mut self.pending_kicks);
         self.expire_arrivals(&mut events);
@@ -2246,7 +2287,7 @@ impl Hub {
                     events.push(HostEvent::Joined(conn));
                 }
                 NetEvent::Left(conn, reason) => {
-                    if let Some(i) = self.guests.iter().position(|g| g.conn == conn) {
+                    if let Some(i) = self.guest_index_mut(conn) {
                         let g = self.remove_guest(i, &reason);
                         events.push(HostEvent::Left(Box::new(g)));
                     }
@@ -2493,6 +2534,7 @@ impl Hub {
 
     pub(super) fn remove_guest(&mut self, i: usize, reason: &str) -> Guest {
         let mut g = self.guests.remove(i);
+        self.reindex();
         // A compass target lasts while the player is on, as the world spawn
         // is sent again when they come back.
         if !self.guests.iter().any(|o| o.uuid == g.uuid) {
@@ -5344,6 +5386,63 @@ mod tests {
         bob.dimension = "minecraft:overworld".into();
         hub.guests.push(bob);
         (hub, rx)
+    }
+
+    fn guest_named(conn: u32, name: &str) -> Guest {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        Guest::new(
+            crate::lan::Joined {
+                conn,
+                uuid: u128::from(conn),
+                name: name.into(),
+                properties: Vec::new(),
+                info: horizon_protocol::packets::configuration::ClientInformation::new(8),
+                brand: "vanilla".into(),
+                sender: crate::lan::PlayerSender::new(tx, std::sync::Arc::default()),
+                latency: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            i32::try_from(conn).unwrap(),
+            [0.5, 64.0, 0.5],
+            8,
+        )
+    }
+
+    #[test]
+    fn guest_lookups_follow_pushes_and_removals_made_behind_the_index() {
+        let (mut hub, _rx) = hub_with_a_guest();
+        let names = |hub: &Hub| -> Vec<(u32, String)> {
+            [1, 2, 3, 4, 9]
+                .into_iter()
+                .filter_map(|c| hub.guest(c).map(|g| (c, g.name.clone())))
+                .collect()
+        };
+        for (conn, name) in [(2, "Cy"), (3, "Di"), (4, "Ed")] {
+            hub.guests.push(guest_named(conn, name));
+        }
+        assert_eq!(hub.guest_index(3), Some(2));
+        assert_eq!(hub.guest_index(9), None);
+        hub.reindex();
+        assert_eq!(names(&hub).len(), 4);
+        // The first guest leaves behind the index's back: every later position shifts.
+        hub.guests.remove(0);
+        assert!(hub.guest(1).is_none());
+        assert_eq!(hub.guest_index(2), Some(0));
+        assert_eq!(hub.guest_mut(4).map(|g| g.name.clone()).as_deref(), Some("Ed"));
+        assert_eq!(hub.conn_index.get(&4), Some(&2));
+        // A reorder and a replacement under an old conn.
+        hub.guests.reverse();
+        hub.guests[0] = guest_named(4, "Fay");
+        assert_eq!(hub.guest(4).unwrap().name, "Fay");
+        assert_eq!(hub.guest(3).unwrap().name, "Di");
+        assert_eq!(hub.guest_index(2), Some(2));
+        hub.reindex();
+        assert_eq!(
+            names(&hub),
+            [(2, "Cy".to_string()), (3, "Di".to_string()), (4, "Fay".to_string())]
+        );
     }
 
     #[test]

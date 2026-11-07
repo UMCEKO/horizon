@@ -257,6 +257,7 @@ impl Game<'_> {
             .and_then(|()| self.write_arrival_records(host, &g));
         let name = g.name.clone();
         host.hub.guests.insert(i, g);
+        host.hub.reindex();
         written?;
         let announced = host.hub.confirm_arrival(uuid, id)?;
         self.arrival_placed(uuid, &name, announced);

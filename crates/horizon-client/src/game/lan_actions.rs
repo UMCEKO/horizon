@@ -365,9 +365,7 @@ impl Game<'_> {
         f: impl FnOnce(&mut Self, &LanHost) -> R,
     ) -> Option<R> {
         let swap = self.enter_guest(host, conn, self.dim)?;
-        super::dedicated::crash_fixture("guest", || {
-            host.hub.guests.iter().any(|g| g.conn == conn && g.placed)
-        });
+        super::dedicated::crash_fixture("guest", || host.hub.guest(conn).is_some_and(|g| g.placed));
         let dimension =
             (self.serving.is_some() || self.options.dedicated.is_some()).then_some(self.dim.id());
         let result = horizon_client::block_contact::in_level(dimension, || f(self, host));
@@ -420,7 +418,7 @@ impl Game<'_> {
         if self.lan_acting == Some(conn) {
             return None;
         }
-        let i = host.hub.guests.iter().position(|g| g.conn == conn)?;
+        let i = host.hub.guest_index(conn)?;
         // EntityGetter.isUnobstructed must still see other players while
         // the hub is taken out of self.lan. The outer body is live here;
         // its saved hub position (if any) belongs to a different turn.
@@ -4127,7 +4125,7 @@ impl Game<'_> {
             self.refresh_hook_targets(host);
         }
         for conn in conns {
-            let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
+            let Some(gi) = host.hub.guest_index(conn) else {
                 continue;
             };
             // ServerGamePacketListenerImpl.tick: the chat and command throttlers
@@ -5974,7 +5972,7 @@ impl Game<'_> {
     pub(super) fn lan_swings(&mut self, host: &mut LanHost) {
         let conns: Vec<u32> = host.play.keys().copied().collect();
         for conn in conns {
-            let Some(g) = host.hub.guests.iter().find(|g| g.conn == conn) else {
+            let Some(g) = host.hub.guest(conn) else {
                 continue;
             };
             let (id, at, here) = (g.entity_id, g.position, host.hub.here(g));
