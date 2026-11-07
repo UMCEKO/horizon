@@ -164,6 +164,8 @@ pub struct Arena {
     spilled: bool,
     sources_enabled: bool,
     spare: Option<Spare>,
+    /// A stale spare's page, capacity and the vertices in use above which another is asked for.
+    declined: Option<(u32, u64, u64)>,
     /// Pages a grow left, for the next `trim`.
     retired: Vec<wgpu::Buffer>,
     /// Tests: GPU-local pages fail as if video memory were full.
@@ -252,6 +254,7 @@ impl Arena {
             spilled: false,
             sources_enabled: false,
             spare: None,
+            declined: None,
             retired: Vec::new(),
             #[cfg(test)]
             video_memory_full: false,
@@ -496,7 +499,15 @@ impl Arena {
         let (Some(page), Some(last)) = (newest, last) else {
             return;
         };
-        if self.spare.is_some()
+        let used = page.capacity - page.free_vertices();
+        let held = self.declined.is_some_and(|(at, from, limit)| {
+            at as usize == last && from == page.capacity && used <= limit
+        });
+        if !held {
+            self.declined = None;
+        }
+        if held
+            || self.spare.is_some()
             || page.capacity >= self.page_limit
             || self.closing == Some(last as u32)
             || page.free_vertices() * 4 > page.capacity
@@ -785,7 +796,13 @@ impl Arena {
             .as_ref()
             .is_some_and(|s| s.asked.elapsed() >= SPARE_KEEP)
         {
-            released.extend(self.spare.take().and_then(|s| s.ready));
+            let stale = self.spare.take();
+            self.declined = stale.as_ref().and_then(|s| {
+                let p = self.pages.get(s.page as usize)?.as_ref()?;
+                let used = p.capacity - p.free_vertices();
+                (p.capacity == s.from).then(|| (s.page, s.from, used + (p.capacity - used) / 2))
+            });
+            released.extend(stale.and_then(|s| s.ready));
         }
         for page in &mut self.pages {
             if page.as_ref().is_some_and(|p| {
@@ -807,6 +824,7 @@ impl Arena {
     /// Drops every page; gives back their buffers and the spare's, for a [`Graveyard`].
     pub fn clear(&mut self) -> Vec<wgpu::Buffer> {
         self.closing = None;
+        self.declined = None;
         let spare = self.spare.take().and_then(|s| s.ready);
         let pages = self.pages.drain(..).flatten().map(|p| p.buffer);
         std::mem::take(&mut self.retired)
@@ -1101,6 +1119,36 @@ mod tests {
         alloc(&mut arena, &device, &queue, GRAIN).unwrap();
         assert_ne!(arena.buffer(0), &spare);
         assert!(arena.bytes() > 4 * GRAIN * 4);
+    }
+
+    #[test]
+    fn a_stale_spare_is_not_asked_for_again_until_the_page_holds_more() {
+        let Some((device, queue)) = device() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let mut arena = Arena::new(&device, 4, 16 * GRAIN, false);
+        for _ in 0..12 {
+            alloc(&mut arena, &device, &queue, GRAIN).unwrap();
+        }
+        // A thirteenth range asks at three quarters used, and goes back: the page stays at twelve of sixteen.
+        let range = alloc(&mut arena, &device, &queue, GRAIN).unwrap();
+        arena.release(range.0, range.1, GRAIN);
+        assert!(arena.has_spare());
+        arena.wait_spare();
+        let spare = arena.spare.as_ref().unwrap().ready.clone().unwrap();
+        // Kept past SPARE_KEEP, it goes back to the graveyard.
+        arena.spare.as_mut().unwrap().asked -= SPARE_KEEP;
+        assert!(arena.trim().contains(&spare));
+        assert!(!arena.has_spare());
+        // Half of the four free grains used: ranges 13 to 15 are placed and none asks.
+        for _ in 0..3 {
+            alloc(&mut arena, &device, &queue, GRAIN).unwrap();
+            assert!(!arena.has_spare());
+        }
+        // Fifteen of sixteen in use is past that: the next range asks once more.
+        alloc(&mut arena, &device, &queue, GRAIN).unwrap();
+        assert!(arena.has_spare());
     }
 
     #[test]
