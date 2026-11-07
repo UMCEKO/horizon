@@ -3487,8 +3487,9 @@ impl Hub {
         });
         drop(viewers);
         for (g, out) in self.guests.iter().filter(|g| here(g)).zip(outs.iter_mut()) {
-            self.hold_sound_removals(g.conn, out);
-            g.sender.send_many(out.drain(..));
+            let mut bodies: Vec<super::Body> = out.drain(..).map(super::Body::Owned).collect();
+            self.hold_sound_removals(g.conn, &mut bodies);
+            g.sender.send_many(bodies);
         }
         let ticks = self.ticks;
         for (g, gone) in self
@@ -5278,6 +5279,7 @@ fn listed_properties(
 #[cfg(test)]
 mod tests {
     mod sound_tests;
+    mod wire_tests;
     use super::*;
     use crate::fast_hash::FxHashSet;
 
