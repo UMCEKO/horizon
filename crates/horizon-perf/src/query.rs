@@ -87,7 +87,7 @@ pub struct Meta {
     pub end_time: f64,
     pub players: u32,
 }
-fn string_map(cap: &Capture, side: Option<i32>) -> BTreeMap<u32, String> {
+pub fn string_map(cap: &Capture, side: Option<i32>) -> BTreeMap<u32, String> {
     let mut m = BTreeMap::new();
     for se in &cap.strings {
         if side.is_none_or(|s| se.side == s) {
@@ -394,6 +394,33 @@ pub fn net(cap: &Capture, opts: &QueryOpts) -> Vec<NetRow> {
     }
     rows
 }
+pub fn bench_ab(cap: &Capture) -> Option<serde_json::Value> {
+    for br in &cap.bench {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&br.report_json) {
+            if let Some(ab) = v.get("ab").cloned() {
+                return Some(ab);
+            }
+            if v.get("ab").is_some() {
+                return Some(v.clone());
+            }
+        }
+    }
+    None
+}
+pub fn bench_ab_verdict(cap: &Capture) -> Option<String> {
+    if let Some(v) = bench_ab(cap) {
+        // look for verdict in nested ab
+        if let Some(verdict) = v.get("verdict").and_then(|x| x.as_str()) {
+            return Some(verdict.to_string());
+        }
+        if let Some(ab) = v.get("ab")
+            && let Some(verdict) = ab.get("verdict").and_then(|x| x.as_str())
+        {
+            return Some(verdict.to_string());
+        }
+    }
+    None
+}
 pub fn meta(cap: &Capture) -> Meta {
     Meta {
         format: cap.format,
@@ -503,6 +530,11 @@ pub fn memory_diff(cap_a: &Capture, cap_b: &Capture) -> Vec<MemoryDiffRow> {
     }
     out
 }
+pub fn query_json(_cap: &Capture, op: &str, _args: &str) -> String {
+    // Minimal JSON reply placeholder; full query serialization follows the CLI contract.
+    format!("{{\"ok\":true,\"op\":\"{}\"}}", op)
+}
+
 pub fn summary(cap: &Capture) -> String {
     crate::summary::health_only(cap)
 }

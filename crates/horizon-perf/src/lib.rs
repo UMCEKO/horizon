@@ -9,6 +9,7 @@ pub use horizon_perf_format::*;
 
 pub mod follow;
 pub mod query;
+pub mod stats;
 pub mod summary;
 
 pub const MAX_FORMAT: u32 = 1;
@@ -226,6 +227,18 @@ pub fn latest(dir: impl AsRef<Path>) -> Result<Option<PathBuf>, Error> {
 
 pub fn summary(cap: &horizon_perf_format::Capture) -> String {
     summary::health_only(cap)
+}
+pub fn summary_with_baseline(
+    cap: &horizon_perf_format::Capture,
+    baseline: Option<&horizon_perf_format::Capture>,
+) -> String {
+    summary::health_only_with_baseline(cap, baseline)
+}
+pub fn summary_baseline(
+    cap: &horizon_perf_format::Capture,
+    baseline: &horizon_perf_format::Capture,
+) -> String {
+    summary::health_only_with_baseline(cap, Some(baseline))
 }
 
 pub use follow::Field;
