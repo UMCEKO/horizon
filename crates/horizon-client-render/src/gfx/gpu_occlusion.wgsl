@@ -54,9 +54,7 @@ fn fs_box(in: BoxOut) -> @location(0) vec4<f32> {
 
 var<workgroup> tally: array<atomic<u32>, 3>;
 
-// After the test, one workgroup per block of ids: the quads of the sections
-// with runs, the tested boxes not seen and their quads, and per page and band
-// each block's draws that phase 2 makes (`drawn_in`'s condition).
+// After the test, per block of ids: quads with runs, unseen boxes, and phase 2's draws per page and band.
 @compute @workgroup_size(64)
 fn count2(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
     if lane < 3u {

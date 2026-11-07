@@ -45,18 +45,7 @@
 //! CPU's runs on every backend, a GPU that flushes subnormal floats too. The
 //! buckets that can face the eye lie in at most `RUNS` runs: a draw each.
 //!
-//! The pass `apply`s the records that changed, then `cull` keeps the sections
-//! in view, writes their runs and counts their draws per page and block of ids,
-//! `scan` turns the counts into where each block's draws start, and `scatter`
-//! writes every block's draws there, band by band of distance (a section wide
-//! to `FINE`, then the CPU's 64 blocks), nearest first, in id order within a band and
-//! each section's in its runs' order. Ids alone follow no distance once
-//! sections come and go, and drawn far before near the depth test rejects few
-//! hidden fragments: about a quarter more GPU time on a Radeon after a few
-//! hundred blocks of travel. Appended with atomics alone, a page's draws would
-//! come in the order the GPU happens to schedule them, and where faces of two
-//! sections meet at exactly the same depth the later draw keeps the pixel, so
-//! such pixels would flicker; in a fixed order they stay put.
+//! The pass `apply`s the records that changed, then `cull` keeps the sections in view, writes their runs and counts their draws per page and block of ids, `scan` turns the counts into where each block's draws start, and `scatter` writes every block's draws there, band by band of distance (a section wide to `FINE`, then the CPU's 64 blocks), nearest first, in id order within a band and each section's in its runs' order. Ids alone follow no distance once sections come and go, and drawn far before near the depth test rejects few hidden fragments: about a quarter more GPU time on a Radeon after a few hundred blocks of travel. Appended with atomics alone, a page's draws would come in the order the GPU happens to schedule them, and where faces of two sections meet at exactly the same depth the later draw keeps the pixel, so such pixels would flicker; in a fixed order they stay put.
 //!
 //! This is not `cull` (occlusion culling, `HORIZON_GPU_CULL`), which tests the
 //! CPU's lists against phase 1's depth: frames drawn from here leave it off.
@@ -2825,31 +2814,7 @@ mod tests {
         bytemuck::pod_collect_to_vec(&rx.recv().unwrap())
     }
 
-    /// The pass draws exactly what its CPU reference (`keeps`, and cave
-    /// culling's `Reach::contains`) keeps: a draw of each run of its solid
-    /// quads that can face the eye, the runs a CPU frame draws
-    /// (`facing_runs`), or of all of them where a frame has no eye, from its
-    /// page and the run's first vertex, with the instance the CPU path gives a
-    /// whole section, every page's draws by distance band, nearest first, then in
-    /// id order and each section's in its runs' order. Its buckets by facing side are drawn at random; one case
-    /// puts the camera on a section's corner, its eye a subnormal float past it
-    /// along x and on +0 and -0 along y and z, with a quad in each of its side
-    /// buckets and every threshold 0: a CPU frame draws the +X one alone, and
-    /// so must a GPU, including one that flushes subnormal floats or compares a
-    /// bucket's keys loosely. One table serves
-    /// every case, changed between them as sections come, go and move (ids
-    /// reused, records written as updates and whole), cleared once as for
-    /// another world, and kept through a frame the CPU draws; in frusta of every
-    /// shape, one with a plane that is not finite, with boxes of every kind,
-    /// and from cameras near the world's origin and 20 million blocks out. Most
-    /// cases have a cave-culling graph, its box as wide as the walk's,
-    /// narrower, or a column wider, full height or clamped, its sky band
-    /// reached or not: the pass reads the copy it holds when a frame brings the
-    /// same graph (once through a bind group made anew), sends a new one after
-    /// a frame the CPU draws, and makes its copy anew for one too large for its
-    /// room. A fifth of the sections fade, flagged anew before each case
-    /// (`FADING`, sent as updates or with the whole table): the pass leaves
-    /// them to the CPU.
+    /// The pass draws exactly what its CPU reference (`keeps`, and cave culling's `Reach::contains`) keeps: a draw of each run of its solid quads that can face the eye, the runs a CPU frame draws (`facing_runs`), or of all of them where a frame has no eye, from its page and the run's first vertex, with the instance the CPU path gives a whole section, every page's draws by distance band, nearest first, then in id order and each section's in its runs' order. Its buckets by facing side are drawn at random; one case puts the camera on a section's corner, its eye a subnormal float past it along x and on +0 and -0 along y and z, with a quad in each of its side buckets and every threshold 0: a CPU frame draws the +X one alone, and so must a GPU, including one that flushes subnormal floats or compares a bucket's keys loosely. One table serves every case, changed between them as sections come, go and move (ids reused, records written as updates and whole), cleared once as for another world, and kept through a frame the CPU draws; in frusta of every shape, one with a plane that is not finite, with boxes of every kind, and from cameras near the world's origin and 20 million blocks out. Most cases have a cave-culling graph, its box as wide as the walk's, narrower, or a column wider, full height or clamped, its sky band reached or not: the pass reads the copy it holds when a frame brings the same graph (once through a bind group made anew), sends a new one after a frame the CPU draws, and makes its copy anew for one too large for its room. A fifth of the sections fade, flagged anew before each case (`FADING`, sent as updates or with the whole table): the pass leaves them to the CPU.
     #[test]
     fn the_gpu_draws_what_the_integer_test_keeps() {
         on_each_device(draws_match);
