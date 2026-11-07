@@ -4,7 +4,7 @@
 //! ticker, in vanilla's list order (`horizon_client::block_entities`), in
 //! chunks that tick blocks. Sculk, brewing stands and pistons tick in their
 //! own passes.
-use super::Game;
+use super::{Game, phase_players::PhasePlayers};
 use horizon_client::{
     Result,
     block_entities::{Pos, Ticking},
@@ -40,6 +40,7 @@ impl Game<'_> {
         let ticking = self.block_ticking_area();
         self.spawner_tick_positions.clear();
         self.trial_spawner_tick_positions.clear();
+        let mut phase = PhasePlayers::default();
         self.item_columns = Some(Default::default());
         self.pass_mobs = Some(Default::default());
         let tickers = self.world.block_entity_tickers();
@@ -74,14 +75,14 @@ impl Game<'_> {
                 Some(BlockEntity::Beacon(_)) => self.tick_beacon_at(pos),
                 Some(BlockEntity::CreakingHeart(_)) => self.tick_creaking_heart(pos)?,
                 Some(BlockEntity::Spawner(_)) => {
-                    self.tick_spawner(pos)?;
+                    self.tick_spawner(pos, &phase)?;
                     self.spawner_tick_positions.push(pos);
                 }
                 Some(BlockEntity::TrialSpawner(_)) => {
-                    self.tick_trial_spawner(pos)?;
+                    self.tick_trial_spawner(pos, &mut phase)?;
                     self.trial_spawner_tick_positions.push(pos);
                 }
-                Some(BlockEntity::Vault(_)) => self.tick_vault(pos)?,
+                Some(BlockEntity::Vault(_)) => self.tick_vault(pos, &phase)?,
                 Some(BlockEntity::Beehive(_)) => self.tick_beehive(pos),
                 Some(BlockEntity::Furnace(_)) => self.tick_furnace(pos)?,
                 Some(BlockEntity::Brewing(_)) => self.tick_brewing_stand(pos)?,
@@ -90,7 +91,7 @@ impl Game<'_> {
                 Some(BlockEntity::Campfire(_)) => self.tick_campfire(pos)?,
                 Some(BlockEntity::Mod(_)) => self.tick_mod_block_entity(pos),
                 Some(BlockEntity::PotentSulfur(_)) => {
-                    self.tick_potent_sulfur(pos)?;
+                    self.tick_potent_sulfur(pos, &phase)?;
                     // A window that simulates the world itself is its own
                     // client; a server's clients tick it on their own.
                     if self.options.execution_role.is_client() {
@@ -99,7 +100,15 @@ impl Game<'_> {
                 }
                 _ => {}
             }
+            // A function or a mod may have moved, killed or switched a player.
+            if std::mem::take(&mut self.players_changed)
+                || !horizon_client::mod_api::mods().is_empty()
+            {
+                phase.invalidate();
+            }
         }
+        #[cfg(debug_assertions)]
+        phase.verify(self);
         // Items move between passes: the columns hold for this one only.
         self.item_columns = None;
         self.pass_mobs = None;

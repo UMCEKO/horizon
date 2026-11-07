@@ -834,21 +834,61 @@ impl PlayerCells {
     /// The players whose chunk is within 8 chunks of (cx, cz) on both axes,
     /// in the players' order.
     pub fn within_8(&self, cx: i32, cz: i32, out: &mut Vec<usize>) {
+        self.within(cx, cz, 8, out);
+    }
+    /// The players whose chunk is within `chunks` chunks of (cx, cz), in the players' order.
+    pub fn within(&self, cx: i32, cz: i32, chunks: i32, out: &mut Vec<usize>) {
         out.clear();
-        for kx in cx.saturating_sub(8) >> 3..=cx.saturating_add(8) >> 3 {
-            for kz in cz.saturating_sub(8) >> 3..=cz.saturating_add(8) >> 3 {
-                let Some(players) = self.cells.get(&(kx, kz)) else {
-                    continue;
-                };
-                out.extend(
-                    players
-                        .iter()
-                        .filter(|&&(_, px, pz)| (px - cx).abs().max((pz - cz).abs()) <= 8)
-                        .map(|&(i, _, _)| i as usize),
-                );
+        self.visit_within(cx, cz, chunks, |i| {
+            out.push(i);
+            false
+        });
+        out.sort_unstable();
+    }
+    /// Whether `found` holds for a player within `chunks` chunks of (cx, cz), asked in no order.
+    pub fn any_within(
+        &self,
+        cx: i32,
+        cz: i32,
+        chunks: i32,
+        found: impl FnMut(usize) -> bool,
+    ) -> bool {
+        self.visit_within(cx, cz, chunks, found)
+    }
+    fn visit_within(
+        &self,
+        cx: i32,
+        cz: i32,
+        chunks: i32,
+        mut visit: impl FnMut(usize) -> bool,
+    ) -> bool {
+        let (kx, kz) = (
+            cx.saturating_sub(chunks) >> 3..=cx.saturating_add(chunks) >> 3,
+            cz.saturating_sub(chunks) >> 3..=cz.saturating_add(chunks) >> 3,
+        );
+        let mut scan = |players: &[(u32, i32, i32)]| {
+            players
+                .iter()
+                .filter(|&&(_, px, pz)| (px - cx).abs().max((pz - cz).abs()) <= chunks)
+                .any(|&(i, _, _)| visit(i as usize))
+        };
+        let squares = i64::from(kx.end() - kx.start() + 1) * i64::from(kz.end() - kz.start() + 1);
+        // A wide ask walks the squares that hold players, not every square it covers.
+        if squares > self.cells.len() as i64 {
+            return self
+                .cells
+                .iter()
+                .filter(|&(&(x, z), _)| kx.contains(&x) && kz.contains(&z))
+                .any(|(_, players)| scan(players));
+        }
+        for x in kx {
+            for z in kz.clone() {
+                if self.cells.get(&(x, z)).is_some_and(|players| scan(players)) {
+                    return true;
+                }
             }
         }
-        out.sort_unstable();
+        false
     }
 }
 

@@ -2,7 +2,7 @@
 //! `clientTick` for every spawner (`mobs::spawner`), the mobs they add, a
 //! spawn egg used on one (`SpawnEggItem.useOn`), their events and the mob
 //! spinning inside (`SpawnerRenderer`).
-use super::Game;
+use super::{Game, phase_players::PhasePlayers};
 use horizon_client::{
     Result,
     containers::BlockEntity,
@@ -78,11 +78,11 @@ impl Game<'_> {
     /// The caller only reaches this for a `BlockEntity::Spawner`, and changing
     /// the block removes or replaces that entity, so the block is not read
     /// again here.
-    pub(super) fn tick_spawner(&mut self, key: Pos) -> Result<()> {
+    pub(super) fn tick_spawner(&mut self, key: Pos, phase: &PhasePlayers) -> Result<()> {
         let Some(BlockEntity::Spawner(mut spawner)) = self.world.block_entities.take(&key) else {
             return Ok(());
         };
-        let result = self.server_tick_spawner(key, &mut spawner);
+        let result = self.server_tick_spawner_of(key, &mut spawner, None, Some(phase));
         self.world
             .block_entities
             .put(key, BlockEntity::Spawner(spawner));
@@ -102,24 +102,25 @@ impl Game<'_> {
             )
         });
     }
-    fn server_tick_spawner(&mut self, key: Pos, spawner: &mut Spawner) -> Result<()> {
-        self.server_tick_spawner_of(key, spawner, None)
-    }
-    /// `BaseSpawner.serverTick` at `key`: a spawner block's, or the spawner minecart
-    /// `cart` is at (its `broadcastEvent` is an entity event on the cart).
+    /// `BaseSpawner.serverTick` for a block or `cart`'s minecart (events go to the cart); `phase` is the pass's frozen players.
     pub(super) fn server_tick_spawner_of(
         &mut self,
         key: Pos,
         spawner: &mut Spawner,
         cart: Option<u32>,
+        phase: Option<&PhasePlayers>,
     ) -> Result<()> {
         // `BaseSpawner.serverTick` does nothing without an alive player in
         // range (`isNearPlayer`) or with the rule off: no level to build for it.
         let at = [key.0, key.1, key.2].map(|c| f64::from(c) + 0.5);
         let range = f64::from(spawner.required_player_range);
-        if !self.alive_player_near(at[0], at[1], at[2], range)
-            || !self.ui.rules.bool("spawner_blocks_work")
-        {
+        let near = match phase {
+            Some(phase) => phase
+                .level(self)
+                .alive_player_near(at[0], at[1], at[2], range),
+            None => self.alive_player_near(at[0], at[1], at[2], range),
+        };
+        if !near || !self.ui.rules.bool("spawner_blocks_work") {
             return Ok(());
         }
         // While its delay counts down, `serverTick` only takes one off it: no
@@ -137,7 +138,10 @@ impl Game<'_> {
         let mut events = Vec::new();
         let mut planned: Vec<Planned> = Vec::new();
         {
-            let level = self.natural_level();
+            let level = match phase {
+                Some(phase) => self.natural_level_in(phase),
+                None => self.natural_level(),
+            };
             let mut spawn = |l: &super::natural_spawning::GameLevel, r: &SpawnerSpawn| {
                 l.game.plan_spawner_mob(l, r, &mut planned)
             };
@@ -637,7 +641,7 @@ mod tests {
         };
         for expected in [2, 1, 0] {
             let mut before = game.world.random.clone();
-            game.tick_spawner(key).unwrap();
+            game.tick_spawner(key, &PhasePlayers::default()).unwrap();
             assert_eq!(delay(&game), expected);
             assert_eq!(
                 game.world.random.next_long(),
@@ -647,7 +651,7 @@ mod tests {
             assert!(game.mobs.is_empty());
         }
         let mut before = game.world.random.clone();
-        game.tick_spawner(key).unwrap();
+        game.tick_spawner(key, &PhasePlayers::default()).unwrap();
         assert!((200..800).contains(&delay(&game)), "{}", delay(&game));
         assert_ne!(game.world.random.next_long(), before.next_long());
     }

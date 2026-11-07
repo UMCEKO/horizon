@@ -154,6 +154,10 @@ pub trait VaultLevel {
     fn game_time(&self) -> i64;
     /// `level.getPlayers()`, in the server's order.
     fn players(&self) -> Vec<VaultPlayer>;
+    /// A superset of the players closer than `range` to `pos`, in order; the caller tests the distance.
+    fn players_near(&self, _pos: [i32; 3], _range: f64) -> Vec<VaultPlayer> {
+        self.players()
+    }
 }
 
 /// Rolls a loot table (`LootTable.getRandomItems`, stacks split) with the
@@ -394,7 +398,7 @@ impl Vault {
     /// `PlayerDetector.INCLUDING_CREATIVE_PLAYERS`.
     fn update_connected_players<L: VaultLevel>(&mut self, l: &L, pos: [i32; 3], range: f64) {
         let found: Vec<Uuid> = l
-            .players()
+            .players_near(pos, range)
             .into_iter()
             .filter(|p| {
                 let d = [0, 1, 2].map(|i| f64::from(p.block[i] - pos[i]));

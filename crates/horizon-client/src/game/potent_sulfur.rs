@@ -6,6 +6,7 @@
 //! push the local player, who moves on its own client and not on the server.
 use super::{
     Game,
+    phase_players::PhasePlayers,
     potions::{mob_can_be_affected, mob_effect_id},
 };
 use horizon_client::{
@@ -152,16 +153,16 @@ impl Game<'_> {
     /// `pos`: a wet block gives nausea; a dormant one counts down, then gives
     /// nausea; an erupting one pushes entities, then counts down; a continuous
     /// one pushes entities. A dry block has no ticker.
-    pub(super) fn tick_potent_sulfur(&mut self, pos: Pos) -> Result<()> {
+    pub(super) fn tick_potent_sulfur(&mut self, pos: Pos, phase: &PhasePlayers) -> Result<()> {
         let Some((state, geyser)) = self.potent_sulfur_state(pos) else {
             return Ok(());
         };
         match geyser {
             Geyser::Dry => {}
-            Geyser::Wet => self.server_nausea_effect_ticker(pos),
+            Geyser::Wet => self.server_nausea_effect_ticker(pos, phase),
             Geyser::Dormant => {
                 self.server_waiting_countdown_ticker(pos, state, geyser)?;
-                self.server_nausea_effect_ticker(pos);
+                self.server_nausea_effect_ticker(pos, phase);
             }
             Geyser::Erupting => {
                 self.launch_entity_ticker(pos);
@@ -175,7 +176,7 @@ impl Game<'_> {
     /// `PotentSulfurBlockEntity.SERVER_NAUSEA_EFFECT_TICKER`: every 10 ticks,
     /// the living entities near the source block that its gas reaches (at
     /// their eyes) get nausea for 4 seconds.
-    fn server_nausea_effect_ticker(&mut self, pos: Pos) {
+    fn server_nausea_effect_ticker(&mut self, pos: Pos, phase: &PhasePlayers) {
         if self.world.game_time % EFFECT_APPLICATION_FREQUENCY_TICKS != 0 {
             return;
         }
@@ -183,11 +184,7 @@ impl Game<'_> {
             return;
         };
         let area = nearby_living_area(source);
-        for player in self
-            .fight_players()
-            .into_iter()
-            .filter(|p| p.alive && p.bounds.intersects(area))
-        {
+        for player in phase.fight(self).touching(area) {
             self.as_fight_player(player.who, |g| g.apply_nausea_effect_to_player(source));
         }
         let mut near = Vec::new();

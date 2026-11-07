@@ -1,7 +1,7 @@
 //! The game's side of `NaturalSpawner` (`mobs::spawn_selection`): the level
 //! it reads, the spawning chunks and caps of `ServerChunkCache.tickChunks`,
 //! and the mobs it adds (finalized with the game's `finalizeSpawn`).
-use super::{Dim, Game};
+use super::{Dim, Game, phase_players::PhasePlayers};
 use horizon_client::vanillagen::VanillaTerrain;
 use horizon_client::{
     biome::{BiomeInfo, SpawnEntry},
@@ -27,7 +27,7 @@ use horizon_world::{
     nbt::{Compound, Tag},
     registry::BlockStateId,
 };
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap};
 
 /// Natural spawning's candidate chunks (`ChunkMap.collectSpawningChunks`):
 /// the union of every player's 17×17 chunk square, in player then dx/dz
@@ -162,6 +162,7 @@ impl SpawnScratch {
 }
 
 /// A player in the level in place, as spawning and despawning see it.
+#[derive(Clone, Debug)]
 pub(super) struct LevelPlayer {
     pub(super) uuid: u128,
     pub(super) position: Vec3,
@@ -180,6 +181,45 @@ impl LevelPlayer {
     /// negative range).
     fn alive_near(&self, x: f64, y: f64, z: f64, range: f64) -> bool {
         self.alive && !self.spectator && (range < 0.0 || self.distance_sqr(x, y, z) < range * range)
+    }
+}
+/// The players of a level, and where the non-spectators among them are (`getNearestPlayer`).
+#[derive(Clone)]
+pub(super) struct LevelView {
+    pub(super) players: Vec<LevelPlayer>,
+    pub(super) nearest: Vec<[f64; 3]>,
+    cells: Option<spawn_selection::PlayerCells>,
+}
+impl LevelView {
+    /// `grid`: also by their chunks, for a view that is asked about many places.
+    pub(super) fn new(players: Vec<LevelPlayer>, grid: bool) -> Self {
+        let nearest = players
+            .iter()
+            .filter(|p| !p.spectator)
+            .map(|p| [p.position.x, p.position.y, p.position.z])
+            .collect();
+        let cells = grid
+            .then(|| {
+                super::phase_players::grid(players.iter().map(|p| (p.position.x, p.position.z)))
+            })
+            .flatten();
+        Self {
+            players,
+            nearest,
+            cells,
+        }
+    }
+    /// `Level.hasNearbyAlivePlayer`, over every player.
+    pub(super) fn alive_player_near(&self, x: f64, y: f64, z: f64, range: f64) -> bool {
+        match &self.cells {
+            Some(cells) if range >= 0.0 => cells.any_within(
+                super::phase_players::chunk_of(x),
+                super::phase_players::chunk_of(z),
+                super::phase_players::reach_chunks(range),
+                |i| self.players[i].alive_near(x, y, z, range),
+            ),
+            _ => self.players.iter().any(|p| p.alive_near(x, y, z, range)),
+        }
     }
 }
 /// `ChunkMap.euclideanDistanceSquared` below 128 blocks
@@ -318,9 +358,9 @@ pub(super) struct GameLevel<'g, 'a> {
     pub(super) game: &'g Game<'a>,
     pub(super) w: MobWorld<'g>,
     /// Every player in the level ([`Game::level_players`]).
-    pub(super) players: Vec<LevelPlayer>,
-    /// Where the non-spectators among them are (`getNearestPlayer`).
-    pub(super) nearest: Vec<[f64; 3]>,
+    pub(super) view: Cow<'g, LevelView>,
+    /// The block entity pass this level is for, with the players and loot it froze.
+    pub(super) phase: Option<&'g PhasePlayers>,
     /// `nearest` by square, built when a spawn start first asks with more
     /// than [`PLAYERS_SCANNED`] players.
     pub(super) player_squares: std::cell::OnceCell<PlayerSquares>,
@@ -469,7 +509,7 @@ impl SpawnLevel for GameLevel<'_, '_> {
     }
     /// `getNearestPlayer(x, y, z, distance, true)`, over every player.
     fn player_near(&self, x: f64, y: f64, z: f64, distance: f64) -> bool {
-        self.players.iter().any(|p| {
+        self.view.players.iter().any(|p| {
             p.alive && !p.creative && !p.spectator && p.distance_sqr(x, y, z) < distance * distance
         })
     }
@@ -547,14 +587,14 @@ impl NaturalLevel for GameLevel<'_, '_> {
         StructureSpawns::shared(&self.game.options.resources)
     }
     fn nearest_player_positions(&self) -> &[[f64; 3]] {
-        &self.nearest
+        &self.view.nearest
     }
     fn player_positions_near(&self, x: f64, z: f64, extent: f64, out: &mut Vec<[f64; 3]>) {
-        if self.nearest.len() <= PLAYERS_SCANNED {
-            out.extend_from_slice(&self.nearest);
+        if self.view.nearest.len() <= PLAYERS_SCANNED {
+            out.extend_from_slice(&self.view.nearest);
             return;
         }
-        let squares = (self.player_squares).get_or_init(|| PlayerSquares::new(&self.nearest));
+        let squares = (self.player_squares).get_or_init(|| PlayerSquares::new(&self.view.nearest));
         squares.near(x, z, extent, out);
     }
     fn respawn(&self) -> Option<[i32; 3]> {
@@ -596,6 +636,7 @@ impl NaturalLevel for GameLevel<'_, '_> {
     }
     fn unobstructed(&self, bounds: Aabb) -> bool {
         let player = self
+            .view
             .players
             .iter()
             .any(|p| p.alive && !p.spectator && p.bounds.intersects(bounds));
@@ -633,7 +674,7 @@ impl NaturalLevel for GameLevel<'_, '_> {
 impl horizon_client::mobs::spawner::SpawnerLevel for GameLevel<'_, '_> {
     /// `Level.hasNearbyAlivePlayer`, over every player.
     fn alive_player_near(&self, x: f64, y: f64, z: f64, range: f64) -> bool {
-        self.players.iter().any(|p| p.alive_near(x, y, z, range))
+        self.view.alive_player_near(x, y, z, range)
     }
     fn spawner_blocks_work(&self) -> bool {
         self.game.ui.rules.bool("spawner_blocks_work")
@@ -666,20 +707,26 @@ fn spawn_cost_types(biomes: &horizon_client::biome::Biomes) -> Vec<&str> {
     types
 }
 impl<'a> Game<'a> {
-    pub(super) fn natural_level_with_players(
-        &self,
-        players: Vec<LevelPlayer>,
-    ) -> GameLevel<'_, 'a> {
-        let nearest = players
-            .iter()
-            .filter(|p| !p.spectator)
-            .map(|p| [p.position.x, p.position.y, p.position.z])
-            .collect();
+    pub(super) fn natural_level(&self) -> GameLevel<'_, 'a> {
+        self.natural_level_of(
+            Cow::Owned(LevelView::new(self.level_players(), false)),
+            None,
+        )
+    }
+    /// [`Game::natural_level`] over the players a block entity pass froze.
+    pub(super) fn natural_level_in<'g>(&'g self, phase: &'g PhasePlayers) -> GameLevel<'g, 'a> {
+        self.natural_level_of(Cow::Borrowed(phase.level(self)), Some(phase))
+    }
+    fn natural_level_of<'g>(
+        &'g self,
+        view: Cow<'g, LevelView>,
+        phase: Option<&'g PhasePlayers>,
+    ) -> GameLevel<'g, 'a> {
         GameLevel {
             game: self,
             w: self.mob_world_base(&[]),
-            players,
-            nearest,
+            view,
+            phase,
             player_squares: Default::default(),
             pending: Default::default(),
             pending_ids: Default::default(),
@@ -687,9 +734,6 @@ impl<'a> Game<'a> {
             box_queries: Default::default(),
             costed: spawn_cost_types(world_biomes!(self)),
         }
-    }
-    pub(super) fn natural_level(&self) -> GameLevel<'_, 'a> {
-        self.natural_level_with_players(self.level_players())
     }
     /// Creates a mob the spawner accepted, finalized the game's way; the
     /// caller adds it with [`Game::add_spawned`].
@@ -1384,5 +1428,60 @@ mod tests {
             ["spawn_raids", "spawn_natural", "spawn_custom"],
             "ServerLevel.tick ticks the raids before the chunk source's spawns"
         );
+    }
+
+    #[test]
+    fn a_view_with_a_grid_finds_the_alive_player_a_scan_finds() {
+        let mut state = 99u64;
+        let mut unit = move || {
+            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for (count, spread) in [(3, 100.0), (20, 2000.0), (150, 60_000.0), (150, 300.0)] {
+            let players: Vec<LevelPlayer> = (0..count)
+                .map(|_| {
+                    let mut p = player(
+                        (unit() - 0.5) * spread,
+                        unit() * 200.0 - 60.0,
+                        (unit() - 0.5) * spread,
+                        unit() < 0.2,
+                    );
+                    p.alive = unit() < 0.7;
+                    p
+                })
+                .collect();
+            let view = LevelView::new(players.clone(), true);
+            for ask in 0..400 {
+                let near = &players[(unit() * count as f64) as usize].position;
+                let (x, y, z) = if ask % 2 == 0 {
+                    (
+                        near.x + unit() * 40.0 - 20.0,
+                        near.y,
+                        near.z + unit() * 40.0 - 20.0,
+                    )
+                } else {
+                    (
+                        (unit() - 0.5) * spread,
+                        unit() * 200.0 - 60.0,
+                        (unit() - 0.5) * spread,
+                    )
+                };
+                let range = [-1.0, 0.0, 7.0, 16.0, 33.0, 128.0, 700.0][ask % 7];
+                let expected = players.iter().any(|p| {
+                    let d2 = (p.position.x - x).powi(2)
+                        + (p.position.y - y).powi(2)
+                        + (p.position.z - z).powi(2);
+                    p.alive && !p.spectator && (range < 0.0 || d2 < range * range)
+                });
+                assert_eq!(
+                    view.alive_player_near(x, y, z, range),
+                    expected,
+                    "{count} players, range {range} at ({x}, {y}, {z})"
+                );
+            }
+        }
     }
 }

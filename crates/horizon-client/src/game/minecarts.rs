@@ -1458,7 +1458,7 @@ impl Game<'_> {
                         c.position.y.floor() as i32,
                         c.position.z.floor() as i32,
                     );
-                    let _ = self.server_tick_spawner_of(key, &mut spawner, Some(c.id));
+                    let _ = self.server_tick_spawner_of(key, &mut spawner, Some(c.id), None);
                     c.spawner = Some(spawner);
                 }
             }

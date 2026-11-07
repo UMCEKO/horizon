@@ -572,6 +572,7 @@ impl Game<'_> {
         args: Option<&Tag>,
         source: Source,
     ) -> R<Outcome> {
+        self.players_changed = true;
         let lines = f.instantiate(args).map_err(|(key, a)| {
             let args: Vec<&dyn std::fmt::Display> =
                 a.iter().map(|s| s as &dyn std::fmt::Display).collect();

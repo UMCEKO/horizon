@@ -362,6 +362,7 @@ mod particle_culling;
 mod passengers;
 mod persist;
 mod perspective;
+mod phase_players;
 mod physical_trigger;
 mod pick_entity;
 mod pickups;
@@ -3062,6 +3063,8 @@ struct Game<'a> {
     /// The player and the stack on their cursor as they clicked a native
     /// menu, while `native_menu_clicked` hears it (`native_menu_cursor`).
     native_click_cursor: Option<(u128, Option<horizon_client::items::ItemStack>)>,
+    /// A function ran: the block entity pass lists the players again.
+    players_changed: bool,
     /// Where the mods refused to prime TNT: the sound and game event the level
     /// queued right after the prime are dropped (`prime_tnt_event`).
     tnt_refused: Option<BlockPos>,
@@ -12058,6 +12061,7 @@ impl<'a> Game<'a> {
             lan_acting_name: None,
             lan_acting_uuid: None,
             native_click_cursor: None,
+            players_changed: false,
             tnt_refused: None,
             lan_acting_permission: None,
             lan_acting_spawn_protection: None,

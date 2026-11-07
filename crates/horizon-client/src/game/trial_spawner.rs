@@ -1,7 +1,7 @@
 //! Trial spawners in the game: `TrialSpawner.tickServer` for every trial
 //! spawner (`mobs::trial_spawner`), the block's state as it changes, the mobs
 //! it adds and the rewards it ejects.
-use super::{Game, natural_spawning::GameLevel, spawner::Planned};
+use super::{Game, natural_spawning::GameLevel, phase_players::PhasePlayers, spawner::Planned};
 use horizon_client::{
     Result,
     containers::BlockEntity,
@@ -32,32 +32,16 @@ impl TrialSpawnerLevel for GameLevel<'_, '_> {
         self.game.ui.rules.bool("spawn_mobs")
     }
     fn players(&self) -> Vec<TrialPlayer> {
-        let guests = self.game.lan_present().into_iter().map(|g| TrialPlayer {
-            uuid: g.uuid,
-            block: g.position.map(|v| v.floor() as i32),
-            eye: g.eye,
-            creative: g.creative,
-            spectator: g.spectator,
-            position: g.position,
-            height: g.height,
-            alive: g.alive,
-            omen: g.omen,
-        });
-        let (Some(p), Some(view)) = (self.game.player.as_ref(), self.game.player_view()) else {
-            return guests.collect();
-        };
-        let host = TrialPlayer {
-            uuid: self.game.acting_uuid(),
-            block: [p.position.x, p.position.y, p.position.z].map(|v| v.floor() as i32),
-            eye: view.eye,
-            creative: self.game.creative,
-            spectator: self.game.spectator(),
-            position: [p.position.x, p.position.y, p.position.z],
-            height: p.dimensions.height,
-            alive: self.game.level.health > 0.0,
-            omen: super::lan_mobs::omen_of(&self.game.potions.effects),
-        };
-        std::iter::once(host).chain(guests).collect()
+        match self.phase {
+            Some(phase) => phase.trial(self.game).all().to_vec(),
+            None => self.game.trial_players(),
+        }
+    }
+    fn players_near(&self, pos: [i32; 3], range: f64) -> Vec<TrialPlayer> {
+        match self.phase {
+            Some(phase) => phase.trial(self.game).near(pos, range),
+            None => self.players(),
+        }
     }
     fn visual_hit(&self, from: [f64; 3], to: [f64; 3]) -> Option<[i32; 3]> {
         let v = |p: [f64; 3]| Vec3::new(p[0], p[1], p[2]);
@@ -86,10 +70,14 @@ impl TrialSpawnerLevel for GameLevel<'_, '_> {
             .is_empty()
     }
     fn loot_items(&self, table: &str, seed: i64) -> Vec<ItemStack> {
-        let Some(loot) = horizon_client::structure_blocks::loot_data(
-            &self.game.options.resources,
-            &self.game.pack_files(),
-        ) else {
+        let loot = match self.phase {
+            Some(phase) => phase.loot(self.game).clone(),
+            None => horizon_client::structure_blocks::loot_data(
+                &self.game.options.resources,
+                &self.game.pack_files(),
+            ),
+        };
+        let Some(loot) = loot else {
             return Vec::new();
         };
         loot.roll_split(table, &mut LegacyRandom::new(seed))
@@ -103,9 +91,38 @@ impl TrialSpawnerLevel for GameLevel<'_, '_> {
 }
 
 impl Game<'_> {
+    /// The players a trial spawner detects (`level.getPlayers()`), in the server's order.
+    pub(super) fn trial_players(&self) -> Vec<TrialPlayer> {
+        let guests = self.lan_present().into_iter().map(|g| TrialPlayer {
+            uuid: g.uuid,
+            block: g.position.map(|v| v.floor() as i32),
+            eye: g.eye,
+            creative: g.creative,
+            spectator: g.spectator,
+            position: g.position,
+            height: g.height,
+            alive: g.alive,
+            omen: g.omen,
+        });
+        let (Some(p), Some(view)) = (self.player.as_ref(), self.player_view()) else {
+            return guests.collect();
+        };
+        let host = TrialPlayer {
+            uuid: self.acting_uuid(),
+            block: [p.position.x, p.position.y, p.position.z].map(|v| v.floor() as i32),
+            eye: view.eye,
+            creative: self.creative,
+            spectator: self.spectator(),
+            position: [p.position.x, p.position.y, p.position.z],
+            height: p.dimensions.height,
+            alive: self.level.health > 0.0,
+            omen: super::lan_mobs::omen_of(&self.potions.effects),
+        };
+        std::iter::once(host).chain(guests).collect()
+    }
     /// The server tick of the trial spawner at `key`. Its client tick comes
     /// after every block entity's.
-    pub(super) fn tick_trial_spawner(&mut self, key: Pos) -> Result<()> {
+    pub(super) fn tick_trial_spawner(&mut self, key: Pos, phase: &mut PhasePlayers) -> Result<()> {
         let Some((current, ominous)) = self.trial_spawner_block(key) else {
             return Ok(());
         };
@@ -113,7 +130,7 @@ impl Game<'_> {
         else {
             return Ok(());
         };
-        let result = self.server_tick_trial_spawner(key, &mut spawner, current, ominous);
+        let result = self.server_tick_trial_spawner(key, &mut spawner, current, ominous, phase);
         self.world
             .block_entities
             .put(key, BlockEntity::TrialSpawner(spawner));
@@ -172,6 +189,7 @@ impl Game<'_> {
         spawner: &mut TrialSpawner,
         current: TrialState,
         ominous: bool,
+        phase: &mut PhasePlayers,
     ) -> Result<()> {
         let pos = [key.0, key.1, key.2];
         let mut random = std::mem::replace(&mut self.world.random, LegacyRandom::new(0));
@@ -181,11 +199,8 @@ impl Game<'_> {
         let mut uuids: Vec<(u32, Uuid)> = Vec::new();
         let mut ejected: Vec<(ItemStack, [f64; 3])> = Vec::new();
         let next = {
-            let level = self.natural_level();
-            let loot = horizon_client::structure_blocks::loot_data(
-                &self.options.resources,
-                &self.pack_files(),
-            );
+            let level = self.natural_level_in(phase);
+            let loot = phase.loot(self).clone();
             let seed = self.level.seed;
             let mut spawn = |l: &GameLevel, r: &SpawnerSpawn| {
                 let added = l.game.plan_spawner_mob(l, r, &mut planned)?;
@@ -274,7 +289,11 @@ impl Game<'_> {
                     let who = by_uuid.get(&uuid).map(|id| Who::Mob(*id));
                     self.post_block_game_event("minecraft:entity_place", at, who, None);
                 }
-                TrialEvent::TrialOmen(uuid) => self.bad_omen_to_trial_omen(uuid),
+                TrialEvent::TrialOmen(uuid) => {
+                    self.bad_omen_to_trial_omen(uuid);
+                    // The effect it swaps is what `TrialPlayer::omen` reads.
+                    phase.invalidate();
+                }
                 TrialEvent::Discard(uuid) => {
                     let (at, dropped) = {
                         let id = self.persist.uuids.iter().find(|(_, u)| **u == uuid);
