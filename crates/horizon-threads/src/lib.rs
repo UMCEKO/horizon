@@ -319,6 +319,10 @@ pub fn heap_tag(name: &'static str) -> Option<heap_census::Tag> {
 /// don't name it.
 const PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
 
+/// `mi_option_allow_thp` in the v3 mimalloc.h, counted the same way as `PURGE_DELAY`.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const ALLOW_THP: libmimalloc_sys::mi_option_t = 43;
+
 /// Set the allocator up, first thing in `main`: free pages go back to the OS
 /// at once instead of a second later. With mimalloc's delay the game held a
 /// quarter more memory than with the system heap; without it a few percent,
@@ -327,6 +331,13 @@ pub fn configure_allocator() {
     // SAFETY: sets one integer option, which mimalloc reads at each purge.
     unsafe {
         libmimalloc_sys::mi_option_set(PURGE_DELAY, 0);
+    }
+    // THP faults compact memory synchronously; the render thread stalled up to 7 ms on migrating pages.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    // SAFETY: sets one integer option, and a process flag that the kernel checks at each page fault.
+    unsafe {
+        libmimalloc_sys::mi_option_set(ALLOW_THP, 0);
+        libc::prctl(libc::PR_SET_THP_DISABLE, 1, 0, 0, 0);
     }
 }
 
@@ -618,10 +629,9 @@ mod tests {
         .unwrap();
     }
 
-    /// The option set is the purge delay: mimalloc v3's default for it is
-    /// 1000 ms, and it is 0 once configured.
+    /// mimalloc v3's purge delay is 1000 ms by default and 0 once configured, and huge pages are off.
     #[test]
-    fn configuring_the_allocator_purges_at_once() {
+    fn configuring_the_allocator_purges_at_once_and_turns_huge_pages_off() {
         // SAFETY: reads and sets one integer option.
         let get = || unsafe { libmimalloc_sys::mi_option_get(super::PURGE_DELAY) };
         if std::env::var_os("MIMALLOC_PURGE_DELAY").is_none() {
@@ -629,6 +639,19 @@ mod tests {
         }
         super::configure_allocator();
         assert_eq!(get(), 0);
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            // SAFETY: reads one integer option.
+            assert_eq!(
+                unsafe { libmimalloc_sys::mi_option_get(super::ALLOW_THP) },
+                0
+            );
+            let status = std::fs::read_to_string("/proc/self/status").unwrap();
+            // Kernels before 5.0 have no such line.
+            if let Some(line) = status.lines().find(|l| l.starts_with("THP_enabled:")) {
+                assert_eq!(line, "THP_enabled:\t0");
+            }
+        }
     }
 }
 
