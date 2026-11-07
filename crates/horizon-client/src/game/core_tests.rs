@@ -1,8 +1,31 @@
 //! Unit tests that lived in game.rs's inline `tests` module.
 use super::inventory_input::drop_whole_stack;
+use super::world_update::upload_time_spent;
 use super::*;
 use horizon_client::container_screen::{Button, Clicks, Release, Target};
 use horizon_client::keymapping::{KeyAction, SNEAK, SPRINT, ToggleKeys};
+
+#[test]
+fn upload_time_is_read_every_eighth_mesh() {
+    let budget = Duration::from_millis(2);
+    // The queued loop over 64 meshes, each clock read taking `took`: meshes uploaded, reads.
+    let run = |took| {
+        let (mut count, mut reads) = (0, Vec::new());
+        while count < 64
+            && !upload_time_spent(count, budget, || {
+                reads.push(count);
+                took
+            })
+        {
+            count += 1;
+        }
+        (count, reads)
+    };
+    let reads: Vec<usize> = (1..8).map(|n| n * 8).collect();
+    assert_eq!(run(Duration::from_millis(1)), (64, reads));
+    assert_eq!(run(Duration::from_millis(3)), (8, vec![8]));
+    assert_eq!(run(budget), (8, vec![8]));
+}
 
 /// `ClipContext.Block.OUTLINE` for the SOURCE_ONLY ray (#8180): a ray
 /// through the empty part of a torch's cell is not stopped by it.

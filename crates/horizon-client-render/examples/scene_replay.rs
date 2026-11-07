@@ -300,6 +300,7 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
     let leaf_layers = leaf_layers(&render);
     let (mut sections, mut quads, mut leaf_quads) = (0, 0usize, 0usize);
     let mut packed_quads = 0usize;
+    let now = Instant::now();
     capture::read_meshes(&o.dir, "sections", |[x, y, z], captured| {
         if near(x, z) {
             let mesh = remeshed.remove(&[x, y, z]).unwrap_or(captured);
@@ -311,7 +312,7 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
                 .filter(|v| leaf_layers.contains(&v.layer))
                 .count()
                 / 4;
-            renderer.upload((x, y, z), &mesh);
+            renderer.upload((x, y, z), &mesh, now);
             sections += 1;
         }
     })?;

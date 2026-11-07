@@ -134,7 +134,7 @@ fn fixture(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
     renderer.resize(320, 180);
     renderer.fullbright = true;
     // (keys count sections from the bottom of the world, y -64: 10 is y 96 to 112)
-    renderer.upload((0, 10, 0), &wall());
+    renderer.upload((0, 10, 0), &wall(), std::time::Instant::now());
     // an entity quad in front of the wall, middle of the screen
     let entity: Vec<Vertex> = [
         [7.5, 103.5, 6.0],
@@ -308,7 +308,7 @@ fn bench(renderer: &mut Renderer, out: &Path) -> Result<(), Box<dyn std::error::
     for cx in -R..=R {
         for cz in -R..=R {
             // (keys count sections from y -64: 8 is y 64 to 80)
-            renderer.upload((cx, 8, cz), &hills(cx, cz));
+            renderer.upload((cx, 8, cz), &hills(cx, cz), std::time::Instant::now());
             sections += 1;
         }
     }

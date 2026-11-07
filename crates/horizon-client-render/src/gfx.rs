@@ -5883,7 +5883,8 @@ impl Renderer {
     ) -> Option<bool> {
         self.occlusion.visible_for_camera(key, camera_section)
     }
-    pub fn upload(&mut self, key: SectionKey, mesh: &SectionMesh) {
+    /// `now`: the batch's time, where its meshes' fades start.
+    pub fn upload(&mut self, key: SectionKey, mesh: &SectionMesh, now: Instant) {
         if let Some(copies) = &mut self.capture_copies {
             copies.section(key, mesh);
         }
@@ -5894,13 +5895,13 @@ impl Renderer {
             self.release_mesh(gpu);
         }
         let facts = MeshFacts::of(mesh);
-        let fading = self.before_mesh(key, &facts);
+        let fading = self.before_mesh(key, &facts, now);
         let section = self.upload_mesh(mesh);
-        self.after_mesh(key, &facts, section, fading);
+        self.after_mesh(key, &facts, section, fading, now);
     }
     /// What goes with section `key`'s new mesh, before its quads go in: its old mesh is
-    /// released. The fade it keeps.
-    fn before_mesh(&mut self, key: SectionKey, mesh: &MeshFacts) -> Option<Instant> {
+    /// released. The fade it keeps. `now`: the batch's time, where its meshes' fades start.
+    fn before_mesh(&mut self, key: SectionKey, mesh: &MeshFacts, now: Instant) -> Option<Instant> {
         self.occlusion.set(key, mesh.visibility);
         let changed = if mesh.block_entities.is_empty() {
             self.block_entities.remove(&key).is_some()
@@ -5938,19 +5939,17 @@ impl Renderer {
         }
         if mesh.translucent && !self.sections.contains(key) {
             // New translucent terrain, not an edit's remesh: large pages wait for it.
-            self.shrink_gate.wait(Instant::now(), SHRINK_SETTLE);
+            self.shrink_gate.wait(now, SHRINK_SETTLE);
         }
         let fading = match self.sections.find(key) {
             Some(old) => old.fading,
             None if !self.lods.is_empty() => {
-                let now = std::time::Instant::now();
                 self.newest_lod_fade = Some(now);
                 Some(now)
             }
             None => None,
         };
         if fading.is_none() && !self.section_uploaded.contains_key(&key) {
-            let now = std::time::Instant::now();
             self.section_uploaded.insert(key, now);
             self.newest_upload = Some(now);
         }
@@ -5965,6 +5964,7 @@ impl Renderer {
         mesh: &MeshFacts,
         section: Option<SectionGpu>,
         fading: Option<Instant>,
+        now: Instant,
     ) {
         let section = section.map(|section| SectionGpu { fading, ..section });
         self.set_detail(key, section.is_some() || mesh.empty);
@@ -5977,7 +5977,7 @@ impl Renderer {
                 // draws it, once a frame has decided the flags (`mark_fades`).
                 if let Some(fade_ms) = gpu.fades.fade_ms {
                     let f = FadeInputs {
-                        now: Instant::now(),
+                        now,
                         fade_ms,
                         uploaded: &self.section_uploaded,
                         retiring: &self.lod_retiring,
@@ -6070,8 +6070,8 @@ impl Renderer {
         for (key, mut held) in waiting {
             let gpu = held.gpu.take();
             let facts = held.facts();
-            let fading = self.before_mesh(key, &facts);
-            self.after_mesh(key, &facts, gpu, fading);
+            let fading = self.before_mesh(key, &facts, started);
+            self.after_mesh(key, &facts, gpu, fading, started);
         }
         log::debug!(
             "Horizon: {count} held sections ({} MiB) took their place in {:.1} ms",
