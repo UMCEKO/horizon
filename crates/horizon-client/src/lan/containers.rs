@@ -16,7 +16,7 @@ use horizon_protocol::{
     },
 };
 use horizon_world::nbt::Tag;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 /// Encode a captured level sound and its broadcast radius without a live hub.
 /// Entity-bound events use the entity packet; ordinary level sounds retain
@@ -76,7 +76,7 @@ impl Hub {
     /// `ChunkMap.sendToTrackingPlayers`: send to every placed guest that
     /// tracks the entity `id`.
     pub fn send_to_tracking(&self, id: i32, packet: &C) {
-        let body = packet.encode();
+        let body: Arc<[u8]> = packet.encode().into();
         for g in self
             .guests
             .iter()
@@ -89,7 +89,7 @@ impl Hub {
     /// Send to every placed guest within `range` blocks of `at`
     /// (`PlayerList.broadcast`, which leaves out a player exactly at `range`).
     pub fn broadcast_near(&self, at: [f64; 3], range: f64, packet: &C, except: Option<u32>) {
-        let body = packet.encode();
+        let body: Arc<[u8]> = packet.encode().into();
         for g in self
             .guests
             .iter()
@@ -229,11 +229,12 @@ impl Hub {
     /// animation to the players tracking the attacker and the attacker
     /// themselves (`sendToTrackingPlayersAndSelf`).
     pub fn critical_hit(&self, attacker: i32, target: i32, magic: bool) {
-        let body = C::Animate(play::Animate {
+        let body: Arc<[u8]> = C::Animate(play::Animate {
             id: target,
             action: if magic { 2 } else { 1 },
         })
-        .encode();
+        .encode()
+        .into();
         for g in self.guests.iter().filter(|g| {
             self.here(g) && (g.entity_id == attacker || g.tracker.is_tracking(attacker))
         }) {
