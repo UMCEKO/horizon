@@ -50,6 +50,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import random
 import re
 import shutil
 import statistics
@@ -301,6 +302,28 @@ def pumpkin_config(text, port, args):
     return head + rest
 
 
+# Above the terrain anywhere: the bots fly in creative.
+SPREAD_Y = 200
+
+
+def spread_spots(bots, size, seed):
+    """Where `--spread` sends each bot: uniform in a size x size square around 0, the same every run."""
+    rng = random.Random(seed)
+    half = size / 2
+    return [(round(rng.uniform(-half, half)) + 0.5, round(rng.uniform(-half, half)) + 0.5) for _ in range(bots)]
+
+
+def spread_bots(server, bots, args):
+    """Teleport each bot (Bot0, Bot1...) from the console soon after it joins, and once more in case it was late."""
+    spots = spread_spots(bots, args.spread, args.seed)
+    start = time.time()
+    for attempt_delay in (3.0, 15.0):
+        for i, (x, z) in enumerate(spots):
+            due = start + i * args.join_every + attempt_delay
+            time.sleep(max(0.0, due - time.time()))
+            server.console(f'tp Bot{i} {x} {SPREAD_Y} {z}')
+
+
 def tick_query(server):
     """Asks `tick query` and reads the average and percentiles it prints (both servers print the same)."""
     start = server.count()
@@ -430,6 +453,8 @@ def run_once(kind, bots, behaviour, args, out):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         bot_lines = []
         threading.Thread(target=lambda: bot_lines.extend(bot_process.stdout), daemon=True).start()
+        if args.spread and bots:
+            threading.Thread(target=spread_bots, args=(server, bots, args), daemon=True).start()
         # All bots in, then the warm-up.
         time.sleep(bots * args.join_every + args.warmup)
         measure_start = time.time()
@@ -576,6 +601,8 @@ def main():
     parser.add_argument('--bots-bin', default='', help='horizon-bots (on the --bots-via machine)')
     parser.add_argument('--connect', default='127.0.0.1', help='the address the bots reach the server at')
     parser.add_argument('--pumpkin', type=Path, default=None, help='the Pumpkin binary (--servers pumpkin)')
+    parser.add_argument('--spread', type=int, default=0,
+                        help='teleport every bot to a random spot in an N x N square (blocks) after it joins; 0: off')
     parser.add_argument('--repeat', type=int, default=1,
                         help='rounds: every server and bot count once per round, the servers alternated')
     args = parser.parse_args()

@@ -641,6 +641,9 @@ fn fight_step(pos: &mut [f64; 3], at: [f64; 3]) {
     }
 }
 
+/// A server teleport farther than this (in blocks) moves the bot's home rather than pulling it back.
+const FAR_TELEPORT: f64 = 256.0;
+
 /// One tick of walking to random points around the spawn, at sprint speed (5.6 blocks a second).
 fn walk_step(
     pos: &mut [f64; 3],
@@ -1068,7 +1071,9 @@ fn read(
                     });
                     *at = Some(pos);
                     teleports += 1;
-                    if teleports > 1 {
+                    // A far jump is a teleport (the bench's spread), not a pull-back.
+                    let far = (pos[0] - previous[0]).hypot(pos[2] - previous[2]) > FAR_TELEPORT;
+                    if teleports > 1 && !far {
                         bot.pulled_back.fetch_add(1, Ordering::Relaxed);
                     }
                     send(
@@ -1158,7 +1163,7 @@ fn run_bot(
     }
     use ids::play::serverbound as sb;
     // Wait for the spawn position.
-    let spawn = loop {
+    let mut spawn = loop {
         if let Some(at) = *lock(&bot.teleport) {
             break at;
         }
@@ -1211,7 +1216,7 @@ fn run_bot(
     let mut random = Random(o.seed ^ (index as u64).wrapping_mul(0x2545_F491_4F6C_DD1D));
     let mut pos = spawn;
     // Fight bots stay at their spawn height; the others climb to fly above the terrain.
-    let cruise = if behaviour == Behaviour::Fight {
+    let mut cruise = if behaviour == Behaviour::Fight {
         spawn[1]
     } else {
         spawn[1] + o.height
@@ -1228,6 +1233,15 @@ fn run_bot(
         }
         // A teleport from the server wins over where the bot thought it was.
         if let Some(at) = lock(&bot.teleport).take() {
+            // Sent somewhere new: walk and fly around there from now on.
+            if (at[0] - pos[0]).hypot(at[2] - pos[2]) > FAR_TELEPORT {
+                (spawn, target) = (at, at);
+                cruise = if behaviour == Behaviour::Fight {
+                    at[1]
+                } else {
+                    at[1].max(cruise)
+                };
+            }
             pos = at;
         }
         let here = ((pos[0].floor() as i32) >> 4, (pos[2].floor() as i32) >> 4);
