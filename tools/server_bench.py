@@ -82,10 +82,14 @@ PROPERTIES = {
     'gamemode': 'creative',
     'force-gamemode': 'true',
     'spawn-protection': '0',
-    'max-players': '200',
     'difficulty': 'easy',
     'sync-chunk-writes': 'true',
 }
+
+
+def max_players(args, bots):
+    """The player limit: --max-players, else the bot count, at least 200."""
+    return args.max_players or max(200, bots)
 
 
 def cpu_seconds(text):
@@ -273,7 +277,7 @@ def pumpkin_config(text, port, args):
     sections = {
         'logging': {'color': 'false'},
         'networking.java': {'address': f'"127.0.0.1:{port}"', 'online_mode': 'false', 'encryption': 'false',
-                            'max_players': '200', 'view_distance': PROPERTIES['view-distance'],
+                            'max_players': str(args.player_limit), 'view_distance': PROPERTIES['view-distance'],
                             'simulation_distance': PROPERTIES['simulation-distance']},
         'networking.java.authentication': {'enabled': 'false'},
         'networking.java.authentication.textures': {'enabled': 'false'},
@@ -421,7 +425,9 @@ def run_once(kind, bots, behaviour, args, out):
     shutil.rmtree(directory, ignore_errors=True)
     directory.mkdir(parents=True)
     port = args.port = lab.free_port()
-    props = dict(PROPERTIES, **{'server-port': str(port), 'level-seed': str(args.seed)})
+    args.player_limit = max_players(args, bots)
+    props = dict(PROPERTIES, **{'server-port': str(port), 'level-seed': str(args.seed),
+                                'max-players': str(args.player_limit)})
     if args.ground:
         props.update({'level-type': 'minecraft\\:flat', 'generate-structures': 'false', 'gamemode': 'survival'})
     (directory / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()))
@@ -603,6 +609,8 @@ def main():
     parser.add_argument('--pumpkin', type=Path, default=None, help='the Pumpkin binary (--servers pumpkin)')
     parser.add_argument('--spread', type=int, default=0,
                         help='teleport every bot to a random spot in an N x N square (blocks) after it joins; 0: off')
+    parser.add_argument('--max-players', type=int, default=0,
+                        help='the servers player limit; 0: the bot count, at least 200')
     parser.add_argument('--repeat', type=int, default=1,
                         help='rounds: every server and bot count once per round, the servers alternated')
     args = parser.parse_args()

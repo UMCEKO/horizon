@@ -4,7 +4,8 @@ import re
 
 from types import SimpleNamespace
 
-from tools.server_bench import DONE, PUMPKIN_READY, TICK_AVERAGE, TICK_PERCENTILES, pumpkin_config, spread_spots, work
+from tools.server_bench import (DONE, PUMPKIN_READY, TICK_AVERAGE, TICK_PERCENTILES, max_players, pumpkin_config,
+                                spread_spots, work)
 
 
 def run(server, bots, sent, new, waited=0.0, behaviour="mixed"):
@@ -72,6 +73,7 @@ enabled = true
 address = "0.0.0.0:25565"
 encryption = true
 online_mode = true
+max_players = 1000
 view_distance = 16
 simulation_distance = 10
 
@@ -92,13 +94,13 @@ endpoint = "https://example.org/heartbeat"
 
 class PumpkinConfigTests(unittest.TestCase):
     def test_the_benchmark_settings_on_loopback_with_the_extras_off(self):
-        text = pumpkin_config(PUMPKIN_DEFAULTS, 27001, SimpleNamespace(seed=12345))
+        text = pumpkin_config(PUMPKIN_DEFAULTS, 27001, SimpleNamespace(seed=12345, player_limit=300))
         self.assertIn('seed = "12345"', text)
         self.assertIn('default_gamemode = "Creative"', text)
         self.assertIn('spawn_protection = 0', text)
         java = text.split('[networking.java]')[1].split('[')[0]
         for line in ('address = "127.0.0.1:27001"', 'encryption = false', 'online_mode = false',
-                     'view_distance = 10', 'simulation_distance = 10'):
+                     'view_distance = 10', 'simulation_distance = 10', 'max_players = 300'):
             self.assertIn(line, java)
         self.assertIn('[networking.query]\nenabled = false\naddress = "127.0.0.1:27002"', text)
         self.assertIn('[networking.bedrock]\nenabled = false', text)
@@ -108,6 +110,11 @@ class PumpkinConfigTests(unittest.TestCase):
         # Only its own section's keys change: Bedrock keeps its (it is off).
         self.assertIn('address = "0.0.0.0:19132"\nonline_mode = true', text)
 
+class MaxPlayersTest(unittest.TestCase):
+    def test_the_limit_follows_the_bots_unless_given(self):
+        self.assertEqual(max_players(SimpleNamespace(max_players=0), 100), 200)
+        self.assertEqual(max_players(SimpleNamespace(max_players=0), 500), 500)
+        self.assertEqual(max_players(SimpleNamespace(max_players=1000), 50), 1000)
 
 
 class SpreadTest(unittest.TestCase):
