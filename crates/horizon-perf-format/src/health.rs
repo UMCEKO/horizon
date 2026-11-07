@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
-use crate::horizon::perf::v1::HealthSample;
 use crate::SlowEvent;
+use crate::horizon::perf::v1::HealthSample;
 
 #[derive(Debug, Clone, Default)]
 pub struct HealthTier {
@@ -47,16 +47,36 @@ impl HealthTier {
         if n == 0 { 0.0 } else { s / n as f64 }
     }
 
-    pub fn mean_mspt(&self) -> f64 { self.mean_field("mspt_avg") }
-    pub fn mean_mspt_avg(&self) -> f64 { self.mean_field("mspt_avg") }
-    pub fn mean_mspt_p50(&self) -> f64 { self.mean_field("mspt_p50") }
-    pub fn mean_mspt_p95(&self) -> f64 { self.mean_field("mspt_p95") }
-    pub fn mean_mspt_max(&self) -> f64 { self.mean_field("mspt_max") }
-    pub fn mean_tps(&self) -> f64 { self.mean_field("tps") }
-    pub fn mean_fps(&self) -> f64 { self.mean_field("fps") }
-    pub fn mean_cpu_process_cores(&self) -> f64 { self.mean_field("cpu_process_cores") }
-    pub fn mean_cpu_system_cores(&self) -> f64 { self.mean_field("cpu_system_cores") }
-    pub fn mean_rss_mb(&self) -> f64 { self.mean_field("rss_mb") }
+    pub fn mean_mspt(&self) -> f64 {
+        self.mean_field("mspt_avg")
+    }
+    pub fn mean_mspt_avg(&self) -> f64 {
+        self.mean_field("mspt_avg")
+    }
+    pub fn mean_mspt_p50(&self) -> f64 {
+        self.mean_field("mspt_p50")
+    }
+    pub fn mean_mspt_p95(&self) -> f64 {
+        self.mean_field("mspt_p95")
+    }
+    pub fn mean_mspt_max(&self) -> f64 {
+        self.mean_field("mspt_max")
+    }
+    pub fn mean_tps(&self) -> f64 {
+        self.mean_field("tps")
+    }
+    pub fn mean_fps(&self) -> f64 {
+        self.mean_field("fps")
+    }
+    pub fn mean_cpu_process_cores(&self) -> f64 {
+        self.mean_field("cpu_process_cores")
+    }
+    pub fn mean_cpu_system_cores(&self) -> f64 {
+        self.mean_field("cpu_system_cores")
+    }
+    pub fn mean_rss_mb(&self) -> f64 {
+        self.mean_field("rss_mb")
+    }
 
     pub fn mean(&self, f: impl Fn(&HealthSample) -> Option<f64>) -> f64 {
         if self.samples.is_empty() {
@@ -115,7 +135,11 @@ fn avg_samples(samples: &[HealthSample]) -> HealthSample {
                 n += 1;
             }
         }
-        if n == 0 { None } else { Some((s / n as f64) as f32) }
+        if n == 0 {
+            None
+        } else {
+            Some((s / n as f64) as f32)
+        }
     }
     out.tps = avg_opt(samples, |s| s.tps);
     out.mspt_avg = avg_opt(samples, |s| s.mspt_avg);
@@ -229,12 +253,24 @@ impl HealthRecorder {
         self.sync_tiers();
     }
 
-    pub fn record_sample(&mut self, sample: HealthSample) { self.record(sample) }
-    pub fn observe(&mut self, sample: HealthSample) { self.record(sample) }
-    pub fn add_sample(&mut self, sample: HealthSample) { self.record(sample) }
-    pub fn push_sample(&mut self, sample: HealthSample) { self.record(sample) }
-    pub fn record_sample_ref(&mut self, sample: &HealthSample) { self.record(*sample) }
-    pub fn record_health_sample(&mut self, sample: HealthSample) { self.record(sample) }
+    pub fn record_sample(&mut self, sample: HealthSample) {
+        self.record(sample)
+    }
+    pub fn observe(&mut self, sample: HealthSample) {
+        self.record(sample)
+    }
+    pub fn add_sample(&mut self, sample: HealthSample) {
+        self.record(sample)
+    }
+    pub fn push_sample(&mut self, sample: HealthSample) {
+        self.record(sample)
+    }
+    pub fn record_sample_ref(&mut self, sample: &HealthSample) {
+        self.record(*sample)
+    }
+    pub fn record_health_sample(&mut self, sample: HealthSample) {
+        self.record(sample)
+    }
 
     pub fn record_tick(&mut self, mspt: f64) {
         let s = HealthSample {
@@ -244,7 +280,9 @@ impl HealthRecorder {
         };
         self.record(s);
     }
-    pub fn record_tick_mspt(&mut self, mspt: f64) { self.record_tick(mspt) }
+    pub fn record_tick_mspt(&mut self, mspt: f64) {
+        self.record_tick(mspt)
+    }
     pub fn record_frame(&mut self, frame_ms: f64) {
         let s = HealthSample {
             frame_ms_p50: Some(frame_ms as f32),
@@ -253,26 +291,48 @@ impl HealthRecorder {
         self.record(s);
     }
 
-    pub fn tier(&self, i: usize) -> &HealthTier { &self.tiers[i] }
-    pub fn tier_mut(&mut self, i: usize) -> &mut HealthTier { &mut self.tiers[i] }
-    pub fn tiers_slice(&self) -> &[HealthTier] { &self.tiers }
+    pub fn tier(&self, i: usize) -> &HealthTier {
+        &self.tiers[i]
+    }
+    pub fn tier_mut(&mut self, i: usize) -> &mut HealthTier {
+        &mut self.tiers[i]
+    }
+    pub fn tiers_slice(&self) -> &[HealthTier] {
+        &self.tiers
+    }
 
-    pub fn tps_1m(&self) -> f64 { self.last_mean_tier(0, 60, "tps") }
-    pub fn tps_5m(&self) -> f64 { self.last_mean_tier(0, 300, "tps") }
-    pub fn tps_15m(&self) -> f64 { self.last_mean_tier(1, 90, "tps") }
-    pub fn tps_1(&self) -> f64 { self.tps_1m() }
-    pub fn tps_5(&self) -> f64 { self.tps_5m() }
-    pub fn tps_15(&self) -> f64 { self.tps_15m() }
+    pub fn tps_1m(&self) -> f64 {
+        self.last_mean_tier(0, 60, "tps")
+    }
+    pub fn tps_5m(&self) -> f64 {
+        self.last_mean_tier(0, 300, "tps")
+    }
+    pub fn tps_15m(&self) -> f64 {
+        self.last_mean_tier(1, 90, "tps")
+    }
+    pub fn tps_1(&self) -> f64 {
+        self.tps_1m()
+    }
+    pub fn tps_5(&self) -> f64 {
+        self.tps_5m()
+    }
+    pub fn tps_15(&self) -> f64 {
+        self.tps_15m()
+    }
 
     fn last_mean_tier(&self, tier_idx: usize, n: usize, field: &str) -> f64 {
         let t = &self.tiers[tier_idx];
-        if t.samples.is_empty() { return 0.0; }
+        if t.samples.is_empty() {
+            return 0.0;
+        }
         let take = n.min(t.samples.len());
         let skip = t.samples.len() - take;
         let mut s = 0.0f64;
         let mut cnt = 0usize;
         for (i, smp) in t.samples.iter().enumerate() {
-            if i < skip { continue; }
+            if i < skip {
+                continue;
+            }
             if let Some(v) = field_value(smp, field) {
                 s += v;
                 cnt += 1;
@@ -289,13 +349,21 @@ impl HealthRecorder {
     }
 
     pub fn push_slow(&mut self, e: SlowEvent) {
-        if self.slow.len() >= 256 { self.slow.pop_front(); }
+        if self.slow.len() >= 256 {
+            self.slow.pop_front();
+        }
         self.slow.push_back(e.clone());
-        if self.slow_ring.len() >= 256 { self.slow_ring.pop_front(); }
+        if self.slow_ring.len() >= 256 {
+            self.slow_ring.pop_front();
+        }
         self.slow_ring.push_back(e.clone());
-        if self.slow_events.len() >= 256 { self.slow_events.pop_front(); }
+        if self.slow_events.len() >= 256 {
+            self.slow_events.pop_front();
+        }
         self.slow_events.push_back(e.clone());
-        if self.slow_history.len() >= 256 { self.slow_history.pop_front(); }
+        if self.slow_history.len() >= 256 {
+            self.slow_history.pop_front();
+        }
         self.slow_history.push_back(e);
     }
     pub fn record_slow(&mut self, event: SlowEvent, threshold_ms: f64) {
@@ -303,12 +371,16 @@ impl HealthRecorder {
             self.push_slow(event);
         }
     }
-    pub fn record_slow_event(&mut self, event: SlowEvent) { self.push_slow(event) }
+    pub fn record_slow_event(&mut self, event: SlowEvent) {
+        self.push_slow(event)
+    }
     pub fn slow_threshold_filter(&mut self, event: SlowEvent, threshold_ms: f64) {
         self.record_slow(event, threshold_ms)
     }
 }
 
 impl Default for HealthRecorder {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

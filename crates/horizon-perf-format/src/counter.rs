@@ -57,12 +57,14 @@ impl CounterRegistry {
 
     pub fn counter(&self, name: &str, labels: &[(&str, &str)]) -> CounterHandle {
         let mut g = self.inner.lock().unwrap();
+        let mut labels: Vec<(String, String)> = labels
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        labels.sort();
         let key = Key {
             name: name.to_string(),
-            labels: labels
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
+            labels,
         };
         let c = g
             .entry(key.clone())
