@@ -15,5 +15,5 @@ pub mod writer;
 
 pub use counter::{CounterHandle, CounterRegistry};
 pub use gzip::GzipWriter;
-pub use health::HealthRecorder;
+pub use health::{HealthRecorder, HealthTier};
 pub use writer::PerfWriter;
