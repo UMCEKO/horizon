@@ -1,4 +1,6 @@
 //! Cloud visibility and flat/fancy cell geometry (`CloudRenderer`).
+use std::sync::{Arc, mpsc};
+
 /// `EnvironmentAttributes.CLOUD_HEIGHT`'s default, and the overworld's `visual/cloud_height`.
 pub const CLOUD_HEIGHT: f64 = 192.33;
 
@@ -146,7 +148,9 @@ pub struct Input<'a> {
     pub color: [f32; 4],
 }
 
-#[derive(Debug, PartialEq, Eq)]
+type Texture = (u32, u32, Vec<bool>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MeshKey {
     cell_x: i64,
     cell_z: i64,
@@ -228,6 +232,60 @@ impl Input<'_> {
     }
 }
 
+/// How close to a cell edge (in blocks) the camera must be before the next cell's mesh is prefetched.
+const PREFETCH_MARGIN: f32 = 3.0;
+
+struct Request {
+    key: MeshKey,
+    bottom: f32,
+    uv: [f32; 2],
+    texture: Arc<Texture>,
+    cells: Arc<Vec<(i32, i32)>>,
+    out: Vec<crate::mesher::Vertex>,
+}
+
+struct Built {
+    key: MeshKey,
+    uv: [f32; 2],
+    texture: Arc<Texture>,
+    vertices: Vec<crate::mesher::Vertex>,
+}
+
+struct Prefetch {
+    requests: mpsc::Sender<Request>,
+    results: mpsc::Receiver<Built>,
+    in_flight: bool,
+}
+
+impl Prefetch {
+    fn spawn() -> Option<Self> {
+        let (requests, request_rx) = mpsc::channel::<Request>();
+        let (result_tx, results) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("Cloud mesh".into())
+            .spawn(move || {
+                while let Ok(mut r) = request_rx.recv() {
+                    build(&r.texture, &r.key, &r.cells, r.bottom, r.uv, &mut r.out);
+                    let built = Built {
+                        key: r.key,
+                        uv: r.uv,
+                        texture: r.texture,
+                        vertices: r.out,
+                    };
+                    if result_tx.send(built).is_err() {
+                        break;
+                    }
+                }
+            })
+            .ok()?;
+        Some(Self {
+            requests,
+            results,
+            in_flight: false,
+        })
+    }
+}
+
 /// The cloud cells around a snapped origin, rebuilt when the key changes: once every
 /// [`SNAP_CELLS`] cells the camera crosses, and every cell while the camera is inside the
 /// layer, where the inward faces follow it. The renderer copies the vertices to the GPU on
@@ -235,9 +293,67 @@ impl Input<'_> {
 #[derive(Default)]
 pub(crate) struct Mesh {
     key: Option<MeshKey>,
-    cells: Vec<(i32, i32)>,
+    cells: Arc<Vec<(i32, i32)>>,
     cached_radius: Option<i32>,
     pub vertices: Vec<crate::mesher::Vertex>,
+    texture: Option<Arc<Texture>>,
+    prefetch: Option<Prefetch>,
+    prefetch_off: bool,
+    ready: Option<Built>,
+    spare: Vec<crate::mesher::Vertex>,
+    last_pos: Option<(f64, f64)>,
+    #[cfg(test)]
+    hits: u32,
+}
+
+/// The key after the camera's next cell crossing (the nearer edge in time), from its place in
+/// the snapped origin's window and its last motion.
+fn predicted_key(
+    key: &MeshKey,
+    (fx, fz): (f32, f32),
+    (dx, dz): (f64, f64),
+    (w, h): (u32, u32),
+) -> MeshKey {
+    let cell = |f: f32| (f / 12.0).floor() as i64;
+    let toward = |f: f32, d: f64| {
+        let in_cell = f - cell(f) as f32 * 12.0;
+        let (step, edge) = if d > 0.0 || (d == 0.0 && in_cell >= 6.0) {
+            (1, 12.0 - f64::from(in_cell))
+        } else {
+            (-1, f64::from(in_cell))
+        };
+        (edge < f64::from(PREFETCH_MARGIN)).then_some((step, edge / d.abs().max(1e-9)))
+    };
+    let (mut sx, mut sz) = (0, 0);
+    match (toward(fx, dx), toward(fz, dz)) {
+        (Some((x, tx)), Some((z, tz))) => {
+            if (tx - tz).abs() < 1.0 {
+                (sx, sz) = (x, z);
+            } else if tx < tz {
+                sx = x;
+            } else {
+                sz = z;
+            }
+        }
+        (Some((x, _)), None) => sx = x,
+        (None, Some((z, _))) => sz = z,
+        (None, None) => {}
+    }
+    let inside_layer = key.top && key.bottom;
+    let snapped = |origin: i64, f: f32, step: i64, period: u32| {
+        let next = (origin + cell(f) + step).rem_euclid(i64::from(period));
+        let snap = next / SNAP_CELLS * SNAP_CELLS;
+        (snap, if inside_layer { (next - snap) as i32 } else { 0 })
+    };
+    let (cell_x, sub_x) = snapped(key.cell_x, fx, sx, w);
+    let (cell_z, sub_z) = snapped(key.cell_z, fz, sz, h);
+    MeshKey {
+        cell_x,
+        cell_z,
+        sub_x,
+        sub_z,
+        ..*key
+    }
 }
 
 #[inline(always)]
@@ -350,60 +466,206 @@ fn emit_flat_cell(vertices: &mut Vec<crate::mesher::Vertex>, x0: f32, z0: f32, u
     push_quad(vertices, [p[3], p[2], p[1], p[0]], 0, [0; 4], uv);
 }
 
+/// Appends every cell's faces for `key`; the output depends on nothing else.
+fn build(
+    texture: &Texture,
+    key: &MeshKey,
+    cells: &[(i32, i32)],
+    bottom: f32,
+    uv: [f32; 2],
+    out: &mut Vec<crate::mesher::Vertex>,
+) {
+    out.clear();
+    let (w, h, tex_cells) = texture;
+    let (w_i64, h_i64) = (i64::from(*w), i64::from(*h));
+    let filled = |cx: i64, cz: i64| {
+        tex_cells[(cz.rem_euclid(h_i64) * w_i64 + cx.rem_euclid(w_i64)) as usize]
+    };
+
+    for &(dx, dz) in cells {
+        let (dx_i64, dz_i64) = (i64::from(dx), i64::from(dz));
+        let (cx, cz) = (key.cell_x + dx_i64, key.cell_z + dz_i64);
+        if !filled(cx, cz) {
+            continue;
+        }
+        let x0 = dx as f32 * 12.0;
+        let z0 = dz as f32 * 12.0;
+
+        if key.fast {
+            emit_flat_cell(out, x0, z0, uv);
+            continue;
+        }
+
+        let mask = face_mask(
+            dx - key.sub_x,
+            dz - key.sub_z,
+            bottom,
+            [
+                !filled(cx, cz - 1),
+                !filled(cx, cz + 1),
+                !filled(cx - 1, cz),
+                !filled(cx + 1, cz),
+            ],
+        );
+        emit_faces(out, mask, x0, z0, uv);
+    }
+}
+
 impl Mesh {
     /// Returns true only when vertices must be uploaded. Sub-cell motion and
     /// color changes update only the uniform, as in CloudRenderer.prepare.
     pub fn prepare(&mut self, input: &Input<'_>) -> (bool, Uniform) {
         let (key, uniform) = input.state();
-        if self.key.as_ref() == Some(&key) {
-            return (false, uniform);
+        let motion = self.track(input, &key, &uniform);
+        self.collect();
+        if self.key.as_ref() != Some(&key) {
+            if self.cached_radius != Some(key.radius) {
+                self.cells = Arc::new(self::cells(key.radius).collect());
+                self.cached_radius = Some(key.radius);
+            }
+            match self.ready.take() {
+                Some(mut built)
+                    if built.key == key
+                        && built.uv == input.uv
+                        && self
+                            .texture
+                            .as_ref()
+                            .is_some_and(|t| Arc::ptr_eq(t, &built.texture)) =>
+                {
+                    std::mem::swap(&mut self.vertices, &mut built.vertices);
+                    self.spare = built.vertices;
+                    #[cfg(test)]
+                    {
+                        self.hits += 1;
+                    }
+                }
+                stale => {
+                    if let Some(stale) = stale {
+                        self.spare = stale.vertices;
+                    }
+                    build(
+                        input.texture,
+                        &key,
+                        &self.cells,
+                        uniform.offset[1],
+                        input.uv,
+                        &mut self.vertices,
+                    );
+                }
+            }
+            self.key = Some(key);
+            self.request_next(input, &key, &uniform, motion);
+            return (true, uniform);
         }
-        if self.cached_radius != Some(key.radius) {
-            self.cells = self::cells(key.radius).collect();
-            self.cached_radius = Some(key.radius);
-        }
-        self.vertices.clear();
+        self.request_next(input, &key, &uniform, motion);
+        (false, uniform)
+    }
 
-        let (w, h, tex_cells) = input.texture;
-        let (cell_x, cell_z) = (key.cell_x, key.cell_z);
-        let bottom = uniform.offset[1];
-        let uv = input.uv;
+    /// The camera's wrapped cloud-space motion since the previous frame.
+    fn track(&mut self, input: &Input<'_>, key: &MeshKey, uniform: &Uniform) -> (f64, f64) {
+        let (w, h, _) = input.texture;
+        let pos = (
+            key.cell_x as f64 * 12.0 - f64::from(uniform.offset[0]),
+            key.cell_z as f64 * 12.0 - f64::from(uniform.offset[2]),
+        );
+        let wrapped = |d: f64, period: f64| d - (d / period).round() * period;
+        let motion = self.last_pos.map_or((0.0, 0.0), |last| {
+            (
+                wrapped(pos.0 - last.0, f64::from(*w) * 12.0),
+                wrapped(pos.1 - last.1, f64::from(*h) * 12.0),
+            )
+        });
+        self.last_pos = Some(pos);
+        motion
+    }
 
-        let (w_i64, h_i64) = (i64::from(*w), i64::from(*h));
-        let filled = |cx: i64, cz: i64| {
-            tex_cells[(cz.rem_euclid(h_i64) * w_i64 + cx.rem_euclid(w_i64)) as usize]
+    fn collect(&mut self) {
+        let Some(prefetch) = &mut self.prefetch else {
+            return;
         };
-
-        for &(dx, dz) in &self.cells {
-            let (dx_i64, dz_i64) = (i64::from(dx), i64::from(dz));
-            let (cx, cz) = (cell_x + dx_i64, cell_z + dz_i64);
-            if !filled(cx, cz) {
-                continue;
+        match prefetch.results.try_recv() {
+            Ok(built) => {
+                prefetch.in_flight = false;
+                if let Some(old) = self.ready.replace(built) {
+                    self.spare = old.vertices;
+                }
             }
-            let x0 = dx as f32 * 12.0;
-            let z0 = dz as f32 * 12.0;
-
-            if input.fast {
-                emit_flat_cell(&mut self.vertices, x0, z0, uv);
-                continue;
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.prefetch = None;
+                self.prefetch_off = true;
             }
-
-            let mask = face_mask(
-                dx - key.sub_x,
-                dz - key.sub_z,
-                bottom,
-                [
-                    !filled(cx, cz - 1),
-                    !filled(cx, cz + 1),
-                    !filled(cx - 1, cz),
-                    !filled(cx + 1, cz),
-                ],
-            );
-            emit_faces(&mut self.vertices, mask, x0, z0, uv);
         }
+    }
 
-        self.key = Some(key);
-        (true, uniform)
+    fn request_next(
+        &mut self,
+        input: &Input<'_>,
+        key: &MeshKey,
+        uniform: &Uniform,
+        motion: (f64, f64),
+    ) {
+        if self.prefetch_off || self.prefetch.as_ref().is_some_and(|p| p.in_flight) {
+            return;
+        }
+        let (w, h, _) = input.texture;
+        let next = predicted_key(
+            key,
+            (-uniform.offset[0], -uniform.offset[2]),
+            motion,
+            (*w, *h),
+        );
+        if next == *key || self.ready.as_ref().is_some_and(|b| b.key == next) {
+            return;
+        }
+        if self.prefetch.is_none() {
+            self.prefetch = Prefetch::spawn();
+            self.prefetch_off = self.prefetch.is_none();
+        }
+        let Some(prefetch) = &mut self.prefetch else {
+            return;
+        };
+        let texture = match &self.texture {
+            Some(t) if **t == *input.texture => t.clone(),
+            _ => {
+                let t = Arc::new(input.texture.clone());
+                self.texture = Some(t.clone());
+                t
+            }
+        };
+        let request = Request {
+            key: next,
+            bottom: uniform.offset[1],
+            uv: input.uv,
+            texture,
+            cells: self.cells.clone(),
+            out: std::mem::take(&mut self.spare),
+        };
+        if prefetch.requests.send(request).is_ok() {
+            prefetch.in_flight = true;
+        } else {
+            self.prefetch = None;
+            self.prefetch_off = true;
+        }
+    }
+
+    #[cfg(test)]
+    fn without_prefetch() -> Self {
+        Self {
+            prefetch_off: true,
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    fn settle(&mut self) {
+        if let Some(prefetch) = &mut self.prefetch
+            && prefetch.in_flight
+            && let Ok(built) = prefetch.results.recv()
+        {
+            prefetch.in_flight = false;
+            self.ready = Some(built);
+        }
     }
 }
 
@@ -485,6 +747,157 @@ mod tests {
         assert!(reloaded.prepare(&input).0);
         assert!(reloaded.vertices.is_empty());
         assert!(!reloaded.prepare(&input).0);
+    }
+
+    fn frame_input(texture: &Texture, camera: [f64; 3], time: i64) -> Input<'_> {
+        Input {
+            texture,
+            uv: [0.5; 2],
+            camera: glam::DVec3::from_array(camera),
+            time,
+            partial_tick: 0.25,
+            range: 3,
+            fast: false,
+            color: [1.0; 4],
+        }
+    }
+
+    /// Runs the frames through a synchronous mesh and a prefetching one, which must agree on every frame.
+    fn assert_same_as_synchronous(
+        texture: &Texture,
+        frames: &[([f64; 3], i64, bool)],
+    ) -> (u32, u32) {
+        let mut sync = Mesh::without_prefetch();
+        let mut prefetched = Mesh::default();
+        let mut rebuilds = 0;
+        for (n, &(camera, time, fast)) in frames.iter().enumerate() {
+            let mut input = frame_input(texture, camera, time);
+            input.fast = fast;
+            let expected = sync.prepare(&input);
+            let actual = prefetched.prepare(&input);
+            assert_eq!(expected.0, actual.0, "frame {n}");
+            assert_eq!(
+                bytemuck::bytes_of(&expected.1),
+                bytemuck::bytes_of(&actual.1),
+                "frame {n}"
+            );
+            assert!(
+                bytemuck::cast_slice::<_, u8>(&sync.vertices)
+                    == bytemuck::cast_slice::<_, u8>(&prefetched.vertices),
+                "frame {n}"
+            );
+            rebuilds += u32::from(expected.0);
+            prefetched.settle();
+        }
+        (rebuilds, prefetched.hits)
+    }
+
+    fn texture() -> Texture {
+        (16, 16, (0..256).map(|i| (i * 7 + i / 5) % 3 != 0).collect())
+    }
+
+    fn flight(
+        from: [f64; 3],
+        step: [f64; 3],
+        frames: usize,
+        time: i64,
+    ) -> Vec<([f64; 3], i64, bool)> {
+        (0..frames)
+            .map(|n| {
+                let n = n as f64;
+                (
+                    [
+                        from[0] + step[0] * n,
+                        from[1] + step[1] * n,
+                        from[2] + step[2] * n,
+                    ],
+                    time + n as i64,
+                    false,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn prefetched_meshes_equal_synchronous_ones_in_straight_flights() {
+        let texture = texture();
+        for step in [
+            [0.7, 0.0, 0.0],
+            [0.0, 0.0, -0.9],
+            [0.6, 0.0, 0.5],
+            [-0.8, 0.0, 0.3],
+        ] {
+            let frames = flight([20.0, 100.0, 30.0], step, 200, 0);
+            let (rebuilds, hits) = assert_same_as_synchronous(&texture, &frames);
+            assert!(rebuilds >= 6);
+            assert!(hits + 1 >= rebuilds, "{step:?}: {hits} hits of {rebuilds}");
+        }
+    }
+
+    #[test]
+    fn prefetched_meshes_equal_synchronous_ones_when_the_camera_turns() {
+        let texture = texture();
+        let mut frames = flight([5.0, 100.0, 5.0], [0.8, 0.0, 0.0], 80, 0);
+        frames.extend(flight([69.0, 100.0, 5.0], [0.0, 0.0, 0.8], 80, 80));
+        frames.extend(flight([69.0, 100.0, 69.0], [-0.8, 0.0, 0.4], 80, 160));
+        assert_same_as_synchronous(&texture, &frames);
+    }
+
+    #[test]
+    fn prefetched_meshes_equal_synchronous_ones_while_clouds_drift_past_a_still_camera() {
+        let texture = texture();
+        let frames = flight([3.0, 100.0, 3.0], [0.0; 3], 1200, 0)
+            .into_iter()
+            .map(|(camera, time, fast)| (camera, time * 4, fast))
+            .collect::<Vec<_>>();
+        let (rebuilds, hits) = assert_same_as_synchronous(&texture, &frames);
+        assert!(rebuilds >= 3);
+        assert!(hits + 1 >= rebuilds);
+    }
+
+    #[test]
+    fn prefetched_meshes_equal_synchronous_ones_across_the_texture_wrap() {
+        let texture = texture();
+        let frames = flight([-60.0, 100.0, 4.0], [0.9, 0.0, 0.0], 160, 0);
+        let (rebuilds, hits) = assert_same_as_synchronous(&texture, &frames);
+        assert!(hits + 1 >= rebuilds);
+    }
+
+    #[test]
+    fn prefetched_meshes_equal_synchronous_ones_through_layer_crossings_teleports_and_mode_changes()
+    {
+        let texture = texture();
+        let mut frames = flight([30.0, 180.0, 30.0], [0.4, 0.25, 0.1], 120, 0);
+        frames.extend(flight([500.0, 100.0, -300.0], [0.5, 0.0, 0.5], 40, 120));
+        frames.extend(
+            flight([10.0, 100.0, 10.0], [0.5, 0.0, 0.0], 40, 160)
+                .into_iter()
+                .map(|(c, t, _)| (c, t, true)),
+        );
+        frames.extend(flight([30.0, 195.0, 10.0], [0.5, -0.3, 0.0], 60, 200));
+        assert_same_as_synchronous(&texture, &frames);
+    }
+
+    #[test]
+    fn a_prefetched_mesh_is_not_used_after_the_uv_changes() {
+        let texture = texture();
+        let mut sync = Mesh::without_prefetch();
+        let mut prefetched = Mesh::default();
+        let mut input = frame_input(&texture, [20.0, 100.0, 30.0], 0);
+        for n in 0..40 {
+            input.camera.x += 0.7;
+            input.time += 1;
+            if n == 20 {
+                input.uv = [0.25, 0.75];
+            }
+            let expected = sync.prepare(&input).0;
+            assert_eq!(prefetched.prepare(&input).0, expected);
+            assert!(
+                bytemuck::cast_slice::<_, u8>(&sync.vertices)
+                    == bytemuck::cast_slice::<_, u8>(&prefetched.vertices)
+            );
+            prefetched.settle();
+        }
     }
 
     #[test]
