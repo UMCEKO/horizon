@@ -5450,7 +5450,8 @@ impl Renderer {
     ) -> Option<bool> {
         self.occlusion.visible_for_camera(key, camera_section)
     }
-    pub fn upload(&mut self, key: SectionKey, mesh: &SectionMesh) {
+    /// `now`: the batch's time, where its meshes' fades start.
+    pub fn upload(&mut self, key: SectionKey, mesh: &SectionMesh, now: Instant) {
         if let Some(copies) = &mut self.capture_copies {
             copies.section(key, mesh);
         }
@@ -5489,19 +5490,17 @@ impl Renderer {
         }
         if !mesh.translucent.is_empty() && !self.sections.contains(key) {
             // New translucent terrain, not an edit's remesh: large pages wait for it.
-            self.shrink_gate.wait(Instant::now(), SHRINK_SETTLE);
+            self.shrink_gate.wait(now, SHRINK_SETTLE);
         }
         let fading = match self.sections.find(key) {
             Some(old) => old.fading,
             None if !self.lods.is_empty() => {
-                let now = std::time::Instant::now();
                 self.newest_lod_fade = Some(now);
                 Some(now)
             }
             None => None,
         };
         if fading.is_none() && !self.section_uploaded.contains_key(&key) {
-            let now = std::time::Instant::now();
             self.section_uploaded.insert(key, now);
             self.newest_upload = Some(now);
         }
@@ -5522,7 +5521,7 @@ impl Renderer {
                 // draws it, once a frame has decided the flags (`mark_fades`).
                 if let Some(fade_ms) = gpu.fades.fade_ms {
                     let f = FadeInputs {
-                        now: Instant::now(),
+                        now,
                         fade_ms,
                         uploaded: &self.section_uploaded,
                         retiring: &self.lod_retiring,

@@ -581,6 +581,13 @@ const AUTO_UPLOAD_TIME: Duration = Duration::from_millis(2);
 const AUTO_UPLOAD_TIME_ARRIVING: Duration = Duration::from_millis(6);
 /// A frame's finished meshes up to this many upload at once, unqueued.
 const AUTO_UPLOADS_AT_ONCE: usize = 8;
+/// The queued uploads read the clock after this many meshes, not after each.
+const AUTO_UPLOAD_CHECK: usize = 8;
+
+/// Whether `count` meshes uploaded have taken `budget`: asks `elapsed` only every `AUTO_UPLOAD_CHECK` meshes.
+fn upload_time_spent(count: usize, budget: Duration, elapsed: impl FnOnce() -> Duration) -> bool {
+    count > 0 && count.is_multiple_of(AUTO_UPLOAD_CHECK) && elapsed() >= budget
+}
 
 #[derive(Clone)]
 struct Options {
@@ -14419,9 +14426,10 @@ impl Game<'_> {
             // The meshes, once copied, are freed by a worker (`Streaming::free`).
             if !budgeted && self.pending_uploads.is_empty() && uploads.len() <= AUTO_UPLOADS_AT_ONCE
             {
+                let now = Instant::now();
                 horizon_client::spans::time("upload", || {
                     for (key, mesh) in &uploads {
-                        renderer.upload(*key, mesh);
+                        renderer.upload(*key, mesh, now);
                     }
                 });
                 self.streaming.free(uploads);
@@ -14468,7 +14476,7 @@ impl Game<'_> {
                 };
                 let started = Instant::now();
                 while let Some((_, mesh)) = pending.last() {
-                    if auto && count > 0 && started.elapsed() >= auto_time {
+                    if auto && upload_time_spent(count, auto_time, || started.elapsed()) {
                         break;
                     }
                     let size = ((mesh.solid.len() + mesh.translucent.len())
@@ -14480,7 +14488,7 @@ impl Game<'_> {
                         break;
                     }
                     let (key, mesh) = pending.pop().expect("checked above");
-                    renderer.upload(key, &mesh);
+                    renderer.upload(key, &mesh, started);
                     spent.push((key, mesh));
                     count += 1;
                     bytes += size;
