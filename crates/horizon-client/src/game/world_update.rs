@@ -386,14 +386,9 @@ impl Game<'_> {
                 // AUTO_UPLOAD_TIME of this frame (at least one goes): a burst of
                 // finished meshes spreads over frames, nearest first.
                 let auto = !budgeted;
-                let auto_time = if arriving {
-                    AUTO_UPLOAD_TIME_ARRIVING
-                } else {
-                    AUTO_UPLOAD_TIME
-                };
                 let started = Instant::now();
                 while let Some((_, mesh)) = pending.last() {
-                    if auto && upload_time_spent(count, auto_time, || started.elapsed()) {
+                    if auto && upload_time_spent(count, AUTO_UPLOAD_TIME, || started.elapsed()) {
                         break;
                     }
                     let size = ((mesh.solid.len() + mesh.translucent.len())
