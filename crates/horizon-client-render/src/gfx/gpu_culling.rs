@@ -1,8 +1,4 @@
-//! GPU culling: the frame's near solid sections culled and their draws listed
-//! by a compute pass, and drawn with one `multi_draw_indexed_indirect_count`
-//! per arena page, where the device can draw a count the GPU wrote
-//! (`MULTI_DRAW_INDIRECT_COUNT`: DX12, Vulkan 1.2 or
-//! `VK_KHR_draw_indirect_count`). Walking those sections on the CPU, listing a
+//! GPU culling: the frame's near solid sections culled and their draws listed by a compute pass, and drawn with one `multi_draw_indexed_indirect_count` per distance group and arena page, nearest group first, where the device can draw a count the GPU wrote (`MULTI_DRAW_INDIRECT_COUNT`: DX12, Vulkan 1.2 or `VK_KHR_draw_indirect_count`). Walking those sections on the CPU, listing a
 //! few draws per section by the sides it shows the eye and grouping them by
 //! page costs the render thread time in proportion to the sections in view.
 //!
@@ -45,7 +41,7 @@
 //! CPU's runs on every backend, a GPU that flushes subnormal floats too. The
 //! buckets that can face the eye lie in at most `RUNS` runs: a draw each.
 //!
-//! The pass `apply`s the records that changed, then `cull` keeps the sections in view, writes their runs and counts their draws per page and block of ids, `scan` turns the counts into where each block's draws start, and `scatter` writes every block's draws there, band by band of distance (a section wide to `FINE`, then the CPU's 64 blocks), nearest first, in id order within a band and each section's in its runs' order. Ids alone follow no distance once sections come and go, and drawn far before near the depth test rejects few hidden fragments: about a quarter more GPU time on a Radeon after a few hundred blocks of travel. Appended with atomics alone, a page's draws would come in the order the GPU happens to schedule them, and where faces of two sections meet at exactly the same depth the later draw keeps the pixel, so such pixels would flicker; in a fixed order they stay put.
+//! The pass `apply`s the records that changed, then `cull` keeps the sections in view, writes their runs and counts their draws per page, distance band and block of ids, `scan` turns the counts into where each block's draws start, and `scatter` writes every block's draws there, band by band of distance (a section wide to `FINE`, then the CPU's 64 blocks), nearest first, in id order within a band and each section's in its runs' order. Ids alone follow no distance once sections come and go, and drawn far before near the depth test rejects few hidden fragments: about a quarter more GPU time on a Radeon after a few hundred blocks of travel. Bands make `GROUPS` distance groups (`RADII`) and each group's draws of a page are one count draw, issued group-major: a page by page order draws page 0 near to far, then page 1, and the same fragments cost a tenth more (Radeon 610M, render distance 32, 6 pages). Appended with atomics alone, draws would come in the order the GPU happens to schedule them, and where faces of two sections meet at exactly the same depth the later draw keeps the pixel, so such pixels would flicker; in a fixed order they stay put.
 //!
 //! This is not `cull` (occlusion culling, `HORIZON_GPU_CULL`), which tests the
 //! CPU's lists against phase 1's depth: frames drawn from here leave it off.
@@ -55,10 +51,7 @@
 //! section's own solid quads (a record's buckets end within them), so its index
 //! count is at most theirs times 6, which the quad index buffer covers (it grows
 //! before a larger mesh uploads), and its base vertex lies in its section's own
-//! range of the page it is drawn from; its first instance is an id below the
-//! table's end, which `origins` holds; and each page's count is clamped to its
-//! region, which `scatter` never writes past. A region has room for `RUNS` draws
-//! of every record of its page, the most a section has, so nothing is clamped.
+//! range of the page it is drawn from; its first instance is an id below the table's end, which `origins` holds; and each (group, page) count is clamped to its region, which `scatter` never writes past. A region has room for `RUNS` draws of every record of its page within its group's radius (`Records::group_records`), the most a section of the group has, so nothing is clamped.
 use super::{
     Frustum, SectionKey,
     arena::{Arena, try_create},
@@ -68,7 +61,7 @@ use super::{
     submit::Queue,
     upload::Uploads,
 };
-use crate::{graphics::GpuCullingOffer, mesher::Sides};
+use crate::{fast_hash::FxHashMap, graphics::GpuCullingOffer, mesher::Sides};
 use glam::{DVec3, DVec4, Mat4, Vec3};
 use std::{
     cmp::Reverse,
@@ -241,8 +234,7 @@ struct Params {
     /// Ids the pass tests, and the `Update`s `apply` writes.
     ids: u32,
     updates: u32,
-    /// Arena pages the counts and regions cover (at least one), and where the
-    /// regions start in `tables`, in words.
+    /// Arena pages the counts and regions cover (at least one), and where the regions (`GROUPS` per page) start in `tables`, in words.
     pages: u32,
     regions: u32,
     /// Bits 3j, 3j + 1 and 3j + 2: frustum plane j's x, y and z are at least 0.
@@ -269,17 +261,13 @@ struct Params {
     /// With `OCCLUDE`: the frame's stamp (never 0), where the boxes to test
     /// start in `counts`, in words, 0, 0.
     occl: [u32; 4],
-    /// The camera's section y (from the level's bottom), the distance bands (`bands`), 0, 0.
+    /// The camera's section y (from the level's bottom), the distance bands (`bands`), and the bands where group 1 and group 2 start.
     order: [i32; 4],
     /// The world pass's view projection, which the test draws its boxes with.
     view_proj: [[f32; 4]; 4],
 }
 
-/// Counts before the pages' (the shader's `STATS`): the sections `cull` kept,
-/// the draws (fewer only where a region was short), then occlusion's: the
-/// quads of the sections with runs and of the tested boxes not seen (the
-/// gate's share), the box draw (its instances: the boxes tested), and the
-/// boxes not seen.
+/// Counts before the groups' (the shader's `STATS`): the sections `cull` kept, the draws (fewer only where a region was short), then occlusion's: the quads of the sections with runs and of the tested boxes not seen (the gate's share), the box draw (its instances: the boxes tested), and the boxes not seen.
 const STATS: u64 = 12;
 const QUADS: usize = 2;
 const HIDDEN_QUADS: usize = 3;
@@ -310,6 +298,11 @@ const PROBE: u32 = 16;
 /// Sections within `FINE` of the camera's get a band each, where most overdraw is; past it bands are `BAND` wide, page_runs.rs's 64 blocks.
 const FINE: i64 = 16;
 const BAND: i64 = 4;
+/// Distance groups, each drawn by a count draw per page; group g holds the sections `d` whole sections from the camera's with `d < RADII[g]`, the last the rest.
+const GROUPS: usize = 3;
+/// Below `FINE` a band is its distance, so a group's radius is also the band where the next group starts.
+const RADII: [i64; GROUPS - 1] = [4, 16];
+const _: () = assert!(RADII[0] < RADII[1] && RADII[1] <= FINE);
 
 /// The band of a section `d` whole sections from the camera's (the shader's `band`).
 fn band_at(d: i64) -> u32 {
@@ -508,7 +501,12 @@ fn tables(input: &FrameInputs<'_>, words: &mut Vec<u32>) -> Option<Params> {
         w: [[w[0], w[1], w[2], w[3]], [w[4], w[5], 0, 0]],
         flags: if input.eye.is_some() { EYE } else { 0 },
         eyes,
-        order: [cam_y, bands(radius, height) as i32, 0, 0],
+        order: [
+            cam_y,
+            bands(radius, height) as i32,
+            RADII[0] as i32,
+            RADII[1] as i32,
+        ],
         ..Default::default()
     })
 }
@@ -635,6 +633,8 @@ pub(super) struct Records {
     all_dirty: bool,
     /// Per arena page, the records on it.
     page_sections: Vec<u32>,
+    /// Per column, its records per arena page (`group_records`).
+    columns: FxHashMap<(i32, i32), Vec<u32>>,
     /// The records flagged `FADING`.
     fading: u32,
 }
@@ -652,7 +652,7 @@ impl Records {
             }
         };
         self.records[id as usize] = record;
-        self.add_to(record.key[3] as u32);
+        self.add_to(&record);
         self.fading += u32::from(record.is_fading());
         self.mark(id);
         id
@@ -670,11 +670,12 @@ impl Records {
         for id in ids {
             let page = self.records.get(id as usize).and_then(Record::page);
             debug_assert!(page.is_some(), "no record {id} to remove");
-            let Some(page) = page else {
+            if page.is_none() {
                 continue;
-            };
-            self.page_sections[page as usize] -= 1;
-            self.fading -= u32::from(self.records[id as usize].is_fading());
+            }
+            let record = self.records[id as usize];
+            self.leave(&record);
+            self.fading -= u32::from(record.is_fading());
             self.records[id as usize] = Record::FREE;
             // shortcut: a teleport frees more than `DIRTY_LIMIT`, so `prepare` writes the
             // whole table (0.6-2.6 ms at render distance 64); upgrade to a list of freed ids
@@ -712,14 +713,16 @@ impl Records {
     pub fn relocate(&mut self, id: u32, page: u32, start: u64) {
         let from = self.records.get(id as usize).and_then(Record::page);
         debug_assert!(from.is_some(), "no record {id} to move");
-        let Some(from) = from else {
+        if from.is_none() {
             return;
-        };
+        }
+        let old = self.records[id as usize];
+        self.leave(&old);
         let record = &mut self.records[id as usize];
         record.key[3] = page as i32;
         record.a[0] = start as u32;
-        self.page_sections[from as usize] -= 1;
-        self.add_to(page);
+        let record = *record;
+        self.add_to(&record);
         self.mark(id);
     }
     /// The section with `id` began to draw faded, or stopped (gfx.rs
@@ -746,6 +749,7 @@ impl Records {
         self.dirty = Vec::new();
         self.all_dirty = false;
         self.page_sections.clear();
+        self.columns.clear();
         self.fading = 0;
     }
     /// The sections with a record.
@@ -771,12 +775,53 @@ impl Records {
     fn ids(&self) -> u32 {
         self.records.len() as u32
     }
-    fn add_to(&mut self, page: u32) {
-        let page = page as usize;
+    fn add_to(&mut self, record: &Record) {
+        let page = record.key[3] as usize;
         if self.page_sections.len() <= page {
             self.page_sections.resize(page + 1, 0);
         }
         self.page_sections[page] += 1;
+        let column = self
+            .columns
+            .entry((record.key[0], record.key[2]))
+            .or_default();
+        if column.len() <= page {
+            column.resize(page + 1, 0);
+        }
+        column[page] += 1;
+    }
+    fn leave(&mut self, record: &Record) {
+        let (page, at) = (record.key[3] as usize, (record.key[0], record.key[2]));
+        self.page_sections[page] -= 1;
+        let Some(column) = self.columns.get_mut(&at) else {
+            return;
+        };
+        column[page] -= 1;
+        if column.iter().all(|&n| n == 0) {
+            self.columns.remove(&at);
+        }
+    }
+    /// Per group and page (`group * pages + page`), the most records a (group, page) region must hold draws for: the page's records in columns within the group's radius of `camera`'s, the last group's all of them.
+    pub fn group_records(&self, (cx, cz): (i32, i32), pages: usize) -> Vec<u32> {
+        let mut records = vec![0; GROUPS * pages];
+        let far = RADII[GROUPS - 2] as i32;
+        for dx in 1 - far..far {
+            for dz in 1 - far..far {
+                let Some(column) = self.columns.get(&(cx + dx, cz + dz)) else {
+                    continue;
+                };
+                let d2 = i64::from(dx * dx + dz * dz);
+                for g in (0..GROUPS - 1).filter(|&g| d2 < RADII[g] * RADII[g]) {
+                    for (page, &n) in column.iter().take(pages).enumerate() {
+                        records[g * pages + page] += n;
+                    }
+                }
+            }
+        }
+        let last = (GROUPS - 1) * pages;
+        records[last..last + self.page_sections.len().min(pages)]
+            .copy_from_slice(&self.page_sections[..self.page_sections.len().min(pages)]);
+        records
     }
     fn mark(&mut self, id: u32) {
         if self.all_dirty {
@@ -1008,9 +1053,8 @@ pub(super) struct GpuCulling {
     /// When the flagged records' fades end, a field of its own as `records`
     /// is: gfx.rs `mark_fades` takes both beside the renderer's sections.
     pub fades: Fades,
-    /// This frame's pages with records: (page, first draw of its region, the
-    /// region's size).
-    pages: Vec<(u32, u32, u32)>,
+    /// This frame's non-empty regions, group-major: (page, group * pages + page, first draw of the region, its size).
+    pages: Vec<(u32, u32, u32, u32)>,
     /// This frame's ids to test, records to `apply`, and pages the counts
     /// cover (at least one).
     ids: u32,
@@ -1256,12 +1300,17 @@ impl GpuCulling {
         let regions = self.words.len() as u32;
         let pass_pages = self.records.page_sections.len().max(1) as u32;
         let slots = u64::from(pass_pages) * planes.as_ref().map_or(1, |p| p.order[1] as u64);
-        // A region has room for every draw of every record on its page.
-        let total = RUNS * self.records.page_sections.iter().sum::<u32>();
-        // The statistics, each page's count in both phases, each block's per
-        // page in both phases, then where the test exists the boxes to test.
+        // A region has room for every draw of the records it can hold; a frame the CPU draws needs none.
+        let caps = match &planes {
+            Some(p) => self
+                .records
+                .group_records((p.cam_x, p.cam_z), pass_pages as usize),
+            None => Vec::new(),
+        };
+        let total = RUNS * caps.iter().sum::<u32>();
+        // The statistics, each group and page's count in both phases, each block's per slot in both phases, then where the test exists the boxes to test.
         let blocks = u64::from(ids.div_ceil(WORKGROUP));
-        let phase1_end = STATS + 2 * u64::from(pass_pages) + blocks * slots;
+        let phase1_end = STATS + 2 * GROUPS as u64 * u64::from(pass_pages) + blocks * slots;
         let counts_end = phase1_end + blocks * slots;
         // Each slot's base in both phases follows; `scan` writes them, so they are never cleared.
         let tests_at = counts_end + 2 * slots;
@@ -1272,7 +1321,10 @@ impl GpuCulling {
         for (buffer, bytes) in [
             (&mut self.updates, self.scratch.len() as u64 * Update::BYTES),
             (&mut self.origins, u64::from(ids) * 16),
-            (&mut self.tables, u64::from(regions + 2 * pass_pages) * 4),
+            (
+                &mut self.tables,
+                u64::from(regions + 2 * GROUPS as u32 * pass_pages) * 4,
+            ),
             (&mut self.counts, count_words * 4),
             (&mut self.draws, u64::from(total.max(1)) * 20),
         ] {
@@ -1332,12 +1384,12 @@ impl GpuCulling {
         }
         self.records.dirty.clear();
         self.records.all_dirty = false;
-        let (sizes, mut first) = (&self.records.page_sections, 0);
-        for page in 0..pass_pages {
-            let size = RUNS * sizes.get(page as usize).copied().unwrap_or(0);
+        let mut first = 0;
+        for (at, &records) in caps.iter().enumerate() {
+            let (page, size) = (at as u32 % pass_pages, RUNS * records);
             self.words.extend([first, size]);
             if size > 0 {
-                self.pages.push((page, first, size));
+                self.pages.push((page, at as u32, first, size));
             }
             first += size;
         }
@@ -1451,10 +1503,7 @@ impl GpuCulling {
         pass.dispatch_workgroups(blocks.min(ROW), blocks.div_ceil(ROW), 1);
     }
 
-    /// The kept sections' solid draws, a count draw per page, with the quad
-    /// indices bound. Leaves the origins at vertex slot 1. `group`: the page's group 1 for
-    /// pipelines that read the page themselves (`Flat::page_group`), else none.
-    /// `phase`: 0, or 1 after `compact` in a frame that occludes.
+    /// Solid draws per distance group and page, nearest first; leaves the origins at vertex slot 1.
     pub fn draw<'a>(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -1466,7 +1515,8 @@ impl GpuCulling {
             return;
         }
         pass.set_vertex_buffer(1, self.origins.buffer.slice(..));
-        for &(page, first, size) in &self.pages {
+        let phase_at = phase * (GROUPS as u64) * u64::from(self.pass_pages);
+        for &(page, region, first, size) in &self.pages {
             pass.set_vertex_buffer(0, arena.buffer(page).slice(..));
             if let Some(group) = group(page) {
                 pass.set_bind_group(1, group, &[]);
@@ -1475,7 +1525,7 @@ impl GpuCulling {
                 &self.draws.buffer,
                 u64::from(first) * 20,
                 &self.counts.buffer,
-                (STATS + phase * u64::from(self.pass_pages) + u64::from(page)) * 4,
+                (STATS + phase_at + u64::from(region)) * 4,
                 size,
             );
         }
@@ -2057,6 +2107,61 @@ mod tests {
         assert_eq!(records.insert(Record::new((0, 0, 0), 0, 0, 1, 0)), 0);
     }
 
+    /// Per group and page, `group_records` counts the records of the page within the group's radius of a camera column (all of them for the last group), through inserts, moves, removals and clears.
+    #[test]
+    fn group_records_count_what_each_region_can_hold() {
+        let mut rng = Rng(0xD1B5_4A32_D192_ED03);
+        let mut records = Records::default();
+        let mut model: Vec<Option<(i32, i32, u32)>> = Vec::new();
+        for step in 0..3_000 {
+            let live: Vec<u32> = (0..model.len() as u32)
+                .filter(|&id| model[id as usize].is_some())
+                .collect();
+            match rng.below(8) {
+                op if op < 4 || live.is_empty() => {
+                    let (x, z, page) = (rng.range(-24, 24), rng.range(-24, 24), rng.below(6));
+                    let record = Record::new((x, rng.range(0, 23), z), page, 0, 1, 0);
+                    let id = records.insert(record) as usize;
+                    if id == model.len() {
+                        model.push(None);
+                    }
+                    model[id] = Some((x, z, page));
+                }
+                4 | 5 => {
+                    let id = live[rng.below(live.len() as u32) as usize];
+                    let page = rng.below(8);
+                    records.relocate(id, page, 0);
+                    model[id as usize].as_mut().expect("live").2 = page;
+                }
+                6 => {
+                    let ids: Vec<u32> =
+                        live.iter().copied().filter(|_| rng.below(4) == 0).collect();
+                    records.remove_all(ids.iter().copied());
+                    ids.iter().for_each(|&id| model[id as usize] = None);
+                }
+                _ if step % 500 == 499 => {
+                    records.clear();
+                    model.clear();
+                }
+                _ => {}
+            }
+            let pages = records.page_sections().len().max(1);
+            for (cx, cz) in [(0, 0), (rng.range(-8, 8), rng.range(-8, 8)), (30, -30)] {
+                let got = records.group_records((cx, cz), pages);
+                let mut want = vec![0; GROUPS * pages];
+                for &(x, z, page) in model.iter().flatten() {
+                    let d2 = i64::from((x - cx).pow(2) + (z - cz).pow(2));
+                    for g in 0..GROUPS {
+                        if g == GROUPS - 1 || d2 < RADII[g] * RADII[g] {
+                            want[g * pages + page as usize] += 1;
+                        }
+                    }
+                }
+                assert_eq!(got, want, "step {step}, column ({cx}, {cz})");
+            }
+        }
+    }
+
     /// A box holds the bounds it is made from, rounded out to whole blocks, and
     /// reaches its cell along every axis; bounds past what it holds, or not
     /// finite, are `UNBOUNDED`; no bounds are the cell.
@@ -2188,6 +2293,7 @@ mod tests {
             ("RUN_WORDS", RUN_WORDS),
             ("FINE", FINE as u64),
             ("BAND", BAND as u64),
+            ("GROUPS", GROUPS as u64),
         ] {
             assert_eq!(constant(name), value, "{name}");
         }
@@ -2814,21 +2920,33 @@ mod tests {
         bytemuck::pod_collect_to_vec(&rx.recv().unwrap())
     }
 
-    /// The pass draws exactly what its CPU reference (`keeps`, and cave culling's `Reach::contains`) keeps: a draw of each run of its solid quads that can face the eye, the runs a CPU frame draws (`facing_runs`), or of all of them where a frame has no eye, from its page and the run's first vertex, with the instance the CPU path gives a whole section, every page's draws by distance band, nearest first, then in id order and each section's in its runs' order. Its buckets by facing side are drawn at random; one case puts the camera on a section's corner, its eye a subnormal float past it along x and on +0 and -0 along y and z, with a quad in each of its side buckets and every threshold 0: a CPU frame draws the +X one alone, and so must a GPU, including one that flushes subnormal floats or compares a bucket's keys loosely. One table serves every case, changed between them as sections come, go and move (ids reused, records written as updates and whole), cleared once as for another world, and kept through a frame the CPU draws; in frusta of every shape, one with a plane that is not finite, with boxes of every kind, and from cameras near the world's origin and 20 million blocks out. Most cases have a cave-culling graph, its box as wide as the walk's, narrower, or a column wider, full height or clamped, its sky band reached or not: the pass reads the copy it holds when a frame brings the same graph (once through a bind group made anew), sends a new one after a frame the CPU draws, and makes its copy anew for one too large for its room. A fifth of the sections fade, flagged anew before each case (`FADING`, sent as updates or with the whole table): the pass leaves them to the CPU.
+    /// The pass draws exactly what its CPU reference (`keeps`, and cave culling's `Reach::contains`) keeps: a draw of each run of its solid quads that can face the eye, the runs a CPU frame draws (`facing_runs`), or of all of them where a frame has no eye, from its page and the run's first vertex, with the instance the CPU path gives a whole section, every (distance group, page) region's draws by distance band, nearest first, then in id order and each section's in its runs' order, within the region's size, their counts adding up to the draws expected. Its buckets by facing side are drawn at random; one case puts the camera on a section's corner, its eye a subnormal float past it along x and on +0 and -0 along y and z, with a quad in each of its side buckets and every threshold 0: a CPU frame draws the +X one alone, and so must a GPU, including one that flushes subnormal floats or compares a bucket's keys loosely. One table serves every case, changed between them as sections come, go and move (ids reused, records written as updates and whole), cleared once as for another world, and kept through a frame the CPU draws; in frusta of every shape, one with a plane that is not finite, with boxes of every kind, and from cameras near the world's origin and 20 million blocks out. Most cases have a cave-culling graph, its box as wide as the walk's, narrower, or a column wider, full height or clamped, its sky band reached or not: the pass reads the copy it holds when a frame brings the same graph (once through a bind group made anew), sends a new one after a frame the CPU draws, and makes its copy anew for one too large for its room. A fifth of the sections fade, flagged anew before each case (`FADING`, sent as updates or with the whole table): the pass leaves them to the CPU.
     #[test]
     fn the_gpu_draws_what_the_integer_test_keeps() {
         on_each_device(draws_match);
     }
 
     /// The shader's `band` of the section at `key`.
-    fn band_of(params: &Params, key: SectionKey) -> u32 {
+    fn whole_sections_from(params: &Params, key: SectionKey) -> i64 {
         let d = [
             key.0 - params.cam_x,
             key.1 - params.order[0],
             key.2 - params.cam_z,
         ];
-        let d2: i64 = d.iter().map(|&v| i64::from(v) * i64::from(v)).sum();
-        band_at(d2.isqrt()).min(params.order[1] as u32 - 1)
+        d.iter()
+            .map(|&v| i64::from(v) * i64::from(v))
+            .sum::<i64>()
+            .isqrt()
+    }
+
+    fn band_of(params: &Params, key: SectionKey) -> u32 {
+        band_at(whole_sections_from(params, key)).min(params.order[1] as u32 - 1)
+    }
+
+    /// The first group whose radius the section is inside, else the last.
+    fn group_of(params: &Params, key: SectionKey) -> usize {
+        let d = whole_sections_from(params, key);
+        RADII.iter().take_while(|&&r| d >= r).count()
     }
 
     fn draws_match(device: &wgpu::Device, queue: &Queue) {
@@ -2856,6 +2974,7 @@ mod tests {
         let (mut eyed, mut hidden, mut several) = (0, 0, 0);
         let (mut edge, mut edge_drawn) = (None, false);
         let mut bands_drawn = std::collections::BTreeSet::new();
+        let mut regions_drawn = std::collections::BTreeSet::new();
         for case in 0..25 {
             let radius = [2, 5, 9][case % 3];
             let at_edge = case == 24;
@@ -3090,23 +3209,42 @@ mod tests {
             queue.submit([encoder.finish()]);
             gpu.submitted().expect("a readback free")();
             let pages = u64::from(gpu.pass_pages);
-            let counts = read(device, queue, &gpu.counts.buffer, (STATS + pages) * 4);
+            let counts = read(
+                device,
+                queue,
+                &gpu.counts.buffer,
+                (STATS + GROUPS as u64 * pages) * 4,
+            );
             let draws = read(device, queue, &gpu.draws.buffer, gpu.draws.bytes);
             let origins = read(device, queue, &gpu.origins.buffer, u64::from(gpu.ids) * 16);
-            let mut got = Vec::new();
-            for &(page, first, size) in &gpu.pages {
-                let count = counts[(STATS + u64::from(page)) as usize];
+            let (mut got, mut counted) = (Vec::new(), 0);
+            for &(page, region, first, size) in &gpu.pages {
+                let (group, count) = (
+                    region / gpu.pass_pages,
+                    counts[(STATS + u64::from(region)) as usize],
+                );
                 assert!(
                     count <= size,
-                    "case {case}, page {page}: {count} draws, room {size}"
+                    "case {case}, group {group}, page {page}: {count} draws, room {size}"
                 );
+                counted += count;
+                regions_drawn.insert((group, page, count > 0));
                 let mut last = None;
                 for d in draws[first as usize * 5..][..count as usize * 5].chunks(5) {
                     // Nearest band first, then id order and each section's runs' order: the same every frame.
-                    let key = held[&d[4]].0.0;
+                    let (placed, _) = &held[&d[4]];
+                    let key = placed.0;
                     let order = (band_of(&params, key), d[4], d[3]);
                     bands_drawn.insert(order.0);
-                    assert!(last < Some(order), "case {case}, page {page}: out of order");
+                    assert!(
+                        last < Some(order),
+                        "case {case}, group {group}, page {page}: out of order"
+                    );
+                    assert_eq!(
+                        (group_of(&params, key) as u32, placed.1),
+                        (group, page),
+                        "case {case}: a draw in another group's or page's region"
+                    );
                     last = Some(order);
                     assert_eq!([d[1], d[2]], [1, 0], "case {case}: one instance, index 0");
                     let instance = &origins[d[4] as usize * 4..][..4];
@@ -3115,6 +3253,7 @@ mod tests {
                 }
             }
             let draw_count = expected.len() as u32;
+            assert_eq!(counted, draw_count, "case {case}: the regions' counts");
             expected.sort_unstable();
             got.sort_unstable();
             assert_eq!(got.len(), expected.len(), "case {case}: draws");
@@ -3145,6 +3284,11 @@ mod tests {
             "of {eyed} from an eye, {hidden} with a bucket left out, {several} in three runs"
         );
         assert!(edge_drawn, "the bucket at the section's edge");
+        // Every group drew from several pages.
+        for g in 0..GROUPS as u32 {
+            let pages = regions_drawn.iter().filter(|r| r.0 == g && r.2).count();
+            assert!(pages > 2, "group {g} drew from {pages} regions");
+        }
         // Fine bands near and coarse ones past them.
         let coarse = bands_drawn.iter().any(|&b| i64::from(b) > FINE);
         assert!(
