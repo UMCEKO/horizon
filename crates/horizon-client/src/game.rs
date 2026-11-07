@@ -427,6 +427,7 @@ use event_loop::EventLoopCtl;
 // `Action` here is the title screen's buttons (`title::Action`).
 use horizon_client::actions::Action as Mapping;
 use horizon_client::held::Source;
+use horizon_client::random_ticking_chunks::ticking_chunk;
 use horizon_client::spans::startup;
 use horizon_client::{
     Result,
@@ -2397,27 +2398,6 @@ fn equipment_modifier_applies(group: &str, slot: &str) -> bool {
         || (group == "hand" && (slot == "mainhand" || slot == "offhand"))
 }
 /// Ctrl+Q reads the physical keyboard, independently of sprint key mappings.
-/// A chunk whose ticking future can complete (`ChunkMap.prepareTickingChunk`):
-/// lit, with its neighbours loaded, as `postprocess_chunks` waits for.
-fn ticking_chunk(world: &World, x: i32, z: i32) -> bool {
-    let Some(center) = world.chunks.get(&(x, z)) else {
-        return false;
-    };
-    if !center.lit {
-        return false;
-    }
-    for dz in -1..=1 {
-        for dx in -1..=1 {
-            if dx == 0 && dz == 0 {
-                continue;
-            }
-            if !world.chunks.contains_key(&(x + dx, z + dz)) {
-                return false;
-            }
-        }
-    }
-    true
-}
 /// Key events carry the scancode's US-layout code, which ignores XKB options like
 /// `caps:swapescape`. For the keys whose meaning the keymap may remap, take the code
 /// from the keysym the keymap resolved instead. This includes function keys on
@@ -3020,6 +3000,7 @@ struct Game<'a> {
     end: end::EndState,
     block_ticks: Ticks,
     tick_chunks: horizon_client::tick_chunk_membership::TickChunkMembership,
+    random_ticking: horizon_client::random_ticking_chunks::RandomTickingChunks,
     tickets: horizon_client::ticket_levels::ChunkTickets,
     random_tick_sections: horizon_client::random_tick_sections::RandomTickSections,
     level_events: Vec<LevelEvent>,
@@ -5270,23 +5251,10 @@ impl Game<'_> {
         self.start_ticking_chunks();
         laps.lap("tb_tickets");
         let levels = self.tickets.levels();
-        let bounds = levels.random_tick_bounds();
-        // Keep the world map's chunk order, including empty chunks
-        // (tick_chunk_random still draws for precipitation in those).
-        let ticking: Vec<_> = self
-            .world
-            .chunks
-            .keys()
-            .copied()
-            .filter(|&(x, z)| {
-                if let Some((min_x, min_z, max_x, max_z)) = bounds
-                    && (x < min_x || x > max_x || z < min_z || z > max_z)
-                {
-                    return false;
-                }
-                levels.random_ticking(x, z) && ticking_chunk(&self.world, x, z)
-            })
-            .collect();
+        let ticking = self
+            .random_ticking
+            .sync(&self.world, &levels, self.tickets.revision())
+            .to_vec();
         laps.lap("tb_chunks");
         // Entity.checkInsideBlocks for the plates, tripwires, detector rails and
         // buttons under the players (the host and the LAN guests), the minecarts
@@ -20647,6 +20615,7 @@ impl<'a> Game<'a> {
             end: Default::default(),
             block_ticks: Ticks::new(0),
             tick_chunks: Default::default(),
+            random_ticking: Default::default(),
             tickets: Default::default(),
             random_tick_sections: Default::default(),
             level_events: Vec::new(),

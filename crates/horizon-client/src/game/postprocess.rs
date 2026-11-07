@@ -3,7 +3,7 @@
 //! blocks) are updated once the chunk is live, which starts cave waterfalls
 //! and lava falls, raises bubble columns over magma and soul sand and fixes
 //! block shapes against their neighbours.
-use super::Game;
+use super::{Game, ticking_chunk};
 use horizon_client::{Result, blocks::Fluid};
 use horizon_core::position::BlockPos;
 use std::sync::Arc;
@@ -13,17 +13,16 @@ const POSTPROCESS_FLAGS: i32 = 276;
 
 impl Game<'_> {
     pub(super) fn postprocess_chunks(&mut self) -> Result<()> {
-        let ready: Vec<(i32, i32)> = self
-            .world
-            .chunks
+        let chunks = &self.world.chunks;
+        let mut ready: Vec<(i32, i32)> = chunks
+            .marked()
             .iter()
-            .filter(|(_, c)| c.lit && !c.postprocess.is_empty())
-            .map(|(k, _)| *k)
-            .filter(|&(x, z)| {
-                (-1..=1)
-                    .all(|dz| (-1..=1).all(|dx| self.world.chunks.contains_key(&(x + dx, z + dz))))
-            })
+            .copied()
+            .filter(|&(x, z)| ticking_chunk(&self.world, x, z))
             .collect();
+        // The map's hash order depends on its history; any fixed order is as faithful to vanilla's.
+        ready.sort_unstable();
+        debug_assert_eq!(ready, self.postprocess_walk(), "stale postprocess set");
         if ready.is_empty() {
             return Ok(());
         }
@@ -37,6 +36,7 @@ impl Game<'_> {
                 continue;
             };
             let marks = std::mem::take(&mut Arc::make_mut(chunk).postprocess);
+            self.world.chunks.marks_taken(&key);
             self.with_level(|b, level, ticks| {
                 for [x, y, z] in marks {
                     let pos = BlockPos::new(x, y, z);
@@ -62,5 +62,16 @@ impl Game<'_> {
             });
         }
         self.process_level_events()
+    }
+
+    /// The chunks with marks that are ready, found by looking at every loaded chunk.
+    fn postprocess_walk(&self) -> Vec<(i32, i32)> {
+        let mut ready: Vec<_> = (self.world.chunks.iter())
+            .filter(|(_, c)| c.lit && !c.postprocess.is_empty())
+            .map(|(k, _)| *k)
+            .filter(|&(x, z)| ticking_chunk(&self.world, x, z))
+            .collect();
+        ready.sort_unstable();
+        ready
     }
 }
