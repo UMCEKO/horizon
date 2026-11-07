@@ -1790,17 +1790,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-perf"
-version = "0.1.0"
-dependencies = [
- "flate2",
- "horizon-perf-format",
- "miniz_oxide 0.9.1",
- "prost",
- "serde_json",
-]
-
-[[package]]
 name = "horizon-perf-format"
 version = "0.1.0"
 dependencies = [

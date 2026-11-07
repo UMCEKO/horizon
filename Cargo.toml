@@ -40,7 +40,6 @@ members = [
     "crates/horizon-polytone",
     "crates/horizon-shader-api",
     "crates/horizon-perf-format",
-    "crates/horizon-perf",
     "crates/horizon-release-sign",
     "crates/horizon-mod-deps",
     "xtask",
