@@ -1,0 +1,17 @@
+[package]
+name = "horizon-perf"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+name = "horizon_perf"
+path = "src/lib.rs"
+
+[dependencies]
+horizon-perf-format = { path = "../horizon-perf-format" }
+prost = "0.14"
+miniz_oxide = "0.9"
+flate2 = { version = "1.1", default-features = false, features = ["miniz_oxide"] }
+serde_json = "1"
