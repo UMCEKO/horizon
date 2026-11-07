@@ -15,3 +15,7 @@ prost = "0.14"
 miniz_oxide = "0.9"
 flate2 = { version = "1.1", default-features = false, features = ["miniz_oxide"] }
 serde_json = "1"
+
+[features]
+default = []
+wasm = []

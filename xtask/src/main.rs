@@ -23,10 +23,19 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-const USAGE: &str = "usage: cargo run -p xtask -- package BINARY OUTDIR | package-server ENGINE OUTDIR | tokens | icons";
+const USAGE: &str = "usage: cargo run -p xtask -- package BINARY OUTDIR | package-server ENGINE OUTDIR | tokens | icons | perf-wasm";
+fn perf_wasm() -> Result<(), String> {
+    let status = std::process::Command::new("cargo")
+        .args(["build", "-p", "horizon-perf", "--target", "wasm32-unknown-unknown", "--features", "wasm"])
+        .status()
+        .map_err(|e| format!("cargo: {e}"))?;
+    if !status.success() {
+        return Err("perf-wasm build failed".to_string());
+    }
+    Ok(())
+}
 
-/// What the release folder takes from the repository at HEAD, as `git archive` writes it.
-const ARCHIVED: [&str; 5] = [
+/// What the release folder takes from the repository at HEAD, as `git archive` writes it.const ARCHIVED: [&str; 5] = [
     "tools",
     "mods/horizon/src/test/java",
     "crates/horizon-prepare",
@@ -53,7 +62,7 @@ fn main() -> ExitCode {
         [task] if task == "mod-api" => mod_api::run(),
         [task] if task == "tokens" => tokens(),
         [task] if task == "icons" => icons(),
-        _ => Err(USAGE.to_string()),
+        [task] if task == "perf-wasm" => perf_wasm(),        _ => Err(USAGE.to_string()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

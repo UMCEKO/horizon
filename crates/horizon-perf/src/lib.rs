@@ -10,6 +10,7 @@ pub use horizon_perf_format::*;
 pub mod follow;
 pub mod query;
 pub mod summary;
+pub mod stats;
 
 pub const MAX_FORMAT: u32 = 1;
 
@@ -122,6 +123,8 @@ pub mod read {
 
 pub use follow::FollowReader;
 
+#[cfg(feature = "wasm")]
+pub mod wasm;
 pub type CaptureSide = horizon_perf_format::Side;
 
 #[derive(Debug, Clone)]
@@ -226,6 +229,12 @@ pub fn latest(dir: impl AsRef<Path>) -> Result<Option<PathBuf>, Error> {
 
 pub fn summary(cap: &horizon_perf_format::Capture) -> String {
     summary::health_only(cap)
+}
+pub fn summary_with_baseline(cap: &horizon_perf_format::Capture, baseline: Option<&horizon_perf_format::Capture>) -> String {
+    summary::health_only_with_baseline(cap, baseline)
+}
+pub fn summary_baseline(cap: &horizon_perf_format::Capture, baseline: &horizon_perf_format::Capture) -> String {
+    summary::health_only_with_baseline(cap, Some(baseline))
 }
 
 pub use follow::Field;
