@@ -8,8 +8,12 @@ pub mod horizon {
 
 pub use horizon::perf::v1::*;
 
-// Writer module placeholder
-pub mod writer;
-pub mod gzip;
 pub mod counter;
+pub mod gzip;
 pub mod health;
+pub mod writer;
+
+pub use counter::{CounterHandle, CounterRegistry};
+pub use gzip::GzipWriter;
+pub use health::HealthRecorder;
+pub use writer::PerfWriter;

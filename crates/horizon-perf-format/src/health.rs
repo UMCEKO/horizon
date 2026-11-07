@@ -4,5 +4,7 @@ pub struct HealthRecorder {
 }
 
 impl HealthRecorder {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 }

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Key {
@@ -9,6 +9,7 @@ struct Key {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct Counter {
     key: Key,
     value_bits: AtomicU64,
@@ -24,7 +25,12 @@ impl CounterHandle {
         let mut cur = self.inner.value_bits.load(Ordering::Relaxed);
         loop {
             let new = (f64::from_bits(cur) + v).to_bits();
-            match self.inner.value_bits.compare_exchange(cur, new, Ordering::Relaxed, Ordering::Relaxed) {
+            match self.inner.value_bits.compare_exchange(
+                cur,
+                new,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
                 Ok(_) => break,
                 Err(actual) => cur = actual,
             }
@@ -43,18 +49,42 @@ pub struct CounterRegistry {
 }
 
 impl CounterRegistry {
-    pub fn new() -> Self { Self { inner: Mutex::new(BTreeMap::new()) } }
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(BTreeMap::new()),
+        }
+    }
+
     pub fn counter(&self, name: &str, labels: &[(&str, &str)]) -> CounterHandle {
         let mut g = self.inner.lock().unwrap();
-        let key = Key { name: name.to_string(), labels: labels.iter().map(|(k,v)| (k.to_string(), v.to_string())).collect() };
-        let c = g.entry(key.clone()).or_insert_with(|| std::sync::Arc::new(Counter { key, value_bits: AtomicU64::new(0) })).clone();
+        let key = Key {
+            name: name.to_string(),
+            labels: labels
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        };
+        let c = g
+            .entry(key.clone())
+            .or_insert_with(|| {
+                std::sync::Arc::new(Counter {
+                    key,
+                    value_bits: AtomicU64::new(0),
+                })
+            })
+            .clone();
         CounterHandle { inner: c }
     }
 }
 
-pub fn counter(_name: &str, _labels: &[(&str, &str)]) -> CounterHandle {
-    // Convenience global registry.
+impl Default for CounterRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub fn counter(name: &str, labels: &[(&str, &str)]) -> CounterHandle {
     static REG: std::sync::OnceLock<CounterRegistry> = std::sync::OnceLock::new();
     let r = REG.get_or_init(CounterRegistry::new);
-    r.counter(_name, _labels)
+    r.counter(name, labels)
 }

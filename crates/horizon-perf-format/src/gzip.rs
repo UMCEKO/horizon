@@ -1,4 +1,6 @@
 use crc32fast::Hasher;
+use miniz_oxide::DataFormat;
+use miniz_oxide::deflate::CompressionLevel;
 use miniz_oxide::deflate::core::CompressorOxide;
 use miniz_oxide::deflate::stream::deflate;
 use miniz_oxide::{MZFlush, MZStatus};
@@ -17,24 +19,29 @@ pub struct GzipWriter {
 impl GzipWriter {
     pub fn new(path: impl AsRef<std::path::Path>) -> io::Result<Self> {
         let mut file = File::create(path)?;
-        // RFC 1952 gzip header.
-        let mtime = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as u32;
-        #[allow(clippy::write_with_newline)]
+        let mtime = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as u32;
         file.write_all(&[
-            0x1f, 0x8b, // magic
-            0x08, // deflate
-            0x00, // flags
+            0x1f,
+            0x8b,
+            0x08,
+            0x00,
             (mtime & 0xff) as u8,
             ((mtime >> 8) & 0xff) as u8,
             ((mtime >> 16) & 0xff) as u8,
             ((mtime >> 24) & 0xff) as u8,
-            0x00, // XFL
-            0x03, // OS Unix
+            0x00,
+            0x03,
         ])?;
         file.flush()?;
         Ok(Self {
             file,
-            compressor: Box::new(CompressorOxide::default()),
+            compressor: Box::new(CompressorOxide::with_format_and_level(
+                DataFormat::Raw,
+                CompressionLevel::DefaultCompression,
+            )),
             crc: Hasher::new(),
             size: 0,
             out_buf: vec![0u8; 64 * 1024],
@@ -44,40 +51,33 @@ impl GzipWriter {
     pub fn write_field_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.crc.update(bytes);
         self.size = self.size.wrapping_add(bytes.len() as u32);
-        // feed input entirely through the compressor, flushing sync at end
         let mut consumed = 0;
-        let mut it = 0;
         while consumed < bytes.len() {
             let res = deflate(
                 &mut self.compressor,
                 &bytes[consumed..],
                 &mut self.out_buf,
-                MZFlush::None,
+                MZFlush::Sync,
             );
-            if let Err(e) = res.status {
-                return Err(io::Error::other(format!("deflate: {e:?}")));
+            if let Err(e) = res.status && !matches!(e, miniz_oxide::MZError::Buf) {
+                return Err(io::Error::other(format!("deflate sync: {e:?}")));
             }
             let bw = res.bytes_written;
             if bw > 0 {
                 self.file.write_all(&self.out_buf[..bw])?;
             }
             consumed += res.bytes_consumed;
-            it += 1;
-            if it > 1000 { panic!("too many none iters"); }
             if res.bytes_consumed == 0 && res.bytes_written == 0 {
                 break;
             }
         }
-        // single sync flush
         let res = deflate(&mut self.compressor, &[], &mut self.out_buf, MZFlush::Sync);
-        if let Err(e) = res.status {
-            if !matches!(e, miniz_oxide::MZError::Buf) {
-                return Err(io::Error::other(format!("deflate sync: {e:?}")));
-            }
-        }
         let bw = res.bytes_written;
         if bw > 0 {
             self.file.write_all(&self.out_buf[..bw])?;
+        }
+        if let Err(e) = res.status && !matches!(e, miniz_oxide::MZError::Buf) {
+            return Err(io::Error::other(format!("deflate sync flush: {e:?}")));
         }
         self.file.flush()?;
         Ok(())
@@ -85,7 +85,12 @@ impl GzipWriter {
 
     pub fn finish(&mut self) -> io::Result<()> {
         loop {
-            let res = deflate(&mut self.compressor, &[], &mut self.out_buf, MZFlush::Finish);
+            let res = deflate(
+                &mut self.compressor,
+                &[],
+                &mut self.out_buf,
+                MZFlush::Finish,
+            );
             let bw = res.bytes_written;
             if bw > 0 {
                 self.file.write_all(&self.out_buf[..bw])?;
