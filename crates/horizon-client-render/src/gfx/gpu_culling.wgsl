@@ -110,8 +110,7 @@ const FADING: u32 = 1u;
 // In `params.flags`: solid quads facing away from the eye are left out, its
 // keys in `tables` from `params.eyes`.
 const EYE: u32 = 4u;
-// Words per id in `runs`, and where its slot (page * bands + band) starts in the
-// first, its flags and draws (at most 4: gpu_culling.rs `RUNS`) below.
+// Words per id in `runs`: its slot (page * bands + band) first, then flags and up to 4 draws (`RUNS`).
 const RUN_WORDS: u32 = 11u;
 const PAGE_SHIFT: u32 = 5u;
 // In its first word: its box is tested this frame; it waits for phase 2.
@@ -180,8 +179,7 @@ fn page_count(group: u32, page: u32, phase: u32) -> u32 {
     return STATS + (phase * GROUPS + group) * params.pages + page;
 }
 
-// The count of `block`'s draws in `slot` (page * bands + band) and `phase`
-// (`cull`, `count2`), then where they start (`scan`): phase 1's, then phase 2's.
+// `block`'s draw count in `slot` and `phase` (`cull`, `count2`), later its start (`scan`).
 fn block_count(block: u32, slot: u32, phase: u32) -> u32 {
     let blocks = (params.ids + BLOCK - 1u) / BLOCK;
     let slots = params.pages * bands();

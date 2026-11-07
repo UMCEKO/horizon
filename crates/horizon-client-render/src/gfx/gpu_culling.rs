@@ -1503,7 +1503,7 @@ impl GpuCulling {
         pass.dispatch_workgroups(blocks.min(ROW), blocks.div_ceil(ROW), 1);
     }
 
-    /// Solid draws per distance group and page, nearest first; `group` is `Flat::page_group`'s, `phase` 1 after `compact`.
+    /// Solid draws per distance group and page, nearest first; leaves the origins at vertex slot 1.
     pub fn draw<'a>(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
