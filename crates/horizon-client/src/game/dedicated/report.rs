@@ -212,8 +212,7 @@ fn worker_jobs(jobs: &[(&'static str, u64, u64)], window_s: f64) -> Value {
     )
 }
 
-/// How often `Streaming::update` ran and the largest in-flight caps it used: a tick over 50 ms updates less
-/// than 20 times a second, which bounds what the chunk workers are given.
+/// `Streaming::update` runs per second and its largest in-flight caps; slow ticks update less often.
 fn streaming_updates(updates: u64, caps: [u64; 3], window_s: f64) -> Value {
     json!({
         "updates": updates,

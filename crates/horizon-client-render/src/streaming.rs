@@ -77,8 +77,7 @@ pub mod job_stats {
             .collect()
     }
 }
-/// The factor the in-flight caps grow by when `update` runs `gap` after the last one: the pipeline only
-/// advances inside it, so a slow tick must hand out the work of the updates it skipped (1 to 16, one per 25 ms).
+/// Cap factor for an update `gap` after the last (1 to 16, one per 25 ms): a slow tick hands out the skipped updates' work.
 fn cap_scale(gap: std::time::Duration) -> usize {
     (gap.as_millis() / 25).clamp(1, 16) as usize
 }
