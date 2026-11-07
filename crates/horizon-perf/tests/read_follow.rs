@@ -8,15 +8,19 @@ fn whole_file_and_follow() {
     let _ = std::fs::remove_file(&path);
     let mut w = PerfWriter::new(&path).unwrap();
     w.send(vec![0x08, 0x01]);
-    let mut start = horizon_perf_format::Start::default();
-    start.side = horizon_perf_format::Side::Server as i32;
+    let start = horizon_perf_format::Start {
+        side: horizon_perf_format::Side::Server as i32,
+        ..Default::default()
+    };
     let mut sb = Vec::new();
     start.encode_length_delimited(&mut sb).unwrap();
     let mut tagged = vec![0x12u8];
     tagged.extend_from_slice(&sb);
     w.send(tagged);
-    let mut stop = horizon_perf_format::Stop::default();
-    stop.side = horizon_perf_format::Side::Server as i32;
+    let stop = horizon_perf_format::Stop {
+        side: horizon_perf_format::Side::Server as i32,
+        ..Default::default()
+    };
     let mut sb = Vec::new();
     stop.encode_length_delimited(&mut sb).unwrap();
     let mut tagged = vec![0xBAu8, 0x01];
