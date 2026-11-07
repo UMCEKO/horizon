@@ -620,6 +620,10 @@ impl Guest {
         }
         self.sender.send(packet.encode());
     }
+    /// Packets already encoded, in order, for ones `note_change` has no use for.
+    pub fn send_encoded(&self, bodies: impl IntoIterator<Item = Vec<u8>>) {
+        self.sender.send_many(bodies);
+    }
     /// Whether the guest is placed and on a Horizon client (the only one that
     /// reads synced attachments).
     pub fn reads_attachment_sync(&self) -> bool {

@@ -2,8 +2,9 @@
 //! each player looks like to their level's waypoint manager this tick.
 use super::{Game, lan::LanHost};
 use horizon_client::{
+    fast_hash::FxHashMap,
     items::ItemStack,
-    lan::waypoints::{self, HIDING_HEADS, Icon, PLAYER_RANGE},
+    lan::waypoints::{self, Body, HIDING_HEADS, Icon, PLAYER_RANGE},
 };
 
 /// `waypoint_transmit_range`: hidden by crouching, invisibility or a head worn.
@@ -89,9 +90,23 @@ impl Game<'_> {
                 host.waypoints.remove(&level);
             }
         }
-        for (conn, packet) in out {
-            if let Some(g) = host.hub.guest(conn) {
-                g.send(&packet);
+        if out.is_empty() {
+            return;
+        }
+        // One lookup and one send per receiving guest; a guest's packets keep their order.
+        let mut slot_of: FxHashMap<u32, usize> = FxHashMap::default();
+        for (i, g) in host.hub.guests.iter().enumerate() {
+            slot_of.entry(g.conn).or_insert(i);
+        }
+        let mut bodies: Vec<Vec<Body>> = (0..host.hub.guests.len()).map(|_| Vec::new()).collect();
+        for (conn, body) in out {
+            if let Some(&i) = slot_of.get(&conn) {
+                bodies[i].push(body);
+            }
+        }
+        for (g, bodies) in host.hub.guests.iter().zip(bodies) {
+            if !bodies.is_empty() {
+                g.send_encoded(bodies.into_iter().map(Body::into_vec));
             }
         }
     }

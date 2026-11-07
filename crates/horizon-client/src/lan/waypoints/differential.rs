@@ -1,8 +1,10 @@
 //! The locator bar against the frozen copy of the implementation before it ([`super::reference`]):
 //! random scenarios must produce the same bytes, in the same order, for every connection.
-use super::{Icon, PLAYER_RANGE, Player, Waypoints, reference};
-use horizon_protocol::packets::play::{Clientbound as C, WaypointTarget, waypoint_operation};
-use std::collections::BTreeMap;
+use super::{Body, Icon, PLAYER_RANGE, Player, Waypoints, reference};
+use horizon_protocol::packets::play::{
+    Clientbound as C, TrackedWaypoint, WaypointId, WaypointTarget, waypoint_operation,
+};
+use std::{collections::BTreeMap, sync::Arc};
 
 struct Rng(u64);
 
@@ -51,9 +53,9 @@ fn sent_by_reference(out: &[(u32, C)], into: &mut Sent) {
     }
 }
 
-fn sent_by_new(out: &[(u32, C)], into: &mut Sent) {
-    for (conn, packet) in out {
-        into.entry(*conn).or_default().push(packet.encode());
+fn sent_by_new(out: &[(u32, Body)], into: &mut Sent) {
+    for (conn, body) in out {
+        into.entry(*conn).or_default().push(body.to_vec());
     }
 }
 
@@ -347,4 +349,36 @@ fn matches_the_reference_at_the_edges_of_a_range_and_of_really_far() {
     counts.merge(&pair_at(10.0, PLAYER_RANGE, -5.0));
     println!("edges: {counts:?}");
     assert!(counts.azimuth > 100 && counts.block > 100 && counts.update > 0, "{counts:?}");
+}
+
+#[test]
+fn one_body_serves_every_receiver_of_a_block_update() {
+    let at = |uuid: u128, x: f64| Player {
+        uuid,
+        conn: Some(uuid as u32),
+        position: [x, 64.0, 0.5],
+        spectator: false,
+        transmit_range: PLAYER_RANGE,
+        receive_range: PLAYER_RANGE,
+        first_tick: false,
+        view_distance: 8,
+        team: None,
+        icon: Icon::default(),
+    };
+    let mut w = Waypoints::default();
+    w.tick(&[at(1, 0.5), at(2, 3.5), at(3, 6.5), at(4, 9.5)], &[], true);
+    let out = w.tick(&[at(1, 0.5), at(2, 3.5), at(3, 6.5), at(4, 10.5)], &[], true);
+    let [(a, Body::Shared(x)), (b, Body::Shared(y)), (c, Body::Shared(z))] = &out[..] else {
+        panic!("{out:?}");
+    };
+    assert_eq!([*a, *b, *c], [1, 2, 3]);
+    assert!(Arc::ptr_eq(x, y) && Arc::ptr_eq(y, z));
+    let expected = C::TrackedWaypoint(TrackedWaypoint {
+        operation: waypoint_operation::UPDATE,
+        id: WaypointId::Uuid(4),
+        style: "minecraft:default".into(),
+        color: None,
+        target: WaypointTarget::Block([10, 64, 0]),
+    });
+    assert_eq!(&x[..], &expected.encode()[..]);
 }

@@ -14,6 +14,7 @@ use crate::fast_hash::FxHashMap as HashMap;
 use horizon_protocol::packets::play::{
     Clientbound as C, TrackedWaypoint, WaypointId, WaypointTarget, waypoint_operation,
 };
+use std::sync::{Arc, LazyLock};
 
 /// `Player.createAttributes`: both waypoint ranges.
 pub const PLAYER_RANGE: f64 = 6.0e7;
@@ -62,17 +63,53 @@ pub fn team_rgb(color: &str) -> Option<i32> {
 /// Waypoint.Icon.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Icon {
-    pub style: String,
+    pub style: Arc<str>,
     pub color: Option<i32>,
 }
 
 impl Default for Icon {
     fn default() -> Self {
+        static STYLE: LazyLock<Arc<str>> = LazyLock::new(|| "minecraft:default".into());
         Self {
-            style: "minecraft:default".into(),
+            style: STYLE.clone(),
             color: None,
         }
     }
+}
+
+/// An encoded packet: one allocation shared by every receiver of the same update.
+#[derive(Clone, Debug)]
+pub enum Body {
+    Owned(Vec<u8>),
+    Shared(Arc<[u8]>),
+}
+
+impl std::ops::Deref for Body {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Body::Owned(v) => v,
+            Body::Shared(a) => a,
+        }
+    }
+}
+
+impl Body {
+    pub fn into_vec(self) -> Vec<u8> {
+        match self {
+            Body::Owned(v) => v,
+            Body::Shared(a) => a.to_vec(),
+        }
+    }
+}
+
+/// A body already encoded this tick for the connections of one source.
+struct Encoded {
+    operation: i32,
+    target: WaypointTarget,
+    color: Option<i32>,
+    style: Arc<str>,
+    bytes: Arc<[u8]>,
 }
 
 /// A player as the waypoint manager sees them this tick.
@@ -206,7 +243,9 @@ struct Tick<'a> {
     /// Players a respawn replaced this tick: a new ServerPlayer, on its first tick.
     fresh: Vec<bool>,
     enabled: bool,
-    out: Vec<(u32, C)>,
+    /// What block and chunk packets were encoded this tick, by source slot.
+    encoded: Vec<Vec<Encoded>>,
+    out: Vec<(u32, Body)>,
 }
 
 impl<'a> Tick<'a> {
@@ -229,11 +268,33 @@ impl<'a> Tick<'a> {
         icon: &Icon,
         target: WaypointTarget,
     ) {
-        let Some(conn) = self.conn(receiver) else {
-            return;
-        };
+        if let Some(conn) = self.conn(receiver) {
+            let body = self.body(source, operation, icon, target);
+            self.out.push((conn, body));
+        }
+    }
+    /// The packet's bytes; a block or chunk target reads the same to every receiver, so it is encoded once.
+    fn body(&mut self, source: u32, operation: i32, icon: &Icon, target: WaypointTarget) -> Body {
         let uuid = self.uuid_of[source as usize];
-        self.out.push((conn, waypoint(uuid, operation, icon, target)));
+        if !matches!(target, WaypointTarget::Block(_) | WaypointTarget::Chunk(_)) {
+            return Body::Owned(waypoint(uuid, operation, icon, target));
+        }
+        let known = &mut self.encoded[source as usize];
+        let hit = known.iter().find(|e| {
+            (e.operation, e.target, e.color) == (operation, target, icon.color) && e.style == icon.style
+        });
+        if let Some(e) = hit {
+            return Body::Shared(e.bytes.clone());
+        }
+        let bytes: Arc<[u8]> = waypoint(uuid, operation, icon, target).into();
+        known.push(Encoded {
+            operation,
+            target,
+            color: icon.color,
+            style: icon.style.clone(),
+            bytes: bytes.clone(),
+        });
+        Body::Shared(bytes)
     }
     fn connect(&mut self, receiver: u32, source: u32, c: &Connection) {
         let target = match c.kind {
@@ -345,13 +406,13 @@ impl<'a> Tick<'a> {
             }
         }
     }
-    /// `Connection.update`: the packet when the waypoint moved.
-    fn update(&mut self, c: &mut Connection, (s, r): (&Player, &Player), source: u32) {
+    /// `Connection.update`: the packet when the waypoint moved. True if the connection now holds a new chunk.
+    fn update(&mut self, c: &mut Connection, (s, r): (&Player, &Player), source: u32) -> bool {
         let target = match &mut c.kind {
             Kind::Block(last) => {
                 let now = self.blk[source as usize];
                 if now == *last {
-                    return;
+                    return false;
                 }
                 *last = now;
                 WaypointTarget::Block(now)
@@ -359,7 +420,7 @@ impl<'a> Tick<'a> {
             Kind::Chunk(last) => {
                 let now = self.chk[source as usize];
                 if now == *last {
-                    return;
+                    return false;
                 }
                 *last = now;
                 WaypointTarget::Chunk(now)
@@ -367,36 +428,37 @@ impl<'a> Tick<'a> {
             Kind::Azimuth(last) => {
                 let now = Self::azimuth(s, r);
                 if (now - *last).abs() <= AZIMUTH_STEP {
-                    return;
+                    return false;
                 }
                 *last = now;
                 WaypointTarget::Azimuth(now)
             }
         };
         if let Some(conn) = r.conn {
-            self.out.push((
-                conn,
-                waypoint(s.uuid, waypoint_operation::UPDATE, &c.icon, target),
-            ));
+            let body = self.body(source, waypoint_operation::UPDATE, &c.icon, target);
+            self.out.push((conn, body));
         }
+        matches!(target, WaypointTarget::Chunk(_))
     }
 }
 
-fn waypoint(source: u128, operation: i32, icon: &Icon, target: WaypointTarget) -> C {
+/// `ClientboundTrackedWaypointPacket`, encoded.
+fn waypoint(source: u128, operation: i32, icon: &Icon, target: WaypointTarget) -> Vec<u8> {
     C::TrackedWaypoint(TrackedWaypoint {
         operation,
         id: WaypointId::Uuid(source),
-        style: icon.style.clone(),
+        style: icon.style.to_string(),
         color: icon.color,
         target,
     })
+    .encode()
 }
 
 impl Waypoints {
-    /// `createConnection`.
-    fn create_connection(&mut self, t: &mut Tick, receiver: u32, source: u32) {
+    /// `createConnection`. True if the receiver now holds a connection it was just given.
+    fn create_connection(&mut self, t: &mut Tick, receiver: u32, source: u32) -> bool {
         if receiver == source || !t.enabled {
-            return;
+            return false;
         }
         match t
             .pair(source, receiver)
@@ -405,19 +467,22 @@ impl Waypoints {
             Some(c) => {
                 t.connect(receiver, source, &c);
                 self.rows[receiver as usize].put(source, c);
+                true
             }
             None => {
                 if self.rows[receiver as usize].take(source).is_some() {
                     t.disconnect(receiver, source);
                 }
+                false
             }
         }
     }
     /// The receiver's connection to the source updated in its place
-    /// (`updateConnection`), or made if it has none (`createConnection`).
-    fn update_or_create(&mut self, t: &mut Tick, receiver: u32, source: u32) {
+    /// (`updateConnection`), or made if it has none (`createConnection`). True if it
+    /// made one or moved a chunk connection: what an identical second call could still change.
+    fn update_or_create(&mut self, t: &mut Tick, receiver: u32, source: u32) -> bool {
         if receiver == source || !t.enabled {
-            return;
+            return false;
         }
         let pair = t.pair(source, receiver);
         let Some(c) = self.rows[receiver as usize].get_mut(source) else {
@@ -427,17 +492,18 @@ impl Waypoints {
         if let Some(pair) = pair
             && !t.broken(c, pair, source, receiver)
         {
-            t.update(c, pair, source);
-            return;
+            return t.update(c, pair, source);
         }
         match pair.and_then(|pair| t.make(pair, source, receiver)) {
             Some(new) => {
                 t.connect(receiver, source, &new);
                 *c = new;
+                true
             }
             None => {
                 t.disconnect(receiver, source);
                 self.rows[receiver as usize].take(source);
+                false
             }
         }
     }
@@ -487,12 +553,17 @@ impl Waypoints {
             self.track(t, player);
         }
     }
-    /// `updatePlayer`.
-    fn update_player(&mut self, t: &mut Tick, player: u32) {
+    /// `updatePlayer`. Returns the sources it made or moved a chunk of, in waypoint order.
+    fn update_player(&mut self, t: &mut Tick, player: u32) -> Vec<u32> {
+        let mut changed = Vec::new();
         // Connections change; the waypoints don't.
         for k in 0..self.waypoints.len() {
-            self.update_or_create(t, player, self.waypoints[k]);
+            let source = self.waypoints[k];
+            if self.update_or_create(t, player, source) {
+                changed.push(source);
+            }
         }
+        changed
     }
     /// `removePlayer`.
     fn remove_player(&mut self, t: &mut Tick, player: u32) {
@@ -543,7 +614,7 @@ impl Waypoints {
         players: &[Player],
         respawned: &[u128],
         locator_bar: bool,
-    ) -> Vec<(u32, C)> {
+    ) -> Vec<(u32, Body)> {
         self.tick_level(players, &[], respawned, locator_bar)
     }
 
@@ -555,7 +626,7 @@ impl Waypoints {
         away: &[(u128, u32)],
         respawned: &[u128],
         locator_bar: bool,
-    ) -> Vec<(u32, C)> {
+    ) -> Vec<(u32, Body)> {
         let slots: Vec<u32> = players.iter().map(|p| self.slot(p.uuid)).collect();
         let n = self.uuid_of.len();
         let mut pl = vec![None; n];
@@ -583,6 +654,7 @@ impl Waypoints {
             view: vec![None; n],
             fresh,
             enabled: locator_bar,
+            encoded: (0..n).map(|_| Vec::new()).collect(),
             out: Vec::new(),
         };
         // Vanilla reads the rule when it connects; changing it breaks or remakes
@@ -641,12 +713,13 @@ impl Waypoints {
                 let moved_view = memo.view_center != center;
                 let transmitting = memo.transmitting;
                 self.memo[su].as_mut().expect("joined above").position = p.position;
+                let mut changed = Vec::new();
                 if !p.first_tick {
                     if transmitting {
                         self.update_waypoint(&mut t, s);
                     }
                     if p.receive_range > 0.0 {
-                        self.update_player(&mut t, s);
+                        changed = self.update_player(&mut t, s);
                     }
                 }
                 if moved_view {
@@ -654,7 +727,14 @@ impl Waypoints {
                     t.view[su] = Some((center, p.view_distance));
                 }
                 if p.receive_range > 0.0 {
-                    self.update_player(&mut t, s);
+                    if moved_view || p.first_tick {
+                        self.update_player(&mut t, s);
+                    } else {
+                        // The same view and positions as the first call: only what it changed can change again.
+                        for source in changed {
+                            self.update_or_create(&mut t, s, source);
+                        }
+                    }
                 }
             }
             // LivingEntity.onAttributeUpdated(WAYPOINT_TRANSMIT_RANGE).
@@ -744,12 +824,16 @@ mod tests {
     }
 
     /// The packets to `conn`, as (operation, target).
-    fn to(out: &[(u32, C)], conn: u32) -> Vec<(i32, WaypointTarget)> {
+    fn to(out: &[(u32, Body)], conn: u32) -> Vec<(i32, WaypointTarget)> {
         out.iter()
             .filter(|(c, _)| *c == conn)
-            .map(|(_, p)| match p {
-                C::TrackedWaypoint(w) => (w.operation, w.target),
-                other => panic!("{other:?}"),
+            .map(|(_, body)| {
+                let mut r = horizon_protocol::buf::Reader::new(body);
+                let id = r.varint().unwrap();
+                match C::decode(id, &body[horizon_protocol::buf::varint_size(id)..]).unwrap() {
+                    C::TrackedWaypoint(w) => (w.operation, w.target),
+                    other => panic!("{other:?}"),
+                }
             })
             .collect()
     }
