@@ -7,8 +7,7 @@
 //!
 //! They rewrite the biomes' `features` lists and
 //! `minecraft:gameplay/natural_mob_spawns` attributes when the content root
-//! builds: an added feature goes at the end of its step's list, as NeoForge
-//! adds it, and the generator orders every biome's lists as vanilla's
+//! builds: an added feature goes at the end of its step's list, and the generator orders every biome's lists as vanilla's
 //! `FeatureSorter` does; an added spawner goes at the end of its entity type's
 //! spawn category with `minCount` and `maxCount` converted to 26.3's `count`.
 //! Biomes no modifier names keep their text byte for byte, and a root with no
@@ -16,6 +15,7 @@
 //! and their random seeds.
 use super::{J, Result};
 use horizon_world::worldgen::structure::start::STEPS;
+use serde::Deserialize;
 use serde_json::{Number, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -29,11 +29,31 @@ pub(super) fn is_modifier(file: &str) -> bool {
 
 /// One mob spawner entry in an `add_spawns` modifier.
 #[derive(Debug, PartialEq)]
-struct Spawner {
-    entity: String,
+pub(super) struct Spawner {
+    pub entity: String,
     weight: i64,
     min_count: i64,
     max_count: i64,
+}
+
+impl Spawner {
+    /// The canonical 26.3 weighted spawn entry, shared by biome and structure modifiers.
+    pub(super) fn entry(&self) -> J {
+        let count = if self.min_count == self.max_count {
+            J::Num(self.min_count.into())
+        } else {
+            J::Obj(vec![
+                ("type".into(), J::Str("minecraft:uniform".into())),
+                ("min_inclusive".into(), J::Num(self.min_count.into())),
+                ("max_inclusive".into(), J::Num(self.max_count.into())),
+            ])
+        };
+        J::Obj(vec![
+            ("type".into(), J::Str(self.entity.clone())),
+            ("count".into(), count),
+            ("weight".into(), J::Num(self.weight.into())),
+        ])
+    }
 }
 
 /// What a modifier does to its biomes.
@@ -71,8 +91,11 @@ impl Action {
 pub(super) struct Modifier {
     /// `<mod>: <file>`, for errors.
     name: String,
-    biomes: Value,
+    biomes: Selector,
     action: Action,
+    /// The mod, the file and its text, kept in the content root so the
+    /// modifier is applied again over a world's data packs (`over_packs`).
+    pub source: [String; 3],
 }
 
 /// A generation step's index from its name.
@@ -85,7 +108,7 @@ fn step(v: &Value) -> std::result::Result<usize, String> {
 }
 
 /// One NeoForge `SpawnerData` object from `spawners`.
-fn spawner(v: &Value) -> std::result::Result<Spawner, String> {
+pub(super) fn spawner(v: &Value) -> std::result::Result<Spawner, String> {
     let o = v.as_object().ok_or("spawner: not an object")?;
     let entity = o
         .get("type")
@@ -94,6 +117,7 @@ fn spawner(v: &Value) -> std::result::Result<Spawner, String> {
     let int = |k: &str| {
         o.get(k)
             .and_then(Value::as_i64)
+            .filter(|value| i32::try_from(*value).is_ok())
             .ok_or_else(|| format!("spawner: no {k}"))
     };
     let weight = int("weight")?;
@@ -198,9 +222,10 @@ impl Modifier {
             }
         };
         Ok(Some(Self {
-            biomes: field("biomes")?,
+            biomes: Selector::read(field("biomes")?, true).map_err(at)?,
             action,
             name,
+            source: [mod_id.to_owned(), file.to_owned(), text.to_owned()],
         }))
     }
 }
@@ -226,7 +251,11 @@ impl Registry<'_> {
     /// `#tag`, a list of ids, or one of NeoForge's `any`, `or`, `and` and
     /// `not` objects. Unknown ids and tags are errors; inside a tag, entries
     /// nobody registers are left out, as the worldgen loader leaves them out.
-    fn resolve(&self, set: &Value) -> std::result::Result<Vec<String>, String> {
+    pub(super) fn resolve(&self, set: &Value) -> std::result::Result<Vec<String>, String> {
+        Selector::read(set.clone(), false)?.resolve(self, None)
+    }
+
+    fn resolve_leaf(&self, set: &Value) -> std::result::Result<Vec<String>, String> {
         let mut out = Vec::new();
         match set {
             Value::String(s) => match s.strip_prefix('#') {
@@ -243,7 +272,7 @@ impl Registry<'_> {
                 for v in list {
                     match v {
                         Value::String(s) if !s.starts_with('#') => {
-                            extend(&mut out, self.resolve(v)?)
+                            extend(&mut out, self.resolve_leaf(v)?)
                         }
                         _ => return Err(format!("a {} list holds ids only", self.what)),
                     }
@@ -252,28 +281,10 @@ impl Registry<'_> {
             Value::Object(o) => {
                 let kind = o.get("type").and_then(Value::as_str).unwrap_or_default();
                 let kind = kind.strip_prefix("neoforge:").unwrap_or(kind);
-                let sets = || -> std::result::Result<Vec<Vec<String>>, String> {
-                    o.get("values")
-                        .and_then(Value::as_array)
-                        .ok_or(format!("{kind}: no values"))?
-                        .iter()
-                        .map(|v| self.resolve(v))
-                        .collect()
-                };
                 match kind {
                     "any" => out.extend(self.ids.iter().cloned()),
-                    "or" => sets()?.into_iter().for_each(|s| extend(&mut out, s)),
-                    "and" => {
-                        let mut sets = sets()?.into_iter();
-                        out = sets.next().unwrap_or_default();
-                        for s in sets {
-                            out.retain(|id| s.contains(id));
-                        }
-                    }
-                    "not" => {
-                        let not = self.resolve(o.get("value").ok_or("not: no value")?)?;
-                        out.extend(self.ids.iter().filter(|id| !not.contains(id)).cloned());
-                    }
+                    "or" | "and" => return Err(format!("{kind}: no values")),
+                    "not" => return Err("not: no value".into()),
                     _ => return Err(format!("{} set type {kind:?} is not read", self.what)),
                 }
             }
@@ -327,12 +338,163 @@ fn extend(out: &mut Vec<String>, ids: impl IntoIterator<Item = String>) {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Range {
+    #[serde(default, deserialize_with = "present")]
+    min: Option<f64>,
+    #[serde(default, deserialize_with = "present")]
+    max: Option<f64>,
+}
+
+fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Climate {
+    #[serde(rename = "type")]
+    _kind: String,
+    #[serde(default, deserialize_with = "present")]
+    temperature: Option<Range>,
+    #[serde(default, deserialize_with = "present")]
+    downfall: Option<Range>,
+}
+
+#[derive(Debug)]
+enum Selector {
+    Generic(Value),
+    Climate(Climate),
+    Or(Vec<Selector>),
+    And(Vec<Selector>),
+    Not(Box<Selector>),
+}
+
+impl Selector {
+    fn read(mut set: Value, allow_climate: bool) -> std::result::Result<Self, String> {
+        let Value::Object(object) = &mut set else {
+            return Ok(Self::Generic(set));
+        };
+        match object.get("type").and_then(Value::as_str) {
+            Some("horizon:climate") if allow_climate => {
+                let climate: Climate = serde_json::from_value(set).map_err(|e| e.to_string())?;
+                if climate.temperature.is_none() && climate.downfall.is_none() {
+                    return Err("climate: temperature or downfall required".into());
+                }
+                for range in [&climate.temperature, &climate.downfall]
+                    .into_iter()
+                    .flatten()
+                {
+                    if range.min.is_none() && range.max.is_none()
+                        || matches!((range.min, range.max), (Some(a), Some(b)) if a > b)
+                    {
+                        return Err("climate: invalid range".into());
+                    }
+                }
+                Ok(Self::Climate(climate))
+            }
+            Some("neoforge:or" | "or" | "neoforge:and" | "and")
+                if object.get("values").is_some_and(Value::is_array) =>
+            {
+                let Value::Array(values) = object.remove("values").unwrap() else {
+                    unreachable!()
+                };
+                let is_or = matches!(
+                    object.get("type").and_then(Value::as_str),
+                    Some("or" | "neoforge:or")
+                );
+                let values = values
+                    .into_iter()
+                    .map(|v| Self::read(v, allow_climate))
+                    .collect::<std::result::Result<_, _>>()?;
+                Ok(if is_or {
+                    Self::Or(values)
+                } else {
+                    Self::And(values)
+                })
+            }
+            Some("neoforge:not" | "not") if object.contains_key("value") => {
+                let value = object.remove("value").unwrap();
+                Ok(Self::Not(Box::new(Self::read(value, allow_climate)?)))
+            }
+            _ => Ok(Self::Generic(set)),
+        }
+    }
+
+    fn resolve(
+        &self,
+        registry: &Registry<'_>,
+        biomes: Option<&J>,
+    ) -> std::result::Result<Vec<String>, String> {
+        match self {
+            Self::Generic(set) => registry.resolve_leaf(set),
+            Self::Climate(climate) => {
+                let Some(J::Obj(entries)) = biomes else {
+                    return Err("biome bundle is not an object".into());
+                };
+                let mut selected = Vec::new();
+                for (id, text) in entries {
+                    let J::Str(text) = text else { continue };
+                    let biome: Value =
+                        serde_json::from_str(text).map_err(|e| format!("{id}: {e}"))?;
+                    let mut matches = true;
+                    for (field, range) in [
+                        ("temperature", &climate.temperature),
+                        ("downfall", &climate.downfall),
+                    ] {
+                        if let Some(range) = range {
+                            let value = biome[field]
+                                .as_f64()
+                                .ok_or_else(|| format!("{id}: no {field}"))?;
+                            matches &= range.min.is_none_or(|min| value >= min)
+                                && range.max.is_none_or(|max| value <= max);
+                        }
+                    }
+                    if matches {
+                        selected.push(id.clone());
+                    }
+                }
+                Ok(selected)
+            }
+            Self::Or(values) => {
+                let mut out = Vec::new();
+                for value in values {
+                    extend(&mut out, value.resolve(registry, biomes)?);
+                }
+                Ok(out)
+            }
+            Self::And(values) => {
+                let mut values = values.iter();
+                let mut out = match values.next() {
+                    Some(value) => value.resolve(registry, biomes)?,
+                    None => Vec::new(),
+                };
+                for value in values {
+                    let ids = value.resolve(registry, biomes)?;
+                    out.retain(|id| ids.contains(id));
+                }
+                Ok(out)
+            }
+            Self::Not(value) => {
+                let excluded = value.resolve(registry, biomes)?;
+                Ok(registry
+                    .ids
+                    .iter()
+                    .filter(|id| !excluded.contains(id))
+                    .cloned()
+                    .collect())
+            }
+        }
+    }
+}
+
 /// Applies `modifiers` to the biome bundle `biomes` (id → the biome's text):
-/// every addition first, then every removal, each in mod and file order (as
-/// NeoForge's add phase runs before its remove phase). A modifier naming a
+/// every addition first, then every removal, each in mod and file order. A modifier naming a
 /// biome, feature, entity type or tag the root doesn't have (another mod's, a
-/// `#c:` convention tag) is skipped with a line in `warnings`, as NeoForge
-/// skips a holder set it can't resolve, instead of dropping every content mod.
+/// `#c:` convention tag) is skipped with a line in `warnings`, instead of dropping every content mod.
 pub(super) fn apply(
     biomes: &mut J,
     modifiers: &[Modifier],
@@ -348,8 +510,10 @@ pub(super) fn apply(
     let mut changed: BTreeMap<String, J> = BTreeMap::new();
     for m in adds.chain(removes) {
         let at = |e: String| format!("{}: {e}", m.name);
-        let resolved: std::result::Result<(Vec<String>, Vec<String>), String> =
-            biome_reg.resolve(&m.biomes).and_then(|targets| {
+        let resolved: std::result::Result<(Vec<String>, Vec<String>), String> = m
+            .biomes
+            .resolve(biome_reg, Some(biomes))
+            .and_then(|targets| {
                 let ids = match &m.action {
                     Action::AddFeatures { features, .. }
                     | Action::RemoveFeatures { features, .. } => feature_reg.resolve(features)?,
@@ -537,22 +701,19 @@ fn add_spawns(
         let Some(J::Arr(list)) = by_cat.get_mut(cat) else {
             return Err(format!("spawns_by_category.{cat}: not a list"));
         };
-        let count = if s.min_count == s.max_count {
-            J::Num(s.min_count.into())
-        } else {
-            J::Obj(vec![
-                ("type".into(), J::Str("minecraft:uniform".into())),
-                ("min_inclusive".into(), J::Num(s.min_count.into())),
-                ("max_inclusive".into(), J::Num(s.max_count.into())),
-            ])
-        };
-        list.push(J::Obj(vec![
-            ("type".into(), J::Str(s.entity.clone())),
-            ("count".into(), count),
-            ("weight".into(), J::Num(s.weight.into())),
-        ]));
+        list.push(s.entry());
     }
     Ok(())
+}
+
+/// Remove entity ids from a canonical weighted spawn list.
+pub(super) fn remove_entities(entries: &mut Vec<J>, entities: &[String]) {
+    entries.retain(|entry| {
+        entry
+            .get("type")
+            .and_then(J::as_str)
+            .is_none_or(|t| !entities.contains(&full(t)))
+    });
 }
 
 fn remove_spawns(biome: &mut J, entities: &[String]) -> std::result::Result<(), String> {
@@ -577,12 +738,7 @@ fn remove_spawns(biome: &mut J, entities: &[String]) -> std::result::Result<(), 
         let J::Arr(entries) = list else {
             return Err(format!("spawns_by_category.{cat}: not a list"));
         };
-        entries.retain(|entry| {
-            entry
-                .get("type")
-                .and_then(J::as_str)
-                .is_none_or(|t| !entities.contains(&full(t)))
-        });
+        remove_entities(entries, entities);
     }
     Ok(())
 }

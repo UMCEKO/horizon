@@ -23,7 +23,11 @@ pub fn main() -> horizon_client::Result<()> {
         .find_map(|line| line.strip_prefix("#resources "))
         .map(std::path::PathBuf::from)
         .ok_or("no #resources line")?;
-    let items = Items::catalog(&root, &PackOverlay::NONE)?;
+    let items = Items::catalog(
+        &root,
+        &PackOverlay::NONE,
+        &horizon_world::item_defaults::read(&root)?,
+    )?;
     let brewing = Brewing::load(&root, &items, &PackOverlay::NONE);
     let providers = Providers::load(&root);
     let mut out = String::new();

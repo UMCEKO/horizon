@@ -46,17 +46,13 @@ pub fn set_size(m: &mut Mob, size: i32) {
     }
 }
 fn can_attack(w: &MobWorld) -> bool {
-    w.player
-        .as_ref()
+    w.selected_player()
         .is_some_and(|p| p.alive && !p.creative && !p.spectator)
 }
 /// `Phantom.canAttack(level, player, TargetingConditions.DEFAULT)`: as above,
 /// and in sight (`Sensing.hasLineOfSight`), so a roof or a wall hides the player.
 fn can_attack_seen(m: &mut Mob, w: &MobWorld) -> bool {
     can_attack(w) && m.sees(w, Who::Player)
-}
-fn sea_level() -> i32 {
-    63
 }
 /// `PhantomAttackPlayerTargetGoal`: every three seconds, the player
 /// within 16 blocks across and 64 up or down.
@@ -75,7 +71,7 @@ impl Goal for AttackPlayerTarget {
             return false;
         }
         self.next_scan = reduced(60);
-        let Some(p) = &cx.w.player else {
+        let Some(p) = cx.w.selected_player() else {
             return false;
         };
         let d = p.position;
@@ -83,7 +79,7 @@ impl Goal for AttackPlayerTarget {
             && (d.y - m.position.y).abs() <= 64.0
             && (d.z - m.position.z).abs() <= 16.0 + f64::from(m.width());
         if near && can_attack_seen(m, cx.w) {
-            m.ai.target = Some(Who::Player);
+            m.set_ai_target(cx.w, Some(Who::Player));
             return true;
         }
         false
@@ -103,7 +99,7 @@ impl AttackStrategy {
             return;
         };
         let y = (t.position.y.floor() as i32 + 20 + m.random.next_int_bound(20).unwrap_or(0))
-            .max(sea_level() + 1);
+            .max(cx.w.sea_level + 1);
         m.extra.home = Some([t.position.x.floor() as i32, y, t.position.z.floor() as i32]);
     }
 }
@@ -263,8 +259,8 @@ impl Goal for SweepAttack {
         }
         !self.scared
     }
-    fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
-        m.ai.target = None;
+    fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
+        m.set_ai_target(cx.w, None);
         m.extra.flag = false;
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
@@ -423,10 +419,11 @@ mod tests {
             // rule is about roofs and full walls, not foot walls).
             let mut target = AttackPlayerTarget { next_scan: 0 };
             let mut events = Vec::new();
-            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            let mut test_level = crate::health::TestLevel::new(0);
+            let level = &mut test_level.level();
             let mut cx = Cx {
                 w: &w,
-                lr: &mut lr,
+                level,
                 events: &mut events,
             };
             m.ai.seen_cache.clear();
@@ -442,7 +439,7 @@ mod tests {
             let mut events = Vec::new();
             let mut cx = Cx {
                 w: &w,
-                lr: &mut lr,
+                level,
                 events: &mut events,
             };
             sweep.tick(&mut m, &mut cx);
@@ -470,10 +467,11 @@ mod tests {
             register(&mut m);
             let mut target = AttackPlayerTarget { next_scan: 0 };
             let mut events = Vec::new();
-            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            let mut test_level = crate::health::TestLevel::new(0);
+            let level = &mut test_level.level();
             let mut cx = Cx {
                 w: &w,
-                lr: &mut lr,
+                level,
                 events: &mut events,
             };
             m.ai.seen_cache.clear();
@@ -522,10 +520,11 @@ mod tests {
                     let mut m = Mob::new(1, kind, Vec3::new(0.5, 80.0, 0.5), 0.0);
                     let mut target = AttackPlayerTarget { next_scan: 0 };
                     let mut events = Vec::new();
-                    let mut lr = horizon_core::random::LegacyRandom::new(0);
+                    let mut test_level = crate::health::TestLevel::new(0);
+                    let level = &mut test_level.level();
                     let mut cx = Cx {
                         w: &w,
-                        lr: &mut lr,
+                        level,
                         events: &mut events,
                     };
                     assert_eq!(target.can_use(&mut m, &mut cx), roof.is_none(), "{roof:?}");
@@ -546,7 +545,7 @@ mod tests {
 mod anchor_save_tests {
     use super::*;
     use crate::entity_nbt::{mob_from_nbt, mob_to_nbt};
-    use horizon_world::nbt::Tag;
+    use horizon_core::nbt::Tag;
     use std::collections::HashMap;
     use std::sync::Arc;
 

@@ -26,8 +26,8 @@ VillagerGoalPackages.raidExistsAndNotVictory	inline	crates/horizon-client/src/mo
 VillagerMakeLove.canStillUse	inline	crates/horizon-client/src/mobs/villager_brain.rs::B::tick_or_stop	MakeLove arm stops once now passes the birth time or breeding is no longer possible
 VillagerMakeLove.start	inline	crates/horizon-client/src/mobs/villager_brain.rs::B::try_start	MakeLove arm: lock gaze, birth time 275 + random 50 ticks; entity event 18 has no villager effect
 VillagerMakeLove.canReach	inline	crates/horizon-client/src/mobs/villager_brain.rs::take_bed_for_child	bed counts only if create_path_to gets there
-VillagerMakeLove.breed	port	crates/horizon-client/src/game/villagers.rs::Game::villager_birth	baby villager at the parent, ages 6000 and -24000, hearts for the child
-VillagerMakeLove.giveBedToChild	inline	crates/horizon-client/src/game/villagers.rs::Game::villager_birth	child.extra.bed is the taken bed
+VillagerMakeLove.breed	port	crates/horizon-client/src/game/mobs/villagers.rs::Game::villager_birth	baby villager at the parent, ages 6000 and -24000, hearts for the child
+VillagerMakeLove.giveBedToChild	inline	crates/horizon-client/src/game/mobs/villagers.rs::Game::villager_birth	child.extra.bed is the taken bed
 WorkAtPoi.checkExtraStartConditions	inline	crates/horizon-client/src/mobs/villager_brain.rs::B::try_start	WorkAtPoi arm: 300 tick gap, 1 in 2 roll, within 1.73 of the job site
 WorkAtPoi.canStillUse	inline	crates/horizon-client/src/mobs/villager_brain.rs::B::tick_or_stop	WorkAtPoi arm: job site still within 1.73
 YieldJobSite.create	inline	crates/horizon-client/src/mobs/villager_brain.rs::B::try_start	gap: minor: the villager gives up its potential site but the nearby villager is not handed the walk and look target or the potential site; it finds the site through its own job search
@@ -107,8 +107,8 @@ WrappedGoal.canBeReplacedBy	inline	crates/horizon-client/src/mobs/goals.rs::Goal
 WrappedGoal.start	inline	crates/horizon-client/src/mobs/goals.rs::GoalSelector::tick	running flag then goal.start
 WrappedGoal.equals	skip:java		identity of wrapped goals in a set
 HurtByTargetGoal.alertOthers	inline	crates/horizon-client/src/mobs/goals.rs::HurtByTarget::start	gap: player: the owner and team checks are missing, so when a wolf is hurt every wolf nearby is called, including other owners' and the player's own tamed wolves
-NonTameRandomTargetGoal.canUse	inline	crates/horizon-client/src/mobs/tame.rs::register	wolf and cat target goals use NearestTarget with when(!tame)
-NonTameRandomTargetGoal.canContinueToUse	inline	crates/horizon-client/src/mobs/goals.rs::NearestTarget::can_continue	gap: minor: the prey filter is not re-tested while hunting, only the base TargetGoal rules
+NonTameRandomTargetGoal.canUse	inline	crates/horizon-client/src/mobs/tame.rs::NonTameTarget::can_use	wolf and cat target goals wrap NearestTarget: wild only, then the prey search
+NonTameRandomTargetGoal.canContinueToUse	inline	crates/horizon-client/src/mobs/tame.rs::NonTameTarget::can_continue	re-tests the prey selector (a baby turtle out of water), then the base TargetGoal rules
 ResetUniversalAngerTargetGoal.wasHurtByPlayer	missing		minor: the universal_anger rule is never read by mobs (default off)
 ResetUniversalAngerTargetGoal.getNearbyMobsOfSameType	missing		minor: the universal_anger rule is never read by mobs (default off)
 TargetGoal.canAttack	inline	crates/horizon-client/src/mobs/goals.rs::NearestTarget::can_use	gap: minor: no isWithinHome test and no must-reach path test

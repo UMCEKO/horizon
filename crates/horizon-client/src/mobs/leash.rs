@@ -4,7 +4,7 @@
 //! while the rope is slack).
 use super::{Mob, MobEvent, MobWorld, Species, Who};
 use horizon_core::geometry::Vec3;
-use horizon_world::nbt::Tag;
+use horizon_core::nbt::Tag;
 
 /// `Leashable.LEASH_ELASTIC_DIST`.
 pub const ELASTIC: f64 = 6.0;
@@ -83,7 +83,7 @@ pub fn knot_state(pos: [i32; 3]) -> HolderState {
 pub fn holder_state(w: &MobWorld, holder: Holder) -> Option<HolderState> {
     match holder {
         Holder::Player => {
-            let p = w.player.as_ref()?;
+            let p = w.selected_player()?;
             let size = p.bounds.max_position().subtract(p.bounds.min_position());
             Some(HolderState {
                 position: p.position,
@@ -122,10 +122,17 @@ pub fn holder_state(w: &MobWorld, holder: Holder) -> Option<HolderState> {
         }
     }
 }
-/// `Entity.yRot(angle)` on a vector (rotation about the Y axis).
+/// A rotation about the Y axis with exact trigonometry (the leash pull uses
+/// `turn_y`, vanilla's `Vec3.yRot`).
+#[cfg(test)]
 fn rot_y(v: [f64; 3], angle: f64) -> [f64; 3] {
     let (s, c) = (angle.sin(), angle.cos());
     [v[0] * c + v[2] * s, v[1], v[2] * c - v[0] * s]
+}
+/// `Vec3.yRot(float)`: Mth's float cosine and sine of a float angle, widened.
+fn turn_y(v: [f64; 3], angle: f64) -> [f64; 3] {
+    let v = Vec3::new(v[0], v[1], v[2]).rotate_y(angle as f32);
+    [v.x, v.y, v.z]
 }
 /// `Leashable.computeDampenedSpringInteraction` for the single attachment
 /// of a mob (0, 0.5, 0.5 of its box) and its holder (0, 0.5, 0): the force
@@ -138,13 +145,13 @@ pub fn spring(
     own_motion: Vec3,
 ) -> Option<([f64; 3], f64)> {
     let (w, h) = size;
-    let lever = rot_y([0.0, 0.5 * h, 0.5 * w], -f64::from(yaw.to_radians()));
+    let lever = turn_y([0.0, 0.5 * h, 0.5 * w], -f64::from(yaw.to_radians()));
     let object = [
         position.x + lever[0],
         position.y + lever[1],
         position.z + lever[2],
     ];
-    let arm = rot_y(
+    let arm = turn_y(
         [0.0, 0.5 * holder.height, 0.0],
         -f64::from(holder.yaw.to_radians()),
     );
@@ -212,16 +219,9 @@ fn elastic_pull_with_distance(
     } else {
         (&OWN, &THEIRS)
     };
-    // Vec3.yRot takes a float angle and widens Mth's float lookup results.
-    // Bound the repair to quad attachment physics; retain the single spring.
-    let rotate = |v: [f64; 3], angle: f64| {
-        if quad {
-            let v = Vec3::new(v[0], v[1], v[2]).rotate_y(angle as f32);
-            [v.x, v.y, v.z]
-        } else {
-            rot_y(v, angle)
-        }
-    };
+    // Vec3.yRot takes a float angle and widens Mth's float lookup results,
+    // for every attachment point (computeElasticInteraction), single or quad.
+    let rotate = turn_y;
     let (w, h) = size;
     let own_yaw = f64::from(yaw.to_radians());
     let holder_yaw = f64::from(holder.yaw.to_radians());
@@ -341,7 +341,7 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     // Leashable.tickLeash: a holder that cannot interact with the level (dead
     // or spectating, `Entity.canInteractWithLevel`) drops the lead.
     if holder == Holder::Player
-        && let Some(p) = w.player.as_ref()
+        && let Some(p) = w.selected_player()
         && m.extra.leash_player.is_none_or(|u| p.uuid == u)
         && (p.spectator || !p.alive)
     {
@@ -356,7 +356,7 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         holder != Holder::Player
             || m.extra
                 .leash_player
-                .is_none_or(|u| w.player.as_ref().is_some_and(|p| p.uuid == u))
+                .is_none_or(|u| w.selected_player().is_some_and(|p| p.uuid == u))
     });
     let Some(state) = state else {
         // The holder is gone: the lead drops.
@@ -433,10 +433,12 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                 state.velocity.y - m.velocity.y,
                 state.velocity.z - m.velocity.z,
             );
+            // addDeltaMovement(force.multiply(AXIS_SPECIFIC_ELASTICITY)
+            // .add(relativeVelocityToLeasher.scale(0.11))): the push is one sum.
             m.velocity = Vec3::new(
-                m.velocity.x + force[0] * 0.8 + rel.x * 0.11,
-                m.velocity.y + force[1] * 0.2 + rel.y * 0.11,
-                m.velocity.z + force[2] * 0.8 + rel.z * 0.11,
+                m.velocity.x + (force[0] * 0.8 + rel.x * 0.11),
+                m.velocity.y + (force[1] * 0.2 + rel.y * 0.11),
+                m.velocity.z + (force[2] * 0.8 + rel.z * 0.11),
             );
             check_fall_distance(m);
             super::equine::on_elastic_leash_pull(m, w, events);
@@ -743,7 +745,7 @@ mod tests {
                     );
                     if kind != "cow" {
                         mob.extra.age = if kind == "baby" { -24000 } else { 0 };
-                        super::super::happy_ghast::ensure_setup(&mut mob);
+                        super::super::happy_ghast::ensure_setup(&mut mob, None);
                     }
                     mob.on_ground = false;
                     mob.ai.nav.path = Some(Path {
@@ -1133,7 +1135,7 @@ mod tests {
             };
             let empty = new();
             let mut full = new();
-            full.extra.body = Some("minecraft:stone".into());
+            full.extra.set_body(Some("minecraft:stone".into()));
             for m in [&empty, &full] {
                 let o = leash_offset(m);
                 let h = f64::from(m.height() / 2.0);

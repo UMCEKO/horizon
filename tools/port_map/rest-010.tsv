@@ -27,7 +27,7 @@ TagParser.parseCompoundFully	port	crates/horizon-command/src/snbt.rs::parse_full
 TagType.parseRoot	skip:java		streaming root parse; Horizon reads whole trees
 TagType.StaticSize.skip	skip:java		streaming skip; Horizon reads whole trees
 TagType.VariableSize.skip	skip:java		streaming skip; Horizon reads whole trees
-TagTypes.getType	inline	crates/horizon-world/src/nbt.rs::Reader::payload	tag id dispatch; unknown id is an error
+TagTypes.getType	inline	crates/horizon-core/src/nbt.rs::Reader::payload	tag id dispatch; unknown id is an error
 TextComponentTagVisitor.visitByte	inline	crates/horizon-client-core/src/snbt.rs::Pretty::visit	number arm: gold value, red suffix
 TextComponentTagVisitor.visitShort	inline	crates/horizon-client-core/src/snbt.rs::Pretty::visit	number arm: gold value, red suffix
 TextComponentTagVisitor.visitLong	inline	crates/horizon-client-core/src/snbt.rs::Pretty::visit	number arm: gold value, red suffix

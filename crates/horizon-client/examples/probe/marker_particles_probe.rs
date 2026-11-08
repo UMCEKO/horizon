@@ -68,7 +68,9 @@ pub fn main() -> Result<()> {
     let root = Path::new(".local/horizon-client/26.3");
     let assets = Assets::load(root)?;
     let facts = BlockFacts::load(root, assets.registry)?;
-    let biomes = Biomes::load(root)?;
+    let biomes = Biomes::load(&horizon_assets::resource_source::ResourceRoot::directory(
+        root.to_path_buf(),
+    ))?;
     let collision = collisions::load(root, assets.registry)?;
     let tables = AnimateTables::load(root, assets.registry, &biomes)?;
     let mut world = World::new(facts.air, 0);
@@ -90,7 +92,11 @@ pub fn main() -> Result<()> {
             }
         }
     }
-    let mut engine = ParticleEngine::new(root, &HashMap::new(), &Default::default());
+    let mut engine = ParticleEngine::new(
+        &horizon_assets::resource_source::ResourceSource::directory(root.to_path_buf()),
+        &HashMap::new(),
+        &Default::default(),
+    );
     // One all-of-that-block world per state the tick cases name: the whole
     // animateTick loop samples inside the box the barriers already fill.
     let mut tick_worlds: HashMap<String, World> = HashMap::new();

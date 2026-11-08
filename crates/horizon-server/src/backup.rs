@@ -3,7 +3,7 @@
 //! (`save-off`, `save-all`), and writes again once the zip is done (`save-on`), so players stay online.
 //! A restore puts the backup's world in place of the current one, which is moved aside, never deleted.
 
-use crate::config::Config;
+use horizon_server_launch::config::Config;
 use std::{
     fs::File,
     io::{BufWriter, Write},
@@ -348,32 +348,10 @@ pub fn restore_dimension(
     Ok(moved)
 }
 
-/// `every` from server.toml: `"6h"`, `"30m"`, `"1d"`, or `"0"` for no automatic backups.
-pub fn interval(every: &str) -> Result<Option<std::time::Duration>, String> {
-    let every = every.trim();
-    if every == "0" || every.is_empty() {
-        return Ok(None);
-    }
-    let (number, unit) = every.split_at(every.len() - 1);
-    let n: u64 = number.trim().parse().map_err(|_| {
-        format!("backups.every is {every:?}: use a number and m, h or d, like \"6h\"")
-    })?;
-    let secs = match unit {
-        "m" => 60,
-        "h" => 3600,
-        "d" => 86_400,
-        _ => {
-            return Err(format!(
-                "backups.every is {every:?}: use a number and m, h or d, like \"6h\""
-            ));
-        }
-    };
-    Ok((n > 0).then(|| std::time::Duration::from_secs(n * secs)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horizon_server_launch::config;
 
     #[test]
     fn names_sort_by_time() {
@@ -387,20 +365,6 @@ mod tests {
     }
 
     #[test]
-    fn intervals() {
-        assert_eq!(
-            interval("6h").unwrap(),
-            Some(std::time::Duration::from_secs(21_600))
-        );
-        assert_eq!(
-            interval("30m").unwrap(),
-            Some(std::time::Duration::from_secs(1800))
-        );
-        assert_eq!(interval("0").unwrap(), None);
-        assert!(interval("6 hours").is_err());
-    }
-
-    #[test]
     fn back_up_and_restore() {
         let dir =
             std::env::temp_dir().join(format!("horizon-server-backup-{}", std::process::id()));
@@ -411,7 +375,7 @@ mod tests {
         std::fs::write(world.join("level.dat"), b"before").unwrap();
         std::fs::write(world.join("region/r.0.0.mca"), vec![7u8; 10_000]).unwrap();
         std::fs::write(world.join("session.lock"), b"x").unwrap();
-        std::fs::write(dir.join("server.toml"), crate::config::TEMPLATE).unwrap();
+        std::fs::write(dir.join("server.toml"), config::TEMPLATE).unwrap();
         let t = SystemTime::now();
         let name = file_name(t, None).unwrap();
         create(&dir, &config, &name).unwrap();

@@ -1455,7 +1455,7 @@ through the `HOTBAR` data fixers (`EmptyItemInHotbarFix`, every item stack
 fixer): `tools/test_hotbar_parity.py` loads generated files of 34 versions with
 the real `HotbarManager`. The creative screen's Saved Hotbars tab shows its
 rows, and the save and load keys write and read it
-(`game/creative_hotbar.rs`).
+(`game/items/creative_hotbar.rs`).
 
 ## Player list and world border rendering
 

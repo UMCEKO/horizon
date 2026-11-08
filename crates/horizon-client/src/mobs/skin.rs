@@ -881,6 +881,8 @@ mod tests {
             blinks: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
+            mod_spawns: Default::default(),
+            pathfindable_overrides: Default::default(),
         };
         // Every texture its own rect, so a swapped texture shows.
         let atlas = |name: &str| {
@@ -916,8 +918,8 @@ mod tests {
                         id.as_str(),
                         "minecraft:villager" | "minecraft:zombie_villager"
                     ) {
-                        m.extra.variant2 = 5;
-                        m.extra.variant3 = 3;
+                        m.extra.profession = crate::mobs::villager::ProfessionState::from_index(5);
+                        m.extra.villager_level = 3;
                     }
                     // White field markings (`entityTranslucent`).
                     if id == "minecraft:horse" {

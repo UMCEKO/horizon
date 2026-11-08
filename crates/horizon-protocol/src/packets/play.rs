@@ -20,7 +20,7 @@ use crate::{
         login::Property,
     },
 };
-use horizon_world::nbt::Tag;
+use horizon_core::nbt::Tag;
 
 // ---- shared structures -------------------------------------------------
 
@@ -3660,7 +3660,7 @@ mod tests {
                 tag: Tag::End
             })
         );
-        let mut items = horizon_world::nbt::Compound::new();
+        let mut items = horizon_core::nbt::Compound::new();
         items.insert("Lock".into(), Tag::String("key".into()));
         round_trip(
             Clientbound::TagQuery(TagQuery {

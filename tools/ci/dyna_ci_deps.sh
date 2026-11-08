@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Install and cache the Ubuntu runner's build dependencies without root.
+set -euo pipefail
+prefix="$DYNA_CI_BUILD/apt-prefix"
+aptroot="$HOME/dyna-ci-apt"
+hash=$(sha256sum "$0" | cut -d ' ' -f1)
+if [ ! -f "$prefix/.dyna-hash" ] || [ "$(< "$prefix/.dyna-hash")" != "$hash" ]; then
+  stage="$DYNA_CI_BUILD/apt-prefix.new"
+  rm -rf "$stage" "$aptroot"
+  mkdir -p "$aptroot/lists/partial" "$aptroot/archives/partial" "$stage"
+  : > "$aptroot/status"
+  printf '%s\n' \
+    'deb https://archive.ubuntu.com/ubuntu noble main universe' \
+    'deb https://archive.ubuntu.com/ubuntu noble-updates main universe' \
+    'deb https://security.ubuntu.com/ubuntu noble-security main universe' > "$aptroot/sources.list"
+  opts=(-o "Dir::Etc::sourcelist=$aptroot/sources.list" -o Dir::Etc::sourceparts=-
+        -o "Dir::State::lists=$aptroot/lists" -o "Dir::State::status=$aptroot/status"
+        -o "Dir::Cache::archives=$aptroot/archives" -o APT::Sandbox::User=root)
+  apt-get "${opts[@]}" update
+  apt-get "${opts[@]}" -y --download-only --no-install-recommends install \
+    pkg-config libasound2-dev libudev-dev libxkbcommon-x11-dev libwayland-dev \
+    libx11-xcb-dev libfontconfig-dev libvulkan-dev \
+    libxcursor1 libxi6 libxrandr2
+  for deb in "$aptroot"/archives/*.deb; do
+    # Build-essential already supplies matching libc, loader and system headers.
+    case "${deb##*/}" in libc6_*|libc6-dev_*|linux-libc-dev_*) continue ;; esac
+    dpkg-deb -x "$deb" "$stage"
+  done
+  echo "$hash" > "$stage/.dyna-hash"
+  rm -rf "$prefix"
+  mv "$stage" "$prefix"
+  rm -rf "$aptroot"
+fi
+arch=x86_64-linux-gnu
+{
+  echo "$prefix/usr/bin"
+  echo "$CARGO_HOME/bin"
+} >> "$GITHUB_PATH"
+{
+  echo "RUSTUP_HOME=$DYNA_CI_BUILD/rustup"
+  echo "PKG_CONFIG_SYSROOT_DIR=$prefix"
+  echo "PKG_CONFIG_PATH=$prefix/usr/lib/$arch/pkgconfig:$prefix/usr/share/pkgconfig"
+  echo "LIBRARY_PATH=$prefix/usr/lib/$arch:$prefix/lib/$arch"
+  echo "C_INCLUDE_PATH=$prefix/usr/include:$prefix/usr/include/$arch"
+  echo "LD_LIBRARY_PATH=$prefix/usr/lib/$arch:$prefix/lib/$arch"
+} >> "$GITHUB_ENV"

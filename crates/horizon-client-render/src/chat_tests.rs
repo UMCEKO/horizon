@@ -1,6 +1,6 @@
 use super::*;
 use crate::{font::Font, hud::Rect};
-use std::{collections::HashMap, path::Path};
+use std::collections::HashMap;
 
 /// The Chat option's default: no restriction.
 fn full() -> ChatAbilities {
@@ -89,7 +89,7 @@ fn clicked_suggestion_reports_the_actual_length_limited_input() {
 fn font() -> Font {
     // The missing-glyph metrics let these tests run without game assets.
     Font::load(
-        Path::new("/nonexistent-horizon-chat-test-resources"),
+        &horizon_assets::resource_source::ResourceSource::default(),
         &HashMap::new(),
         &[],
         (1, 1),

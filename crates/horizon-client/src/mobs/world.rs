@@ -79,7 +79,7 @@ impl MobWorld<'_> {
             .iter()
             .map(|b| std::array::from_fn(|i| f64::from(at[i % 3]) + b[i]))
             .collect();
-        shape_top(&boxes, f64::from(at[1])).map(|height| pos_to_bed(head, height))
+        shape_top(boxes, f64::from(at[1])).map(|height| pos_to_bed(head, height))
     }
     /// The biome's base temperature at a position.
     pub fn temperature(&self, x: i32, y: i32, z: i32) -> f32 {
@@ -386,7 +386,7 @@ impl MobWorld<'_> {
             return Some(target);
         }
         match who {
-            Who::Player => self.player.as_ref().map(|p| TargetInfo {
+            Who::Player => self.selected_player().map(|p| TargetInfo {
                 position: p.position,
                 eye_y: p.eye[1],
                 bounds: p.bounds,
@@ -565,14 +565,22 @@ pub(crate) fn with_resource_test_world(
     let registry = assets.registry;
     let facts = BlockFacts::load(root, registry).unwrap();
     let motion = crate::motion::MotionResources::load(root, &assets).unwrap();
-    let data = super::MobData::load(root, &facts);
+    let data = super::MobData::load(
+        &horizon_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
+        &facts,
+    );
     let types = super::MobTypes::load(root).unwrap();
-    let biomes = crate::biome::Biomes::load(root).unwrap();
+    let biomes = crate::biome::Biomes::load(
+        &horizon_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
+    )
+    .unwrap();
+    let defaults = horizon_world::item_defaults::read(root).unwrap();
     let items = crate::items::Items::load(
         root,
         registry,
         &facts,
         &horizon_world::loot::PackOverlay::NONE,
+        &defaults,
     )
     .unwrap();
     let collision = std::sync::Arc::new(crate::collisions::load(root, registry).unwrap());
@@ -583,19 +591,25 @@ pub(crate) fn with_resource_test_world(
     build(&mut world, registry);
     let lid_openers = std::collections::HashMap::new();
     let w = MobWorld {
+        goal_host: None,
         teams: Default::default(),
+        loop_context: crate::test_resources::server_loop_context(),
         world: &world,
         registry,
         facts: &facts,
         fluid_tables: &motion.fluids,
+        attributes: &motion.attributes,
         movement: &motion.blocks,
         collision: &collision,
         suffocation: &suffocation,
         data: &data,
         player: None,
+        player_identity: None,
+        player_selection: None,
         controlling_player_movement: None,
         nearest_player: None,
         others,
+        live_mobs: None,
         dragon: None,
         leash_boats: &[],
         who_lookup: None,
@@ -624,6 +638,10 @@ pub(crate) fn with_resource_test_world(
         items: Some(&items),
         lid_openers: &lid_openers,
         mod_effects: None,
+        mob_hooks: None,
+        asks_animal_tame: false,
+        asks_living_destroy_block: false,
+        asks_baby_spawn: false,
         border: None,
     };
     f(&w, &types);
@@ -640,6 +658,7 @@ pub(crate) fn test_player(position: Vec3) -> super::PlayerView {
         ),
         eye: [position.x, position.y + 1.62, position.z],
         alive: true,
+        invulnerable: false,
         creative: false,
         sneaking: false,
         swimming: false,

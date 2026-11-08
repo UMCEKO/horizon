@@ -98,15 +98,15 @@ pub struct Registries {
 /// A codec check of an inline value: its error message when it does not decode.
 #[derive(Clone)]
 pub struct InlineFeatureCheck(
-    std::sync::Arc<dyn Fn(&horizon_world::nbt::Tag) -> Result<(), String> + Send + Sync>,
+    std::sync::Arc<dyn Fn(&horizon_core::nbt::Tag) -> Result<(), String> + Send + Sync>,
 );
 impl InlineFeatureCheck {
     pub fn new(
-        check: impl Fn(&horizon_world::nbt::Tag) -> Result<(), String> + Send + Sync + 'static,
+        check: impl Fn(&horizon_core::nbt::Tag) -> Result<(), String> + Send + Sync + 'static,
     ) -> Self {
         Self(std::sync::Arc::new(check))
     }
-    pub fn check(&self, value: &horizon_world::nbt::Tag) -> Result<(), String> {
+    pub fn check(&self, value: &horizon_core::nbt::Tag) -> Result<(), String> {
         (self.0)(value)
     }
 }

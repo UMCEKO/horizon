@@ -1,5 +1,5 @@
 use super::*;
-use crate::nbt::NamedTag;
+use horizon_core::nbt::NamedTag;
 
 struct TempWorld(PathBuf);
 impl TempWorld {

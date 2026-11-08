@@ -27,7 +27,7 @@ use super::{
     playerdata,
 };
 use crate::save::Level;
-use horizon_world::nbt::{Limits, Tag, read_named};
+use horizon_core::nbt::{Limits, Tag, read_named};
 use serde_json::Value;
 
 /// The parts of a record, in the order the replies list them.
@@ -53,9 +53,6 @@ pub struct Imported {
     /// asked for: they need the game's tree and its counters.
     pub advancements: Option<Value>,
     pub stats: Option<Value>,
-    /// Whether the mods' attachments came (a whole import): the game's own copy of them is then
-    /// the record's.
-    pub attachments: bool,
     /// Whether the other players are told the player has arrived (when it is placed).
     pub announce: bool,
     /// Whether the request asks the player to be let into the world now. The import never places
@@ -329,6 +326,12 @@ fn check_values(level: &Level) -> Result<(), String> {
     Ok(())
 }
 
+struct GameMode {
+    mode: i32,
+    previous: Option<i32>,
+    abilities: super::abilities::PlayerAbilities,
+}
+
 /// What the held player has now, for the parts that are not imported.
 struct Kept {
     inventory: Option<(
@@ -337,11 +340,12 @@ struct Kept {
         Option<crate::items::ItemStack>,
         usize,
     )>,
+    equipment: Option<horizon_items::equipment::Equipment>,
     ender: Option<Vec<Option<crate::items::ItemStack>>>,
     experience: Option<(i32, f32, i32, i32)>,
     health: Option<(f32, Option<f32>, i32, f32)>,
     effects: Option<crate::effects::PlayerEffects>,
-    game_mode: Option<(i32, bool, f32)>,
+    game_mode: Option<GameMode>,
     position: Option<([f64; 3], [f64; 3], f32, f32, f32, bool, Option<[i32; 4]>)>,
     spawn: Option<(Option<[f64; 3]>, Option<(String, [i32; 3], f32, bool)>)>,
     recipes: Option<crate::recipe_book::Settings>,
@@ -353,7 +357,7 @@ struct Kept {
         Option<(String, [i32; 3])>,
         bool,
         Vec<String>,
-        horizon_world::attachments::Attachments,
+        horizon_mod_runtime::attachments::Attachments,
     )>,
     dimension: String,
 }
@@ -371,6 +375,7 @@ impl Kept {
                     g.selected,
                 )
             }),
+            equipment: (!has("inventory")).then(|| g.equipment.clone()),
             ender: (!has("ender_chest")).then(|| g.ender_items.clone()),
             experience: (!has("experience")).then_some((
                 g.xp_level,
@@ -385,7 +390,11 @@ impl Kept {
                 g.saturation,
             )),
             effects: (!has("effects")).then(|| g.effects.clone()),
-            game_mode: (!has("game_mode")).then_some((g.game_mode, g.flying, g.flying_speed)),
+            game_mode: (!has("game_mode")).then_some(GameMode {
+                mode: g.game_mode,
+                previous: g.previous_game_mode,
+                abilities: g.abilities,
+            }),
             position: (!has("position")).then_some((
                 g.position,
                 g.previous_position,
@@ -404,7 +413,7 @@ impl Kept {
                     g.last_death.clone(),
                     g.seen_credits,
                     g.post_effects.clone(),
-                    g.attachments.clone(),
+                    horizon_mod_runtime::attachments::Attachments::clone(&g.attachments),
                 )
             }),
             dimension: g.dimension.clone(),
@@ -416,6 +425,9 @@ impl Kept {
         let has = |p: &str| parts.contains(&p);
         if let Some((inventory, armor, offhand, selected)) = self.inventory {
             (g.inventory, g.armor, g.offhand, g.selected) = (inventory, armor, offhand, selected);
+        }
+        if let Some(equipment) = self.equipment {
+            g.equipment = equipment;
         }
         if let Some(ender) = self.ender {
             g.ender_items = ender;
@@ -430,8 +442,10 @@ impl Kept {
         if let Some(effects) = self.effects {
             g.effects = effects;
         }
-        if let Some((mode, flying, speed)) = self.game_mode {
-            (g.game_mode, g.flying, g.flying_speed) = (mode, flying, speed);
+        if let Some(mode) = self.game_mode {
+            g.game_mode = mode.mode;
+            g.previous_game_mode = mode.previous;
+            g.abilities = mode.abilities;
         }
         if let Some((position, previous, yaw, pitch, head, ground, vehicle)) = self.position {
             (g.position, g.previous_position) = (position, previous);
@@ -466,13 +480,8 @@ impl Kept {
             (None, _) => {}
         }
         if let Some((saved, death, credits, post, attachments)) = self.other {
-            (
-                g.saved,
-                g.last_death,
-                g.seen_credits,
-                g.post_effects,
-                g.attachments,
-            ) = (saved, death, credits, post, attachments);
+            (g.saved, g.last_death, g.seen_credits, g.post_effects) = (saved, death, credits, post);
+            g.attachments.replace_contents(attachments);
         }
         // The client is in one dimension, and only a login can change it.
         g.dimension = self.dimension;
@@ -481,7 +490,7 @@ impl Kept {
 
 /// Applies the request to the held player `uuid` and tells its client, leaving it held
 /// (`Hub::confirm_arrival` places it). The caller gives the player its advancements and
-/// statistics (`Imported::advancements`, `Imported::stats`) and its attachments.
+/// statistics (`Imported::advancements`, `Imported::stats`).
 ///
 /// Nothing changes when it refuses: the record is read and checked first, and the
 /// guest is touched only once everything is known to be well. It refuses everything once
@@ -541,22 +550,19 @@ pub fn import_player(hub: &mut Hub, uuid: u128, request: &Value) -> Result<Impor
     // for a player loaded into an empty guest and wrong here: the held player holds what its
     // own file gave it on this server, and an imported inventory REPLACES that, a slot the
     // record leaves empty being empty afterwards.
-    {
-        let g = &mut hub.guests[i];
+    hub.guests.update(i, |g| {
         if request.parts.contains(&"inventory") {
             g.inventory.iter_mut().for_each(|slot| *slot = None);
             g.armor = Default::default();
             g.offhand = None;
+            g.equipment = Default::default();
         }
         if request.parts.contains(&"ender_chest") {
             g.ender_items.iter_mut().for_each(|slot| *slot = None);
         }
-    }
-    playerdata::apply(&mut hub.guests[i], &level);
-    kept.restore(&mut hub.guests[i], &request.parts);
-    // What the request says of where the player stands wins over the record.
-    {
-        let g = &mut hub.guests[i];
+        playerdata::apply(g, &level);
+        kept.restore(g, &request.parts);
+        // What the request says of where the player stands wins over the record.
         let a = &request.arrival;
         if let Some(p) = a.position {
             g.position = p;
@@ -575,18 +581,21 @@ pub fn import_player(hub: &mut Hub, uuid: u128, request: &Value) -> Result<Impor
         {
             body.velocity = velocity;
         }
-    }
+    });
     // Everything the import changed reaches the client now, so that a proxy sees the
     // player as it will be; the player stays held until it is placed or dropped.
     let recentered = hub.send_arrival_state(i);
-    let g = &mut hub.guests[i];
-    // A retry of this hand-over's import finds the view already moved: it still answers that
-    // the chunks around the new place are on their way, as the first reply did.
-    let recentered = recentered || (g.arrival_handover == Some(handover) && g.arrival_recentered);
-    g.arrival_recentered = recentered;
-    g.imported = true;
-    g.arrival_announce = request.announce;
-    g.arrival_handover = Some(handover);
+    let recentered = hub.guests.update(i, |g| {
+        // A retry of this hand-over's import finds the view already moved: it still answers that
+        // the chunks around the new place are on their way, as the first reply did.
+        let recentered =
+            recentered || (g.arrival_handover == Some(handover) && g.arrival_recentered);
+        g.arrival_recentered = recentered;
+        g.imported = true;
+        g.arrival_announce = request.announce;
+        g.arrival_handover = Some(handover);
+        recentered
+    });
     let records = |key: &str| {
         request
             .parts
@@ -598,7 +607,6 @@ pub fn import_player(hub: &mut Hub, uuid: u128, request: &Value) -> Result<Impor
     Ok(Imported {
         advancements: records("advancements"),
         stats: records("stats"),
-        attachments: request.parts.len() == PARTS.len(),
         parts: request.parts,
         announce: request.announce,
         place: request.place,
@@ -607,10 +615,11 @@ pub fn import_player(hub: &mut Hub, uuid: u128, request: &Value) -> Result<Impor
     })
 }
 
-/// The dimension a record names, the way `playerdata::apply` places it.
+/// The dimension a record names, the way `playerdata::apply` places it: any level, with the
+/// Overworld for a record that names none.
 fn playerdata_dimension(level: &Level) -> String {
     match level.dimension.as_str() {
-        d @ ("minecraft:the_nether" | "minecraft:the_end") => d.to_owned(),
-        _ => "minecraft:overworld".to_owned(),
+        "" => "minecraft:overworld".to_owned(),
+        d => d.to_owned(),
     }
 }

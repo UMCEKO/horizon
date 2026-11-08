@@ -266,10 +266,13 @@ impl StructureState {
         let (Some(resources), Some(raw)) = (&data.structures, &data.structure_resources) else {
             return Ok(None);
         };
-        let registry =
-            StructureRegistry::new(&raw.structures, &raw.sets, raw.pools.clone(), &|value| {
-                biome_set(data, value)
-            })?;
+        let registry = StructureRegistry::new(
+            &raw.structures,
+            &raw.sets,
+            raw.pools.clone(),
+            &|value| biome_set(data, value),
+            super::structure::mod_types::mod_structure_types(),
+        )?;
         let possible_sets = registry
             .sets
             .iter()
@@ -469,7 +472,7 @@ impl StructureState {
                     && let Some(pieces) = start
                         .pieces
                         .iter()
-                        .map(|piece| self.saved_pool_piece(piece))
+                        .map(|piece| self.saved_piece(piece))
                         .collect::<Option<Vec<_>>>()
                 {
                     return Some(Arc::new(StructureStart::new(index, def, chunk, pieces)));
@@ -511,7 +514,7 @@ impl StructureState {
                     chunk,
                     references: 0,
                     pieces: Vec::new(),
-                    bounding_box: crate::worldgen::structure::BoundingBox::new(
+                    bounding_box: horizon_core::bounding_box::BoundingBox::new(
                         [x0, y0, z0],
                         [x1, y1, z1],
                     ),
@@ -521,11 +524,31 @@ impl StructureState {
         Arc::new(starts)
     }
     /// A saved `minecraft:jigsaw` piece, or `None` for any other piece or one that does not decode.
-    fn saved_pool_piece(&self, piece: &crate::nbt::Tag) -> Option<Piece> {
+    fn saved_pool_piece(&self, piece: &horizon_core::nbt::Tag) -> Option<Piece> {
         saved_piece_id(piece)?;
         PoolPiece::from_saved(&tag_json(piece), &self.resources, &self.bindings)
             .ok()
             .map(Piece::Pool)
+    }
+    /// A saved piece, as `StructureStart.loadStaticStart` loads it: a jigsaw
+    /// piece from `PoolPiece::from_saved`, a mod type's piece from its
+    /// `load_piece` (the `StructurePieceType` is the loader), none otherwise.
+    fn saved_piece(&self, piece: &horizon_core::nbt::Tag) -> Option<Piece> {
+        if let Some(pool) = self.saved_pool_piece(piece) {
+            return Some(pool);
+        }
+        let horizon_core::nbt::Tag::Compound(map) = piece else {
+            return None;
+        };
+        let id = match map.get(&"id".into()) {
+            Some(horizon_core::nbt::Tag::String(s)) => s.to_string_lossy(),
+            _ => return None,
+        };
+        let types = super::structure::mod_types::mod_structure_types();
+        types
+            .get(&*id)?
+            .load_piece(self.resources.registry, map)
+            .map(Piece::Legacy)
     }
     pub(super) fn set_saved_starts(&self, source: Arc<super::generator::SavedStructureStarts>) {
         let _ = self.saved.set(source);
@@ -707,6 +730,7 @@ impl StructureState {
                 .find(|s| wanted(s.structure) && !skip(&s.name, chunk))
                 .map(|s| s.name.clone())
         };
+        let mut spaced_sets = Vec::new();
         for &si in &self.possible_sets {
             let set = &self.registry.sets[si];
             if !set.structures.iter().any(|(s, _)| wanted(*s)) {
@@ -739,36 +763,50 @@ impl StructureState {
                     }
                 }
                 Some(spacing) => {
-                    let (cx, cz) = (from[0] >> 4, from[2] >> 4);
-                    'search: for r in 0..=radius {
-                        for dx in -r..=r {
-                            let x_edge = dx == -r || dx == r;
-                            for dz in -r..=r {
-                                if !(x_edge || dz == -r || dz == r) {
-                                    continue;
+                    spaced_sets.push((si, spacing));
+                }
+            }
+        }
+        if !spaced_sets.is_empty() {
+            let (cx, cz) = (from[0] >> 4, from[2] >> 4);
+            // ChunkGenerator.findNearestMapStructure: expands outward ring by ring across all
+            // candidate sets, stops at the first ring with any hit, and takes the first hit in
+            // each ring for each set.
+            for r in 0..=radius {
+                let mut found_in_ring = false;
+                for &(si, spacing) in &spaced_sets {
+                    let set = &self.registry.sets[si];
+                    'ring: for dx in -r..=r {
+                        let x_edge = dx == -r || dx == r;
+                        for dz in -r..=r {
+                            if !(x_edge || dz == -r || dz == r) {
+                                continue;
+                            }
+                            let (sx, sz) = (cx + spacing * dx, cz + spacing * dz);
+                            let Some(c) = StructureRegistry::potential_chunk(set, seed, sx, sz)
+                            else {
+                                continue;
+                            };
+                            if !self
+                                .registry
+                                .is_structure_chunk(set, seed, c.x, c.z, &rings)
+                            {
+                                continue;
+                            }
+                            if let Some(name) = found_at(self, context, c) {
+                                let p = set.locate_pos(c);
+                                let d = dist(p);
+                                if best.as_ref().is_none_or(|(b, ..)| d < *b) {
+                                    best = Some((d, name, p));
                                 }
-                                let (sx, sz) = (cx + spacing * dx, cz + spacing * dz);
-                                let Some(c) = StructureRegistry::potential_chunk(set, seed, sx, sz)
-                                else {
-                                    continue;
-                                };
-                                if !self
-                                    .registry
-                                    .is_structure_chunk(set, seed, c.x, c.z, &rings)
-                                {
-                                    continue;
-                                }
-                                if let Some(name) = found_at(self, context, c) {
-                                    let p = set.locate_pos(c);
-                                    let d = dist(p);
-                                    if best.as_ref().is_none_or(|(b, ..)| d < *b) {
-                                        best = Some((d, name, p));
-                                    }
-                                    break 'search;
-                                }
+                                found_in_ring = true;
+                                break 'ring;
                             }
                         }
                     }
+                }
+                if found_in_ring {
+                    break;
                 }
             }
         }
@@ -835,7 +873,7 @@ impl StructureState {
 
 /// The union of the pieces' boxes as `[min x, min y, min z, max x, max y, max z]`.
 fn pieces_box(pieces: &[Piece]) -> Option<[i32; 6]> {
-    let mut union: Option<crate::worldgen::structure::BoundingBox> = None;
+    let mut union: Option<horizon_core::bounding_box::BoundingBox> = None;
     for piece in pieces {
         let b = piece.bounding_box();
         match union.as_mut() {
@@ -851,11 +889,11 @@ pub(super) fn read_saved_start(
     index: usize,
     def: &StructureDef,
     chunk: ChunkPos,
-    tag: &crate::nbt::Tag,
+    tag: &horizon_core::nbt::Tag,
     resources: &StructureResources,
     bindings: &FeatureBlockBindings<'_>,
 ) -> Option<StructureStart> {
-    use crate::nbt::Tag;
+    use horizon_core::nbt::Tag;
     if !matches!(tag.get("id"), Some(Tag::String(id)) if id.to_string_lossy() == def.name) {
         return None;
     }
@@ -905,11 +943,11 @@ pub(super) fn read_saved_start(
 /// `minecraft:bastionremnant`, `minecraft:runtime`) are read as `minecraft:jigsaw`,
 /// which is what vanilla's table maps them to. `None` for a piece of another type
 /// (its NBT is not a pool piece's) and for one with no id.
-fn saved_piece_id(piece: &crate::nbt::Tag) -> Option<&'static str> {
-    let crate::nbt::Tag::Compound(map) = piece else {
+fn saved_piece_id(piece: &horizon_core::nbt::Tag) -> Option<&'static str> {
+    let horizon_core::nbt::Tag::Compound(map) = piece else {
         return None;
     };
-    let crate::nbt::Tag::String(id) = map.get(&"id".into())? else {
+    let horizon_core::nbt::Tag::String(id) = map.get(&"id".into())? else {
         return None;
     };
     // `Identifier.parse`: an id with no namespace is `minecraft:`'s.
@@ -921,8 +959,8 @@ fn saved_piece_id(piece: &crate::nbt::Tag) -> Option<&'static str> {
 }
 /// A saved piece's tag as the JSON `PoolPiece::from_saved` reads: compounds and lists as they
 /// are, numbers as numbers.
-fn tag_json(tag: &crate::nbt::Tag) -> Value {
-    use crate::nbt::Tag;
+pub(crate) fn tag_json(tag: &horizon_core::nbt::Tag) -> Value {
+    use horizon_core::nbt::Tag;
     match tag {
         Tag::Byte(v) => Value::from(i64::from(*v)),
         Tag::Short(v) => Value::from(i64::from(*v)),
@@ -951,15 +989,14 @@ mod tests {
     #[test]
     fn saved_jigsaw_round_trip_and_whole_start_fallback() {
         use crate::{
-            nbt::Tag,
             registry::BlockRegistry,
             worldgen::structure::{
-                BoundingBox, Rotation, StateTransforms,
+                Rotation, StateTransforms,
                 jigsaw::{Junction, PoolElement, Projection},
                 start::StructureKind,
             },
         };
-        use horizon_core::density::TerrainAdjustment;
+        use horizon_core::{bounding_box::BoundingBox, density::TerrainAdjustment, nbt::Tag};
         let names = ["minecraft:air", "minecraft:cave_air", "minecraft:void_air"];
         let registry = Box::leak(Box::new(
             BlockRegistry::from_nbt(&Tag::compound([
@@ -1090,9 +1127,9 @@ mod tests {
     #[test]
     fn an_old_saves_jigsaw_piece_ids_are_read_as_jigsaw() {
         let piece = |id: &str| {
-            crate::nbt::Tag::compound([
-                ("id", crate::nbt::Tag::String(id.into())),
-                ("PosX", crate::nbt::Tag::Int(16)),
+            horizon_core::nbt::Tag::compound([
+                ("id", horizon_core::nbt::Tag::String(id.into())),
+                ("PosX", horizon_core::nbt::Tag::Int(16)),
             ])
         };
         for id in [
@@ -1119,13 +1156,13 @@ mod tests {
         }
         // No id, or not a compound at all: nothing to read.
         assert_eq!(
-            saved_piece_id(&crate::nbt::Tag::compound([(
+            saved_piece_id(&horizon_core::nbt::Tag::compound([(
                 "PosX",
-                crate::nbt::Tag::Int(16)
+                horizon_core::nbt::Tag::Int(16)
             )])),
             None
         );
-        assert_eq!(saved_piece_id(&crate::nbt::Tag::Int(1)), None);
+        assert_eq!(saved_piece_id(&horizon_core::nbt::Tag::Int(1)), None);
     }
 
     /// The start cache keeps the first starts built for a chunk, spreads a

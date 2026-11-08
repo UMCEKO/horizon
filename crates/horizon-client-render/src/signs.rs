@@ -3,7 +3,14 @@
 //! `back_text` NBT layout.
 pub use crate::chunk::block_entity::{SavedLine, SignData, SignText};
 use crate::{scoreboard, text::Text};
-use horizon_world::nbt::Tag;
+use horizon_core::nbt::Tag;
+
+/// `getBooleanOr(key, false)` and `Codec.BOOL`: any numeric tag's nonzero byte.
+fn nbt_flag(tag: &Tag, key: &str) -> bool {
+    tag.get(key)
+        .and_then(horizon_client_core::nbt_path::int_value)
+        .is_some_and(|value| value as i8 != 0)
+}
 
 /// `DyeColor` names and `getTextColor` values by id.
 pub const DYE_TEXT: [(&str, u32); 16] = [
@@ -78,7 +85,7 @@ impl SignText {
     }
     /// `DyeColor.getTextColor` of this side.
     pub fn text_color(&self) -> u32 {
-        DYE_TEXT[usize::from(self.color.min(15))].1
+        crate::pack_palette::text(usize::from(self.color.min(15)))
     }
     /// `SignText.hasAnyClickCommands`: a line whose style has a `run_command`
     /// click event.
@@ -126,7 +133,7 @@ impl SignText {
         // Signs are drawn every frame: a line read as plain text (most of them) skips the
         // NBT -> JSON -> component round trip. Its click event does not change the drawing.
         if self.saved[i].is_none() {
-            return Text::literal(self.lines[i].as_str());
+            return Text::untrusted(self.lines[i].as_str());
         }
         scoreboard::comp_text(&scoreboard::tag_to_json(&self.message(i)))
     }
@@ -201,12 +208,12 @@ impl SignData {
                     out.color = i as u8;
                 }
             }
-            out.glowing = matches!(t.get("has_glowing_text"), Some(Tag::Byte(b)) if *b != 0);
+            out.glowing = nbt_flag(t, "has_glowing_text");
             out
         };
         self.front = side(tag.get("front_text"));
         self.back = side(tag.get("back_text"));
-        self.waxed = matches!(tag.get("is_waxed"), Some(Tag::Byte(b)) if *b != 0);
+        self.waxed = nbt_flag(tag, "is_waxed");
         self.allow_op_features =
             matches!(tag.get("allow_op_features"), Some(Tag::Byte(b)) if *b != 0);
     }
@@ -301,6 +308,19 @@ pub fn editor_sprite(folder: &str, wood: &str) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn waxed_and_glowing_text_take_any_number() {
+        let tag = Tag::compound([
+            ("is_waxed", Tag::Int(1)),
+            (
+                "front_text",
+                Tag::compound([("has_glowing_text", Tag::Short(1))]),
+            ),
+        ]);
+        let mut decoded = SignData::default();
+        decoded.decode(&tag);
+        assert!(decoded.waxed && decoded.front.glowing);
+    }
+    #[test]
     fn round_trips_nbt() {
         let mut data = SignData {
             hanging: false,
@@ -370,8 +390,8 @@ mod tests {
     fn run_colors(text: &SignText, line: usize) -> Vec<(String, Option<u32>)> {
         text.line_text(line)
             .spans
-            .into_iter()
-            .map(|s| (s.text, s.style.color))
+            .iter()
+            .map(|s| (s.text.clone(), s.style.color))
             .collect()
     }
     #[test]

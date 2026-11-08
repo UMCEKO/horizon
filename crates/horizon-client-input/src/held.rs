@@ -42,11 +42,6 @@ impl HeldKeys {
     pub fn raw(&self, key: &KeyCode) -> bool {
         self.held.contains_key(key)
     }
-    /// The old way of asking, by a mapping's default key; clippy refuses it (`clippy.toml`). It
-    /// stays so that a change written against it says what to use instead.
-    pub fn contains(&self, key: &KeyCode) -> bool {
-        self.raw(key)
-    }
     /// `source` holds `key`. True when nothing held it before.
     pub fn press(&mut self, key: KeyCode, source: Source) -> bool {
         let sources = self.held.entry(key).or_insert(0);

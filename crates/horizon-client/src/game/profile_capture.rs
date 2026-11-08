@@ -399,7 +399,7 @@ impl Game<'_> {
         self.profile.server_only = None;
         let start = client_perf::start_message(
             self.integrated.is_some(),
-            horizon_client::telemetry::gpu_name().as_deref(),
+            None::<String>.as_deref(),
         );
         let t = self.profile.perf.now();
         let path =

@@ -162,8 +162,7 @@ pub fn steer(m: &mut Mob) {
 fn target_pos(w: &MobWorld, id: i32) -> Option<([f64; 3], f64, bool)> {
     match id {
         -1 => w
-            .player
-            .as_ref()
+            .selected_player()
             .filter(|p| p.alive && !p.creative && !p.spectator)
             .map(|p| ([p.position.x, p.position.y, p.position.z], p.eye[1], true)),
         0 => None,
@@ -348,7 +347,7 @@ pub fn custom_server_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEven
         }
         m.extra.counter = left;
         if m.age.is_multiple_of(10) {
-            m.heal(10.0);
+            m.heal(w.loop_context, 10.0);
         }
         return;
     }
@@ -416,7 +415,7 @@ pub fn custom_server_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEven
                 .filter(|s| s.alive && s.id != m.id && !undead(s.species) && near(s.position))
                 .map(|s| s.id as i32)
                 .collect();
-            if let Some(pl) = &w.player
+            if let Some(pl) = w.selected_player()
                 && pl.alive
                 && !pl.creative
                 && !pl.spectator
@@ -432,7 +431,7 @@ pub fn custom_server_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEven
     }
     if m.extra.counter2 > 0 {
         m.extra.counter2 -= 1;
-        if m.extra.counter2 == 0 && w.mob_griefing {
+        if m.extra.counter2 == 0 && w.can_grief(m.id) {
             let width = (m.width() / 2.0 + 1.0).floor() as i32;
             let height = m.height().floor() as i32;
             let b = [
@@ -453,6 +452,8 @@ pub fn custom_server_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEven
                             events.push(MobEvent::BreakBlock {
                                 pos: [x, y, z],
                                 drop: true,
+                                by: Some(m.id),
+                                breaker: None,
                             });
                             // destroyBlock is true when setBlock changed the
                             // cell: a liquid is already its fluid's block.
@@ -463,18 +464,20 @@ pub fn custom_server_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEven
                 }
             }
             if destroyed {
-                // Level event 1022.
+                // Level event 1022, once the game has broken a block.
+                let start = events.len();
                 events.push(MobEvent::LevelEventSound {
                     sound: "entity.wither.break_block",
                     at: [m.position.x, m.position.y, m.position.z],
                     volume: 1.0,
                     spread: 0.0,
                 });
+                super::after_break(events, w.asks_living_destroy_block, m.id, start);
             }
         }
     }
     if m.age.is_multiple_of(20) {
-        m.heal(1.0);
+        m.heal(w.loop_context, 1.0);
     }
 }
 /// `WitherBoss.hurtServer` filter: not while charging, no arrows once
@@ -545,6 +548,60 @@ pub fn scale(m: &Mob, alpha: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The break sound waits for the game's verdict only when a listener can
+    /// cancel the break: an installed mod that does not listen leaves it plain.
+    #[test]
+    #[ignore = "needs prepared resources"]
+    fn break_sound_defers_only_for_a_destroy_listener() {
+        use std::sync::Arc;
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world
+                .chunks
+                .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+            world
+                .set(0, 64, 0, registry.default_state("minecraft:stone").unwrap())
+                .unwrap();
+        };
+        assert!(super::super::world::with_built_test_world(
+            &[],
+            build,
+            |world, types| {
+                let kind = Arc::new(types.types.get("minecraft:wither").unwrap().clone());
+                let mut world = world.clone();
+                for asks in [false, true] {
+                    world.asks_living_destroy_block = asks;
+                    let mut m = Mob::new(1, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                    m.extra.counter = 0;
+                    m.extra.counter2 = 1;
+                    let mut events = Vec::new();
+                    custom_server_ai_step(&mut m, &world, &mut events);
+                    assert!(events.iter().any(|e| matches!(
+                        e,
+                        MobEvent::BreakBlock {
+                            pos: [0, 64, 0],
+                            ..
+                        }
+                    )));
+                    let plain = events.iter().any(|e| {
+                        matches!(
+                            e,
+                            MobEvent::LevelEventSound {
+                                sound: "entity.wither.break_block",
+                                ..
+                            }
+                        )
+                    });
+                    let deferred = events.iter().any(|e| matches!(
+                        e,
+                        MobEvent::IfBroke { mob: 1, effects, .. }
+                            if matches!(effects.as_slice(), [MobEvent::LevelEventSound { sound: "entity.wither.break_block", .. }])
+                    ));
+                    assert_eq!((plain, deferred), (!asks, asks), "asks: {asks}");
+                }
+            }
+        ));
+    }
     #[test]
     fn head_rotlerp_keeps_negative_angles_unwrapped() {
         assert_eq!(head_rotlerp(-5.0, -20.0, 40.0), -20.0);
@@ -599,12 +656,13 @@ mod tests {
         assert!(!armor_refuses(&mob(Species::Zombie, 150.0), &charge));
 
         // What `wind_charge_damage` lets through still lands on the armor...
+        let mut test_level = crate::health::TestLevel::new(0);
         let mut m = mob(Species::Wither, 150.0);
-        assert!(m.damage(1.0, Damage::of(DamageKind::Thrown)));
+        assert!(m.damage(&mut test_level.level(), 1.0, Damage::of(DamageKind::Thrown)));
         assert!(m.health < 150.0);
         // ...and arrows stay refused by the damage filter.
         let mut m = mob(Species::Wither, 150.0);
-        assert!(!m.damage(1.0, Damage::of(DamageKind::Arrow)));
+        assert!(!m.damage(&mut test_level.level(), 1.0, Damage::of(DamageKind::Arrow)));
         assert_eq!(m.health, 150.0);
     }
     /// A spawning wither rolled the three particles of `aiStep`'s

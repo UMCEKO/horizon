@@ -7,6 +7,7 @@
 //! `continueDestroyBlock`, `stopDestroyBlock`).
 //!
 //! What those read and do in the world is behind [`HandWorld`].
+pub use mod_api::client::first_person::Hand;
 
 /// The ranged item state read by the first-person hand renderer.
 #[derive(Clone, Copy, Debug)]
@@ -37,7 +38,7 @@ pub enum ItemPose {
     /// A spear being charged (`ItemUseAnimation.SPEAR`): the time held and
     /// the ticks since its last hit's feedback.
     Spear {
-        kinetic: crate::spear::Kinetic,
+        timing: crate::spear::UseTiming,
         time_held: f32,
         ticks_since_hit: f32,
     },
@@ -89,13 +90,13 @@ pub fn item_pose(left: bool, inverse_height: f32, attack: f32, pose: ItemPose) -
     }
     // The spear's own place in the hand, without the equip height.
     if let ItemPose::Spear {
-        kinetic,
+        timing,
         time_held,
         ticks_since_hit,
     } = pose
     {
         return Mat4::from_translation(Vec3::new(invert * 0.56, -0.52, -0.72))
-            * crate::spear::first_person_use(&kinetic, ticks_since_hit, time_held, !left);
+            * crate::spear::first_person_use(&timing, ticks_since_hit, time_held, !left);
     }
     if matches!(pose, ItemPose::Stab) {
         return m * crate::spear::first_person_attack(attack, !left);
@@ -461,16 +462,6 @@ pub fn hands_to_render(held: [Option<(&str, bool)>; 2], using: Option<(Hand, &st
     }
 }
 
-/// `InteractionHand`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Hand {
-    Main,
-    Off,
-}
-impl Hand {
-    pub const BOTH: [Hand; 2] = [Hand::Main, Hand::Off];
-}
-
 /// `SwingAnimation`: its type (`SwingAnimationType` ordinal) and duration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SwingAnimation {
@@ -741,6 +732,7 @@ impl UseResult {
     }
 }
 pub use horizon_items::use_animation::consumable_animation;
+
 /// What the click handling reads and does in the world.
 pub trait HandWorld {
     fn hit(&mut self) -> Hit;
@@ -1099,7 +1091,7 @@ mod tests {
                 }))
                 .unwrap(),
             );
-            models.prototypes.insert(
+            std::sync::Arc::make_mut(&mut models.prototypes).insert(
                 item.into(),
                 [("minecraft:item_model".into(), json!(item))].into(),
             );
@@ -1587,17 +1579,26 @@ mod action_result_tests {
         assert!(!UseResult::Success { swing: true }.should_swing(2, 3));
     }
     #[test]
-    fn consumption_pose_requires_eat_or_drink_animation() {
-        use horizon_world::consumable::UseAnimation::*;
+    fn a_consumable_names_its_use_animation() {
+        use horizon_core::use_animation::UseAnimation::*;
         assert_eq!(consumable_animation(&serde_json::json!({})), Eat);
-        assert_eq!(
-            consumable_animation(&serde_json::json!({"animation":"drink"})),
-            Drink
-        );
-        for animation in ["none", "block", "bow", "brush"] {
+        for (name, expected) in [
+            ("drink", Drink),
+            ("block", Block),
+            ("bow", Bow),
+            ("trident", Trident),
+            ("crossbow", Crossbow),
+            ("spyglass", Spyglass),
+            ("toot_horn", TootHorn),
+            ("brush", Brush),
+            ("bundle", Bundle),
+            ("spear", Spear),
+            ("none", None),
+        ] {
             assert_eq!(
-                consumable_animation(&serde_json::json!({"animation":animation})),
-                None
+                consumable_animation(&serde_json::json!({"animation":name})),
+                expected,
+                "{name}"
             );
         }
     }

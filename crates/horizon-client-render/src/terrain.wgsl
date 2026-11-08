@@ -40,7 +40,7 @@ struct Globals {
     hdr_windows: array<vec4<f32>, 2>,
     // HDR lighting: x how strongly the sky lights the world now (`Sky::sky_light_factor`),
     // y what the sky and fog get: the same, but none under water; z 1 with HDR output on.
-    // w: this entire frame writes light, so alpha is coverage rather than a mark.
+    // w: apply the no-pack HDR gain; HDR_WRITE_LIGHT independently keeps float alpha as coverage.
     hdr_light: vec4<f32>,
     hdr_settings: vec4<f32>,
     hdr_shares: vec4<f32>,
@@ -151,31 +151,23 @@ fn rotated_grid(uv: vec2<f32>, layer: u32, pixel: vec2<f32>, du: vec2<f32>,
     let dv_len = length(dv);
     let effective = sqrt(min(du_len, dv_len) * max(du_len, dv_len));
     let exact = max(0.0, log2(effective / min_pixel));
-    let low = floor(exact);
-    let mip_blend = fract(exact);
     // From this level on the sprite is a single texel (0: the views stop before one is), and
     // the sampler clamps any level past it to it: there every tap reads the same value, so
     // one tap gives the four's mean. Distant tiles sit there.
     let single = globals.filtering.z;
-    if single > 0.0 && low >= single {
-        return sprite_level(uv, layer, low);
+    if single > 0.0 && floor(exact) >= single {
+        return sprite_level(uv, layer, floor(exact));
     }
-    let high_single = single > 0.0 && low + 1.0 >= single;
+    // sampleRGSS takes each of the four taps at the two mip levels around `exact` and mixes them
+    // by fract(exact). The sprite sampler's mip filter is linear, so a tap at the fractional
+    // level is that mix: four texture instructions where the shader mix took eight.
     var offsets = array<vec2<f32>, 4>(
         vec2(0.125, 0.375), vec2(-0.125, -0.375), vec2(0.375, -0.125), vec2(-0.375, 0.125));
-    var sum_low = vec4(0.0);
-    var sum_high = vec4(0.0);
+    var sum = vec4(0.0);
     for (var i = 0; i < 4; i++) {
-        let p = uv + offsets[i] * pixel;
-        sum_low += sprite_level(p, layer, low);
-        if !high_single {
-            sum_high += sprite_level(p, layer, low + 1.0);
-        }
+        sum += sprite_level(uv + offsets[i] * pixel, layer, exact);
     }
-    if high_single {
-        sum_high = 4.0 * sprite_level(uv, layer, low + 1.0);
-    }
-    return mix(sum_low * 0.25, sum_high * 0.25, mip_blend);
+    return sum * 0.25;
 }
 // Distant terrain tiles (lod/mesh.rs) count their UVs in blocks past 1: each block takes the
 // sprite again, as separate faces would under the clamped sampler. Sprite UVs in [0, 1] stay.
@@ -762,11 +754,14 @@ fn solid_color(in: TerrainOut) -> vec4<f32> {
 fn solid_finish(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>) -> vec4<f32> {
     return solid_light(solid_finish_at(in, texel, color, dpdx(in.uv), dpdy(in.uv)));
 }
-// A finished solid pixel as the frame keeps it: its mark in alpha, or on the written lane its
-// light, alpha 1.
+// A finished solid pixel as the frame keeps it: on the float frame its colour, alpha 1, lit by
+// HDR's gain where it applies (`hdr_light.w`); else its mark in alpha.
 fn solid_light(finished: vec4<f32>) -> vec4<f32> {
-    if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
-        return vec4(hdr_written(finished.rgb, finished.a, globals.hdr_settings, globals.hdr_shares), 1.0);
+    if HDR_WRITE_LIGHT {
+        if globals.hdr_light.w != 0.0 {
+            return vec4(hdr_written(finished.rgb, finished.a, globals.hdr_settings, globals.hdr_shares), 1.0);
+        }
+        return vec4(finished.rgb, 1.0);
     }
     return finished;
 }
@@ -915,7 +910,7 @@ struct NativeModelOut {
         color = vec4(color.rgb * shade, color.a);
     }
     let finished = apply_fog(color, in.spherical, in.cylindrical);
-    return vec4(finished.rgb, select(finished.a, 1.0, HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0));
+    return vec4(finished.rgb, select(finished.a, 1.0, HDR_WRITE_LIGHT));
 }
 
 // Sky (SkyRenderer): the 10-vertex sky disc fan at y = 16 (radius 512) in
@@ -1050,8 +1045,11 @@ fn sky_along_ray_base(d: vec3<f32>) -> vec3<f32> {
 }
 fn sky_finished(color: vec3<f32>) -> vec4<f32> {
     let mark = 1.0 - 0.24 * globals.hdr_light.y;
-    if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
-        return vec4(hdr_written(color, mark, globals.hdr_settings, globals.hdr_shares), 1.0);
+    if HDR_WRITE_LIGHT {
+        if globals.hdr_light.w != 0.0 {
+            return vec4(hdr_written(color, mark, globals.hdr_settings, globals.hdr_shares), 1.0);
+        }
+        return vec4(color, 1.0);
     }
     return vec4(color, mark);
 }

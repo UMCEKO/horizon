@@ -103,10 +103,39 @@ pub struct RenderAssets {
     pub connected: crate::connected::ConnectedTextures,
     /// Fusion connected textures (empty without Fusion's connecting textures and models).
     pub fusion: crate::fusion::FusionTextures,
-    /// Counts up each time resources load, from 1: a native mod asks again where blocks'
-    /// sprites are when it changes (`native_block_sprites_version`).
+    /// Counts up on every successful resource load, including model-only changes.
+    /// Only publishing this store invalidates the previous store's model handles and sprites.
     pub generation: u64,
 }
+impl RenderAssets {
+    /// Resolve a registered standalone model in this published store.
+    pub fn model(
+        &self,
+        id: &mod_api::Identifier,
+    ) -> std::result::Result<mod_api::ModelRef, mod_api::ModelError> {
+        let slot = self
+            .model_catalog
+            .standalone_slot(&id.to_string())
+            .ok_or(mod_api::ModelError::UnknownModel)?;
+        Ok(mod_api::__private::built::model_ref(self.generation, slot))
+    }
+
+    /// Validate a handle once at consumption, before appending any geometry.
+    pub fn resolve_model(
+        &self,
+        model: mod_api::ModelRef,
+    ) -> std::result::Result<&crate::models::catalog::BakedModel, mod_api::ModelError> {
+        use mod_api::__private::game::Fields;
+        let fields = model.fields();
+        if fields.generation != self.generation {
+            return Err(mod_api::ModelError::StaleModel);
+        }
+        self.model_catalog
+            .model_by_slot(fields.slot)
+            .ok_or(mod_api::ModelError::UnknownModel)
+    }
+}
+
 /// The block sprites' pixels for a renderer to upload. Once a renderer has
 /// them ([`Self::pack`]) they are kept lz4-compressed: the GPU holds the
 /// texture array, and the copy only serves a renderer made again (another
@@ -267,7 +296,7 @@ impl Assets {
     /// The models and sprites of another resource root over these blocks
     /// (resource packs changed): the registry and block facts come from the
     /// game data, which resource packs do not touch.
-    pub fn reload(&self, root: &Path) -> Result<RenderAssets> {
+    pub fn reload(&self, root: &crate::resource_source::ResourceRoot) -> Result<RenderAssets> {
         RenderAssets::load(root, self)
     }
     /// [`Assets::reload`] with the model library already parsed.
@@ -279,28 +308,35 @@ impl Assets {
     /// critical path.
     pub fn reload_with_models(
         &self,
-        root: &Path,
+        root: &crate::resource_source::ResourceRoot,
         parsed: crate::model_library::ParsedModels,
     ) -> Result<RenderAssets> {
         RenderAssets::load_with_parsed(root, self, true, Some(parsed))
     }
     /// [`Assets::reload`] for a server, which draws nothing: the sprites'
     /// layers, without the block or item models or the textures' pixels.
-    pub fn reload_for_server(&self, root: &Path) -> Result<RenderAssets> {
+    pub fn reload_for_server(
+        &self,
+        root: &crate::resource_source::ResourceRoot,
+    ) -> Result<RenderAssets> {
         RenderAssets::load_with(root, self, false)
     }
 }
 impl RenderAssets {
-    pub fn load(root: &Path, assets: &Assets) -> Result<Self> {
+    pub fn load(root: &crate::resource_source::ResourceRoot, assets: &Assets) -> Result<Self> {
         Self::load_with(root, assets, true)
     }
-    fn load_with(root: &Path, assets: &Assets, draws: bool) -> Result<Self> {
+    fn load_with(
+        root: &crate::resource_source::ResourceRoot,
+        assets: &Assets,
+        draws: bool,
+    ) -> Result<Self> {
         Self::load_with_parsed(root, assets, draws, None)
     }
     /// `parsed`: the model library when a caller parsed it ahead of this
     /// (see [`Assets::reload_with_models`]); otherwise it is parsed here.
     fn load_with_parsed(
-        root: &Path,
+        root: &crate::resource_source::ResourceRoot,
         assets: &Assets,
         draws: bool,
         parsed: Option<crate::model_library::ParsedModels>,
@@ -308,7 +344,12 @@ impl RenderAssets {
         let registry = assets.registry;
         let mut sprites = crate::sprites::Sprites::with_disk_cache(root);
         for name in MATERIALS {
-            sprites.insert(root, &format!("minecraft:block/{name}"))?;
+            sprites.insert(&format!("minecraft:block/{name}"))?;
+        }
+        if draws {
+            for id in root.runtime_block_sprites() {
+                sprites.insert(id)?;
+            }
         }
         // A server draws no block and no item: its block models (about 24 MB
         // baked) and item model library (7 MB) stay empty.
@@ -316,7 +357,7 @@ impl RenderAssets {
             Some(parsed) => parsed,
             None if draws => {
                 let _step = crate::spans::startup::step("core.models_parse");
-                crate::model_library::ParsedModels::load(root)
+                crate::model_library::ParsedModels::load(root.source())
             }
             None => crate::model_library::ParsedModels::default(),
         };
@@ -339,26 +380,43 @@ impl RenderAssets {
             "lava_still",
             "lava_flow",
         ] {
-            sprites.insert(root, &format!("minecraft:block/{name}"))?;
+            sprites.insert(&format!("minecraft:block/{name}"))?;
+        }
+        for model in crate::fluid_models::resolved() {
+            for name in [
+                Some(&model.still),
+                Some(&model.flowing),
+                model.overlay.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                sprites.insert(name)?;
+            }
         }
         for stage in 0..10 {
-            sprites.insert(root, &format!("minecraft:block/destroy_stage_{stage}"))?;
-            sprites.insert(root, &format!("minecraft:block/destroy_oit_stage_{stage}"))?;
+            sprites.insert(&format!("minecraft:block/destroy_stage_{stage}"))?;
+            sprites.insert(&format!("minecraft:block/destroy_oit_stage_{stage}"))?;
         }
         let fusion = if draws {
             let _step = crate::spans::startup::step("core.fusion");
-            crate::fusion::FusionTextures::load(root, registry, &mut sprites, &mut models.catalog)
+            crate::fusion::FusionTextures::load(
+                root.source(),
+                registry,
+                &mut sprites,
+                &mut models.catalog,
+            )
         } else {
             Default::default()
         };
         let mut emissive = Vec::new();
         let connected = if draws {
-            crate::native_emissive::load(root, &mut sprites);
+            crate::native_emissive::load(root.source(), &mut sprites);
             // A side's sprite, for rules that connect by tile: the first quad facing it.
             let catalog = &models.catalog;
             let mut found = Vec::new();
             crate::connected::ConnectedTextures::load(
-                root,
+                root.source(),
                 registry,
                 &mut sprites,
                 |state, face| {
@@ -383,7 +441,7 @@ impl RenderAssets {
         // After the connected tiles: a tile identical to a block shares its layer, and the
         // overlays skip shared layers.
         if draws {
-            emissive = crate::native_emissive::load_optifine(root, &mut sprites);
+            emissive = crate::native_emissive::load_optifine(root.source(), &mut sprites);
         }
         sprites.save_disk_cache();
         if draws {
@@ -423,6 +481,80 @@ mod tests {
     use horizon_world::loot::PackOverlay;
 
     #[test]
+    #[ignore = "requires HORIZON_TEST_RESOURCES pointing to prepared vanilla resources"]
+    fn archive_world_override_loads_over_real_prepared_tables_without_unpacking()
+    -> crate::Result<()> {
+        use crate::{
+            packs::{self, Pack, Source},
+            resource_source::{ResourceRoot, ResourceSource},
+        };
+        use std::{fs, io::Write};
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let prepared = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES")
+                .ok_or("HORIZON_TEST_RESOURCES is required")?,
+        );
+        let scratch = Scratch(
+            std::env::temp_dir().join(format!("horizon-real-archive-world-{}", std::process::id())),
+        );
+        fs::create_dir_all(&scratch.0)?;
+        let model = "assets/minecraft/models/block/stone.json";
+        let original_model = fs::read(prepared.join(model))?;
+        let jar = scratch.0.join("world.jar");
+        let mut writer = zip::ZipWriter::new(fs::File::create(&jar)?);
+        writer.start_file(model, zip::write::SimpleFileOptions::default())?;
+        writer.write_all(br##"{"textures":{"all":"archive:block/stone","particle":"#all"},"elements":[{"from":[0,0,0],"to":[16,16,16],"faces":{"north":{"texture":"#all"}}}]}"##)?;
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, 16, 16);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()?
+                .write_image_data(&[217, 34, 87, 255].repeat(256))?;
+        }
+        writer.start_file(
+            "assets/archive/textures/block/stone.png",
+            zip::write::SimpleFileOptions::default(),
+        )?;
+        writer.write_all(&png)?;
+        writer.finish()?;
+        let source = packs::resources(
+            ResourceSource::directory(prepared.clone()),
+            &[Pack::mod_layer("archive".into(), Source::Zip(jar))],
+        )?;
+        let root = ResourceRoot::new(prepared.clone(), scratch.0.join("cache"), source);
+        let assets = super::Assets::load(root.prepared())?;
+        let render = assets.reload(&root)?;
+        let stone = assets
+            .registry
+            .default_state("minecraft:stone")
+            .ok_or("missing stone")?;
+        let models = render
+            .model_catalog
+            .collect(stone, horizon_core::position::BlockPos::new(0, 0, 0))?;
+        assert_eq!(models[0].1.faces.len(), 1);
+        let layer = render.sprite_layers["archive:block/stone"];
+        assert_eq!(models[0].1.faces[0].layer, layer);
+        let offset = layer as usize * (render.sprite_size * render.sprite_size * 4) as usize;
+        assert_eq!(render.pixels.get()[offset..offset + 4], [217, 34, 87, 255]);
+        assert_eq!(fs::read(prepared.join(model))?, original_model);
+        assert!(!prepared.join("assets/archive").exists());
+        assert!(!scratch.0.join("assets").exists());
+        eprintln!(
+            "archive-backed render loaded {} prepared states and {} sprite layers without unpacking",
+            assets.registry.len(),
+            render.texture_layers
+        );
+        Ok(())
+    }
+
+    #[test]
     fn always_edible_and_consume_effects_loaded() {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/horizon-client/26.3");
@@ -431,8 +563,15 @@ mod tests {
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
         let facts = crate::blocks::BlockFacts::load(&root, assets.registry).unwrap();
-        let items =
-            crate::items::Items::load(&root, assets.registry, &facts, &PackOverlay::NONE).unwrap();
+        let defaults = horizon_world::item_defaults::read(&root).unwrap();
+        let items = crate::items::Items::load(
+            &root,
+            assets.registry,
+            &facts,
+            &PackOverlay::NONE,
+            &defaults,
+        )
+        .unwrap();
 
         let apple = items.get("minecraft:golden_apple").expect("golden apple");
         assert!(apple.can_always_eat);
@@ -451,7 +590,7 @@ mod tests {
         assert!(beef.food.is_some());
 
         // Consumables without food, their style and their remainders.
-        use horizon_world::consumable::UseAnimation;
+        use horizon_core::use_animation::UseAnimation;
         let milk = items.get("minecraft:milk_bucket").expect("milk bucket");
         let drink = milk.consumable.as_ref().unwrap();
         assert!(milk.food.is_none());

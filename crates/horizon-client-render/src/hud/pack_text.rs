@@ -2,10 +2,10 @@
 //! with `IS_GUI`): servers' HUDs that their pack's vertex shader moves to the screen's corners,
 //! and text effects in its fragment shader. Without one the text draws natively.
 
-use std::path::Path;
+use crate::resource_source::ResourceSource;
 use std::sync::Arc;
 
-use horizon_shaders::{CoreProgram, Glue};
+use crate::core_shader::{CoreProgram, Glue};
 
 use super::{HudBatch, HudVertex};
 use crate::gfx::hud_coverage::Pipeline;
@@ -31,7 +31,7 @@ const GLUE: Glue = Glue {
 };
 
 /// The packs' text shader, when a pack replaces either stage.
-pub(super) fn load(root: &Path, defaults: &Path) -> Option<Arc<CoreProgram>> {
+pub(super) fn load(root: &ResourceSource, defaults: &ResourceSource) -> Option<Arc<CoreProgram>> {
     load_core(root, defaults, "text", &["IS_GUI"], &GLUE)
 }
 
@@ -39,16 +39,13 @@ pub(super) fn load(root: &Path, defaults: &Path) -> Option<Arc<CoreProgram>> {
 /// game's own resources, which have vanilla's and its includes), when a pack replaces either
 /// stage.
 pub(super) fn load_core(
-    root: &Path,
-    defaults: &Path,
+    root: &ResourceSource,
+    defaults: &ResourceSource,
     name: &str,
     defines: &[&str],
     glue: &Glue,
 ) -> Option<Arc<CoreProgram>> {
-    if root == defaults {
-        return None;
-    }
-    let read = |base: &Path, path: &str| std::fs::read_to_string(base.join(path)).ok();
+    let read = |base: &ResourceSource, path: &str| base.read_to_string(path).ok();
     let own =
         |path: &str| read(root, path).filter(|text| read(defaults, path).as_ref() != Some(text));
     let vertex_path = format!("assets/minecraft/shaders/core/{name}.vsh");
@@ -64,7 +61,7 @@ pub(super) fn load_core(
         let path = format!("assets/{namespace}/{path}");
         read(root, &path).or_else(|| read(defaults, &path))
     };
-    match horizon_shaders::translate_core(&vertex, &fragment, defines, &include, glue) {
+    match crate::core_shader::translate_core(&vertex, &fragment, defines, &include, glue) {
         Ok(program) => {
             log::info!("the resource pack's {name} shader is used");
             Some(Arc::new(program))
@@ -74,6 +71,25 @@ pub(super) fn load_core(
             None
         }
     }
+}
+
+/// The packs' core shaders the atlas carries (text, block outline, sky, stars).
+pub(super) fn load_shaders(
+    atlas: &mut super::HudAtlas,
+    root: &ResourceSource,
+    defaults: &ResourceSource,
+) {
+    atlas.text_shader = load(root, defaults);
+    atlas.lines_shader = load_core(
+        root,
+        defaults,
+        "rendertype_lines",
+        &[],
+        &crate::gfx::core_lines::GLUE,
+    );
+    let sky = |name| load_core(root, defaults, name, &[], &crate::gfx::core_sky::GLUE);
+    atlas.sky_shader = sky("sky");
+    atlas.stars_shader = sky("stars");
 }
 
 /// Each uniform block's offset in the one buffer (`core_shader::BLOCKS` order).
@@ -117,7 +133,7 @@ impl PackText {
                 count: None,
             })
             .collect();
-        for (_, binding) in horizon_shaders::SAMPLERS {
+        for (_, binding) in crate::core_shader::SAMPLERS {
             entries.push(wgpu::BindGroupLayoutEntry {
                 binding,
                 visibility,
@@ -160,7 +176,7 @@ impl PackText {
                 }),
             })
             .collect();
-        for (_, binding) in horizon_shaders::SAMPLERS {
+        for (_, binding) in crate::core_shader::SAMPLERS {
             resources.push(wgpu::BindGroupEntry {
                 binding,
                 resource: wgpu::BindingResource::TextureView(atlas),
@@ -311,7 +327,7 @@ mod tests {
 
     #[test]
     fn the_gui_projection_maps_gui_pixels_to_the_screen() {
-        let mut batch = HudBatch::new([1920, 1080]);
+        let mut batch = HudBatch::scratch([1920, 1080]);
         batch.scale = 4.0;
         let data: Vec<f32> =
             bytemuck::cast_slice(&uniforms(&batch, [1920, 1080], batch.scale)).to_vec();

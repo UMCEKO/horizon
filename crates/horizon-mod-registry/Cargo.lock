@@ -448,6 +448,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-core"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "horizon-mod-package"
+version = "0.1.0"
+dependencies = [
+ "horizon-core",
+ "horizon-shader-api",
+ "log",
+ "minisign-verify",
+ "png",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml",
+ "wasmparser",
+ "zip",
+]
+
+[[package]]
 name = "horizon-mod-registry"
 version = "0.1.0"
 dependencies = [
@@ -455,7 +482,8 @@ dependencies = [
  "base64",
  "getrandom 0.3.4",
  "hmac",
- "horizon-mods",
+ "horizon-mod-package",
+ "horizon-release-sign",
  "http-body-util",
  "rusqlite",
  "serde",
@@ -469,18 +497,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-mods"
+name = "horizon-release-sign"
 version = "0.1.0"
 dependencies = [
- "horizon-shader-api",
- "log",
- "minisign-verify",
- "serde",
- "serde_json",
- "sha2",
- "toml",
- "wasmparser",
- "zip",
+ "base64",
+ "ring",
 ]
 
 [[package]]
@@ -1049,6 +1070,10 @@ name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+dependencies = [
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "serde"
@@ -1514,9 +1539,9 @@ dependencies = [
 
 [[package]]
 name = "wasmparser"
-version = "0.254.2"
+version = "0.261.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5ff8685b587722894b6f25958fc608d315b93b8d23647bfb567664e7006d757"
+checksum = "4f20f20e44f7e8aeb6744823ea9d869ede51e51be4fdaedede2852282e54d2d8"
 dependencies = [
  "bitflags",
  "hashbrown 0.17.1",

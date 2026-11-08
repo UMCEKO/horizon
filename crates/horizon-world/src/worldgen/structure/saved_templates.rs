@@ -11,9 +11,9 @@ use super::{
 };
 use crate::{
     datafix::dynamic::{Number, as_bool_opt, as_float, as_number},
-    nbt::Tag,
     worldgen::block_feature::FeatureBlockBindings,
 };
+use horizon_core::nbt::Tag;
 use std::sync::Arc;
 
 fn text(tag: &Tag, key: &str) -> Option<String> {
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn saved_templates_round_trip_and_whole_start_fallback() {
-        let (mut registry_tag, _) = crate::nbt::parse_snbt(
+        let (mut registry_tag, _) = horizon_core::nbt::parse_snbt(
             r#"{DataVersion:0,states:[
             {id:"minecraft:air"},{id:"minecraft:cave_air"},{id:"minecraft:void_air"},
             {id:"minecraft:structure_block"},{id:"minecraft:sand"},{id:"minecraft:gravel"},
@@ -262,9 +262,10 @@ mod tests {
                     let template = Arc::new(template);
                     resources
                         .templates
+                        .loaded
                         .write()
                         .unwrap()
-                        .insert(name.clone(), Some(template.clone()));
+                        .insert(name.clone(), template.clone());
                     let mut pivot = [0; 3];
                     let mut mirror_value = Mirror::None;
                     let mut ignore = vec!["minecraft:structure_block".into()];

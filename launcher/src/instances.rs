@@ -130,6 +130,13 @@ pub fn adopt_icon(home: &Path, url: &str) {
     }
 }
 
+// A malformed preference must not invalidate unrelated instance metadata.
+fn saved_profile<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<crate::native_mods::Profile>, D::Error> {
+    Ok(serde_json::from_value(serde_json::Value::deserialize(deserializer)?).ok())
+}
+
 /// The player's choices about one instance.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Meta {
@@ -143,6 +150,13 @@ pub struct Meta {
     /// launcher's own version, which follows updates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// This instance's saved native build choice; missing or unknown starts at Balanced.
+    #[serde(
+        default,
+        deserialize_with = "saved_profile",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub native_profile: Option<crate::native_mods::Profile>,
     /// Seconds played in it, every run started by the launcher (the window or `play`) added up.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub played_secs: u64,
@@ -245,6 +259,8 @@ pub struct Instance {
     pub group: Option<String>,
     /// Its pinned Horizon version, if any (`Meta::version`).
     pub version: Option<String>,
+    /// Its saved native build choice, or Balanced before the player chooses one.
+    pub native_profile: crate::native_mods::Profile,
     pub played: Duration,
     pub last_played: Option<SystemTime>,
     /// What runs around the game (`launch::wrap`).
@@ -347,6 +363,9 @@ fn list_in(game_home: &Path, data: &Path) -> Vec<Instance> {
                 icon: meta.icon,
                 group: meta.group,
                 version: meta.version,
+                native_profile: meta
+                    .native_profile
+                    .unwrap_or(crate::native_mods::Profile::Balanced),
                 played: Duration::from_secs(meta.played_secs),
                 last_played: meta
                     .last_played
@@ -404,6 +423,7 @@ pub fn delete_with_selection(query: &str) -> Result<(Instance, Result<(), String
     } else {
         Ok(())
     };
+    crate::storage::eviction::request_cleanup();
     Ok((gone, saved))
 }
 
@@ -455,7 +475,6 @@ const NOT_COPIED: &[&str] = &[
     "logs",
     "crash-reports",
     "sessions",
-    "telemetry",
     "mod-browser",
     ".horizon-cache",
     // Far terrain's copies of what servers sent, rebuilt as the instance plays.
@@ -555,6 +574,7 @@ fn create_in(
         let _ = fs::remove_dir_all(&dir);
         return Err(format!("Could not make {}: {e}", dir.display()));
     }
+    crate::run_leases::publish(&dir).map_err(crate::native_mods::cache_error)?;
     let mut store = Store::load(data);
     let meta = store.instances.entry(slug.clone()).or_default();
     meta.name = (name != slug).then(|| name.to_string());
@@ -697,12 +717,6 @@ fn follow_player(game_home: &Path, home: &Path) {
         if !home.join(f).exists() && game_home.join(f).is_file() {
             let _ = fs::copy(game_home.join(f), home.join(f));
         }
-    }
-    let consent = horizon_telemetry::consent::Consent::path(game_home);
-    if consent.is_file() {
-        let to = horizon_telemetry::consent::Consent::path(home);
-        let _ = fs::create_dir_all(to.parent().unwrap());
-        let _ = fs::copy(consent, to);
     }
     let no_ai = horizon_core::no_ai::is_on(game_home);
     if horizon_core::no_ai::is_on(home) != no_ai {

@@ -5,12 +5,12 @@ on:
   push:
     branches: [main]
     paths:
-      - 'crates/horizon-mods/**'
+      - 'crates/horizon-mod-package/**'
       - 'crates/horizon-mod-registry/**'
       - '.github/workflows/mod-registry.yml'
   pull_request:
     paths:
-      - 'crates/horizon-mods/**'
+      - 'crates/horizon-mod-package/**'
       - 'crates/horizon-mod-registry/**'
       - '.github/workflows/mod-registry.yml'
 permissions:

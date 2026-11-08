@@ -1,470 +1,228 @@
-//! Trait-backed injections, prepared as build-script input alongside the staged game.
-use super::{api, Bundle, MANIFEST};
-use horizon_mod_api_gen::{TraitContract as Contract, TraitInjection as Injection};
-use std::{
-    collections::{HashMap, HashSet},
-    fs,
-    path::Path,
-};
+//! Raw function declarations and the staged point catalog.
+use std::{fs, path::Path};
 
-/// Replace trait injections with ordinary mixin helpers, leaving ordinary injections unchanged.
-pub(super) fn prepare(mods: &[Bundle], source: &Path) -> Result<Vec<Injection>, String> {
-    let mut result = Vec::new();
-    let mut names = HashSet::new();
-    let owners: HashMap<_, _> = api::with_api(mods)
-        .enumerate()
-        .map(|(i, b)| (b.id.as_str(), i))
-        .collect();
-    // These are the copied bundles under mods.incoming, never the player's originals.
-    for bundle in mods {
-        api::strip(bundle)?;
-        let path = bundle.dir.join(MANIFEST);
-        let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let mut manifest: toml::Table = text
-            .parse()
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        let entries = manifest
-            .get_mut("injection")
-            .and_then(toml::Value::as_array_mut);
-        if let Some(entries) = entries {
-            for (index, entry) in entries.iter_mut().enumerate() {
-                let table = entry.as_table_mut().ok_or("injection must be a table")?;
-                let Some(method) = table.remove("trait_method") else {
-                    continue;
-                };
-                if bundle.api.is_none() {
-                    return Err(format!("{}: trait_method requires [api]", path.display()));
-                }
-                let target = if let Some(hook) = table.get("hook").and_then(toml::Value::as_str) {
-                    let catalog = source.join("native-hooks.json");
-                    let text = fs::read_to_string(&catalog)
-                        .map_err(|e| format!("{}: {e}", catalog.display()))?;
-                    let catalog: serde_json::Value =
-                        serde_json::from_str(&text).map_err(|e| e.to_string())?;
-                    catalog["hooks"]
-                        .as_array()
-                        .and_then(|hooks| hooks.iter().find(|h| h["name"].as_str() == Some(hook)))
-                        .and_then(|h| h["target"].as_str())
-                        .ok_or_else(|| format!("unknown catalog hook {hook}"))?
-                        .to_owned()
-                } else {
-                    table
-                        .get("target")
-                        .and_then(toml::Value::as_str)
-                        .ok_or("trait_method needs a target or catalog hook")?
-                        .to_owned()
-                };
-                let target_crate = target.split("::").next().unwrap_or_default();
-                if target_crate != "horizon_client" {
-                    return Err(format!("trait injection target {target:?} is in crate {target_crate:?}; only horizon-client targets are supported"));
-                }
-                if table.contains_key("helper") {
-                    return Err(format!(
-                        "{}: trait_method cannot also specify helper",
-                        path.display()
-                    ));
-                }
-                let method = method
-                    .as_str()
-                    .ok_or("trait_method must be a Rust identifier")?;
-                let _: syn::Ident =
-                    syn::parse_str(method).map_err(|_| "trait_method must be a Rust identifier")?;
-                let name = format!("inject_{}_{}", bundle.id.replace('-', "_"), method);
-                let ident: syn::Ident =
-                    syn::parse_str(&name).map_err(|_| "invalid generated trait method")?;
-                if !names.insert(name.clone()) {
-                    return Err(format!("duplicate generated trait method {name}"));
-                }
-                let cancellable = match table.get("cancellable") {
-                    None => false,
-                    Some(v) => v.as_bool().ok_or("cancellable must be a boolean")?,
-                };
-                let mut parameters = Vec::new();
-                let mut seen = HashSet::new();
-                let mut value = None;
-                if let Some(bindings) = table.get("bindings") {
-                    for binding in bindings.as_array().ok_or("bindings must be an array")? {
-                        let binding = binding.as_table().ok_or("binding must be a table")?;
-                        let name = binding
-                            .get("name")
-                            .and_then(toml::Value::as_str)
-                            .ok_or("binding needs a name")?;
-                        let ident: syn::Ident =
-                            syn::parse_str(name).map_err(|_| "invalid binding name")?;
-                        if !seen.insert(name.to_owned()) {
-                            return Err(format!("duplicate binding {name}"));
-                        }
-                        let ty = binding
-                            .get("ty")
-                            .and_then(toml::Value::as_str)
-                            .ok_or("binding needs a type")?;
-                        let ty: syn::Type =
-                            syn::parse_str(ty).map_err(|e| format!("invalid binding type: {e}"))?;
-                        if binding.get("value").and_then(toml::Value::as_str) == Some("$value") {
-                            value = Some(ident.clone());
-                        }
-                        parameters.push((ident, ty));
-                    }
-                }
-                let kind = table
-                    .get("kind")
-                    .and_then(toml::Value::as_str)
-                    .unwrap_or_default();
-                let contract = match (kind, cancellable) {
-                    ("HEAD", false) => Contract::Listen,
-                    ("HEAD", true) => Contract::Cancel,
-                    ("RETURN" | "MODIFY_ARG" | "MODIFY_EXPRESSION_VALUE", false) => {
-                        Contract::Value(value.ok_or_else(|| {
-                            format!(
-                                "{}: a {kind} trait_method needs a `$value` binding",
-                                path.display()
-                            )
-                        })?)
-                    }
-                    (_, true) => {
-                        return Err(format!(
-                            "{}: cancellable trait_method needs HEAD",
-                            path.display()
-                        ));
-                    }
-                    _ => {
-                        return Err(format!(
-                            "{}: trait_method supports HEAD, RETURN, MODIFY_ARG and MODIFY_EXPRESSION_VALUE",
-                            path.display()
-                        ));
-                    }
-                };
-                let injection = Injection::new(ident, parameters, contract);
-                let helper_path = format!("horizon-trait-injection-{index}.rs");
-                let helper_file = bundle.dir.join(&helper_path);
-                if helper_file.exists() {
-                    return Err(format!(
-                        "{} is reserved for generated helpers",
-                        helper_file.display()
-                    ));
-                }
-                fs::write(&helper_file, injection.helper(owners[bundle.id.as_str()]))
-                    .map_err(|e| e.to_string())?;
-                table.insert("helper".into(), helper_path.into());
-                result.push(injection);
-            }
-        }
-        fs::write(
-            &path,
-            toml::to_string(&manifest).map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    Ok(result)
+/// One raw function declaration and its head or return target.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PointInjection {
+    pub(super) mod_id: String,
+    pub(super) id: String,
+    pub(super) target: String,
+    pub(super) method: String,
+    /// At the function's return, not its head.
+    pub(super) at_return: bool,
 }
 
-pub(super) const INPUT: &str = ".horizon-mod-api-injections.json";
-pub(super) const ENV: &str = "HORIZON_MOD_API_INJECTIONS";
+/// A game build's point, as its `points.json` lists it.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub(super) struct ListedPoint {
+    pub(super) name: String,
+    #[serde(default)]
+    pub(super) private: bool,
+    #[serde(default)]
+    pub(super) record_name: Option<String>,
+    pub(super) target: String,
+    pub(super) raw: bool,
+    pub(super) at_return: bool,
+    /// Why its API listeners are refused, naming the parameter with no API type.
+    #[serde(default)]
+    pub(super) api_refusal: Option<String>,
+    /// What its listeners may do with the return: `cancel`, `result` or `none`.
+    #[serde(default)]
+    pub(super) returns: String,
+    /// Its API listeners' host: `none`, or the host they take.
+    #[serde(default)]
+    pub(super) host: String,
+    /// Its raw form's return type, named when a `replace` is refused.
+    #[serde(default)]
+    pub(super) raw_shape: Option<horizon_mod_point_emit::RawReturn>,
+    /// The function's return type as written, which a `replace` at a `cancel` point needs `()`.
+    #[serde(default)]
+    pub(super) return_ty: Option<String>,
+    pub(super) listener: Option<String>,
+    pub(super) return_listener: Option<String>,
+}
 
-/// New sources consume declarations in their build script; released sources still commit the
-/// generated trait. Both paths use the same generation and collision checks, without rustfmt.
-pub(super) fn stage(stage: &Path, injections: &[Injection]) -> Result<(), String> {
-    let client = api::read(&stage.join("crates/horizon-client/Cargo.toml"))?;
-    let build_time = client
-        .get("build-dependencies")
-        .and_then(toml::Value::as_table)
-        .is_some_and(|deps| deps.contains_key("horizon-mod-api-gen"));
-    let declarations = injections.iter().map(Injection::input).collect::<Vec<_>>();
-    let input = serde_json::to_string(&declarations).map_err(|e| e.to_string())?;
-    if build_time {
-        // This file travels with cached mixin output; generated Rust lives in Cargo's OUT_DIR.
-        let path = stage.join(INPUT);
-        fs::write(&path, input).map_err(|e| format!("{}: {e}", path.display()))
-    } else if injections.is_empty() {
-        Ok(())
-    } else {
-        let path = stage.join("crates/horizon-client/src/mod_api/generated.rs");
-        let source = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let output = horizon_mod_api_gen::inject(&source, &input)?;
-        fs::write(&path, output).map_err(|e| format!("{}: {e}", path.display()))
+impl ListedPoint {
+    /// The point as the shared API constructor emitter reads it.
+    pub(super) fn emitted(&self) -> horizon_mod_point_emit::Point {
+        horizon_mod_point_emit::Point {
+            name: self.name.clone(),
+            target: self.target.clone(),
+            private: self.private,
+            at_return: self.at_return,
+            api_refusal: self.api_refusal.clone(),
+            returns: self.returns.clone(),
+            host: self.host.clone(),
+            raw_shape: self.raw_shape.clone(),
+            return_ty: self.return_ty.clone(),
+        }
     }
+
+    pub(super) fn place(&self, at_return: bool) -> String {
+        if at_return {
+            format!("{}_return", self.name)
+        } else {
+            self.name.clone()
+        }
+    }
+}
+
+/// The `points.json` the game's build script writes, beside the prebuilt game or in the
+/// staged game's build output.
+pub(super) const POINTS: &str = "points.json";
+
+#[derive(serde::Deserialize)]
+pub(super) struct Catalog {
+    pub points: Vec<ListedPoint>,
+    pub sites: Vec<super::sites::Site>,
+}
+
+pub(super) fn catalog(path: &Path) -> Result<Catalog, String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::{Bundle, MANIFEST};
     use super::*;
 
     fn fixture(name: &str, injection: &str) -> (std::path::PathBuf, Bundle) {
-        let root =
-            std::env::temp_dir().join(format!("horizon-inject-{}-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("engine/src")).unwrap();
-        fs::write(
-            root.join("engine/Cargo.toml"),
-            "[package]\nname = 'mod-example'\nversion = '1.0.0'\n",
-        )
-        .unwrap();
-        fs::write(root.join("engine/src/lib.rs"), "").unwrap();
-        fs::write(
-            root.join(MANIFEST),
-            format!("[mod]\nid = 'example'\nversion = '1'\n[api]\npath = 'engine'\n{injection}"),
-        )
-        .unwrap();
-        let bundle = super::super::bundle(&root, None).unwrap();
+        let root = super::super::tests::dir(&format!("inject-{name}"));
+        super::super::tests::write_bundle(&root, "example", "");
+        let path = root.join(horizon_mod_package::manifest::MANIFEST);
+        let text = fs::read_to_string(&path).unwrap() + injection;
+        fs::write(path, text).unwrap();
+        let bundle = super::super::bundle_in(&root).unwrap().unwrap();
         (root, bundle)
     }
 
-    /// Emulate a released source tree or the current build script, including its inject() call.
-    fn staged_hooks(
-        stage_dir: &Path,
-        injections: &[Injection],
-        build_time: bool,
-        existing: &str,
-    ) -> Result<String, String> {
-        let client = stage_dir.join("crates/horizon-client");
-        fs::create_dir_all(client.join("src/mod_api")).unwrap();
-        let dependencies = if build_time {
-            "[build-dependencies]\nhorizon-mod-api-gen = { path = '../horizon-mod-api-gen' }\n"
-        } else {
-            ""
-        };
+    #[test]
+    fn a_module_stages_beside_a_unified_callback() {
+        let (root, _bundle) = fixture(
+            "module",
+            "[[inject]]\nid = 'hook'\nat = 'horizon_client::game::tick'\nkind = 'head'\nwith = 'tick_hook'\nhash = 'signature'\n",
+        );
+        // The callback remains in the mod crate; only the support module reaches the tool.
         fs::write(
-            client.join("Cargo.toml"),
-            format!("[package]\nname = 'horizon-client'\nversion = '0.1.0'\n{dependencies}"),
+            root.join("src/lib.rs"),
+            "mod runtime; pub fn tick_hook() { runtime::bump(&mut 0); }\n",
         )
         .unwrap();
-        let generated = client.join("src/mod_api/generated.rs");
-        if !build_time {
-            fs::write(&generated, existing).unwrap();
-        }
-        stage(stage_dir, injections)?;
-        if build_time {
-            assert!(!generated.exists());
-            horizon_mod_api_gen::inject(
-                existing,
-                &fs::read_to_string(stage_dir.join(INPUT)).unwrap(),
-            )
-        } else {
-            assert!(!stage_dir.join(INPUT).exists());
-            Ok(fs::read_to_string(generated).unwrap())
-        }
-    }
-
-    fn compile_and_run(root: &Path, program: &str) {
-        let source = root.join("proof.rs");
-        let binary = root.join(format!("proof-bin{}", std::env::consts::EXE_SUFFIX));
-        fs::write(&source, program).unwrap();
-        let compiler = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-        let compiled = std::process::Command::new(compiler)
-            .args(["--edition", "2024"])
-            .arg(&source)
-            .arg("-o")
-            .arg(&binary)
-            .output()
-            .unwrap();
-        assert!(
-            compiled.status.success(),
-            "{}",
-            String::from_utf8_lossy(&compiled.stderr)
+        fs::write(
+            root.join("src/runtime.rs"),
+            "pub(crate) fn bump(value: &mut i32) { *value += 1; }\n",
+        )
+        .unwrap();
+        let path = root.join(horizon_mod_package::manifest::MANIFEST);
+        let text = fs::read_to_string(&path).unwrap()
+            + "[[native.module]]\nid = 'runtime'\nfile = 'crates/horizon-client/src/game.rs'\nname = 'runtime'\nsource = 'src/runtime.rs'\n";
+        fs::write(&path, text).unwrap();
+        let bundle = super::super::bundle_in(&root).unwrap().unwrap();
+        let mixin_input = root.with_extension("mixins");
+        let tool_mods =
+            super::super::stage_mixins(std::slice::from_ref(&bundle), &mixin_input).unwrap();
+        assert_eq!(tool_mods.len(), 1);
+        let staged = &tool_mods[0].dir;
+        let manifest = fs::read_to_string(staged.join(MANIFEST)).unwrap();
+        assert!(manifest.contains("[[module]]"));
+        assert!(!manifest.contains("[[injection]]"));
+        assert!(manifest.contains("name = \"runtime\""));
+        assert!(manifest.contains("source = \"src/runtime.rs\""));
+        // `visibility` stays out of the tool manifest until a package sets it.
+        assert!(!manifest.contains("visibility"));
+        assert_eq!(
+            fs::read_to_string(staged.join("src/runtime.rs")).unwrap(),
+            "pub(crate) fn bump(value: &mut i32) { *value += 1; }\n"
         );
-        assert!(std::process::Command::new(binary)
-            .status()
-            .unwrap()
-            .success());
+        assert!(staged.join("src/lib.rs").is_file());
     }
 
     #[test]
-    fn owner_dispatch_and_cancel_are_generated_from_bindings() {
-        let (root, bundle) = fixture("cancel", "[[injection]]\nid = 'hook'\ntarget = 'horizon_client::game::tick'\nkind = 'HEAD'\ntrait_method = 'tick'\ncancellable = true\nbindings = [{ name = 'amount', ty = '&mut i32', value = '&mut *amount' }]\n");
-        let injections = prepare(&[bundle], &root).unwrap();
-        let helper = fs::read_to_string(root.join("horizon-trait-injection-0.rs")).unwrap();
-        let manifest = fs::read_to_string(root.join(MANIFEST)).unwrap();
-        assert!(!manifest.contains("trait_method"));
-        assert!(!manifest.contains("[api]"));
-        for build_time in [false, true] {
-            let stage_dir = root.join(if build_time { "build-time" } else { "legacy" });
-            let output = staged_hooks(
-                &stage_dir,
-                &injections,
-                build_time,
-                "pub trait Hooks: Send + Sync {\n}\n",
-            )
-            .unwrap();
-            assert!(syn::parse_file(&output).is_ok());
-            let program = format!(
-                r#"
-            mod mod_api {{
-                use std::sync::OnceLock;
-                #[derive(PartialEq)] pub enum Flow {{ Continue, Cancel }}
-                {output}
-                struct Owner;
-                impl Hooks for Owner {{
-                    fn inject_example_tick(&self, event: &mut InjectExampleTickEvent) -> Flow {{
-                        event.amount = event.amount * 2 + 40;
-                        Flow::Cancel
-                    }}
-                }}
-                struct Other;
-                impl Hooks for Other {{
-                    fn inject_example_tick(&self, _: &mut InjectExampleTickEvent) -> Flow {{ panic!("wrong owner") }}
-                }}
-                pub fn mods() -> &'static [Box<dyn Hooks>] {{
-                    static MODS: OnceLock<Vec<Box<dyn Hooks>>> = OnceLock::new();
-                    MODS.get_or_init(|| vec![Box::new(Owner), Box::new(Other)])
-                }}
-            }}
-            {helper}
-            fn main() {{
-                let mut value = 1;
-                assert!(matches!(horizon_trait_dispatch(&mut value), core::ops::ControlFlow::Break(())));
-                assert_eq!(value, 42);
-            }}
-        "#
-            );
-            compile_and_run(&root, &program);
-        }
-        fs::remove_dir_all(root).unwrap();
+    fn a_module_only_bundle_still_needs_the_tool() {
+        let root = super::super::tests::dir("inject-module-only");
+        super::super::tests::write_bundle(&root, "example", "");
+        let path = root.join(horizon_mod_package::manifest::MANIFEST);
+        let text = fs::read_to_string(&path).unwrap()
+            + "[[native.module]]\nid = 'runtime'\nfile = 'crates/horizon-client/src/game.rs'\nname = 'runtime'\nsource = 'src/lib.rs'\n";
+        fs::write(&path, text).unwrap();
+        let bundle = super::super::bundle_in(&root).unwrap().unwrap();
+        let mixin_input = root.with_extension("mixins");
+        let tool_mods =
+            super::super::stage_mixins(std::slice::from_ref(&bundle), &mixin_input).unwrap();
+        assert_eq!(tool_mods.len(), 1);
+        assert!(tool_mods[0].dir.join(MANIFEST).is_file());
     }
 
     #[test]
-    fn value_injection_returns_what_the_owner_changed() {
-        let (root, bundle) = fixture("value", "[[injection]]\nid = 'hook'\ntarget = 'horizon_client::game::tick'\nkind = 'RETURN'\ntrait_method = 'total'\nbindings = [{ name = 'total', ty = 'i32', value = '$value' }, { name = 'calls', ty = '&mut u32', value = '&mut *calls' }]\n");
-        let injections = prepare(&[bundle], &root).unwrap();
-        let helper = fs::read_to_string(root.join("horizon-trait-injection-0.rs")).unwrap();
-        for build_time in [false, true] {
-            let stage_dir = root.join(if build_time { "build-time" } else { "legacy" });
-            let output = staged_hooks(
-                &stage_dir,
-                &injections,
-                build_time,
-                "pub trait Hooks: Send + Sync {\n}\n",
-            )
-            .unwrap();
-            let program = format!(
-                r#"
-            mod mod_api {{
-                use std::sync::atomic::{{AtomicBool, Ordering}};
-                use std::sync::OnceLock;
-                {output}
-                struct Owner;
-                impl Hooks for Owner {{
-                    fn inject_example_total(&self, event: &mut InjectExampleTotalEvent) {{
-                        event.total = event.total * 2 + 1;
-                        event.calls += 1;
-                    }}
-                }}
-                struct Other;
-                impl Hooks for Other {{
-                    fn inject_example_total(&self, _: &mut InjectExampleTotalEvent) {{ panic!("wrong owner") }}
-                }}
-                pub static INSTALLED: AtomicBool = AtomicBool::new(false);
-                pub fn mods() -> &'static [Box<dyn Hooks>] {{
-                    static MODS: OnceLock<Vec<Box<dyn Hooks>>> = OnceLock::new();
-                    if !INSTALLED.load(Ordering::SeqCst) {{
-                        return &[];
-                    }}
-                    MODS.get_or_init(|| vec![Box::new(Owner), Box::new(Other)])
-                }}
-            }}
-            {helper}
-            fn main() {{
-                let mut calls = 0;
-                assert_eq!(horizon_trait_dispatch(20, &mut calls), 20);
-                assert_eq!(calls, 0);
-                mod_api::INSTALLED.store(true, std::sync::atomic::Ordering::SeqCst);
-                assert_eq!(horizon_trait_dispatch(20, &mut calls), 41);
-                assert_eq!(calls, 1);
-            }}
-        "#
-            );
-            compile_and_run(&root, &program);
-        }
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn staged_input_checks_conflicts_and_clears_removed_injections() {
-        let (root, bundle) = fixture("conflicts", "[[injection]]\nid = 'hook'\ntarget = 'horizon_client::game::tick'\nkind = 'HEAD'\ntrait_method = 'tick'\n");
-        let injections = prepare(&[bundle], &root).unwrap();
-        for build_time in [false, true] {
-            let stage_dir = root.join(if build_time { "build-time" } else { "legacy" });
-            for (existing, expected) in [
-                (
-                    "pub trait Hooks: Send + Sync { fn inject_example_tick(&self) {} }",
-                    "duplicate generated trait method",
-                ),
-                (
-                    "pub trait Hooks: Send + Sync {} pub struct InjectExampleTickEvent;",
-                    "duplicate generated event",
-                ),
-            ] {
-                let error =
-                    staged_hooks(&stage_dir, &injections, build_time, existing).unwrap_err();
-                assert!(error.contains(expected), "{error}");
-            }
-            let output = staged_hooks(
-                &stage_dir,
-                &[],
-                build_time,
-                "pub trait Hooks: Send + Sync {}",
-            )
-            .unwrap();
-            assert!(!output.contains("inject_example_tick"));
-            if build_time {
-                assert_eq!(fs::read_to_string(stage_dir.join(INPUT)).unwrap(), "[]");
-            }
-        }
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn trait_edits_do_not_invalidate_mixin_cache() {
-        let (root, bundle) = fixture("cache", "[[injection]]\nid = 'hook'\ntarget = 'horizon_client::game::tick'\nkind = 'HEAD'\ntrait_method = 'tick'\n");
+    fn callback_edits_reuse_the_patch_but_invalidate_the_installed_build() {
+        let (root, bundle) = fixture(
+            "api-helper",
+            "[[inject]]\nid = 'hook'\nat = 'horizon_client::game::tick'\nkind = 'head'\nwith = 'tick_hook'\nhash = 'signature'\n",
+        );
         let key = || {
             super::super::inject_cache::key(
                 "revision",
                 "mixins",
-                super::super::Profile::Performance,
+                super::super::Profile::Balanced,
+                std::slice::from_ref(&bundle),
+            )
+            .unwrap()
+        };
+        let installed = || {
+            super::super::version_for(
+                "revision",
+                "mixins",
+                super::super::Profile::Balanced,
+                super::super::Target::Client,
+                None,
                 std::slice::from_ref(&bundle),
             )
             .unwrap()
         };
         let before = key();
-        fs::write(root.join("engine/src/lib.rs"), "// one line edit").unwrap();
+        let built = installed();
+        fs::write(root.join("src/lib.rs"), "fn changed() {}\n").unwrap();
         assert_eq!(before, key());
-        fs::write(root.join("other.rs"), "// mixin input").unwrap();
-        assert_ne!(before, key());
+        assert_ne!(built, installed());
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn mixin_inputs_inside_api_are_not_excluded_from_cache() {
-        let (root, bundle) = fixture("api-helper", "[[injection]]\nid = 'hook'\ntarget = 'horizon_client::game::tick'\nkind = 'HEAD'\nhelper = 'engine/src/lib.rs'\n");
+    fn module_source_edits_invalidate_the_patch_key() {
+        let (root, _) = fixture("module-cache", "");
+        let path = root.join(horizon_mod_package::manifest::MANIFEST);
+        let text = fs::read_to_string(&path).unwrap()
+            + "[[native.module]]\nid = 'runtime'\nfile = 'crates/horizon-client/src/game.rs'\nname = 'runtime'\nsource = 'src/runtime.rs'\n";
+        fs::write(path, text).unwrap();
+        fs::write(root.join("src/runtime.rs"), "pub fn run() {}\n").unwrap();
+        let bundle = super::super::bundle_in(&root).unwrap().unwrap();
         let key = || {
             super::super::inject_cache::key(
                 "revision",
                 "mixins",
-                super::super::Profile::Performance,
+                super::super::Profile::Balanced,
                 std::slice::from_ref(&bundle),
             )
             .unwrap()
         };
         let before = key();
-        fs::write(root.join("engine/src/lib.rs"), "fn changed() {}\n").unwrap();
+        fs::write(
+            root.join("src/runtime.rs"),
+            "pub fn run() { let _value = 7; }\n",
+        )
+        .unwrap();
         assert_ne!(before, key());
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn mixin_crate_containing_api_is_not_excluded_from_cache() {
-        let (root, bundle) = fixture("api-parent", "[[crate]]\nid = 'whole_bundle'\npath = '.'\n");
-        let key = || {
-            super::super::inject_cache::key(
-                "revision",
-                "mixins",
-                super::super::Profile::Performance,
-                std::slice::from_ref(&bundle),
-            )
-            .unwrap()
-        };
-        let before = key();
-        fs::write(root.join("engine/src/lib.rs"), "// changed\n").unwrap();
-        assert_ne!(before, key());
+    fn rejects_manual_tool_crate_declarations() {
+        let (root, _) = fixture("tool-route", "");
+        let path = root.join(horizon_mod_package::manifest::MANIFEST);
+        let text = fs::read_to_string(&path).unwrap();
+        fs::write(path, text + "[[crate]]\nid='code'\npath='src'\n").unwrap();
+        assert!(super::super::bundle_in(&root).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -472,11 +230,11 @@ mod tests {
     fn installed_build_key_tracks_dispatch_order() {
         let (root, first) = fixture("order", "");
         let mut second = first.clone();
-        second.id = "second".into();
+        second.manifest.id = "second".into();
         let a = super::super::version_for(
             "0123456789012345678901234567890123456789",
             "mixins",
-            super::super::Profile::Performance,
+            super::super::Profile::Balanced,
             super::super::Target::Client,
             None,
             &[first.clone(), second.clone()],
@@ -485,7 +243,7 @@ mod tests {
         let b = super::super::version_for(
             "0123456789012345678901234567890123456789",
             "mixins",
-            super::super::Profile::Performance,
+            super::super::Profile::Balanced,
             super::super::Target::Client,
             None,
             &[second, first],
@@ -493,52 +251,5 @@ mod tests {
         .unwrap();
         assert_ne!(a, b);
         fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn trait_injections_reject_targets_in_other_crates() {
-        let (root, bundle) = fixture("other-crate", "[[injection]]\nid = 'hook'\ntarget = 'horizon_world::loot::load'\nkind = 'HEAD'\ntrait_method = 'load'\n");
-        let error = prepare(&[bundle], &root).err().unwrap();
-        assert!(error.contains("horizon_world::loot::load") && error.contains("horizon_world"));
-        fs::remove_dir_all(root).unwrap();
-
-        let (root, bundle) = fixture("other-catalog", "[[injection]]\nid = 'hook'\nhook = 'loot_table_load'\nkind = 'HEAD'\ntrait_method = 'load'\n");
-        fs::write(
-            root.join("native-hooks.json"),
-            r#"{"hooks":[{"name":"loot_table_load","target":"horizon_world::loot::load"}]}"#,
-        )
-        .unwrap();
-        let error = prepare(&[bundle], &root).err().unwrap();
-        assert!(error.contains("horizon_world::loot::load") && error.contains("horizon_world"));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn trait_injection_kinds_are_checked() {
-        for (kind, extra, expected) in [
-            (
-                "AFTER_CALL",
-                "",
-                "supports HEAD, RETURN, MODIFY_ARG and MODIFY_EXPRESSION_VALUE",
-            ),
-            (
-                "RETURN",
-                "bindings = [{ name = 'amount', ty = 'i32', value = 'amount' }]\n",
-                "`$value` binding",
-            ),
-            (
-                "MODIFY_ARG",
-                "cancellable = true\nbindings = [{ name = 'points', ty = 'i32', value = '$value' }]\n",
-                "cancellable trait_method needs HEAD",
-            ),
-        ] {
-            let (root, bundle) = fixture(
-                "kinds",
-                &format!("[[injection]]\nid = 'hook'\ntarget = 'horizon_client::game::tick'\nkind = '{kind}'\ntrait_method = 'tick'\n{extra}"),
-            );
-            let error = prepare(&[bundle], &root).err().unwrap();
-            assert!(error.contains(expected), "{kind}: {error}");
-            fs::remove_dir_all(root).unwrap();
-        }
     }
 }

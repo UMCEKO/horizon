@@ -5,7 +5,7 @@ use crate::{
     lang,
     options_ui::{Event, Page},
     settings::Settings,
-    settings_shell::{self as shell, Group, Output, Row, Screen, Sheet, Value},
+    settings_shell::{self as shell, Binding, Group, Output, Row, Screen, Sheet, Value},
 };
 
 const TITLE: &str = "horizon.pages.extras";
@@ -36,7 +36,7 @@ pub(crate) enum ExtraRow {
 fn item_row(item: Item, s: &Settings) -> Row<ExtraRow> {
     let e = &s.extras;
     let value = match (item.key_name(), item.switch(e)) {
-        (Some(key), _) => Value::Key(key, item.value(e)),
+        (Some(key), _) => Value::Binding(Binding::key(key, item.value(e))),
         (None, Some(on)) => Value::Switch(on),
         (None, None) => Value::Choice(item.value(e)),
     };
@@ -65,7 +65,7 @@ fn zoom_rows(s: &Settings) -> Vec<Row<ExtraRow>> {
     let on = Value::Switch(s.mods.is_on(i));
     let mut rows = vec![Row::new(ExtraRow::Zoom(i), lang::get(ZOOM), on).about(about)];
     let page = installed[i].native.as_ref();
-    if page.is_some_and(|page| !page.keys.is_empty() || !page.buttons.is_empty()) {
+    if page.is_some_and(|page| !page.mappings.is_empty() || !page.settings.is_empty()) {
         let name = lang::get(MOD_SETTINGS);
         rows.push(Row::new(ExtraRow::ZoomSettings(i), name, Value::Press));
     }
@@ -85,9 +85,9 @@ impl Screen for ExtrasScreen {
     fn note_lines(&self) -> usize {
         NOTE_LINES
     }
-    /// The rows read the extras, the mods and whether cosmetics are offered.
+    /// The rows read the extras and the mods.
     fn stamp(&self, s: &Settings) -> u64 {
-        shell::stamp_of(&(&s.extras, &s.mods, horizon_cosmetics::enabled()))
+        shell::stamp_of(&(&s.extras, &s.mods))
     }
     fn sheets(&self, s: &Settings) -> Vec<Sheet<(), ExtraRow>> {
         let mut groups = vec![Group {
@@ -107,22 +107,14 @@ impl Screen for ExtrasScreen {
                 }
             }
         }
-        vec![Sheet {
-            id: (),
-            name: lang::get(TITLE),
-            about: lang::get(ABOUT),
-            groups,
-        }]
+        vec![Sheet::new((), lang::get(TITLE), lang::get(ABOUT), groups)]
     }
     fn press(&mut self, s: &mut Settings, row: ExtraRow, back: bool) -> Vec<Output> {
         match row {
-            ExtraRow::Item(item) => match item.key_name() {
-                Some(key) => vec![Output::BindKey(key)],
-                None => {
-                    item.cycle(&mut s.extras, back);
-                    vec![Output::Event(Event::Changed)]
-                }
-            },
+            ExtraRow::Item(item) => {
+                item.cycle(&mut s.extras, back);
+                vec![Output::Event(Event::Changed)]
+            }
             ExtraRow::Zoom(i) => {
                 s.mods.toggle(i);
                 vec![Output::Event(Event::Changed)]
@@ -189,34 +181,24 @@ mod tests {
         assert_ne!(s.extras.mouse_tweaks_wheel, before);
     }
 
-    #[test]
-    fn the_three_way_cosmetics_row_turns_both_ways() {
-        use horizon_cosmetics::prefs::Others;
-        let mut s = Settings::default();
-        let mut screen = ExtrasScreen;
-        let row = ExtraRow::Item(Item::CosmeticsOthers);
-        // Not chosen, nothing owned: it shows Hidden, and forward wraps to Shown.
-        assert_eq!(s.extras.effective_others(), Others::Hidden);
-        screen.press(&mut s, row, false);
-        assert_eq!(s.extras.cosmetics_others, Some(Others::Shown));
-        screen.press(&mut s, row, true);
-        assert_eq!(s.extras.cosmetics_others, Some(Others::Hidden));
-        screen.press(&mut s, row, true);
-        assert_eq!(s.extras.cosmetics_others, Some(Others::NameTags));
-    }
-
     /// The sort key binds instead of cycling; the wheel leaves it be.
     #[test]
     fn the_key_row_waits_for_a_key() {
+        use crate::settings_shell::Capture;
         let mut s = Settings::default();
-        let mut screen = ExtrasScreen;
+        s.extras.sort = true;
+        let mut shell = Shell::<ExtrasScreen>::default();
         let row = ExtraRow::Item(Item::SortKey);
         let key = s.extras.sort_key.clone();
+        let at = shell.point_at(&s, SIZE, row);
         assert_eq!(
-            screen.press(&mut s, row, false),
-            vec![Output::BindKey(extras::SORT_KEY)]
+            shell.click(&mut s, at, SIZE, false, false, false),
+            vec![
+                Output::Event(Event::ButtonClick),
+                Output::Bind(Capture::Key(extras::SORT_KEY))
+            ]
         );
-        screen.wheel_step(&mut s, row, true);
+        ExtrasScreen.wheel_step(&mut s, row, true);
         assert_eq!(s.extras.sort_key, key);
     }
 
@@ -268,10 +250,13 @@ mod tests {
     fn down_from_the_search_field_lands_on_the_first_row() {
         use crate::{hud::HudBatch, settings_shell::Columns, ui};
         use winit::keyboard::KeyCode as K;
-        let atlas = crate::hud::HudAtlas::build(std::path::Path::new("/nonexistent")).unwrap();
+        let atlas = crate::hud::HudAtlas::build(
+            &crate::resource_source::ResourceSource::directory("/nonexistent".into()),
+        )
+        .unwrap();
         let mut s = Settings::default();
         let mut shell = Shell::<ExtrasScreen>::default();
-        let mut batch = HudBatch::new([1708, 960]);
+        let mut batch = HudBatch::scratch([1708, 960]);
         shell.draw(&s, &mut batch, &atlas, (0.0, 0.0), false, None);
         crate::widgets::end_frame(1);
         let size = (batch.width, batch.height);

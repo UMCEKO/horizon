@@ -12,7 +12,10 @@
 //! rest goes under `overrides/`, which a launcher copies into the game folder.
 use crate::browser::installed::{Entry, Installed};
 use crate::browser::{FileRef, Kind, SourceId, GAME};
-use horizon_world::nbt::{self, Limits, Tag};
+use horizon_core::{
+    nbt,
+    nbt::{Limits, Tag},
+};
 use sha2::Digest;
 use std::fs;
 use std::io::{Read, Write};

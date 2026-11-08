@@ -2,7 +2,10 @@
 //! up, copying and deleting them. Backups are made as vanilla's Make Backup makes them
 //! (`LevelStorageAccess.makeWorldBackup`): `backups/<yyyy-MM-dd_HH-mm-ss>_<folder>.zip` in the
 //! game folder, every file under `<folder>/` but the world's `session.lock`.
-use horizon_world::nbt::{self, Limits, Tag};
+use horizon_core::{
+    nbt,
+    nbt::{Limits, Tag},
+};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

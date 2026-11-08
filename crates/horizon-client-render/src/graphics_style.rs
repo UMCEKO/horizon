@@ -136,20 +136,9 @@ pub fn scroller(batch: &mut HudBatch, atlas: &HudAtlas, track: [f32; 4], thumb: 
     fill(batch, atlas, track, ROW_RULE);
     fill(batch, atlas, thumb, TRACK);
 }
-/// `text` cut to `width` with an ellipsis, as a long name gives way to its control.
-pub fn fit(atlas: &HudAtlas, text: &str, width: f32) -> String {
-    if atlas.font.width(text) <= width {
-        return text.to_owned();
-    }
-    let mut out = String::new();
-    for c in text.chars() {
-        if atlas.font.width(&format!("{out}{c}...")) > width {
-            break;
-        }
-        out.push(c);
-    }
-    format!("{}...", out.trim_end())
-}
+/// `text` cut to `width` with an ellipsis, as a long name gives way to its control: the HUD
+/// kit's `fit::ellipsize`.
+pub use crate::hud_kit::fit::ellipsize as fit;
 /// A 12 px tick box ending at `right`, centred in the row at `y`: its edge in the accent when on.
 pub fn checkbox(batch: &mut HudBatch, atlas: &HudAtlas, right: f32, y: f32, on: bool, live: bool) {
     let rect = [right - 12.0, y + 4.0, 12.0, 12.0];
@@ -193,7 +182,19 @@ pub fn button(
     atlas: &HudAtlas,
     rect: [f32; 4],
     label: &Text,
+    flags: (bool, bool, bool),
+) {
+    button_with_room(batch, atlas, rect, label, flags, 0.0);
+}
+/// A button whose label leaves `room` at its left, for a controller's glyph drawn there
+/// (`widgets::action_glyph_room`).
+pub fn button_with_room(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    rect: [f32; 4],
+    label: &Text,
     (hover, live, primary): (bool, bool, bool),
+    room: f32,
 ) {
     let [x, y, w, h] = rect;
     let face = match (live, primary, hover) {
@@ -209,7 +210,15 @@ pub fn button(
     }
     let color = if live { WHITE } else { MUTED };
     let ty = y + ((h - 8.0) / 2.0).floor();
-    scrolling_label(batch, atlas, label, [x + 2.0, ty, w - 4.0], (y, h), color);
+    let left = x + 2.0 + room;
+    scrolling_label(
+        batch,
+        atlas,
+        label,
+        [left, ty, w - 4.0 - room],
+        (y, h),
+        color,
+    );
 }
 /// A widget label of `[left, y, width]` inside the widget's `(top, height)`: centred when it fits,
 /// else slid (vanilla `AbstractWidget.extractScrollingStringOverContents`) and clipped to the box.
@@ -306,7 +315,10 @@ mod tests {
     use super::*;
 
     fn atlas() -> HudAtlas {
-        HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap()
+        HudAtlas::build(&horizon_assets::resource_source::ResourceSource::directory(
+            (std::path::Path::new("/nonexistent/horizon-test-assets")).to_owned(),
+        ))
+        .unwrap()
     }
 
     fn x_span(batch: &HudBatch, plain: &HudBatch) -> (f32, f32) {
@@ -341,10 +353,10 @@ mod tests {
             ("cycler", |b, a, r, t| cycler(b, a, r, t, (false, true))),
         ];
         for (name, draw) in draws {
-            let mut plain = HudBatch::new([640, 480]);
+            let mut plain = HudBatch::scratch([640, 480]);
             draw(&mut plain, &atlas, rect, &Text::empty());
             let base = plain.vertices.len();
-            let mut batch = HudBatch::new([640, 480]);
+            let mut batch = HudBatch::scratch([640, 480]);
             draw(&mut batch, &atlas, rect, &long);
             assert!(batch.vertices.len() > base, "{name}: long label drawn");
             // The widget's own fill, track and handle also draw: only the label's vertices count.
@@ -361,7 +373,7 @@ mod tests {
                 );
             }
             // The label's own glyphs (past the widget's fill) start centred.
-            let mut batch = HudBatch::new([640, 480]);
+            let mut batch = HudBatch::scratch([640, 480]);
             draw(&mut batch, &atlas, rect, &short);
             let (lo, hi) = x_span(&batch, &plain);
             let middle = (lo + hi) / 2.0;

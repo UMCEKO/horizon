@@ -6,25 +6,32 @@ use crate::{
     items::{ItemStack, Items},
     providers::Providers,
 };
+use horizon_world::native_load_context::LoopContext;
 
 /// The furnace methods that read the recipes.
 pub trait FurnaceCooking {
     /// `AbstractFurnaceBlockEntity.setItem` on the input slot: anything but
     /// the same item with the same components restarts cooking, with the
     /// total time of the new input's recipe (200 ticks without one).
-    fn set_input(&mut self, recipes: &Recipes, stack: Option<ItemStack>);
+    fn set_input(&mut self, context: &LoopContext, recipes: &Recipes, stack: Option<ItemStack>);
     /// `recipesUsed`, each recipe with its `experience` (0 for one this data pack does
     /// not have), in the order `getRecipesToAwardAndPopExperience` pays them.
     fn recipe_experience(&self, recipes: &Recipes) -> Vec<(u32, f32)>;
     /// A menu click wrote its slots into `items`, and `before` was the input
     /// slot until then: the menu called `setItem` on it only if it changed
     /// (`Slot.setByPlayer`; partial takes and merges keep the stack).
-    fn input_clicked(&mut self, recipes: &Recipes, before: Option<ItemStack>);
+    fn input_clicked(
+        &mut self,
+        context: &LoopContext,
+        recipes: &Recipes,
+        before: Option<ItemStack>,
+    );
     /// One server tick. Returns `Some(lit)` when the LIT block state must change.
     /// `drops` collects what the furnace lets fall at its position
     /// (`Containers.dropItemStack`): the remainder of a fuel when more of it is left.
     fn tick(
         &mut self,
+        context: &LoopContext,
         recipes: &Recipes,
         items: &Items,
         providers: &Providers,
@@ -33,7 +40,7 @@ pub trait FurnaceCooking {
     fn idle(&self) -> bool;
 }
 impl FurnaceCooking for Furnace {
-    fn set_input(&mut self, recipes: &Recipes, stack: Option<ItemStack>) {
+    fn set_input(&mut self, context: &LoopContext, recipes: &Recipes, stack: Option<ItemStack>) {
         let same = match (&self.items[0], &stack) {
             (Some(old), Some(new)) => old.same_item_same_components(new),
             _ => false,
@@ -42,7 +49,7 @@ impl FurnaceCooking for Furnace {
         if !same {
             self.cooking_total = self.items[0]
                 .as_ref()
-                .and_then(|input| recipes.cook(self.kind.recipe_type(), input))
+                .and_then(|input| recipes.cook(context, self.kind.recipe_type(), input))
                 .map_or(200, |recipe| total_time(recipe.time, self.speed));
             self.cooking_timer = 0;
         }
@@ -53,14 +60,20 @@ impl FurnaceCooking for Furnace {
             .map(|(id, count)| (*count, recipes.cooking_experience(id)))
             .collect()
     }
-    fn input_clicked(&mut self, recipes: &Recipes, before: Option<ItemStack>) {
+    fn input_clicked(
+        &mut self,
+        context: &LoopContext,
+        recipes: &Recipes,
+        before: Option<ItemStack>,
+    ) {
         if self.items[0] != before {
             let after = std::mem::replace(&mut self.items[0], before);
-            self.set_input(recipes, after);
+            self.set_input(context, recipes, after);
         }
     }
     fn tick(
         &mut self,
+        context: &LoopContext,
         recipes: &Recipes,
         items: &Items,
         providers: &Providers,
@@ -77,7 +90,7 @@ impl FurnaceCooking for Furnace {
         let has_fuel = self.items[1].is_some();
         if lit || has_fuel && has_ingredient {
             if let Some(ingredient) = self.items[0].clone() {
-                if let Some(recipe) = recipes.cook(self.kind.recipe_type(), &ingredient) {
+                if let Some(recipe) = recipes.cook(context, self.kind.recipe_type(), &ingredient) {
                     let max = items.get(&recipe.result.item).map_or(64, |i| i.max_stack);
                     let can_burn = match &self.items[2] {
                         None => true,
@@ -240,8 +253,15 @@ mod tests {
             r#"{"test:cell": "test:husk"}"#,
         )
         .unwrap();
-        let items = Items::catalog(&root, &PackOverlay::NONE).unwrap();
-        let recipes = Recipes::load(&root, &items, &PackOverlay::NONE).unwrap();
+        let defaults = horizon_world::item_defaults::read(&root).unwrap();
+        let items = Items::catalog(&root, &PackOverlay::NONE, &defaults).unwrap();
+        let recipes = Recipes::load(
+            &root,
+            &items,
+            &PackOverlay::NONE,
+            &crate::test_resources::server_load(),
+        )
+        .unwrap();
         let providers = Providers::load(&root);
         let _ = fs::remove_dir_all(&root);
         (items, recipes, providers)
@@ -250,9 +270,11 @@ mod tests {
     #[test]
     fn loaded_totals_survive_until_actual_completion() {
         let (items, recipes, providers) = data("loaded-total");
+        let context = crate::test_resources::server_loop_context();
         assert_eq!(
             recipes
                 .cook(
+                    context,
                     FurnaceKind::Furnace.recipe_type(),
                     &ItemStack::new("test:ore", 3)
                 )
@@ -276,7 +298,10 @@ mod tests {
             for elapsed in 1..=6 {
                 let mut drops = Vec::new();
                 assert!(!f.idle());
-                assert_eq!(f.tick(&recipes, &items, &providers, &mut drops), None);
+                assert_eq!(
+                    f.tick(context, &recipes, &items, &providers, &mut drops),
+                    None
+                );
                 assert!(drops.is_empty());
                 assert_eq!((f.lit_remaining, f.lit_total), (20 - elapsed, 20));
                 assert!(f.items[1].is_none());
@@ -305,7 +330,7 @@ mod tests {
                 );
             }
             // A changed input still goes through setItem's independent reset.
-            f.set_input(&recipes, Some(ItemStack::new("test:ingot", 1)));
+            f.set_input(context, &recipes, Some(ItemStack::new("test:ingot", 1)));
             assert_eq!((f.cooking_timer, f.cooking_total), (0, 200));
         }
     }
@@ -313,8 +338,9 @@ mod tests {
     #[test]
     fn cooking_requires_output_components_and_capacity() {
         let (items, recipes, providers) = data("output-components");
+        let context = crate::test_resources::server_loop_context();
         let mut different = ItemStack::new("test:ingot", 1);
-        different.data_mut().custom_name = Some(horizon_world::nbt::Tag::String("Cold".into()));
+        different.data_mut().custom_name = Some(horizon_core::nbt::Tag::String("Cold".into()));
         for (output, eligible) in [
             (Some(different), false),
             (None, true),
@@ -338,7 +364,7 @@ mod tests {
                 recipes_used: HashMap::new(),
             };
             let recipe = recipes
-                .cook(f.kind.recipe_type(), f.items[0].as_ref().unwrap())
+                .cook(context, f.kind.recipe_type(), f.items[0].as_ref().unwrap())
                 .unwrap();
             assert_eq!(
                 (&*recipe.result.item, recipe.result.count, recipe.time),
@@ -346,7 +372,7 @@ mod tests {
             );
             let mut drops = Vec::new();
             assert_eq!(
-                f.tick(&recipes, &items, &providers, &mut drops),
+                f.tick(context, &recipes, &items, &providers, &mut drops),
                 eligible.then_some(true),
                 "output {before:?}"
             );
@@ -354,7 +380,7 @@ mod tests {
             if eligible {
                 assert!(f.items[1].is_none());
                 for _ in 1..200 {
-                    f.tick(&recipes, &items, &providers, &mut drops);
+                    f.tick(context, &recipes, &items, &providers, &mut drops);
                 }
                 assert_eq!(f.items[0].as_ref().unwrap().count, 2);
                 assert_eq!(
@@ -398,7 +424,13 @@ mod tests {
             assert!(before.idle(), "{before:?}");
             let mut after = before.clone();
             let mut drops = Vec::new();
-            let lit = after.tick(&recipes, &items, &providers, &mut drops);
+            let lit = after.tick(
+                crate::test_resources::server_loop_context(),
+                &recipes,
+                &items,
+                &providers,
+                &mut drops,
+            );
             assert_eq!(lit, None, "{before:?}");
             assert!(drops.is_empty(), "{before:?}");
             assert_eq!(format!("{after:?}"), format!("{before:?}"));
@@ -407,7 +439,13 @@ mod tests {
         assert!(!busy.idle());
         let before = format!("{busy:?}");
         assert_eq!(
-            busy.tick(&recipes, &items, &providers, &mut Vec::new()),
+            busy.tick(
+                crate::test_resources::server_loop_context(),
+                &recipes,
+                &items,
+                &providers,
+                &mut Vec::new(),
+            ),
             Some(true)
         );
         assert_ne!(format!("{busy:?}"), before);
@@ -432,7 +470,13 @@ mod tests {
             recipes_used: HashMap::new(),
         };
         let mut drops = Vec::new();
-        let lit = furnace.tick(&recipes, &items, &providers, &mut drops);
+        let lit = furnace.tick(
+            crate::test_resources::server_loop_context(),
+            &recipes,
+            &items,
+            &providers,
+            &mut drops,
+        );
         assert_eq!(lit, Some(true), "the fuel lit the furnace");
         (furnace, drops)
     }

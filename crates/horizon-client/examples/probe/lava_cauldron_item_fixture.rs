@@ -12,7 +12,13 @@ pub fn main() -> horizon_client::Result<()> {
     let root = Path::new(args.get(1).ok_or("missing resources")?);
     let assets = Assets::load(root)?;
     let facts = BlockFacts::load(root, assets.registry)?;
-    let items = Items::load(root, assets.registry, &facts, &PackOverlay::NONE)?;
+    let items = Items::load(
+        root,
+        assets.registry,
+        &facts,
+        &PackOverlay::NONE,
+        &horizon_world::item_defaults::read(root)?,
+    )?;
     let mut world = World::new(facts.air, 1);
     world.chunks.insert((0, 0), Arc::new(Chunk::empty(0, 0)));
     let mut output = String::new();
@@ -51,6 +57,9 @@ pub fn main() -> horizon_client::Result<()> {
                 .ok_or("missing cauldron")?,
         )?;
         let mut item = ItemEntity {
+            attachment_lifetime: Default::default(),
+            fall_distance: 0.0,
+            random: horizon_core::random::LegacyRandom::new(0),
             rotation: [0.0; 2],
             join: Default::default(),
             health: 5,

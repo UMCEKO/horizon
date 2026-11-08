@@ -3,7 +3,7 @@
 //! The expected flags are vanilla 26.3's, measured on loaded husks summoned
 //! with `FallFlying:1b` (tools/test_mob_glide_state_parity.py).
 use super::*;
-use horizon_world::nbt::Tag;
+use horizon_core::{nbt::Tag, random::LegacyRandom};
 use std::sync::Arc;
 
 fn husk(types: &crate::mobs::MobTypes, no_ai: bool, chest_damage: Option<u32>) -> Mob {
@@ -22,10 +22,10 @@ fn husk(types: &crate::mobs::MobTypes, no_ai: bool, chest_damage: Option<u32>) -
 }
 
 fn tick_once(m: &mut Mob, w: &MobWorld) {
-    let mut level_random = LegacyRandom::new(2);
+    let mut fixture = crate::health::TestLevel::new(2);
     let mut events = Vec::new();
     assert!(
-        tick(m, w, &mut level_random, &mut events),
+        tick(m, w, &mut fixture.level(), &mut events),
         "still in the level"
     );
 }
@@ -161,7 +161,7 @@ fn a_grounded_riding_or_levitating_mob_stops_gliding() {
 #[test]
 #[ignore = "needs prepared resources in .local/horizon-client"]
 fn a_glider_wears_on_the_twentieth_and_fortieth_glide_ticks() {
-    use horizon_world::player_inventory::EquipmentSlot;
+    use horizon_core::equipment_slot::EquipmentSlot;
     let ran = crate::mobs::world::with_built_test_world(
         &[],
         |_, _| {},
@@ -170,7 +170,12 @@ fn a_glider_wears_on_the_twentieth_and_fortieth_glide_ticks() {
             let mut worn_at = Vec::new();
             for t in 1..=40 {
                 let mut events = Vec::new();
-                assert!(tick(&mut m, w, &mut LegacyRandom::new(2), &mut events));
+                assert!(tick(
+                    &mut m,
+                    w,
+                    &mut crate::health::TestLevel::new(2).level(),
+                    &mut events
+                ));
                 for e in &events {
                     if let MobEvent::GliderWear { mob, slot } = e {
                         assert_eq!((*mob, *slot), (1, EquipmentSlot::Chest));
@@ -199,7 +204,7 @@ fn a_glider_wears_on_the_twentieth_and_fortieth_glide_ticks() {
 #[test]
 #[ignore = "needs prepared resources in .local/horizon-client"]
 fn the_wear_draws_once_from_the_mobs_own_random() {
-    use horizon_world::player_inventory::EquipmentSlot;
+    use horizon_core::equipment_slot::EquipmentSlot;
     let ran = crate::mobs::world::with_built_test_world(
         &[],
         |_, _| {},

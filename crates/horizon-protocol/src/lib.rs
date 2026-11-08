@@ -4,6 +4,7 @@
 // `deny`, not `forbid`: crypto/blocks.rs allows the ARMv8 AES intrinsics, nothing else.
 #![deny(unsafe_code)]
 pub mod adapter;
+pub mod anvil_cost;
 pub mod attachment_sync;
 pub mod buf;
 pub mod chunk;
@@ -24,6 +25,7 @@ mod resolver;
 pub use resolver::server_redirect;
 pub mod rsa;
 pub mod secure_chat;
+pub mod server_status;
 pub mod servers;
 pub mod text;
 

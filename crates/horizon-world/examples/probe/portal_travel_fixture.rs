@@ -7,23 +7,26 @@ use horizon_core::{
     position::BlockPos,
     random::LegacyRandom,
 };
-use horizon_world::{
-    level::{
-        Behaviours, Dimension, LevelAccess, Ticks,
-        data::load_registry,
-        portal::PortalShape,
-        portal_travel::{
-            BorderBounds, closest_portal, collision_free_position, exit_position,
-            largest_rectangle_around, relative_position,
-        },
-    },
-    registry::BlockStateId,
-};
 use serde_json::Value;
 use std::{
     collections::HashMap,
     io::{BufRead, Write},
     path::Path,
+};
+use {
+    horizon_core::dimension::Dimension,
+    horizon_world::{
+        level::{
+            Behaviours, LevelAccess, Ticks,
+            data::load_registry,
+            portal::PortalShape,
+            portal_travel::{
+                BorderBounds, closest_portal, collision_free_position, exit_position,
+                largest_rectangle_around, relative_position,
+            },
+        },
+        registry::BlockStateId,
+    },
 };
 
 struct Cells {

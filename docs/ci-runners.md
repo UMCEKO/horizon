@@ -7,7 +7,7 @@ we have to the max") every job that can runs on our own machines, and GitHub's p
 
 | Runner | Machine | Labels | Takes |
 | --- | --- | --- | --- |
-| `ludodesktop-checks-1`…`-3` | ludodesktop (the maintainer's desktop, 24 threads), isolated user `gha` | `horizon-checks` | `checks`' `verify` and `launcher` for the pull requests whose number ends in 0 or 1, forks included, `mod-registry`, `telemetry-server`, `pack load bench` |
+| `ludodesktop-checks-1`…`-3` | ludodesktop (the maintainer's desktop, 24 threads), isolated user `gha` | `horizon-checks` | `checks`' `verify` and `launcher` for the pull requests whose number ends in 0 or 1, forks included, `mod-registry`, `pack load bench` |
 | `playhorizon-light-1`…`-12` | playhorizon (partner's server, 8 vCPU) | `horizon-light`, `playhorizon-light` | The bots that run main's own scripts: `pr labels`, `overlap note`, `cancel-on-close`, `claim command`, `triage command`, `mojang republish`, `nightly build`'s `answer`, and `checks`' `parity-scope` |
 | `playhorizon-ci-1`, `playhorizon-ci-2` | playhorizon | `playhorizon-ci` | Nothing routed since 2026-11-03 (they took `checks` of this repository's own pull requests with the old `SELF_HOSTED_CI=all`) |
 | `playhorizon-horizon`, `ludodesktop-horizon`, `ludodesktop-parity-2` | playhorizon, ludodesktop | `horizon-game` | Parity ([release-flow.md](release-flow.md#the-parity-job)) |
@@ -15,6 +15,9 @@ we have to the max") every job that can runs on our own machines, and GitHub's p
 
 The desktop's runners are declared in the maintainer's NixOS configuration (his private fleet repository,
 `nixos/ludodesktop/horizon-runner.nix`), not installed from here; playhorizon's by `tools/ci/checks-runners.sh`.
+Every persistent checkout (the desktop's `/var/lib/gha/<runner>/horizon`, playhorizon's, the Mac mini's) is kept small by
+[`tools/ci/git-slim.sh`](../tools/ci/git-slim.sh) before a job or while the runner is idle; the desktop runs its own copy
+from a `ACTIONS_RUNNER_HOOK_JOB_STARTED` hook in the NixOS configuration.
 
 ## What stays on GitHub, and why
 
@@ -38,7 +41,7 @@ The desktop's runners are declared in the maintainer's NixOS configuration (his 
 The repository variable `SELF_HOSTED_CI` decides, from the next job queued (queued jobs keep the runner they asked
 for):
 
-| `SELF_HOSTED_CI` | Bots (`horizon-light`) | `checks`, `mod-registry`, `telemetry-server`, `pack load bench` (`horizon-checks`) |
+| `SELF_HOSTED_CI` | Bots (`horizon-light`) | `checks`, `mod-registry`, `pack load bench` (`horizon-checks`) |
 | --- | --- | --- |
 | unset (default) | ours | `verify`, `launcher`: ours for the pull requests ending in 0 or 1, GitHub's for the others and main's pushes; the rest ours |
 | `all` | ours | ours, every pull request |
@@ -88,9 +91,11 @@ ssh ludovic@playhorizon 'bash ~/horizon-install/checks-runners.sh status'
   the machine, `linux-runner.sh`). The checks runners have their own `horizon-ci-checks.slice` (memory ≤ 16 GB).
   CPUs 0–3 stay for `tools/remote.sh` runs, benchmarks and the servers.
 - `job-started.sh`, before every job: refuses a fork's pull request; empties a cargo build folder over 40 GB
-  (`MAX_TARGET_GB`); drops a checkout's `.git` over 2 GB (`MAX_GIT_GB`), which the checkout then clones again; removes the
-  runner's diagnostic logs older than a day. Every
-  job's fetch adds a pack and nothing repacks them: on 2026-11-03 each light runner's checkout held 6822 packs, 50 GB.
+  (`MAX_TARGET_GB`); collects a checkout's `.git` over 1.5 GB with `git-slim.sh` (`git gc --prune=now`, installed beside
+  the hook; it also folds many packs and removes the `tmp_pack_*` of cut-short fetches) and drops one still over 4 GB
+  (`MAX_GIT_GB`), which the checkout then clones again; removes the runner's diagnostic logs older than a day.
+  actions/checkout turns gc off in a persistent checkout and every job's fetch adds a pack: on 2026-11-03 each light
+  runner's checkout held 6822 packs, 50 GB; on 2026-11-09 the desktop's checks runners held 1051 packs (111 GB in one).
 - The checks runners share one cargo home (`~/.actions-runners/ci-shared/cargo`: registry and git sources). Each has
   its own rustup home and its own build folder (`CARGO_TARGET_DIR`, outside the checkout). `CARGO_BUILD_JOBS=4`.
 - Python is the host's 3.13 (`ci-shared/bin/python3`); the apt packages the jobs need are installed by the script, so

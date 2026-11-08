@@ -5,12 +5,14 @@
 #[global_allocator]
 static ALLOCATOR: horizon_threads::GameAllocator = horizon_threads::GAME_ALLOCATOR;
 
-/// The mod API level this game serves, kept in the program for the launcher
-/// to read without running it (`horizon_mods::api_level::MARK`). `main`
-/// reads it, so the linker keeps it.
-static MOD_API_LEVEL: [u8; 27] = horizon_mods::api_level::MARK;
+/// Identifies this executable as the game for launcher imports. `main` reads it so the
+/// linker keeps it; it carries neither an API version nor a per-build id.
+static GAME_IDENTITY: [u8; horizon_mod_package::game_identity::MARK.len()] =
+    horizon_mod_package::game_identity::MARK;
 
 fn main() {
-    std::hint::black_box(&MOD_API_LEVEL);
-    horizon_client::entry::main();
+    let startup = horizon_client::entry::prepare();
+    std::hint::black_box(&horizon_mod_package::holder::CAPABILITY);
+    std::hint::black_box(&GAME_IDENTITY);
+    horizon_client::entry::main(startup);
 }

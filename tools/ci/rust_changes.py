@@ -16,7 +16,8 @@ from tools import release_train  # noqa: E402
 # The root workspace's manifest and toolchain files: the launcher's path crates inherit from them.
 ROOT_RUST = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rustfmt.toml", "clippy.toml"}
 # The check itself: a change to it runs it.
-LAUNCHER_CHECK = {".github/workflows/ci.yml", "tools/ci/rust_changes.py", "tools/release_train.py"}
+LAUNCHER_CHECK = {".github/workflows/ci.yml", ".github/workflows/dyna-ci.yml",
+                  "tools/ci/rust_changes.py", "tools/release_train.py"}
 
 
 def needs_rust(paths):
@@ -31,12 +32,25 @@ def needs_launcher(paths):
     ) for path in paths)
 
 
+# Stands for "everything changed" when no diff can be computed: a root manifest every check and shard selector
+# treats as touching all of them.
+UNKNOWN_CHANGE = "Cargo.lock"
+
+
 def changed_paths(base, head):
     # Renames must include deletions too: moving source into docs still affects Rust.
-    output = subprocess.check_output([
-        "git", "diff", "--name-only", "--no-renames", "-z", f"{base}...{head}", "--",
-    ])
-    return [path for path in output.decode("utf-8").split("\0") if path]
+    command = ["git", "diff", "--name-only", "--no-renames", "-z", f"{base}...{head}", "--"]
+    for fetch_base in (False, True):
+        # The event's base can be newer than the checked-out history (main moved on): fetch it once.
+        if fetch_base:
+            subprocess.run(["git", "fetch", "-q", "--no-tags", "origin", base], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        diff = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+        if diff.returncode == 0:
+            return [path for path in diff.stdout.decode("utf-8").split("\0") if path]
+    # Never an error and never "nothing changed": assume everything did.
+    print(f"rust_changes: no diff for {base}...{head}; treating everything as changed", file=sys.stderr)
+    return [UNKNOWN_CHANGE]
 
 
 if __name__ == "__main__":

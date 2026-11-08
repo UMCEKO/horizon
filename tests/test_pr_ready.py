@@ -94,6 +94,22 @@ class GitChangedPathsTests(unittest.TestCase):
 
 
 class PrReadyTests(unittest.TestCase):
+    def test_windows_runner_gives_a_leading_variable_to_the_environment(self):
+        step = pr_ready.Step(
+            "dispatch tests tests",
+            "CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-4} cargo test --manifest-path a/Cargo.toml --locked",
+        )
+        with mock.patch.object(pr_ready.subprocess, "Popen") as popen, \
+                mock.patch.object(pr_ready, "finish"), mock.patch.dict(os.environ):
+            os.environ.pop("CARGO_BUILD_JOBS", None)
+            popen.return_value.__enter__.return_value.stdout = []
+            popen.return_value.__enter__.return_value.wait.return_value = 0
+            pr_ready.run_windows([step], False)
+        self.assertEqual(popen.call_args.args[0],
+                         ["cargo", "test", "--manifest-path", "a/Cargo.toml", "--locked"])
+        self.assertEqual(popen.call_args.kwargs["env"]["CARGO_BUILD_JOBS"], "4")
+        self.assertEqual(step.status, "pass")
+
     def test_paths_map_to_the_crates_that_own_them(self):
         self.assertEqual(pr_ready.touched_crates({"crates/horizon-core/src/jmath.rs", "crates/horizon-client/build.rs",
                                                   "xtask/src/main.rs", "tools/parity.py"}, PACKAGES),
@@ -112,7 +128,7 @@ class PrReadyTests(unittest.TestCase):
                      "examples/probe/main.rs", "tests/lan_bot.rs"]:
             self.assertEqual(pr_ready.touched_crates({f"crates/horizon-client/{path}"}, packages),
                              ["horizon-client-lib"])
-        for path in ["src/lib.rs", "src/main.rs", "src/entry.rs", "src/game.rs", "src/game/combat.rs",
+        for path in ["src/lib.rs", "src/main.rs", "src/entry.rs", "src/game.rs", "src/game/items/combat.rs",
                      "tests/launch_api.rs", "Cargo.toml", "build.rs"]:
             self.assertEqual(pr_ready.touched_crates({f"crates/horizon-client/{path}"}, packages),
                              ["horizon-client"])
@@ -128,7 +144,7 @@ class PrReadyTests(unittest.TestCase):
         self.assertTrue(pr_ready.launcher_rust("tools/ci/rust_changes.py"))
         self.assertTrue(pr_ready.launcher_rust("crates/horizon-prepare/src/lib.rs"))
         self.assertTrue(pr_ready.launcher_rust("crates/horizon-theme/src/lib.rs"))
-        self.assertTrue(pr_ready.launcher_rust("crates/horizon-telemetry/src/lib.rs"))
+        self.assertTrue(pr_ready.launcher_rust("crates/horizon-system/src/lib.rs"))
         self.assertTrue(pr_ready.launcher_rust("crates/horizon-mod-api-gen/src/injection.rs"))
         self.assertFalse(pr_ready.launcher_rust("launcher/links.json"))
         self.assertFalse(pr_ready.launcher_rust("launcher/README.md"))
@@ -151,11 +167,40 @@ class PrReadyTests(unittest.TestCase):
             return {step.name: step for step in steps}["content root tests"]
         self.assertEqual(content_step("crates/horizon-client/src/game.rs").skip, "content root untouched")
         for path in ["crates/horizon-client/src/mod_content.rs", "crates/horizon-client/src/mod_content_tests.rs",
-                     "crates/horizon-mods/src/content.rs", "crates/horizon-assets/src/lib.rs", "Cargo.lock"]:
+                     "crates/horizon-mod-package/src/content.rs", "crates/horizon-assets/src/lib.rs", "Cargo.lock"]:
             with self.subTest(path=path):
                 step = content_step(path)
                 self.assertIsNone(step.skip)
                 self.assertEqual(step.command, pr_ready.CONTENT_ROOT_TESTS)
+
+    def test_dispatch_and_registry_suites_run_when_their_inputs_change(self):
+        def suite_steps(path):
+            with mock.patch.object(pr_ready, "affected_here", return_value=[]):
+                steps = pr_ready.plan(args(quick=True), "origin/main", {path}, PACKAGES, LIBRARIES, DEPENDENCIES)
+            return {step.name: step for step in steps}
+        for path in ["crates/horizon-mod-api-gen/src/lib.rs",
+                     "crates/horizon-mod-api-gen/dispatch-tests/src/lib.rs",
+                     "crates/horizon-mod-api-macros/src/lib.rs",
+                     "crates/horizon-mod-api/src/lib.rs",
+                     "crates/horizon-mod-api/src/parts/mod.rs",
+                     "crates/horizon-mod-api/src/hooks/block.rs"]:
+            with self.subTest(path=path):
+                by_name = suite_steps(path)
+                for name in ("dispatch tests clippy", "dispatch tests tests"):
+                    self.assertIsNone(by_name[name].skip)
+                self.assertIn("crates/horizon-mod-api-gen/dispatch-tests/Cargo.toml",
+                              by_name["dispatch tests clippy"].command)
+                self.assertIn("--test-threads=4", by_name["dispatch tests tests"].command)
+                self.assertEqual(by_name["mod registry tests clippy"].skip, "mod registry untouched")
+        for path in ["crates/horizon-mod-registry/src/main.rs", "crates/horizon-mod-registry/Cargo.toml"]:
+            with self.subTest(path=path):
+                by_name = suite_steps(path)
+                for name in ("mod registry tests clippy", "mod registry tests tests"):
+                    self.assertIsNone(by_name[name].skip)
+                self.assertEqual(by_name["dispatch tests clippy"].skip, "dispatch surface untouched")
+        by_name = suite_steps("crates/horizon-core/src/lib.rs")
+        self.assertEqual(by_name["dispatch tests clippy"].skip, "dispatch surface untouched")
+        self.assertEqual(by_name["mod registry tests tests"].skip, "mod registry untouched")
 
     def test_shared_rust_configuration_keeps_workspace_coverage(self):
         for path in sorted(pr_ready.ROOT_RUST | {".cargo/config.toml", "crates/unknown/src/lib.rs"}):
@@ -170,14 +215,14 @@ class PrReadyTests(unittest.TestCase):
     def test_tests_get_the_features_ci_s_workspace_run_gives_them(self):
         self.assertEqual(pr_ready.mod_features(["horizon-world"]), "")
         self.assertEqual(pr_ready.mod_features(["horizon-client"]), "")
-        self.assertEqual(pr_ready.mod_features(["horizon-mods"]),
-                         " --features horizon-mods/index")
+        self.assertEqual(pr_ready.mod_features(["horizon-mod-package"]),
+                         " --features horizon-mod-package/index")
         self.assertEqual(pr_ready.mod_features(None), MODS)
 
     def test_mod_api_data_inputs_build_and_test_the_consuming_crates(self):
         packages = {**PACKAGES, "horizon-client-render": "crates/horizon-client-render",
                     "horizon-mod-api-gen": "crates/horizon-mod-api-gen"}
-        for path in ("native-hooks.json", "tools/native-hook-fragments/player.json"):
+        for path in ("crates/horizon-mod-api/src/hooks/player.rs",):
             with self.subTest(path=path), mock.patch.object(pr_ready, "affected_here", return_value=[]):
                 steps = pr_ready.plan(args(quick=True), "origin/main", {path}, packages,
                                       LIBRARIES | {"horizon-client-render", "horizon-mod-api-gen"}, DEPENDENCIES)
@@ -341,24 +386,11 @@ class PrReadyTests(unittest.TestCase):
         self.assertEqual(libraries, {"core"})
         self.assertEqual(pr_ready.dependent_crates(["core"], dependencies), ["build", "core", "dev", "optional"])
 
-    def test_scope_warns_on_size_and_mixed_areas(self):
-        self.assertEqual(pr_ready.scope_warnings({"crates/horizon-client/src/game.rs", "tools/test_food_parity.py",
-                                                  "mods/horizon/src/test/java/dev/horizonlab/parity/X.java",
-                                                  "docs/native-client.md"}, 120), [])
-        self.assertEqual(pr_ready.scope_warnings({"crates/horizon-theme/src/lib.rs", "launcher/src/theme.rs"}, 10), [])
-        warnings = pr_ready.scope_warnings({"crates/horizon-client/src/game.rs", "launcher/src/main.rs",
-                                            ".github/workflows/ci.yml"}, 900)
-        self.assertEqual(len(warnings), 2)
-        self.assertIn("900 lines of code: over 500", warnings[0])
-        self.assertEqual(warnings[1], "mixes CI, game, launcher")
-
-    def test_documentation_and_tests_are_not_counted_in_the_size(self):
-        self.assertTrue(pr_ready.reviewed("tools/pr_ready.py"))
-        self.assertTrue(pr_ready.reviewed("crates/horizon-client/src/game.rs"))
-        self.assertFalse(pr_ready.reviewed("CONTRIBUTING.md"))
-        self.assertFalse(pr_ready.reviewed("tests/test_pr_ready.py"))
-        self.assertFalse(pr_ready.reviewed("tools/test_food_parity.py"))
-        self.assertFalse(pr_ready.reviewed("crates/horizon-core/tests/jmath.rs"))
+    def test_scope_warns_on_mixed_areas(self):
+        self.assertEqual(pr_ready.scope_warnings({"crates/horizon-theme/src/lib.rs", "launcher/src/theme.rs"}), [])
+        self.assertEqual(pr_ready.scope_warnings({"crates/horizon-client/src/game.rs", "launcher/src/main.rs",
+                                                  ".github/workflows/ci.yml"}),
+                         ["mixes CI, game, launcher"])
 
     def test_cargo_lock_changes_only_with_a_manifest(self):
         self.assertIsNone(pr_ready.lock_problem({"crates/horizon-core/src/lib.rs"}))

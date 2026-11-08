@@ -13,13 +13,14 @@
 //! `RunOne` shuffles with a random of its own, seeded with the brain's
 //! shuffle seed.
 use super::{
-    Mob, MobEvent, MobWorld, Who,
+    Mob, MobEvent, MobWorld, TargetChange, Who,
     brain::Timed,
     goals::Cx,
     path::Path,
     villager_brain::{Slot, Tracker, Visible, WalkTarget, compute_path, reached},
     warden::{self, Pose},
 };
+use crate::health::DamageLevel;
 use horizon_core::{
     geometry::Vec3,
     random::{LegacyRandom, RandomSource},
@@ -172,6 +173,8 @@ enum B {
     Digging(Timed),
     SetRoarTarget(bool),
     TryToSniff(bool),
+    /// A mod's behavior (#824), wrapped by `mod_behaviors`.
+    Mod(super::mod_behaviors::ModBehavior),
     RunOne(Box<Gate>),
     Stroll(bool),
     DoNothing(Timed),
@@ -188,6 +191,7 @@ enum B {
 
 #[derive(Clone, Debug)]
 struct Entry {
+    prio: i32,
     act: Act,
     b: B,
 }
@@ -205,16 +209,28 @@ pub struct Brain {
 }
 impl Default for Brain {
     fn default() -> Self {
-        Self::new(0)
+        // No mob id: nothing attaches (a default brain is the empty shell a
+        // warden's state starts from; `init_brain` builds the real one).
+        Self::new("", 0)
     }
 }
 impl Brain {
-    pub fn new(shuffle_seed: i64) -> Self {
+    pub fn new(mob_id: &str, shuffle_seed: i64) -> Self {
+        let mut list = activities(shuffle_seed);
+        // The parts' behaviors join before the sort, so each lands after
+        // vanilla's of its priority (#824); the stable sort keeps vanilla's
+        // own order. Nothing joins a type no part attached to, and nothing
+        // is asked or built then.
+        let before = list.len();
+        attach_behaviors(mob_id, &mut list);
+        if list.len() > before {
+            list.sort_by_key(|e| (e.prio, e.act.slot(), e.act.order()));
+        }
         Self {
             mem: Memories::default(),
             sensors: [0; 2],
             activity: Act::Idle,
-            list: activities(shuffle_seed),
+            list,
             shuffle_seed,
         }
     }
@@ -250,6 +266,23 @@ impl Brain {
         self.activity = a;
     }
     /// `WardenAi.updateActivity`: `setActiveActivityToFirstValid`.
+    pub(super) fn will_clear_attack_target(&self) -> bool {
+        self.activity == Act::Fight
+            && self.mem.attack_target.present()
+            && [
+                Act::Emerge,
+                Act::Dig,
+                Act::Roar,
+                Act::Fight,
+                Act::Investigate,
+                Act::Sniff,
+                Act::Idle,
+            ]
+            .into_iter()
+            .find(|&activity| self.requirements_met(activity))
+            .is_some_and(|activity| activity != Act::Fight)
+    }
+
     pub fn update_activity(&mut self) {
         for a in [
             Act::Emerge,
@@ -341,14 +374,14 @@ fn activities(seed: i64) -> Vec<Entry> {
     // A stable sort keeps each activity's own order.
     list.sort_by_key(|(prio, act, _)| (*prio, act.slot(), act.order()));
     list.into_iter()
-        .map(|(_, act, b)| Entry { act, b })
+        .map(|(prio, act, b)| Entry { prio, act, b })
         .collect()
 }
 
 /// What behaviours read and emit during a brain tick.
-pub struct Bx<'a, 'w> {
+pub struct Bx<'a, 'w, 'l> {
     pub w: &'a MobWorld<'w>,
-    pub lr: &'a mut LegacyRandom,
+    pub level: &'a mut DamageLevel<'l>,
     pub events: &'a mut Vec<MobEvent>,
     pub now: i64,
 }
@@ -368,7 +401,7 @@ pub(super) fn mem_ref(m: &Mob) -> Option<&Memories> {
 }
 
 /// `Brain.tick` (from `Warden.customServerAiStep`).
-pub fn tick(m: &mut Mob, w: &MobWorld, lr: &mut LegacyRandom, events: &mut Vec<MobEvent>) {
+pub fn tick(m: &mut Mob, w: &MobWorld, level: &mut DamageLevel<'_>, events: &mut Vec<MobEvent>) {
     if m.extra.warden.is_none() {
         return;
     }
@@ -381,7 +414,7 @@ pub fn tick(m: &mut Mob, w: &MobWorld, lr: &mut LegacyRandom, events: &mut Vec<M
     let mut list = std::mem::take(&mut st.brain.list);
     let mut cx = Bx {
         w,
-        lr,
+        level,
         events,
         now: w.game_time,
     };
@@ -444,8 +477,7 @@ fn targetable(m: &mut Mob, w: &MobWorld, who: Who) -> bool {
 fn sense_players(m: &mut Mob, w: &MobWorld) {
     let range = m.attrs.follow_range;
     let near = w
-        .player
-        .as_ref()
+        .selected_player()
         .is_some_and(|p| !p.spectator && m.distance_sqr(p.position) < range * range);
     let players: Vec<Who> = if near { vec![Who::Player] } else { vec![] };
     let visible: Vec<Who> = players
@@ -477,7 +509,7 @@ fn sense_entities(m: &mut Mob, w: &MobWorld) {
             found.push((Who::Mob(o.id), m.distance_sqr(o.position)));
         }
     }
-    if let Some(p) = &w.player
+    if let Some(p) = w.selected_player()
         && p.alive
         && p.bounds.intersects(area)
     {
@@ -563,10 +595,13 @@ pub(super) fn set_disturbance(m: &mut Mob, w: &MobWorld, position: [i32; 3]) {
     mm.walk_target.clear();
 }
 /// `Warden.setAttackTarget`.
-pub(super) fn set_attack_target(m: &mut Mob, target: Who) {
+pub(super) fn set_attack_target(m: &mut Mob, w: &MobWorld, target: Who) {
+    let TargetChange::Set(target) = w.change_target(m, true, Some(target)) else {
+        return;
+    };
     let mm = mem(m);
     mm.roar_target.clear();
-    mm.attack_target.set(target);
+    mm.attack_target.set_opt(target);
     mm.cant_reach_walk_target_since.clear();
     mm.sonic_boom_cooldown.set_ttl((), 200);
 }
@@ -600,6 +635,62 @@ fn sound(m: &Mob, name: &'static str, volume: f32, pitch: f32, events: &mut Vec<
     ));
 }
 
+// ---- Mod behaviors ------------------------------------------------------
+
+/// The parts' behaviors for this brain (#824): each joins the list with its
+/// activity and priority, refused where this brain has no such activity.
+fn attach_behaviors(mob_id: &str, list: &mut Vec<Entry>) {
+    struct Reg<'a> {
+        list: &'a mut Vec<Entry>,
+        mob_id: &'a str,
+    }
+    impl mod_api::BehaviorRegistrarBackend for Reg<'_> {
+        fn add_behavior(
+            &mut self,
+            r: mod_api::RegisteredBehavior,
+        ) -> Result<(), mod_api::BehaviorRefusal> {
+            let act = act_of(r.activity)?;
+            self.list.push(Entry {
+                prio: r.priority,
+                act,
+                b: B::Mod(super::mod_behaviors::ModBehavior::new(r)),
+            });
+            Ok(())
+        }
+        fn mob_id(&self) -> &str {
+            self.mob_id
+        }
+    }
+    super::mod_behaviors::attach(mob_id, &mut Reg { list, mob_id });
+}
+
+/// This brain's slot for a mod-api activity.
+fn act_of(activity: mod_api::Activity) -> Result<Act, mod_api::BehaviorRefusal> {
+    use mod_api::Activity as A;
+    Ok(match activity {
+        A::Core => Act::Core,
+        A::Idle => Act::Idle,
+        A::Fight => Act::Fight,
+        A::Investigate => Act::Investigate,
+        A::Roar => Act::Roar,
+        A::Sniff => Act::Sniff,
+        A::Emerge => Act::Emerge,
+        A::Dig => Act::Dig,
+        other => return Err(mod_api::BehaviorRefusal::UnknownActivity(other)),
+    })
+}
+
+/// The list's `(prio, activity, is a mod's)` keys, in `Brain.tick`'s start
+/// order — the inspection the goal selector's `entries` gives goals' tests.
+pub fn entry_keys(m: &Mob) -> Option<Vec<(i32, Act, bool)>> {
+    brain(m).map(|b| {
+        b.list
+            .iter()
+            .map(|e| (e.prio, e.act, matches!(e.b, B::Mod(_))))
+            .collect()
+    })
+}
+
 // ---- Behaviours -----------------------------------------------------------
 
 impl B {
@@ -615,6 +706,7 @@ impl B {
             | B::Roar(t)
             | B::SonicBoom(t) => t.running,
             B::MoveToTargetSink { t, .. } => t.running,
+            B::Mod(e) => e.running(),
             B::RunOne(g) => g.running,
             B::SetWardenLookTarget(r)
             | B::SetRoarTarget(r)
@@ -632,11 +724,12 @@ impl B {
     /// `BehaviorControl.tryStart`.
     fn try_start(&mut self, m: &mut Mob, cx: &mut Bx) -> bool {
         match self {
+            B::Mod(e) => e.try_start(m, cx.w, cx.level.random(), cx.now),
             B::Swim(t) => {
                 if !swim_condition(m) {
                     return false;
                 }
-                t.begin(cx.lr, cx.now);
+                t.begin(cx.level.random(), cx.now);
                 true
             }
             B::SetWardenLookTarget(r) => one(r, || {
@@ -658,7 +751,7 @@ impl B {
                 if !mem(m).look_target.present() {
                     return false;
                 }
-                t.begin(cx.lr, cx.now);
+                t.begin(cx.level.random(), cx.now);
                 true
             }
             B::MoveToTargetSink {
@@ -683,7 +776,7 @@ impl B {
                 let reached = reached(m, cx.w, &walk);
                 if !reached && compute_path(m, cx.w, cx.now, &walk, path, speed, cant_reach) {
                     *last_target = walk.target.block(cx.w);
-                    t.begin(cx.lr, cx.now);
+                    t.begin(cx.level.random(), cx.now);
                     // start
                     mem(m).path.set_opt(path.clone());
                     m.nav_move_to_path(cx.w, path.clone(), f64::from(*speed));
@@ -701,7 +794,7 @@ impl B {
                 if !mm.is_emerging.present() || mm.walk_target.present() {
                     return false;
                 }
-                t.begin(cx.lr, cx.now);
+                t.begin(cx.level.random(), cx.now);
                 warden::set_pose(m, Pose::Emerging);
                 sound(m, "entity.warden.emerge", 5.0, 1.0, cx.events);
                 true
@@ -717,7 +810,7 @@ impl B {
                 if !(m.on_ground || liquid) {
                     return false;
                 }
-                t.begin(cx.lr, cx.now);
+                t.begin(cx.level.random(), cx.now);
                 if m.on_ground {
                     warden::set_pose(m, Pose::Digging);
                     sound(m, "entity.warden.dig", 5.0, 1.0, cx.events);
@@ -754,7 +847,7 @@ impl B {
                 }
                 mm.is_sniffing.set(());
                 // UniformInt.of(100, 200).sample(level.getRandom())
-                let cooldown = 100 + cx.lr.next_int_bound(101).unwrap_or(0);
+                let cooldown = 100 + cx.level.random().next_int_bound(101).unwrap_or(0);
                 let mm = mem(m);
                 mm.sniff_cooldown.set_ttl((), i64::from(cooldown));
                 mm.walk_target.clear();
@@ -798,7 +891,7 @@ impl B {
                 true
             }),
             B::DoNothing(t) => {
-                t.begin(cx.lr, cx.now);
+                t.begin(cx.level.random(), cx.now);
                 true
             }
             B::GoToDisturbance(r) => one(r, || {
@@ -812,8 +905,8 @@ impl B {
                 // Vec3i.closerThan(body.blockPosition(), 2)
                 if dist_sqr(p, block_of(m.position)) >= 4 {
                     // GoToTargetLocation.getNearbyPos: the level random.
-                    let dx = cx.lr.next_int_bound(3).unwrap_or(0) - 1;
-                    let dz = cx.lr.next_int_bound(3).unwrap_or(0) - 1;
+                    let dx = cx.level.random().next_int_bound(3).unwrap_or(0) - 1;
+                    let dz = cx.level.random().next_int_bound(3).unwrap_or(0) - 1;
                     let near = [p[0] + dx, p[1], p[2] + dz];
                     let mm = mem(m);
                     mm.look_target.set(Tracker::Block(near));
@@ -833,7 +926,7 @@ impl B {
                 {
                     return false;
                 }
-                t.begin(cx.lr, cx.now);
+                t.begin(cx.level.random(), cx.now);
                 sound(m, "entity.warden.sniff", 5.0, 1.0, cx.events);
                 true
             }
@@ -845,7 +938,7 @@ impl B {
                 let Some(target) = mm.roar_target.value() else {
                     return false;
                 };
-                t.begin(cx.lr, cx.now);
+                t.begin(cx.level.random(), cx.now);
                 let mm = mem(m);
                 mm.roar_sound_delay.set_ttl((), ROAR_SOUND_DELAY);
                 mm.walk_target.clear();
@@ -869,12 +962,14 @@ impl B {
                 if can && alive && angry {
                     return true;
                 }
-                // WardenAi.onTargetInvalid
-                if !can && let Some(st) = m.extra.warden.as_mut() {
-                    st.anger.clear(target);
+                if let TargetChange::Set(replacement) = cx.w.change_target(m, true, None) {
+                    // WardenAi.onTargetInvalid
+                    if !can && let Some(st) = m.extra.warden.as_mut() {
+                        st.anger.clear(target);
+                    }
+                    set_dig_cooldown(m);
+                    mem(m).attack_target.set_opt(replacement);
                 }
-                set_dig_cooldown(m);
-                mem(m).attack_target.clear();
                 true
             }),
             B::SetEntityLookTarget(r) => one(r, || {
@@ -930,7 +1025,7 @@ impl B {
                 if !close {
                     return false;
                 }
-                t.begin(cx.lr, cx.now);
+                t.begin(cx.level.random(), cx.now);
                 let mm = mem(m);
                 mm.attack_cooling_down
                     .set_ttl(true, i64::from(SONIC_DURATION));
@@ -962,7 +1057,7 @@ impl B {
                 }
                 mem(m).look_target.set(Tracker::Entity(target, true));
                 m.swing();
-                warden::do_hurt_target(m, target, w, cx.lr, cx.events);
+                warden::do_hurt_target(m, target, w, cx.level, cx.events);
                 mem(m)
                     .attack_cooling_down
                     .set_ttl(true, MELEE_ATTACK_COOLDOWN);
@@ -975,6 +1070,7 @@ impl B {
     fn tick_or_stop(&mut self, m: &mut Mob, cx: &mut Bx) {
         let now = cx.now;
         match self {
+            B::Mod(e) => e.tick_or_stop(m, cx.w, cx.now),
             B::Swim(t) => {
                 if now > t.end || !swim_condition(m) {
                     self.do_stop(m, cx);
@@ -1007,7 +1103,7 @@ impl B {
                         !m.ai.nav.is_done()
                             && !reached(m, cx.w, &walk)
                             && !matches!(walk.target, Tracker::Entity(Who::Player, _)
-                                if cx.w.player.as_ref().is_some_and(|p| p.spectator))
+                                if cx.w.selected_player().is_some_and(|p| p.spectator))
                     });
                 if now > t.end || !still {
                     self.do_stop(m, cx);
@@ -1088,6 +1184,7 @@ impl B {
     /// `BehaviorControl.doStop`.
     fn do_stop(&mut self, m: &mut Mob, cx: &mut Bx) {
         match self {
+            B::Mod(e) => e.do_stop(m, cx.w),
             B::Swim(t) | B::ForceUnmount(t) | B::DoNothing(t) => t.running = false,
             B::LookAtTargetSink(t) => {
                 t.running = false;
@@ -1101,7 +1198,7 @@ impl B {
                     && !reached(m, cx.w, &walk)
                     && m.ai.nav.stuck
                 {
-                    *cooldown = cx.lr.next_int_bound(40).unwrap_or(0);
+                    *cooldown = cx.level.random().next_int_bound(40).unwrap_or(0);
                 }
                 m.nav_stop();
                 let mm = mem(m);
@@ -1152,7 +1249,7 @@ impl B {
                     warden::set_pose(m, Pose::Standing);
                 }
                 if let Some(target) = mem(m).roar_target.value() {
-                    set_attack_target(m, target);
+                    set_attack_target(m, cx.w, target);
                 }
                 mem(m).roar_target.clear();
             }
@@ -1188,12 +1285,12 @@ fn swim_condition(m: &Mob) -> bool {
     m.fluids.water > m.fluid_jump_threshold() || m.fluids.in_lava
 }
 /// The `Cx` the mob library's attacks take.
-pub(super) fn cx<'a, 'w>(
+pub(super) fn cx<'a, 'w, 'l>(
     w: &'a MobWorld<'w>,
-    lr: &'a mut LegacyRandom,
+    level: &'a mut DamageLevel<'l>,
     events: &'a mut Vec<MobEvent>,
-) -> Cx<'a, 'w> {
-    Cx { w, lr, events }
+) -> Cx<'a, 'w, 'l> {
+    Cx { w, level, events }
 }
 
 // ---- Printing ---------------------------------------------------------------
@@ -1313,16 +1410,13 @@ mod warden_owned_memory_tests {
     use crate::entity_nbt::{mob_from_nbt, mob_to_nbt};
     use crate::mobs::MobType;
     use crate::save::{doubles, put};
-    use horizon_world::{
-        nbt::{Compound, Tag},
-        registry::BlockRegistry,
-    };
+    use horizon_core::nbt::{Compound, Tag};
+    use horizon_world::registry::BlockRegistry;
     use std::{collections::HashMap, sync::Arc};
     fn string(s: &str) -> Tag {
         Tag::String(s.into())
     }
     use crate::mobs::{Species, world::with_built_test_world};
-    use horizon_core::random::LegacyRandom;
 
     fn types() -> HashMap<String, Arc<MobType>> {
         let mut kind = crate::mobs::sensor_scan_tests::kind();
@@ -1518,10 +1612,10 @@ mod warden_owned_memory_tests {
                 put(&mut raw, "Health", Tag::Float(500f32.to_bits()));
                 let mut m = mob_from_nbt(&raw, &types, 93, None).unwrap();
                 let loaded = slot_state(&m);
-                let mut random = LegacyRandom::new(0);
+                let mut fixture = crate::health::TestLevel::new(0);
                 let mut events = Vec::new();
                 for tick in 1..=5 {
-                    assert!(m.tick(w, &mut random, &mut events));
+                    assert!(m.tick(w, &mut fixture.level(), &mut events));
                     assert_eq!(m.age, tick as u32);
                     let expected = if no_ai {
                         [Some(2), Some(17)]

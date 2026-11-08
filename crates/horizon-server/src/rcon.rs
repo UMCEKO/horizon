@@ -16,6 +16,7 @@ use crate::{
     supervisor::note,
 };
 use horizon_server_files::properties::{ServerProperties, SystemEntropy};
+use horizon_server_launch::config;
 use serde_json::Value;
 use std::{
     io::{self, Read, Write},
@@ -68,7 +69,7 @@ enum Setup {
 }
 
 fn setup(dir: &Path) -> Result<Setup, String> {
-    let file = crate::config::read_properties(&dir.join(crate::config::PROPERTIES))?;
+    let file = config::read_properties(&dir.join(config::PROPERTIES))?;
     let p = ServerProperties::new(file, &mut SystemEntropy::default())?;
     if !p.enable_rcon {
         return Ok(Setup::Off);
@@ -99,7 +100,7 @@ fn setup(dir: &Path) -> Result<Setup, String> {
 /// not a server that doesn't start.
 pub fn start(shared: Arc<Shared>) -> Result<Option<SocketAddr>, String> {
     // The file the game reads, as server.toml makes it.
-    crate::config::Config::load(&shared.dir)?
+    config::Config::load(&shared.dir)?
         .write_properties(&shared.dir)
         .map_err(|e| format!("server.properties: {e}"))?;
     let settings = match setup(&shared.dir)? {
@@ -589,7 +590,7 @@ mod tests {
     }
 
     fn properties(dir: &Path, text: &str) {
-        std::fs::write(dir.join(crate::config::PROPERTIES), text).unwrap();
+        std::fs::write(dir.join(config::PROPERTIES), text).unwrap();
     }
 
     #[test]
@@ -641,7 +642,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::fs::write(
-            engine::control_path(dir),
+            horizon_server_launch::control_path(dir),
             format!("{{\"port\":{port},\"token\":\"t\"}}"),
         )
         .unwrap();
@@ -701,7 +702,7 @@ mod tests {
             .port();
         // The dotted keys are quoted in TOML.
         // `[server] bind` is `server-ip`, the address RCON listens on too.
-        let toml = crate::config::TEMPLATE
+        let toml = config::TEMPLATE
             .replacen("bind = \"\"", "bind = \"127.0.0.1\"", 1)
             .replace(
                 "[properties]
@@ -714,7 +715,7 @@ enable-rcon = true
 "
                 ),
             );
-        std::fs::write(dir.join(crate::config::FILE), toml).unwrap();
+        std::fs::write(dir.join(config::FILE), toml).unwrap();
         let shared = Shared::with_install(&dir, None);
         shared.set_phase(Phase::Running);
         let address = start(shared.clone()).unwrap().expect("RCON is on");

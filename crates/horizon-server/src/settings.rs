@@ -3,7 +3,8 @@
 //! (difficulty, the default game mode, the whitelist) and through its management settings (the message of the
 //! day, the player limit) at once; the rest applies at the next start.
 
-use crate::{api::Client, config, engine};
+use crate::{api::Client, engine};
+use horizon_server_launch::config;
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, path::Path};
 

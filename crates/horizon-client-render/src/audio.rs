@@ -13,11 +13,12 @@ use crate::sound_engine::{
 use crate::sound_events::{Sound, SoundRegistry};
 #[cfg(feature = "audio")]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use horizon_assets::resource_source::{Resource, ResourceSource};
 use horizon_core::random::{LegacyRandom, RandomSource};
+#[cfg(any(feature = "audio", test))]
+use std::path::Path;
 use std::{
     collections::HashMap,
-    fs,
-    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -112,6 +113,8 @@ struct Mixer {
     cameras: Vec<([f64; 3], Basis, u32)>,
     /// Per-source gain/pan/step cache for one buffer, reused across callbacks.
     voices: Vec<(ChannelId, [f32; 3], f64)>,
+    /// Mods' audio sources (`push_voice`), each with its queue.
+    mod_audio: Vec<ModAudioSource>,
     /// A mod's muffle of the sounds it does not exempt.
     muffle: Muffle,
     limiter_peak: f32,
@@ -121,10 +124,158 @@ struct Mixer {
     /// The stream reported its device gone (`Library.isCurrentDeviceDisconnected`).
     #[cfg(feature = "audio")]
     device_lost: bool,
+    /// The stream's recent backend errors, which tell a dead stream from a hiccup.
+    #[cfg(feature = "audio")]
+    stream_errors: StreamErrors,
+}
+
+/// A stream's backend errors close together (`StreamErrors::dead`).
+#[cfg(any(feature = "audio", test))]
+#[derive(Default)]
+struct StreamErrors {
+    /// When the current run of errors began, and how many it holds.
+    since: Option<std::time::Instant>,
+    count: u32,
+}
+#[cfg(any(feature = "audio", test))]
+impl StreamErrors {
+    /// Errors this close together...
+    const WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+    /// ...this many of them: the stream is dead. Under vanilla a device that fails unrecoverably
+    /// reads as disconnected (`ALC_CONNECTED`, the `ALC_EXT_disconnect` extension), and
+    /// `SoundEngine` opens the output again; cpal reports a dead ALSA stream (`alsa::poll()`
+    /// returning POLLERR, over and over) as a backend error like any other, so a run of them
+    /// stands for it. One alone is a hiccup the stream recovers from.
+    const DEAD_AFTER: u32 = 3;
+    /// One more backend error at `now`: whether the stream counts as dead.
+    fn dead(&mut self, now: std::time::Instant) -> bool {
+        match self.since {
+            Some(since) if now.duration_since(since) <= Self::WINDOW => self.count += 1,
+            _ => {
+                self.since = Some(now);
+                self.count = 1;
+            }
+        }
+        self.count >= Self::DEAD_AFTER
+    }
+}
+
+/// Opening the output again after it failed: a few more tries, a couple of seconds apart, so a
+/// device that is gone for good isn't asked forever.
+#[cfg(any(feature = "audio", test))]
+#[derive(Default, Debug, PartialEq)]
+struct Reopen {
+    /// The tries left; 0 while the output plays, or after the last try.
+    tries: u32,
+    /// Ticks since the last try.
+    ticks: u32,
+}
+#[cfg(any(feature = "audio", test))]
+impl Reopen {
+    const TRIES: u32 = 5;
+    /// Two seconds of client ticks.
+    const TICKS: u32 = 40;
+    /// The output failed to open: whether to keep trying.
+    fn failed(&mut self, retrying: bool) -> bool {
+        self.ticks = 0;
+        self.tries = if retrying {
+            self.tries.saturating_sub(1)
+        } else {
+            Self::TRIES
+        };
+        self.tries > 0
+    }
+    /// A tick while tries are left: whether to try now.
+    fn due(&mut self) -> bool {
+        if self.tries == 0 {
+            return false;
+        }
+        self.ticks += 1;
+        self.ticks >= Self::TICKS
+    }
 }
 /// A camera's forward, up and right vectors.
 type Basis = ([f64; 3], [f64; 3], [f64; 3]);
+/// How much audio one mod source may have waiting, in seconds (`push_voice`): a burst past it
+/// is refused rather than delayed, so a stalled sender cannot pile up latency.
+const MOD_AUDIO_SECONDS: f64 = 2.0;
+/// How many mod audio sources may play at once, across mods.
+const MOD_AUDIO_SOURCES: usize = 64;
+/// The distance at which positioned mod audio has faded out, in blocks (linear, as a sound's
+/// `AL_LINEAR_DISTANCE` fades).
+const MOD_AUDIO_RANGE: f32 = 48.0;
+/// One of a mod's audio sources (`push_voice`): a speaker, keyed by the mod and its own id
+/// for it. Its chunks play one after another, oldest first, so each speaker's audio stays in
+/// order while different speakers play at the same time.
+struct ModAudioSource {
+    mod_id: String,
+    source: u128,
+    chunks: std::collections::VecDeque<ModAudioChunk>,
+    /// How far into the head chunk the callback has got, in its own samples.
+    played: f64,
+}
+/// A block of mono samples a mod queued.
+struct ModAudioChunk {
+    /// Mono samples, -1 to 1.
+    samples: Vec<f32>,
+    /// The rate they were sampled at.
+    rate: u32,
+    /// Where they were spoken, for distance and direction; none plays them centred.
+    at: Option<[f64; 3]>,
+}
 impl Mixer {
+    /// Queues `samples` behind what `source` of `mod_id` already has waiting. False, and
+    /// nothing queued, when they are empty or the rate is 0, when the source would hold more
+    /// than [`MOD_AUDIO_SECONDS`], or when a new source would pass [`MOD_AUDIO_SOURCES`].
+    fn push_mod_audio(
+        &mut self,
+        mod_id: &str,
+        source: u128,
+        samples: &[f32],
+        rate: u32,
+        at: Option<[f64; 3]>,
+    ) -> bool {
+        if samples.is_empty() || rate == 0 {
+            return false;
+        }
+        let seconds = |len: usize, rate: u32| len as f64 / f64::from(rate);
+        let added = seconds(samples.len(), rate);
+        let chunk = ModAudioChunk {
+            samples: samples.to_vec(),
+            rate,
+            at,
+        };
+        match self
+            .mod_audio
+            .iter()
+            .position(|s| s.source == source && s.mod_id == mod_id)
+        {
+            Some(i) => {
+                let s = &mut self.mod_audio[i];
+                let waiting: f64 = s
+                    .chunks
+                    .iter()
+                    .map(|c| seconds(c.samples.len(), c.rate))
+                    .sum();
+                if waiting + added > MOD_AUDIO_SECONDS {
+                    return false;
+                }
+                s.chunks.push_back(chunk);
+            }
+            None => {
+                if added > MOD_AUDIO_SECONDS || self.mod_audio.len() >= MOD_AUDIO_SOURCES {
+                    return false;
+                }
+                self.mod_audio.push(ModAudioSource {
+                    mod_id: mod_id.to_owned(),
+                    source,
+                    chunks: std::collections::VecDeque::from([chunk]),
+                    played: 0.0,
+                });
+            }
+        }
+        true
+    }
     /// The id of world `name` (1 and up), given once per name.
     fn world_id(&mut self, name: &str) -> u32 {
         let i = match self.world_names.iter().position(|w| w == name) {
@@ -164,10 +315,28 @@ impl MuffleFade {
         [self.amount * left, self.lowpass * left]
     }
 }
+impl MixerBackend {
+    /// Queues a mod's audio for the output callback (`Host::push_voice`). False when nothing
+    /// was queued: no output device, or what [`Mixer::push_mod_audio`] refuses.
+    pub fn push_voice(
+        &self,
+        mod_id: &str,
+        source: u128,
+        samples: &[f32],
+        rate: u32,
+        at: Option<[f64; 3]>,
+    ) -> bool {
+        self.live
+            && self
+                .mixer
+                .lock()
+                .is_ok_and(|mut m| m.push_mod_audio(mod_id, source, samples, rate, at))
+    }
+}
 /// The mixer side of the engine (`Backend`).
 pub struct MixerBackend {
     mixer: Arc<Mutex<Mixer>>,
-    root: PathBuf,
+    root: ResourceSource,
     cache: Arc<Mutex<SoundCache>>,
     /// The decoder thread for static sounds, started with the first one.
     decoder: Option<std::sync::mpsc::Sender<Decode>>,
@@ -249,7 +418,7 @@ impl SoundCache {
 /// A static sound to decode for a channel waiting on it.
 struct Decode {
     key: String,
-    file: PathBuf,
+    file: Resource,
     channel: ChannelId,
     looping: bool,
 }
@@ -284,6 +453,21 @@ pub struct CapturedSound {
     pub source: usize,
     pub entity: Option<u32>,
     pub except_entity: Option<u32>,
+}
+
+impl Audio {
+    /// Plays a mod's audio (`Host::push_voice`): mono samples, -1 to 1, at `rate`, behind what
+    /// `source` of `mod_id` already has waiting; `at` places them for distance and direction.
+    pub fn push_voice(
+        &self,
+        mod_id: &str,
+        source: u128,
+        samples: &[f32],
+        rate: u32,
+        at: Option<[f64; 3]>,
+    ) -> bool {
+        self.backend.push_voice(mod_id, source, samples, rate, at)
+    }
 }
 
 pub struct Audio {
@@ -327,6 +511,9 @@ pub struct Audio {
     /// Ticks since the output devices were last looked at (`DeviceTracker.tick`).
     #[cfg(feature = "audio")]
     device_ticks: u32,
+    /// Opening the output again after it failed to (`Reopen`).
+    #[cfg(feature = "audio")]
+    reopen: Reopen,
     /// The look at the output devices running on its own thread, until a tick
     /// takes its answer: listing them can take 100 ms (#11490).
     #[cfg(feature = "audio")]
@@ -362,12 +549,12 @@ fn probe_devices(default_seen: Option<String>, cards_seen: Option<String>) -> De
         devices,
     }
 }
-fn decode(path: &Path) -> Option<(Vec<f32>, u32, u16)> {
+fn decode(resource: &Resource) -> Option<(Vec<f32>, u32, u16)> {
     use symphonia::core::{
         audio::SampleBuffer, codecs::DecoderOptions, formats::FormatOptions, io::MediaSourceStream,
         meta::MetadataOptions, probe::Hint,
     };
-    let file = fs::File::open(path).ok()?;
+    let file = std::io::Cursor::new(resource.read().ok()?);
     let stream = MediaSourceStream::new(Box::new(file), Default::default());
     let mut hint = Hint::new();
     hint.with_extension("ogg");
@@ -545,7 +732,7 @@ impl Backend for MixerBackend {
             return;
         }
         let (namespace, path) = sound.path();
-        let file = self.root.join("assets").join(namespace).join(&path);
+        let file = Resource::file(self.root.clone(), format!("assets/{namespace}/{path}"));
         // A looping sound follows its entity in one client's tracking only: each keeps its own.
         if !looping && self.duplicate(channel, (namespace, &path)) {
             return;
@@ -836,6 +1023,62 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         mixer.muffle.stages = [[0.0; 2]; 2];
     }
     mixer.muffle.bus = bus;
+    // A mod's audio (`push_voice`): every source at once, each playing its own chunks in order;
+    // a chunk that ends mid-buffer hands the rest of the buffer to the next one.
+    if !mixer.mod_audio.is_empty() {
+        let (forward, up, right) = basis(mixer.listener_yaw, mixer.listener_pitch);
+        let listener = mixer.listener;
+        let frames = data.len() / channels.max(1);
+        for source in &mut mixer.mod_audio {
+            let ModAudioSource { chunks, played, .. } = source;
+            let mut f = 0;
+            while f < frames {
+                let Some(chunk) = chunks.front() else {
+                    break;
+                };
+                let len = chunk.samples.len();
+                let [left, right_gain, gain] = match chunk.at {
+                    Some(at) => {
+                        let d = [
+                            at[0] - listener[0],
+                            at[1] - listener[1],
+                            at[2] - listener[2],
+                        ];
+                        let gain = distance_gain(Some(MOD_AUDIO_RANGE), dot(d, d).sqrt());
+                        let [l, r] = stereo_gains(dot(d, right), dot(d, up), dot(d, forward));
+                        [l * gain, r * gain, gain]
+                    }
+                    None => [1.0; 3],
+                };
+                let step = f64::from(chunk.rate) / f64::from(rate);
+                while f < frames && (*played as usize) < len {
+                    let i = *played as usize;
+                    let t = (*played - i as f64) as f32;
+                    let next = chunk
+                        .samples
+                        .get(i + 1)
+                        .copied()
+                        .unwrap_or(chunk.samples[i]);
+                    let s = chunk.samples[i] * (1.0 - t) + next * t;
+                    let frame = &mut data[f * channels..(f + 1) * channels];
+                    if channels >= 2 {
+                        frame[0] += s * left;
+                        frame[1] += s * right_gain;
+                    } else {
+                        frame[0] += s * gain;
+                    }
+                    *played += step;
+                    f += 1;
+                }
+                if *played as usize >= len {
+                    // The next chunk starts where this one's last step left off.
+                    *played -= len as f64;
+                    chunks.pop_front();
+                }
+            }
+        }
+        mixer.mod_audio.retain(|s| !s.chunks.is_empty());
+    }
     // Limit the whole buffer together, preserving waveform and stereo balance
     // instead of flattening each overloaded sample; release over 200 ms
     // (OpenAL Soft's output limiter, `ALC_OUTPUT_LIMITER_SOFT`, releases
@@ -903,6 +1146,7 @@ fn open_device(
     if let Ok(mut m) = mixer.lock() {
         m.device_name = device.name().unwrap_or_default();
         m.device_lost = false;
+        m.stream_errors = StreamErrors::default();
     }
     Ok((stream, config))
 }
@@ -1052,10 +1296,19 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
         },
         move |e| {
             log::warn!("Horizon: audio stream error: {e}");
-            if matches!(e, cpal::StreamError::DeviceNotAvailable)
-                && let Ok(mut m) = on_error.lock()
-            {
-                m.device_lost = true;
+            if let Ok(mut m) = on_error.lock() {
+                let dead = match e {
+                    cpal::StreamError::DeviceNotAvailable => true,
+                    cpal::StreamError::BackendSpecific { .. } => {
+                        m.stream_errors.dead(std::time::Instant::now())
+                    }
+                };
+                if dead && !m.device_lost {
+                    if !matches!(e, cpal::StreamError::DeviceNotAvailable) {
+                        log::warn!("Horizon: the audio stream stopped; opening the output again");
+                    }
+                    m.device_lost = true;
+                }
             }
         },
         None,
@@ -1088,14 +1341,14 @@ pub fn output_devices() -> Vec<String> {
 }
 
 impl Audio {
-    pub fn new(root: &Path) -> Self {
+    pub fn new(root: &ResourceSource) -> Self {
         Self::with_device(root, "")
     }
-    pub fn with_device(root: &Path, device_name: &str) -> Self {
+    pub fn with_device(root: &ResourceSource, device_name: &str) -> Self {
         Self::with_output(root, true, device_name)
     }
     /// No output device: the dedicated server.
-    pub fn silent(root: &Path) -> Self {
+    pub fn silent(root: &ResourceSource) -> Self {
         Self::with_output(root, false, "")
     }
     /// The output device asked for (`soundDevice`), empty for the system's default; the
@@ -1103,15 +1356,23 @@ impl Audio {
     pub fn device(&self) -> &str {
         &self.device_name
     }
-    fn with_output(root: &Path, output: bool, target_device: &str) -> Self {
+    /// The loop context of this client's current resource generation.
+    pub fn loop_context(&self) -> Option<&horizon_world::native_load_context::LoopContext> {
+        self.engine.loop_context()
+    }
+    /// Replace the loop context when a resource generation starts or reloads, and tell
+    /// the sound hooks the engine is loaded with it.
+    pub fn set_loop_context(&mut self, context: horizon_world::native_load_context::LoopContext) {
+        self.engine.set_loop_context(context);
+        self.engine.notify_loaded();
+    }
+    fn with_output(root: &ResourceSource, output: bool, target_device: &str) -> Self {
         let registry = SoundRegistry::load(root);
         if output && registry.is_empty() {
             // The game then plays nothing on a working output (#1035, #1076).
             log::warn!(
-                "Horizon: no sounds in {}: they were not copied from your Minecraft \
-                 install; prepare the game again in the launcher (or run \
-                 horizon-prepare sounds)",
-                root.join("assets").display()
+                "Horizon: no sounds in the active resources; prepare the game again in the \
+                 launcher (or run horizon-prepare sounds)"
             );
         }
         let mixer = Arc::new(Mutex::new(Mixer::default()));
@@ -1177,6 +1438,8 @@ impl Audio {
             #[cfg(feature = "audio")]
             device_ticks: 0,
             #[cfg(feature = "audio")]
+            reopen: Reopen::default(),
+            #[cfg(feature = "audio")]
             device_probe: None,
         }
     }
@@ -1228,6 +1491,7 @@ impl Audio {
         self.device_name = name.to_owned();
         self.backend.live = true;
         self.engine.loaded = true;
+        self.engine.notify_loaded();
         Ok(())
     }
     #[cfg(not(feature = "audio"))]
@@ -1340,6 +1604,8 @@ impl Audio {
             #[cfg(feature = "audio")]
             device_ticks: 0,
             #[cfg(feature = "audio")]
+            reopen: Reopen::default(),
+            #[cfg(feature = "audio")]
             device_probe: None,
         }
     }
@@ -1447,6 +1713,27 @@ impl Audio {
         }
         changed
     }
+    /// Opens the output on the chosen device again; `retrying` after an earlier try failed.
+    #[cfg(feature = "audio")]
+    fn reopen_output(&mut self, retrying: bool) {
+        // The old stream lets go of the device first: a dead one may still hold it.
+        self._stream = None;
+        let device = self.device_name.clone();
+        match self.set_device(&device) {
+            Ok(()) => {
+                if retrying {
+                    log::info!("Horizon: the audio output is back");
+                }
+                self.reopen = Reopen::default();
+            }
+            Err(e) if self.reopen.failed(retrying) => {
+                log::warn!("Horizon: could not reopen the audio output ({e}); trying again soon");
+            }
+            Err(e) => {
+                log::warn!("Horizon: could not reopen the audio output ({e}); it stays off");
+            }
+        }
+    }
     /// `SoundManager.tick(paused)`, once per client tick.
     pub fn tick(&mut self, paused: bool, ctx: &TickContext) {
         #[cfg(feature = "audio")]
@@ -1454,10 +1741,9 @@ impl Audio {
             if self.should_change_device() {
                 // SoundEngine.reload: stop every sound, open the output again.
                 self.stop_all();
-                let device = self.device_name.clone();
-                if let Err(e) = self.set_device(&device) {
-                    log::warn!("Horizon: could not reopen the audio output: {e}");
-                }
+                self.reopen_output(false);
+            } else if self.backend.owner == 0 && self.reopen.due() {
+                self.reopen_output(true);
             }
         }
         self.sync_volumes();
@@ -1533,18 +1819,23 @@ impl Audio {
     }
     /// `SoundManager.reload` (resource packs changed): stop every sound, then
     /// read sound events and sound files from the new resource root.
-    pub fn reload(&mut self, root: &Path) {
+    pub fn reload(&mut self, root: &ResourceSource) {
         self.reload_with(root, SoundRegistry::load(root));
     }
     /// [`Self::reload`] with the root's sound events already read
     /// (`SoundRegistry::load`, which a pack reload runs off the render thread).
-    pub fn reload_with(&mut self, root: &Path, registry: SoundRegistry) {
+    pub fn reload_with(&mut self, root: &ResourceSource, registry: SoundRegistry) {
         self.stop_all();
         self.engine.registry = registry;
         self.backend.root = root.to_owned();
-        let mut cache = self.backend.cache.lock().unwrap();
-        cache.entries.clear();
-        cache.bytes = 0;
+        // A queued decode retains its old resource generation and cache. Dropping
+        // the sender lets it finish without populating the new generation's cache.
+        self.backend.decoder = None;
+        self.backend.cache = Arc::new(Mutex::new(SoundCache::default()));
+    }
+    /// Reserve the seed of a local level request before its cancellable hooks run.
+    pub fn next_sound_seed(&mut self) -> i64 {
+        self.random.next_long()
     }
     /// Play a sound event at a world position, as `ClientLevel.playLocalSound`
     /// (a `SimpleSoundInstance` seeded from the level random), or relative to
@@ -1603,6 +1894,54 @@ impl Audio {
             SoundInstance::at(&event, source, volume, pitch, LegacyRandom::new(seed), at);
         let id = self.engine.add(instance, false);
         self.engine.play_delayed(id, ticks);
+    }
+    /// A client mod's sound (`ClientHost::play_local_sound`), as its `SoundPlay` gives it,
+    /// starting `after` sound-engine ticks from now (`SoundEngine.playDelayed`) or at once.
+    pub fn play_mod_sound(&mut self, sound: &mod_api::SoundPlay, after: u32) -> InstanceId {
+        let seed = self.random.next_long();
+        if let Some(capture) = self.capture.as_mut().filter(|_| !sound.relative) {
+            capture.push(CapturedSound {
+                event: sound.identifier.clone(),
+                position: sound.position,
+                volume: sound.volume,
+                pitch: sound.pitch,
+                source: sound.source.index(),
+                entity: None,
+                except_entity: None,
+            });
+        }
+        *self.heard.entry(sound.identifier.clone()).or_default() += 1;
+        let mut instance = SoundInstance::from_play(sound, LegacyRandom::new(seed));
+        instance.identifier = crate::sound_events::normalize(&sound.identifier);
+        // Tickable, so the engine applies a fade's volume each tick it plays; and it may start
+        // silent (`canStartSilent`, as vanilla's tickable loops), so a play at volume 0 is
+        // still there when a fade raises it.
+        instance.ticking = crate::sound_engine::Ticking::Mod { fade: None };
+        instance.can_start_silent = true;
+        if after == 0 {
+            self.play_instance(instance, false).0
+        } else {
+            self.sync_volumes();
+            let id = self.engine.add(instance, false);
+            self.engine.play_delayed(id, after as i32);
+            id
+        }
+    }
+    /// Where a client mod's sound (`SoundRef`) is.
+    pub fn mod_sound_state(&self, id: InstanceId) -> mod_api::SoundState {
+        self.engine.mod_sound_state(id)
+    }
+    /// A client mod's `SoundRef::stop`.
+    pub fn stop_mod_sound(&mut self, id: InstanceId) {
+        self.engine.stop_for_good(id, &mut self.backend);
+    }
+    /// A client mod's `SoundRef::fade`; a fade to 0 at once stops it as `stop_mod_sound` does.
+    pub fn fade_mod_sound(&mut self, id: InstanceId, volume: f32, ticks: u32) {
+        if ticks == 0 && volume <= 0.0 {
+            self.stop_mod_sound(id);
+        } else if let Some(instance) = self.engine.instance_mut(id) {
+            instance.fade_to(volume, ticks);
+        }
     }
     /// `SoundManager.playDelayed` of an instance the caller made: it starts
     /// `ticks` sound-engine ticks from now.
@@ -1755,8 +2094,21 @@ impl Audio {
         volume: f32,
         pitch: f32,
     ) {
+        let seed = self.random.next_long();
+        self.play_on_seeded(source, event, at, volume, pitch, seed);
+    }
+    /// A level sound with an explicit category and seed, as received from the server.
+    pub fn play_on_seeded(
+        &mut self,
+        source: usize,
+        event: &str,
+        at: Option<[f64; 3]>,
+        volume: f32,
+        pitch: f32,
+        seed: i64,
+    ) {
         self.source_override = Some(source);
-        self.play(event, at, volume, pitch);
+        self.play_seeded(event, at, volume, pitch, seed);
         self.source_override = None;
     }
     /// `SimpleSoundInstance.forJukeboxSong` at a jukebox; the handle stays
@@ -1858,9 +2210,138 @@ impl Sounds for Audio {
 mod tests {
     use super::*;
 
+    /// A run of backend errors close together is a dead stream; one or two, or errors far apart,
+    /// are hiccups.
+    #[test]
+    fn a_run_of_stream_errors_is_a_dead_stream() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut errors = StreamErrors::default();
+        assert!(!errors.dead(at(0)));
+        assert!(!errors.dead(at(500)));
+        assert!(errors.dead(at(900)));
+        // Spread out, they never add up.
+        let mut apart = StreamErrors::default();
+        for k in 0..10 {
+            assert!(!apart.dead(at(k * 2500)), "error {k}");
+        }
+    }
+
+    /// A failed reopening is tried again every two seconds, five more times, then given up.
+    #[test]
+    fn a_failed_reopening_retries_a_few_times_then_stops() {
+        let mut reopen = Reopen::default();
+        assert!(!reopen.due(), "nothing to retry while the output plays");
+        assert!(reopen.failed(false));
+        let mut tries = 0;
+        for _ in 0..1000 {
+            if reopen.due() {
+                tries += 1;
+                if !reopen.failed(true) {
+                    break;
+                }
+            }
+        }
+        assert_eq!(tries, Reopen::TRIES);
+        assert_eq!(reopen, Reopen::default());
+        // The next lost device starts a fresh run.
+        assert!(reopen.failed(false));
+        assert_eq!(reopen.tries, Reopen::TRIES);
+    }
+
+    #[test]
+    fn reload_isolates_pending_decodes_from_the_new_resource_cache() {
+        let source = ResourceSource::indexed(Default::default());
+        let mut audio = Audio::silent(&source);
+        let old = audio.backend.cache.clone();
+        old.lock().unwrap().insert("old".into(), None);
+        audio.reload(&source);
+        assert!(!Arc::ptr_eq(&old, &audio.backend.cache));
+        old.lock().unwrap().insert("late".into(), None);
+        assert!(audio.backend.cache.lock().unwrap().entries.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires HORIZON_TEST_RESOURCES with imported vanilla sounds"]
+    fn archive_sound_decodes_like_the_original_without_unpacking() {
+        use std::io::Write;
+        let prepared = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("resources"),
+        );
+        let source = ResourceSource::directory(prepared);
+        let name = source
+            .list("assets/minecraft/sounds/")
+            .into_iter()
+            .find(|name| name.ends_with(".ogg"))
+            .expect("imported ogg");
+        let bytes = source.read(&name).unwrap();
+        let original = decode(&Resource::bytes(bytes.clone())).expect("vanilla ogg decodes");
+        assert!(!original.0.is_empty());
+        let folder = std::env::temp_dir().join(format!(
+            "horizon-archive-sound-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&folder).unwrap();
+        let jar = folder.join("sound.jar");
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&jar).unwrap());
+        writer
+            .start_file(&name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(&bytes).unwrap();
+        writer.finish().unwrap();
+        let resource = Resource::file(ResourceSource::archive(&jar).unwrap(), name);
+        std::fs::remove_file(&jar).unwrap();
+        let archived = decode(&resource).expect("retained archive ogg decodes");
+        assert_eq!(archived, original);
+        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0);
+        std::fs::remove_dir(&folder).unwrap();
+    }
+
+    #[test]
+    fn explicit_category_seed_does_not_advance_local_sound_random() {
+        let source = ResourceSource::indexed(Default::default());
+        let mut audio = Audio::silent(&source);
+        let mut expected = audio.random.clone();
+        audio.capture = Some(Vec::new());
+        audio.play_on_seeded(
+            8,
+            "minecraft:entity.cow.ambient",
+            Some([1.0; 3]),
+            0.5,
+            1.5,
+            -17,
+        );
+        assert_eq!(audio.random.next_long(), expected.next_long());
+        let capture = audio.capture.as_ref().unwrap();
+        assert_eq!(capture.len(), 1);
+        assert_eq!(capture[0].source, 8);
+        assert_eq!(capture[0].position, [1.0; 3]);
+        assert_eq!((capture[0].volume, capture[0].pitch), (0.5, 1.5));
+        assert!(audio.source_override.is_none());
+        // A local request reserves one draw before dispatch, and playback reuses it.
+        let seed = audio.next_sound_seed();
+        assert_eq!(seed, expected.next_long());
+        audio.play_on_seeded(
+            7,
+            "minecraft:entity.player.swim",
+            Some([0.0; 3]),
+            1.0,
+            1.0,
+            seed,
+        );
+        assert_eq!(audio.random.next_long(), expected.next_long());
+    }
+
     #[test]
     fn level_capture_keeps_order_category_entity_and_actor_exclusion() {
-        let mut audio = Audio::silent(Path::new("/nonexistent/horizon-entity-sound-test"));
+        let mut audio = Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+            (Path::new("/nonexistent/horizon-entity-sound-test")).to_path_buf(),
+        ));
         audio.capture = Some(Vec::new());
         let mut expected = audio.random.clone();
         audio.play_on(
@@ -1899,7 +2380,9 @@ mod tests {
 
     #[test]
     fn entity_sound_packets_neither_rebroadcast_nor_advance_the_local_seed_generator() {
-        let mut audio = Audio::silent(Path::new("/nonexistent/horizon-entity-sound-test"));
+        let mut audio = Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+            (Path::new("/nonexistent/horizon-entity-sound-test")).to_path_buf(),
+        ));
         audio.capture = Some(Vec::new());
         let mut expected = audio.random.clone();
         let entity = crate::sound_engine::SoundEntity::new(7, [1.0, 2.0, 3.0], false);
@@ -1910,7 +2393,9 @@ mod tests {
     #[test]
     fn removal_marks_only_existing_references_to_that_entity() {
         use crate::sound_engine::SoundEntity;
-        let mut audio = Audio::silent(Path::new("/nonexistent/horizon-entity-sound-test"));
+        let mut audio = Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+            (Path::new("/nonexistent/horizon-entity-sound-test")).to_path_buf(),
+        ));
         let old = SoundEntity::new(7, [0.0; 3], false);
         let other = SoundEntity::new(8, [0.0; 3], false);
         for entity in [old.clone(), other.clone()] {
@@ -1935,7 +2420,9 @@ mod tests {
 
     #[test]
     fn button_click_uses_vanilla_ui_parameters_without_advancing_world_random() {
-        let mut audio = Audio::silent(Path::new("/nonexistent/horizon-test-assets"));
+        let mut audio = Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+            (Path::new("/nonexistent/horizon-test-assets")).to_path_buf(),
+        ));
         audio.engine.registry.add_file(
             "minecraft",
             br#"{"ui.button.click":{"sounds":["gui/button"]}}"#,
@@ -1962,6 +2449,58 @@ mod tests {
             audio.backend.mixer.lock().unwrap().channels[&1].state,
             State::Initial
         );
+        audio.stop_all();
+    }
+
+    /// A client mod's `SoundPlay` reaches the engine as it says: an interface sound at once,
+    /// at the listener; a positioned, looping one on its own source, queued `after` ticks.
+    #[test]
+    fn a_mod_sound_plays_as_its_sound_play_says() {
+        use mod_api::{SoundPlay, SoundSource};
+        let mut audio = Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+            (Path::new("/nonexistent/horizon-test-assets")).to_path_buf(),
+        ));
+        audio.engine.registry.add_file(
+            "minecraft",
+            br#"{"ui.button.click":{"sounds":["gui/button"]}}"#,
+            &|_, _| true,
+        );
+        audio.engine.registry.add_file(
+            "mymod",
+            br#"{"boom":{"sounds":["mymod:boom"]}}"#,
+            &|_, _| true,
+        );
+        audio.engine.loaded = true;
+        audio.backend.live = true;
+
+        audio.play_mod_sound(
+            &SoundPlay::ui("minecraft:ui.button.click").with_volume(0.5),
+            0,
+        );
+        let click = audio
+            .engine
+            .instance(1)
+            .expect("the click reached the engine");
+        assert_eq!(click.source, crate::sound_engine::UI);
+        assert_eq!((click.volume, click.pitch), (0.5, 1.0));
+        assert_eq!(click.attenuation, Attenuation::None);
+        assert!(click.relative && !click.looping);
+        assert_eq!(audio.engine.census()["queued"], 0);
+
+        let boom = SoundPlay::at("mymod:boom", SoundSource::Hostile, [1.0, 64.0, 2.0])
+            .with_pitch(1.5)
+            .looping(20);
+        audio.play_mod_sound(&boom, 40);
+        let queued = audio
+            .engine
+            .instance(2)
+            .expect("the boom is held for later");
+        assert_eq!(queued.source, SoundSource::Hostile as usize);
+        assert_eq!(queued.position, [1.0, 64.0, 2.0]);
+        assert_eq!((queued.pitch, queued.delay), (1.5, 20));
+        assert_eq!(queued.attenuation, Attenuation::Linear);
+        assert!(queued.looping && !queued.relative);
+        assert_eq!(audio.engine.census()["queued"], 1, "it waits its 40 ticks");
         audio.stop_all();
     }
 
@@ -2236,7 +2775,9 @@ mod tests {
 
     #[test]
     fn a_shared_listener_registers_even_in_the_hosts_world() {
-        let mut host = Audio::silent(Path::new("/nonexistent/horizon-test-audio"));
+        let mut host = Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+            (Path::new("/nonexistent/horizon-test-audio")).to_path_buf(),
+        ));
         host.set_world("minecraft:overworld");
         let mut guest = host.share(1);
         guest.set_world("minecraft:overworld");
@@ -2320,7 +2861,7 @@ mod tests {
         let shares = Arc::new(std::sync::atomic::AtomicUsize::new(1));
         let backend = |owner| MixerBackend {
             mixer: mixer.clone(),
-            root: PathBuf::new(),
+            root: ResourceSource::indexed(Default::default()),
             cache: Arc::default(),
             decoder: None,
             next: (u64::from(owner)) << 40,
@@ -2364,7 +2905,9 @@ mod tests {
 
     #[test]
     fn reusing_a_seat_does_not_reuse_its_channels_or_leave_its_camera() {
-        let host = Audio::silent(Path::new("/nonexistent/horizon-test-audio"));
+        let host = Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+            (Path::new("/nonexistent/horizon-test-audio")).to_path_buf(),
+        ));
         let mut guest = host.share(1);
         guest.set_world("overworld");
         guest.set_listener([1.0, 0.0, 0.0], 0.0, 0.0);
@@ -2467,7 +3010,9 @@ mod tests {
 
     #[test]
     fn a_mods_muffle_fades_with_the_game_ticks_and_spares_its_exempt_sounds() {
-        let mut audio = Audio::silent(Path::new("/nonexistent/horizon-test-assets"));
+        let mut audio = Audio::silent(&ResourceSource::directory(
+            "/nonexistent/horizon-test-assets".into(),
+        ));
         audio.engine.registry.add_file(
             "minecraft",
             br#"{"ambient.cave":{"sounds":["ambient/cave/cave1"]}}"#,
@@ -2518,6 +3063,66 @@ mod tests {
     }
 
     #[test]
+    fn each_mod_audio_source_plays_its_own_chunks_in_order() {
+        let mut m = Mixer::default();
+        // Two speakers of one mod, each queuing two chunks, interleaved.
+        for (source, level) in [(1, 0.1), (2, 0.4), (1, 0.2), (2, 0.3)] {
+            assert!(m.push_mod_audio("voice", source, &[level; 4], 48_000, None));
+        }
+        let mut data = vec![0.0f32; 8 * 2];
+        mix(&mut m, &mut data, 2, 48_000);
+        // Each speaker's first chunk, then its second: never both of one speaker at once.
+        let left: Vec<f32> = data.chunks(2).map(|f| f[0]).collect();
+        let expected = [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5];
+        assert!(
+            left.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-6),
+            "{left:?}"
+        );
+        assert!(m.mod_audio.is_empty(), "both sources played out");
+        // Order within a source: its second chunk follows its first.
+        assert!(m.push_mod_audio("voice", 1, &[0.25; 2], 48_000, None));
+        assert!(m.push_mod_audio("voice", 1, &[0.5; 2], 48_000, None));
+        let mut data = vec![0.0f32; 4 * 2];
+        mix(&mut m, &mut data, 2, 48_000);
+        let left: Vec<f32> = data.chunks(2).map(|f| f[0]).collect();
+        assert_eq!(left, [0.25, 0.25, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn mod_audio_sources_are_kept_apart_by_mod_and_capped() {
+        let mut m = Mixer::default();
+        assert!(m.push_mod_audio("a", 1, &[0.1; 48_000], 48_000, None));
+        assert!(m.push_mod_audio("b", 1, &[0.1; 48_000], 48_000, None));
+        assert_eq!(
+            m.mod_audio.len(),
+            2,
+            "the same id in two mods is two sources"
+        );
+        // Two seconds wait at most per source; a burst past that is refused, not delayed.
+        assert!(m.push_mod_audio("a", 1, &[0.1; 48_000], 48_000, None));
+        assert!(!m.push_mod_audio("a", 1, &[0.1; 1], 48_000, None));
+        assert!(!m.push_mod_audio("a", 2, &[], 48_000, None));
+        assert!(!m.push_mod_audio("a", 2, &[0.1], 0, None));
+    }
+
+    #[test]
+    fn mod_audio_is_panned_and_faded_by_where_it_was_spoken() {
+        let mut m = Mixer::default();
+        // Facing south (yaw 0), -X is the listener's right.
+        assert!(m.push_mod_audio("voice", 1, &[0.5; 16], 48_000, Some([-4.0, 0.0, 0.0])));
+        let mut data = vec![0.0f32; 16 * 2];
+        mix(&mut m, &mut data, 2, 48_000);
+        let left: f32 = data.chunks(2).map(|f| f[0]).sum();
+        let right: f32 = data.chunks(2).map(|f| f[1]).sum();
+        assert!(right > left, "right {right} should beat left {left}");
+        // Past the range it is silent.
+        assert!(m.push_mod_audio("voice", 1, &[0.5; 16], 48_000, Some([0.0, 0.0, 60.0])));
+        let mut data = vec![0.0f32; 16 * 2];
+        mix(&mut m, &mut data, 2, 48_000);
+        assert!(data.iter().all(|s| *s == 0.0));
+    }
+
+    #[test]
     fn output_devices_are_looked_at_again_only_when_the_cards_change() {
         // No fingerprint (not Linux, or the cards could not be read): the list
         // has to be looked at as before.
@@ -2526,5 +3131,136 @@ mod tests {
         // The same cards list the same devices; a card added or removed does not.
         assert!(!cards_changed(Some("0 [PCH ]"), Some("0 [PCH ]")));
         assert!(cards_changed(Some("0 [PCH ]"), Some("0 [PCH ]\n 1 [USB ]")));
+    }
+
+    /// The mixer live without an output device, and the button click's event: a sound
+    /// holds a channel, and a stopped channel is let go at the next update.
+    fn live_audio() -> Audio {
+        let mut audio = Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+            (Path::new("/nonexistent/horizon-test-assets")).to_path_buf(),
+        ));
+        audio.engine.registry.add_file(
+            "minecraft",
+            br#"{"ui.button.click":{"sounds":["gui/button"]}}"#,
+            &|_, _| true,
+        );
+        audio.engine.loaded = true;
+        audio.backend.live = true;
+        audio
+    }
+
+    #[test]
+    fn a_mod_sound_waits_out_its_delay_plays_and_stops_for_good() {
+        use mod_api::SoundState::*;
+        let mut audio = live_audio();
+        let ctx = TickContext::default();
+        let click = mod_api::SoundPlay::ui("minecraft:ui.button.click");
+        let sound = audio.play_mod_sound(&click, 2);
+        assert_eq!(audio.mod_sound_state(sound), Waiting);
+        audio.tick(false, &ctx);
+        assert_eq!(audio.mod_sound_state(sound), Waiting, "one tick of two");
+        audio.tick(false, &ctx);
+        assert_eq!(audio.mod_sound_state(sound), Playing);
+        audio.stop_mod_sound(sound);
+        audio.tick(false, &ctx);
+        audio.tick(false, &ctx);
+        assert_eq!(audio.mod_sound_state(sound), Stopped);
+        // Stopped while it waits, it never starts; a looping one never repeats.
+        let never = audio.play_mod_sound(&click.clone().looping(0), 3);
+        audio.stop_mod_sound(never);
+        assert_eq!(audio.mod_sound_state(never), Stopped);
+        for _ in 0..5 {
+            audio.tick(false, &ctx);
+            assert_eq!(audio.mod_sound_state(never), Stopped);
+        }
+    }
+
+    #[test]
+    fn a_mod_sound_fades_to_its_volume_and_a_fade_to_zero_stops_it() {
+        use mod_api::SoundState::*;
+        let mut audio = live_audio();
+        let ctx = TickContext::default();
+        let sound = audio.play_mod_sound(&mod_api::SoundPlay::ui("minecraft:ui.button.click"), 0);
+        assert_eq!(audio.mod_sound_state(sound), Playing);
+        let volume = |audio: &Audio| audio.engine.instance(sound).map(|i| i.volume);
+        audio.fade_mod_sound(sound, 0.5, 2);
+        let mut volumes = Vec::new();
+        for _ in 0..3 {
+            audio.tick(false, &ctx);
+            volumes.push(volume(&audio));
+        }
+        assert_eq!(
+            volumes,
+            [Some(0.75), Some(0.5), Some(0.5)],
+            "two equal steps, then held"
+        );
+        // Paused, a fade waits.
+        audio.fade_mod_sound(sound, 0.0, 2);
+        audio.tick(true, &ctx);
+        assert_eq!(volume(&audio), Some(0.5));
+        audio.tick(false, &ctx);
+        assert_eq!(volume(&audio), Some(0.25));
+        assert_eq!(audio.mod_sound_state(sound), Playing);
+        for _ in 0..4 {
+            audio.tick(false, &ctx);
+        }
+        assert_eq!(audio.mod_sound_state(sound), Stopped, "faded out");
+        // A fade at once: to a volume sets it, to 0 stops it.
+        let other = audio.play_mod_sound(&mod_api::SoundPlay::ui("minecraft:ui.button.click"), 0);
+        audio.fade_mod_sound(other, 0.3, 0);
+        assert_eq!(volume_of(&audio, other), Some(0.3));
+        audio.fade_mod_sound(other, 0.0, 0);
+        for _ in 0..2 {
+            audio.tick(false, &ctx);
+        }
+        assert_eq!(audio.mod_sound_state(other), Stopped);
+    }
+
+    /// A sound that repeats after a gap (`looping` with a delay) keeps its handle across the
+    /// gap: once its sample ends it waits for the repeat, plays again, and still stops.
+    #[test]
+    fn a_repeating_mod_sound_waits_between_its_repeats_and_plays_again() {
+        use mod_api::SoundState::*;
+        let mut audio = live_audio();
+        let ctx = TickContext::default();
+        let click = mod_api::SoundPlay::ui("minecraft:ui.button.click").looping(2);
+        let sound = audio.play_mod_sound(&click, 0);
+        assert_eq!(audio.mod_sound_state(sound), Playing);
+        // The sample ends on its own, as the mixer stops a channel that runs out.
+        for channel in audio.backend.mixer.lock().unwrap().channels.values_mut() {
+            channel.state = State::Stopped;
+        }
+        let mut states = Vec::new();
+        for _ in 0..30 {
+            audio.tick(false, &ctx);
+            states.push(audio.mod_sound_state(sound));
+        }
+        assert_eq!(states[0], Waiting, "{states:?}");
+        assert!(!states.contains(&Stopped), "{states:?}");
+        assert_eq!(states.last(), Some(&Playing), "repeated: {states:?}");
+        audio.stop_mod_sound(sound);
+        audio.tick(false, &ctx);
+        assert_eq!(audio.mod_sound_state(sound), Stopped);
+    }
+
+    /// A mod sound at volume 0 starts silent and keeps its handle, so a fade raises it.
+    #[test]
+    fn a_silent_mod_sound_starts_and_a_fade_raises_it() {
+        use mod_api::SoundState::*;
+        let mut audio = live_audio();
+        let ctx = TickContext::default();
+        let silent = mod_api::SoundPlay::ui("minecraft:ui.button.click").with_volume(0.0);
+        let sound = audio.play_mod_sound(&silent, 0);
+        assert_eq!(audio.mod_sound_state(sound), Playing, "started silently");
+        audio.fade_mod_sound(sound, 1.0, 2);
+        audio.tick(false, &ctx);
+        assert_eq!(volume_of(&audio, sound), Some(0.5));
+        audio.tick(false, &ctx);
+        assert_eq!(volume_of(&audio, sound), Some(1.0));
+        assert_eq!(audio.mod_sound_state(sound), Playing);
+    }
+
+    fn volume_of(audio: &Audio, id: InstanceId) -> Option<f32> {
+        audio.engine.instance(id).map(|i| i.volume)
     }
 }

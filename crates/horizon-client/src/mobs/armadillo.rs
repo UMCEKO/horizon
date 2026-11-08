@@ -338,7 +338,7 @@ fn scared_by_someone(m: &Mob, w: &MobWorld) -> bool {
     let attacker =
         m.ai.last_hurt_by
             .filter(|_| m.age as i32 - m.ai.last_hurt_by_time <= 100);
-    if let Some(p) = &w.player
+    if let Some(p) = w.selected_player()
         && p.alive
         && !p.spectator
         && p.bounds.intersects(area)
@@ -686,10 +686,11 @@ mod tests {
     fn run_goals(m: &mut Mob, w: &MobWorld, ticks: u32) -> Vec<MobEvent> {
         let mut events = Vec::new();
         let mut goals = std::mem::take(&mut m.ai.goals);
-        let mut lr = horizon_core::random::LegacyRandom::new(0);
+        let mut test_level = crate::health::TestLevel::new(0);
+        let level = &mut test_level.level();
         let mut cx = Cx {
             w,
-            lr: &mut lr,
+            level,
             events: &mut events,
         };
         for _ in 0..ticks {
@@ -803,10 +804,11 @@ mod tests {
         baby.extra.age = -24000;
         crate::mobs::world::with_test_world(&[], |w, _| {
             let mut events = Vec::new();
-            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            let mut test_level = crate::health::TestLevel::new(0);
+            let level = &mut test_level.level();
             let mut cx = Cx {
                 w,
-                lr: &mut lr,
+                level,
                 events: &mut events,
             };
             let mut tempt = ArmadilloTempt(Tempt::new(1.25, baby.kind.food.clone(), false));
@@ -836,7 +838,7 @@ mod tests {
     #[test]
     fn a_rolled_up_armadillo_keeps_its_state_through_the_chunk_save() {
         use crate::entity_nbt::{mob_from_nbt, mob_to_nbt};
-        use horizon_world::nbt::Tag;
+        use horizon_core::nbt::Tag;
         fn armadillo_tag(state: Option<&str>) -> Tag {
             let mut fields = vec![
                 ("id", Tag::String("minecraft:armadillo".into())),

@@ -1,17 +1,11 @@
-//! Native mods' own crates and post-build steps (docs/native-mods.md, "Crates" and
-//! "Post-build steps"). horizon-mixins stages a mod's `[[crate]]` as
-//! `native-crates/<mod>/<crate>/`, a workspace member, and lists its `[[post_build]]` steps in
-//! `native-post-build.json`. A mod's crate may use only what Horizon's own `Cargo.lock` has: the
-//! lock file is the allow list, so a build never downloads a crate Horizon doesn't already ship.
-use std::collections::BTreeSet;
+//! Lock-file isolation for the launcher's flat native crates.
+//! The launcher stages one crate at native-api/<mod>/.
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 
-/// Where horizon-mixins stages the mods' crates, in the workspace it writes.
-pub(super) const DIR: &str = "native-crates";
-/// The post-build steps it found, in mod order.
-const POST_BUILD: &str = "native-post-build.json";
+/// Where the launcher stages the mods' crates.
+pub(super) const DIR: &str = "native-api";
 
 /// A package of a `Cargo.lock` from a registry (or git): the ones a build would download.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -43,6 +37,95 @@ pub(super) fn downloaded(text: &str) -> Result<BTreeSet<Locked>, String> {
         .collect())
 }
 
+/// Refuse game crates reached through a mod's dependencies rather than its generated facade.
+/// Cargo lock dependency references may include a version and source; retaining the complete
+/// package set for a name makes ambiguous references conservative.
+pub(super) fn check_game_graph(stage: &Path, text: &str) -> Result<(), String> {
+    let lock: toml::Table = text.parse().map_err(|e| format!("Cargo.lock: {e}"))?;
+    let packages = lock
+        .get("package")
+        .and_then(toml::Value::as_array)
+        .ok_or("Cargo.lock: missing packages")?;
+    let game_names: BTreeSet<String> = fs::read_dir(stage.join("crates"))
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let text = fs::read_to_string(entry.path().join("Cargo.toml")).ok()?;
+            let manifest: toml::Table = text.parse().ok()?;
+            Some(manifest.get("package")?.get("name")?.as_str()?.to_owned())
+        })
+        .collect();
+    let mut staged = Vec::new();
+    for (mod_id, manifest) in manifests(&stage.join(DIR))? {
+        let text = fs::read_to_string(manifest).map_err(|e| e.to_string())?;
+        let value: toml::Table = text.parse().map_err(|e| format!("Cargo.toml: {e}"))?;
+        let name = value
+            .get("package")
+            .and_then(|p| p.get("name"))
+            .and_then(toml::Value::as_str)
+            .ok_or("Cargo.toml: missing package name")?
+            .to_owned();
+        staged.push((mod_id, name));
+    }
+    // Each staged mod's generated facade, by package, and the mod crate it belongs to. Only that
+    // crate passes through it: a facade with a registry or git source, or one reached from any
+    // other crate, is walked like any dependency, so its game dependency is refused.
+    let facades: BTreeMap<String, &str> = staged
+        .iter()
+        .filter(|(id, _)| {
+            let facade = super::internals::package(id);
+            packages.iter().all(|p| {
+                p.get("name").and_then(toml::Value::as_str) != Some(&facade)
+                    || p.get("source").is_none()
+            })
+        })
+        .map(|(id, name)| (super::internals::package(id), name.as_str()))
+        .collect();
+    for (mod_id, name) in &staged {
+        let mut todo = vec![(name.to_owned(), name.to_owned())];
+        let mut seen = BTreeSet::new();
+        while let Some((current, via)) = todo.pop() {
+            if !seen.insert(current.clone()) {
+                continue;
+            }
+            for package in packages
+                .iter()
+                .filter(|p| p.get("name").and_then(toml::Value::as_str) == Some(&current))
+            {
+                for dep in package
+                    .get("dependencies")
+                    .and_then(toml::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(toml::Value::as_str)
+                {
+                    let dep = dep.split_whitespace().next().unwrap_or(dep);
+                    if dep == super::api::API_PACKAGE
+                        || dep == super::api::POINTS_PACKAGE
+                        || facades.get(dep) == Some(&current.as_str())
+                    {
+                        continue;
+                    }
+                    let first = if current == *name {
+                        dep.to_owned()
+                    } else {
+                        via.clone()
+                    };
+                    if game_names.contains(dep) {
+                        return Err(super::api::ProjectError::GameDependency {
+                            mod_id: mod_id.clone(),
+                            key: format!("{first} -> {dep}"),
+                        }
+                        .to_string());
+                    }
+                    todo.push((dep.to_owned(), first));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A crate a mod's crate asks for in its `Cargo.toml`: under its own name or `package`, in any
 /// dependency table (dev and build ones too: the lock has them all).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -52,8 +135,11 @@ pub(super) struct Wanted {
     pub version: String,
 }
 
-/// What every crate of `stage/native-crates/<mod>/<crate>/` asks for.
-pub(super) fn wanted(stage: &Path) -> Result<Vec<Wanted>, String> {
+/// Registry dependencies of each staged crate, validating generated local paths as well.
+pub(super) fn wanted(
+    stage: &Path,
+    declared: &BTreeMap<&str, BTreeSet<&str>>,
+) -> Result<Vec<Wanted>, String> {
     let mut out = Vec::new();
     let staged_manifests = manifests(&stage.join(DIR))?;
     for (mod_id, manifest) in &staged_manifests {
@@ -82,6 +168,13 @@ pub(super) fn wanted(stage: &Path) -> Result<Vec<Wanted>, String> {
         }
         for (key, dep) in tables.iter().filter_map(|t| t.as_table()).flatten() {
             let get = |name: &str| dep.get(name).and_then(|v| v.as_str());
+            if get("package").unwrap_or(key) == "horizon-client" {
+                return Err(super::api::ProjectError::GameDependency {
+                    mod_id: mod_id.clone(),
+                    key: key.clone(),
+                }
+                .to_string());
+            }
             if let Some(path) = dep.get("path") {
                 let path = path.as_str().ok_or_else(|| {
                     format!(
@@ -115,7 +208,27 @@ pub(super) fn wanted(stage: &Path) -> Result<Vec<Wanted>, String> {
                     })?,
                     None => key,
                 };
-                validate_sibling_path(mod_id, manifest, path, package, &staged_manifests)?;
+                // The game's own packages, at the path `api::stage` rewrites them to.
+                if package == super::internals::package(mod_id)
+                    && path == format!("../../{}", super::internals::relative(mod_id))
+                {
+                    continue;
+                }
+                if super::api::PACKAGES.iter().any(|(game, _)| {
+                    *game != super::api::INTERNALS_PACKAGE
+                        && package == *game
+                        && path == format!("../../crates/{game}")
+                }) {
+                    continue;
+                }
+                validate_sibling_path(
+                    mod_id,
+                    manifest,
+                    path,
+                    package,
+                    &staged_manifests,
+                    declared,
+                )?;
                 continue;
             }
             out.push(Wanted {
@@ -129,7 +242,7 @@ pub(super) fn wanted(stage: &Path) -> Result<Vec<Wanted>, String> {
     Ok(out)
 }
 
-/// `(mod id, its crate's Cargo.toml)` under `native-crates/`, sorted.
+/// `(mod id, its crate's Cargo.toml)` under `native-api/`, sorted.
 fn manifests(dir: &Path) -> Result<Vec<(String, PathBuf)>, String> {
     let mut out = Vec::new();
     let read = |d: &Path| -> Result<Vec<PathBuf>, String> {
@@ -162,31 +275,29 @@ fn manifests(dir: &Path) -> Result<Vec<(String, PathBuf)>, String> {
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        // A folder left empty by an earlier build (the stage keeps folders) is no crate.
-        for krate in read(&mod_dir)? {
-            let manifest = krate.join("Cargo.toml");
-            match fs::symlink_metadata(&manifest) {
-                Ok(metadata) if is_link_or_junction(&metadata) => {
-                    return Err(format!("{}: linked crate manifest", manifest.display()));
-                }
-                Ok(metadata) if metadata.is_file() => out.push((id.clone(), manifest)),
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(format!("{}: {error}", manifest.display())),
+        let manifest = mod_dir.join("Cargo.toml");
+        match fs::symlink_metadata(&manifest) {
+            Ok(metadata) if is_link_or_junction(&metadata) => {
+                return Err(format!("{}: linked crate manifest", manifest.display()));
             }
+            Ok(metadata) if metadata.is_file() => out.push((id, manifest)),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("{}: {error}", manifest.display())),
         }
     }
     Ok(out)
 }
 
-/// Only a literal `../<crate-id>` may name another staged crate. Its directory and manifest must
-/// be ordinary entries in the same mod; never canonicalize a source path or follow a link.
+/// Only a declared `../<mod-id>` may name another staged mod's crate. Its directory and
+/// manifest must be ordinary entries; never canonicalize a source path or follow a link.
 fn validate_sibling_path(
     mod_id: &str,
     manifest: &Path,
     path: &str,
     package: &str,
     staged_manifests: &[(String, PathBuf)],
+    declared: &BTreeMap<&str, BTreeSet<&str>>,
 ) -> Result<(), String> {
     let invalid = || {
         format!(
@@ -197,7 +308,13 @@ fn validate_sibling_path(
     let Some(crate_id) = path.strip_prefix("../") else {
         return Err(invalid());
     };
-    if crate_id.is_empty() || crate_id.contains('/') || crate_id.contains('\\') {
+    if crate_id.is_empty()
+        || crate_id.contains('/')
+        || crate_id.contains('\\')
+        || !declared
+            .get(mod_id)
+            .is_some_and(|ids| ids.contains(crate_id))
+    {
         return Err(invalid());
     }
     let mut components = Path::new(path).components();
@@ -223,7 +340,7 @@ fn validate_sibling_path(
     }
     if !staged_manifests
         .iter()
-        .any(|(staged_mod, staged)| staged_mod == mod_id && staged == &sibling_manifest)
+        .any(|(_, staged)| staged == &sibling_manifest)
     {
         return Err(invalid());
     }
@@ -268,7 +385,9 @@ pub(super) fn refused(
     api_ids: &[&str],
 ) -> Option<String> {
     let why = |mod_id: &str, name: &str, version: &str| {
-        format!("{mod_id} needs {name} {version}, which isn't in Horizon's Cargo.lock. A native mod's crate can use only the crates Horizon itself uses, in the versions its Cargo.lock has.")
+        format!(
+            "{mod_id} needs {name} {version}, which isn't in Horizon's Cargo.lock. A native mod's crate can use only the crates Horizon itself uses, in the versions its Cargo.lock has."
+        )
     };
     if let Some(w) = wanted
         .iter()
@@ -301,48 +420,13 @@ pub(super) fn locked(error: String) -> String {
     if !error.contains("--locked was passed") {
         return error;
     }
-    format!("A native mod's crate needs a crate that isn't in Horizon's Cargo.lock, through one of its dependencies' features. A native mod's crate can use only the crates Horizon itself uses, with the features that need no others.\n\n{error}")
-}
-
-/// A mod's post-build step: a program of one of its crates, run after the game compiles.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
-pub(super) struct PostBuild {
-    #[serde(rename = "mod")]
-    pub mod_id: String,
-    pub package: String,
-    pub bin: String,
-    #[serde(default)]
-    pub args: Vec<String>,
-}
-
-/// The post-build steps horizon-mixins listed in `stage` (none without the file: an older
-/// horizon-mixins, or no mod has one).
-pub(super) fn post_builds(stage: &Path) -> Result<Vec<PostBuild>, String> {
-    let path = stage.join(POST_BUILD);
-    match fs::read_to_string(&path) {
-        Ok(text) => {
-            let steps: Vec<PostBuild> =
-                serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-            match steps
-                .iter()
-                .find(|s| !horizon_mods::index::valid_id(&s.mod_id))
-            {
-                Some(bad) => Err(format!(
-                    "{}: invalid mod id {:?}",
-                    path.display(),
-                    bad.mod_id
-                )),
-                None => Ok(steps),
-            }
-        }
-        // Only a missing file means none: any other error must not skip the steps.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(e) => Err(format!("{}: {e}", path.display())),
-    }
+    format!(
+        "A native mod's crate needs a crate that isn't in Horizon's Cargo.lock, through one of its dependencies' features. A native mod's crate can use only the crates Horizon itself uses, with the features that need no others.\n\n{error}"
+    )
 }
 
 /// Whether `stage` has any mod's crate: a build with none skips the crate check, even when an
-/// earlier build left `native-crates/` behind (the stage keeps folders).
+/// earlier build left `native-api/` behind (the stage keeps folders).
 pub(super) fn any(stage: &Path) -> bool {
     let dir = stage.join(DIR);
     match fs::symlink_metadata(&dir) {
@@ -351,38 +435,6 @@ pub(super) fn any(stage: &Path) -> bool {
         Ok(metadata) if is_link_or_junction(&metadata) || !metadata.is_dir() => true,
         Ok(_) => manifests(&dir).map_or(true, |m| !m.is_empty()),
     }
-}
-
-/// Step `step`'s program `program` set up to run in the new build's version folder `version`,
-/// with the mod's folders in its environment: `HORIZON_NATIVE_DATA_DIR` (what the game reads at
-/// run time, in the version folder) and `HORIZON_NATIVE_CACHE_DIR` (kept across builds, under
-/// `cache`). Both are created. `HORIZON_NATIVE_BUNDLE_DATA_DIR` is the bundle's own `data/`
-/// as staged in `stage` (`native-data/<mod id>/`), which the step may read.
-pub(super) fn post_build(
-    program: &Path,
-    step: &PostBuild,
-    version: &Path,
-    cache: &Path,
-    stage: &Path,
-) -> Result<Command, String> {
-    let data = version.join("native-data").join(&step.mod_id);
-    let cache = cache.join(&step.mod_id);
-    for dir in [&data, &cache] {
-        fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    }
-    let mut cmd = Command::new(program);
-    crate::rust_toolchain::low_priority(&mut cmd);
-    cmd.args(&step.args)
-        .current_dir(version)
-        .env("HORIZON_NATIVE_MOD", &step.mod_id)
-        .env("HORIZON_NATIVE_VERSION_DIR", version)
-        .env("HORIZON_NATIVE_DATA_DIR", &data)
-        .env("HORIZON_NATIVE_CACHE_DIR", &cache)
-        .env(
-            "HORIZON_NATIVE_BUNDLE_DATA_DIR",
-            stage.join("native-data").join(&step.mod_id),
-        );
-    Ok(cmd)
 }
 
 #[cfg(test)]
@@ -418,7 +470,12 @@ mod tests {
         }
 
         fn add_crate(&self, mod_id: &str, crate_id: &str, package: &str, body: &str) -> PathBuf {
-            let dir = self.root.join(DIR).join(mod_id).join(crate_id);
+            let id = if crate_id == "engine" {
+                mod_id
+            } else {
+                crate_id
+            };
+            let dir = self.root.join(DIR).join(id);
             write_manifest(&dir, package, body);
             dir
         }
@@ -437,6 +494,114 @@ mod tests {
             format!("[package]\nname = {package:?}\nversion = \"0.1.0\"\n{body}"),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn game_graph_refuses_transitive_game_dependency_but_allows_facade() {
+        let stage = StageFixture::new();
+        stage.add_crate("bake", "engine", "bake", "");
+        write_manifest(
+            &stage.root().join("crates/horizon-client"),
+            "horizon-client",
+            "",
+        );
+        let lock = r#"
+[[package]]
+name = "bake"
+version = "0.1.0"
+dependencies = ["bridge", "horizon-internals-bake"]
+[[package]]
+name = "bridge"
+version = "0.1.0"
+dependencies = ["horizon-client"]
+[[package]]
+name = "horizon-internals-bake"
+version = "0.1.0"
+dependencies = ["horizon-client"]
+[[package]]
+name = "horizon-client"
+version = "0.1.0"
+"#;
+        let error = check_game_graph(stage.root(), lock).unwrap_err();
+        assert!(error.contains("bridge -> horizon-client"), "{error}");
+        let safe = lock.replace(
+            "dependencies = [\"bridge\", \"horizon-internals-bake\"]",
+            "dependencies = [\"horizon-internals-bake\"]",
+        );
+        assert!(check_game_graph(stage.root(), &safe).is_ok());
+    }
+
+    #[test]
+    fn game_graph_allows_a_sibling_mods_path_facade_only() {
+        let stage = StageFixture::new();
+        stage.add_crate("app", "engine", "app", "");
+        stage.add_crate("library", "engine", "library", "");
+        write_manifest(
+            &stage.root().join("crates/horizon-client"),
+            "horizon-client",
+            "",
+        );
+        let lock = r#"
+[[package]]
+name = "app"
+version = "0.1.0"
+dependencies = ["library"]
+[[package]]
+name = "library"
+version = "0.1.0"
+dependencies = ["horizon-internals-library"]
+[[package]]
+name = "horizon-internals-library"
+version = "0.1.0"
+dependencies = ["horizon-client"]
+[[package]]
+name = "horizon-client"
+version = "0.1.0"
+"#;
+        assert!(check_game_graph(stage.root(), lock).is_ok());
+        for source in [
+            "registry+https://github.com/rust-lang/crates.io-index",
+            "git+https://example.invalid/facade#1234",
+        ] {
+            let external = lock.replace(
+                "name = \"horizon-internals-library\"",
+                &format!("name = \"horizon-internals-library\"\nsource = {source:?}"),
+            );
+            let error = check_game_graph(stage.root(), &external).unwrap_err();
+            assert!(error.contains("E_GAME_DEPENDENCY"), "{error}");
+            assert!(error.contains("library -> horizon-client"), "{error}");
+        }
+        let unstaged = lock.replace("horizon-internals-library", "horizon-internals-other");
+        assert!(check_game_graph(stage.root(), &unstaged).is_err());
+        // The app reaching the library's facade itself is the app using undeclared internals.
+        let borrowed = lock.replace(
+            "dependencies = [\"library\"]",
+            "dependencies = [\"library\", \"horizon-internals-library\"]",
+        );
+        let error = check_game_graph(stage.root(), &borrowed).unwrap_err();
+        assert!(
+            error.contains("horizon-internals-library -> horizon-client"),
+            "{error}"
+        );
+    }
+
+    fn wanted(stage: &Path) -> Result<Vec<Wanted>, String> {
+        let targets = [
+            "same_name",
+            "industrial_sim",
+            "test_support",
+            "build_helper",
+            "unix_helper",
+            "windows_test",
+            "target_build",
+            "actual",
+            "absolute",
+            "linked",
+            "local",
+            "not_a_crate",
+        ];
+        let declared = BTreeMap::from([("bake", targets.into_iter().collect())]);
+        super::wanted(stage, &declared)
     }
 
     fn assert_rejected_path(label: &str, dependency: impl FnOnce(&StageFixture) -> String) {
@@ -468,7 +633,7 @@ mod tests {
 version = 4
 
 [[package]]
-name = "horizon-client"
+name = "horizon-mod-api"
 version = "0.1.0"
 
 [[package]]
@@ -544,7 +709,7 @@ checksum = "def"
         let stage =
             std::env::temp_dir().join(format!("horizon-native-crates-{}", std::process::id()));
         let _ = fs::remove_dir_all(&stage);
-        let krate = stage.join(DIR).join("bake").join("engine");
+        let krate = stage.join(DIR).join("bake");
         fs::create_dir_all(&krate).unwrap();
         fs::write(
             krate.join("Cargo.toml"),
@@ -565,13 +730,12 @@ checksum = "def"
                 wants("bake", "sha2", "0.10"),
             ]
         );
-        fs::create_dir_all(stage.join(DIR).join("gone/engine/src")).unwrap();
+        fs::create_dir_all(stage.join(DIR).join("gone/src")).unwrap();
         assert_eq!(
             wanted(&stage).unwrap().len(),
             5,
             "an emptied crate folder is skipped"
         );
-        assert_eq!(post_builds(&stage).unwrap(), []);
         assert!(any(&stage));
         fs::remove_file(krate.join("Cargo.toml")).unwrap();
         assert!(!any(&stage), "only emptied crate folders left");
@@ -671,10 +835,39 @@ checksum = "def"
         });
         assert_rejected_path("path is not a string", |_| "local = { path = 7 }".into());
         assert_rejected_path("sibling Cargo.toml is not a regular file", |stage| {
-            let sibling = stage.root.join(DIR).join("bake").join("not_a_crate");
+            let sibling = stage.root.join(DIR).join("not_a_crate");
             fs::create_dir_all(sibling.join("Cargo.toml")).unwrap();
             "local = { path = \"../not_a_crate\" }".into()
         });
+    }
+
+    #[test]
+    fn sibling_crates_require_a_manifest_dependency_and_the_game_path_is_exact() {
+        let stage = StageFixture::new();
+        stage.add_crate(
+            "bake",
+            "engine",
+            "bake-engine",
+            "[dependencies]\nother={path='../other'}\n",
+        );
+        stage.add_crate("other", "other", "other", "");
+        assert!(super::wanted(stage.root(), &BTreeMap::new()).is_err());
+        let declared = BTreeMap::from([("bake", BTreeSet::from(["other"]))]);
+        assert!(super::wanted(stage.root(), &declared).is_ok());
+        let root = stage.root().join(DIR).join("bake/Cargo.toml");
+        for (package, path, valid) in [
+            ("horizon-mod-api", "../../crates/horizon-mod-api", true),
+            (
+                "horizon-mod-points",
+                "../../crates/horizon-mod-points",
+                true,
+            ),
+            ("horizon-mod-api", "../../other/horizon-mod-api", false),
+            ("horizon-mod-points", "../../crates/horizon-mod-api", false),
+        ] {
+            fs::write(&root, format!("[package]\nname='bake'\nversion='1'\n[dependencies]\napi={{package='{package}',path='{path}'}}\n")).unwrap();
+            assert_eq!(super::wanted(stage.root(), &BTreeMap::new()).is_ok(), valid);
+        }
     }
 
     #[test]
@@ -745,60 +938,5 @@ checksum = "def"
     #[cfg(windows)]
     fn create_test_dir_link(target: &Path, link: &Path) -> std::io::Result<()> {
         crate::sources::junction(target, link)
-    }
-
-    #[test]
-    fn post_build_steps_run_in_the_version_folder_with_the_mods_folders() {
-        let json = r#"[{"mod":"bake","package":"bake-engine","bin":"bake","args":["--fast"]},
-            {"mod":"zoom","package":"zoom-tables","bin":"tables"}]"#;
-        let root = std::env::temp_dir().join(format!("horizon-native-post-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join(POST_BUILD), json).unwrap();
-        let steps = post_builds(&root).unwrap();
-        assert_eq!(steps.len(), 2);
-        assert_eq!(steps[1].args, Vec::<String>::new());
-        let version = root.join("versions/native-abc");
-        let cmd = post_build(
-            Path::new("/target/fast/bake"),
-            &steps[0],
-            &version,
-            &root.join("cache"),
-            &root.join("stage"),
-        )
-        .unwrap();
-        assert_eq!(cmd.get_current_dir(), Some(version.as_path()));
-        assert_eq!(cmd.get_args().collect::<Vec<_>>(), ["--fast"]);
-        let env = |name: &str| {
-            cmd.get_envs()
-                .find(|(k, _)| *k == name)
-                .and_then(|(_, v)| v)
-                .map(PathBuf::from)
-        };
-        assert_eq!(env("HORIZON_NATIVE_MOD"), Some("bake".into()));
-        assert_eq!(env("HORIZON_NATIVE_VERSION_DIR"), Some(version.clone()));
-        assert_eq!(
-            env("HORIZON_NATIVE_DATA_DIR"),
-            Some(version.join("native-data/bake"))
-        );
-        assert_eq!(
-            env("HORIZON_NATIVE_CACHE_DIR"),
-            Some(root.join("cache/bake"))
-        );
-        assert_eq!(
-            env("HORIZON_NATIVE_BUNDLE_DATA_DIR"),
-            Some(root.join("stage/native-data/bake"))
-        );
-        assert!(version.join("native-data/bake").is_dir() && root.join("cache/bake").is_dir());
-        fs::write(root.join(POST_BUILD), "{}").unwrap();
-        assert!(post_builds(&root).is_err());
-        // A mod id that would leave its folder is refused.
-        let bad = r#"[{"mod":"../x","package":"p","bin":"b"}]"#;
-        fs::write(root.join(POST_BUILD), bad).unwrap();
-        assert!(post_builds(&root).is_err());
-        // A file that can't be read is an error, not "no steps".
-        fs::remove_file(root.join(POST_BUILD)).unwrap();
-        fs::create_dir(root.join(POST_BUILD)).unwrap();
-        assert!(post_builds(&root).is_err());
     }
 }

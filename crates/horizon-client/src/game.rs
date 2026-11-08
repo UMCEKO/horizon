@@ -1,5 +1,13 @@
 //! The playable game loop: streaming world, player simulation at 20 ticks/s,
 //! block interaction, inventory and HUD.
+use key_codes::{
+    container_key_clones, drop_held_behind_dialog, follow_named_keymap, gameplay_has_keyboard,
+    glfw_button, glfw_modifiers, keyboard_button,
+};
+use loading_screen::{
+    App, Loading, leave_fullscreen_after, missing_resources, run_event_loop, unclean_start_recovery,
+};
+use resource_load::{Progress, launch_world, load_resources, named_scope, synchronous_startup};
 
 /// The content tables the world plays with, as field-level borrows: the
 /// world's data packs' over the game's own. The `Game::items`/`recipes`/
@@ -8,9 +16,10 @@
 /// which borrows stay disjoint from.
 macro_rules! world_items {
     ($s:ident) => {
-        match &$s.world_tables {
-            Some(t) => &t.items,
-            None => $s.res.items(),
+        match (&$s.server_items, &$s.world_tables) {
+            (Some(items), _) => &**items,
+            (None, Some(t)) => &t.items,
+            (None, None) => $s.res.items(),
         }
     };
 }
@@ -44,436 +53,67 @@ macro_rules! world_biomes {
 /// The world's packs' content files, as a field-level borrow (see the macros).
 fn pack_files(world_tables: &Option<WorldTables>) -> horizon_world::loot::PackOverlay<'_> {
     match world_tables {
-        Some(t) => horizon_world::loot::PackOverlay { files: &t.files },
+        Some(t) => horizon_world::loot::PackOverlay {
+            conditions: &t.conditions,
+            files: &t.files,
+        },
         None => horizon_world::loot::PackOverlay::NONE,
     }
 }
 
-mod advancements;
-mod advancements_screen;
-mod agent;
-mod agent_settings;
-mod allays;
-mod armor_stands;
-mod atlas_slots;
-mod attachment_sync;
-mod autosave;
-mod banners;
-mod beacon;
-mod beds;
-mod beehives;
-mod block_editor;
-mod block_edits;
-mod block_entity_anims;
-mod block_entity_ticks;
-mod block_items;
-mod block_particles;
-mod blockctl;
-mod boarding;
-mod boat_authority_fixture;
-mod boat_leads;
-mod boat_passengers;
-mod boat_rider_fixture;
-mod boats;
-mod books;
-mod bossbars;
-mod breezes;
-mod brush;
-mod building_players;
-mod bundles;
-mod campfire;
-mod campfire_douse;
-mod cartography;
-mod cat_spawner;
-mod cauldrons;
-mod chat;
-mod chat_filter;
-mod chiseled_bookshelf;
-mod client_ambient;
-mod clipboard;
-#[cfg(test)]
-mod clone_block_ticks_tests;
-mod code_of_conduct;
-mod combat;
-mod command_blocks;
-mod command_harness;
-mod command_minecarts;
-mod commands;
-mod composter;
-mod consume;
-mod control;
-mod copper_golems;
-#[cfg(test)]
-mod core_tests;
-mod cosmetics;
-mod creaking;
-mod creative_hotbar;
-mod creative_screen;
-mod creatures;
-mod crossbow;
-pub(crate) mod cushions;
-mod custom_sky;
-mod debug_keys;
-mod debug_lines;
-mod debug_options;
-mod debug_renderers;
-mod debug_stick;
-mod decorated_pot;
-mod dedicated;
-mod deflect;
-mod dialogs;
-#[cfg(feature = "discord")]
-mod discord;
-mod dispense_fixture;
-mod dispenser;
-mod dragon;
-mod dynamic_lights;
-mod emote_wheel;
-mod emotes;
-mod enchant_effects;
-mod end;
-mod enderman;
-#[cfg(test)]
-mod enderman_hurt_teleport_tests;
-#[cfg(test)]
-mod enderman_placement_tests;
-mod entity;
-mod entity_culling;
-mod entity_sounds;
-mod event_loop;
-mod events;
-mod execution_role;
-mod explosion;
-mod extras;
-mod falling_damage;
-mod fangs;
-mod fireworks;
-#[cfg(test)]
-mod first_tick_registration_tests;
-mod fishing;
-mod fov;
-mod foxes;
-mod frames;
-#[cfg(feature = "friends")]
-mod friends;
-#[cfg(test)]
-mod setblock_order_tests;
-// Without Play with Friends: nothing shared, no Friends button (game/friends_off.rs).
-#[cfg(test)]
-mod entity_inside_tests;
-#[cfg(not(feature = "friends"))]
-#[path = "game/friends_off.rs"]
-mod friends;
-mod functions;
-mod game_mode;
-mod game_tests;
-mod gamemode_switcher;
-mod ghasts;
-mod glowing;
-mod golems;
-mod growth;
-mod hand;
-mod headless;
-mod hud_editor;
-mod ime;
-mod initial_spawn;
-mod input_trace;
-mod integrated;
-mod interaction_shapes;
-mod interactions;
-mod inventory_input;
-mod inventory_slots;
-mod item_actions;
-mod item_areas;
-#[cfg(test)]
-mod item_contact_tests;
-mod item_draw;
-#[cfg(test)]
-mod item_interact_mob_tests;
-mod item_particles;
-mod item_use;
-mod jigsaw_blocks;
-mod jigsaw_edit;
-mod jukebox;
-mod key_codes;
-mod key_focus;
-mod lan;
-mod lan_actions;
-mod lan_attributes;
-mod lan_camera;
-mod lan_chat;
-mod lan_crafting;
-mod lan_entities;
-mod lan_far;
-mod lan_idle;
-mod lan_mobs;
-mod lan_mount_menu;
-mod lan_particles;
-mod lan_pvp;
-mod lan_quiet;
-mod lan_screen;
-mod lan_stations;
-mod lan_trading;
-mod lan_vehicles;
-mod lan_waypoints;
-mod launch_api;
-mod leads;
-mod legacy_rules;
-mod level_particles;
-mod levels;
-mod lightning;
-mod llamas;
-mod loading_screen;
-mod loading_window;
-mod locator_bar;
-mod loom;
-mod mace;
-mod machines;
-mod maps;
-mod melee;
-mod memory;
-mod minecarts;
-#[cfg(test)]
-mod mining_component_tests;
-mod mob_blocks;
-#[cfg(test)]
-mod mob_discard_tests;
-mod mob_gear;
-mod mob_index;
-mod mob_looting;
-mod mob_sounds;
-mod mod_api_host;
-mod mod_browser;
-mod mods;
-mod mount_menu;
-mod mounts;
-mod moving_pistons;
-mod music;
-mod names;
-mod narrator;
-mod native_biome_colors;
-pub mod native_block_entity_draw;
-mod native_block_sprites;
-mod native_bots;
-mod native_chunk_snapshot;
-mod native_chunk_tickets;
-mod native_claimed_items;
-mod native_client_entities;
-mod native_client_particles;
-mod native_client_particles_fixture;
-pub mod native_client_services;
-mod native_client_world;
-mod native_components;
-mod native_configs;
-mod native_criteria;
-mod native_damage;
-mod native_data_maps;
-mod native_diagnostics;
-mod native_entities;
-mod native_entity_data;
-mod native_entity_motion;
-mod native_entity_moves;
-mod native_entity_refs;
-mod native_entity_state;
-mod native_explosions;
-mod native_falling;
-mod native_fluid_render;
+include!(concat!(env!("OUT_DIR"), "/game_modules.rs"));
+/// The game's side of the injection points (#589), whose slots and listeners live in `mod_points`.
+#[doc(hidden)]
+pub mod points {
+    /// A `side = "both"` point's host, out of line: each point's listener call stays a few bytes.
+    /// Called only by the `#[point]`s the stage adds to its copy.
+    #[inline(never)]
+    #[allow(dead_code, reason = "used by the staged copy's points")]
+    pub(super) fn host_side<'a>(game: &'a mut super::Game<'_>) -> mod_api::HostSide<'a> {
+        super::execution_role::host_side(game)
+    }
+
+    /// An engine value's `mod_api` mirror for a point record, through the boundary's conversion.
+    #[allow(dead_code, reason = "used by the staged copy's points")]
+    pub(super) fn mirror_in<T: super::api_values::TryIntoApi + ?Sized>(
+        value: &T,
+    ) -> Option<T::Api> {
+        value.try_into_api().ok()
+    }
+
+    /// A listener's `mod_api` value as the engine's, validated as every mod value is; a value the
+    /// engine refuses leaves the engine's own in place.
+    #[allow(dead_code, reason = "used by the staged copy's points")]
+    pub(super) fn mirror_out<A: super::api_values::TryIntoEngine<()>>(
+        value: &A,
+        point: &str,
+    ) -> Option<A::Engine> {
+        let engine = value.try_into_engine(&()).ok();
+        if engine.is_none() {
+            log::warn!(
+                "point {point}: a listener's value has no engine form; the engine's is kept"
+            );
+        }
+        engine
+    }
+
+    /// An engine value with no `mod_api` form at this call: its listeners are skipped this once.
+    #[cold]
+    #[allow(dead_code, reason = "used by the staged copy's points")]
+    pub(super) fn unconverted(point: &str) {
+        log::warn!("point {point}: a value has no API form; its listeners were skipped");
+    }
+}
+mod host;
 mod native_hooks;
-mod native_host_bridge;
-mod native_inventories;
-mod native_item_container;
-mod native_item_energy;
-mod native_item_fluids;
-mod native_level_effects;
-mod native_level_refs;
-mod native_level_world;
-mod native_lifecycle;
-mod native_living_refs;
-mod native_machines;
-mod native_menu_stacks;
-mod native_menus;
-mod native_mob_draw;
-mod native_mobs;
-mod native_motion;
-mod native_mounts;
-mod native_net;
-mod native_npcs;
-mod native_packets;
-mod native_panel;
-mod native_panel_recipes;
-mod native_permissions;
-mod native_player_break;
-mod native_player_fx;
-mod native_player_reads;
-mod native_player_state;
-mod native_profiles;
-mod native_projectiles;
-mod native_quick_move;
-mod native_recipes;
-mod native_reload_listeners;
-mod native_scene;
-mod native_server;
-mod native_shaders;
-mod native_structures;
-mod native_terrain_model;
-pub mod native_text_field;
-mod native_ticks;
-mod native_travel;
-mod native_view_distance;
-mod native_visuals;
-mod native_world_border;
-mod native_world_columns;
-pub mod native_world_draw;
-mod native_world_edit;
-mod native_world_read;
-mod native_world_seed;
-mod natural_spawning;
-mod nautili;
-mod net_harness;
-mod nether_portal;
-mod no_resources;
-mod occlusion_culling;
-mod ominous_item_spawner;
-mod options;
-mod ordered_tick;
-mod packs;
-mod pad;
-mod pad_actions;
-mod pad_craft;
-mod pad_menu;
-mod paintings;
-mod pandas;
-mod particle_culling;
-mod passengers;
-mod perf_link;
-mod perf_remote;
-mod persist;
-mod perspective;
-mod pick_entity;
-mod pickups;
-mod piglins;
-mod piston_push;
-#[cfg(test)]
-mod place_feature_tests;
-mod play_input;
-mod play_keys;
-mod player_equip;
-mod player_spawn;
-mod pointer_capture;
-#[cfg(test)]
-mod portal_ticking_tests;
-mod postprocess;
-mod potent_sulfur;
-mod potions;
-mod powder_snow;
-mod prediction;
-mod profile_capture;
-mod pumpkin;
-mod pvp;
-mod quick_actions;
-mod raids;
-mod random_textures;
-mod recipe_book;
-mod remote;
-mod remote_camera;
-mod remote_chat;
-mod remote_chunks;
-mod remote_mob_data;
-mod remote_mob_particles;
-mod remote_mob_use;
-mod remote_objects;
-mod remote_projectiles;
-mod remote_stations;
-mod remote_vehicles;
-mod render_control;
-mod render_settings;
-mod render_tick;
-mod repro;
-mod resource_load;
-mod resource_tables;
-mod respawn_anchor;
-mod saves_control;
-mod saving;
-mod scoreboard;
-mod screen_backgrounds;
-mod screen_info;
-mod screens;
-mod screenshot_sequence;
-mod sculk;
-mod sculk_fixture;
-mod seats;
-mod server_links;
-mod server_packs;
-mod server_travel;
-mod shader_packs;
-mod sheep_dye;
-mod shelf;
-mod shield;
-mod shoulders;
-mod sign_edit;
-mod skin_models;
-mod sniffers;
-mod social;
-mod spawner;
-mod spear;
-mod spear_players;
-mod spectator;
-mod spill;
-mod splash_water;
-mod split;
-mod startup_menu;
-mod station_control;
-mod stations;
-mod stats;
-mod stats_screen;
-mod storage;
-mod structure_blocks;
-mod structure_edit;
-mod structures;
-mod studio;
-mod subtitle_hud;
-mod sulfur_cubes;
-mod tempban;
-mod test_block_edit;
-mod test_blocks;
-mod test_entities;
-mod test_environments;
-mod test_instance_edit;
-mod test_instances;
-mod text_displays;
-mod tick_profile;
-mod tick_script;
-mod titles;
-mod tnt;
-mod totem;
-mod trading;
-mod transient_blocks;
-mod trial_spawner;
-mod trial_visuals;
-mod trident;
-mod tutorial;
-mod tweaks;
-mod ui_control;
-mod using_item;
-mod vault;
-mod vehicle_teleport;
-mod villagers;
-mod wandering_trader;
-mod win;
-mod wind;
-mod window_handler;
-mod wither;
-mod world_entry;
-mod world_loading;
-mod world_primitives;
-mod world_session;
-#[cfg(test)]
-mod world_test_def_tests;
-mod zombie_reinforcements;
-mod zombie_villagers;
 use event_loop::EventLoopCtl;
 use horizon_client::random_source;
+use loading_window::{
+    build_renderer, loading_frame, loading_renderer, prepare_renderer_textures, start_game,
+};
 // `Action` here is the title screen's buttons (`title::Action`).
+use self::api_values::TryIntoApi;
+pub(crate) use api_values::{block_jump_factor, block_speed_factor};
 use horizon_client::actions::Action as Mapping;
 use horizon_client::held::Source;
 use horizon_client::spans::startup;
@@ -525,52 +165,14 @@ use horizon_core::{
     position::BlockPos,
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
-use horizon_world::{
-    block_collision::BlockCollisionRegistry,
-    collision_context::{CollisionContext, CollisionEntity, CollisionItem},
-    entity_obstruction::{EntityIdentity, EntityObstructionWorld, ObstructionEntity},
-    fluid::FluidState,
-    level::{
-        Behaviours, BucketContent, Dimension as LevelDimension, EntityQuery, Landing, LevelAccess,
-        LevelEvent, PlaceContext, PlaceOutcome, PlacementContext, PlayerContext, PlayerEffect,
-        Ticks, flags as level_flags,
-    },
-    registry::BlockStateId,
-};
-use key_codes::{
-    container_key_clones, drop_held_behind_dialog, follow_named_keymap, gameplay_has_keyboard,
-    glfw_button, glfw_modifiers, keyboard_button,
-};
-use loading_screen::{
-    App, Loading, leave_fullscreen_after, missing_resources, run_event_loop, unclean_start_recovery,
-};
-use loading_window::{
-    build_renderer, loading_frame, loading_renderer, prepare_renderer_textures, start_game,
-};
-pub use machines::native_fluids::NativeFluidTank;
-pub use maps::{NativeMapDecoration, NativeMapInfo};
+use horizon_mod_package::selection::{Argument, LaunchArguments};
 pub use native_block_entity_draw::BlockEntityDraw;
-pub use native_chunk_snapshot::NativeChunkSnapshot;
-pub use native_claimed_items::{NativeHeldItem, NativeHit, NativeModEvent};
-pub use native_client_world::{NativeBiomeId, NativeClientBiomes, NativeClientChunks};
+pub use native_claimed_items::{HeldItemSlot, ModEvent};
 pub use native_components::NativeComponentError;
-pub use native_configs::{NativeConfig, NativeConfigFile, NativeConfigKind};
-pub use native_criteria::NativeCriterion;
-pub use native_data_maps::NativeDataMapType;
-pub use native_falling::NativeFalling;
-pub use native_hooks::{NativeClock, NativeItemEntity, NativePlayer, NativeShake};
-pub use native_inventories::NativeInventoryKind;
-pub use native_item_energy::ItemEnergyBuffer;
-pub use native_mob_draw::{NativeMobRender, NativePlayerRender};
-pub use native_player_state::NativeEffect;
-pub use native_reload_listeners::NativeReloadListener;
-pub use native_server::NativeExperienceOrb;
-pub use native_structures::{NativeStructureBlock, NativeStructureTemplate};
-pub use native_world_columns::NativeColumnBlocks;
-pub use native_world_draw::NativeWorldDraw;
-pub use native_world_edit::{NativeBlockEdit, NativeBlockRun, NativeHeightmap};
-pub use native_world_read::NativeBlockReadError;
-use resource_load::{Progress, launch_world, load_resources, named_scope, synchronous_startup};
+pub use native_configs::ConfigFile;
+pub use native_data_maps::DataMapType;
+pub use native_hooks::{PhantomSpawnResult, Shake, SleepProblem};
+pub use native_mob_draw::{MobRender, PlayerRender};
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -591,6 +193,21 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{CursorGrabMode, Window, WindowId},
 };
+use {
+    horizon_core::dimension::Dimension as LevelDimension,
+    horizon_world::{
+        block_collision::BlockCollisionRegistry,
+        collision_context::{CollisionContext, CollisionEntity, CollisionItem},
+        entity_obstruction::{EntityIdentity, EntityObstructionWorld, ObstructionEntity},
+        fluid::FluidState,
+        level::{
+            Behaviours, BucketContent, EntityQuery, Landing, LevelAccess, LevelEvent, PlaceContext,
+            PlaceOutcome, PlacementContext, PlayerContext, PlayerEffect, Ticks,
+            flags as level_flags,
+        },
+        registry::BlockStateId,
+    },
+};
 
 /// The time a frame spends uploading chunk meshes when the player set no
 /// Chunk Updates or Upload Budget: a burst past it waits for the next frames.
@@ -606,7 +223,7 @@ const AUTO_UPLOADS_AT_ONCE: usize = 8;
 const HELD_FAR_COLUMNS: usize = 1 << 13;
 
 #[derive(Clone)]
-struct Options {
+pub(crate) struct Options {
     resources: PathBuf,
     distance: i32,
     distance_override: Option<i32>,
@@ -645,7 +262,7 @@ struct Options {
     /// window stays hidden and never grabs the system pointer.
     offscreen: bool,
     /// `--headless` (#4951): no display, no window and no renderer. The game runs its own
-    /// loop (`game/headless.rs`) instead of winit's, so it starts where no display server
+    /// loop (`game/runtime/headless.rs`) instead of winit's, so it starts where no display server
     /// is (an SSH session, a server). It counts as `offscreen` for everything else (an
     /// automated run that never shows a window or grabs the pointer).
     headless: bool,
@@ -669,14 +286,15 @@ struct Options {
     benchmark_set: Option<(String, String)>,
     /// `--profile`: with `--benchmark`, record a .hzperf capture of the run that embeds the report.
     benchmark_profile: bool,
-    /// `--dev-mod PATH` (repeatable): content mods always on.
-    dev_mods: Vec<PathBuf>,
+    /// Content selection and the compiled native runtime shared with resource loaders.
+    mods: mods::ModsState,
     /// What this Game executes; independent of its current server connection.
     execution_role: execution_role::ExecutionRole,
     /// `--fullscreen` (vanilla's): the window opens fullscreen whatever options.txt says,
     /// as vanilla's DisplayData does, without saving it there.
     fullscreen: bool,
-    /// `--game-dir DIR`: the folder `read` makes the working directory (saves, options.txt...).
+    /// `--game-dir DIR`: the folder `read` makes the working directory (saves, options.txt...);
+    /// none for a splitscreen player's game, which shares P1's working directory.
     game_dir: Option<PathBuf>,
     /// `--quickPlaySingleplayer`, checked once the game folder is known.
     quick_play: Option<String>,
@@ -685,6 +303,11 @@ struct Options {
     session_stdin: bool,
 }
 impl Options {
+    /// Whether this `Game` is the process's client start: not a dedicated server, and not
+    /// a splitscreen guest, whose `run` is another local player joining the same process.
+    fn is_client_start(&self) -> bool {
+        self.execution_role.is_client() && !self.split_guest
+    }
     /// The name to join servers with: the one given, else the offline name kept
     /// next to options.txt (created on first use).
     fn player_name(&self) -> String {
@@ -699,23 +322,9 @@ impl Options {
             )
         })
     }
-    /// The command line, then what it asks of the process: the game folder, the account.
-    /// A bad command line is a [`launch_api::UsageError`] (exit code 2, no crash report).
-    fn read() -> Result<Option<Self>> {
-        let Some(mut o) = Self::parse(std::env::args().skip(1))
-            .map_err(|e| launch_api::UsageError(e.to_string()))?
-        else {
-            return Ok(None);
-        };
-        // Paths given on the command line stay relative to where the game was started.
-        if o.game_dir.is_some() {
-            o.control = o.control.map(std::path::absolute).transpose()?;
-        }
-        // Refused here, before the account's file is used up or anything loads.
-        if let Some(path) = &o.control {
-            horizon_client::control::check_path(path).map_err(|e| {
-                launch_api::UsageError(format!("--control-socket {}: {e}", path.display()))
-            })?;
+    fn read(mut o: Self) -> Result<Self> {
+        if o.pregen {
+            horizon_client::command::vanilla::set_horizon_commands(true);
         }
         // The launcher's account: online-mode servers need it. A bad file
         // only leaves the game offline.
@@ -744,9 +353,6 @@ impl Options {
         }
         split::launcher::read_now();
         if let Some(dir) = o.game_dir.take() {
-            // These too stay relative to where the game was started.
-            o.resources = std::path::absolute(&o.resources)?;
-            o.report = o.report.map(std::path::absolute).transpose()?;
             std::fs::create_dir_all(&dir)
                 .and_then(|()| std::env::set_current_dir(&dir))
                 .map_err(|e| format!("game folder {}: {e}", dir.display()))?;
@@ -765,11 +371,21 @@ impl Options {
                 eprintln!("Quick play: there is no world {world} in saves/");
             }
         }
-        Ok(Some(o))
+        Ok(o)
     }
     /// The command line alone: no file is read and nothing changes. `None` for `--help` and
     /// `--launch-api`, which print and end the run.
-    fn parse(mut args: impl Iterator<Item = String>) -> Result<Option<Self>> {
+    #[cfg(test)]
+    fn parse(args: impl Iterator<Item = String>) -> Result<Option<Self>> {
+        Self::from_launch(LaunchArguments::parse(
+            args,
+            &std::env::current_dir()?,
+            &horizon_client::logging::game_home(),
+            std::env::var_os("HORIZON_HOME").as_deref(),
+        )?)
+    }
+
+    fn from_launch(LaunchArguments { context, rest }: LaunchArguments) -> Result<Option<Self>> {
         let sibling = std::env::current_exe()?
             .parent()
             .ok_or("missing executable directory")?
@@ -816,59 +432,61 @@ impl Options {
             benchmark: None,
             benchmark_set: None,
             benchmark_profile: false,
-            dev_mods: Vec::new(),
+            mods: mods::ModsState {
+                dev: context.dev_mods,
+                ..Default::default()
+            },
             execution_role: execution_role::ExecutionRole::Client,
             fullscreen: false,
-            game_dir: None,
+            game_dir: Some(context.game_dir),
             quick_play: None,
             session_file: std::env::var("HORIZON_SESSION_FILE").ok(),
             session_stdin: false,
         };
-        while let Some(arg) = args.next() {
-            match arg.as_str() {
-                "--help" | "-h" => {
-                    println!(
-                        "Horizon — Minecraft Java Edition {} in Rust\n\n  --resources PATH        Prepared resources (horizon-prepare)\n  --render-distance N     Chunks, 2..128 (default 12)\n  --world NAME            World folder under saves/ (default \"New World\")\n  --seed N                World seed for new worlds (default 0)\n  --width N, --height N   Window size (default 1280 x 720)\n  --creative              Creative mode (default survival)\n  --test-terrain          Simple test terrain instead of vanilla generation\n  --frames N              Exit after N frames (testing)\n  --world-frames N        Exit after N frames drawn in the world (testing)\n  --smoke-report PATH     Write a JSON report on exit\n  --benchmark SCENARIO    Run a benchmark (standard, village, forest, ocean, mountain, travel), write its report to benchmarks/ and quit\n  --profile               With --benchmark: also write a performance capture (reports/*.hzperf in the game home) that embeds the report\n  --benchmark-set S=V     With --benchmark travel: set a graphics switch (gpu-culling, section-cull, section-sides, section-draws) to one of its two values first\n  --control               Accept horizon-ctl commands on a local socket\n  --control-socket PATH   Control socket path (default $XDG_RUNTIME_DIR/horizon-control.sock)\n  --transfers SETTINGS    A dedicated server takes a proxy's hand-over requests (server.toml [transfer], docs/server.md)\n  --server HOST[:PORT]    Join a multiplayer server (offline mode) at start\n  --quickPlaySingleplayer WORLD  Open this world of saves/ at start, only if it exists (vanilla's)\n  --quickPlayMultiplayer HOST[:PORT]  The same as --server (vanilla's name)\n  --name NAME             Player name for multiplayer (default: generated once, kept in horizon-player.txt)\n  --session-file PATH     Signed-in account from the launcher (read once, then deleted)\n  --session-stdin         The same account as JSON on standard input\n  --game-dir DIR          Game folder: saves, options.txt, packs, mods (default: the working directory)\n  --home DIR              Logs and crash reports (default $HORIZON_HOME, else the platform data folder)\n  --player-dir DIR        This player's own files when several play in one game folder: options.txt, logs, horizon-player.txt, servers.dat, screenshots\n  --fullscreen            Open the window fullscreen\n  --launch-api            Print the Launch API version and options as JSON (docs/api/launch.md)\n  --dev-mod PATH          A content mod (.hmod or folder) to develop: always on\n  --pregen                Add Horizon's /pregen command (docs/pregeneration.md)\n\nControls: mouse look, WASD move, Space jump, Left Shift sneak, Left Ctrl sprint,\nleft click break, right click place/use, 1-9/scroll hotbar, E inventory,\nQ drop, F3 debug, Esc pause.",
-                        horizon_core::VANILLA_VERSION
-                    );
-                    return Ok(None);
-                }
-                "--launch-api" => {
-                    println!("{}", launch_api::reply(&horizon_client::crash::version()));
-                    return Ok(None);
-                }
-                "--fullscreen" => o.fullscreen = true,
-                "--profile" => o.benchmark_profile = true,
-                "--session-stdin" => o.session_stdin = true,
-                "--dedicated" => {
+        for argument in rest {
+            match argument {
+                Argument::Switch(arg) => match arg.as_str() {
+                    "--help" | "-h" => {
+                        println!(
+                            "Horizon — Minecraft Java Edition {} in Rust\n\n  --resources PATH        Prepared resources (horizon-prepare)\n  --render-distance N     Chunks, 2..128 (default 12)\n  --world NAME            World folder under saves/ (default \"New World\")\n  --seed N                World seed for new worlds (default 0)\n  --width N, --height N   Window size (default 1280 x 720)\n  --creative              Creative mode (default survival)\n  --test-terrain          Simple test terrain instead of vanilla generation\n  --frames N              Exit after N frames (testing)\n  --world-frames N        Exit after N frames drawn in the world (testing)\n  --smoke-report PATH     Write a JSON report on exit\n  --benchmark SCENARIO    Run a benchmark (standard, village, forest, ocean, mountain), write its report to benchmarks/ and quit\n  --control               Accept horizon-ctl commands on a local socket\n  --control-socket PATH   Control socket path (default $XDG_RUNTIME_DIR/horizon-control.sock)\n  --server HOST[:PORT]    Join a multiplayer server (offline mode) at start\n  --quickPlaySingleplayer WORLD  Open this world of saves/ at start, only if it exists (vanilla's)\n  --quickPlayMultiplayer HOST[:PORT]  The same as --server (vanilla's name)\n  --name NAME             Player name for multiplayer (default: generated once, kept in horizon-player.txt)\n  --session-file PATH     Signed-in account from the launcher (read once, then deleted)\n  --session-stdin         The same account as JSON on standard input\n  --game-dir DIR          Game folder: saves, options.txt, packs, mods (default: the working directory)\n  --home DIR              Logs and crash reports (default $HORIZON_HOME, else the platform data folder)\n  --player-dir DIR        This player's own files when several play in one game folder: options.txt, logs, horizon-player.txt, servers.dat, screenshots\n  --fullscreen            Open the window fullscreen\n  --launch-api            Print the Launch API version and options as JSON (docs/api/launch.md)\n  --dev-mod PATH          A content mod (.hmod or folder) to develop: always on\n  --pregen                Add Horizon's /pregen command (docs/pregeneration.md)\n\nControls: mouse look, WASD move, Space jump, Left Shift sneak, Left Ctrl sprint,\nleft click break, right click place/use, 1-9/scroll hotbar, E inventory,\nQ drop, F3 debug, Esc pause.",
+                            horizon_core::VANILLA_VERSION
+                        );
+                        return Ok(None);
+                    }
+                    "--launch-api" => {
+                        println!("{}", launch_api::reply(&horizon_client::crash::version()));
+                        return Ok(None);
+                    }
+                    "--fullscreen" => o.fullscreen = true,
+                    "--profile" => o.benchmark_profile = true,
+                    "--session-stdin" => o.session_stdin = true,
+                    "--creative" => o.creative = true,
+                    "--test-terrain" => o.test_terrain = true,
+                    "--no-pause" => o.no_pause = true,
+                    "--offscreen" => o.offscreen = true,
+                    "--headless" => {
+                        o.headless = true;
+                        o.offscreen = true;
+                    }
+                    "--control" => o.control = Some(horizon_client::control::default_path()),
+                    // Single player always runs on its server thread: a launcher's saved arguments
+                    // may still name the old switches.
+                    "--server-thread" => {}
+                    "--in-frame" | "--no-server-thread" => eprintln!(
+                        "Horizon: {arg} was removed: single player runs on its server thread."
+                    ),
+                    // Horizon's own commands (/pregen), off by default as on vanilla.
+                    "--pregen" => {
+                        o.pregen = true;
+                    }
+                    _ => return Err(format!("{arg}: unknown option").into()),
+                },
+                Argument::Dedicated(args) => {
                     o.execution_role = execution_role::ExecutionRole::DedicatedServer;
-                    o.dedicated = Some(args.by_ref().collect());
+                    o.dedicated = Some(args);
                     break;
                 }
-                "--creative" => o.creative = true,
-                "--test-terrain" => o.test_terrain = true,
-                "--no-pause" => o.no_pause = true,
-                "--offscreen" => o.offscreen = true,
-                "--headless" => {
-                    o.headless = true;
-                    o.offscreen = true;
-                }
-                "--control" => o.control = Some(horizon_client::control::default_path()),
-                // Single player always runs on its server thread: a launcher's saved arguments
-                // may still name the old switches.
-                "--server-thread" => {}
-                "--in-frame" | "--no-server-thread" => eprintln!(
-                    "Horizon: {arg} was removed: single player runs on its server thread."
-                ),
-                // Horizon's own commands (/pregen), off by default as on vanilla.
-                "--pregen" => {
-                    o.pregen = true;
-                    horizon_client::command::vanilla::set_horizon_commands(true);
-                }
-                _ => {
-                    let value = args
-                        .next()
-                        .ok_or_else(|| format!("missing value after {arg}"))?;
+                Argument::Value(arg, value) => {
                     // A launcher shows the error to the player: it names the option.
                     let read = || -> Result<()> {
                         match arg.as_str() {
@@ -916,12 +534,9 @@ impl Options {
                                 }
                                 o.quick_play = Some(value);
                             }
-                            "--game-dir" | "--gameDir" => o.game_dir = Some(value.into()),
-                            // main has made it the game home already (logging::set_game_home).
-                            "--home" => {}
-                            // ...and this player's own folder (logging::set_player_dir).
+                            // main has set this player's own folder (logging::set_player_dir).
                             "--player-dir" => {}
-                            "--dev-mod" => o.dev_mods.push(std::path::absolute(&value)?),
+
                             "--benchmark" => {
                                 horizon_client::benchmark::Scenario::parse(&value)?;
                                 o.benchmark = Some(value);
@@ -969,12 +584,10 @@ impl Options {
         Ok(Some(o))
     }
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Screen {
     Playing,
     GameModeSwitcher,
-    /// Horizon's emote wheel (`game/emote_wheel.rs`): over the world, not pausing.
-    EmoteWheel,
     Paused,
     Options,
     Chat,
@@ -985,42 +598,44 @@ enum Screen {
     Stats,
     /// The Advancements screen.
     Advancements,
-    /// WorldOptionsScreen (game/lan_screen.rs).
+    /// WorldOptionsScreen (game/network/lan_screen.rs).
     WorldOptions,
     /// Play with Friends, from the pause menu's Friends button
-    /// (`friends_screen`, game/friends.rs).
+    /// (`friends_screen`, game/network/friends.rs).
     Friends,
-    /// `SocialInteractionsScreen` (`social_screen`, game/social.rs).
+    /// `SocialInteractionsScreen` (`social_screen`, game/network/social.rs).
     Social,
-    /// CommandBlockEditScreen (game/command_blocks.rs).
+    /// CommandBlockEditScreen (game/administration/command_blocks.rs).
     CommandBlock,
-    /// A game master block's edit screen (game/block_editor.rs).
+    /// A game master block's edit screen (game/interface/block_editor.rs).
     BlockEditor,
-    /// ServerLinksDialogScreen: a server's links (game/server_links.rs).
+    /// ServerLinksDialogScreen: a server's links (game/network/server_links.rs).
     ServerLinks,
-    /// ConfirmLinkScreen for a server link (game/server_links.rs).
+    /// ConfirmLinkScreen for a server link (game/network/server_links.rs).
     ConfirmLink,
     /// DialogScreen.WarningScreen: the note about custom screens.
     DialogWarning,
-    /// WinScreen: the end poem and the credits (game/win.rs).
+    /// WinScreen: the end poem and the credits (game/interface/win.rs).
     Win,
-    /// DebugOptionsScreen, F3+F6 (game/debug_options.rs).
+    /// DebugOptionsScreen, F3+F6 (game/interface/debug_options.rs).
     DebugOptions,
-    /// A screen of a native mod's own (`native_mod_screen_open`): it draws and
+    /// A screen of a native mod's own (`mod_screen_open`): it draws and
     /// takes its input through the screen hooks.
     Mod,
-    /// PvP & HUD's widget editor (game/hud_editor.rs).
+    /// PvP & HUD's widget editor (game/interface/hud_editor.rs).
     HudEditor,
+    /// Horizon Studio script screen (`studio_screen_open`): canvas draws
+    /// itself, takes input through the screen hooks, does not draw chat.
+    Studio,
 }
 impl Screen {
-    /// The id native mods see for this screen (`NativeScreenView.id`, the
+    /// The id native mods see for this screen (`ScreenView.id`, the
     /// `screen_render_post` hook): one per variant, and a hook's contract, so
     /// it stays the same from release to release. A new variant must add one.
     fn id(self) -> &'static str {
         match self {
             Screen::Playing => "playing",
             Screen::GameModeSwitcher => "game_mode_switcher",
-            Screen::EmoteWheel => "emote_wheel",
             Screen::Paused => "paused",
             Screen::Options => "options",
             Screen::Chat => "chat",
@@ -1041,9 +656,33 @@ impl Screen {
             Screen::DebugOptions => "debug_options",
             Screen::Mod => "mod",
             Screen::HudEditor => "hud_editor",
+            Screen::Studio => "studio",
         }
     }
 }
+/// The vanilla `state` a `transformer` table entry offers to `ability`: hoe and
+/// shovel tables have one action each; the axe's strip, scrape and wax-off lists
+/// are one untagged list in `BlockTransformers.bootstrap`, so its particle names it.
+fn vanilla_tool_state(
+    transformer: &str,
+    particle: &str,
+    ability: mod_api::ToolAbility,
+    state: BlockStateId,
+) -> Option<BlockStateId> {
+    use mod_api::ToolAbility::*;
+    let action = match transformer {
+        "minecraft:axe" => match particle {
+            "scrape" => AxeScrape,
+            "wax_off" => AxeWaxOff,
+            _ => AxeStrip,
+        },
+        "minecraft:shovel" => ShovelFlatten,
+        "minecraft:hoe" => HoeTill,
+        _ => return None,
+    };
+    (action == ability).then_some(state)
+}
+
 struct Mining {
     pos: [i32; 3],
     progress: f32,
@@ -1051,13 +690,33 @@ struct Mining {
     per_tick: f32,
     ticks: u32,
 }
+impl Mining {
+    fn stage(&self) -> Option<u8> {
+        (self.progress > 0.0).then(|| ((self.progress * 10.0) as u8).min(9))
+    }
+}
+#[derive(Clone, Copy)]
+struct TransformContext<'a> {
+    world: &'a World,
+    player: Option<u32>,
+    hand: mod_api::Hand,
+    blocking: bool,
+    simulated: bool,
+}
+
 #[derive(Clone, Copy)]
 struct Hit {
     pos: [i32; 3],
     face: [i32; 3],
     point: [f64; 3],
+    /// The ray started inside the block (`BlockHitResult.isInside`).
+    inside: bool,
 }
 impl Hit {
+    /// The hit as block-use hooks hear it (`UseOnContext`'s hit result).
+    fn native(&self) -> mod_api::BlockHit {
+        mod_api::BlockHit::new(self.point, self.face, self.inside)
+    }
     /// The block the clicked face leads to (`pos.relative(direction)`).
     fn beside(&self) -> [i32; 3] {
         [
@@ -1111,6 +770,7 @@ struct GameLevel<'w> {
     >,
     border: &'w horizon_core::geometry::border::BorderGeometry,
     world: &'w mut World,
+    command_block_transition: Option<command_blocks::CommandBlockTransition>,
     redstone_experiments: bool,
     facts: &'w BlockFacts,
     collision: &'w BlockCollisionRegistry<'w>,
@@ -1121,11 +781,13 @@ struct GameLevel<'w> {
     environment: &'w Environment,
     raining: bool,
     thundering: bool,
+    /// The world's enabled feature flags as this side knows them (`LevelReader.enabledFeatures`).
+    enabled_features: &'w std::sync::Arc<[String]>,
     player_box: Option<([f64; 3], [f64; 3])>,
     /// The LAN guests in this level who trigger blocks (not spectators).
     guest_boxes: Vec<([f64; 3], [f64; 3])>,
-    /// Other players that block placement during a guest turn, whose hub is
-    /// borrowed out; None outside one, where `guest_boxes` are those players.
+    /// Other players that block placement during a guest turn, including live
+    /// ancestor bodies; None outside one, where `guest_boxes` are those players.
     building_player_boxes: Option<Vec<([f64; 3], [f64; 3])>>,
     player_collision: Option<PlayerCollision>,
     /// Minecart boxes (detector rails).
@@ -1157,6 +819,7 @@ struct GameLevel<'w> {
     /// Container loot tables (`unpackLootTable`).
     loot: Option<std::sync::Arc<horizon_world::loot::LootData>>,
     registry: &'static horizon_world::registry::BlockRegistry,
+    block_registries: &'w horizon_client::command::args::Registries,
     rules: horizon_world::level::GameRules,
     /// `Difficulty.getId()` (peaceful 0 .. hard 3).
     difficulty: i32,
@@ -1186,10 +849,14 @@ struct GameLevel<'w> {
     /// Only the integrated or dedicated server dispatches native observations.
     native_authoritative: bool,
     native_player: Option<u128>,
+    /// The acting player's entity id, beside `native_player`.
+    native_player_entity: Option<i32>,
     /// `Level.isDebug`: `setBlock` changes nothing.
     debug: bool,
     native_sounds: &'w mut Vec<creatures::NativeSound>,
     native_particles: &'w mut Vec<lan_particles::QueuedParticle>,
+    sound_seeds: Option<&'w horizon_client::lan::hub::Hub>,
+    drop_entity: Option<mod_api::EntityRef>,
     /// The block a mod's machine breaks and the tool it breaks it with
     /// (`native_machine_destroy_block`): `Block.dropResources` rolls that
     /// block's loot with the tool instead of with none. Neighbours that pop
@@ -1252,18 +919,6 @@ fn server_only_block_use(
         ]
         .iter()
         .any(|class| block.has_class(class))
-}
-/// An entity's box (`EntityDimensions.makeBoundingBox`): `width` wide and
-/// `height` tall, standing on `feet`.
-fn point_box(feet: [f64; 3], width: f64, height: f64) -> Aabb {
-    Aabb::new(
-        Vec3::new(feet[0] - width / 2.0, feet[1], feet[2] - width / 2.0),
-        Vec3::new(
-            feet[0] + width / 2.0,
-            feet[1] + height,
-            feet[2] + width / 2.0,
-        ),
-    )
 }
 impl GameLevel<'_> {
     /// `LilyPadBlock.entityInside`: the boxes of the boats that can break a pad.
@@ -1391,23 +1046,8 @@ impl LevelAccess for GameLevel<'_> {
         {
             return;
         }
-        let mut entity = None;
-        let Some(state) = self.registry.state(state) else {
-            return;
-        };
-        Self::native_block_entity_from_state(&state.name, &state.properties, &mut entity);
-        if let Some((id, nbt)) = entity {
-            self.world.block_entities.insert(
-                key,
-                BlockEntity::Mod(Box::new(
-                    horizon_client::containers::ModBlockEntityFields {
-                        id,
-                        nbt,
-                        ..Default::default()
-                    }
-                    .into(),
-                )),
-            );
+        if let Some(entity) = self.new_block_entity_for_state(state) {
+            self.world.block_entities.insert(key, entity);
         }
     }
     fn observe_block_changed(&self, pos: BlockPos, old: BlockStateId, new: BlockStateId) {
@@ -1415,20 +1055,44 @@ impl LevelAccess for GameLevel<'_> {
             self.native_block_changed(self.dimension, pos, old, new);
         }
     }
+    fn neighbor_notify(&self, pos: BlockPos, skipped: Option<Direction>) -> bool {
+        if !self.native_authoritative
+            || !mod_api::__private::listened(mod_api::HookId::NeighborNotify)
+        {
+            return false;
+        }
+        let mut cancel = false;
+        let state = self.block_state(pos);
+        self.native_neighbor_notify(self.dimension, pos, state, skipped, &mut cancel);
+        cancel
+    }
     fn observe_neighbor_changed(
         &self,
+        ticks: &mut Ticks,
         pos: BlockPos,
         state: BlockStateId,
         changed: horizon_world::level::BlockId,
         moved: bool,
     ) {
-        if self.native_authoritative {
-            self.native_neighbor_changed(self.dimension, pos, state, changed, moved);
+        if self.native_authoritative
+            && api_values::block_state::block_listens(mod_api::HookId::NeighborChanged, state)
+        {
+            use api_values::TryIntoApi;
+            let Ok(changed) = self.behaviours.table.default_state(changed).try_into_api() else {
+                return;
+            };
+            self.native_neighbor_changed(ticks, self.dimension, pos, state, changed.block(), moved);
         }
     }
-    fn redstone_change(&self, pos: BlockPos, old: i32, new: &mut i32) {
+    fn affect_neighbors_after_removal(
+        &self,
+        pos: BlockPos,
+        state: BlockStateId,
+        moved: bool,
+        updates: &mut Vec<horizon_core::neighbour_update::NeighbourUpdate>,
+    ) {
         if self.native_authoritative {
-            self.native_block_redstone(self.dimension, pos, old, new);
+            self.native_affect_neighbors_after_removal(self.dimension, pos, state, moved, updates);
         }
     }
     fn allow_spread(
@@ -1447,6 +1111,33 @@ impl LevelAccess for GameLevel<'_> {
         }
         !canceled
     }
+    fn fluid_place_block(
+        &self,
+        pos: BlockPos,
+        liquid_pos: BlockPos,
+        state: BlockStateId,
+    ) -> Option<BlockStateId> {
+        let mut new_state = state;
+        let mut cancel = false;
+        if self.native_authoritative {
+            self.native_fluid_place_block(
+                self.dimension,
+                pos,
+                liquid_pos,
+                state,
+                &mut new_state,
+                &mut cancel,
+            );
+        }
+        (!cancel).then_some(new_state)
+    }
+    fn allow_fluid_tick(&self, pos: BlockPos, fluid: &'static str) -> bool {
+        let mut cancel = false;
+        if self.native_authoritative {
+            self.native_fluid_tick(self.dimension, pos, fluid, &mut cancel);
+        }
+        !cancel
+    }
     fn allow_fluid_level_change(
         &self,
         pos: BlockPos,
@@ -1460,12 +1151,63 @@ impl LevelAccess for GameLevel<'_> {
         }
         !cancel
     }
+    fn create_fluid_source(&self, pos: BlockPos, state: BlockStateId, vanilla: bool) -> bool {
+        let mut can_convert = vanilla;
+        if self.native_authoritative {
+            self.native_create_fluid_source(self.dimension, pos, state, &mut can_convert);
+        }
+        can_convert
+    }
+    fn mod_fluid_rules(
+        &self,
+        pos: BlockPos,
+        fluid: horizon_world::fluid::ModFluid,
+        registered: horizon_world::fluid::ModFluidRules,
+    ) -> horizon_world::fluid::ModFluidRules {
+        if !self.native_authoritative {
+            return registered;
+        }
+        Self::answered_fluid_rules(self.dimension, pos, fluid, registered, |call| {
+            self.native_fluid_rules(call)
+        })
+    }
     fn allow_block_ignite(&self, pos: BlockPos, cause: &'static str) -> bool {
         let mut cancel = false;
         if self.native_authoritative {
             self.native_block_ignite(self.dimension, self.native_player, pos, cause, &mut cancel);
         }
         !cancel
+    }
+    fn block_grow_feature<'a>(
+        &mut self,
+        pos: BlockPos,
+        feature: Option<&'a str>,
+    ) -> Option<std::borrow::Cow<'a, str>> {
+        if !self.native_authoritative
+            || !mod_api::__private::listened(mod_api::HookId::BlockGrowFeature)
+        {
+            return feature.map(std::borrow::Cow::Borrowed);
+        }
+        let mut feature = feature.map(str::to_owned);
+        let mut cancel = false;
+        self.native_block_grow_feature(self.dimension, pos, &mut feature, &mut cancel);
+        feature.filter(|_| !cancel).map(std::borrow::Cow::Owned)
+    }
+    fn crop_grow_pre(&mut self, pos: BlockPos, state: BlockStateId, vanilla: bool) -> bool {
+        if !self.native_authoritative || !mod_api::__private::listened(mod_api::HookId::CropGrowPre)
+        {
+            return vanilla;
+        }
+        let mut result = mod_api::TriState::Default;
+        self.native_crop_grow_pre(self.dimension, pos, state, &mut result);
+        result.or(vanilla)
+    }
+    fn crop_grow_post(&mut self, pos: BlockPos, original: BlockStateId) {
+        if self.native_authoritative && mod_api::__private::listened(mod_api::HookId::CropGrowPost)
+        {
+            let state = self.block_state(pos);
+            self.native_crop_grow_post(self.dimension, pos, original, state);
+        }
     }
     fn allow_block_burn(&self, pos: BlockPos) -> bool {
         let mut cancel = false;
@@ -1510,33 +1252,75 @@ impl LevelAccess for GameLevel<'_> {
     fn note_block_change(
         &self,
         pos: BlockPos,
-        instrument: &str,
+        instrument: u8,
         old: i32,
         mut new: i32,
     ) -> Option<i32> {
         let mut cancel = false;
         if self.native_authoritative {
-            let context = horizon_client::mod_api::NativeNoteBlockChange {
+            let context = mod_api::NoteBlockChange {
                 dimension: self.dimension,
                 pos,
-                instrument,
+                instrument: mod_api::NoteInstrument::ALL[usize::from(instrument)],
                 old_note: old,
             };
             self.native_note_block_change(&context, &mut new, &mut cancel);
         }
         (!cancel).then_some(new)
     }
-    fn allow_note_play(&self, pos: BlockPos, instrument: &str, note: i32) -> bool {
+    fn note_block_play(
+        &self,
+        pos: BlockPos,
+        by_player: bool,
+        instrument: &mut u8,
+        note: &mut i32,
+    ) -> bool {
+        use mod_api::NoteInstrument;
+        if !self.native_authoritative
+            || !mod_api::__private::listened(mod_api::HookId::NoteBlockPlay)
+        {
+            return true;
+        }
+        let mut played_instrument = NoteInstrument::ALL[usize::from(*instrument)];
+        let mut played = *note;
         let mut cancel = false;
-        if self.native_authoritative {
-            self.native_note_play(
-                self.dimension,
-                self.native_player,
-                pos,
-                instrument,
-                note,
-                &mut cancel,
-            );
+        let (player, player_entity_id) = if by_player {
+            (self.native_player, self.native_player_entity)
+        } else {
+            (None, None)
+        };
+        self.native_note_block_play(mod_api::__private::NoteBlockPlayCall {
+            dimension: self.dimension,
+            player,
+            player_entity_id,
+            pos,
+            instrument: &mut played_instrument,
+            note: &mut played,
+            cancel: &mut cancel,
+        });
+        *instrument = played_instrument as u8;
+        // A note out of 0 to 24 keeps the block's own.
+        if (0..=24).contains(&played) {
+            *note = played;
+        }
+        !cancel
+    }
+    fn allow_portal_spawn(
+        &self,
+        pos: BlockPos,
+        state: BlockStateId,
+        shape: &horizon_world::level::PortalShape,
+    ) -> bool {
+        let mut cancel = false;
+        if self.native_authoritative && mod_api::__private::listened(mod_api::HookId::PortalSpawn) {
+            let b = shape.bottom_left;
+            let shape = mod_api::PortalShape::from(mod_api::__private::built::PortalShape {
+                x_axis: shape.x_axis,
+                bottom_left: [b.x, b.y, b.z],
+                width: shape.width,
+                height: shape.height,
+            });
+            self.native_portal_spawn(self.dimension, pos, state, shape, &mut cancel);
         }
         !cancel
     }
@@ -1556,15 +1340,15 @@ impl LevelAccess for GameLevel<'_> {
     ) -> bool {
         let mut cancel = false;
         if self.native_authoritative {
-            self.native_cauldron_level_changed(
-                self.dimension,
-                self.native_player,
+            self.native_cauldron_level_changed(mod_api::__private::CauldronLevelChangedCall {
+                dimension: self.dimension,
+                player: self.native_player,
                 pos,
-                from,
-                to,
+                from_level: from,
+                to_level: to,
                 reason,
-                &mut cancel,
-            );
+                cancel: &mut cancel,
+            });
         }
         !cancel
     }
@@ -1572,15 +1356,37 @@ impl LevelAccess for GameLevel<'_> {
         &self,
         piston: BlockPos,
         direction: horizon_core::geometry::Direction,
+        extending: bool,
         push: &[BlockPos],
         destroy: &[BlockPos],
     ) -> bool {
         let mut canceled = false;
         if self.native_authoritative {
             let step = direction.normal();
-            self.native_piston_move(self.dimension, piston, step, push, destroy, &mut canceled);
+            self.native_piston_pre(mod_api::__private::PistonPreCall {
+                dimension: self.dimension,
+                piston,
+                direction: step,
+                extending,
+                push,
+                destroy,
+                canceled: &mut canceled,
+            });
         }
         !canceled
+    }
+    fn observe_piston_moved(
+        &self,
+        piston: BlockPos,
+        direction: horizon_core::geometry::Direction,
+        extending: bool,
+        push: &[BlockPos],
+        destroy: &[BlockPos],
+    ) {
+        if self.native_authoritative {
+            let step = direction.normal();
+            self.native_piston_post(self.dimension, piston, step, extending, push, destroy);
+        }
     }
     fn adjust_signal_source(&self, state: BlockStateId, vanilla: bool) -> bool {
         let mut source = vanilla;
@@ -1588,6 +1394,69 @@ impl LevelAccess for GameLevel<'_> {
             self.native_is_signal_source(state, &mut source);
         }
         source
+    }
+    fn has_weak_power_hook(&self) -> bool {
+        self.native_authoritative
+            && mod_api::__private::has_scoped_hook(mod_api::HookId::ShouldCheckWeakPower)
+    }
+    fn adjust_should_check_weak_power(
+        &self,
+        pos: BlockPos,
+        state: BlockStateId,
+        direction: Direction,
+        vanilla: bool,
+    ) -> bool {
+        let mut check = vanilla;
+        self.native_should_check_weak_power(self.dimension, pos, state, direction, &mut check);
+        check
+    }
+    fn has_redstone_wire_connection_hook(&self) -> bool {
+        self.native_authoritative
+            && mod_api::__private::has_scoped_hook(mod_api::HookId::ShouldRedstoneWireConnectTo)
+    }
+    fn adjust_should_redstone_wire_connect_to(
+        &self,
+        pos: BlockPos,
+        state: BlockStateId,
+        direction: Option<Direction>,
+        vanilla: bool,
+    ) -> bool {
+        let mut connected = vanilla;
+        self.native_should_redstone_wire_connect_to(
+            self.dimension,
+            pos,
+            state,
+            direction,
+            &mut connected,
+        );
+        connected
+    }
+    fn has_connection_hook(&self) -> bool {
+        self.native_authoritative
+            && mod_api::__private::has_scoped_hook(mod_api::HookId::ConnectsTo)
+    }
+    fn adjust_connects_to(
+        &self,
+        kind: horizon_core::connection_kind::ConnectionKind,
+        pos: BlockPos,
+        state: BlockStateId,
+        neighbour: BlockStateId,
+        direction: Direction,
+        face_solid: bool,
+        vanilla: bool,
+    ) -> bool {
+        let mut connected = vanilla;
+        self.native_connects_to(native_hooks::ConnectsToCall {
+            dimension: self.dimension,
+            pos,
+            state,
+            kind,
+            neighbour,
+            direction,
+            face_solid,
+            connected: &mut connected,
+        });
+        connected
     }
     fn adjust_signal(
         &self,
@@ -1597,12 +1466,11 @@ impl LevelAccess for GameLevel<'_> {
         direct: bool,
         vanilla: i32,
     ) -> i32 {
-        let mut signal = vanilla;
-        if self.native_authoritative {
-            let face = direction.opposite();
-            self.native_block_signal(self.dimension, pos, state, face, direct, &mut signal);
-        }
-        signal.clamp(0, 15)
+        native_level_signals::adjust_signal(direction, vanilla, |face, signal| {
+            if self.native_authoritative {
+                self.native_block_signal(self.dimension, pos, state, face, direct, signal);
+            }
+        })
     }
     fn adjust_has_analog_output(&self, state: BlockStateId, vanilla: bool) -> bool {
         let mut output = vanilla;
@@ -1669,13 +1537,15 @@ impl LevelAccess for GameLevel<'_> {
         if self.native_authoritative {
             self.native_update_shape(
                 ticks,
-                self.dimension,
-                pos,
-                state,
-                direction,
-                neighbour_pos,
-                neighbour,
-                new,
+                native_hooks::UpdateShapeCall {
+                    dimension: self.dimension,
+                    pos,
+                    state,
+                    direction,
+                    neighbour_pos,
+                    neighbour,
+                    new,
+                },
             );
         }
     }
@@ -1687,7 +1557,9 @@ impl LevelAccess for GameLevel<'_> {
         fluid: FluidState,
         answer: &mut Option<Option<BlockStateId>>,
     ) {
-        if self.native_authoritative {
+        if self.native_authoritative
+            && let Some(fluid) = native_world_read::api_fluid_state(fluid)
+        {
             self.native_state_for_placement(self.dimension, state, context, fluid, answer);
         }
     }
@@ -1837,17 +1709,7 @@ impl LevelAccess for GameLevel<'_> {
         _state: BlockStateId,
         _direction: Direction,
     ) -> i32 {
-        // TestBlock.ownSignal.
-        if let Some(BlockEntity::TestBlock(b)) =
-            self.world.block_entities.get(&(pos.x, pos.y, pos.z))
-        {
-            return b.own_signal();
-        }
-        // TrappedChestBlock.getSignal: the players with it open, at most 15.
-        if let Some(count) = self.lid_openers.get(&(pos.x, pos.y, pos.z)) {
-            return (*count).clamp(0, 15);
-        }
-        jukebox::jukebox_signals(self.world, self.items, pos).map_or(0, |(signal, _)| signal)
+        native_level_signals::block_entity_signal(self.world, self.items, self.lid_openers, pos)
     }
     fn biome_name(&self, pos: BlockPos) -> Option<&str> {
         let chunk = self.world.chunks.get(&(pos.x >> 4, pos.z >> 4))?;
@@ -1905,8 +1767,17 @@ impl LevelAccess for GameLevel<'_> {
             return None;
         }
         let previous = self.world.block(pos.x, pos.y, pos.z);
-        self.world.set(pos.x, pos.y, pos.z, state).ok()?;
+        self.world
+            .set_with_notification(pos.x, pos.y, pos.z, state, false)
+            .ok()?;
         Some(previous)
+    }
+    fn send_block_updated(&mut self, pos: BlockPos) {
+        if (self.client_side || self.tickets.block_ticking(pos.x >> 4, pos.z >> 4))
+            && let Some(log) = &mut self.world.block_log
+        {
+            log.push((pos.x, pos.y, pos.z));
+        }
     }
     fn is_loaded(&self, pos: BlockPos) -> bool {
         self.world.loaded(pos.x, pos.z)
@@ -1935,7 +1806,10 @@ impl LevelAccess for GameLevel<'_> {
     }
     fn sun_angle(&self, _pos: BlockPos) -> f32 {
         self.environment
-            .sample(self.world.day_time, None, None)
+            .sample(&horizon_client::environment::Sample {
+                day_time: self.world.day_time,
+                ..Default::default()
+            })
             .sun_angle
     }
     fn is_raining(&self) -> bool {
@@ -2001,6 +1875,10 @@ impl LevelAccess for GameLevel<'_> {
             &shape,
         )
         .unwrap_or(false)
+    }
+    /// `ServerLevel.shouldTickBlocksAt`: only the block-ticking ticket range.
+    fn should_tick_blocks_at(&self, chunk: horizon_core::position::ChunkPos) -> bool {
+        self.tickets.block_ticking(chunk.x, chunk.z)
     }
     /// `ServerLevel.isPositionTickingWithEntitiesLoaded`: block ticking, a
     /// ticking chunk, and its entities loaded.
@@ -2104,22 +1982,34 @@ impl LevelAccess for GameLevel<'_> {
             .map(|s| s.status == horizon_client::block_entity_anim::ShulkerStatus::Closed)
     }
     fn remove_block_entity(&mut self, pos: BlockPos, old: BlockStateId, side_effects: bool) -> u8 {
+        if let Some(change) = &mut self.command_block_transition
+            && change.preserve(self.world, pos, old)
+        {
+            // Returning 0 skips remove_entity's side effects once; command blocks have no contents or drops.
+            return 0;
+        }
         self.remove_entity(pos, old, side_effects)
     }
-    fn load_block_entity(&mut self, pos: BlockPos, mut nbt: horizon_world::nbt::Compound) {
-        use horizon_world::nbt::Tag;
+    fn load_block_entity(&mut self, pos: BlockPos, mut nbt: horizon_core::nbt::Compound) {
+        use horizon_core::nbt::Tag;
         for (k, v) in [("x", pos.x), ("y", pos.y), ("z", pos.z)] {
             nbt.insert(k.into(), Tag::Int(v));
         }
+        let block = self.world.block(pos.x, pos.y, pos.z);
+        let Some(block) = self.registry.state(block) else {
+            return;
+        };
+        let name = &block.name;
         let tag = Tag::Compound(nbt);
-        if let Some((key, entity)) = horizon_client::save::decode_block_entity(&tag) {
+        if let Some((key, entity)) = horizon_client::save::decode_block_entity_for_block(&tag, name)
+        {
             self.world.block_entities.insert(key, entity);
             if tag.get("LootTable").is_some() {
                 self.emit(LevelEvent::ContainerLootTable { pos, tag });
             }
         }
     }
-    fn create_feature_spawner(&mut self, pos: BlockPos, nbt: horizon_world::nbt::Compound) {
+    fn create_feature_spawner(&mut self, pos: BlockPos, nbt: horizon_core::nbt::Compound) {
         // Guard at the owner/insert boundary as well as the live feature sink.
         // Existing entries of every class retain the prior no-op behavior.
         if self
@@ -2147,9 +2037,18 @@ impl LevelAccess for GameLevel<'_> {
         }
     }
 }
+/// A landing's block game event, emitted after its world write is applied.
+struct LandingVibration {
+    event: &'static str,
+    position: BlockPos,
+    state: BlockStateId,
+    from_entity: bool,
+}
+
 /// FallingBlockEntity carrying a block state.
 #[derive(Clone, Debug)]
 struct FallingBlock {
+    attachment_lifetime: horizon_mod_runtime::attachments::AttachmentLifetime,
     /// `Entity.yRot` and `xRot` (`/tp`, `/data get ... Rotation`).
     pub rotation: [f32; 2],
     /// When it joined its list (`horizon_client::join_seq`); set by the list.
@@ -2173,12 +2072,16 @@ struct FallingBlock {
     drop_item: bool,
     /// `Entity.fallDistance` (powder snow holds a block that fell far at 0.9).
     fall_distance: f64,
+    /// `Entity.onGround`: whether its last move was stopped going down.
+    on_ground: bool,
     /// `Entity.stuckSpeedMultiplier`: a cobweb it is in scales its next move.
     stuck: Vec3,
     damage: horizon_client::falling_block::Damage,
     /// The UUID and compound it was loaded with, kept while it moves.
-    saved: Option<Box<([i32; 4], horizon_world::nbt::Tag)>>,
+    saved: Option<Box<([i32; 4], horizon_core::nbt::Tag)>>,
 }
+horizon_mod_runtime::impl_attachment_lifetime!(FallingBlock);
+
 impl FallingBlock {
     /// Where `FallingBlockRenderer` draws the block's model corner, `alpha`
     /// into the tick: centred on the entity, then moved by `offset`, the
@@ -2234,12 +2137,14 @@ pub struct Resources {
 }
 
 struct WorldCore {
+    item_data: Arc<horizon_world::item_defaults::ItemData>,
     facts: BlockFacts,
     biomes: Arc<Biomes>,
     environment: Environment,
     collision: Arc<BlockCollisionRegistry<'static>>,
     motion: MotionResources,
     suffocation: horizon_world::suffocation::SuffocationRegistry<'static>,
+    spawn_registries: horizon_client::mobs::finalize::SpawnRegistries,
     threads: usize,
 }
 
@@ -2273,6 +2178,7 @@ struct WorldRest {
 /// recipes, loot tables and tags from the world's pack stack, over the
 /// resource root's own. Worlds without packs use `Resources.rest` directly.
 struct WorldTables {
+    conditions: horizon_world::conditions::LoadConditions,
     suffocation: horizon_world::suffocation::SuffocationRegistry<'static>,
     /// The pack files the tables were built from (a native mod's among
     /// them), for the advancement tree reload and the loot data.
@@ -2280,6 +2186,7 @@ struct WorldTables {
     items: Items,
     recipes: Recipes,
     stations: horizon_client::stations::StationData,
+    reload_sources: Option<Arc<horizon_client::crafting::ResolvedSources>>,
     /// The values of the data map types native mods registered
     /// (`native_data_map_types`).
     data_maps: native_data_maps::DataMaps,
@@ -2287,6 +2194,20 @@ struct WorldTables {
     /// over the game's own, by registry (`TagLoader.loadTagsForExistingRegistries`):
     /// what the predicates' `#tag`s of those registries read.
     pack_tags: HashMap<&'static str, HashMap<String, HashSet<String>>>,
+}
+
+struct PreparedParts {
+    block_states: Arc<api_values::block_state::Index>,
+    tags: HashMap<String, HashSet<mod_api::BlockKey>>,
+    parts: Option<mod_api::Parts>,
+}
+
+struct PreparedWorldReload {
+    structure_spawns: horizon_client::mobs::spawn_selection::StructureSpawns,
+    tables: Option<WorldTables>,
+    health: horizon_client::health::HealthResources,
+    parts: PreparedParts,
+    wire: Option<Arc<horizon_client::lan::data::SyncData>>,
 }
 
 impl WorldTables {
@@ -2300,8 +2221,25 @@ impl WorldTables {
 }
 
 /// The equipment slot of `armor[index]`: head, chest, legs, feet.
-pub(super) fn armor_slot(index: usize) -> horizon_world::player_inventory::EquipmentSlot {
-    use horizon_world::player_inventory::EquipmentSlot;
+/// `doHurtEquipment`'s `durabilityDamage` before the cast to int: `max(1, damage / 4)`.
+pub(super) fn durability_damage(damage: f32) -> f32 {
+    (damage / 4.0).max(1.0)
+}
+/// The durability damage a mod left for `slot` (`mod_api::ArmorHurt::new_damage`, cast to int
+/// as vanilla casts it); an entry it removed keeps vanilla's `fallback`.
+pub(super) fn answered_wear(
+    entries: &[mod_api::ArmorHurt],
+    slot: horizon_core::equipment_slot::EquipmentSlot,
+    fallback: u32,
+) -> u32 {
+    entries
+        .iter()
+        .find(|e| e.slot == slot)
+        .map_or(fallback, |e| e.new_damage as u32)
+}
+
+pub(super) fn armor_slot(index: usize) -> horizon_core::equipment_slot::EquipmentSlot {
+    use horizon_core::equipment_slot::EquipmentSlot;
     match index {
         0 => EquipmentSlot::Head,
         1 => EquipmentSlot::Chest,
@@ -2319,13 +2257,19 @@ pub struct UiResources {
     /// The title screen's panorama faces.
     pub panorama: Arc<horizon_client::gfx::panorama::Faces>,
 }
+
 /// What a resource pack reload replaces (`Minecraft.reloadResourcePacks`):
 /// block models and sprites with their meshing tables, item models,
 /// translations and the textures read on the CPU. Each game holds its own;
 /// cloning shares the loaded data.
 #[derive(Clone)]
 pub struct PackResources {
+    source: horizon_assets::resource_source::ResourceSource,
+    data_source: horizon_assets::resource_source::ResourceSource,
+    data_changes: horizon_assets::resource_source::ResourceSource,
+    additional_data: Arc<[Arc<horizon_client::datapack::DataPack>]>,
     assets: Arc<Assets>,
+    block_registries: Arc<horizon_client::command::args::Registries>,
     render: Arc<RenderAssets>,
     context: Arc<WorkerContext>,
     layer_names: Arc<HashMap<u32, String>>,
@@ -2338,15 +2282,23 @@ pub struct PackResources {
     forcefield: Arc<(u32, u32, Vec<u8>)>,
     /// OptiFine custom sky layers (`optifine/sky`) with their textures; empty without them.
     custom_sky: Arc<horizon_client::custom_sky::CustomSky>,
+    /// The overworld's, Nether's and End's attribute stacks with the packs' Polytone biome and
+    /// dimension modifiers (#11486), when a pack has some: what the frame draws.
+    environments: Option<Arc<[Environment; 3]>>,
+    /// The packs' Polytone custom particles and block emitters (#11486), when a pack has some.
+    polytone_particles: Option<Arc<horizon_client::particles::polytone::Registry>>,
+    /// The packs' Polytone post chains (#11486), when a pack has some.
+    polytone_post: Option<Arc<horizon_client::polytone_post::PolytonePost>>,
+    /// The packs' Polytone custom colours (`polytone/colors.json`).
+    polytone_colors: Arc<horizon_client::polytone_colors::PackColors>,
 }
+
 /// A quick craft drag as the screen draws it: each dragged slot's count and
 /// whether the slot caps it (None: hidden), and what stays in hand.
 struct DragView {
     slots: HashMap<usize, Option<(u32, bool)>>,
     left: Option<u32>,
 }
-/// Whether an item modifier of slot `group` applies in the worn or held `slot`
-/// (`EquipmentSlotGroup.test`).
 fn equipment_modifier_applies(group: &str, slot: &str) -> bool {
     group == slot
         || group == "any"
@@ -2360,20 +2312,27 @@ fn ticking_chunk(world: &World, x: i32, z: i32) -> bool {
     let Some(center) = world.chunks.get(&(x, z)) else {
         return false;
     };
-    if !center.lit {
-        return false;
-    }
-    for dz in -1..=1 {
-        for dx in -1..=1 {
-            if dx == 0 && dz == 0 {
-                continue;
-            }
-            if !world.chunks.contains_key(&(x + dx, z + dz)) {
-                return false;
-            }
-        }
-    }
-    true
+    center.lit && world.chunks.surrounded((x, z))
+}
+/// `TicketStorage.canTicketExpire` for a `PORTAL` ticket: its chunk's holder is
+/// ready for saving once the futures of its level are done, the chunk lit and
+/// its neighbours loaded out to one chunk at a ticking level
+/// (`prepareTickingChunk`) and two at an entity-ticking one
+/// (`prepareEntityTickingChunk`). The ticket's own level stands for the
+/// holder's: the area it waits for is the one its own streaming loads.
+fn portal_ticket_can_expire(
+    world: &World,
+    ticket: &horizon_client::ticket_levels::PortalTicket,
+) -> bool {
+    use horizon_client::ticket_levels::{BLOCK_TICKING, ENTITY_TICKING};
+    let r = match ticket.level {
+        l if l <= i32::from(ENTITY_TICKING) => 2,
+        l if l == i32::from(BLOCK_TICKING) => 1,
+        _ => 0,
+    };
+    let (x, z) = ticket.chunk;
+    world.chunks.get(&(x, z)).is_some_and(|c| c.lit)
+        && (-r..=r).all(|dz| (-r..=r).all(|dx| world.chunks.contains_key(&(x + dx, z + dz))))
 }
 /// Key events carry the scancode's US-layout code, which ignores XKB options like
 /// `caps:swapescape`. For the keys whose meaning the keymap may remap, take the code
@@ -2383,15 +2342,6 @@ fn follow_keymap(event: &mut WindowEvent) {
     if let WindowEvent::KeyboardInput { event, .. } = event {
         follow_named_keymap(&event.logical_key, &mut event.physical_key);
     }
-}
-
-#[cfg(test)]
-mod keymap_tests;
-
-/// Q throws the whole stack with Control down: the same modifier word the
-/// screens read (`has_control_down`), never a latched sprint toggle.
-fn drop_whole_stack(modifiers: winit::keyboard::ModifiersState) -> bool {
-    modifiers.control_key()
 }
 
 fn select_creative_tab(
@@ -2411,6 +2361,28 @@ fn select_creative_tab(
 struct WorldIcon {
     path: PathBuf,
     last_attempt: Option<Instant>,
+}
+
+#[derive(Debug, PartialEq)]
+struct QueuedLevelEvent {
+    kind: i32,
+    pos: [i32; 3],
+    data: i32,
+    source: Option<horizon_world::level::LevelEventPlayer>,
+}
+
+/// Physical and scaled GUI dimensions last reported by `window_resize`.
+#[derive(Clone, Copy, PartialEq)]
+struct ResizeState {
+    size: winit::dpi::PhysicalSize<u32>,
+    gui_size: [u32; 2],
+}
+
+impl ResizeState {
+    /// Records `self` as the last report and says whether it differs from the previous one.
+    fn differs_from(self, last: &mut Option<Self>) -> bool {
+        last.replace(self) != Some(self)
+    }
 }
 
 /// Temporary block-contact collections rebuilt on every server tick. Keeping
@@ -2438,9 +2410,9 @@ struct Game<'a> {
     /// again only when the feet block (or the dimension) changes.
     debug_density: RefCell<debug_keys::DensityCache>,
     pending_pack_reload: bool,
-    /// HDR, Smooth Gradients and the pack picked when the frame was last checked against them
-    /// (`follow_frame`).
-    frame_followed: Option<(bool, bool, String)>,
+    /// HDR, Smooth Gradients, picked path and outcome at the last frame attempt, including a failed
+    /// replacement (`follow_frame`).
+    frame_attempted: render_settings::FrameAttempt,
     /// When `resourcepacks/` was last looked at for the open pack screen, and what it held
     /// (`watch_pack_folder`).
     pack_folder: Option<(
@@ -2450,14 +2422,14 @@ struct Game<'a> {
     /// A pack reload staged on a worker (`LoadingOverlay`): the frame draws
     /// its progress until `drive_pack_reload` applies it.
     pack_reload: Option<packs::PackReload>,
-    /// A server's resource packs (game/server_packs.rs).
+    /// A server's resource packs (game/world/server_packs.rs).
     server_packs: server_packs::ServerPackState,
     /// The link a chat click asks to open (`ConfirmLinkScreen`).
     link_prompt: Option<String>,
     /// A command the player didn't type, waiting for their answer
-    /// (game/remote_chat.rs).
+    /// (game/network/remote_chat.rs).
     command_prompt: Option<remote_chat::CommandPrompt>,
-    /// A server's Code of Conduct to accept (game/code_of_conduct.rs).
+    /// A server's Code of Conduct to accept (game/interface/code_of_conduct.rs).
     code_of_conduct: Option<code_of_conduct::Prompt>,
     dialogs: dialogs::DialogState,
     /// Single player's server while it loads its world (`Minecraft.doWorldLoad`).
@@ -2468,10 +2440,15 @@ struct Game<'a> {
     /// This world's frozen damage definitions and reloadable tag snapshot.
     pub(super) health_resources: horizon_client::health::HealthResources,
     damage_tag_generation: u64,
+    /// The registries native mods registered data map types for, as of the
+    /// server tables' last build: what `data_maps_updated` fires for.
+    data_map_registries: Vec<&'static str>,
     /// This game's resource packs (`reload_packs` replaces them).
     pack: PackResources,
     /// The title and menu bundle (GUI atlas, font and panorama).
     gui: UiResources,
+    instance_groups: std::cell::RefCell<native_instance_groups::InstanceGroupStorage>,
+    standalone_geometry: native_block_entity_draw::StandaloneGeometry,
     /// `FogRenderer`'s evolving state.
     fog: horizon_client::fog::FogState,
     screen_fx: horizon_client::screen_effects::ScreenEffects,
@@ -2534,15 +2511,20 @@ struct Game<'a> {
     /// The wheel and hovered slot of `BundleMouseActions`.
     bundle_mouse: bundles::BundleMouse,
     /// The last inventory click, for the double click that gathers a stack.
-    last_inv_click: Option<(std::time::Instant, usize, bool)>,
+    last_inv_click: Option<(std::time::Instant, Option<usize>, bool)>,
     /// `lastQuickMoved`: what the last Shift click moved, which a Shift
     /// double click moves every stack of.
     last_quick_moved: Option<ItemStack>,
     /// Open container block entity, if any.
     container: Option<(i32, i32, i32)>,
+    /// The open container and the slots it had when it opened:
+    /// `Container.stillValid` holds only while every block entity the menu
+    /// took is still there, so a half of a double chest (or the container)
+    /// going away closes it.
+    open_container_slots: Option<((i32, i32, i32), usize)>,
     /// Open workstation menu (enchanting table, anvil, ...).
     station: Option<stations::Station>,
-    /// Status effects and thrown potions (game/potions.rs).
+    /// Status effects and thrown potions (game/items/potions.rs).
     potions: potions::PotionState,
     scratch_slot: Option<ItemStack>,
     mining: Option<Mining>,
@@ -2557,6 +2539,8 @@ struct Game<'a> {
     keys: horizon_client::held::HeldKeys,
     // Physical input is separate from remapped and toggled movement keys.
     physical_keys: HashSet<KeyCode>,
+    /// Keys whose first press a mod cancelled (`key_mapping_pre`): their repeats are never held.
+    rejected_keys: HashSet<KeyCode>,
     physical_buttons: HashSet<MouseButton>,
     drag_button: Option<MouseButton>,
     /// Control + left click as a right click (macOS).
@@ -2587,6 +2571,12 @@ struct Game<'a> {
     /// accounts), in place of the process's (P1's) for its connections and skin.
     split_auth: Option<std::sync::Arc<horizon_client::auth::AuthSession>>,
     focused: bool,
+    /// The visible window of a game an agent started, until a person focuses it: it opened
+    /// without the focus, and its pointer grab stays inside the game as `--offscreen`'s does,
+    /// so the person's pointer is never taken, hidden or moved.
+    unclaimed_window: bool,
+    /// The window's last focus change during a scripted run, applied once the run ends.
+    focus_after_run: Option<bool>,
     /// Whether the window currently accepts input method events.
     ime_allowed: bool,
     /// The candidate window's area last given to the window, in pixels.
@@ -2620,7 +2610,11 @@ struct Game<'a> {
     gpu_pass_detail: bool,
     screen: Screen,
     observed_screen: Option<native_hooks::ObservedScreen>,
+    /// The layout the last frame drew the inventory's effect panels with.
+    effects_layout: std::cell::Cell<Option<horizon_client::inventory_effects::EffectsLayout>>,
     window: Option<Arc<Window>>,
+    /// What `window_resize` last reported: the physical size and the GUI settings behind the scaled size.
+    resize_state: Option<ResizeState>,
     renderer: Option<Renderer>,
     /// Avoid an endless rebuild loop if the new device is lost as well.
     last_device_recovery: Option<Instant>,
@@ -2635,7 +2629,7 @@ struct Game<'a> {
     /// The first-person player's model, which only a native pack's shadow pass draws.
     shadow_only_vertices: std::cell::RefCell<Vec<Vertex>>,
     /// Runs of `entity_vertices` by entity, for a shader pack's per-entity draws; recorded only
-    /// while `pack_ids` is set (game/shader_packs.rs).
+    /// while `pack_ids` is set (game/interface/shader_packs.rs).
     entity_spans: std::cell::RefCell<Vec<horizon_client::gfx::pack_draw::EntitySpan>>,
     /// Which entity this frame's entity vertices belong to (`Frame::entity_motion`).
     entity_motion: std::cell::RefCell<Vec<(u32, u64)>>,
@@ -2645,8 +2639,14 @@ struct Game<'a> {
     /// and this frame's draws.
     skin_models: std::cell::RefCell<horizon_client::mobs::skin::SkinModels>,
     skin_frame: std::cell::RefCell<horizon_client::gfx::entity_skin::SkinFrame>,
-    /// The glowing entities' silhouettes this frame (game/glowing.rs).
+    /// The glowing entities' silhouettes this frame (game/entities/glowing.rs).
     glowing_vertices: std::cell::RefCell<Vec<Vertex>>,
+    /// Client mods' sounds (`play_local_sound`): those waiting for the next audio update
+    /// (`tick_sound_engine`), the stops and fades asked of them, and their handles.
+    mod_sounds: native_local_sounds::ModSounds,
+    /// A client mod asked to clear the particles (`clear_particles`), done before
+    /// the next frame or particle tick (`apply_mod_particle_clear`).
+    mod_clear_particles: std::cell::Cell<bool>,
     /// The shader pack's entity and block entity ids, while one draws entities.
     pack_ids: Option<shader_packs::PackIds>,
     started: Instant,
@@ -2659,11 +2659,23 @@ struct Game<'a> {
     pad: pad::Pads,
     frames: u64,
     /// The glint clock and options, read once at the start of each frame
-    /// (game/item_draw.rs).
+    /// (game/interface/item_draw.rs).
     glint_frame: horizon_client::item_render::GlintFrame,
     /// Mod block entities' geometry their mods kept
-    /// (game/native_block_entity_draw.rs).
+    /// (game/modding/native_block_entity_draw.rs).
     kept_block_entities: std::cell::RefCell<native_block_entity_draw::KeptGeometry>,
+    /// Prepared block-entity copies for this frame, in entity-stream order.
+    prepared_model_draws: std::cell::RefCell<Vec<horizon_client::gfx::PreparedModelDraw>>,
+    world_geometry: Option<horizon_client::world_geometry::WorldGeometry>,
+    /// `DebugRenderer.renderers`: the ids `debug_renderer_draw` is asked about.
+    debug_renderers: Vec<String>,
+    /// `DebugRenderer.lastDebugEntriesVersion`: none before the first view of a world.
+    debug_renderers_version: Option<u64>,
+    /// The next place in the HUD's layer order (`gui_layers::order`) whose mod layers are not
+    /// drawn yet this frame; `None` while the HUD is hidden or outside its pass.
+    hud_layer_next: Option<usize>,
+    /// The mod block entities' view distances, asked of the parts once (`native_block_entity_draw`).
+    mod_view_distances: std::cell::OnceCell<native_block_entity_draw::ViewDistances>,
     /// `item_level` for one frame, game time, day time and dimension.
     item_level_cache: std::cell::RefCell<
         Option<(
@@ -2689,7 +2701,17 @@ struct Game<'a> {
     /// Must precede session_lock: dropping the writer drains writes while the world is locked.
     player_autosaves: horizon_client::lan::playerdata::Autosaves,
     session_lock: Option<horizon_client::save::SessionLock>,
+    /// The prepared world is installed. The session lock is taken earlier so tag
+    /// reads see ready tables, and is not this marker: a final save before the
+    /// prepared `Level` is installed would replace the world with placeholder state.
+    world_adopted: bool,
     audio: Audio,
+    /// The side, registries and mod settings of this game's resource generation, which
+    /// its menus lend to the hooks they fire inside a loop; rebuilt by `refresh_loop_context`.
+    loop_context: Arc<horizon_world::native_load_context::LoopContext>,
+    setting_overrides: std::cell::RefCell<std::collections::BTreeMap<(String, String), String>>,
+    /// The native damage hooks every level of this game lends to its hits.
+    damage_hooks: horizon_client::health::DamageHooks,
     music: horizon_client::music::MusicManager,
     /// The tracks native mods play over the music (`native_music_layers`).
     music_layers: horizon_client::music::MusicLayers,
@@ -2713,6 +2735,8 @@ struct Game<'a> {
     bee_sounds: HashMap<u32, bool>,
     /// Guardians whose attack hum is playing.
     guardian_sounds: HashSet<u32>,
+    /// Remote guardian eye targets reused between ticks.
+    guardian_look_scratch: Vec<(usize, [f64; 3])>,
     dropped: horizon_client::join_seq::JoinList<ItemEntity>,
     next_entity: u32,
     /// The last entity id when this level's entity pass began: an item with a
@@ -2742,8 +2766,14 @@ struct Game<'a> {
     creation_job: Option<std::thread::JoinHandle<std::result::Result<(), String>>>,
     /// When `loading_progress` last eased (the server thread's load, 50 ms a step).
     loading_progress_at: Option<std::time::Instant>,
+    /// A received packet started or ended a piston's move: `poll_remote`
+    /// syncs the moving pistons once its packets are handled, not once per packet.
+    moving_pistons_stale: bool,
     /// The world spawn search's origin chunk and fallback height, once known.
     spawn_origin: Option<((i32, i32), i32)>,
+    /// `native_create_spawn_position` was asked, and a mod chose the spawn.
+    spawn_hook_fired: bool,
+    spawn_hook_cancelled: bool,
     spawn_spiral: horizon_client::world_spawn::ChunkSpiral,
     /// A new player's spawn search, while its candidates' chunks load.
     player_spawn: Option<horizon_client::world_spawn::PlayerSpawnFinder>,
@@ -2751,7 +2781,7 @@ struct Game<'a> {
     /// player's own (taken by `update_world`).
     spawn_wait: Vec<(i32, i32)>,
     mobs: horizon_client::join_seq::JoinList<Mob>,
-    /// `mobs` by network id, for the packets that name one (`game/mob_index.rs`).
+    /// `mobs` by network id, for the packets that name one (`game/mobs/mob_index.rs`).
     mob_index: mob_index::MobIndex,
     creatures: creatures::Creatures,
     sculk: sculk::SculkState,
@@ -2762,9 +2792,8 @@ struct Game<'a> {
     /// swap just before an attack keeps them, with the new item's enchantments
     /// (attribute swapping).
     attack_item: Option<Arc<str>>,
-    /// Mobs a player hurt (`LivingEntity.lastHurtByPlayer`), with the guest
-    /// it was by connection (None: the host).
-    last_hurt_by_player: HashMap<u32, Option<u32>>,
+    /// Mobs a player hurt (`LivingEntity.lastHurtByPlayer`), by player UUID.
+    last_hurt_by_player: HashMap<u32, combat::PlayerCredit>,
     /// Leashed mobs a player killed, with the killer's UUID: the lead drops
     /// on the corpse's next tick (`Leashable.tickLeash`), for the mods. With
     /// the corpse's dimension: each level's tick prunes only its own.
@@ -2775,17 +2804,17 @@ struct Game<'a> {
     /// Mobs whose death (`LivingEntity.die`) has been handled.
     /// Looked up per mob each tick: a fast hasher (never iterated).
     died: horizon_client::fast_hash::FxHashSet<u32>,
-    /// Client-ticked block-entity animation state (`game/block_entity_anims.rs`).
+    /// Client-ticked block-entity animation state (`game/blocks/block_entity_anims.rs`).
     be_anims: horizon_client::block_entity_anim::BlockEntityAnims,
     /// Item being used (eaten): hotbar slot and ticks used.
     using: Option<(usize, u32)>,
     /// `getUseDuration` when that use started, as a mod left it
-    /// (`game/item_use.rs`): consumables and mod items count to it.
+    /// (`game/items/item_use.rs`): consumables and mod items count to it.
     use_duration: i32,
-    /// A mod's `Start` or `Tick` set that use's ticks left (`game/item_use.rs`).
+    /// A mod's `Start` or `Tick` set that use's ticks left (`game/items/item_use.rs`).
     use_ticks_set: bool,
     /// The crossbow charge's start and middle loading sounds played so far
-    /// (`game/crossbow.rs`): each charge plays each of them once, however
+    /// (`game/items/crossbow.rs`): each charge plays each of them once, however
     /// far a mod's tick moved the charge at a time.
     crossbow_sounds: [bool; 2],
     /// Camera.oldFovModifier / fovModifier.
@@ -2803,6 +2832,11 @@ struct Game<'a> {
     armor: [Option<ItemStack>; 4],
     /// The off hand (Inventory slot 40, saved as slot 150; menu slot 504 here).
     offhand: Option<ItemStack>,
+    /// The body and saddle slots (`EquipmentSlot.BODY`, `SADDLE`; Inventory
+    /// slots 41 and 42, saved as 151 and 152). The hands and armor stay in
+    /// the fields above. Nothing in the game reads these yet; they are kept
+    /// for mods and saves.
+    equipment: horizon_items::equipment::Equipment,
     /// `ItemStack.popTime` of the nine hotbar stacks, then the off hand: set to 5
     /// when a slot gains items, counted down each tick.
     hotbar_pop: [u8; 10],
@@ -2817,6 +2851,7 @@ struct Game<'a> {
     cooldowns: horizon_client::cooldowns::Cooldowns,
     /// The source of a command run through /execute (the player otherwise).
     command_source: Option<commands::execute::Source>,
+    native_command_filter: bool,
     titles: titles::Titles,
     /// `Hud.toolHighlightTimer`: the selected item name.
     tool_highlight: horizon_client::hud_overlays::ToolHighlight,
@@ -2879,15 +2914,22 @@ struct Game<'a> {
     sleeping: Option<[i32; 3]>,
     sleep_timer: u32,
     /// The beds players sleep in that this game marked `occupied`, by level
-    /// (game/beds.rs).
+    /// (game/blocks/beds.rs).
     player_beds: Vec<(Dim, [i32; 3])>,
     /// `SleepStatus`'s active and sleeping players at the last announcement.
     sleep_seen: (i64, i64),
     dim: Dim,
     world_root: PathBuf,
+    /// The owner's offline-to-account UUID move of this world, when it opened under
+    /// the account (`playerdata::migrate_owner`): entities the world loads still name
+    /// the player by the offline UUID until their chunk is saved again.
+    owner_migration: Option<(u128, u128)>,
     /// The world's data packs' content tables, when it has packs (`None`
     /// keeps `Resources.rest`'s own in use).
     world_tables: Option<WorldTables>,
+    /// Server-owned loot and item snapshots, independent of client preloads.
+    server_loot: horizon_client::structure_blocks::LootSnapshot,
+    server_items: Option<Arc<Items>>,
     /// The world is superflat (`ServerLevel.isFlat`, for every dimension).
     world_flat: bool,
     /// The world is the Debug preset (`Level.isDebug`, for every dimension): its blocks
@@ -2901,19 +2943,19 @@ struct Game<'a> {
     /// Teleports a command made inside a level, for `native_player_teleported`
     /// once the player's move has reached their client (`leave_guest`).
     teleport_notes: Vec<server_travel::TeleportNote>,
-    /// A server's levels other than the one in place (game/levels.rs).
+    /// A server's levels other than the one in place (game/world/levels.rs).
     levels: levels::Levels,
     /// Which pass of a server tick runs (`tick_server`): the first one reads
     /// the network, the last one ends the players' tick.
     level_pass: levels::Pass,
-    /// Nether portals: the player's, items' and mobs' (game/nether_portal.rs).
+    /// Nether portals: the player's, items' and mobs' (game/blocks/nether_portal.rs).
     portals: nether_portal::Portals,
     /// The respawn point when it is not the world spawn or a bed: a respawn
-    /// anchor (`game/respawn_anchor.rs`).
+    /// anchor (`game/blocks/respawn_anchor.rs`).
     respawn_config: Option<respawn_anchor::RespawnConfig>,
     /// The next enter_dimension call comes from an End portal.
     end_portal_travel: bool,
-    /// The open WinScreen (game/win.rs).
+    /// The open WinScreen (game/interface/win.rs).
     win: Option<win::Win>,
     end: end::EndState,
     block_ticks: Ticks,
@@ -2922,24 +2964,24 @@ struct Game<'a> {
     tickets: horizon_client::ticket_levels::ChunkTickets,
     random_tick_sections: horizon_client::random_tick_sections::RandomTickSections,
     level_events: Vec<LevelEvent>,
-    falling: horizon_client::join_seq::JoinList<FallingBlock>,
+    falling: horizon_client::join_seq::JoinList<FallingBlock, false>,
     /// Blocks the server shows for a moment (`ClientboundAddTransientBlockPacket`).
     transient_blocks: transient_blocks::TransientBlocks,
-    paintings: Vec<horizon_client::entities::Painting>,
+    paintings: horizon_client::join_seq::JoinList<horizon_client::entities::Painting>,
     painting_variants: paintings::PaintingVariants,
-    item_frames: Vec<horizon_client::entities::ItemFrame>,
+    item_frames: horizon_client::join_seq::JoinList<horizon_client::entities::ItemFrame>,
     frame_model: frames::FrameModel,
     glow_frame_model: frames::FrameModel,
     /// The `map=true` frame variants.
     map_frame_model: frames::FrameModel,
     glow_map_frame_model: frames::FrameModel,
     armor_stands: horizon_client::join_seq::JoinList<horizon_client::entities::ArmorStand>,
-    /// Worn armor as of the last `collectEquipmentChanges` look (frost walker).
+    /// Worn armor as of the last equipment check (frost walker).
     location_armor: [Option<ItemStack>; 4],
-    /// `Cushion` decoration entities (game/cushions.rs).
-    cushions: Vec<horizon_client::entities::Cushion>,
+    /// `Cushion` decoration entities (game/entities/cushions.rs).
+    cushions: horizon_client::join_seq::JoinList<horizon_client::entities::Cushion>,
     /// Entities of types Horizon does not simulate.
-    others: Vec<commands::OtherEntity>,
+    others: horizon_client::join_seq::ResidentList<commands::OtherEntity>,
     armor_stand_assets: armor_stands::ArmorStandAssets,
     /// `WaypointStyleManager`.
     waypoint_styles: horizon_client::locator_bar::WaypointStyles,
@@ -2947,18 +2989,20 @@ struct Game<'a> {
     waypoints: horizon_client::locator_bar::ClientWaypoints,
     /// The camera the last frame drew from (position, yaw, pitch, fov), for the locator bar.
     locator_camera: Option<([f64; 3], f32, f32, f32)>,
-    native_camera_frame: Option<horizon_client::mod_api::NativeCamera>,
+    native_camera_frame: Option<mod_api::Camera>,
     /// The yaw and pitch a native mod's camera drew the last frame from (`native_camera_pose`),
     /// none when it drew from vanilla's.
     posed_rotation: Option<(f32, f32)>,
     /// `LocalPlayer.postEffects`: the chains the server has the screen run
     /// (`ClientboundPostEffectsPacket`), in order.
     post_effects: Vec<String>,
+    /// The game time (ticks and partial) of the last frame, for `PolyDeltaTime`.
+    polytone_post_ticks: f64,
     /// `GameRenderer.spectatedEntityPostEffect` (`checkEntityPostEffect`).
     spectated_post_effect: Option<&'static str>,
     /// `LocalPlayer.experienceDisplayStartTick`: (last progress, seen a change, tick).
     experience_display: (f32, bool, u64),
-    boats: horizon_client::join_seq::JoinList<boats::Boat>,
+    boats: horizon_client::join_seq::JoinList<boats::Boat, false>,
     /// The boats a mob's lead can hang on, for this tick's mob ticks.
     leash_boats: Vec<(u32, horizon_client::mobs::leash::HolderState)>,
     boat_models: boats::BoatModels,
@@ -2968,22 +3012,18 @@ struct Game<'a> {
     cushion_model: Option<horizon_client::mobs::Part>,
     /// Models drawn only once such an entity shows up (lead knots, wind charges...).
     entity_models: EntityModels,
-    carts: horizon_client::join_seq::JoinList<minecarts::Minecart>,
+    carts: horizon_client::join_seq::JoinList<minecarts::Minecart, false>,
     /// The boats and minecarts `native_vehicle_moved` follows (lan_vehicles.rs).
     watched_vehicles: Vec<lan_vehicles::WatchedVehicle>,
-    /// What the mods asked for server players out of reach (`native_teleport_player`...),
-    /// done after the players' packets of the tick (native_travel.rs).
-    native_moves: Vec<(u128, native_travel::NativeMove)>,
     /// Songs playing from jukeboxes (tracked sound handles).
     jukebox_sounds: HashMap<(i32, i32, i32), u64>,
     bolts: Vec<lightning::Bolt>,
     maps: maps::Maps,
-    /// The ender dragon fight (game/dragon.rs).
+    /// The ender dragon fight (game/mobs/dragon.rs).
     fight: dragon::Fight,
-    dragon: Option<dragon::Dragon>,
-    crystals: Vec<dragon::Crystal>,
-    dragon_fireballs: Vec<dragon::DragonFireball>,
-    breath_clouds: Vec<dragon::Breath>,
+    dragon: horizon_client::join_seq::ResidentSlot<dragon::Dragon>,
+    crystals: horizon_client::join_seq::JoinList<dragon::Crystal>,
+    breath_clouds: horizon_client::join_seq::ResidentList<dragon::Breath>,
     dragon_model: Option<horizon_client::mobs::Part>,
     /// Map textures waiting for the next HUD batch to upload them.
     map_patches: Vec<horizon_client::font::Patch>,
@@ -3004,11 +3044,6 @@ struct Game<'a> {
     /// and mannequins) resolve through the services in the background.
     skin_profiles: RefCell<horizon_client::skins::Resolver>,
     skin_slots: horizon_client::skins::SkinSlots,
-    /// Cosmetics on players (game/cosmetics.rs), off by default.
-    cosmetics: cosmetics::Cosmetics,
-    /// Emotes: those the wheel offers and the one playing (`game/emotes.rs`).
-    emotes: emotes::Emotes,
-    emote_wheel: emote_wheel::Wheel,
     /// 3D skin layers: each player's outer layer as one slab per painted
     /// texel, built once per (skin, slim) (`mobs::skin_layers`).
     skin_3d: RefCell<skin_models::SkinModels>,
@@ -3018,7 +3053,7 @@ struct Game<'a> {
     /// The boat the player rides.
     riding: Option<u32>,
     /// Vehicles that gained a rider this tick whose `START_RIDING_TRIGGER` was
-    /// not fired yet (`game/boarding.rs`), for a guest's turn.
+    /// not fired yet (`game/entities/boarding.rs`), for a guest's turn.
     started_riding: Vec<u32>,
     /// A rotation-only write (`/rotate`, `Entity.forceSetRotation`) to the player of this
     /// turn: `leave_guest` sends it as `ClientboundPlayerRotationPacket`, not a teleport.
@@ -3038,9 +3073,9 @@ struct Game<'a> {
     /// Item entities spawned and block entities removed while the block
     /// behaviour ran (spilled contents, popped resources).
     spill: spill::Spill,
-    /// The recipe book of the open screen (game/recipe_book.rs).
+    /// The recipe book of the open screen (game/items/recipe_book.rs).
     recipe_ui: recipe_book::RecipeUi,
-    /// The horse inventory (game/mount_menu.rs).
+    /// The horse inventory (game/interface/mount_menu.rs).
     mount_menu: mount_menu::MountMenu,
     /// The player's fishing hook.
     hook: Option<fishing::Hook>,
@@ -3049,9 +3084,10 @@ struct Game<'a> {
     tridents: horizon_client::join_seq::JoinList<trident::ThrownTrident>,
     rockets: horizon_client::join_seq::JoinList<fireworks::Rocket>,
     /// Ominous trial spawners' item spawners.
-    ominous_spawners: Vec<ominous_item_spawner::OminousItemSpawner>,
+    ominous_spawners:
+        horizon_client::join_seq::ResidentList<ominous_item_spawner::OminousItemSpawner>,
     creaking: creaking::CreakingState,
-    /// Monster spawners' display mobs (`game/spawner.rs`).
+    /// Monster spawners' display mobs (`game/mobs/spawner.rs`).
     spawners: spawner::SpawnerState,
     /// Reused candidate buffers for natural spawning.
     spawn_scratch: natural_spawning::SpawnScratch,
@@ -3060,17 +3096,25 @@ struct Game<'a> {
     bee_stinger_model: Option<horizon_client::mobs::Part>,
     tnts: horizon_client::join_seq::JoinList<tnt::PrimedTnt>,
     hoppers: HashMap<(i32, i32, i32), machines::HopperState>,
+    /// The open `host.transaction`s, innermost last (`transactions.rs`).
+    transactions: Vec<transactions::Level>,
+    /// Backing blocks whose contents notice is on the call stack, innermost last.
+    contents_changing: Vec<(mod_api::LevelRef, BlockPos)>,
     /// The screen of a mod block's menu open on this client (`native_screen`).
     mod_screen: Option<native_hooks::OpenNativeScreen>,
     /// The players with each mod container open, by level (`tick_mod_container_viewers`).
     mod_container_viewers: HashMap<(&'static str, (i32, i32, i32)), u32>,
-    /// The owners of each chunk a native mod's ticket holds, by level
-    /// (`native_force_chunk`); `streaming.mod_forced` is the level's chunks.
-    mod_chunk_tickets: HashMap<Dim, HashMap<(i32, i32), std::collections::BTreeSet<String>>>,
     /// Where item entities are, while the block entities tick (hoppers).
     item_columns: Option<machines::ItemColumns>,
+    /// The item columns for one pass of the players' pickups
+    /// (`tick_guests`), rebuilt after any write to the items (a pickup, a
+    /// command, an explosion): see `item_columns`.
+    pickup_columns: Option<machines::StampedItemColumns>,
     /// Where the mobs are, while the block entities tick (potent sulfur gas).
     pass_mobs: Option<potent_sulfur::PassMobs>,
+    /// Block-entity positions retained between ticks for client effects.
+    spawner_tick_positions: Vec<horizon_client::block_entities::Pos>,
+    trial_spawner_tick_positions: Vec<horizon_client::block_entities::Pos>,
     creative_screen: Creative,
     /// `CreativeModeInventoryScreen.ignoreTextInput`: the chat key opened the
     /// search tab, so the letter it carries is not typed into the box.
@@ -3086,8 +3130,6 @@ struct Game<'a> {
         horizon_threads::alloc_count::Counts,
         horizon_threads::alloc_count::Counts,
     )>,
-    /// This play session's frame and tick times, for opt-in performance statistics.
-    perf: horizon_client::telemetry::Session,
     /// Control replies waiting for a rendered frame or a benchmark deadline.
     pending_screenshot: Option<std::sync::mpsc::Sender<String>>,
     /// `screenshot-sequence` while it runs.
@@ -3097,30 +3139,34 @@ struct Game<'a> {
     pending_bench: Option<(Instant, std::sync::mpsc::Sender<String>, bool)>,
     /// Recent frame times for the performance overlay.
     frame_graph: horizon_client::perf_overlay::FrameGraph,
-    /// Horizon's extras (minimap, auto-reconnect; mods' counters): `game/extras.rs`.
+    /// Horizon's extras (minimap, auto-reconnect; mods' counters): `game/interface/extras.rs`.
     extras: extras::ExtrasState,
-    /// The PvP & HUD options' state (`game/pvp.rs`).
+    /// The PvP & HUD options' state (`game/entities/pvp.rs`).
     pvp: pvp::PvpState,
-    /// Horizon mods (`game/mods.rs`), none running unless turned on.
+    /// Horizon mods (`game/modding/mods/mod.rs`), none running unless turned on.
     mods: mods::ModsState,
-    /// Every item and recipe, for mods (`game/native_recipes.rs`), made once.
+    /// The in-game browser's worker, separate from the cloneable reload inputs.
+    mod_jobs: mod_browser::Jobs,
+    /// Every item and recipe, for mods (`game/modding/native_recipes.rs`), made once.
     recipe_tables: native_recipes::RecipeTables,
-    /// The item panel beside container screens (`game/native_panel.rs`).
+    /// The item panel beside container screens (`game/modding/native_panel.rs`).
     panel: native_panel::Panel,
-    /// Horizon's own shader pack, while one is picked (`game/native_shaders.rs`).
+    /// Horizon's own shader pack, while one is picked (`game/modding/native_shaders.rs`).
     native_shaders: native_shaders::NativeShaders,
-    /// The items native client mods claim and the events they haven't polled (game/native_claimed_items.rs).
+    /// The items native client mods claim and the events they haven't polled (game/modding/native_claimed_items.rs).
     native_input: native_claimed_items::ModInput,
     /// The native lifecycle bookkeeping.
     native_lifecycle: native_lifecycle::NativeLifecycle,
-    /// Native mods' config files this game loaded (game/native_configs.rs).
+    /// The mobs lent to the hook calls running now, before they join a level
+    /// (game/modding/native_unspawned_mob.rs).
+    lent_mobs: RefCell<native_unspawned_mob::LentMobs>,
+    /// Entities whose copies are held out of storage; their handles refuse until stored back.
+    held_out: Vec<u32>,
+    /// Native mods' config files this game loaded (game/modding/native_configs.rs).
     native_configs: native_configs::NativeConfigs,
-    /// Native mods' messages waiting (`game/native_net.rs`).
+    mod_phase: mod_api::__private::PhaseOwner,
+    /// Native mods' messages waiting (`game/modding/native_net.rs`).
     native_net: native_net::NativeNet,
-    /// What native mods send one player, waiting for the hub (`game/native_player_fx.rs`).
-    native_player_fx: native_player_fx::NativePlayerFx,
-    /// Native mods' kicks waiting for the tick's end (`game/native_packets.rs`).
-    native_packets: native_packets::NativePackets,
     /// The mod whose own screen is open (`Screen::Mod`).
     native_mod_screen: Option<String>,
     /// Meshed sections waiting for an upload budget (Horizon settings).
@@ -3140,22 +3186,22 @@ struct Game<'a> {
     pack_shadow_casters: (bool, bool),
     /// A scripted flight from the control socket (`fly`).
     flight: Option<control::Flight>,
-    /// The running agent action from the control socket (game/agent.rs).
+    /// The running agent action from the control socket (game/runtime/agent/mod.rs).
     agent: agent::Agent,
-    /// Widget commands waiting for the frame after a click (game/ui_control.rs).
+    /// Widget commands waiting for the frame after a click (game/runtime/ui_control.rs).
     ui_wait: ui_control::UiWait,
-    /// What happened, for `events` and `wait-for` (game/events.rs).
+    /// What happened, for `events` and `wait-for` (game/runtime/events.rs).
     events: events::Events,
-    /// Who caused each input event: a person, an agent or the game (game/input_trace.rs).
+    /// Who caused each input event: a person, an agent or the game (game/runtime/input_trace.rs).
     input_trace: input_trace::InputTrace,
-    /// A repro recording, export or replay (game/repro.rs).
+    /// A repro recording, export or replay (game/runtime/repro.rs).
     repro: repro::Repro,
     /// The health history and client captures (game/profile_capture.rs).
     profile: profile_capture::Profile,
     /// `HORIZON_TICK_SCRIPT`'s scenario (game/tick_script.rs).
     tick_script: tick_script::TickScript,
     /// The overworld's last `sky_darken` and its inputs (time, rain, thunder).
-    sky_darken_memo: std::cell::Cell<Option<((i64, u32, u32), i32)>>,
+    sky_darken_memo: std::cell::Cell<Option<((Dim, i64, u32, u32), i32)>>,
     /// The last water plane `water_plane` found, kept while none is in reach.
     water_plane_memo: std::cell::Cell<Option<f32>>,
     /// The camera's block and the second `water_plane` last scanned at.
@@ -3164,8 +3210,13 @@ struct Game<'a> {
     /// worked out for (`vehicle_mob_reach`).
     vehicle_mob_reach: std::cell::Cell<Option<(usize, horizon_client::mobs::BoxReach)>>,
     persist: persist::EntityMemory,
-    entity_attachments: HashMap<[i32; 4], horizon_world::attachments::Attachments>,
-    /// Connected to a server: the world comes from the network (game/remote.rs).
+    /// Missing profession IDs already reported for this world session.
+    missing_professions: HashSet<String>,
+    entity_attachments: HashMap<[i32; 4], horizon_mod_runtime::attachments::Attachments>,
+    entity_initialization: entity_initialization::EntityInitialization,
+    /// Typed per-level membership follows dimensions, not the temporary world swap.
+    attachment_indexes: attachment_index::Indexes,
+    /// Connected to a server: the world comes from the network (game/network/remote/mod.rs).
     remote: Option<remote::Remote>,
     /// Active packet replay session (game/studio.rs).
     pub(super) studio_replay: Option<horizon_client::studio::ReplayDriver>,
@@ -3175,23 +3226,23 @@ struct Game<'a> {
     pub(super) studio_rmb_down: bool,
     studio_camera_track_dirty: bool,
     /// Camera perspective to restore after leaving replay playback.
-    studio_replay_previous_camera_type: Option<perspective::CameraType>,
+    studio_replay_previous_camera_type: Option<horizon_client::camera::CameraType>,
     /// Replay opened from the title screen owns the synthetic remote session.
     studio_replay_standalone: bool,
     last_replay_tick: Option<Instant>,
     pub(super) studio_virtual_tick_ms: f32,
-    /// This world is open to the network (game/lan.rs).
+    /// This world is open to the network (game/network/lan/mod.rs).
     lan: Option<lan::LanHost>,
     /// Single player's server thread, which `remote` is connected to.
     integrated: Option<integrated::Integrated>,
     /// The shapes of the open world's levels, from its dimension types.
     level_shapes: horizon_client::chunk::LevelShapes,
-    /// This game is that server thread's (game/integrated.rs).
+    /// This game is that server thread's (game/world/integrated.rs).
     serving: Option<integrated::Serving>,
-    /// The open world is shared behind an invite code (game/friends.rs).
+    /// The open world is shared behind an invite code (game/network/friends.rs).
     #[cfg(feature = "friends")]
     friends: Option<friends::Sharing>,
-    /// The Social Interactions screen and the players whose chat is hidden (game/social.rs).
+    /// The Social Interactions screen and the players whose chat is hidden (game/network/social.rs).
     social: social::Social,
     world_options: Option<lan_screen::WorldOptions>,
     /// Chat Settings opened from RestrictionsScreen: Done returns to World Options.
@@ -3201,8 +3252,9 @@ struct Game<'a> {
     command_block_screen: Option<command_blocks::CommandBlockScreen>,
     block_editor: Option<block_editor::BlockEditScreen>,
     /// `StructureTemplateManager.structureRepository`: the templates in memory
-    /// by id, a miss included (game/structure_blocks.rs).
+    /// by id, a miss included (game/administration/structure_blocks.rs).
     structure_templates: HashMap<String, Option<structure_blocks::TemplateEntry>>,
+    structure_spawns: horizon_client::mobs::spawn_selection::StructureSpawns,
     /// The game tests read so far, by id (the test instance registry).
     test_defs: std::cell::RefCell<HashMap<String, Option<test_instances::TestDef>>>,
     /// `test_defs` holds the world's whole test instance registry
@@ -3212,7 +3264,7 @@ struct Game<'a> {
     test_highlights: HashMap<(i32, i32, i32), (String, std::time::Instant)>,
     /// `GameTestTicker.SINGLETON`: the game tests running on this server.
     game_tests: game_tests::GameTests,
-    /// KeyboardHandler's debug key state (game/debug_keys.rs), the physical
+    /// KeyboardHandler's debug key state (game/interface/debug_keys.rs), the physical
     /// keys held, and the debug renderers F3+B and F3+G switch on.
     debug_keys: horizon_client::debug_keys::DebugKeys,
     /// The F3 overlay's charts (F3+2, F3+3).
@@ -3220,9 +3272,9 @@ struct Game<'a> {
     /// `Minecraft.debugEntries`: what the overlay and the debug renderers
     /// show (`debug-profile.json`, F3+F6).
     debug_entries: horizon_client::debug_entries::DebugEntries,
-    /// `DebugOptionsScreen` while it is open (game/debug_options.rs).
+    /// `DebugOptionsScreen` while it is open (game/interface/debug_options.rs).
     debug_options: Option<debug_options::DebugOptionsUi>,
-    /// `DebugEntryMemory`'s readings (game/debug_lines.rs).
+    /// `DebugEntryMemory`'s readings (game/interface/debug_lines.rs).
     memory_meter: std::cell::RefCell<horizon_client::debug_overlay::MemoryMeter>,
     /// The F3 overlay's vertices between rebuilds (`draw_debug_overlay_under`).
     debug_paint: RefCell<horizon_client::debug_overlay::PaintCache>,
@@ -3240,6 +3292,9 @@ struct Game<'a> {
     /// `ServerChunkCache.lastSpawnState` of each level: its spawnable chunks
     /// and each `MobCategory`'s count.
     spawn_counts: HashMap<Dim, (i32, [i32; 8])>,
+    /// The natural spawning policy mods set on each level (`LevelRef::set_spawn_limits`,
+    /// `set_spawn_flags`); a level with none spawns as vanilla. Kept while the world is open.
+    spawn_policies: HashMap<mod_api::DimensionKey, natural_spawning::SpawnPolicy>,
     /// PauseScreen.showPauseMenu (false after F3+Escape).
     pause_menu: bool,
     pause_focus: Option<u8>,
@@ -3253,21 +3308,25 @@ struct Game<'a> {
     gamemode_switcher: Option<horizon_client::game_mode_switcher::GameModeSwitcher>,
     /// The system clipboard (`KeyboardHandler.clipboardManager`).
     clipboard: horizon_client::clipboard::SystemClipboard,
+    /// The game is handling a key, mouse or typed-text event, from the window or the
+    /// control socket: the only time a mod reaches the clipboard (`with_user_input`).
+    user_input: std::cell::Cell<bool>,
     /// Select All in the append-only text fields.
     text_selection: horizon_client::clipboard::AppendSelection,
     /// The world was saved for the application ending (`save_for_exit`).
     saved_for_exit: bool,
-    native_client_stopped: bool,
     pending_save: Option<saving::ClosingSave>,
+    /// Scheduled end of the server tick (`MinecraftServer.haveTime`).
+    server_tick_deadline: Option<Instant>,
     /// The last world frame reached the swap chain. A window the compositor
     /// stops showing gets no frames, and the event loop must not spin on it.
     frame_drawn: bool,
     /// The world list's icon in progress (`GameRenderer.tryTakeScreenshotIfNeeded`):
     /// `None` without a local world, or once the save has its icon.png.
     world_icon: Option<WorldIcon>,
-    /// The block a guest is acting on (game/lan_actions.rs).
+    /// The block a guest is acting on (game/network/lan_actions/interaction.rs).
     forced_hit: Option<Hit>,
-    /// `Minecraft.hitResult` while the clicks of a tick act (game/remote.rs
+    /// `Minecraft.hitResult` while the clicks of a tick act (game/network/remote/mod.rs
     /// `remote_handle_input`): picked once, so a creative break does not
     /// move the use that follows it past the broken block.
     tick_hit: Option<Option<Hit>>,
@@ -3283,24 +3342,21 @@ struct Game<'a> {
     /// +2): the pick helpers' `&self` reach.
     entity_reach: f64,
     block_reach: f64,
-    /// The part of a right click a guest's packet asks for (game/lan_actions.rs).
+    /// The part of a right click a guest's packet asks for (game/network/lan_actions/interaction.rs).
     guest_use: Option<GuestUse>,
     /// The last `use_hand` that ended the click did so with `FAIL`, which
     /// does not consume the action (handleUseItemOn's ANY_BLOCK_USE).
     use_failed: bool,
-    /// A mod canceled a use the acting guest's client predicted (a throw, a
-    /// placement): their inventory goes out whole when the turn ends.
-    guest_inventory_resend: bool,
-    /// Level events of this tick for the guests, and the guest acting now.
-    lan_events: Vec<(i32, [i32; 3], i32, Option<u32>)>,
+    /// Level events of this tick for the guests, with their excluded source.
+    lan_events: Vec<QueuedLevelEvent>,
     /// Jukebox level events 1010 (song name) and 1011 (`None`) for the guests;
     /// the song's network id is only known once the hub is in hand.
     lan_songs: Vec<([i32; 3], Option<String>)>,
     lan_cushion_breaks: Vec<(horizon_world::registry::BlockStateId, [f64; 3])>,
-    /// Block events (position, b0, b1, state) and entity events (id, event,
-    /// position) for the guests.
+    /// Block events (position, b0, b1, state) and entity events (id, event)
+    /// for the guests.
     lan_block_events: Vec<([i32; 3], i32, i32, u32)>,
-    lan_entity_events: Vec<(i32, i8, [f64; 3])>,
+    lan_entity_events: Vec<(i32, i8)>,
     /// Successful crits (attacking guest, hit entity), queued while the hub is taken.
     lan_critical_hits: Vec<(Option<u32>, i32, bool)>,
     /// Spear stabs that landed (the stabbing guest), queued while the hub is
@@ -3330,17 +3386,18 @@ struct Game<'a> {
     /// A mod asked for the command trees again (`native_refresh_commands`):
     /// the next server tick asks every mod for its commands and resends them.
     native_commands_refresh: bool,
-    /// Other players in the current guest turn, while its hub is borrowed out.
+    /// The abilities of the server player whose turn it is (`as_guest`): their record's
+    /// copy, which the turn reads and writes and `leave_guest` stores. None outside a turn.
+    acting_abilities: Option<horizon_client::lan::abilities::PlayerAbilities>,
+    /// Other players in the current guest turn, including borrowed ancestor bodies.
     lan_building_boxes: building_players::BuildingPlayers,
     /// A guest's `/save-all`: saved once their turn ends (`run_guest_command`),
     /// when their own state is back in their record.
     save_after_guest_turn: bool,
-    player_attachments: horizon_world::attachments::Attachments,
-    /// The joined guests' attachments, by UUID: here rather than in their
-    /// records, so a hook in one guest's turn (when the hub is out of
-    /// `self.lan`) still reaches the others'. The acting guest's are in
-    /// `player_attachments` for the turn.
-    guest_attachments: HashMap<u128, horizon_world::attachments::Attachments>,
+    /// Guests whose records are displaced by nested player swaps, outer first.
+    lan_guest_swaps: Vec<u32>,
+    /// The active player's map; a guest turn moves it from its owning record.
+    player_attachments: horizon_mod_runtime::attachments::ResidentAttachments,
     /// The block the acting player is breaking (`break_block`): its destroy
     /// event, and the ones before it, are the player's own (`Level.levelEvent`
     /// with the player excluded); the events after it are not.
@@ -3352,9 +3409,6 @@ struct Game<'a> {
     lan_acting_name: Option<String>,
     /// Their UUID (`Player.getUUID`).
     lan_acting_uuid: Option<u128>,
-    /// The player and the stack on their cursor as they clicked a native
-    /// menu, while `native_menu_clicked` hears it (`native_menu_cursor`).
-    native_click_cursor: Option<(u128, Option<horizon_client::items::ItemStack>)>,
     /// Where the mods refused to prime TNT: the sound and game event the level
     /// queued right after the prime are dropped (`prime_tnt_event`).
     tnt_refused: Option<BlockPos>,
@@ -3367,9 +3421,10 @@ struct Game<'a> {
     /// Their entity id, which the hub (often taken out of `lan` while they
     /// act) would otherwise have to be asked for.
     lan_acting_entity: Option<u32>,
-    /// The player `native_player_login` hears and their permission level, while it runs
-    /// (`native_player_permission`): the hub is out of reach there.
-    native_login_permission: Option<(u128, u8)>,
+    /// Whether the player currently swapped into the game is connectionless.
+    lan_acting_fake: bool,
+    /// A fake player's `perform_action` in progress, and what it refused.
+    fake_action: std::sync::Arc<native_server::FakeAction>,
     /// Command feedback to forward to a guest.
     chat_capture: Option<Vec<horizon_client::text::Text>>,
     /// Packets for the guest acting now, sent once its action returns.
@@ -3377,22 +3432,20 @@ struct Game<'a> {
     /// The acting guest's cooldowns, as (item, ticks): their packet needs the
     /// hub's item registry, which the guest's turn does not hold.
     guest_cooldowns: Vec<(Arc<str>, i32)>,
-    /// Players whose command tree the mods asked to send again
-    /// (`native_resend_commands`), sent in the next server tick.
-    native_resend_trees: Vec<u128>,
     /// The acting guest's own entity events (`ServerPlayer.connection.send`),
     /// sent with their entity id, which the guest's turn does not hold.
     guest_entity_events: Vec<i8>,
-    /// The acting guest's equipment breaks (`onEquippedItemBroken`: event and
-    /// position), broadcast with their entity id once their turn ends.
-    guest_equipment_breaks: Vec<(i8, [f64; 3])>,
-    /// `Level.playSound(player, ...)` of the acting guest in `SoundSource.BLOCKS`
-    /// (event, position, volume, pitch): everyone near hears it but the guest.
+    /// The acting guest's equipment breaks (`onEquippedItemBroken`'s entity
+    /// events), broadcast with their entity id once their turn ends.
+    guest_equipment_breaks: Vec<i8>,
+    /// Block sounds queued by the acting guest, excluding that guest.
     guest_block_sounds: Vec<(String, [f64; 3], f32, f32)>,
     /// `Player.playSound` of the acting guest (event, position, volume,
     /// pitch): `level.playSound(player, ...)` leaves the guest out, whose
     /// own client plays it.
     guest_player_sounds: Vec<(String, [f64; 3], f32, f32)>,
+    /// Sounds bound to an entity this tick, for the players (`game/interface/level_sounds.rs`).
+    bound_sounds: Vec<level_sounds::BoundSound>,
     /// `broadcastToAdmins` lines a guest's command queued, sent once it
     /// returns: the line, whether operators get it and whether the console
     /// logs it.
@@ -3409,6 +3462,8 @@ struct Game<'a> {
     server_lists: Option<std::sync::Arc<std::sync::Mutex<dedicated::Lists>>>,
     /// State of `/spectate`, `/posteffect`, `/debug`, `/waypoint` and friends.
     cmds: commands::extra::CommandExtras,
+    /// The retained server reload listeners of the last successful reload.
+    reload_resources: mod_api::RetainedListeners,
     ui: chat::UiState,
     combat: combat::CombatTracker,
     /// Each guest's own `CombatTracker`, out of `combat` between turns.
@@ -3437,32 +3492,127 @@ struct Game<'a> {
     restore_player_state: bool,
     stats_ui: stats_screen::StatsUi,
     adv_ui: advancements_screen::AdvUi,
-    /// The Server Links screens' state (game/server_links.rs).
+    /// The Server Links screens' state (game/network/server_links.rs).
     links_ui: server_links::LinksUi,
-    camera_type: perspective::CameraType,
+    camera_type: horizon_client::camera::CameraType,
+    requested_camera_type: std::cell::Cell<Option<horizon_client::camera::CameraType>>,
     fangs: fangs::FangState,
     /// The local player as a model (third person, the inventory).
     player_model: Option<Mob>,
 }
+/// The open world's dimensions past vanilla's three. One per process, as a window
+/// and its server thread name the same dimensions.
+static EXTRA_DIMS: std::sync::RwLock<Vec<mod_api::DimensionKey>> =
+    std::sync::RwLock::new(Vec::new());
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Dim {
     Overworld,
     Nether,
     End,
+    /// A dimension past vanilla's three, from a data pack or a mod.
+    Extra(mod_api::DimensionKey),
 }
 impl Dim {
+    /// The level as block behaviour and the mods name it.
+    fn level(self) -> LevelDimension {
+        match self {
+            Self::Overworld => LevelDimension::Overworld,
+            Self::Nether => LevelDimension::Nether,
+            Self::End => LevelDimension::End,
+            Self::Extra(_) => LevelDimension::of_level(
+                horizon_core::LevelKey::parse(self.id())
+                    .unwrap_or(horizon_core::LevelKey::OVERWORLD),
+            ),
+        }
+    }
     fn id(self) -> &'static str {
         match self {
             Self::Overworld => "minecraft:overworld",
             Self::Nether => "minecraft:the_nether",
             Self::End => "minecraft:the_end",
+            Self::Extra(key) => {
+                mod_api::__private::dimension_id(key).expect("the game's table made the key")
+            }
         }
     }
     fn from_id(id: &str) -> Self {
         match id {
             "minecraft:the_nether" => Self::Nether,
             "minecraft:the_end" => Self::End,
-            _ => Self::Overworld,
+            _ => Self::extra(id).unwrap_or(Self::Overworld),
+        }
+    }
+    /// `Level.getSeaLevel` of the level: the sea level its noise settings give a mod's level, else
+    /// the built-in level's.
+    fn sea_level(self) -> i32 {
+        Self::sea_level_of_id(self.id())
+    }
+    /// [`Self::sea_level`] of the level `id` names.
+    fn sea_level_of_id(id: &str) -> i32 {
+        horizon_core::LevelKey::parse(id).map_or(63, horizon_world::level::sea_level_of)
+    }
+    /// `DimensionType.getTeleportationScale`: how a coordinate in `source` scales into `target`,
+    /// the source's `coordinate_scale` over the target's (8 into the Overworld from the Nether).
+    fn teleportation_scale(source: Self, target: Self) -> f64 {
+        use horizon_world::dimension_type::DimensionFacts;
+        let facts = |dim: Self| {
+            horizon_core::LevelKey::parse(dim.id())
+                .ok()
+                .map(DimensionFacts::of_level)
+        };
+        match (facts(source), facts(target)) {
+            (Some(from), Some(to)) => DimensionFacts::teleportation_scale(from, to),
+            _ => 1.0,
+        }
+    }
+    /// The open world's dimension `id` past vanilla's three.
+    fn extra(id: &str) -> Option<Self> {
+        let extra = EXTRA_DIMS.read().unwrap();
+        let key = extra
+            .iter()
+            .find(|key| mod_api::__private::dimension_id(**key) == Some(id))?;
+        Some(Self::Extra(*key))
+    }
+    fn is_vanilla(id: &str) -> bool {
+        matches!(
+            id,
+            "minecraft:overworld" | "minecraft:the_nether" | "minecraft:the_end"
+        )
+    }
+    /// Whether the open world has the dimension `id`.
+    fn exists(id: &str) -> bool {
+        Self::is_vanilla(id) || Self::extra(id).is_some()
+    }
+    /// The open world's dimensions, in the order its server ticks them.
+    fn all() -> Vec<Self> {
+        let extra = EXTRA_DIMS.read().unwrap();
+        [Self::Overworld, Self::Nether, Self::End]
+            .into_iter()
+            .chain(extra.iter().copied().map(Self::Extra))
+            .collect()
+    }
+    /// The dimensions past vanilla's three of the world being opened.
+    fn set_extra<'a>(ids: impl Iterator<Item = &'a str>) {
+        *EXTRA_DIMS.write().unwrap() = ids.map(mod_api::__private::dimension_key).collect();
+    }
+    /// Adds the dimension `id` a remote server sent, which no local world told of, so that
+    /// [`Self::from_id`] finds it.
+    fn add_extra(id: &str) {
+        if !Self::exists(id) {
+            EXTRA_DIMS
+                .write()
+                .unwrap()
+                .push(mod_api::__private::dimension_key(id));
+        }
+    }
+    /// The dimension as mods' level handles name it.
+    fn key(self) -> mod_api::DimensionKey {
+        match self {
+            Self::Overworld => mod_api::DimensionKey::OVERWORLD,
+            Self::Nether => mod_api::DimensionKey::NETHER,
+            Self::End => mod_api::DimensionKey::END,
+            Self::Extra(key) => key,
         }
     }
     /// The level's shape in a world of vanilla's dimension types.
@@ -3472,21 +3622,10 @@ impl Dim {
             Self::Overworld => LevelShape::OVERWORLD,
             Self::Nether => LevelShape::NETHER,
             Self::End => LevelShape::END,
+            Self::Extra(_) => LevelShape::OVERWORLD,
         }
     }
 }
-fn death_drops(
-    inventory: &mut [Option<ItemStack>],
-    offhand: &mut Option<ItemStack>,
-    armor: &mut [Option<ItemStack>],
-) -> Vec<ItemStack> {
-    let mut stacks: Vec<ItemStack> = inventory.iter_mut().filter_map(Option::take).collect();
-    stacks.extend(offhand.take());
-    stacks.extend(armor.iter_mut().rev().filter_map(Option::take));
-    stacks.retain(|s| s.enchantment_level("minecraft:vanishing_curse") == 0);
-    stacks
-}
-
 /// `Inventory.add` on a player's 36 slots (hotbar first) and off hand,
 /// `max` the stack's own maximum: onto equal stacks first
 /// (`getSlotWithRemainingSpace`: the selected slot, the off hand, then the
@@ -3606,12 +3745,17 @@ fn level_can_have_weather(sky_light: bool, has_ceiling: bool, is_end: bool) -> b
 }
 /// `Camera.setRotation` (`rotationYXZ(π - yaw, -pitch, 0)`) for the player's
 /// view, turned round in third-person front view (`Camera.setup`).
-fn camera_rotation(camera_type: perspective::CameraType, yaw: f32, pitch: f32) -> glam::Quat {
-    let (view_yaw, view_pitch) = if camera_type == perspective::CameraType::ThirdPersonFront {
-        (yaw + 180.0, -pitch)
-    } else {
-        (yaw, pitch)
-    };
+fn camera_rotation(
+    camera_type: horizon_client::camera::CameraType,
+    yaw: f32,
+    pitch: f32,
+) -> glam::Quat {
+    let (view_yaw, view_pitch) =
+        if camera_type == horizon_client::camera::CameraType::ThirdPersonFront {
+            (yaw + 180.0, -pitch)
+        } else {
+            (yaw, pitch)
+        };
     glam::Quat::from_euler(
         glam::EulerRot::YXZ,
         std::f32::consts::PI - view_yaw.to_radians(),
@@ -3620,1658 +3764,13 @@ fn camera_rotation(camera_type: perspective::CameraType, yaw: f32, pitch: f32) -
     )
 }
 impl Game<'_> {
-    /// `Level.canHaveWeather`, from the level's dimension type (sky light, no
-    /// ceiling) and the End, which vanilla names by id. Every rain, thunder
-    /// and lightning rule asks this, never the dimension's id.
-    fn level_key(&self) -> horizon_core::LevelKey {
-        horizon_core::LevelKey::builtin_or_overworld(self.dim.id())
-    }
-    fn dimension_type(&self) -> &'static horizon_world::dimension_type::DimensionFacts {
-        horizon_world::dimension_type::DimensionFacts::of_builtin_level(self.level_key())
-    }
-    fn dimension_type_of(
-        &self,
-        dim: Dim,
-    ) -> &'static horizon_world::dimension_type::DimensionFacts {
-        horizon_world::dimension_type::DimensionFacts::of_builtin_level(
-            horizon_core::LevelKey::builtin_or_overworld(dim.id()),
-        )
-    }
-    /// `Level.isDarkOutside`.
-    fn dark_outside(&self) -> bool {
-        !self.dimension_type().has_fixed_time && self.sky_darken() >= 4
-    }
-    fn can_have_weather(&self) -> bool {
-        level_can_have_weather(
-            self.world.shape.sky_light,
-            self.world.shape.has_ceiling,
-            self.dim == Dim::End,
-        )
-    }
-    /// The rain and thunder levels (`Level.getRainLevel`, `getThunderLevel`):
-    /// the world's, where the level can have weather, else none.
-    fn weather_levels(&self, partial: f32) -> (f32, f32) {
-        if self.can_have_weather() {
-            self.world.weather.levels(partial)
-        } else {
-            (0.0, 0.0)
-        }
-    }
-    fn eye_position(&self) -> Option<[f64; 3]> {
-        let p = self.player.as_ref()?;
-        Some([
-            p.position.x,
-            p.position.y + f64::from(p.dimensions.eye_height),
-            p.position.z,
-        ])
-    }
-    /// Where targeting starts and points: the eyes along the view. Every
-    /// crosshair target (blocks, fluids, entities, mod raycasts) is found
-    /// along this ray, so a tracked controller can stand in for it.
-    fn aim(&self) -> Option<([f64; 3], [f64; 3])> {
-        // Minecraft.pick: from the camera entity's eyes along its view
-        // (LivingEntity.getViewYRot: the head's yaw).
-        if let Some(m) = self.camera_mob() {
-            return Some((
-                [m.position.x, m.eye_y(), m.position.z],
-                pick_view_vector(m.head_yaw, m.head_pitch),
-            ));
-        }
-        Some((self.eye_position()?, pick_view_vector(self.yaw, self.pitch)))
-    }
-    /// `Player.blockInteractionRange`: the block pick's and mining's reach.
-    fn reach(&self) -> f64 {
-        self.block_reach
-    }
-    /// Outline shapes that depend on more than the block state, as one box
-    /// in block space: `LightBlock` and `ScaffoldingBlock.getShape` are a full
-    /// block while the main hand holds the block's own item
-    /// (`CollisionContext.isHoldingItem`), and `ShulkerBoxBlock.getShape`
-    /// grows with the lid (`ShulkerBoxBlockEntity.getBoundingBox`).
-    fn context_outline(&self, pos: [i32; 3], state: BlockStateId) -> Option<[f64; 6]> {
-        let name = &self.res.facts().get(state).name;
-        if matches!(&**name, "minecraft:light" | "minecraft:scaffolding") {
-            return self
-                .held()
-                .is_some_and(|s| *s.item == **name)
-                .then_some([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
-        }
-        if !name.ends_with("shulker_box") {
-            return None;
-        }
-        let progress = self.be_anims.shulkers.get(&pos).map_or(0.0, |s| s.progress);
-        let facing = self
-            .pack
-            .assets
-            .registry
-            .state(state)
-            .and_then(|s| s.properties.get("facing").cloned());
-        let d = facing_offset(facing.as_deref().unwrap_or("up"));
-        let mut b = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
-        for a in 0..3 {
-            match d[a] {
-                1 => b[a + 3] += 0.5 * f64::from(progress),
-                -1 => b[a] -= 0.5 * f64::from(progress),
-                _ => {}
-            }
-        }
-        Some(b)
-    }
-    fn outline_context_kind(&self) -> horizon_world::collision_context::EntityContextKind {
-        if self.camera_mob().is_some() {
-            horizon_world::collision_context::EntityContextKind::Living
-        } else {
-            horizon_world::collision_context::EntityContextKind::Player
-        }
-    }
-    /// A block's outline boxes in world space (`getShape` plus the random offset).
-    fn outline_boxes(&self, pos: [i32; 3]) -> Vec<[f64; 6]> {
-        let state = self.world.block(pos[0], pos[1], pos[2]);
-        let declared = self
-            .collision
-            .cached_shapes()
-            .context_outline_shape(state, self.outline_context_kind());
-        if declared.is_none()
-            && let Some(b) = self.context_outline(pos, state)
-        {
-            return vec![std::array::from_fn(|i| f64::from(pos[i % 3]) + b[i])];
-        }
-        let f = self.res.facts().get(state);
-        let o = if f.outline_offset {
-            self.pack
-                .context
-                .tables
-                .offset(state, pos[0], pos[2])
-                .unwrap_or([0.0; 3])
-        } else {
-            [0.0; 3]
-        };
-        let base = [
-            f64::from(pos[0]) + o[0],
-            f64::from(pos[1]) + o[1],
-            f64::from(pos[2]) + o[2],
-        ];
-        if let Some(shape) = declared {
-            return shape
-                .boxes()
-                .iter()
-                .map(|b| {
-                    let p = b.min_position();
-                    let min = [p.x, p.y, p.z];
-                    let p = b.max_position();
-                    let max = [p.x, p.y, p.z];
-                    std::array::from_fn(|i| base[i % 3] + if i < 3 { min[i] } else { max[i - 3] })
-                })
-                .collect();
-        }
-        f.outline
-            .iter()
-            .map(|b| std::array::from_fn(|i| base[i % 3] + b[i]))
-            .collect()
-    }
-    /// The declared outline uses vanilla's inside-ray test and interaction override.
-    fn clip_declared_outline(
-        &self,
-        state: BlockStateId,
-        pos: [i32; 3],
-        origin: [f64; 3],
-        dir: [f64; 3],
-        reach: f64,
-    ) -> Option<Hit> {
-        use horizon_core::geometry::{Aabb, Vec3};
-        use std::borrow::Cow;
-        let facts = self.res.facts().get(state);
-        let cached = self.collision.cached_shapes();
-        let shape = cached.context_outline_shape(state, self.outline_context_kind());
-        let boxes: Cow<'_, [Aabb]> = if let Some(shape) = shape {
-            Cow::Borrowed(shape.boxes())
-        } else if let Some(b) = self.context_outline(pos, state) {
-            Cow::Owned(vec![Aabb::new(
-                Vec3::new(b[0], b[1], b[2]),
-                Vec3::new(b[3], b[4], b[5]),
-            )])
-        } else {
-            Cow::Owned(
-                facts
-                    .outline
-                    .iter()
-                    .map(|b| Aabb::new(Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5])))
-                    .collect(),
-            )
-        };
-        let offset = if facts.outline_offset {
-            self.pack
-                .context
-                .tables
-                .offset(state, pos[0], pos[2])
-                .unwrap_or([0.; 3])
-        } else {
-            [0.; 3]
-        };
-        let offset = Vec3::new(offset[0], offset[1], offset[2]);
-        let interaction: Cow<'_, [Aabb]> = if let Some(shape) = cached.interaction_shape(state) {
-            Cow::Borrowed(shape.boxes())
-        } else {
-            let facing = self
-                .pack
-                .assets
-                .registry
-                .state(state)
-                .and_then(|s| s.properties.get("facing"))
-                .map(String::as_str);
-            Cow::Owned(
-                interaction_shapes::boxes(&facts.name, facing)
-                    .into_iter()
-                    .map(|b| Aabb::new(Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5])))
-                    .collect(),
-            )
-        };
-        let start = Vec3::new(origin[0], origin[1], origin[2]);
-        let end = Vec3::new(
-            origin[0] + dir[0] * reach,
-            origin[1] + dir[1] * reach,
-            origin[2] + dir[2] * reach,
-        );
-        let hit = horizon_world::interaction_shapes::clip_with_interaction_override(
-            boxes.iter().map(|b| b.move_by(offset)),
-            interaction.iter().copied(),
-            start,
-            end,
-            BlockPos::new(pos[0], pos[1], pos[2]),
-        )?;
-        Some(Hit {
-            pos,
-            face: hit.direction.normal(),
-            point: [hit.location.x, hit.location.y, hit.location.z],
-        })
-    }
-    /// Voxel traversal against non-air, non-fluid blocks, clipped against
-    /// each block's outline shape (`BlockGetter.clip` with `ClipContext.Block.OUTLINE`).
-    fn pick(&self) -> Option<Hit> {
-        // A guest of a hosted world acts on the block their client targeted.
-        if let Some(hit) = self.forced_hit {
-            return Some(hit);
-        }
-        if let Some(hit) = self.tick_hit {
-            return hit;
-        }
-        let (origin, dir) = self.aim()?;
-        // GameRenderer.pick: the block ray runs out to the larger of the two
-        // interaction ranges; filterHitResult then drops a hit past the
-        // block's.
-        self.clip_ray(origin, dir, self.block_reach.max(self.entity_reach))
-            .filter(|hit| {
-                let distance: [f64; 3] = std::array::from_fn(|i| hit.point[i] - origin[i]);
-                distance.iter().map(|v| v * v).sum::<f64>() <= self.block_reach.powi(2)
-            })
-    }
-    /// The same traversal without `filterHitResult`: the block hit that
-    /// bounds the entity ray in `GameRenderer.pick`, out to the larger
-    /// interaction range — a wall between the two still hides the entity.
-    fn pick_unfiltered(&self) -> Option<Hit> {
-        if let Some(hit) = self.forced_hit {
-            return Some(hit);
-        }
-        let (origin, dir) = self.aim()?;
-        self.clip_ray(origin, dir, self.block_reach.max(self.entity_reach))
-    }
-    /// The first block outline hit within `reach` along the unit `dir`.
-    fn clip_ray(&self, origin: [f64; 3], dir: [f64; 3], reach: f64) -> Option<Hit> {
-        let mut pos = origin.map(|v| v.floor() as i32);
-        let step = dir.map(|d| if d > 0.0 { 1 } else { -1 });
-        let delta = dir.map(|d| {
-            if d == 0.0 {
-                f64::INFINITY
-            } else {
-                (1.0 / d).abs()
-            }
-        });
-        let mut t_max = [0.0; 3];
-        for i in 0..3 {
-            let boundary = if dir[i] > 0.0 {
-                f64::from(pos[i]) + 1.0
-            } else {
-                f64::from(pos[i])
-            };
-            t_max[i] = if dir[i] == 0.0 {
-                f64::INFINITY
-            } else {
-                (boundary - origin[i]) / dir[i]
-            };
-        }
-        let mut face = [0; 3];
-        let mut t = 0.0;
-        while t <= reach {
-            let state = self.world.block(pos[0], pos[1], pos[2]);
-            let f = self.res.facts().get(state);
-            if self.collision.cached_shapes().has_context_shapes(state) {
-                if let Some(hit) = self.clip_declared_outline(state, pos, origin, dir, reach) {
-                    return Some(hit);
-                }
-            } else if !self.res.facts().is_air(state)
-                && (f.fluid == Fluid::None
-                    || f.waterlogged
-                    || &*f.name == "minecraft:kelp"
-                    || f.render_shape == horizon_client::blocks::RenderShape::Model)
-                && !matches!(
-                    &*f.name,
-                    "minecraft:water" | "minecraft:lava" | "minecraft:bubble_column"
-                )
-            {
-                // The nearest entry into one of the outline's boxes (slab method).
-                let mut best: Option<(f64, [i32; 3])> = None;
-                for b in self.outline_boxes(pos) {
-                    let (mut t0, mut t1, mut axis_in, mut sign) = (0.0f64, f64::INFINITY, None, 0);
-                    let mut miss = false;
-                    for a in 0..3 {
-                        if dir[a] == 0.0 {
-                            miss |= origin[a] < b[a] || origin[a] > b[a + 3];
-                            continue;
-                        }
-                        let (lo, hi) =
-                            ((b[a] - origin[a]) / dir[a], (b[a + 3] - origin[a]) / dir[a]);
-                        let (near, far) = if lo < hi { (lo, hi) } else { (hi, lo) };
-                        if near > t0 {
-                            t0 = near;
-                            axis_in = Some(a);
-                            sign = if dir[a] > 0.0 { -1 } else { 1 };
-                        }
-                        t1 = t1.min(far);
-                    }
-                    if miss || t0 > t1 || t0 > reach {
-                        continue;
-                    }
-                    let mut normal = face;
-                    if let Some(a) = axis_in {
-                        normal = [0; 3];
-                        normal[a] = sign;
-                    }
-                    if best.is_none_or(|(bt, _)| t0 < bt) {
-                        best = Some((t0, normal));
-                    }
-                }
-                if let Some((t, mut face)) = best {
-                    // `BlockGetter.clipWithInteractionOverride`: the hit stays at the
-                    // outline's point, with the face of the interaction shape when
-                    // the ray enters that first.
-                    let name = &*f.name;
-                    let facing = self
-                        .pack
-                        .assets
-                        .registry
-                        .state(state)
-                        .and_then(|s| s.properties.get("facing"))
-                        .map(String::as_str);
-                    let inside = interaction_shapes::boxes(name, facing);
-                    if !inside.is_empty() {
-                        let at = pos.map(f64::from);
-                        let world: Vec<[f64; 6]> = inside
-                            .iter()
-                            .map(|b| std::array::from_fn(|i| at[i % 3] + b[i]))
-                            .collect();
-                        if let Some((ti, normal)) =
-                            interaction_shapes::entry(origin, dir, &world, reach, face)
-                            && ti < t
-                        {
-                            face = normal;
-                        }
-                    }
-                    return Some(Hit {
-                        pos,
-                        face,
-                        point: [
-                            origin[0] + dir[0] * t,
-                            origin[1] + dir[1] * t,
-                            origin[2] + dir[2] * t,
-                        ],
-                    });
-                }
-            }
-            let axis = if t_max[0] < t_max[1] {
-                if t_max[0] < t_max[2] { 0 } else { 2 }
-            } else if t_max[1] < t_max[2] {
-                1
-            } else {
-                2
-            };
-            t = t_max[axis];
-            t_max[axis] += delta[axis];
-            pos[axis] += step[axis];
-            face = [0; 3];
-            face[axis] = -step[axis];
-        }
-        None
-    }
-    /// The stack in the hand that acts (`getItemInHand(hand)`).
-    fn held(&self) -> Option<&ItemStack> {
-        self.stack_in(self.held_slot())
-    }
-    fn held_mut(&mut self) -> &mut Option<ItemStack> {
-        self.stack_in_mut(self.held_slot())
-    }
-    /// The slot of the hand that acts: the selected one, or `OFFHAND_SLOT`.
-    /// `LivingEntity.canGlide`: some worn piece `gliding_pieces` lets glide,
-    /// or a stack in a hand that glides there (`canGlideUsing` walks every
-    /// `EquipmentSlot`).
-    fn glider_worn(&self) -> bool {
-        let items = self.res.items();
-        let hand = |stack: Option<&ItemStack>, slot: &str| {
-            stack.is_some_and(|s| horizon_client::item_sync::can_glide_using(s, slot, items))
-        };
-        gliding_pieces(items, &self.armor).contains(&true)
-            || hand(self.inventory[self.selected].as_ref(), "mainhand")
-            || hand(self.offhand.as_ref(), "offhand")
-    }
-    /// `LivingEntity.updateFallFlying`: the glide's wear. `Util.getRandom`
-    /// picks one of the gliders that will not break (from the entity's own
-    /// random), and
-    /// `ItemStack.hurtAndBreak` takes `points` of its durability (Unbreaking
-    /// may save it). Callers skip creative.
-    pub(super) fn wear_glider(&mut self, points: u32) {
-        let gliding = gliding_pieces(self.res.items(), &self.armor);
-        let pieces: Vec<usize> = (0..4).filter(|&i| gliding[i]).collect();
-        if pieces.is_empty() {
-            return;
-        }
-        // `Util.getRandom(slotsWithGliders, this.random)`: the entity's own
-        // random, which never touches the level's stream.
-        let pick = random_source::entity().next_int_bound(pieces.len() as i32);
-        let pick = pieces[pick.unwrap_or(0) as usize];
-        if let Some(stack) = self.armor[pick].clone() {
-            let loss = self.wear(&stack, points);
-            if let Some(piece) = self.armor[pick].as_mut() {
-                piece.damage += loss;
-            }
-        }
-    }
-    /// `LivingEntity.canFreeze`'s armor half: any worn piece in
-    /// `freeze_immune_wearables`.
-    pub(crate) fn wears_freeze_immune(&self) -> bool {
-        let immune = self
-            .res
-            .items()
-            .item_tags
-            .get("minecraft:freeze_immune_wearables");
-        self.armor
-            .iter()
-            .flatten()
-            .any(|s| immune.is_some_and(|t| t.contains(&*s.item)))
-    }
-    /// `LocalPlayer.moveTowardsClosestSpace` at the body's four corners
-    /// (aiStep, unless a spectator or a passenger): a corner inside a
-    /// suffocating block sets a 0.1 speed towards the nearest side that is
-    /// free, on that side's axis; a later corner overwrites an earlier one.
-    /// Suffocating is a full collision cube that is also a full render cube,
-    /// as `in_wall` has it.
-    fn closest_space_nudge(&self) -> [Option<f64>; 2] {
-        match self.player.as_ref() {
-            Some(p) if !p.spectator && self.riding.is_none() => {
-                closest_space_nudge(p, &self.world, self.res.facts())
-            }
-            _ => [None; 2],
-        }
-    }
-    /// What the window decides for its player's body every tick: the look
-    /// (Player.travel steers sprint-swimming by the pitch), Auto Jump (LocalPlayer.sendPosition), the slowdown of an
-    /// item in use (LocalPlayer.modifyInput), the helmet's Respiration
-    /// (decreaseAirSupply), the wings, leather boots on powder snow
-    /// (PowderSnowBlock.canEntityWalkOnPowderSnow), freeze-immune wear
-    /// (LivingEntity.canFreeze), the dimension's FAST_LAVA, the sleeping
-    /// pose and blindness (Player.isMobilityRestricted, which stops a sprint).
-    pub(crate) fn sync_player_body(&mut self) {
-        let glider = self.glider_worn();
-        let sleeping = self.sleeping.is_some();
-        let item_in_use = self
-            .using
-            .and_then(|(slot, _)| {
-                if slot == shield::OFFHAND_SLOT {
-                    self.offhand.as_ref()
-                } else {
-                    self.inventory.get(slot)?.as_ref()
-                }
-            })
-            .and_then(|s| self.items().get(&s.item));
-        let item_use_speed = item_in_use.map(|i| i.use_speed);
-        let item_use_slows_sprint = item_in_use.is_some_and(|i| !i.can_sprint);
-        let respiration = self.armor[0]
-            .as_ref()
-            .map_or(0, |s| s.enchantment_level("minecraft:respiration") as i32);
-        let leather_boots = self.armor[3]
-            .as_ref()
-            .is_some_and(|s| &*s.item == "minecraft:leather_boots");
-        let freeze_immune = self.wears_freeze_immune();
-        let burn_immune = self.wears_burn_from_stepping_immunity();
-        let nudge = self.closest_space_nudge();
-        let fast_lava = self.dimension_type().fast_lava;
-        let blind = self.potions.effects.get("blindness").is_some();
-        let Some(player) = self.player.as_mut() else {
-            return;
-        };
-        player.nudge = nudge;
-        player.mobility_restricted = blind;
-        player.yaw = self.yaw;
-        player.pitch = self.pitch;
-        player.auto_jump_enabled = self.settings.auto_jump;
-        player.item_use_speed = item_use_speed;
-        player.item_use_slows_sprint = item_use_slows_sprint;
-        player.respiration = respiration;
-        player.glider = glider;
-        // On someone else's server the glide flag is the server's
-        // (`DATA_SHARED_FLAGS_ID`, applied by the SetEntityData handler); the
-        // game's own integrated server has no such round trip, so the client
-        // keeps predicting the clear a tick after the landing glide.
-        player.server_owns_glide = self.integrated.is_none();
-        let _ = player.set_sleeping(sleeping);
-        player.leather_boots = leather_boots;
-        player.freeze_immune = freeze_immune;
-        player.burn_from_stepping_immune = burn_immune;
-        player.fluids.fast_lava = fast_lava;
-    }
-    fn held_slot(&self) -> usize {
-        match self.hand {
-            Hand::Main => self.selected,
-            Hand::Off => shield::OFFHAND_SLOT,
-        }
-    }
-    /// `LivingEntity.getUsedItemHand`: the hand of the item in use.
-    fn used_hand(&self) -> Option<Hand> {
-        self.using.map(|(slot, _)| {
-            if slot == shield::OFFHAND_SLOT {
-                Hand::Off
-            } else {
-                Hand::Main
-            }
-        })
-    }
-    /// Run `f` with `hand` acting (`held`, `consume_held`, `swing_arm`).
-    fn with_hand<T>(&mut self, hand: Hand, f: impl FnOnce(&mut Self) -> T) -> T {
-        let prior = std::mem::replace(&mut self.hand, hand);
-        let out = f(self);
-        self.hand = prior;
-        out
-    }
-    /// Inventory.add: returns the stack that did not fit.
-    fn give(&mut self, mut stack: ItemStack) -> Option<ItemStack> {
-        let tutorial_item = matches!(
-            self.tutorial.step,
-            tutorial::Step::FindTree | tutorial::Step::PunchTree | tutorial::Step::CraftPlanks
-        )
-        .then(|| stack.clone());
-        let max = self
-            .res
-            .items()
-            .get(&stack.item)
-            .map_or(64, |i| i.max_stack);
-        let before = stack.count;
-        let left = inventory_add(
-            &mut self.inventory,
-            &mut self.offhand,
-            self.selected,
-            max,
-            &mut stack,
-        );
-        if stack.count < before {
-            self.tutorial_get_item(tutorial_item.as_ref());
-        }
-        left.then_some(stack)
-    }
-    fn particle_sprite(&self, state: BlockStateId, pos: [i32; 3]) -> Option<(String, u32)> {
-        let sprite = Self::block_particle_sprite(&self.pack, state)?;
-        let chunks = &self.world.chunks;
-        let (cx, cz) = (pos[0] >> 4, pos[2] >> 4);
-        let region: [[Option<&horizon_client::chunk::Chunk>; 3]; 3] = std::array::from_fn(|dz| {
-            std::array::from_fn(|dx| {
-                chunks
-                    .get(&(cx + dx as i32 - 1, cz + dz as i32 - 1))
-                    .map(|c| &**c)
-            })
-        });
-        let tint = self
-            .pack
-            .context
-            .tables
-            .terrain_particle_tint(
-                state,
-                pos,
-                &region,
-                world_biomes!(self),
-                self.streaming.biome_zoom,
-                self.streaming.biome_blend,
-            )
-            .unwrap_or(0xFFFFFF);
-        Some((sprite, tint))
-    }
-    /// ClientLevel.addBreakingParticles: one crumb on the face being mined.
-    fn crack_particle(&mut self, pos: [i32; 3], face: [i32; 3], state: BlockStateId) {
-        if self.settings.extras.hide_block_particles {
-            return;
-        }
-        let Some((sprite, tint)) = self.particle_sprite(state, pos) else {
-            return;
-        };
-        let boxes = self.particle_shape(pos, state);
-        // Keep client effects separate from the authoritative world RNG.
-        let r = self.particles.random();
-        let Some(p) = horizon_client::particles::breaking_position(r, pos, face, &boxes) else {
-            return;
-        };
-        let mut particle = Particle::terrain(r, p, [0.0; 3], sprite, tint);
-        particle.set_power(0.2);
-        particle.scale(0.6);
-        self.particles.push(particle);
-    }
-    /// `Player.dropEquipment` for the player who died: unless keep_inventory
-    /// is on, `destroyVanishingCursedItems`, then `Inventory.dropAll` from
-    /// `at` (the eyes less 0.3): slots 0..36, armor feet to head (36..39),
-    /// the off hand (40), each thrown in a random direction. The mods
-    /// (`native_loot_drops`, the dying player `who`: uuid and entity id)
-    /// may add to, change or take out the stacks before they are thrown.
-    fn drop_inventory(&mut self, at: [f64; 3], who: (u128, i32)) {
-        if self.ui.rules.bool("keep_inventory") {
-            return;
-        }
-        let mut stacks = death_drops(&mut self.inventory, &mut self.offhand, &mut self.armor);
-        self.apply_equipment();
-        let context = horizon_client::mod_api::NativeLootDrops {
-            table: "",
-            dimension: self.dim.id(),
-            origin: at,
-            block: None,
-            entity: Some((who.1 as u32, "minecraft:player")),
-            player: Some(who.0),
-            tool: None,
-            explosion: None,
-            used: false,
-        };
-        self.native_loot_drops(&context, &mut stacks);
-        stacks.retain(|stack| stack.count > 0 && &*stack.item != "minecraft:air");
-        for stack in stacks {
-            let r = &mut self.world.random;
-            let v = horizon_client::entities::drop_motion(r, self.yaw, self.pitch, true);
-            self.spawn_item(stack, at, v, 40);
-        }
-    }
-    /// Item entity `i` leaves the level (`Entity.discard`); mods hear it.
-    pub(super) fn remove_dropped(&mut self, i: usize) -> ItemEntity {
-        let e = self.dropped.remove(i);
-        self.native_entity_left(e.id);
-        e
-    }
-    /// Experience orb `i` leaves the level (`Entity.discard`); mods hear it.
-    pub(super) fn remove_orb(&mut self, i: usize) -> ExperienceOrb {
-        let o = self.orbs.remove(i);
-        self.native_entity_left(o.id);
-        o
-    }
-    /// The item entity `spawn_item` just added, unless a native mod kept it
-    /// out of the level (`native_entity_join_level`).
-    pub(super) fn just_spawned_item(&mut self) -> Option<&mut ItemEntity> {
-        let id = self.next_entity;
-        self.dropped.last_mut().filter(|d| d.id == id)
-    }
-    /// `new ItemEntity(level, x, y, z, stack, dx, dy, dz)`.
-    fn spawn_item(
-        &mut self,
-        stack: ItemStack,
-        position: [f64; 3],
-        velocity: [f64; 3],
-        pickup_delay: u32,
-    ) {
-        self.add_item_entity(stack, position, Some(velocity), pickup_delay);
-    }
-    /// `new ItemEntity(level, x, y, z, stack)`: the item leaves with its own
-    /// random's motion, which this returns.
-    pub(super) fn spawn_item_own(
-        &mut self,
-        stack: ItemStack,
-        position: [f64; 3],
-        pickup_delay: u32,
-    ) -> [f64; 3] {
-        self.add_item_entity(stack, position, None, pickup_delay)
-    }
-    fn add_item_entity(
-        &mut self,
-        stack: ItemStack,
-        position: [f64; 3],
-        velocity: Option<[f64; 3]>,
-        pickup_delay: u32,
-    ) -> [f64; 3] {
-        let item = stack.item.clone();
-        let count = stack.count as i32;
-        self.next_entity += 1;
-        let p = Vec3::new(position[0], position[1], position[2]);
-        // The item's own random, in vanilla's order: Entity's UUID, ItemEntity's
-        // bobOffs and yaw, then (without a given motion) the constructor's motion.
-        let mut own = random_source::entity();
-        let uuid = horizon_client::save::insecure_uuid(&mut own);
-        self.persist.uuids.insert(self.next_entity, uuid);
-        let bob = own.next_float() * std::f32::consts::PI * 2.0;
-        let yaw = own.next_float() * 360.0;
-        let velocity = velocity.unwrap_or_else(|| {
-            let x = own.next_double() * 0.2 - 0.1;
-            [x, 0.2, own.next_double() * 0.2 - 0.1]
-        });
-        self.dropped.push(ItemEntity {
-            rotation: [yaw, 0.0],
-            join: Default::default(),
-            no_gravity: false,
-            health: 5,
-            fire_ticks: 0,
-            thrower: None,
-            target: None,
-            id: self.next_entity,
-            stack,
-            position: p,
-            previous: p,
-            velocity: Vec3::new(velocity[0], velocity[1], velocity[2]),
-            on_ground: false,
-            vertical_collision: false,
-            horizontal_collision: false,
-            age: 0,
-            pickup_delay: i64::from(pickup_delay),
-            bob_offset: bob,
-            ticks: 0,
-            needs_sync: false,
-            stuck: Vec3::ZERO,
-            was_touching_water: false,
-        });
-        // ServerLevel.addFreshEntity.
-        if self.native_joins_flush(false, self.next_entity) {
-            self.native_item_spawn(self.next_entity, &item, count, position);
-        }
-        velocity
-    }
-    /// The block entity at `pos` saved with its id and position
-    /// (`saveWithFullMetadata`), or the saved one Horizon keeps as loaded:
-    /// what a broken block's loot sees as `LootContextParams.BLOCK_ENTITY`.
-    fn loot_block_entity(&self, pos: [i32; 3], block: &str) -> Option<horizon_world::nbt::Tag> {
-        let key = (pos[0], pos[1], pos[2]);
-        match self.world.block_entities.get(&key) {
-            Some(entity) => Some(horizon_client::save::encode_block_entity(
-                key, entity, block,
-            )),
-            None => spill::saved_entity(&self.world, pos),
-        }
-    }
-    /// Where a loot roll at `origin` happens, for a mod's own loot kinds:
-    /// the block entity it may copy from, and this level as
-    /// `LootContext.getLevel` gives it (`Level.isRaining`: rain above 0.2;
-    /// `isThundering`: thunder above 0.9; neither where `canHaveWeather` is
-    /// false: a level with a ceiling or no sky light, or the End).
-    fn loot_place_at(
-        &self,
-        origin: [f64; 3],
-        block_entity: Option<horizon_world::nbt::Tag>,
-    ) -> horizon_world::loot::NativeLootPlace {
-        let (rain, thunder) = self.world.weather.levels(1.0);
-        // Level.canHaveWeather: sky light, no ceiling and not the End.
-        let weather =
-            self.world.shape.sky_light && !self.world.shape.has_ceiling && self.dim != Dim::End;
-        horizon_world::loot::NativeLootPlace {
-            origin: Some(origin),
-            block_entity,
-            level: Some(horizon_world::loot::NativeLootLevel {
-                dimension: self.dim.id().to_owned(),
-                game_time: self.world.game_time,
-                day_time: self.world.day_time,
-                raining: weather && rain > 0.2,
-                thundering: weather && thunder > 0.9,
-            }),
-        }
-    }
-    /// `Block.getDrops` for a block a player breaks: the block's loot table
-    /// with the player as `this`, drawing from its server random sequence
-    /// (`LootContext.Builder.create`), else the level random. The roll's
-    /// origin is the block's centre and `block_entity` the entity it had.
-    fn block_loot_at(
-        &mut self,
-        pos: [i32; 3],
-        state: BlockStateId,
-        held: Option<&ItemStack>,
-        block_entity: Option<horizon_world::nbt::Tag>,
-    ) -> Vec<ItemStack> {
-        let registry = self.pack.assets.registry;
-        let dynamic = self.pending.dynamic(pos);
-        let place = self.loot_place_at(pos.map(|v| f64::from(v) + 0.5), block_entity);
-        let mut drops =
-            horizon_world::loot::with_native_loot_place(place, || {
-                match world_items!(self).block_loot_sequence(registry, state) {
-                    Some(sequence) => {
-                        let random = self.rand_sequences.get(&sequence, self.level.seed);
-                        world_items!(self)
-                            .block_drops_by_player(registry, state, held, &dynamic, random)
-                    }
-                    None => world_items!(self).block_drops_by_player(
-                        registry,
-                        state,
-                        held,
-                        &dynamic,
-                        &mut self.world.random,
-                    ),
-                }
-            });
-        let player = self.native_acting_id();
-        self.native_block_drops(pos, state, Some(player), held, None, &mut drops);
-        drops
-    }
-    /// Block.popResource
-    fn pop_resource(&mut self, pos: [i32; 3], mut stack: ItemStack) {
-        self.pending.attach(pos, &mut stack);
-        // Block.popResource: Mth.nextDouble offsets from the level random; the
-        // motion is `new ItemEntity(..)`'s own, from the item's random.
-        let p = spill::pop_position(&mut self.world.random, pos);
-        // Block.popResource draws its offsets before the private overload checks the gamerule.
-        if !self.ui.rules.bool("block_drops") {
-            return;
-        }
-        self.spawn_item_own(stack, p, 10);
-    }
-    /// `Block.popResourceFromFace`: the loot leaves the clicked face with the
-    /// face's own motion instead of the item's random one.
-    fn pop_resource_from_face(&mut self, pos: [i32; 3], face: [i32; 3], mut stack: ItemStack) {
-        self.pending.attach(pos, &mut stack);
-        let (p, v) = spill::pop_position_from_face(&mut self.world.random, pos, face);
-        // The private overload checks the gamerule after the offsets are drawn.
-        if !self.ui.rules.bool("block_drops") {
-            return;
-        }
-        self.spawn_item(stack, p, v, 10);
-    }
-    /// Player.drop: thrown from the eyes along the view direction.
-    fn drop_held(&mut self, all: bool) {
-        if self.eye_position().is_none() {
-            return;
-        }
-        let spectator = self.spectator();
-        let Some(thrown) = horizon_client::items::take_held_drop(
-            &mut self.inventory[self.selected],
-            all,
-            spectator,
-        ) else {
-            return;
-        };
-        self.player_drop(thrown);
-    }
-    /// `Player.drop`: the statistics and a thrown item entity in front of the player.
-    pub(super) fn player_drop(&mut self, thrown: ItemStack) {
-        let Some(eye) = self.eye_position() else {
-            return;
-        };
-        // LivingEntity.drop: every drop swings the main hand, a menu's
-        // THROW and a creative tab's drop included.
-        self.swing_hand(Hand::Main, SwingAnimation::DEFAULT);
-        // Player.drop: the drop statistics.
-        self.award_stat("dropped", &thrown.item, thrown.count as i32);
-        self.award_custom_stat("drop", 1);
-        let player = self.native_acting_id();
-        let mut cancel = false;
-        self.native_item_dropped_v2(player, &thrown, &mut cancel);
-        if cancel {
-            // The stack stays the player's: what doesn't fit is thrown after all.
-            if let Some(rest) = self.give(thrown) {
-                self.throw_from_eyes(rest, eye, true);
-            }
-            return;
-        }
-        self.native_item_dropped(player, &thrown.item, thrown.count);
-        self.throw_from_eyes(thrown, eye, true);
-    }
-    /// `Player.createItemStackToDrop`: an item entity thrown from the eyes
-    /// along the view direction. `thrown_from_hand` (`drop(stack, true)`, the
-    /// drop key) names the player as the thrower; `drop(stack, false)`, for
-    /// what no longer fits in the inventory, does not.
-    fn throw_from_eyes(&mut self, thrown: ItemStack, eye: [f64; 3], thrown_from_hand: bool) {
-        let r = &mut self.world.random;
-        let v = horizon_client::entities::drop_motion(r, self.yaw, self.pitch, false);
-        // `getEyeY() - 0.3F`.
-        let y = eye[1] - f64::from(0.3f32);
-        self.spawn_item(thrown, [eye[0], y, eye[2]], v, 40);
-        // A native mod can keep the item out of the level (native_entity_join_level).
-        if thrown_from_hand {
-            let uuid = self.acting_player_uuid();
-            if let Some(item) = self.just_spawned_item() {
-                item.thrower = Some(uuid);
-            }
-        }
-    }
-    /// The UUID of the player acting: the guest whose turn it is, else the host.
-    pub(super) fn acting_player_uuid(&mut self) -> [i32; 4] {
-        match self.lan_acting_uuid {
-            Some(guest) => horizon_client::lan::playerdata::uuid_ints(guest),
-            None => self.level.ensure_player_uuid(),
-        }
-    }
-    /// `Entity.doWaterSplashEffect` for a dropped item. The client draws the
-    /// bubble and splash particles (`Level.addParticle` is empty on a server).
-    /// The server plays `entity.generic.splash` (`Entity.playSound`); a
-    /// client's `playSeededSound` ignores that call.
-    pub(super) fn apply_item_splash(&mut self, splash: horizon_client::entities::ItemSplash) {
-        use horizon_client::entities::ItemSplash;
-        let client = self.options.execution_role.is_client();
-        match splash {
-            ItemSplash::Sound { at, volume, pitch } if !client => {
-                self.audio
-                    .play("minecraft:entity.generic.splash", Some(at), volume, pitch);
-            }
-            ItemSplash::Particle {
-                bubble,
-                at,
-                velocity,
-            } if client => {
-                use horizon_client::particles::{ParticleOptions, ParticleType};
-                let kind = if bubble {
-                    ParticleType::Bubble
-                } else {
-                    ParticleType::Splash
-                };
-                self.particles
-                    .add(&ParticleOptions::simple(kind), at, velocity);
-            }
-            _ => {}
-        }
-    }
-    fn tick_items(&mut self) {
-        // EntityTickEvent.Pre for the items about to tick, and the Post after them.
-        let mut round = self.native_tick_round();
-        if round.listening() {
-            let ticking = self.entity_ticking_area();
-            let merging = self.remote.is_none();
-            let mut i = 0;
-            while let Some(item) = self.dropped.get(i) {
-                let (id, x, z) = (
-                    item.id,
-                    item.position.x.floor() as i32,
-                    item.position.z.floor() as i32,
-                );
-                if !(merging && self.joined_during_entity_pass(id)) && ticking(x, z) {
-                    let kind = native_ticks::TickKind::Fixed("minecraft:item");
-                    self.native_tick_pre_batch(&mut round, id, kind);
-                }
-                i += 1;
-            }
-        }
-        self.tick_dropped_items(&mut round);
-        horizon_threads::work::clear_work();
-        self.native_tick_post_batch(round);
-    }
-    /// An item that joined during this tick's entity pass: it first ticks on
-    /// the next one.
-    fn joined_during_entity_pass(&self, id: u32) -> bool {
-        id > self.ticked_entities_through || self.contact_drops.contains(&id)
-    }
-    fn tick_dropped_items(&mut self, round: &mut native_ticks::TickRound) {
-        let mut items = std::mem::take(&mut self.dropped);
-        // ServerLevel.tick: only entities in entity-ticking chunks tick.
-        let ticking = self.entity_ticking_area();
-        let mut removed = vec![false; items.len()];
-        let mut cells = horizon_client::entities::ItemCells::new(&items);
-        // A LAN or server guest only shows the host's items.
-        let merging = self.remote.is_none();
-        let obstacles = horizon_client::entities::ObstacleGrid::new(self.item_entity_collisions());
-        let mut nearby = Vec::new();
-        let mut bubble_tops = Vec::new();
-        // `ItemUtils.onContainerDestroyed`: what a destroyed item held, and
-        // where it lay, for adding to the level once its own tick is done.
-        let mut destroyed: Vec<(ItemStack, Vec3)> = Vec::new();
-        let item_type = horizon_threads::work::entity_id("minecraft:item");
-        for i in 0..items.len() {
-            horizon_threads::work::set_entity(item_type);
-            if removed[i] {
-                // Merged into an earlier item before its own tick: it never ticked.
-                round.not_ticked(items[i].id);
-                continue;
-            }
-            let item = &mut items[i];
-            // `addFreshEntity` during the entity pass: the item ticks from the
-            // next tick on (`EntityTickList`).
-            if merging && self.joined_during_entity_pass(item.id) {
-                continue;
-            }
-            if !ticking(
-                item.position.x.floor() as i32,
-                item.position.z.floor() as i32,
-            ) || round.canceled(item.id)
-            {
-                continue;
-            }
-            // ItemEntity.tick's noPhysics (servers only): out of a block
-            // placed on it, towards the closest open side (#1252).
-            let no_physics = merging && item.inside_block(&self.world, self.collision);
-            let escape_speed = no_physics.then(|| self.world.random.next_float() * 0.2 + 0.1);
-            // `getEntityCollisions(entity, bounds.expandTowards(movement))`: the boxes around
-            // where the item can reach this tick (a block of slack for the next velocity).
-            let reach = Vec3::new(
-                item.velocity.x.abs() + 1.0,
-                item.velocity.y.abs() + 1.0,
-                item.velocity.z.abs() + 1.0,
-            );
-            obstacles.near(item.bounds().inflate(reach), &mut nearby);
-            let mut entered = Vec::new();
-            let (alive, discarded) = self.tick_item_with_block_contacts(
-                item,
-                escape_speed,
-                &nearby,
-                false,
-                &mut |splash| entered.push(splash),
-            );
-            // Entity.doWaterSplashEffect: the server plays the sound (broadcast
-            // to clients). Its addParticle is empty.
-            for splash in entered {
-                self.apply_item_splash(splash);
-            }
-            if discarded {
-                removed[i] = true;
-                cells.remove(i, item.previous);
-                continue;
-            }
-            if merging && !no_physics {
-                self.item_landing_event(item.id, item.previous, item.position, item.on_ground);
-                self.entity_powder_snow_particles(
-                    item.previous,
-                    item.position,
-                    item.bounds(),
-                    item.velocity,
-                    false,
-                );
-            }
-            cells.moved(i, item.previous, item.position);
-            // Entity.handleOnAboveBubbleColumn: the server sends the particles of
-            // the surface of a bubble column the item is at the top of.
-            if merging {
-                bubble_tops.extend(horizon_client::motion::bubble_column_surfaces(
-                    &self.world,
-                    self.pack.assets.registry,
-                    self.res.facts(),
-                    self.collision,
-                    item.bounds(),
-                ));
-            }
-            // ItemEntity.tick: merge every 2 ticks while moving between
-            // blocks, every 40 otherwise, before the lifetime check.
-            let block = |v: Vec3| (v.x.floor(), v.y.floor(), v.z.floor());
-            let rate = if block(item.previous) == block(item.position) {
-                40
-            } else {
-                2
-            };
-            if merging
-                && (alive || item.age == 6000 && item.position.y > -128.0)
-                && item.ticks.is_multiple_of(rate)
-            {
-                let max_stack = |stack: &ItemStack| self.stack_max_size(stack).max(1);
-                horizon_client::entities::merge_with_neighbours(
-                    &mut items,
-                    &mut removed,
-                    &mut cells,
-                    i,
-                    &max_stack,
-                );
-            }
-            let item = &mut items[i];
-            let mut alive = alive || (item.age < 6000 && item.position.y > -128.0);
-            if merging && !removed[i] && item.age >= 6000 && item.position.y > -128.0 {
-                let mut extra_life = 0;
-                self.native_item_expire(item.id, &item.stack, &mut extra_life);
-                if extra_life > 0 {
-                    item.age = 6000 - extra_life.min(32766);
-                    alive = true;
-                } else if self.serving.is_some() || self.options.dedicated.is_some() {
-                    self.native_item_despawn(
-                        item.id,
-                        &item.stack.item,
-                        item.stack.count as i32,
-                        [item.position.x, item.position.y, item.position.z],
-                    );
-                }
-            }
-            if !alive || removed[i] {
-                removed[i] = true;
-                cells.remove(i, item.position);
-                continue;
-            }
-            let environment = item.environment_tick(
-                &self.world,
-                self.res.facts(),
-                self.pack.assets.registry,
-                world_items!(self),
-            );
-            if environment.should_play_lava_hurt_sound(item.ticks) {
-                let pitch = 2.0 + self.world.random.next_float() * 0.4;
-                self.audio.play(
-                    "minecraft:entity.generic.burn",
-                    Some([item.position.x, item.position.y, item.position.z]),
-                    0.4,
-                    pitch,
-                );
-            }
-            if !environment.alive {
-                removed[i] = true;
-                cells.remove(i, item.position);
-                for stack in environment.spilled {
-                    destroyed.push((stack, item.position));
-                }
-            }
-        }
-        for pos in bubble_tops {
-            self.bubble_column_particles(pos);
-        }
-        let mut removed = removed.into_iter();
-        items.retain(|_| !removed.next().unwrap_or(false));
-        let Some(p) = self.player.as_ref() else {
-            self.restore_item_batch(items);
-            self.spawn_destroyed_contents(destroyed);
-            return;
-        };
-        if p.health.dead_or_dying() || self.spectator() {
-            self.restore_item_batch(items);
-            self.spawn_destroyed_contents(destroyed);
-            return;
-        }
-        let w = f64::from(p.dimensions.width) / 2.0;
-        let (min, max) = (
-            [
-                p.position.x - w - 1.0,
-                p.position.y - 0.5,
-                p.position.z - w - 1.0,
-            ],
-            [
-                p.position.x + w + 1.0,
-                p.position.y + f64::from(p.dimensions.height) + 0.5,
-                p.position.z + w + 1.0,
-            ],
-        );
-        let feet = [p.position.x, p.position.y, p.position.z];
-        let own = self.level.ensure_player_uuid();
-        let mut kept = Vec::with_capacity(items.len());
-        for mut item in items {
-            let b = item.bounds();
-            let touching = b.min_position().x < max[0]
-                && b.max_position().x > min[0]
-                && b.min_position().y < max[1]
-                && b.max_position().y > min[1]
-                && b.min_position().z < max[2]
-                && b.max_position().z > min[2];
-            // ItemEntity.playerTouch: no pickup delay, and the target (if any) is this player.
-            if touching && item.pickup_delay == 0 && item.target.is_none_or(|t| t == own) {
-                if self.native_pickup_refused(&item.stack, item.thrower, item.position) {
-                    item.pickup_delay = 10;
-                    kept.push(item);
-                    continue;
-                }
-                let before = item.stack.count;
-                let kind = item.stack.item.clone();
-                let thrower = item.thrower;
-                match self.give(item.stack.clone()) {
-                    None => {
-                        self.award_stat("picked_up", &kind, before as i32);
-                        if let Some(thrower) = thrower {
-                            self.trigger_thrown_picked_up_by_player(&item.stack, thrower);
-                        }
-                        self.add_pickup(
-                            pickups::Taken::Item(Box::new(item)),
-                            pickups::Collector::Player,
-                        );
-                        let pitch = ((self.world.random.next_float()
-                            - self.world.random.next_float())
-                            * 0.7
-                            + 1.0)
-                            * 2.0;
-                        self.audio
-                            .play("minecraft:entity.item.pickup", Some(feet), 0.2, pitch);
-                        continue;
-                    }
-                    Some(rest) => {
-                        if rest.count < before {
-                            self.award_stat("picked_up", &kind, (before - rest.count) as i32);
-                            if let Some(thrower) = thrower {
-                                self.trigger_thrown_picked_up_by_player(&rest, thrower);
-                            }
-                            self.add_pickup(
-                                pickups::Taken::Item(Box::new(item.clone())),
-                                pickups::Collector::Player,
-                            );
-                            // handleTakeItemEntity: the random pitch of a full pickup.
-                            let pitch = ((self.world.random.next_float()
-                                - self.world.random.next_float())
-                                * 0.7
-                                + 1.0)
-                                * 2.0;
-                            self.audio
-                                .play("minecraft:entity.item.pickup", Some(feet), 0.2, pitch);
-                        }
-                        item.stack = rest;
-                    }
-                }
-            }
-            kept.push(item);
-        }
-        self.restore_item_batch(kept.into());
-        self.spawn_destroyed_contents(destroyed);
-    }
-    /// `ItemUtils.onContainerDestroyed`: each stack a destroyed item held
-    /// becomes an item entity where that item lay (`new ItemEntity(level, x,
-    /// y, z, stack)`), nudged by 0.2 less 0.1 per axis and pickable at once.
-    fn spawn_destroyed_contents(&mut self, destroyed: Vec<(ItemStack, Vec3)>) {
-        for (stack, at) in destroyed {
-            let r = &mut self.world.random;
-            let motion = [
-                r.next_double() * 0.2 - 0.1,
-                r.next_double() * 0.2 - 0.1,
-                r.next_double() * 0.2 - 0.1,
-            ];
-            self.spawn_item(stack, [at.x, at.y, at.z], motion, 0);
-        }
-    }
-    /// Run vanilla block behaviour against the world through `LevelAccess`.
-    fn with_level<R>(
-        &mut self,
-        f: impl FnOnce(&Behaviours, &mut GameLevel<'_>, &mut Ticks) -> R,
-    ) -> R {
-        self.ensure_stateful_entity_table();
-        let darken = self.sky_darken();
-        let (rain, thunder) = self.weather_levels(1.0);
-        // Spectators ignore block triggers (Entity.isIgnoringBlockTriggers).
-        let spectator = self.spectator();
-        let player_box = self.player.as_ref().filter(|_| !spectator).map(|p| {
-            let w = f64::from(p.dimensions.width) / 2.0;
-            (
-                [p.position.x - w, p.position.y, p.position.z - w],
-                [
-                    p.position.x + w,
-                    p.position.y + f64::from(p.dimensions.height),
-                    p.position.z + w,
-                ],
-            )
-        });
-        let player_collision = self.player.as_ref().filter(|_| !spectator).map(|p| {
-            let main_hand = self.inventory.get(self.selected).and_then(Option::as_ref);
-            PlayerCollision {
-                y: p.position.y,
-                descending: p.velocity.y < 0.0,
-                fall_distance: p.fall_distance,
-                main_hand_item: main_hand.map_or_else(
-                    || Arc::from("minecraft:air"),
-                    |stack| Arc::clone(&stack.item),
-                ),
-                main_hand_count: main_hand.map_or(0, |stack| stack.count as i32),
-                leather_boots: self.armor[3]
-                    .as_ref()
-                    .is_some_and(|stack| stack.item.as_ref() == "minecraft:leather_boots"),
-            }
-        });
-        let cart_boxes = self
-            .carts
-            .iter()
-            .map(|c| {
-                let p = c.position;
-                (
-                    [p.x - 0.49, p.y, p.z - 0.49],
-                    [p.x + 0.49, p.y + 0.7, p.z + 0.49],
-                )
-            })
-            .collect();
-        let arrow_boxes = self
-            .creatures
-            .projectiles
-            .iter()
-            .filter(|p| p.arrow.is_some())
-            .map(|p| p.position)
-            .chain(self.tridents.iter().map(|t| t.position))
-            .map(|at| {
-                let b = horizon_client::arrows::arrow_bounds(at);
-                (b.min_position().components(), b.max_position().components())
-            })
-            .collect();
-        let guest_boxes = self.lan_block_trigger_boxes();
-        let building_player_boxes = self
-            .lan_acting
-            .is_some()
-            .then(|| self.lan_building_boxes.boxes(self.dim));
-        let dimension = match self.dim {
-            Dim::Overworld => LevelDimension::Overworld,
-            Dim::Nether => LevelDimension::Nether,
-            Dim::End => LevelDimension::End,
-        };
-        let rules = self.level_rules();
-        let fire_players: Vec<[f64; 3]> = self
-            .player
-            .iter()
-            .filter(|_| !spectator)
-            .map(|p| [p.position.x, p.position.y, p.position.z])
-            .chain(self.lan.iter().flat_map(|h| {
-                h.hub
-                    .guests
-                    .iter()
-                    .filter(|g| h.hub.here(g) && !g.spectator())
-                    .map(|g| g.position)
-            }))
-            .collect();
-        let mut trigger_hooks: Vec<(Aabb, bool)> = self
-            .hook
-            .iter()
-            .map(|h| (h.bounds(), h.applies_block_effects()))
-            .collect();
-        self.lan_hook_triggers(&mut trigger_hooks);
-        // EntityType.LIGHTNING_BOLT: 0 x 0.
-        let trigger_extras: Vec<Aabb> = self
-            .bolts
-            .iter()
-            .map(|b| point_box(b.at, 0.0, 0.0))
-            .collect();
-        // `ContainerOpenersCounter.getEntitiesWithContainerOpen`: the players
-        // whose menu still holds a container of the block at a position. A
-        // double chest answers for both halves (`ChestBlockEntity$1` takes a
-        // `CompoundContainer`), and a spectator's menu counts for nothing.
-        let mut open_containers: Vec<(i32, i32, i32)> = Vec::new();
-        for key in self.container.into_iter().filter(|_| !spectator).chain(
-            self.lan
-                .iter()
-                .flat_map(|h| {
-                    h.hub
-                        .guests
-                        .iter()
-                        .filter(|g| h.hub.here(g) && !g.spectator())
-                })
-                .filter_map(|g| g.menu.as_ref().and_then(|m| m.pos)),
-        ) {
-            open_containers.push(key);
-            if let Some(other) = self.chest_other_half(key) {
-                open_containers.push(other);
-            }
-        }
-        // CopperGolem.hasContainerOpen: the chest a golem opened, and its other half.
-        let mut golem_chests: Vec<(i32, i32, i32)> = Vec::new();
-        for &key in self.world.chest_openers.keys() {
-            golem_chests.push(key);
-            golem_chests.extend(self.chest_other_half(key));
-        }
-        let native_authoritative = self.native_authoritative();
-        let mut level = GameLevel {
-            gateway_servers: &mut self.be_anims.gateway_servers,
-            border: self.border.geometry(),
-            redstone_experiments: self
-                .level
-                .enabled_features
-                .iter()
-                .any(|feature| feature == "minecraft:redstone_experiments"),
-            cart_boxes,
-            item_frames: &self.item_frames,
-            carts: &self.carts,
-            arrow_boxes,
-            entities: entity::entity_lists_of!(self),
-            crystals: &self.crystals,
-            trigger_hooks,
-            trigger_extras,
-            world: &mut self.world,
-            facts: self.res.facts(),
-            collision: self.collision,
-            events: &mut self.level_events,
-            dimension,
-            darken,
-            environment: match dimension {
-                LevelDimension::Overworld => self.res.environment(),
-                LevelDimension::Nether => self.res.nether_environment(),
-                LevelDimension::End => self.res.end_environment(),
-            },
-            raining: rain > 0.2,
-            thundering: thunder > 0.9,
-            player_box,
-            guest_boxes,
-            building_player_boxes,
-            player_collision,
-            biomes: world_biomes!(self),
-            seed: self.level.seed,
-            behaviours: self.res.behaviours(),
-            items: world_items!(self),
-            recipes: world_recipes!(self),
-            // A client rolls no loot (LootTable.getRandomItems needs a
-            // ServerLevel): it doesn't load the tables on its game thread.
-            loot: if self.remote.is_some() {
-                None
-            } else {
-                horizon_client::structure_blocks::loot_data(
-                    &self.options.resources,
-                    &pack_files(&self.world_tables),
-                )
-            },
-            registry: self.pack.assets.registry,
-            rules,
-            difficulty: i32::from(self.ui.difficulty),
-            fire_players,
-            rand_sequences: &mut self.rand_sequences,
-            pending: &mut self.pending,
-            spill: &mut self.spill,
-            tickets: self.tickets.levels(),
-            random_tick_sections: &mut self.random_tick_sections,
-            lid_openers: &mut self.lid_openers,
-            open_containers: &open_containers,
-            golem_chests: &golem_chests,
-            client_side: self.remote.is_some(),
-            native_authoritative,
-            native_player: self.lan_acting_uuid,
-            debug: self.world_debug,
-            native_sounds: &mut self.creatures.lan_sounds,
-            native_particles: &mut self.creatures.lan_particles,
-            drop_tool: None,
-            drop_breaker_at: None,
-            drop_into: None,
-        };
-        let result = f(self.res.behaviours(), &mut level, &mut self.block_ticks);
-        self.flush_spill();
-        if self.lan.is_some() {
-            self.flush_lan_particles();
-            self.flush_native_sounds();
-        }
-        result
-    }
-    pub(super) fn native_block_ignite_allowed(
-        &mut self,
-        pos: BlockPos,
-        cause: &'static str,
-    ) -> bool {
-        self.with_level(|_, level, _| level.allow_block_ignite(pos, cause))
-    }
-    pub(super) fn native_cauldron_level_change_allowed(
-        &mut self,
-        pos: BlockPos,
-        from: i32,
-        to: i32,
-        reason: &'static str,
-    ) -> bool {
-        self.with_level(|_, level, _| level.allow_cauldron_level_change(pos, from, to, reason))
-    }
-    /// Level.setBlock(pos, state, UPDATE_ALL) with neighbour/shape updates.
-    fn level_set(&mut self, pos: [i32; 3], state: BlockStateId) -> Result<()> {
-        self.level_set_with_flags(pos, state, level_flags::UPDATE_ALL)
-    }
-    /// Level.setBlock with the caller's update flags.
-    fn level_set_with_flags(
-        &mut self,
-        pos: [i32; 3],
-        state: BlockStateId,
-        flags: i32,
-    ) -> Result<()> {
-        self.with_level(|b, level, ticks| {
-            b.set_block(
-                level,
-                ticks,
-                BlockPos::new(pos[0], pos[1], pos[2]),
-                state,
-                flags,
-            );
-        });
-        self.process_level_events()
-    }
-    fn attack_block(&mut self, pos: [i32; 3]) -> Result<()> {
-        let note = self.with_level(|b, level, ticks| {
-            b.attack_block(level, ticks, BlockPos::new(pos[0], pos[1], pos[2]))
-        });
-        // NoteBlock.attack awards the statistic.
-        if note {
-            self.award_custom_stat("play_noteblock", 1);
-        }
-        self.process_level_events()
-    }
-    /// `AbstractCandleBlock.getParticleOffsets`, in sixteenths of a block:
-    /// `CandleBlock.PARTICLE_OFFSETS` by its `candles` (one to four wicks),
-    /// then `CandleCakeBlock.PARTICLE_OFFSETS`, whose one wick sits a block up.
-    fn candle_offsets(name: &str, candles: Option<usize>) -> &'static [[u8; 3]] {
-        const OFFSETS: [&[[u8; 3]]; 5] = [
-            &[[8, 8, 8]],
-            &[[6, 7, 8], [10, 8, 7]],
-            &[[8, 5, 10], [6, 7, 8], [9, 8, 7]],
-            &[[7, 5, 9], [10, 7, 9], [6, 7, 6], [9, 8, 6]],
-            &[[8, 16, 8]],
-        ];
-        if name.ends_with("candle_cake") {
-            OFFSETS[4]
-        } else {
-            OFFSETS[candles.unwrap_or(1).clamp(1, 4) - 1]
-        }
-    }
-    /// `AbstractCandleBlock.extinguish`: the smoke from each wick, at the
-    /// block's `getParticleOffsets` (sixteenths of a block), rising 0.1.
-    fn candle_smoke(&mut self, pos: [i32; 3], state: BlockStateId) {
-        use horizon_client::particles::{ParticleOptions, ParticleType};
-        let candles = self
-            .pack
-            .assets
-            .registry
-            .state(state)
-            .and_then(|s| s.properties.get("candles")?.parse::<usize>().ok());
-        let offsets = Self::candle_offsets(&self.res.facts().get(state).name, candles);
-        for o in offsets {
-            self.particles.add(
-                &ParticleOptions::simple(ParticleType::Smoke),
-                [
-                    f64::from(pos[0]) + f64::from(o[0]) / 16.0,
-                    f64::from(pos[1]) + f64::from(o[1]) / 16.0,
-                    f64::from(pos[2]) + f64::from(o[2]) / 16.0,
-                ],
-                [0.0, 0.1, 0.0],
-            );
-        }
-    }
-    /// `LeverBlock.makeParticle` at full scale: a powered lever puffs one red
-    /// dust on the clicking client (`LeverBlock.useWithoutItem`).
-    fn lever_puff(&mut self, pos: [i32; 3]) {
-        // The server's side of a guest's pull draws nothing.
-        if self.lan_acting.is_some() {
-            return;
-        }
-        let state = self.world.block(pos[0], pos[1], pos[2]);
-        let Some(registry_state) = self.pack.assets.registry.state(state) else {
-            return;
-        };
-        let prop = |key: &str| registry_state.properties.get(key).map(String::as_str);
-        if prop("powered") != Some("true") {
-            return;
-        }
-        // FACING is horizontal; getConnectedDirection is the face's direction.
-        let facing = match prop("facing") {
-            Some("north") => [0, 0, -1],
-            Some("south") => [0, 0, 1],
-            Some("west") => [-1, 0, 0],
-            Some("east") => [1, 0, 0],
-            _ => return,
-        };
-        let connected = match prop("face") {
-            Some("ceiling") => [0, -1, 0],
-            Some("floor") => [0, 1, 0],
-            _ => facing,
-        };
-        let at = |base: i32, i: usize| {
-            f64::from(base) + 0.5 + 0.1 * f64::from(-facing[i]) + 0.2 * f64::from(-connected[i])
-        };
-        let p = [at(pos[0], 0), at(pos[1], 1), at(pos[2], 2)];
-        self.particles.add(
-            &horizon_client::particles::ParticleOptions::dust([1.0, 0.0, 0.0], 1.0),
-            p,
-            [0.0; 3],
-        );
-    }
-    /// Track which chunks are ticking (Ticks needs chunk load/unload).
-    fn sync_tick_chunks(&mut self) {
-        if !self.tick_chunks.synchronize(&self.world.chunks) {
-            return;
-        }
-        // Move only the added keys out so registration can borrow all of Game.
-        let added = self.tick_chunks.take_added();
-        for &key in &added {
-            self.register_chunk_ticks(key);
-        }
-        for &key in self.tick_chunks.removed() {
-            self.random_tick_sections.remove(&key);
-            self.portals.sections.remove(&key);
-            self.block_ticks
-                .remove_chunk(horizon_core::position::ChunkPos::new(key.0, key.1));
-            self.block_ticks
-                .comparator_outputs
-                .retain(|p, _| (p.x >> 4, p.z >> 4) != key);
-            self.hoppers.retain(|p, _| (p.0 >> 4, p.2 >> 4) != key);
-            // Its moving pistons were saved with it and load back with it.
-            self.block_ticks
-                .moving_pistons
-                .retain(|(p, _)| (p.x >> 4, p.z >> 4) != key);
-        }
-        self.tick_chunks.recycle_added(added);
-    }
-    /// `DistanceManager`'s tickets of the level in place, from every player in
-    /// it (the local player, LAN guests, a server's players; a spectator the
-    /// rule skips holds none), its forced chunks and its portal tickets. A game
-    /// with neither a server nor a player (the headless fixtures) ticks
-    /// everywhere.
-    fn update_chunk_tickets(&mut self) {
-        let rule = self.ui.rules.bool("spectators_generate_chunks");
-        let mut players: Vec<((i32, i32), bool)> = self.lan.as_ref().map_or_else(Vec::new, |h| {
-            h.hub
-                .guests
-                .iter()
-                .filter(|g| h.hub.here(g))
-                .map(|g| (g.chunk(), g.spectator()))
-                .collect()
-        });
-        if let Some(p) = &self.player {
-            players.push((
-                (
-                    (p.position.x.floor() as i32) >> 4,
-                    (p.position.z.floor() as i32) >> 4,
-                ),
-                self.spectator(),
-            ));
-        }
-        // A spectator the rule skips is still a player: a game that has one
-        // must not take the headless fixtures' tick-everywhere case below.
-        let any_player = !players.is_empty();
-        let sources = (!self.options.execution_role.is_client() || any_player).then(|| {
-            horizon_client::ticket_levels::Sources {
-                players: players
-                    .into_iter()
-                    .filter(|&(_, spectator)| game_mode::loads_chunks(rule, spectator))
-                    .map(|(chunk, _)| chunk)
-                    .collect(),
-                // A native mod's ticket holds its chunk as `/forceload` does
-                // (NeoForge's `TicketController` uses the same `FORCED` level).
-                forced: self
-                    .streaming
-                    .forced
-                    .iter()
-                    .chain(
-                        self.streaming
-                            .mod_forced
-                            .iter()
-                            .filter(|c| !self.streaming.forced.contains(c)),
-                    )
-                    .copied()
-                    .collect(),
-                // Filled from the `PORTAL` tickets by `update`.
-                portal: Vec::new(),
-                // EnderDragonFight.tick: while a player watches the fight, the
-                // arena holds a `DRAGON` ticket of radius 9 at (0, 0), so its
-                // island ticks out to 7 chunks whatever the watcher's
-                // simulation distance. The fight lives where the type has one.
-                dragon: (self.dimension_type().has_ender_dragon_fight
-                    && self.fight.arena_watched())
-                .then_some((0, 0)),
-                view_distance: self.settings.render_distance.clamp(2, 32),
-                simulation_distance: self.settings.simulation_distance.max(2),
-            }
-        });
-        self.tickets.update(sources);
-    }
-    /// `ServerLevel.startTickingChunk`: a loaded chunk's saved ticks are
-    /// scheduled from the game time at which it becomes a ticking chunk
-    /// (block ticking, with its neighbours loaded). Chunks become ticking
-    /// between ticks in vanilla: before this tick's clock advanced.
-    fn start_ticking_chunks(&mut self) {
-        let levels = self.tickets.levels();
-        let world = &self.world;
-        let started = self
-            .tick_chunks
-            .start_ticking(|(x, z)| levels.loaded_ticking(x, z) && ticking_chunk(world, x, z));
-        let time = self.world.game_time - 1;
-        for (x, z) in started {
-            let pos = horizon_core::position::ChunkPos::new(x, z);
-            self.block_ticks.blocks.unpack_chunk(pos, time);
-            self.block_ticks.fluids.unpack_chunk(pos, time);
-        }
-    }
-    /// ServerLevel.tick block phases: scheduled ticks, random ticks in the
-    /// chunks the tickets simulate, block events and moving pistons.
-    /// The length the block log had after the changed blocks went out
-    /// (`ServerChunkCache.tick`'s broadcast), before the block events and the
-    /// block entities ran.
-    fn tick_blocks(&mut self) -> Result<Option<usize>> {
-        let mut scratch = std::mem::take(&mut self.tick_scratch);
-        let result = self.tick_blocks_with_scratch(&mut scratch);
-        self.tick_scratch = scratch;
-        result
-    }
-
+    /// The ticks shown by this frame; still mode follows world time.
     fn tick_blocks_with_scratch(&mut self, scratch: &mut TickScratch) -> Result<Option<usize>> {
         let mut laps = horizon_client::spans::laps();
         // ServerChunkCache.tick: the tickets that time out.
-        self.tickets.tick_portal();
+        let world = &self.world;
+        self.tickets
+            .tick_portal(|ticket| portal_ticket_can_expire(world, ticket));
         self.sync_tick_chunks();
         self.start_ticking_chunks();
         laps.lap("tb_tickets");
@@ -5526,6 +4025,7 @@ impl Game<'_> {
         laps = horizon_client::spans::laps();
         let sent = self.lan_broadcast_changes();
         laps.lap("tb_broadcast");
+        self.save_chunks_eagerly();
         self.with_level(|b, level, ticks| {
             b.run_block_events(level, ticks);
         });
@@ -5536,6 +4036,2049 @@ impl Game<'_> {
         laps.lap("tb_pistons");
         Ok(sent)
     }
+
+    fn tick_blocks(&mut self) -> Result<Option<usize>> {
+        let mut scratch = std::mem::take(&mut self.tick_scratch);
+        let result = self.tick_blocks_with_scratch(&mut scratch);
+        self.tick_scratch = scratch;
+        result
+    }
+
+    fn weather_geometry(
+        &mut self,
+        camera: glam::DVec3,
+        alpha: f64,
+    ) -> Vec<horizon_client::weather::Vertex> {
+        use horizon_client::weather;
+        let (intensity, _) = self.view_weather(alpha as f32);
+        if intensity <= 0.0 {
+            return Vec::new();
+        }
+        let atlas = &self.gui.atlas;
+        let (Some(rain_tex), Some(snow_tex)) = (
+            atlas.sprites.get("environment/rain").copied(),
+            atlas.sprites.get("environment/snow").copied(),
+        ) else {
+            return Vec::new();
+        };
+        let (cx, cy, cz) = (
+            camera.x.floor() as i32,
+            camera.y.floor() as i32,
+            camera.z.floor() as i32,
+        );
+        // The 32x32 direction table supports at most a 15-block radius.
+        let radius = self.settings.weather_radius.clamp(0, 15);
+        let eye = camera.to_array();
+        let mut rain = Vec::new();
+        let mut snow_vertices = Vec::new();
+        // Saturation keeps extreme camera coordinates from overflowing the loop.
+        for z in cz.saturating_sub(radius)..=cz.saturating_add(radius) {
+            for x in cx.saturating_sub(radius)..=cx.saturating_add(radius) {
+                let top = self.rain_height(x, z);
+                let y0 = cy.saturating_sub(radius).max(top);
+                let y1 = cy.saturating_add(radius).max(top);
+                if y1 == y0 {
+                    continue;
+                }
+                let Some(snow) = self.precipitation(x, cy, z) else {
+                    continue;
+                };
+                let parameters = self.weather_parameters.get(x, z);
+                let light = self.world.light(x, top.max(cy), z);
+                let coords = i32::from(light & 15) << 4 | i32::from(light >> 4) << 20;
+                // Only light brightening is needed here; UV phases stay zero.
+                let lc = if snow {
+                    let (block, sky) = (coords >> 4 & 15, coords >> 20 & 15);
+                    ((block * 3 + 15) / 4) << 4 | ((sky * 3 + 15) / 4) << 20
+                } else {
+                    coords
+                };
+                let column = weather::Column {
+                    x,
+                    z,
+                    bottom_y: y0,
+                    top_y: y1,
+                    u_offset: 0.0,
+                    v_offset: 0.0,
+                    light_coords: lc,
+                };
+                let r = if snow { snow_tex } else { rain_tex };
+                let vertices = weather::vertices(
+                    &column,
+                    parameters,
+                    snow,
+                    eye,
+                    radius,
+                    intensity,
+                    [r.u0, r.v0, r.u1 - r.u0, r.v1 - r.v0],
+                );
+                if snow {
+                    snow_vertices.extend(vertices);
+                } else {
+                    rain.extend(vertices);
+                }
+            }
+        }
+        // Vanilla draws every rain column before the snow ones.
+        rain.extend(snow_vertices);
+        rain
+    }
+
+    fn celestial_geometry(
+        &self,
+        sky: &horizon_client::environment::Sky,
+        rain: f32,
+    ) -> (Vec<Vertex>, Option<(glam::Mat4, f32)>) {
+        let body_color =
+            0x00FF_FFFF | (((1.0 - rain).clamp(0.0, 1.0) * 255.0).round() as u32) << 24;
+        let mut out = Vec::new();
+        let atlas = &self.gui.atlas;
+        let frame = |angle: f32| {
+            glam::Mat4::from_rotation_y((-90.0f32).to_radians())
+                * glam::Mat4::from_rotation_x(angle.to_radians())
+        };
+        let mut body = |name: &str, angle: f32, size: f32, moon: bool| {
+            let Some(r) = atlas.sprites.get(name).copied() else {
+                return;
+            };
+            // How brightly HDR output lets the body shine (mesher::hdr_tier):
+            // the moon at the low tier, not the sun's.
+            let tier = if moon {
+                horizon_client::mesher::LOW
+            } else {
+                horizon_client::mesher::VERY_BRIGHT
+            };
+            let m = frame(angle);
+            let corners = [(-size, -size), (size, -size), (size, size), (-size, size)];
+            // buildCelestialQuad (sun) vs buildMoonPhases: the moon's UVs run
+            // the other way round.
+            let uv = if moon {
+                [[r.u1, r.v1], [r.u0, r.v1], [r.u0, r.v0], [r.u1, r.v0]]
+            } else {
+                [[r.u0, r.v0], [r.u1, r.v0], [r.u1, r.v1], [r.u0, r.v1]]
+            };
+            for ((x, z), uv) in corners.iter().zip(uv) {
+                let p = m.transform_point3(glam::Vec3::new(*x, 100.0, *z));
+                out.push(Vertex {
+                    normal: [0; 4],
+                    pos: p.to_array(),
+                    uv,
+                    layer: 2 | u32::from(tier) << 16,
+                    color: body_color,
+                    light: 0,
+
+                    glint_uv: [0.0, 0.0],
+                });
+            }
+        };
+        body("environment/celestial/sun", sky.sun_angle, 30.0, false);
+        let phases = [
+            "full_moon",
+            "waning_gibbous",
+            "third_quarter",
+            "waning_crescent",
+            "new_moon",
+            "waxing_crescent",
+            "first_quarter",
+            "waxing_gibbous",
+        ];
+        let phase = phases[(self.view_day_time() / 24000).rem_euclid(8) as usize];
+        body(
+            &format!("environment/celestial/moon/{phase}"),
+            sky.moon_angle,
+            20.0,
+            true,
+        );
+        // SkyRenderer.renderStars: the static star buffer on the same frame.
+        let stars =
+            (sky.star_brightness > 0.0).then(|| (frame(sky.star_angle), sky.star_brightness));
+        (out, stars)
+    }
+
+    pub(super) fn visual_ticks(&self) -> u64 {
+        if self.clock.still() {
+            self.world.game_time.max(0) as u64
+        } else {
+            self.ticks
+        }
+    }
+
+    /// Frame time in milliseconds, fixed to world time in still mode.
+    pub(super) fn visual_millis(&self) -> i64 {
+        if self.clock.still() {
+            self.visual_ticks() as i64 * 50
+        } else {
+            self.started.elapsed().as_millis() as i64
+        }
+    }
+
+    /// `Level.canHaveWeather`, from the level's dimension type (sky light, no
+    /// ceiling) and the End, which vanilla names by id. Every rain, thunder
+    /// and lightning rule asks this, never the dimension's id.
+    fn level_key(&self) -> horizon_core::LevelKey {
+        horizon_core::LevelKey::builtin_or_overworld(self.dim.id())
+    }
+    /// The level's dimension type: a mod's or a data pack's own when it has one, else the
+    /// built-in level's.
+    fn dimension_type(&self) -> &horizon_world::dimension_type::DimensionFacts {
+        // A client of a server has the facts its server sent for the level, which are its own,
+        // not the table the server's levels (in this process, for an integrated server) read.
+        if let Some(facts) = self.remote.as_ref().and_then(|r| r.level_facts.as_deref()) {
+            return facts;
+        }
+        // Else the level the server named, whether or not the client has the mod that
+        // registered it (`self.dim` is then the Overworld).
+        let level = self
+            .remote
+            .as_ref()
+            .map(|r| r.level.as_str())
+            .filter(|level| !level.is_empty())
+            .unwrap_or_else(|| self.dim.id());
+        self.dimension_facts_for(
+            horizon_core::LevelKey::parse(level).unwrap_or(horizon_core::LevelKey::OVERWORLD),
+        )
+    }
+    /// A client only knows its current level's type; other keys use built-in defaults.
+    fn dimension_facts_for(
+        &self,
+        key: horizon_core::LevelKey,
+    ) -> &horizon_world::dimension_type::DimensionFacts {
+        use horizon_world::dimension_type::DimensionFacts;
+        if let Some(remote) = &self.remote {
+            if horizon_core::LevelKey::parse(&remote.level).ok() == Some(key)
+                && let Some(facts) = remote.level_facts.as_deref()
+            {
+                return facts;
+            }
+            DimensionFacts::of_builtin_level(key)
+        } else {
+            DimensionFacts::of_level(key)
+        }
+    }
+    fn dimension_type_of(
+        &self,
+        dim: Dim,
+    ) -> &'static horizon_world::dimension_type::DimensionFacts {
+        horizon_world::dimension_type::DimensionFacts::of_level(
+            horizon_core::LevelKey::parse(dim.id()).unwrap_or(horizon_core::LevelKey::OVERWORLD),
+        )
+    }
+    /// `Level.isDarkOutside`.
+    fn dark_outside(&self) -> bool {
+        !self.dimension_type().has_fixed_time && self.sky_darken() >= 4
+    }
+    fn can_have_weather(&self) -> bool {
+        level_can_have_weather(
+            self.world.shape.sky_light,
+            self.world.shape.has_ceiling,
+            self.dim == Dim::End,
+        )
+    }
+    /// The rain and thunder levels (`Level.getRainLevel`, `getThunderLevel`):
+    /// the world's, where the level can have weather, else none.
+    fn weather_levels(&self, partial: f32) -> (f32, f32) {
+        if self.can_have_weather() {
+            self.world.weather.levels(partial)
+        } else {
+            (0.0, 0.0)
+        }
+    }
+    fn eye_position(&self) -> Option<[f64; 3]> {
+        let p = self.player.as_ref()?;
+        Some([
+            p.position.x,
+            p.position.y + f64::from(p.dimensions.eye_height),
+            p.position.z,
+        ])
+    }
+    /// Where targeting starts and points: the eyes along the view. Every
+    /// crosshair target (blocks, fluids, entities, mod raycasts) is found
+    /// along this ray, so a tracked controller can stand in for it.
+    fn aim(&self) -> Option<([f64; 3], [f64; 3])> {
+        // Minecraft.pick: from the camera entity's eyes along its view
+        // (LivingEntity.getViewYRot: the head's yaw).
+        if let Some(m) = self.camera_mob() {
+            return Some((
+                [m.position.x, m.eye_y(), m.position.z],
+                pick_view_vector(m.head_yaw, m.head_pitch),
+            ));
+        }
+        Some((self.eye_position()?, pick_view_vector(self.yaw, self.pitch)))
+    }
+    /// `Player.blockInteractionRange`: the block pick's and mining's reach.
+    fn reach(&self) -> f64 {
+        self.block_reach
+    }
+    /// Outline shapes that depend on more than the block state, as one box
+    /// in block space: `LightBlock` and `ScaffoldingBlock.getShape` are a full
+    /// block while the main hand holds the block's own item
+    /// (`CollisionContext.isHoldingItem`), and `ShulkerBoxBlock.getShape`
+    /// grows with the lid (`ShulkerBoxBlockEntity.getBoundingBox`).
+    fn context_outline(
+        &self,
+        pos: [i32; 3],
+        state: BlockStateId,
+        player_context: bool,
+        anims: &horizon_client::block_entity_anim::BlockEntityAnims,
+    ) -> Option<[f64; 6]> {
+        let name = &self.res.facts().get(state).name;
+        if matches!(&**name, "minecraft:light" | "minecraft:scaffolding") {
+            return (player_context && self.held().is_some_and(|s| *s.item == **name))
+                .then_some([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+        }
+        if !name.ends_with("shulker_box") {
+            return None;
+        }
+        let progress = anims.shulkers.get(&pos).map_or(0.0, |s| s.progress);
+        let facing = self
+            .pack
+            .assets
+            .registry
+            .state(state)
+            .and_then(|s| s.properties.get("facing").cloned());
+        let d = facing_offset(facing.as_deref().unwrap_or("up"));
+        let mut b = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        for a in 0..3 {
+            match d[a] {
+                1 => b[a + 3] += 0.5 * f64::from(progress),
+                -1 => b[a] -= 0.5 * f64::from(progress),
+                _ => {}
+            }
+        }
+        Some(b)
+    }
+    fn outline_context_kind(&self) -> horizon_world::collision_context::EntityContextKind {
+        if self.camera_mob().is_some() {
+            horizon_world::collision_context::EntityContextKind::Living
+        } else {
+            horizon_world::collision_context::EntityContextKind::Player
+        }
+    }
+    /// A block's outline boxes in world space (`getShape` plus the random offset).
+    fn outline_boxes(&self, pos: [i32; 3]) -> Vec<[f64; 6]> {
+        self.outline_boxes_in_context(&self.world, &self.be_anims, pos, true)
+    }
+    fn outline_boxes_in_context(
+        &self,
+        world: &World,
+        anims: &horizon_client::block_entity_anim::BlockEntityAnims,
+        pos: [i32; 3],
+        player_context: bool,
+    ) -> Vec<[f64; 6]> {
+        self.outline_boxes_iter(world, anims, pos, player_context)
+            .collect()
+    }
+    /// The same outline traversal without allocating a box list.
+    fn outline_boxes_iter(
+        &self,
+        world: &World,
+        anims: &horizon_client::block_entity_anim::BlockEntityAnims,
+        pos: [i32; 3],
+        player_context: bool,
+    ) -> impl Iterator<Item = [f64; 6]> + '_ {
+        let state = world.block(pos[0], pos[1], pos[2]);
+        let declared = self.collision.cached_shapes().context_outline_shape(
+            state,
+            if player_context {
+                self.outline_context_kind()
+            } else {
+                horizon_world::collision_context::EntityContextKind::Other
+            },
+        );
+        let context = declared
+            .is_none()
+            .then(|| self.context_outline(pos, state, player_context, anims))
+            .flatten();
+        let f = self.res.facts().get(state);
+        let o = perspective::outline_offset(
+            &self.pack.context.tables,
+            state,
+            pos[0],
+            pos[2],
+            f.outline_offset,
+        );
+        let base = [
+            f64::from(pos[0]) + o[0],
+            f64::from(pos[1]) + o[1],
+            f64::from(pos[2]) + o[2],
+        ];
+        let boxes = if context.is_some() || declared.is_some() {
+            &[][..]
+        } else {
+            &f.outline[..]
+        };
+        context
+            .map(|b| std::array::from_fn(|i| f64::from(pos[i % 3]) + b[i]))
+            .into_iter()
+            .chain(
+                declared
+                    .into_iter()
+                    .flat_map(|shape| shape.boxes())
+                    .map(move |b| {
+                        let min = b.min_position();
+                        let max = b.max_position();
+                        let coords = [min.x, min.y, min.z, max.x, max.y, max.z];
+                        std::array::from_fn(|i| base[i % 3] + coords[i])
+                    }),
+            )
+            .chain(
+                boxes
+                    .iter()
+                    .map(move |b| std::array::from_fn(|i| base[i % 3] + b[i])),
+            )
+    }
+    /// The declared outline uses vanilla's inside-ray test and interaction override.
+    fn clip_declared_outline(
+        &self,
+        state: BlockStateId,
+        pos: [i32; 3],
+        origin: [f64; 3],
+        dir: [f64; 3],
+        reach: f64,
+    ) -> Option<Hit> {
+        use horizon_core::geometry::{Aabb, Vec3};
+        use std::borrow::Cow;
+        let facts = self.res.facts().get(state);
+        let cached = self.collision.cached_shapes();
+        let shape = cached.context_outline_shape(state, self.outline_context_kind());
+        let boxes: Cow<'_, [Aabb]> = if let Some(shape) = shape {
+            Cow::Borrowed(shape.boxes())
+        } else if let Some(b) = self.context_outline(pos, state, true, &self.be_anims) {
+            Cow::Owned(vec![Aabb::new(
+                Vec3::new(b[0], b[1], b[2]),
+                Vec3::new(b[3], b[4], b[5]),
+            )])
+        } else {
+            Cow::Owned(
+                facts
+                    .outline
+                    .iter()
+                    .map(|b| Aabb::new(Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5])))
+                    .collect(),
+            )
+        };
+        let offset = if facts.outline_offset {
+            self.pack
+                .context
+                .tables
+                .offset(state, pos[0], pos[2])
+                .unwrap_or([0.; 3])
+        } else {
+            [0.; 3]
+        };
+        let offset = Vec3::new(offset[0], offset[1], offset[2]);
+        let interaction: Cow<'_, [Aabb]> = if let Some(shape) = cached.interaction_shape(state) {
+            Cow::Borrowed(shape.boxes())
+        } else {
+            let facing = self
+                .pack
+                .assets
+                .registry
+                .state(state)
+                .and_then(|s| s.properties.get("facing"))
+                .map(String::as_str);
+            Cow::Owned(
+                interaction_shapes::boxes(&facts.name, facing)
+                    .into_iter()
+                    .map(|b| Aabb::new(Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5])))
+                    .collect(),
+            )
+        };
+        let start = Vec3::new(origin[0], origin[1], origin[2]);
+        let end = Vec3::new(
+            origin[0] + dir[0] * reach,
+            origin[1] + dir[1] * reach,
+            origin[2] + dir[2] * reach,
+        );
+        let hit = horizon_world::interaction_shapes::clip_with_interaction_override(
+            boxes.iter().map(|b| b.move_by(offset)),
+            interaction.iter().copied(),
+            start,
+            end,
+            BlockPos::new(pos[0], pos[1], pos[2]),
+        )?;
+        Some(Hit {
+            pos,
+            face: hit.direction.normal(),
+            point: [hit.location.x, hit.location.y, hit.location.z],
+            inside: hit.inside,
+        })
+    }
+    /// Voxel traversal against non-air, non-fluid blocks, clipped against
+    /// each block's outline shape (`BlockGetter.clip` with `ClipContext.Block.OUTLINE`).
+    fn pick(&self) -> Option<Hit> {
+        // A guest of a hosted world acts on the block their client targeted.
+        if let Some(hit) = self.forced_hit {
+            return Some(hit);
+        }
+        if let Some(hit) = self.tick_hit {
+            return hit;
+        }
+        let (origin, dir) = self.aim()?;
+        // GameRenderer.pick: the block ray runs out to the larger of the two
+        // interaction ranges; filterHitResult then drops a hit past the
+        // block's.
+        self.clip_ray(origin, dir, self.block_reach.max(self.entity_reach))
+            .filter(|hit| {
+                let distance: [f64; 3] = std::array::from_fn(|i| hit.point[i] - origin[i]);
+                distance.iter().map(|v| v * v).sum::<f64>() <= self.block_reach.powi(2)
+            })
+    }
+    /// The same traversal without `filterHitResult`: the block hit that
+    /// bounds the entity ray in `GameRenderer.pick`, out to the larger
+    /// interaction range — a wall between the two still hides the entity.
+    fn pick_unfiltered(&self) -> Option<Hit> {
+        if let Some(hit) = self.forced_hit {
+            return Some(hit);
+        }
+        let (origin, dir) = self.aim()?;
+        self.clip_ray(origin, dir, self.block_reach.max(self.entity_reach))
+    }
+    /// The first block outline hit within `reach` along the unit `dir`.
+    fn clip_ray(&self, origin: [f64; 3], dir: [f64; 3], reach: f64) -> Option<Hit> {
+        let mut pos = origin.map(|v| v.floor() as i32);
+        let step = dir.map(|d| if d > 0.0 { 1 } else { -1 });
+        let delta = dir.map(|d| {
+            if d == 0.0 {
+                f64::INFINITY
+            } else {
+                (1.0 / d).abs()
+            }
+        });
+        let mut t_max = [0.0; 3];
+        for i in 0..3 {
+            let boundary = if dir[i] > 0.0 {
+                f64::from(pos[i]) + 1.0
+            } else {
+                f64::from(pos[i])
+            };
+            t_max[i] = if dir[i] == 0.0 {
+                f64::INFINITY
+            } else {
+                (boundary - origin[i]) / dir[i]
+            };
+        }
+        let mut face = [0; 3];
+        let mut t = 0.0;
+        while t <= reach {
+            let state = self.world.block(pos[0], pos[1], pos[2]);
+            let f = self.res.facts().get(state);
+            if self.collision.cached_shapes().has_context_shapes(state) {
+                if let Some(hit) = self.clip_declared_outline(state, pos, origin, dir, reach) {
+                    return Some(hit);
+                }
+            } else if !self.res.facts().is_air(state)
+                && (f.fluid == Fluid::None
+                    || f.waterlogged
+                    || &*f.name == "minecraft:kelp"
+                    || f.render_shape == horizon_client::blocks::RenderShape::Model)
+                && !matches!(
+                    &*f.name,
+                    "minecraft:water" | "minecraft:lava" | "minecraft:bubble_column"
+                )
+            {
+                // The nearest entry into one of the outline's boxes (slab method).
+                let mut best: Option<(f64, [i32; 3])> = None;
+                for b in self.outline_boxes(pos) {
+                    let (mut t0, mut t1, mut axis_in, mut sign) = (0.0f64, f64::INFINITY, None, 0);
+                    let mut miss = false;
+                    for a in 0..3 {
+                        if dir[a] == 0.0 {
+                            miss |= origin[a] < b[a] || origin[a] > b[a + 3];
+                            continue;
+                        }
+                        let (lo, hi) =
+                            ((b[a] - origin[a]) / dir[a], (b[a + 3] - origin[a]) / dir[a]);
+                        let (near, far) = if lo < hi { (lo, hi) } else { (hi, lo) };
+                        if near > t0 {
+                            t0 = near;
+                            axis_in = Some(a);
+                            sign = if dir[a] > 0.0 { -1 } else { 1 };
+                        }
+                        t1 = t1.min(far);
+                    }
+                    if miss || t0 > t1 || t0 > reach {
+                        continue;
+                    }
+                    let mut normal = face;
+                    if let Some(a) = axis_in {
+                        normal = [0; 3];
+                        normal[a] = sign;
+                    }
+                    if best.is_none_or(|(bt, _)| t0 < bt) {
+                        best = Some((t0, normal));
+                    }
+                }
+                if let Some((t, mut face)) = best {
+                    // `BlockGetter.clipWithInteractionOverride`: the hit stays at the
+                    // outline's point, with the face of the interaction shape when
+                    // the ray enters that first.
+                    let name = &*f.name;
+                    let facing = self
+                        .pack
+                        .assets
+                        .registry
+                        .state(state)
+                        .and_then(|s| s.properties.get("facing"))
+                        .map(String::as_str);
+                    let inside = interaction_shapes::boxes(name, facing);
+                    if !inside.is_empty() {
+                        let at = pos.map(f64::from);
+                        let world: Vec<[f64; 6]> = inside
+                            .iter()
+                            .map(|b| std::array::from_fn(|i| at[i % 3] + b[i]))
+                            .collect();
+                        if let Some((ti, normal)) =
+                            interaction_shapes::entry(origin, dir, &world, reach, face)
+                            && ti < t
+                        {
+                            face = normal;
+                        }
+                    }
+                    return Some(Hit {
+                        pos,
+                        face,
+                        point: [
+                            origin[0] + dir[0] * t,
+                            origin[1] + dir[1] * t,
+                            origin[2] + dir[2] * t,
+                        ],
+                        // No face entered: the eyes are in the shape.
+                        inside: face == [0; 3],
+                    });
+                }
+            }
+            let axis = if t_max[0] < t_max[1] {
+                if t_max[0] < t_max[2] { 0 } else { 2 }
+            } else if t_max[1] < t_max[2] {
+                1
+            } else {
+                2
+            };
+            t = t_max[axis];
+            t_max[axis] += delta[axis];
+            pos[axis] += step[axis];
+            face = [0; 3];
+            face[axis] = -step[axis];
+        }
+        None
+    }
+    /// The stack in the hand that acts (`getItemInHand(hand)`).
+    fn held(&self) -> Option<&ItemStack> {
+        self.stack_in(self.held_slot())
+    }
+    fn held_mut(&mut self) -> &mut Option<ItemStack> {
+        self.stack_in_mut(self.held_slot())
+    }
+    /// The slot of the hand that acts: the selected one, or `OFFHAND_SLOT`.
+    /// `LivingEntity.canGlide`: some worn piece `gliding_pieces` lets glide,
+    /// or a stack in a hand that glides there (`canGlideUsing` walks every
+    /// `EquipmentSlot`).
+    fn glider_worn(&self) -> bool {
+        let items = self.res.items();
+        let hand = |stack: Option<&ItemStack>, slot: &str| {
+            stack.is_some_and(|s| horizon_client::item_sync::can_glide_using(s, slot, items))
+        };
+        gliding_pieces(items, &self.armor).contains(&true)
+            || hand(self.inventory[self.selected].as_ref(), "mainhand")
+            || hand(self.offhand.as_ref(), "offhand")
+    }
+    /// `LivingEntity.updateFallFlying`: the glide's wear. `Util.getRandom`
+    /// picks one of the gliders that will not break (from the entity's own
+    /// random), and
+    /// `ItemStack.hurtAndBreak` takes `points` of its durability (Unbreaking
+    /// may save it). Callers skip creative.
+    pub(super) fn wear_glider(&mut self, points: u32) {
+        let gliding = gliding_pieces(self.res.items(), &self.armor);
+        let pieces: Vec<usize> = (0..4).filter(|&i| gliding[i]).collect();
+        if pieces.is_empty() {
+            return;
+        }
+        // `Util.getRandom(slotsWithGliders, this.random)`: the entity's own
+        // random, which never touches the level's stream.
+        let pick = random_source::entity().next_int_bound(pieces.len() as i32);
+        let pick = pieces[pick.unwrap_or(0) as usize];
+        if let Some(stack) = self.armor[pick].clone() {
+            let loss = self.wear(&stack, points);
+            if let Some(piece) = self.armor[pick].as_mut() {
+                piece.damage += loss;
+            }
+        }
+    }
+    /// `LivingEntity.canFreeze`'s armor half: any worn piece in
+    /// `freeze_immune_wearables`.
+    pub(crate) fn wears_freeze_immune(&self) -> bool {
+        let immune = self
+            .res
+            .items()
+            .item_tags
+            .get("minecraft:freeze_immune_wearables");
+        self.armor
+            .iter()
+            .flatten()
+            .any(|s| immune.is_some_and(|t| t.contains(&*s.item)))
+    }
+    /// `LocalPlayer.moveTowardsClosestSpace` at the body's four corners
+    /// (aiStep, unless a spectator or a passenger): a corner inside a
+    /// suffocating block sets a 0.1 speed towards the nearest side that is
+    /// free, on that side's axis; a later corner overwrites an earlier one.
+    /// Suffocating is a full collision cube that is also a full render cube,
+    /// as `in_wall` has it.
+    fn closest_space_nudge(&self) -> [Option<f64>; 2] {
+        match self.player.as_ref() {
+            Some(p) if !p.spectator && self.riding.is_none() => {
+                closest_space_nudge(p, &self.world, self.res.facts())
+            }
+            _ => [None; 2],
+        }
+    }
+    /// What the window decides for its player's body every tick: the look
+    /// (Player.travel steers sprint-swimming by the pitch), Auto Jump (LocalPlayer.sendPosition), the slowdown of an
+    /// item in use (LocalPlayer.modifyInput), the helmet's Respiration
+    /// (decreaseAirSupply), the wings, leather boots on powder snow
+    /// (PowderSnowBlock.canEntityWalkOnPowderSnow), freeze-immune wear
+    /// (LivingEntity.canFreeze), the dimension's FAST_LAVA, the sleeping
+    /// pose and blindness (Player.isMobilityRestricted, which stops a sprint).
+    pub(crate) fn sync_player_body(&mut self) {
+        let glider = self.glider_worn();
+        let sleeping = self.sleeping.is_some();
+        let item_in_use = self
+            .using
+            .and_then(|(slot, _)| {
+                if slot == shield::OFFHAND_SLOT {
+                    self.offhand.as_ref()
+                } else {
+                    self.inventory.get(slot)?.as_ref()
+                }
+            })
+            .and_then(|s| self.items().get(&s.item));
+        let item_use_speed = item_in_use.map(|i| i.use_speed);
+        let item_use_slows_sprint = item_in_use.is_some_and(|i| !i.can_sprint);
+        let respiration = self.armor[0]
+            .as_ref()
+            .map_or(0, |s| s.enchantment_level("minecraft:respiration") as i32);
+        let leather_boots = self.armor[3]
+            .as_ref()
+            .is_some_and(|s| &*s.item == "minecraft:leather_boots");
+        let freeze_immune = self.wears_freeze_immune();
+        let burn_immune = self.wears_burn_from_stepping_immunity();
+        let nudge = self.closest_space_nudge();
+        let fast_lava = self.dimension_type().fast_lava;
+        let blind = self.potions.effects.get("blindness").is_some();
+        let Some(player) = self.player.as_mut() else {
+            return;
+        };
+        player.nudge = nudge;
+        player.mobility_restricted = blind;
+        player.yaw = self.yaw;
+        player.pitch = self.pitch;
+        player.auto_jump_enabled = self.settings.auto_jump;
+        player.item_use_speed = item_use_speed;
+        player.item_use_slows_sprint = item_use_slows_sprint;
+        player.respiration = respiration;
+        player.glider = glider;
+        // On someone else's server the glide flag is the server's
+        // (`DATA_SHARED_FLAGS_ID`, applied by the SetEntityData handler); the
+        // game's own integrated server has no such round trip, so the client
+        // keeps predicting the clear a tick after the landing glide.
+        player.server_owns_glide = self.integrated.is_none();
+        let _ = player.set_sleeping(sleeping);
+        player.leather_boots = leather_boots;
+        player.freeze_immune = freeze_immune;
+        player.burn_from_stepping_immune = burn_immune;
+        player.fluids.fast_lava = fast_lava;
+    }
+    fn held_slot(&self) -> usize {
+        match self.hand {
+            Hand::Main => self.selected,
+            Hand::Off => shield::OFFHAND_SLOT,
+        }
+    }
+    /// `LivingEntity.getUsedItemHand`: the hand of the item in use.
+    fn used_hand(&self) -> Option<Hand> {
+        item_use::hand_of(self.using)
+    }
+    /// Run `f` with `hand` acting (`held`, `consume_held`, `swing_arm`).
+    fn with_hand<T>(&mut self, hand: Hand, f: impl FnOnce(&mut Self) -> T) -> T {
+        let prior = std::mem::replace(&mut self.hand, hand);
+        let out = f(self);
+        self.hand = prior;
+        out
+    }
+    /// Inventory.add: returns the stack that did not fit.
+    fn add_stack_to_inventory(&mut self, mut stack: ItemStack) -> Option<ItemStack> {
+        let tutorial_item = matches!(
+            self.tutorial.step,
+            tutorial::Step::FindTree | tutorial::Step::PunchTree | tutorial::Step::CraftPlanks
+        )
+        .then(|| stack.clone());
+        let max = self
+            .res
+            .items()
+            .get(&stack.item)
+            .map_or(64, |i| i.max_stack);
+        let before = stack.count;
+        let left = inventory_add(
+            &mut self.inventory,
+            &mut self.offhand,
+            self.selected,
+            max,
+            &mut stack,
+        );
+        if stack.count < before {
+            self.tutorial_get_item(tutorial_item.as_ref());
+        }
+        left.then_some(stack)
+    }
+    /// The block's first up face (or any face) and its fixed tint, for block
+    /// models drawn as entities (falling blocks, carried blocks).
+    fn falling_block_face_sprite(&self, state: BlockStateId) -> Option<(String, u32)> {
+        let pack = &self.pack;
+        let models = pack
+            .render
+            .model_catalog
+            .collect(state, horizon_core::position::BlockPos::new(0, 0, 0))
+            .ok()?;
+        let face = models
+            .iter()
+            .flat_map(|(_, m)| m.faces.iter())
+            .find(|f| f.quad.facing == horizon_assets::model::Direction::Up)
+            .or_else(|| models.iter().flat_map(|(_, m)| m.faces.iter()).next())?;
+        let name = pack.layer_names.get(&face.layer)?.clone();
+        let tint = if face.quad.tint_index >= 0 {
+            let n = &self.res.facts().get(state).name;
+            if n.contains("leaves") || n.contains("vine") {
+                0x48B518
+            } else {
+                0x91BD59
+            }
+        } else {
+            0xFFFFFF
+        };
+        Some((name, tint))
+    }
+    fn particle_sprite(&self, state: BlockStateId, pos: [i32; 3]) -> Option<(String, u32)> {
+        let sprite = Self::block_particle_sprite(&self.pack, state)?;
+        let chunks = &self.world.chunks;
+        let (cx, cz) = (pos[0] >> 4, pos[2] >> 4);
+        let region: [[Option<&horizon_client::chunk::Chunk>; 3]; 3] = std::array::from_fn(|dz| {
+            std::array::from_fn(|dx| {
+                chunks
+                    .get(&(cx + dx as i32 - 1, cz + dz as i32 - 1))
+                    .map(|c| &**c)
+            })
+        });
+        let tint = self
+            .pack
+            .context
+            .tables
+            .terrain_particle_tint(
+                state,
+                pos,
+                &region,
+                world_biomes!(self),
+                self.streaming.biome_zoom,
+                self.streaming.biome_blend,
+                self.streaming.nether_shading,
+            )
+            .unwrap_or(0xFFFFFF);
+        Some((sprite, tint))
+    }
+    /// ClientLevel.addBreakingParticles: one crumb on the face being mined.
+    fn crack_particle(&mut self, pos: [i32; 3], face: [i32; 3], state: BlockStateId) {
+        if self.settings.extras.hide_block_particles {
+            return;
+        }
+        let Some((sprite, tint)) = self.particle_sprite(state, pos) else {
+            return;
+        };
+        let boxes = self.particle_shape(pos, state);
+        // Keep client effects separate from the authoritative world RNG.
+        let r = self.particles.random();
+        let Some(p) = horizon_client::particles::breaking_position(r, pos, face, &boxes) else {
+            return;
+        };
+        let mut particle = Particle::terrain(r, p, [0.0; 3], sprite, tint);
+        particle.set_power(0.2);
+        particle.scale(0.6);
+        self.particles.push(particle);
+    }
+    /// `Player.dropEquipment` for the player who died: unless keep_inventory
+    /// is on, `destroyVanishingCursedItems`, then `Inventory.dropAll` from
+    /// `at` (the eyes less 0.3): slots 0..36, armor feet to head (36..39),
+    /// the off hand (40), each thrown in a random direction. The mods hear
+    /// the drops (`native_living_drops`) before they join the level.
+    fn drop_inventory(&mut self, at: [f64; 3], dying: &creatures::DyingDrops<'_>) {
+        let mut stacks: Vec<ItemStack> = Vec::new();
+        if !self
+            .ui
+            .rules
+            .bool_at(horizon_client::gamerules::vanilla::KEEP_INVENTORY)
+        {
+            stacks.extend(self.inventory.iter_mut().filter_map(Option::take));
+            stacks.extend(self.armor.iter_mut().rev().filter_map(Option::take));
+            stacks.extend(self.offhand.take());
+            stacks.extend(self.equipment.take_all());
+            stacks.retain(|s| s.enchantment_level("minecraft:vanishing_curse") == 0);
+            self.apply_equipment();
+        }
+        let stacks = stacks.into_iter().map(|stack| (stack, at)).collect();
+        self.drop_death_items(dying, stacks, 40, |game| {
+            let r = &mut game.world.random;
+            let strength = f64::from(r.next_float()) * 0.5;
+            let angle = f64::from(r.next_float()) * std::f64::consts::TAU;
+            Some([-angle.sin() * strength, 0.2, angle.cos() * strength])
+        });
+    }
+    /// Item entity `i` leaves the level (`Entity.discard`); mods hear it.
+    pub(super) fn remove_dropped(&mut self, i: usize) -> ItemEntity {
+        let e = self.dropped.remove(i);
+        self.native_entity_left(e.id);
+        e
+    }
+    /// Experience orb `i` leaves the level (`Entity.discard`); mods hear it.
+    pub(super) fn remove_orb(&mut self, i: usize) -> ExperienceOrb {
+        let o = self.orbs.remove(i);
+        self.native_entity_left(o.id);
+        o
+    }
+    /// The item entity `spawn_item` just added, unless a native mod kept it
+    /// out of the level (`native_entity_join_level`).
+    pub(super) fn just_spawned_item(&mut self) -> Option<&mut ItemEntity> {
+        let id = self.next_entity;
+        self.dropped.last_mut().filter(|d| d.id == id)
+    }
+    /// `new ItemEntity(level, x, y, z, stack, dx, dy, dz)`.
+    fn spawn_item(
+        &mut self,
+        stack: ItemStack,
+        position: [f64; 3],
+        velocity: [f64; 3],
+        pickup_delay: u32,
+    ) {
+        self.add_item_entity(stack, position, Some(velocity), pickup_delay);
+    }
+    /// `new ItemEntity(level, x, y, z, stack)`: the item leaves with its own
+    /// random's motion, which this returns.
+    pub(super) fn spawn_item_own(
+        &mut self,
+        stack: ItemStack,
+        position: [f64; 3],
+        pickup_delay: u32,
+    ) -> [f64; 3] {
+        self.add_item_entity(stack, position, None, pickup_delay)
+    }
+    fn add_item_entity(
+        &mut self,
+        stack: ItemStack,
+        position: [f64; 3],
+        velocity: Option<[f64; 3]>,
+        pickup_delay: u32,
+    ) -> [f64; 3] {
+        self.add_item_entity_prepared(stack, position, velocity, pickup_delay, None)
+    }
+    /// Joins an item only after drop hooks have seen its constructor's motion.
+    fn add_item_entity_prepared(
+        &mut self,
+        stack: ItemStack,
+        position: [f64; 3],
+        velocity: Option<[f64; 3]>,
+        pickup_delay: u32,
+        random: Option<spill::ItemRandom>,
+    ) -> [f64; 3] {
+        let random = random.unwrap_or_else(|| spill::prepare_item_random(velocity));
+        let item = stack.item.clone();
+        let count = stack.count as i32;
+        self.next_entity += 1;
+        let p = Vec3::new(position[0], position[1], position[2]);
+        self.persist.uuids.insert(self.next_entity, random.uuid);
+        let (bob, yaw) = (random.bob, random.yaw);
+        let velocity = velocity.unwrap_or(random.velocity);
+        self.dropped.push(ItemEntity {
+            attachment_lifetime: Default::default(),
+            fall_distance: 0.0,
+            rotation: [yaw, 0.0],
+            pickup_delay: i64::from(pickup_delay),
+            random: random.own.into(),
+            ..ItemEntity::new(
+                self.next_entity,
+                stack,
+                p,
+                Vec3::new(velocity[0], velocity[1], velocity[2]),
+                bob,
+            )
+        });
+        // ServerLevel.addFreshEntity.
+        if self.native_joins_flush(false, self.next_entity) {
+            self.native_item_spawn(self.next_entity, &item, count, position);
+        }
+        velocity
+    }
+    /// The block entity at `pos` saved with its id and position
+    /// (`saveWithFullMetadata`), or the saved one Horizon keeps as loaded:
+    /// what a broken block's loot sees as `LootContextParams.BLOCK_ENTITY`.
+    fn loot_block_entity(&self, pos: [i32; 3], block: &str) -> Option<horizon_core::nbt::Tag> {
+        let key = (pos[0], pos[1], pos[2]);
+        match self.world.block_entities.get(&key) {
+            Some(entity) => Some(horizon_client::save::encode_block_entity(
+                key, entity, block,
+            )),
+            None => spill::saved_entity(&self.world, pos),
+        }
+    }
+    /// Where a loot roll at `origin` happens, for a mod's own loot kinds:
+    /// the block entity it may copy from, and this level as
+    /// `LootContext.getLevel` gives it (`Level.isRaining`: rain above 0.2;
+    /// `isThundering`: thunder above 0.9; neither where `canHaveWeather` is
+    /// false: a level with a ceiling or no sky light, or the End).
+    fn loot_place_at(
+        &self,
+        origin: [f64; 3],
+        block_entity: Option<horizon_core::nbt::Tag>,
+    ) -> horizon_world::loot::LootPlace {
+        let (rain, thunder) = self.world.weather.levels(1.0);
+        // Level.canHaveWeather: sky light, no ceiling and not the End.
+        let weather =
+            self.world.shape.sky_light && !self.world.shape.has_ceiling && self.dim != Dim::End;
+        horizon_world::loot::LootPlace {
+            origin: Some(origin),
+            block_entity,
+            level: Some(horizon_world::loot::LootLevel {
+                dimension: self.dim.id().to_owned(),
+                game_time: self.world.game_time,
+                day_time: self.world.day_time,
+                raining: weather && rain > 0.2,
+                thundering: weather && thunder > 0.9,
+            }),
+        }
+    }
+    /// `Block.getDrops` for a block a player breaks: the block's loot table
+    /// with the player as `this`, drawing from its server random sequence
+    /// (`LootContext.Builder.create`), else the level random. The roll's
+    /// origin is the block's centre and `block_entity` the entity it had.
+    fn block_loot_at(
+        &mut self,
+        pos: [i32; 3],
+        state: BlockStateId,
+        held: Option<&ItemStack>,
+        block_entity: Option<horizon_core::nbt::Tag>,
+    ) -> Vec<ItemStack> {
+        let dynamic = self.pending.dynamic(pos);
+        let place = self.loot_place_at(pos.map(|v| f64::from(v) + 0.5), block_entity);
+        let (_, entity) = self.native_clicker();
+        let mut drops = horizon_world::loot::with_native_loot_place(place, || {
+            let roll = horizon_client::items::BlockLootRoll {
+                held,
+                dynamic: &dynamic,
+                breaker: true,
+                ..Default::default()
+            };
+            self.roll_block_loot(pos, state, Some(entity as u32), roll)
+        });
+        let player = self.native_acting_id();
+        self.native_block_loot(pos, state, Some(player), held, None, &mut drops);
+        drops
+    }
+    /// Block.popResource
+    fn pop_resource(&mut self, pos: [i32; 3], mut stack: ItemStack) {
+        self.pending.attach(pos, &mut stack);
+        // Block.popResource: Mth.nextDouble offsets from the level random; the
+        // motion is `new ItemEntity(..)`'s own, from the item's random.
+        let p = spill::pop_position(&mut self.world.random, pos);
+        // Block.popResource draws its offsets before the private overload checks the gamerule.
+        if !self
+            .ui
+            .rules
+            .bool_at(horizon_client::gamerules::vanilla::BLOCK_DROPS)
+        {
+            return;
+        }
+        self.spawn_item_own(stack, p, 10);
+    }
+    /// `Block.popResourceFromFace`: the loot leaves the clicked face with the
+    /// face's own motion instead of the item's random one.
+    fn pop_resource_from_face(&mut self, pos: [i32; 3], face: [i32; 3], mut stack: ItemStack) {
+        self.pending.attach(pos, &mut stack);
+        let (p, v) = spill::pop_position_from_face(&mut self.world.random, pos, face);
+        // The private overload checks the gamerule after the offsets are drawn.
+        if !self
+            .ui
+            .rules
+            .bool_at(horizon_client::gamerules::vanilla::BLOCK_DROPS)
+        {
+            return;
+        }
+        self.spawn_item(stack, p, v, 10);
+    }
+    /// Player.drop: thrown from the eyes along the view direction.
+    fn drop_held(&mut self, all: bool) {
+        if self.eye_position().is_none() {
+            return;
+        }
+        let spectator = self.spectator();
+        let Some(thrown) = horizon_client::items::take_held_drop(
+            &mut self.inventory[self.selected],
+            all,
+            spectator,
+        ) else {
+            return;
+        };
+        self.player_drop(thrown);
+    }
+    /// `Player.drop`: the statistics and a thrown item entity in front of the player.
+    pub(super) fn player_drop(&mut self, thrown: ItemStack) -> Option<u32> {
+        let eye = self.eye_position()?;
+        // LivingEntity.drop: every drop swings the main hand, a menu's
+        // THROW and a creative tab's drop included.
+        self.swing_hand(Hand::Main, SwingAnimation::DEFAULT);
+        // ServerPlayer.drop: the drop statistics, only when an item entity came of it.
+        let (item, count) = (thrown.item.clone(), thrown.count as i32);
+        let dropped = self.throw_from_eyes(thrown, eye, false, true)?;
+        self.award_stat("dropped", &item, count);
+        self.award_custom_stat("drop", 1);
+        Some(dropped)
+    }
+    /// `Player.drop(stack, false)`, as `ItemUtils.createFilledResult` drops what no longer fits
+    /// in the inventory: thrown from the eyes, with no thrower, statistic or drop hook.
+    pub(super) fn drop_plain(&mut self, stack: ItemStack) -> Option<u32> {
+        self.drop_stack_from_eyes(stack, false)
+    }
+    /// `Player.drop(stack, false, thrown_from_hand)`: the stack thrown from the eyes along the
+    /// view, the main hand swinging for every drop (`LivingEntity.drop`; `PREDICTED` only keeps
+    /// the swing from being sent back to the player who made it). `thrown_from_hand` names the
+    /// player as the thrower, as the drop key does. The item's id, none for an empty stack or a
+    /// toss a mod canceled.
+    pub(super) fn drop_stack_from_eyes(
+        &mut self,
+        stack: ItemStack,
+        thrown_from_hand: bool,
+    ) -> Option<u32> {
+        if stack.count == 0 {
+            return None;
+        }
+        self.swing_hand(Hand::Main, SwingAnimation::DEFAULT);
+        let eye = self.eye_position()?;
+        self.throw_from_eyes(stack, eye, false, thrown_from_hand)
+    }
+    /// `Player.createItemStackToDrop`: an item entity thrown from the eyes
+    /// along the view direction. `thrown_from_hand` (`drop(stack, true)`, the
+    /// drop key) names the player as the thrower; `drop(stack, false)`, for
+    /// what no longer fits in the inventory, does not.
+    fn throw_from_eyes(
+        &mut self,
+        thrown: ItemStack,
+        eye: [f64; 3],
+        randomly: bool,
+        thrown_from_hand: bool,
+    ) -> Option<u32> {
+        let r = &mut self.world.random;
+        let v = horizon_client::entities::drop_motion(r, self.yaw, self.pitch, randomly);
+        let y = eye[1] - f64::from(0.3f32);
+        // ItemTossEvent: a canceled toss never enters the world; what was thrown is gone.
+        // Only `drop(.., false)` tosses fire it: a death's scatter (`randomly`) does not.
+        if !randomly {
+            let player = self.native_acting_id();
+            let mut canceled = false;
+            self.native_item_toss(player, &thrown.item, thrown.count, &mut canceled);
+            if canceled {
+                return None;
+            }
+        }
+        self.spawn_item(thrown, [eye[0], y, eye[2]], v, 40);
+        let uuid = thrown_from_hand.then(|| self.acting_player_uuid());
+        let item = self.just_spawned_item()?;
+        item.thrower = uuid;
+        Some(item.id)
+    }
+    /// The UUID of the player acting: the guest whose turn it is, else the host.
+    pub(super) fn acting_player_uuid(&mut self) -> [i32; 4] {
+        match self.lan_acting_uuid {
+            Some(guest) => horizon_client::lan::playerdata::uuid_ints(guest),
+            None => self.level.ensure_player_uuid(),
+        }
+    }
+    /// `Entity.doWaterSplashEffect` for a dropped item. The client draws the
+    /// bubble and splash particles (`Level.addParticle` is empty on a server).
+    /// The server plays `entity.generic.splash` (`Entity.playSound`); a
+    /// client's `playSeededSound` ignores that call.
+    pub(super) fn apply_item_splash(&mut self, splash: horizon_client::entities::ItemSplash) {
+        use horizon_client::entities::ItemSplash;
+        let client = self.options.execution_role.is_client();
+        match splash {
+            ItemSplash::Sound { at, volume, pitch } if !client => {
+                self.audio
+                    .play("minecraft:entity.generic.splash", Some(at), volume, pitch);
+            }
+            ItemSplash::Particle {
+                bubble,
+                at,
+                velocity,
+            } if client => {
+                use horizon_client::particles::{ParticleOptions, ParticleType};
+                let kind = if bubble {
+                    ParticleType::Bubble
+                } else {
+                    ParticleType::Splash
+                };
+                self.particles
+                    .add(&ParticleOptions::simple(kind), at, velocity);
+            }
+            _ => {}
+        }
+    }
+    fn tick_items(&mut self) {
+        // EntityTickEvent.Pre for the items about to tick, and the Post after them.
+        let mut round = self.native_tick_round();
+        if round.listening() {
+            let ticking = self.entity_ticking_area();
+            let merging = self.remote.is_none();
+            let mut i = 0;
+            while let Some(item) = self.dropped.get(i) {
+                let (id, x, z) = (
+                    item.id,
+                    item.position.x.floor() as i32,
+                    item.position.z.floor() as i32,
+                );
+                if !(merging && self.joined_during_entity_pass(id)) && ticking(x, z) {
+                    let kind = native_ticks::TickKind::Fixed("minecraft:item");
+                    self.native_tick_pre_batch(&mut round, id, kind);
+                }
+                i += 1;
+            }
+        }
+        self.tick_dropped_items(&mut round);
+        self.drain_entity_inside();
+        self.native_tick_post_batch(round);
+    }
+    /// `Block.fallOn` for item `id`, which fell `distance` onto the block at `on`
+    /// (`Entity.checkFallDamage`): a mod block's `fall_on` Part hears it, through the same
+    /// `block_contact::fall` as a player's and a mob's landing. An item takes no fall damage.
+    /// Nothing is lent or built unless a Part of that block listens.
+    fn item_fall_on(&mut self, id: u32, on: horizon_core::position::BlockPos, distance: f64) {
+        let state = self.world.block(on.x, on.y, on.z);
+        if !horizon_client::block_contact::fall_listens(state) {
+            return;
+        }
+        let mut lent = horizon_client::health::LentLevel::take(&mut self.world);
+        // A native fall_on Part can unwind. Keep the persistent level carrier
+        // outside the callback's temporary views, and return its progressed state
+        // before propagating the original panic. This does not restore the item batch.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut level = horizon_client::health::DamageLevel::lent(
+                &self.world,
+                self.pack.assets.registry,
+                &mut lent,
+                Some(world_items!(self)),
+                Some(&self.pack.block_registries),
+                &self.damage_hooks,
+            );
+            let contact = horizon_client::block_contact::Contact {
+                entity: id as i32,
+                kind: "minecraft:item",
+                state,
+                position: on,
+            };
+            let _ = horizon_client::block_contact::fall(&mut level, contact, distance, 0.0);
+        }));
+        lent.give_back(&mut self.world);
+        if let Err(payload) = result {
+            std::panic::resume_unwind(payload);
+        }
+    }
+    /// An item that joined during this tick's entity pass: it first ticks on
+    /// the next one.
+    fn joined_during_entity_pass(&self, id: u32) -> bool {
+        id > self.ticked_entities_through || self.contact_drops.contains(&id)
+    }
+    fn tick_dropped_items(&mut self, round: &mut native_ticks::TickRound) {
+        let mut items = self.dropped.lift();
+        // ServerLevel.tick: only entities in entity-ticking chunks tick.
+        let ticking = self.entity_ticking_area();
+        let mut removed = vec![false; items.len()];
+        let mut cells = horizon_client::entities::ItemCells::new(&items);
+        // A LAN or server guest only shows the host's items.
+        let merging = self.remote.is_none();
+        let mut obstacles =
+            horizon_client::entities::ObstacleGrid::new(self.item_entity_collisions());
+        let mut nearby = Vec::new();
+        let mut bubble_tops = Vec::new();
+        // `ItemUtils.onContainerDestroyed`: what a destroyed item held, and
+        // where it lay, for adding to the level once its own tick is done.
+        let mut destroyed: Vec<(ItemStack, Vec3)> = Vec::new();
+        for i in 0..items.len() {
+            if removed[i] {
+                // Merged into an earlier item before its own tick: it never ticked.
+                round.not_ticked(items[i].id);
+                continue;
+            }
+            // `addFreshEntity` during the entity pass: the item ticks from the
+            // next tick on (`EntityTickList`).
+            if merging && self.joined_during_entity_pass(items[i].id) {
+                continue;
+            }
+            if !ticking(
+                items[i].position.x.floor() as i32,
+                items[i].position.z.floor() as i32,
+            ) || round.canceled(items[i].id)
+            {
+                continue;
+            }
+            // Entity.baseTick: the entity-level invulnerability window of
+            // the saved data counts down (#916) — only for an item that
+            // really ticks in this pass.
+            self.tick_saved_invulnerable_time(items[i].id);
+            let item = &mut items[i];
+            // `getEntityCollisions(entity, bounds.expandTowards(movement))`: the boxes around
+            // where the item can reach this tick (a block of slack for the next velocity).
+            let reach = Vec3::new(
+                item.velocity.x.abs() + 1.0,
+                item.velocity.y.abs() + 1.0,
+                item.velocity.z.abs() + 1.0,
+            );
+            obstacles.near(item.bounds().inflate(reach), &mut nearby);
+            let no_physics = merging
+                && item.inside_block(
+                    &self.world,
+                    self.collision,
+                    &nearby,
+                    Some(self.border.geometry()),
+                );
+            let escape_speed = no_physics.then(|| item.random.next_float() * 0.2 + 0.1);
+            let mut entered = Vec::new();
+            let (alive, discarded) = self.tick_item_with_block_contacts(
+                item,
+                escape_speed,
+                &nearby,
+                false,
+                &mut |splash| entered.push(splash),
+            );
+            // Entity.doWaterSplashEffect: the server plays the sound (broadcast
+            // to clients). Its addParticle is empty.
+            for splash in entered {
+                self.apply_item_splash(splash);
+            }
+            if discarded {
+                removed[i] = true;
+                cells.remove(i, item.previous);
+                continue;
+            }
+            if merging && !no_physics {
+                self.item_landing_event(item.id, item.previous, item.position, item.on_ground);
+                self.entity_powder_snow_particles(
+                    item.previous,
+                    item.position,
+                    item.bounds(),
+                    item.velocity,
+                    false,
+                );
+            }
+            cells.moved(i, item.previous, item.position);
+            // Entity.handleOnAboveBubbleColumn: the server sends the particles of
+            // the surface of a bubble column the item is at the top of.
+            if merging {
+                bubble_tops.extend(horizon_client::motion::bubble_column_surfaces(
+                    &self.world,
+                    self.pack.assets.registry,
+                    self.res.facts(),
+                    self.collision,
+                    item.bounds(),
+                ));
+            }
+            // ItemEntity.tick: merge every 2 ticks while moving between
+            // blocks, every 40 otherwise, before the lifetime check.
+            let block = |v: Vec3| (v.x.floor(), v.y.floor(), v.z.floor());
+            let rate = if block(item.previous) == block(item.position) {
+                40
+            } else {
+                2
+            };
+            if merging
+                && (alive || item.age == 6000 && item.position.y > -128.0)
+                && item.ticks.is_multiple_of(rate)
+            {
+                let max_stack = |stack: &ItemStack| self.stack_max_size(stack).max(1);
+                horizon_client::entities::merge_with_neighbours(
+                    &mut items,
+                    &mut removed,
+                    &mut cells,
+                    i,
+                    &max_stack,
+                );
+            }
+            let item = &mut items[i];
+            let mut alive = alive || (item.age < 6000 && item.position.y > -128.0);
+            if merging && !removed[i] && item.age >= 6000 && item.position.y > -128.0 {
+                let mut extra_life = 0;
+                self.native_item_expire(item.id, &item.stack, &mut extra_life);
+                if extra_life > 0 {
+                    item.age = 6000 - extra_life.min(32766);
+                    alive = true;
+                } else if self.serving.is_some() || self.options.dedicated.is_some() {
+                    self.native_item_despawn(
+                        item.id,
+                        &item.stack.item,
+                        item.stack.count as i32,
+                        [item.position.x, item.position.y, item.position.z],
+                    );
+                }
+            }
+            if !alive || removed[i] {
+                removed[i] = true;
+                cells.remove(i, item.position);
+                continue;
+            }
+            let item_id = item.id;
+            let saved = [
+                "minecraft:on_fire",
+                "minecraft:lava",
+                "minecraft:in_fire",
+                "minecraft:cactus",
+            ]
+            .map(|damage| self.saved_refuses_damage(item_id, damage, false));
+            let tags = world_items!(self);
+            let registry = self.pack.assets.registry;
+            let block_registries = &self.pack.block_registries;
+            let hooks = &self.damage_hooks;
+            let environment = item.environment_tick_with_hook(
+                &mut self.world,
+                self.res.facts(),
+                registry,
+                tags,
+                |world, damage| {
+                    let vanilla = match damage {
+                        "minecraft:on_fire" => saved[0],
+                        "minecraft:lava" => saved[1],
+                        "minecraft:in_fire" => saved[2],
+                        "minecraft:cactus" => saved[3],
+                        _ => false,
+                    };
+                    let source = horizon_client::health::HurtSource {
+                        damage_type: damage,
+                        causing: 0,
+                        direct: 0,
+                        position: None,
+                    };
+                    horizon_client::health::DamageLevel::of(
+                        world,
+                        registry,
+                        Some(tags),
+                        Some(block_registries),
+                        hooks,
+                    )
+                    .invulnerability_check(
+                        horizon_client::health::Hurting::Entity(
+                            item_id as i32,
+                            "minecraft:item",
+                            source,
+                        ),
+                        vanilla,
+                    )
+                },
+            );
+            if environment.should_play_lava_hurt_sound(item.ticks) {
+                let pitch = 2.0 + self.world.random.next_float() * 0.4;
+                self.audio.play(
+                    "minecraft:entity.generic.burn",
+                    Some([item.position.x, item.position.y, item.position.z]),
+                    0.4,
+                    pitch,
+                );
+            }
+            if !environment.alive {
+                removed[i] = true;
+                cells.remove(i, item.position);
+                for stack in environment.spilled {
+                    destroyed.push((stack, item.position));
+                }
+            }
+        }
+        for pos in bubble_tops {
+            self.bubble_column_particles(pos);
+        }
+        let mut removed = removed.into_iter();
+        items.retain(|_| !removed.next().unwrap_or(false));
+        let Some(p) = self.player.as_ref() else {
+            self.put_back_dropped(items);
+            self.spawn_destroyed_contents(destroyed);
+            return;
+        };
+        if p.health.dead_or_dying() || self.spectator() {
+            self.put_back_dropped(items);
+            self.spawn_destroyed_contents(destroyed);
+            return;
+        }
+        let w = f64::from(p.dimensions.width) / 2.0;
+        let (min, max) = (
+            [
+                p.position.x - w - 1.0,
+                p.position.y - 0.5,
+                p.position.z - w - 1.0,
+            ],
+            [
+                p.position.x + w + 1.0,
+                p.position.y + f64::from(p.dimensions.height) + 0.5,
+                p.position.z + w + 1.0,
+            ],
+        );
+        let feet = [p.position.x, p.position.y, p.position.z];
+        let own = self.level.ensure_player_uuid();
+        // The predicate's Game borrow ends before each yielded row's effects.
+        // This cell is stack-local and never accessible to a native callback.
+        let game = std::cell::RefCell::new(&mut *self);
+        for item in items.extract_if_mut(|item| {
+            let mut game = game.borrow_mut();
+            let b = item.bounds();
+            let touching = b.min_position().x < max[0]
+                && b.max_position().x > min[0]
+                && b.min_position().y < max[1]
+                && b.max_position().y > min[1]
+                && b.min_position().z < max[2]
+                && b.max_position().z > min[2];
+            // ItemEntity.playerTouch: no pickup delay, and the target (if any) is this player.
+            if touching && item.pickup_delay == 0 && item.target.is_none_or(|t| t == own) {
+                if game.native_pickup_refused(&item.stack) {
+                    item.pickup_delay = 10;
+                    return false;
+                }
+                let before = item.stack.count;
+                let kind = item.stack.item.clone();
+                let thrower = item.thrower;
+                match game.add_stack_to_inventory(item.stack.clone()) {
+                    None => {
+                        game.award_stat("picked_up", &kind, before as i32);
+                        if let Some(thrower) = thrower {
+                            game.trigger_thrown_picked_up_by_player(&item.stack, thrower);
+                        }
+                        return true;
+                    }
+                    Some(rest) => {
+                        if rest.count < before {
+                            game.award_stat("picked_up", &kind, (before - rest.count) as i32);
+                            if let Some(thrower) = thrower {
+                                game.trigger_thrown_picked_up_by_player(&rest, thrower);
+                            }
+                            game.add_pickup(
+                                pickups::Taken::Item(Box::new(item.clone())),
+                                pickups::Collector::Player,
+                            );
+                            // handleTakeItemEntity: the random pitch of a full pickup.
+                            let pitch = ((game.world.random.next_float()
+                                - game.world.random.next_float())
+                                * 0.7
+                                + 1.0)
+                                * 2.0;
+                            game.audio
+                                .play("minecraft:entity.item.pickup", Some(feet), 0.2, pitch);
+                        }
+                        item.stack = rest;
+                    }
+                }
+            }
+            false
+        }) {
+            let mut game = game.borrow_mut();
+            game.add_pickup(
+                pickups::Taken::Item(Box::new(item)),
+                pickups::Collector::Player,
+            );
+            let pitch = ((game.world.random.next_float() - game.world.random.next_float()) * 0.7
+                + 1.0)
+                * 2.0;
+            game.audio
+                .play("minecraft:entity.item.pickup", Some(feet), 0.2, pitch);
+        }
+        self.put_back_dropped(items);
+        self.spawn_destroyed_contents(destroyed);
+    }
+    /// The item entities `tick_dropped_items` took out, back in the level,
+    /// before those its hooks spawned meanwhile (`addFreshEntity` appends).
+    /// They keep their join numbers; the spawned ones got theirs on joining.
+    fn put_back_dropped(&mut self, items: horizon_client::join_seq::JoinList<ItemEntity>) {
+        self.dropped.restore(
+            items,
+            horizon_client::join_seq::RestoreOrder::SurvivorsFirst,
+        );
+    }
+    /// `ItemUtils.onContainerDestroyed`: each stack a destroyed item held
+    /// becomes an item entity where that item lay (`new ItemEntity(level, x,
+    /// y, z, stack)`), nudged by 0.2 less 0.1 per axis and pickable at once.
+    fn spawn_destroyed_contents(&mut self, destroyed: Vec<(ItemStack, Vec3)>) {
+        for (stack, at) in destroyed {
+            let r = &mut self.world.random;
+            let motion = [
+                r.next_double() * 0.2 - 0.1,
+                r.next_double() * 0.2 - 0.1,
+                r.next_double() * 0.2 - 0.1,
+            ];
+            self.spawn_item(stack, [at.x, at.y, at.z], motion, 0);
+        }
+    }
+    /// Run vanilla block behaviour against the world through `LevelAccess`.
+    fn with_level<R>(
+        &mut self,
+        f: impl FnOnce(&Behaviours, &mut GameLevel<'_>, &mut Ticks) -> R,
+    ) -> R {
+        self.ensure_stateful_entity_table();
+        let darken = self.sky_darken();
+        let (rain, thunder) = self.weather_levels(1.0);
+        // Spectators ignore block triggers (Entity.isIgnoringBlockTriggers).
+        let spectator = self.spectator();
+        let player_box = self.player.as_ref().filter(|_| !spectator).map(|p| {
+            let w = f64::from(p.dimensions.width) / 2.0;
+            (
+                [p.position.x - w, p.position.y, p.position.z - w],
+                [
+                    p.position.x + w,
+                    p.position.y + f64::from(p.dimensions.height),
+                    p.position.z + w,
+                ],
+            )
+        });
+        let player_collision = self.player.as_ref().filter(|_| !spectator).map(|p| {
+            let main_hand = self.inventory.get(self.selected).and_then(Option::as_ref);
+            PlayerCollision {
+                y: p.position.y,
+                descending: p.velocity.y < 0.0,
+                fall_distance: p.fall_distance,
+                main_hand_item: main_hand.map_or_else(
+                    || Arc::from("minecraft:air"),
+                    |stack| Arc::clone(&stack.item),
+                ),
+                main_hand_count: main_hand.map_or(0, |stack| stack.count as i32),
+                leather_boots: self.armor[3]
+                    .as_ref()
+                    .is_some_and(|stack| stack.item.as_ref() == "minecraft:leather_boots"),
+            }
+        });
+        let cart_boxes = self
+            .carts
+            .iter()
+            .map(|c| {
+                let p = c.position;
+                (
+                    [p.x - 0.49, p.y, p.z - 0.49],
+                    [p.x + 0.49, p.y + 0.7, p.z + 0.49],
+                )
+            })
+            .collect();
+        let arrow_boxes = self
+            .creatures
+            .projectiles
+            .iter()
+            .filter(|p| p.arrow.is_some())
+            .map(|p| p.position)
+            .chain(self.tridents.iter().map(|t| t.position))
+            .map(|at| {
+                let b = horizon_client::arrows::arrow_bounds(at);
+                (b.min_position().components(), b.max_position().components())
+            })
+            .collect();
+        let guest_boxes = self.lan_block_trigger_boxes();
+        let building_player_boxes = self
+            .lan_acting
+            .is_some()
+            .then(|| self.lan_building_boxes.boxes(self.dim));
+        let dimension = self.dim.level();
+        let rules = self.level_rules();
+        let fire_players: Vec<[f64; 3]> = self
+            .player
+            .iter()
+            .filter(|_| !spectator)
+            .map(|p| [p.position.x, p.position.y, p.position.z])
+            .chain(self.lan.iter().flat_map(|h| {
+                h.hub
+                    .guests
+                    .simulation_iter()
+                    .filter(|g| h.hub.here(g) && !g.spectator())
+                    .map(|g| g.position)
+            }))
+            .collect();
+        let mut trigger_hooks: Vec<(Aabb, bool)> = self
+            .hook
+            .iter()
+            .map(|h| (h.bounds(), h.applies_block_effects()))
+            .collect();
+        self.lan_hook_triggers(&mut trigger_hooks);
+        // EntityType.LIGHTNING_BOLT: 0 x 0.
+        let trigger_extras: Vec<Aabb> = self
+            .bolts
+            .iter()
+            .map(|b| {
+                let at = Vec3::new(b.at[0], b.at[1], b.at[2]);
+                Aabb::new(at, at)
+            })
+            .collect();
+        // `ContainerOpenersCounter.getEntitiesWithContainerOpen`: the players
+        // whose menu still holds a container of the block at a position. A
+        // double chest answers for both halves (`ChestBlockEntity$1` takes a
+        // `CompoundContainer`), and a spectator's menu counts for nothing.
+        let mut open_containers: Vec<(i32, i32, i32)> = Vec::new();
+        for key in self.container.into_iter().filter(|_| !spectator).chain(
+            self.lan
+                .iter()
+                .flat_map(|h| {
+                    h.hub
+                        .guests
+                        .simulation_iter()
+                        .filter(|g| h.hub.here(g) && !g.spectator())
+                })
+                .filter_map(|g| g.menu.as_ref().and_then(|m| m.pos)),
+        ) {
+            open_containers.push(key);
+            if let Some(other) = self.chest_other_half(key) {
+                open_containers.push(other);
+            }
+        }
+        // CopperGolem.hasContainerOpen: the chest a golem opened, and its other half.
+        let mut golem_chests: Vec<(i32, i32, i32)> = Vec::new();
+        for &key in self.world.chest_openers.keys() {
+            golem_chests.push(key);
+            golem_chests.extend(self.chest_other_half(key));
+        }
+        let native_authoritative = self.native_authoritative();
+        let mut level = GameLevel {
+            command_block_transition: None,
+            gateway_servers: &mut self.be_anims.gateway_servers,
+            border: self.border.geometry(),
+            redstone_experiments: self
+                .level
+                .enabled_features
+                .iter()
+                .any(|feature| feature == "minecraft:redstone_experiments"),
+            cart_boxes,
+            item_frames: &self.item_frames,
+            carts: &self.carts,
+            arrow_boxes,
+            entities: entity::entity_lists_of!(self),
+            crystals: &self.crystals,
+            trigger_hooks,
+            trigger_extras,
+            world: &mut self.world,
+            facts: self.res.facts(),
+            collision: self.collision,
+            events: &mut self.level_events,
+            dimension,
+            darken,
+            environment: match dimension {
+                LevelDimension::Overworld => self.res.environment(),
+                LevelDimension::Nether => self.res.nether_environment(),
+                LevelDimension::End => self.res.end_environment(),
+                LevelDimension::Custom(key) => horizon_client::environment::Environment::for_level(
+                    key.id(),
+                    self.res.environment(),
+                ),
+            },
+            raining: rain > 0.2,
+            thundering: thunder > 0.9,
+            enabled_features: self
+                .remote
+                .as_ref()
+                .map_or(&self.level.enabled_features, |remote| &remote.features),
+            player_box,
+            guest_boxes,
+            building_player_boxes,
+            player_collision,
+            biomes: world_biomes!(self),
+            seed: self.level.seed,
+            behaviours: self.res.behaviours(),
+            items: world_items!(self),
+            recipes: world_recipes!(self),
+            // A client rolls no loot (LootTable.getRandomItems needs a
+            // ServerLevel): it doesn't load the tables on its game thread.
+            loot: if self.remote.is_some() {
+                None
+            } else {
+                self.server_loot.get()
+            },
+            registry: self.pack.assets.registry,
+            block_registries: &self.pack.block_registries,
+            rules,
+            difficulty: i32::from(self.ui.difficulty),
+            fire_players,
+            rand_sequences: &mut self.rand_sequences,
+            pending: &mut self.pending,
+            spill: &mut self.spill,
+            tickets: self.tickets.levels(),
+            random_tick_sections: &mut self.random_tick_sections,
+            lid_openers: &mut self.lid_openers,
+            open_containers: &open_containers,
+            golem_chests: &golem_chests,
+            client_side: self.remote.is_some(),
+            native_authoritative,
+            native_player: self.lan_acting_uuid,
+            native_player_entity: self.lan_acting_entity.map(|id| id as i32),
+            debug: self.world_debug,
+            native_sounds: &mut self.creatures.lan_sounds,
+            native_particles: &mut self.creatures.lan_particles,
+            sound_seeds: self.lan.as_ref().map(|host| &host.hub),
+            drop_tool: None,
+            drop_entity: None,
+            drop_breaker_at: None,
+            drop_into: None,
+        };
+        let result = f(self.res.behaviours(), &mut level, &mut self.block_ticks);
+        self.flush_spill();
+        if self.lan.is_some() {
+            self.flush_lan_particles();
+            self.flush_native_sounds();
+        }
+        result
+    }
+    pub(super) fn native_block_ignite_allowed(
+        &mut self,
+        pos: BlockPos,
+        cause: &'static str,
+    ) -> bool {
+        self.with_level(|_, level, _| level.allow_block_ignite(pos, cause))
+    }
+    pub(super) fn native_cauldron_level_change_allowed(
+        &mut self,
+        pos: BlockPos,
+        from: i32,
+        to: i32,
+        reason: &'static str,
+    ) -> bool {
+        self.with_level(|_, level, _| level.allow_cauldron_level_change(pos, from, to, reason))
+    }
+    /// Level.setBlock(pos, state, UPDATE_ALL) with neighbour/shape updates.
+    fn level_set(&mut self, pos: [i32; 3], state: BlockStateId) -> Result<()> {
+        self.level_set_with_flags(pos, state, level_flags::UPDATE_ALL)
+    }
+    /// Level.setBlock with the caller's update flags.
+    fn level_set_with_flags(
+        &mut self,
+        pos: [i32; 3],
+        state: BlockStateId,
+        flags: i32,
+    ) -> Result<()> {
+        self.with_level(|b, level, ticks| {
+            b.set_block(
+                level,
+                ticks,
+                BlockPos::new(pos[0], pos[1], pos[2]),
+                state,
+                flags,
+            );
+        });
+        self.process_level_events()
+    }
+    /// `BlockState.canSurvive(level, pos)` for `state` at `pos` in the level in
+    /// place: the rule a placement checks before `level_set` (a sapling on
+    /// grass, a torch on a wall), with a mod block's own `native_can_survive`
+    /// hook. False for an invalid state, an unloaded or out-of-height
+    /// position, and on a client.
+    ///
+    /// This is the non-closure equivalent of `with_level(|b, level, ticks|
+    /// b.can_survive(level, ticks, pos, state))`, for a wasm mod whose
+    /// internals view cannot send a closure.
+    // A wasm mod's staged internals table calls this; nothing in Horizon does.
+    #[allow(dead_code)]
+    fn level_can_survive(&mut self, pos: [i32; 3], state: BlockStateId) -> bool {
+        if !self.is_logical_server()
+            || !self.world.loaded(pos[0], pos[2])
+            || !self.world.shape.contains_y(pos[1])
+            || self.pack.assets.registry.state(state).is_none()
+        {
+            return false;
+        }
+        self.with_level(|b, level, ticks| {
+            b.can_survive(level, ticks, BlockPos::new(pos[0], pos[1], pos[2]), state)
+        })
+    }
+    fn attack_block(&mut self, pos: [i32; 3]) -> Result<()> {
+        let note = self.with_level(|b, level, ticks| {
+            b.attack_block(level, ticks, BlockPos::new(pos[0], pos[1], pos[2]))
+        });
+        // NoteBlock.attack awards the statistic.
+        if note {
+            self.award_custom_stat("play_noteblock", 1);
+        }
+        self.process_level_events()
+    }
+    /// `AbstractCandleBlock.getParticleOffsets`, in sixteenths of a block:
+    /// `CandleBlock.PARTICLE_OFFSETS` by its `candles` (one to four wicks),
+    /// then `CandleCakeBlock.PARTICLE_OFFSETS`, whose one wick sits a block up.
+    fn candle_offsets(name: &str, candles: Option<usize>) -> &'static [[u8; 3]] {
+        const OFFSETS: [&[[u8; 3]]; 5] = [
+            &[[8, 8, 8]],
+            &[[6, 7, 8], [10, 8, 7]],
+            &[[8, 5, 10], [6, 7, 8], [9, 8, 7]],
+            &[[7, 5, 9], [10, 7, 9], [6, 7, 6], [9, 8, 6]],
+            &[[8, 16, 8]],
+        ];
+        if name.ends_with("candle_cake") {
+            OFFSETS[4]
+        } else {
+            OFFSETS[candles.unwrap_or(1).clamp(1, 4) - 1]
+        }
+    }
+    /// `AbstractCandleBlock.extinguish`: the smoke from each wick, at the
+    /// block's `getParticleOffsets` (sixteenths of a block), rising 0.1.
+    fn candle_smoke(&mut self, pos: [i32; 3], state: BlockStateId) {
+        use horizon_client::particles::{ParticleOptions, ParticleType};
+        let candles = self
+            .pack
+            .assets
+            .registry
+            .state(state)
+            .and_then(|s| s.properties.get("candles")?.parse::<usize>().ok());
+        let offsets = Self::candle_offsets(&self.res.facts().get(state).name, candles);
+        for o in offsets {
+            self.particles.add(
+                &ParticleOptions::simple(ParticleType::Smoke),
+                [
+                    f64::from(pos[0]) + f64::from(o[0]) / 16.0,
+                    f64::from(pos[1]) + f64::from(o[1]) / 16.0,
+                    f64::from(pos[2]) + f64::from(o[2]) / 16.0,
+                ],
+                // AbstractCandleBlock.extinguish: ySpeed 0.1F, widened.
+                [0.0, f64::from(0.1_f32), 0.0],
+            );
+        }
+    }
+    /// `LeverBlock.makeParticle` at full scale: a powered lever puffs one red
+    /// dust on the clicking client (`LeverBlock.useWithoutItem`).
+    fn lever_puff(&mut self, pos: [i32; 3]) {
+        // The server's side of a guest's pull draws nothing.
+        if self.lan_acting.is_some() {
+            return;
+        }
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let Some(registry_state) = self.pack.assets.registry.state(state) else {
+            return;
+        };
+        let prop = |key: &str| registry_state.properties.get(key).map(String::as_str);
+        if prop("powered") != Some("true") {
+            return;
+        }
+        // FACING is horizontal; getConnectedDirection is the face's direction.
+        let facing = match prop("facing") {
+            Some("north") => [0, 0, -1],
+            Some("south") => [0, 0, 1],
+            Some("west") => [-1, 0, 0],
+            Some("east") => [1, 0, 0],
+            _ => return,
+        };
+        let connected = match prop("face") {
+            Some("ceiling") => [0, -1, 0],
+            Some("floor") => [0, 1, 0],
+            _ => facing,
+        };
+        let at = |base: i32, i: usize| {
+            f64::from(base) + 0.5 + 0.1 * f64::from(-facing[i]) + 0.2 * f64::from(-connected[i])
+        };
+        let p = [at(pos[0], 0), at(pos[1], 1), at(pos[2], 2)];
+        self.particles.add(
+            &horizon_client::particles::ParticleOptions::dust([1.0, 0.0, 0.0], 1.0),
+            p,
+            [0.0; 3],
+        );
+    }
+    /// Track which chunks are ticking (Ticks needs chunk load/unload).
+    fn sync_tick_chunks(&mut self) {
+        if !self.tick_chunks.synchronize(&self.world.chunks) {
+            return;
+        }
+        // Move only the added keys out so registration can borrow all of Game.
+        let added = self.tick_chunks.take_added();
+        for &key in &added {
+            self.register_chunk_ticks(key);
+        }
+        for &key in self.tick_chunks.removed() {
+            self.random_tick_sections.remove(&key);
+            self.portals.sections.remove(&key);
+            self.block_ticks
+                .remove_chunk(horizon_core::position::ChunkPos::new(key.0, key.1));
+            self.block_ticks
+                .comparator_outputs
+                .retain(|p, _| (p.x >> 4, p.z >> 4) != key);
+            self.hoppers.retain(|p, _| (p.0 >> 4, p.2 >> 4) != key);
+            // Its moving pistons were saved with it and load back with it.
+            self.block_ticks
+                .moving_pistons
+                .retain(|(p, _)| (p.x >> 4, p.z >> 4) != key);
+        }
+        self.tick_chunks.recycle_added(added);
+    }
+    /// `DistanceManager`'s tickets of the level in place, from every player in
+    /// it (the local player, LAN guests, a server's players; a spectator the
+    /// rule skips holds none), its forced chunks and its portal tickets. A game
+    /// with neither a server nor a player (the headless fixtures) ticks
+    /// everywhere.
+    fn update_chunk_tickets(&mut self) {
+        let rule = self
+            .ui
+            .rules
+            .bool_at(horizon_client::gamerules::vanilla::SPECTATORS_GENERATE_CHUNKS);
+        let mut players: Vec<((i32, i32), bool)> = self.lan.as_ref().map_or_else(Vec::new, |h| {
+            h.hub
+                .guests
+                .iter()
+                .filter(|g| h.hub.here(g))
+                .filter(|g| !g.is_fake()) // fake players hold small forced tickets below
+                .map(|g| (g.chunk(), g.spectator()))
+                .collect()
+        });
+        if let Some(p) = &self.player {
+            players.push((
+                (
+                    (p.position.x.floor() as i32) >> 4,
+                    (p.position.z.floor() as i32) >> 4,
+                ),
+                self.spectator(),
+            ));
+        }
+        // A spectator the rule skips is still a player: a game that has one
+        // must not take the headless fixtures' tick-everywhere case below.
+        let any_player = !players.is_empty();
+        let sources = (!self.options.execution_role.is_client() || any_player).then(|| {
+            horizon_client::ticket_levels::Sources {
+                players: players
+                    .into_iter()
+                    .filter(|&(_, spectator)| game_mode::loads_chunks(rule, spectator))
+                    .map(|(chunk, _)| chunk)
+                    .collect(),
+                forced: self.streaming.forced.iter().copied().collect(),
+                // Filled from the `PORTAL` tickets by `update`.
+                portal: Vec::new(),
+                // EnderDragonFight.tick: while a player watches the fight, the
+                // arena holds a `DRAGON` ticket of radius 9 at (0, 0), so its
+                // island ticks out to 7 chunks whatever the watcher's
+                // simulation distance. The fight lives where the type has one.
+                dragon: (self.dimension_type().has_ender_dragon_fight
+                    && self.fight.arena_watched())
+                .then_some((0, 0)),
+                view_distance: self.settings.render_distance.clamp(2, 32),
+                simulation_distance: self.settings.simulation_distance.max(2),
+            }
+        });
+        // The levels' changes are kept only for a listener, so that a tick
+        // with none looks at no chunk.
+        self.tickets.record_changes(
+            self.is_logical_server()
+                && mod_api::__private::listened(mod_api::HookId::ChunkTicketLevelUpdated),
+        );
+        self.tickets.update(sources);
+        self.run_chunk_ticket_level_updates();
+    }
+    /// `ServerLevel.startTickingChunk`: a loaded chunk's saved ticks are
+    /// scheduled from the game time at which it becomes a ticking chunk
+    /// (block ticking, with its neighbours loaded). Chunks become ticking
+    /// between ticks in vanilla: before this tick's clock advanced.
+    fn start_ticking_chunks(&mut self) {
+        let levels = self.tickets.levels();
+        let world = &self.world;
+        let started = self
+            .tick_chunks
+            .start_ticking(|(x, z)| levels.loaded_ticking(x, z) && ticking_chunk(world, x, z));
+        let time = self.world.game_time - 1;
+        for (x, z) in started {
+            let pos = horizon_core::position::ChunkPos::new(x, z);
+            self.block_ticks.blocks.unpack_chunk(pos, time);
+            self.block_ticks.fluids.unpack_chunk(pos, time);
+        }
+    }
+
     /// `ServerLevel.tick`: moving block entities push after entity travel.
     fn tick_moving_pistons(&mut self) -> Result<()> {
         self.with_level(|b, level, ticks| b.tick_block_entities(level, ticks));
@@ -5547,7 +6090,12 @@ impl Game<'_> {
     }
     /// Copies the moving-piston block entities into the world, where the
     /// collision queries and the renderer read them.
+    ///
+    /// A client runs this for every block change that ends a piston's move,
+    /// so it stays linear in the pistons moving: a clock of a thousand pistons
+    /// ends two thousand moves at once.
     fn sync_moving_pistons(&mut self) {
+        use horizon_client::fast_hash::{FxHashMap, FxHashSet};
         let previous = std::mem::take(&mut self.world.moving_pistons);
         let current: Vec<_> = self
             .block_ticks
@@ -5555,16 +6103,30 @@ impl Game<'_> {
             .iter()
             .map(|(p, piston)| ([p.x, p.y, p.z], piston.shape_state()))
             .collect();
+        // The positions drawn by `current` or `fallback` so far.
+        let mut drawn: FxHashSet<[i32; 3]> = current.iter().map(|(p, _)| *p).collect();
         let mut fallback: Vec<_> = previous
             .into_iter()
-            .filter(|(pos, _)| !current.iter().any(|(next, _)| next == pos))
+            .filter(|(pos, _)| !drawn.contains(pos))
             .collect();
+        drawn.extend(fallback.iter().map(|(p, _)| *p));
         // A finished piston stays drawn until the chunk mesh shows the block
-        // it placed, however many ticks that takes.
+        // it placed, however many ticks that takes. Pistons share a few
+        // sections, so each section is asked once.
         let older = std::mem::take(&mut self.world.moving_piston_fallback);
+        let mut pending: FxHashMap<(i32, i32, i32), bool> = FxHashMap::default();
         for (pos, piston) in older {
-            let replaced = current.iter().chain(&fallback).any(|(p, _)| *p == pos);
-            if !replaced && self.section_mesh_pending(pos) {
+            if drawn.contains(&pos) {
+                continue;
+            }
+            let Some(section) = self.section_of(pos) else {
+                continue;
+            };
+            if *pending
+                .entry(section)
+                .or_insert_with(|| self.section_mesh_pending_in(section))
+            {
+                drawn.insert(pos);
                 fallback.push((pos, piston));
             }
         }
@@ -5617,6 +6179,7 @@ impl Game<'_> {
                     id: 2001,
                     pos,
                     data,
+                    ..
                 } => {
                     // LevelEventHandler: destroy particles and the block's
                     // break sound (none for air).
@@ -5643,6 +6206,7 @@ impl Game<'_> {
                     id: 3006,
                     pos,
                     data,
+                    ..
                 } => self.sculk_charge_event(pos, data),
                 LevelEvent::LevelEvent { id: 3007, pos, .. } => self.shriek_event(pos),
                 // LevelEventHandler 1010 and 1011: a jukebox's song starts
@@ -5651,6 +6215,7 @@ impl Game<'_> {
                     id: 1010,
                     pos,
                     data,
+                    ..
                 } => self.jukebox_song_event([pos.x, pos.y, pos.z], data),
                 LevelEvent::LevelEvent { id: 1011, pos, .. } => {
                     self.jukebox_stop_event([pos.x, pos.y, pos.z])
@@ -5661,6 +6226,7 @@ impl Game<'_> {
                     id: id @ (2019 | 2020),
                     pos,
                     data,
+                    ..
                 } => {
                     let face = horizon_core::geometry::Direction::ALL[data.clamp(0, 5) as usize];
                     self.breaking_block_effects([pos.x, pos.y, pos.z], face.normal(), id == 2020);
@@ -5669,6 +6235,7 @@ impl Game<'_> {
                     id: 3008,
                     pos,
                     data,
+                    ..
                 } => self.brush_complete_event([pos.x, pos.y, pos.z], data),
                 LevelEvent::LevelEvent { id: 2004, pos, .. } => {
                     self.spawner_burst([pos.x, pos.y, pos.z])
@@ -5678,6 +6245,7 @@ impl Game<'_> {
                     id: 1505,
                     pos,
                     data,
+                    ..
                 } => {
                     self.growth_particles(pos, data);
                     let at = [pos.x, pos.y, pos.z].map(|v| f64::from(v) + 0.5);
@@ -5688,21 +6256,25 @@ impl Game<'_> {
                     id: 2015,
                     pos,
                     data,
+                    ..
                 } => self.dragon_egg_particles([pos.x, pos.y, pos.z], data),
                 LevelEvent::LevelEvent {
                     id: 2016,
                     pos,
                     data,
+                    ..
                 } => self.shulker_teleport_particles([pos.x, pos.y, pos.z], data),
                 LevelEvent::LevelEvent {
                     id: 2017,
                     pos,
                     data,
+                    ..
                 } => self.consume_teleport_particles([pos.x, pos.y, pos.z], data),
                 LevelEvent::LevelEvent {
                     id: 2018,
                     pos,
                     data,
+                    ..
                 } => self.enderman_teleport_particles([pos.x, pos.y, pos.z], data),
                 LevelEvent::LevelEvent { id: 2003, pos, .. } => {
                     self.eye_break_particles([pos.x, pos.y, pos.z]);
@@ -5711,27 +6283,32 @@ impl Game<'_> {
                     id: 2013,
                     pos,
                     data,
+                    ..
                 } => self.smash_dust(pos, data),
                 // LevelEventHandler 2002 and 2007: a potion's splash.
                 LevelEvent::LevelEvent {
                     id: 2002,
                     pos,
                     data,
+                    ..
                 } => self.potion_splash_particles(pos, data, false),
                 LevelEvent::LevelEvent {
                     id: 2007,
                     pos,
                     data,
+                    ..
                 } => self.potion_splash_particles(pos, data, true),
                 LevelEvent::LevelEvent {
                     id: id @ 3002..=3005,
                     pos,
                     data,
+                    ..
                 } => self.block_particle_event(id, pos, data),
                 LevelEvent::LevelEvent {
                     id: 1500,
                     pos,
                     data,
+                    ..
                 } => self.composter_fill_event(pos, data == 1),
                 // LevelEventHandler 1504: the stalactite's drip particle.
                 LevelEvent::LevelEvent { id: 1504, pos, .. } => self.dripstone_drip_particle(pos),
@@ -5740,6 +6317,7 @@ impl Game<'_> {
                     id: 2006,
                     pos,
                     data,
+                    ..
                 } => self.dragon_fireball_burst(pos, data),
                 // LevelEventHandler 2009: a wet sponge drying.
                 LevelEvent::LevelEvent { id: 2009, pos, .. } => {
@@ -5751,12 +6329,14 @@ impl Game<'_> {
                     id: 2011 | 2012,
                     pos,
                     data,
+                    ..
                 } => self.turtle_egg_particles(pos, data),
                 // LevelEventHandler 2014: a straw bed destroyed, with no sound.
                 LevelEvent::LevelEvent {
                     id: 2014,
                     pos,
                     data,
+                    ..
                 } => self.destroy_particles([pos.x, pos.y, pos.z], BlockStateId(data as u32)),
                 // EnderDragonFight.spawnNewGateway: an always-visible burst
                 // and a sound at the gateway for every nearby player.
@@ -5792,6 +6372,7 @@ impl Game<'_> {
                     id: id @ 3011..=3021,
                     pos,
                     data,
+                    ..
                 } => self.trial_level_event(id, [pos.x, pos.y, pos.z], data),
                 // LevelEvent.SOUND_PORTAL_TRAVEL: LevelEventHandler.levelEvent
                 // plays SimpleSoundInstance.forLocalAmbience (ambient, no
@@ -5974,6 +6555,7 @@ impl Game<'_> {
                     );
                     self.next_entity += 1;
                     self.falling.push(FallingBlock {
+                        attachment_lifetime: Default::default(),
                         rotation: [0.0, 0.0],
                         join: Default::default(),
                         id: self.next_entity,
@@ -5987,19 +6569,20 @@ impl Game<'_> {
                         portal: Default::default(),
                         drop_item: true,
                         fall_distance: 0.0,
+                        on_ground: false,
                         stuck: Vec3::ZERO,
                         damage,
                         saved: None,
                     });
                 }
                 LevelEvent::Player { pos, effect, .. } => match effect {
-                    PlayerEffect::OpenMenu => self.open_menu([pos.x, pos.y, pos.z]),
+                    PlayerEffect::OpenMenu => self.open_block_effect_menu([pos.x, pos.y, pos.z]),
                     PlayerEffect::Sleep if self.beds_destroy_on_use() => {
                         self.destroy_bed_on_use([pos.x, pos.y, pos.z])?
                     }
                     PlayerEffect::Sleep => self.try_sleep([pos.x, pos.y, pos.z]),
                     PlayerEffect::GiveItem(item) => {
-                        if let Some(rest) = self.give(ItemStack {
+                        if let Some(rest) = self.add_stack_to_inventory(ItemStack {
                             item,
                             count: 1,
                             damage: 0,
@@ -6082,7 +6665,12 @@ impl Game<'_> {
                             f64::from(pos.y) - 0.5,
                             f64::from(pos.z) + dz,
                         ];
-                        let _ = self.spawn_mob_raw("minecraft:tadpole", spawn, true);
+                        let _ = self.spawn_mob(
+                            "minecraft:tadpole",
+                            spawn,
+                            true,
+                            creatures::SpawnSite::Plain,
+                        );
                     }
                 }
                 LevelEvent::BlockEvent {
@@ -6184,7 +6772,10 @@ impl Game<'_> {
         Ok(())
     }
     /// Menus opened by PlayerEffect::OpenMenu.
-    fn open_menu(&mut self, pos: [i32; 3]) {
+    fn open_block_effect_menu(&mut self, pos: [i32; 3]) {
+        if self.fake_blocks(mod_api::FakeEffect::Menu) {
+            return;
+        }
         let name = self
             .res
             .facts()
@@ -6194,6 +6785,11 @@ impl Game<'_> {
         let key = (pos[0], pos[1], pos[2]);
         if self.chest_menu_blocked(key, &name) {
             // The use still succeeds, but no menu, stat or piglin anger.
+            return;
+        }
+        // BaseContainerBlockEntity.createMenu: a lock the opener cannot
+        // unlock refuses the menu with vanilla's action bar and sound.
+        if self.refuse_locked_container(key, &name) {
             return;
         }
         if &*name == "minecraft:lectern" {
@@ -6240,7 +6836,10 @@ impl Game<'_> {
                 );
                 self.container_edge_sound(key, true);
             }
-        } else if &*name == "minecraft:beacon" && self.open_station(pos, &name) {
+        } else if matches!(&*name, "minecraft:beacon" | "minecraft:enchanting_table")
+            && self.open_station(pos, &name)
+        {
+            // Station menus whose block has a block entity, not a container.
             self.world.block_entities.get_or_insert_with(key, || {
                 BlockEntity::for_block(&name).unwrap_or(BlockEntity::Chest(Vec::new()))
             });
@@ -6258,6 +6857,7 @@ impl Game<'_> {
                 self.resolve_container_maps(key, centre);
             });
             self.container = Some(key);
+            self.open_container_slots = Some((key, self.open_container_size()));
             let first = self.container_opener_event(key, true);
             if first {
                 self.post_block_game_event(
@@ -6291,7 +6891,7 @@ impl Game<'_> {
             // A mod block's container (`native_block_entity_container`).
             self.container = Some(key);
         } else if self.open_station(pos, &name) {
-            // Workstation menus: game/stations.rs.
+            // Workstation menus: game/blocks/stations.rs.
         } else {
             self.message = Some((
                 format!(
@@ -6302,30 +6902,9 @@ impl Game<'_> {
             ));
             return;
         }
-        self.screen = Screen::Inventory;
+        self.set_screen(Screen::Inventory);
         self.capture(false);
         self.right = false;
-    }
-    /// FallingBlockEntity.tick: fall with 0.04 gravity and 0.98F drag, then land.
-    /// One falling block's `tick`: places or drops its block in its own tick,
-    /// so a block falling onto one that just landed lands on top of it. `i` is
-    /// its place in the list; the caller has checked it is ticking.
-    /// `entities` are the boxes that stop its move (`Game::item_entity_collisions`).
-    fn tick_one_falling(&mut self, i: usize, entities: &[Aabb]) -> Result<()> {
-        let entity_drops = self.ui.rules.bool("entity_drops");
-        let mut f = self.falling.remove(i);
-        let original = f.clone();
-        match self.fall_step(&mut f, entity_drops, entities) {
-            Ok(FallStep::Falling) => self.falling.insert(i.min(self.falling.len()), f),
-            Ok(FallStep::Gone) => {}
-            Ok(FallStep::Dropped(at)) => self.drop_falling_block(f.state, at),
-            Ok(FallStep::Landed(pos)) => self.finish_falling_block(f, pos),
-            Err(error) => {
-                self.falling.insert(i.min(self.falling.len()), original);
-                return Err(error);
-            }
-        }
-        Ok(())
     }
     /// One `FallingBlockEntity.tick` move of `f`.
     fn fall_step(
@@ -6391,8 +6970,9 @@ impl Game<'_> {
             f.position.z + movement.z,
         );
         let on_ground = wanted.y < 0.0 && movement.y != wanted.y;
-        if next.y < f.position.y {
-            f.fall_distance += f.position.y - next.y;
+        f.on_ground = on_ground;
+        if movement.y < 0.0 {
+            f.fall_distance -= f64::from(movement.y as f32);
         }
         let from = f.position;
         f.position = next;
@@ -6527,8 +7107,9 @@ impl Game<'_> {
             .get("minecraft:breaks_decorated_pots")
             .is_some_and(|t| t.contains(&*held.item));
         let enchantments = &self.stations().enchantments;
+        // `EnchantmentHelper.hasTag`.
         let kept = held
-            .enchantments()
+            .all_enchantments()
             .iter()
             .any(|(e, _)| enchantments.in_tag("minecraft:prevents_decorated_pot_shattering", e));
         if !breaks || kept {
@@ -6560,7 +7141,7 @@ impl Game<'_> {
             hardness != 0.0
         };
         if wears && per_block > 0 && max > 0 {
-            self.damage_held_with_max(per_block, max);
+            self.damage_held(per_block);
         }
         self.award_stat("used", &stack.item, 1);
     }
@@ -6605,7 +7186,8 @@ impl Game<'_> {
         // Native mods, once the game allowed the break: a canceled one keeps
         // the block, and a guest's acknowledgement puts it back in its world.
         let mut canceled = false;
-        self.native_destroy_block(pos, state, &mut canceled);
+        let mut exp_to_drop = None;
+        self.native_break_block(pos, state, &mut canceled, &mut exp_to_drop);
         if canceled {
             return Ok(false);
         }
@@ -6655,7 +7237,10 @@ impl Game<'_> {
         // BeehiveBlock.playerWillDestroy: a creative break still drops the hive
         // with its bees and honey level.
         if creative
-            && self.ui.rules.bool("block_drops")
+            && self
+                .ui
+                .rules
+                .bool_at(horizon_client::gamerules::vanilla::BLOCK_DROPS)
             && let Some((h, (honey, _))) = &hive
             && (!h.bees.is_empty() || honey.is_some_and(|l| l > 0))
             && let Some(stack) = self.picked_stack(pos, true)
@@ -6663,8 +7248,26 @@ impl Game<'_> {
             let at = pos.map(f64::from);
             self.spawn_item_own(stack, at, 10);
         }
-        let correct_tool =
+        let mut correct_tool =
             !facts.requires_tool || self.res.items().correct_for_drops(self.held(), &facts.name);
+        if !creative
+            && self
+                .res
+                .behaviours()
+                .data(state)
+                .is(horizon_world::level::classes::Class::Door)
+            && mod_api::__private::listened(mod_api::HookId::PlayerHarvestCheck)
+        {
+            self.native_player_harvest_check(
+                self.own_entity_id() as u32,
+                pos,
+                state.0,
+                &mut correct_tool,
+            );
+        }
+        let source = self
+            .lan_acting_uuid
+            .map(horizon_world::level::LevelEventPlayer);
         let removed = self.with_level(|b, level, ticks| {
             b.player_destroy_block(
                 level,
@@ -6672,30 +7275,58 @@ impl Game<'_> {
                 BlockPos::new(pos[0], pos[1], pos[2]),
                 creative,
                 correct_tool,
+                source,
             )
         });
-        if removed && !creative {
+        if !creative {
             let held = self.held().cloned();
-            self.mine_block_with_held(&facts.name, facts.hardness);
-            let harvest = !facts.requires_tool
+            let mut harvest = !facts.requires_tool
                 || self
                     .res
                     .items()
                     .correct_for_drops(held.as_ref(), &facts.name);
-            if harvest {
+            if mod_api::__private::listened(mod_api::HookId::PlayerHarvestCheck) {
+                self.native_player_harvest_check(
+                    self.own_entity_id() as u32,
+                    pos,
+                    state.0,
+                    &mut harvest,
+                );
+            }
+            if removed {
+                self.mine_block_with_held(&facts.name, facts.hardness);
+            }
+            if removed && harvest {
                 // Block.playerDestroy: the mined statistic, the exhaustion and the drops.
                 self.award_stat("mined", &facts.name, 1);
                 if let Some(p) = self.player.as_mut() {
                     p.cause_food_exhaustion(0.005);
                 }
-                let drops = self.block_loot_at(pos, state, held.as_ref(), loot_entity);
+                let stacks = self.block_loot_at(pos, state, held.as_ref(), loot_entity);
                 let silk = held
                     .as_ref()
                     .is_some_and(|h| h.enchantment_level("minecraft:silk_touch") > 0);
-                for d in drops {
-                    if &*d.item != "minecraft:air" {
-                        self.pop_break_drop(pos, d);
+                // Block.dropResources: the item entities, then spawnAfterBreak's
+                // experience, with the mods' say between the two.
+                let breaker = Some(self.native_acting_id());
+                let dropped = self.with_level(|_, level, _| {
+                    level.block_dropped(
+                        BlockPos::new(pos[0], pos[1], pos[2]),
+                        state,
+                        breaker,
+                        held.as_ref(),
+                        stacks,
+                        exp_to_drop,
+                    )
+                });
+                let canceled = dropped.canceled;
+                if let Some(kept) = self.break_collect.as_mut() {
+                    kept.extend(dropped.items.into_iter().map(|item| item.stack));
+                    if dropped.experience > 0 {
+                        self.spawn_orbs(pos.map(|v| f64::from(v) + 0.5), dropped.experience);
                     }
+                } else {
+                    self.spawn_block_drops(pos, dropped);
                 }
                 // BeehiveBlock.playerDestroy: silk touch keeps the bees in, so
                 // the trigger counts them; otherwise they are out already.
@@ -6710,35 +7341,25 @@ impl Game<'_> {
                 // tool has silk touch (#prevents_infested_spawns) or blocks don't drop.
                 if facts.name.starts_with("minecraft:infested_")
                     && !silk
-                    && self.ui.rules.bool("block_drops")
+                    && !canceled
+                    && self
+                        .ui
+                        .rules
+                        .bool_at(horizon_client::gamerules::vanilla::BLOCK_DROPS)
                 {
                     let at = [
                         f64::from(pos[0]) + 0.5,
                         f64::from(pos[1]),
                         f64::from(pos[2]) + 0.5,
                     ];
-                    if let Some(id) = self.spawn_mob_raw("minecraft:silverfish", at, false) {
+                    if let Some(id) = self.spawn_mob(
+                        "minecraft:silverfish",
+                        at,
+                        false,
+                        creatures::SpawnSite::Plain,
+                    ) {
                         self.mob_poof(id);
                     }
-                }
-                // Block.tryDropExperience samples before Silk Touch removes the XP.
-                // SpawnerBlock.spawnAfterBreak ignores Silk Touch. Both sample even
-                // when Block.popExperience suppresses the award via block_drops.
-                let sampled_xp = self.block_experience(&facts.name);
-                let xp = if silk && &*facts.name != "minecraft:spawner" {
-                    0
-                } else {
-                    sampled_xp
-                };
-                if xp > 0 && self.ui.rules.bool("block_drops") {
-                    self.spawn_orbs(
-                        [
-                            f64::from(pos[0]) + 0.5,
-                            f64::from(pos[1]) + 0.5,
-                            f64::from(pos[2]) + 0.5,
-                        ],
-                        xp,
-                    );
                 }
                 // TurtleEggBlock.playerDestroy: after the drops, one egg of a
                 // mined stack is taken and the rest stay.
@@ -6770,21 +7391,6 @@ impl Game<'_> {
         self.process_level_events()?;
         Ok(removed)
     }
-    /// `Block.popResource` for a player's break, or into `break_collect`
-    /// when a mod takes the drops to the player's inventory: the stack still
-    /// gets what the block entity copies into it, and nothing is kept where
-    /// blocks don't drop.
-    fn pop_break_drop(&mut self, pos: [i32; 3], mut stack: ItemStack) {
-        if self.break_collect.is_none() {
-            return self.pop_resource(pos, stack);
-        }
-        self.pending.attach(pos, &mut stack);
-        if self.ui.rules.bool("block_drops")
-            && let Some(kept) = self.break_collect.as_mut()
-        {
-            kept.push(stack);
-        }
-    }
     /// The `ItemStack.interactLivingEntity` fallback in `Player.interactOn`,
     /// currently for native Mob entries after the entity's own action passed.
     fn item_interact_mob(&mut self, target: Option<InteractTarget>) -> bool {
@@ -6806,7 +7412,7 @@ impl Game<'_> {
             return false;
         };
         let mut swing = None;
-        self.native_item_interact_mob(entity, &kind, Some(&stack), &mut swing);
+        self.native_item_interact_mob(entity, &kind, &stack, &mut swing);
         if swing == Some(true) {
             self.swing_arm();
         }
@@ -6854,106 +7460,147 @@ impl Game<'_> {
     /// then `useItem`. Whether the click ends here (it acted or failed).
     fn use_hand(&mut self, block_hit: Option<&Hit>) -> Result<bool> {
         self.use_failed = false;
+        // The click's target as it was decided, before the adventure gate
+        // below may drop the block for the item's own use.
+        let aimed_at_block = block_hit.is_some();
         // isSecondaryUseActive with something in either hand keeps blocks
         // from reacting.
         let sneaking = self.keys.held(Mapping::Sneak);
         let hands_full = self.stack_in(self.selected).is_some() || self.offhand.is_some();
         let mut anchor_passed = false;
-        // Native mods, where ServerPlayerGameMode.useItemOn starts: a
-        // canceled click does nothing (a guest's block is sent back).
-        // A slow tick's line names the phase of a use that took it (#8669): the mods' hook,
-        // the block's own use, then the item's.
+        // Native mods, where ServerPlayerGameMode.useItemOn starts
+        // (RightClickBlock): a cancel answers for the block and the item, and
+        // its PASS goes on to Item.use, which a guest's UseItem asks for.
+        // A slow tick's line names the phase of a use that took it (#8669): the
+        // mods' hook, the block's own use, then the item's.
+        use mod_api::InteractionResult as Answer;
+        use mod_api::TriState;
+        let on_block = matches!(self.guest_use, Some(GuestUse::OnBlock(_)));
+        let mut block_hit = block_hit;
+        let (mut use_block, mut use_item) = (TriState::Default, TriState::Default);
+        let block_phase = horizon_client::spans::guard("use_block");
         if let Some(hit) = block_hit {
-            let mut canceled = false;
-            horizon_client::spans::time("use_mods", || {
-                self.native_right_click_block(hit.pos, hit.face, &mut canceled);
-                let hand = self.hand;
-                self.native_right_click_block_v2(hit.pos, hit.face, hand, &mut canceled);
+            let held = self.held().cloned();
+            let answer = horizon_client::spans::time("use_mods", || {
+                self.right_click_block(hit, self.hand, held.as_ref())
             });
-            if canceled {
-                // Nothing was used, so nothing consumed the action.
-                self.use_failed = true;
-                return Ok(true);
+            match answer {
+                native_hooks::BlockClickAnswer::Go {
+                    use_block: block,
+                    use_item: item,
+                } => (use_block, use_item) = (block, item),
+                native_hooks::BlockClickAnswer::Canceled(answer)
+                    if answer.consumes_action() || answer == Answer::Fail =>
+                {
+                    if matches!(answer, Answer::Success | Answer::SuccessServer) {
+                        self.swing_arm();
+                    }
+                    self.use_failed = answer == Answer::Fail;
+                    return Ok(true);
+                }
+                native_hooks::BlockClickAnswer::Canceled(_) => {
+                    (use_block, use_item) = (TriState::False, TriState::False);
+                }
             }
         }
-        // MultiPlayerGameMode.useItemOn: blocks react first.
-        let block_phase = horizon_client::spans::guard("use_block");
-        if !(sneaking && hands_full)
+        // ServerPlayerGameMode.useItemOn: the held item's onItemUseFirst, when
+        // RightClickBlock didn't deny the item, ahead of the sneak gate and
+        // every block behaviour. Its answer ends the click for this hand.
+        if use_item.or(true)
+            && let Some(hit) = block_hit
+            && let Some(held) = self.held().cloned()
+            && let Some(answer) = self.item_use_first(hit, self.hand, &held)
+        {
+            if matches!(answer, Answer::Success | Answer::SuccessServer) {
+                self.swing_arm();
+            }
+            self.use_failed = answer == Answer::Fail;
+            return Ok(answer.consumes_action() || answer == Answer::Fail);
+        }
+        // ServerPlayerGameMode.useItemOn: after the spectator and sneak gates,
+        // BlockState.useItemOn runs before every block-specific behaviour.
+        if use_block.or(!(sneaking && hands_full))
             && let Some(hit) = block_hit
         {
             let held = self.held().cloned();
-            if self.use_lectern(hit.pos, held.as_ref()) {
-                self.swing_arm();
-                return Ok(true);
+            let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
+            let mut block_answer =
+                self.use_item_on_block(hit, self.hand, held.as_ref(), mod_api::UsePhase::Block);
+            if block_answer.is_none()
+                && mod_api::__private::has_part_hook(mod_api::HookId::UseItemOn)
+                && api_values::block_state::block_listens(mod_api::HookId::UseItemOn, state)
+                && let Ok(snapshot) = held.try_into_api()
+            {
+                let click = self.block_click(hit, self.hand, snapshot.as_ref());
+                self.native_use_item_on(state, &click, &mut block_answer);
             }
-            if self.use_sign_applicator(hit.pos, held.as_ref()) {
-                self.swing_arm();
-                return Ok(true);
-            }
-            if self.use_golem_statue(hit.pos, held.as_ref()) {
-                self.swing_arm();
-                return Ok(true);
-            }
-            if self.use_jukebox(hit.pos, held.as_ref()) {
-                self.swing_arm();
-                return Ok(true);
-            }
-            if let Some(swings) = self.use_shelf(hit) {
-                let used = held.unwrap_or_else(|| ItemStack::new("minecraft:air", 0));
-                self.trigger_block("minecraft:item_used_on_block", hit.pos, &used);
-                if swings {
-                    self.swing_arm();
-                }
-                return Ok(true);
-            }
-            if let Some(swings) = self.use_chiseled_bookshelf(hit, held.as_ref()) {
-                if swings {
-                    self.swing_arm();
-                }
-                return Ok(true);
-            }
-            if self.use_composter(hit.pos, held.as_ref()) {
-                self.swing_arm();
-                return Ok(true);
-            }
-            if self.use_vault(hit.pos, held.as_ref())? {
-                self.swing_arm();
-                return Ok(true);
-            }
-            if self.use_decorated_pot(hit.pos, held.as_ref()) {
-                self.swing_arm();
-                return Ok(true);
-            }
-            if self.use_pumpkin(hit.pos, hit.face, held.as_ref())? {
-                self.swing_arm();
-                return Ok(true);
-            }
-            if self.use_beehive(hit.pos, held.as_ref())? {
-                self.swing_arm();
-                return Ok(true);
-            }
-            if self.use_campfire_douse(hit.pos, held.as_ref())? {
-                self.swing_arm();
-                return Ok(true);
-            }
-            if self.use_redstone_ore(hit.pos, held.as_ref())? {
-                self.swing_arm();
-                return Ok(true);
-            }
-            match self.use_respawn_anchor(hit.pos, held.as_ref())? {
-                respawn_anchor::AnchorUse::Charged => {
+            let mut chains_sign = false;
+            if block_answer.is_none() {
+                if self.use_on_cauldron(hit.pos)? {
                     self.swing_arm();
                     return Ok(true);
                 }
-                // The main hand passes; its item is used, then the off hand's glowstone.
-                respawn_anchor::AnchorUse::Pass => anchor_passed = true,
-                respawn_anchor::AnchorUse::Other => {}
-            }
-            // CeilingHangingSignBlock.useItemOn: a hanging sign aimed at the
-            // underside passes, so the next sign chains below instead of
-            // opening the editor, unless the side has click commands to run
-            // (`shouldTryToChainAnotherHangingSign`).
-            let chains_sign = hit.face == [0, -1, 0]
+                if let Some(placed) = self.use_on_campfire(hit.pos)? {
+                    if placed {
+                        self.swing_arm();
+                    }
+                    return Ok(true);
+                }
+                if self.use_lectern(hit.pos, held.as_ref()) {
+                    self.swing_arm();
+                    return Ok(true);
+                }
+                if self.use_sign_applicator(hit.pos, held.as_ref()) {
+                    self.swing_arm();
+                    return Ok(true);
+                }
+                if self.use_golem_statue(hit.pos, held.as_ref()) {
+                    self.swing_arm();
+                    return Ok(true);
+                }
+                if let Some(swings) = self.use_shelf(hit) {
+                    let used = held.unwrap_or_else(|| ItemStack::new("minecraft:air", 0));
+                    self.trigger_block("minecraft:item_used_on_block", hit.pos, &used);
+                    if swings {
+                        self.swing_arm();
+                    }
+                    return Ok(true);
+                }
+                if self.use_composter(hit.pos, held.as_ref()) {
+                    self.swing_arm();
+                    return Ok(true);
+                }
+                if self.use_vault(hit.pos, held.as_ref())? {
+                    self.swing_arm();
+                    return Ok(true);
+                }
+                if self.use_pumpkin(hit.pos, hit.face, held.as_ref())? {
+                    self.swing_arm();
+                    return Ok(true);
+                }
+                if self.use_beehive(hit.pos, held.as_ref())? {
+                    self.swing_arm();
+                    return Ok(true);
+                }
+                if self.use_campfire_douse(hit, held.as_ref())? {
+                    self.swing_arm();
+                    return Ok(true);
+                }
+                block_answer = self.use_redstone_ore(hit.pos, held.as_ref())?;
+                match self.use_respawn_anchor(hit.pos, held.as_ref())? {
+                    respawn_anchor::AnchorUse::Charged => {
+                        self.swing_arm();
+                        return Ok(true);
+                    }
+                    // The main hand passes; its item is used, then the off hand's glowstone.
+                    respawn_anchor::AnchorUse::Pass => anchor_passed = true,
+                    respawn_anchor::AnchorUse::Other => {}
+                }
+                // CeilingHangingSignBlock.useItemOn: a hanging sign aimed at the
+                // underside passes, so the next sign chains below instead of
+                // opening the editor, unless the side has click commands to run
+                // (`shouldTryToChainAnotherHangingSign`).
+                chains_sign = hit.face == [0, -1, 0]
                 // `instanceof HangingSignItem`, independent of the item's name.
                 && held.as_ref().is_some_and(|s| {
                     self.res.behaviours().item_binding(&s.item)
@@ -6971,9 +7618,18 @@ impl Game<'_> {
                     Some(BlockEntity::Sign(_))
                 )
                 && !self.sign_can_execute_click_commands((hit.pos[0], hit.pos[1], hit.pos[2]));
+            }
+            if block_answer.is_none() {
+                use horizon_world::level::UseBranch::ItemOn;
+                block_answer = self
+                    .use_jukebox(hit.pos, state, held.as_ref(), ItemOn)
+                    .or_else(|| self.use_decorated_pot(hit.pos, state, held.as_ref(), ItemOn))
+                    .or_else(|| self.use_chiseled_bookshelf(hit, state, held.as_ref(), ItemOn));
+            }
             // TRY_WITH_EMPTY_HAND: only the main hand's turn uses the block
-            // itself (useWithoutItem).
-            if !anchor_passed && !chains_sign && self.hand == Hand::Main {
+            // itself (useWithoutItem). The block's item behaviour hears both hands.
+            if !anchor_passed && !chains_sign && (self.hand == Hand::Main || block_answer.is_some())
+            {
                 let face = match hit.face {
                     [0, 1, 0] => Direction::Up,
                     [0, -1, 0] => Direction::Down,
@@ -6983,27 +7639,81 @@ impl Game<'_> {
                     _ => Direction::East,
                 };
                 let player = self.use_context();
-                let at = Vec3::new(hit.point[0], hit.point[1], hit.point[2]);
+                let block_hit = horizon_core::geometry::BlockHit {
+                    block: BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]),
+                    direction: face,
+                    location: Vec3::new(hit.point[0], hit.point[1], hit.point[2]),
+                    inside: hit.inside,
+                };
                 let item = held.as_ref().map(|s| s.item.to_string());
-                let cake = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
-                let adds_candle =
-                    self.with_level(|b, _, _| b.cake_candle_state(cake, item.as_deref()).is_some());
+                let adds_candle = self
+                    .with_level(|b, _, _| b.cake_candle_state(state, item.as_deref()).is_some());
                 let pots_flower = self
-                    .with_level(|b, _, _| b.potted_flower_state(cake, item.as_deref()).is_some());
-                let (result, branch) = self.with_level(|b, level, ticks| {
-                    b.use_item_on_branch(
-                        level,
-                        ticks,
-                        BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]),
-                        face,
-                        at,
-                        player,
-                        item.as_deref(),
-                    )
-                });
+                    .with_level(|b, _, _| b.potted_flower_state(state, item.as_deref()).is_some());
+                use horizon_world::level::{InteractionResult, UseBranch};
+                let item_result = match block_answer {
+                    Some(answer) => native_hooks::block_use_result(answer),
+                    None => self.with_level(|b, level, ticks| {
+                        b.block_use_item_on(level, ticks, state, block_hit, player, item.as_deref())
+                    }),
+                };
+                let mut empty_template_ran = false;
+                let (result, branch) = if let Some(result) = item_result {
+                    (result, UseBranch::ItemOn)
+                } else if self.hand == Hand::Main {
+                    let mut empty_answer = None;
+                    if mod_api::__private::has_part_hook(mod_api::HookId::UseWithoutItem)
+                        && api_values::block_state::block_listens(
+                            mod_api::HookId::UseWithoutItem,
+                            state,
+                        )
+                        && let Ok(snapshot) = self.held().try_into_api()
+                    {
+                        let click = self.block_click(hit, self.hand, snapshot.as_ref());
+                        self.native_use_without_item(state, &click, &mut empty_answer);
+                    }
+                    if empty_answer.is_none()
+                        && self
+                            .res
+                            .behaviours()
+                            .data(state)
+                            .is(horizon_world::level::classes::Class::Fence)
+                        && self.use_knot(hit.pos, false)
+                    {
+                        self.trigger_default_block_use(hit.pos);
+                        return Ok(true);
+                    }
+                    let answer = empty_answer.or_else(|| {
+                        self.use_jukebox(hit.pos, state, None, UseBranch::WithoutItem)
+                            .or_else(|| {
+                                self.use_decorated_pot(hit.pos, state, None, UseBranch::WithoutItem)
+                            })
+                            .or_else(|| {
+                                self.use_chiseled_bookshelf(
+                                    hit,
+                                    state,
+                                    None,
+                                    UseBranch::WithoutItem,
+                                )
+                            })
+                    });
+                    let result = if let Some(answer) = answer {
+                        native_hooks::block_use_result(answer).unwrap_or(InteractionResult::Pass)
+                    } else {
+                        empty_template_ran = true;
+                        let player = self.use_context();
+                        self.with_level(|b, level, ticks| {
+                            b.use_without_item(level, ticks, state, block_hit, player)
+                        })
+                    };
+                    (result, UseBranch::WithoutItem)
+                } else {
+                    (InteractionResult::Pass, UseBranch::ItemOn)
+                };
                 self.process_level_events()?;
                 // CakeBlock.useItemOn: the candle is used up and counted.
-                if adds_candle
+                if block_answer.is_none()
+                    && adds_candle
                     && result == horizon_world::level::InteractionResult::Success
                     && let Some(used) = held.as_ref()
                 {
@@ -7011,7 +7721,8 @@ impl Game<'_> {
                     self.consume_held();
                 }
                 // FlowerPotBlock.useItemOn: the plant is potted, used up, and counted.
-                if pots_flower
+                if block_answer.is_none()
+                    && pots_flower
                     && result == horizon_world::level::InteractionResult::Success
                     && let Some(used) = held.as_ref()
                 {
@@ -7026,8 +7737,9 @@ impl Game<'_> {
                         );
                     }
                 }
-                // NoteBlock.useWithoutItem (tuned) and BellBlock.onHit (rung).
-                if result == horizon_world::level::InteractionResult::Success {
+                // These effects belong to the vanilla method, not its Part replacement.
+                if empty_template_ran && result == horizon_world::level::InteractionResult::Success
+                {
                     let name = self
                         .res
                         .facts()
@@ -7056,7 +7768,7 @@ impl Game<'_> {
                     if result.should_swing() {
                         // SUCCESS swings on the client too; the beds, light,
                         // respawn anchor and sign's own uses are SUCCESS_SERVER.
-                        if server_only_block_use(self.res.facts().get(cake), branch) {
+                        if server_only_block_use(self.res.facts().get(state), branch) {
                             self.swing_arm();
                         } else {
                             self.swing_arm_predicted();
@@ -7065,6 +7777,14 @@ impl Game<'_> {
                     return Ok(true);
                 }
             }
+        }
+        // RightClickBlock's useItem FALSE: no ItemStack.useOn, so only
+        // Item.use is left (a guest's UseItem asks for it).
+        if !use_item.or(true) {
+            if on_block {
+                return Ok(false);
+            }
+            block_hit = None;
         }
         drop(block_phase);
         let _item_phase = horizon_client::spans::guard("use_item");
@@ -7075,29 +7795,89 @@ impl Game<'_> {
             return Ok(false);
         };
         // ServerPlayerGameMode.useItem and useItemOn: an item on cooldown is
-        // not used (PASS, so the other hand may still act).
-        if self
-            .cooldowns
-            .is_on_cooldown(&horizon_client::cooldowns::group(
-                &stack,
-                info.use_cooldown.as_ref(),
-            ))
+        // not used (PASS, so the other hand may still act), unless
+        // RightClickBlock's useItem TRUE forces a block click's useOn.
+        let forced = on_block && use_item == TriState::True;
+        if !forced
+            && self
+                .cooldowns
+                .is_on_cooldown(&horizon_client::cooldowns::group(
+                    &stack,
+                    info.use_cooldown.as_ref(),
+                ))
         {
             return Ok(false);
+        }
+        // ItemStack.useOn: adventure's predicate selects Item.useOn before
+        // its event and Part, not just before the eventual block placement.
+        if let Some(hit) = block_hit
+            && !self.may_build()
+            && !self.can_place_on_in_adventure(hit.pos)
+        {
+            if on_block {
+                return Ok(false);
+            }
+            block_hit = None;
         }
         // Native mods, where ItemStack.useOn and Item.use start: the block
         // aimed at had its turn, and the item is off cooldown. A guest's
         // UseItemOn reaches only useOn, its UseItem only use.
-        let on_block = matches!(self.guest_use, Some(GuestUse::OnBlock(_)));
         let mut claimed = false;
         if let Some(hit) = block_hit {
-            self.native_use_item_on(&stack, hit.pos, hit.face, &mut claimed);
+            if let Some(answer) = self.use_item_on_block(
+                hit,
+                self.hand,
+                Some(&stack),
+                mod_api::UsePhase::ItemAfterBlock,
+            ) {
+                if answer.consumes_action() {
+                    self.trigger_block("minecraft:item_used_on_block", hit.pos, &stack);
+                    if matches!(answer, Answer::Success | Answer::SuccessServer) {
+                        self.swing_arm();
+                    }
+                    return Ok(true);
+                }
+                if answer == Answer::Fail {
+                    self.use_failed = true;
+                    return Ok(true);
+                }
+                if on_block {
+                    return Ok(false);
+                }
+                block_hit = None;
+            } else if mod_api::__private::has_part_hook(mod_api::HookId::UseOn)
+                && let Ok(snapshot) = stack.try_into_api()
+            {
+                let (player, player_entity_id) = self.native_clicker();
+                let (hand, at) = (self.hand, hit.native());
+                self.native_use_on(mod_api::__private::UseOnCall {
+                    stack: &snapshot,
+                    pos: hit.pos,
+                    face: hit.face,
+                    hand,
+                    hit: at,
+                    player,
+                    player_entity_id,
+                    claimed: &mut claimed,
+                });
+            }
         }
         if !claimed && !on_block {
+            if let Some(answer) = self.right_click_item(self.hand, &stack, aimed_at_block) {
+                if matches!(answer, Answer::Success | Answer::SuccessServer) {
+                    self.swing_arm();
+                }
+                return Ok(answer.consumes_action());
+            }
             self.native_use_item(&stack, &mut claimed);
         }
         if claimed {
             self.swing_arm();
+            return Ok(true);
+        }
+        // LeadItem.useOn follows the block and the item's override, including
+        // when sneaking bypassed the block's useWithoutItem.
+        if block_hit.is_some() && &*stack.item == "minecraft:lead" && self.interact_knot() {
             return Ok(true);
         }
         // ItemStack.useOn: after the block's own useItemOn/useWithoutItem
@@ -7260,8 +8040,9 @@ impl Game<'_> {
         // PlaceOnWaterBlockItem.use: the lily pad and frogspawn aim at the block
         // or water source the SOURCE_ONLY ray meets and are placed on the
         // position above it.
+        let water_placement = matches!(&*stack.item, "minecraft:lily_pad" | "minecraft:frogspawn");
         let water_hit;
-        let hit = if matches!(&*stack.item, "minecraft:lily_pad" | "minecraft:frogspawn") {
+        let hit = if water_placement {
             let Some(h) = self.pick_fluid() else {
                 return Ok(false);
             };
@@ -7279,8 +8060,8 @@ impl Game<'_> {
         if info.block.is_none() {
             return Ok(false);
         }
-        if !self.may_build() && !self.can_place_on_in_adventure(hit.pos) {
-            // ItemStack.useOn passes in adventure mode; useItem eats.
+        if water_placement && !self.may_build() && !self.can_place_on_in_adventure(hit.pos) {
+            // The fluid-ray placement has its own target, selected by Item.use.
             return Ok(!on_block && self.start_eating(&info));
         }
         let face = match hit.face {
@@ -7303,14 +8084,11 @@ impl Game<'_> {
             item: stack.item.to_string(),
             can_use_game_master_blocks: self.can_use_game_master_blocks(),
         };
-        // The mods, once the position and state are known: a canceled
-        // placement is a failed one, and the client's prediction is undone.
-        if self.block_place_canceled(&stack, &ctx) {
-            self.use_failed = true;
-            self.guest_inventory_resend = true;
-            return Ok(true);
-        }
-        let outcome = self.with_level(|b, level, ticks| b.place_block(level, ticks, &ctx));
+        let outcome = if self.player_place_canceled(&ctx) {
+            PlaceOutcome::Failed
+        } else {
+            self.with_level(|b, level, ticks| b.place_block(level, ticks, &ctx))
+        };
         let PlaceOutcome::Placed { pos, state } = outcome else {
             self.process_level_events()?;
             // BlockItem.useOn: a consumable that could not be placed is used,
@@ -7369,7 +8147,6 @@ impl Game<'_> {
         // BlockItem.place: the used statistic and the placed_block trigger.
         self.award_stat("used", &stack.item, 1);
         self.trigger_block("minecraft:placed_block", target, &stack);
-        self.native_place_block(&stack, target, state);
         self.check_wither_spawn(target)?;
         self.check_golem_spawn(target)?;
         self.consume_held();
@@ -7377,67 +8154,123 @@ impl Game<'_> {
         if solid_bucket && !self.creative {
             *self.held_mut() = Some(ItemStack::new("minecraft:bucket", 1));
         }
+        // ItemStack.useOn applies the pre-use stack's component side effects
+        // after the successful placement and its hand replacement.
+        self.apply_use_cooldown(&stack);
         Ok(true)
     }
-    fn apply_consume_effect(&mut self, effect: &horizon_client::items::ConsumeEffect) {
+    fn apply_consume_effect(
+        &mut self,
+        consumed: &horizon_client::items::ItemStack,
+        effect: &horizon_client::items::ConsumeEffect,
+        mob: Option<mod_api::LivingRef>,
+        allow_native: bool,
+    ) -> Option<bool> {
         use horizon_client::items::ConsumeEffect;
-        match effect {
+        Some(match effect {
             ConsumeEffect::ApplyEffects {
                 effects,
                 probability,
             } => {
-                // ApplyStatusEffectsConsumeEffect.apply: the user's random
-                // (the level's stands in, as for every player draw) is drawn
-                // even at probability 1.
-                if self.world.random.next_float() < *probability {
-                    for eff in effects {
-                        if let Some(def) = horizon_client::brewing::effect(&eff.id) {
-                            if def.instant {
-                                if let Some(a) =
-                                    horizon_client::effects::instant(def.id, eff.amplifier, 1.0)
-                                {
-                                    self.apply_effect_action(a);
-                                }
-                            } else {
-                                let mut instance = horizon_client::effects::EffectInstance::new(
-                                    def.id,
-                                    eff.duration,
-                                    eff.amplifier,
-                                );
-                                instance.ambient = eff.ambient;
-                                instance.visible = eff.show_particles;
-                                instance.show_icon = eff.show_icon;
-                                self.add_player_effect(instance);
-                            }
-                        }
+                // ApplyStatusEffectsConsumeEffect draws from the user's random,
+                // even at probability 1. The level random stands in for a player's.
+                let draw = match mob {
+                    Some(living) => {
+                        let commands::Target::Mob(id) = self.native_living_target(living)? else {
+                            return None;
+                        };
+                        self.mobs
+                            .iter_mut()
+                            .find(|m| m.id == id)?
+                            .random
+                            .next_float()
+                    }
+                    None => self.world.random.next_float(),
+                };
+                if draw >= *probability {
+                    return Some(false);
+                }
+                let mut changed = false;
+                for eff in effects {
+                    let Some(def) = horizon_client::brewing::effect(&eff.id) else {
+                        continue;
+                    };
+                    if let Some(living) = mob {
+                        let effect = mod_api::ActiveEffect::new(
+                            mod_api::__private::effect_key_by_index(def.index)
+                                .expect("effects resolved at load"),
+                            eff.duration,
+                            eff.amplifier,
+                            eff.ambient,
+                            eff.show_particles,
+                            eff.show_icon,
+                        );
+                        changed |= self.living_add_effect(living, &effect);
+                    } else {
+                        let mut instance = horizon_client::effects::EffectInstance::new(
+                            def.id,
+                            eff.duration,
+                            eff.amplifier,
+                        );
+                        instance.ambient = eff.ambient;
+                        instance.visible = eff.show_particles;
+                        instance.show_icon = eff.show_icon;
+                        changed |= self.add_player_effect(instance);
                     }
                 }
+                changed
             }
-            ConsumeEffect::ClearAllEffects => {
-                self.potions.effects.clear();
-                self.apply_effect_status();
-            }
-            ConsumeEffect::RemoveEffects(to_remove) => {
-                for target in to_remove {
-                    let id = target.trim_start_matches("minecraft:");
-                    self.potions.effects.list.retain(|e| e.id != id);
+            ConsumeEffect::ClearAllEffects => match mob {
+                Some(living) => self.living_remove_all_effects(living),
+                None => self.remove_player_effects(None),
+            },
+            ConsumeEffect::RemoveEffects(effects) => {
+                let mut changed = false;
+                for effect in effects {
+                    changed |= match mob {
+                        Some(living) => horizon_client::brewing::effect(effect)
+                            .and_then(|def| mod_api::__private::effect_key_by_index(def.index))
+                            .is_some_and(|key| self.living_remove_effect(living, key)),
+                        None => horizon_client::brewing::effect(effect)
+                            .is_some_and(|def| self.remove_player_effects(Some(def.index))),
+                    };
                 }
-                self.apply_effect_status();
+                changed
             }
-            ConsumeEffect::TeleportRandomly(teleport) => self.teleport_randomly(teleport),
+            ConsumeEffect::TeleportRandomly(teleport) => {
+                if mob.is_some() {
+                    return None;
+                }
+                self.teleport_randomly(teleport, consumed)
+            }
             ConsumeEffect::PlaySound(sound) => {
-                // PlaySoundConsumeEffect: at the user's block position.
-                let at = self.player.as_ref().map(|p| {
-                    let b = horizon_core::position::BlockPos::containing(p.position);
-                    [b.x, b.y, b.z].map(|v| f64::from(v) + 0.5)
-                });
-                self.audio.play(sound, at, 1.0, 1.0);
+                let at = match mob {
+                    Some(living) => {
+                        let commands::Target::Mob(id) = self.native_living_target(living)? else {
+                            return None;
+                        };
+                        self.mobs.iter().find(|m| m.id == id).map(|m| m.position)?
+                    }
+                    None => self.player.as_ref()?.position,
+                };
+                let b = horizon_core::position::BlockPos::containing(at);
+                let at = [b.x, b.y, b.z].map(|v| f64::from(v) + 0.5);
+                let level = self.level(self.dim.id())?;
+                let source = match mob {
+                    Some(living) => self.entity_sound_source(living.entity())?,
+                    None => mod_api::SoundSource::Players,
+                };
+                self.native_queue_sound(level, sound, at, source, 1.0, 1.0, None)?;
+                true
             }
-            // A mod's own kind: the owning mod's hook answers.
             ConsumeEffect::Native { kind, data } => {
+                if !allow_native {
+                    return None;
+                }
                 self.native_consume_effect(kind, data);
+                return None;
             }
-        }
+        })
     }
     /// `BundleItem.dropContent`: `removeOneItemFromBundle` and `Player.drop`,
     /// then the drop sound and the used statistic.
@@ -7600,17 +8433,22 @@ impl Game<'_> {
     /// The level events they send go out too: a turtle egg's break particles
     /// and sound (`decreaseEggs`' 2001, `Level.destroyBlock`'s for the last).
     ///
-    /// A mod hears the change first (`native_entity_change_block_v2`, Bukkit's
+    /// A mod hears the change first (`native_entity_change_block_pre`, Bukkit's
     /// `EntityChangeBlockEvent`): cancelling puts the block back and skips the
     /// updates and the events, so nothing the change would have caused happens -
     /// the crop on trampled farmland stays, because breaking it is the
     /// neighbour update below and not a write of its own.
+    ///
+    /// The game event the rule posts comes back for the caller to post with the
+    /// landing player in place (`post_landing_vibration`).
     fn landing_block_updates(
         &mut self,
         player: Option<u128>,
         event: &horizon_client::landing::FallEvent,
-    ) {
+    ) -> Option<LandingVibration> {
         use horizon_client::landing::FallEvent;
+        use horizon_world::block_landing::LandingEvent;
+        let mut vibration = None;
         // The block the landing changed, what it replaced, and what it became.
         let (position, from, to, flags) = match *event {
             FallEvent::Write {
@@ -7621,27 +8459,81 @@ impl Game<'_> {
             } => (position, from, state, flags as i32),
             FallEvent::Destroy {
                 position, state, ..
-            } => (position, state, self.air_state(), level_flags::UPDATE_ALL),
+            } => {
+                // `Level.destroyBlock`: BLOCK_DESTROY with no source, after the
+                // write (`TurtleEggBlock.decreaseEggs`' last egg).
+                vibration = Some(LandingVibration {
+                    event: "minecraft:block_destroy",
+                    position,
+                    state,
+                    from_entity: false,
+                });
+                (position, state, self.air_state(), level_flags::UPDATE_ALL)
+            }
+            // `FarmlandBlock.turnToBaseBlock`'s BLOCK_CHANGE from the entity that
+            // trampled it, and `TurtleEggBlock.decreaseEggs`' BLOCK_DESTROY
+            // (`Context.of(state)`, no source): the write is already applied.
+            FallEvent::BlockEvent {
+                kind,
+                position,
+                state,
+                with_entity,
+            } => {
+                // A cancelled change put the block back: nothing happened.
+                let current = self.world.block(position.x, position.y, position.z);
+                let cancelled = match kind {
+                    LandingEvent::BlockChange => current != state,
+                    LandingEvent::BlockDestroy => current == state,
+                };
+                if cancelled {
+                    return None;
+                }
+                return Some(LandingVibration {
+                    event: match kind {
+                        LandingEvent::BlockChange => "minecraft:block_change",
+                        LandingEvent::BlockDestroy => "minecraft:block_destroy",
+                    },
+                    position,
+                    state,
+                    from_entity: matches!(kind, LandingEvent::BlockChange) && with_entity,
+                });
+            }
             FallEvent::LevelEvent {
                 event,
                 position,
                 data,
             } => {
                 self.level_event_at(event, [position.x, position.y, position.z], data);
-                return;
+                return None;
             }
-            _ => return,
+            _ => return None,
         };
         if self.landing_change_cancelled(player, position, from, to) {
             self.world
                 .set(position.x, position.y, position.z, from)
                 .ok();
-            return;
+            return None;
         }
         if matches!(event, FallEvent::Destroy { .. }) {
             self.level_event_at(2001, [position.x, position.y, position.z], from.0 as i32);
         }
         self.with_level(|b, level, ticks| b.notify_written(level, ticks, position, flags));
+        vibration
+    }
+    /// Post a landing's block game event (`FarmlandBlock.turnToBaseBlock`'s
+    /// BLOCK_CHANGE, `TurtleEggBlock.decreaseEggs`' BLOCK_DESTROY) as the player
+    /// whose landing it was, who must be in place (`as_guest`). A sculk sensor, a
+    /// calibrated sensor and a warden hear it.
+    fn post_landing_vibration(&mut self, vibration: LandingVibration) {
+        let at = [
+            vibration.position.x,
+            vibration.position.y,
+            vibration.position.z,
+        ];
+        let who = vibration
+            .from_entity
+            .then_some(horizon_client::mobs::Who::Player);
+        self.post_block_game_event(vibration.event, at, who, Some(vibration.state));
     }
     /// `Blocks.AIR.defaultBlockState`: what a landing's destroy leaves.
     fn air_state(&self) -> BlockStateId {
@@ -7652,7 +8544,7 @@ impl Game<'_> {
             .unwrap_or(BlockStateId(0))
     }
     /// Whether a mod cancelled a landing's block change
-    /// (`native_entity_change_block_v2`): asked with the two blocks' names and
+    /// (`native_entity_change_block_pre`): asked with the two blocks' names and
     /// the player whose landing it was (`None` when no player did it).
     fn landing_change_cancelled(
         &mut self,
@@ -7661,29 +8553,20 @@ impl Game<'_> {
         from: BlockStateId,
         to: BlockStateId,
     ) -> bool {
-        let name = |s: BlockStateId| self.res.facts().get(s).name.to_string();
-        let (from, to) = (name(from), name(to));
-        let mut cancel = false;
-        self.native_entity_change_block_v2(
-            player,
-            None,
-            "minecraft:player",
-            [position.x, position.y, position.z],
-            &from,
-            &to,
-            &mut cancel,
-        );
-        cancel
-    }
-    /// The ticks the frame shows (animated textures, the HUD, a shader pack's clock): the
-    /// client's, or under `HORIZON_STILL` (`FixedStep::still`) the world's game time, which
-    /// moves only while the world runs.
-    pub(super) fn visual_ticks(&self) -> u64 {
-        if self.clock.still() {
-            self.world.game_time.max(0) as u64
-        } else {
-            self.ticks
+        if !mod_api::__private::listened(mod_api::HookId::EntityChangeBlockPre) {
+            return false;
         }
+        let mut cancel = false;
+        self.native_entity_change_block_pre(native_hooks::EntityChangeBlockPreCall {
+            player,
+            entity: None,
+            kind: "minecraft:player",
+            pos: [position.x, position.y, position.z],
+            from,
+            to,
+            cancel: &mut cancel,
+        });
+        cancel
     }
     /// The clock of the animated textures: `Minecraft.runTick` ticks the `TextureManager`
     /// only while the level runs normally. Under `HORIZON_STILL` it is the world's ticks.
@@ -7694,19 +8577,11 @@ impl Game<'_> {
             self.texture_ticks
         }
     }
-    /// `Util.getMillis` for what the frame shows (the world border's scroll, the hearts' blink,
-    /// the glint's under the switch): under `HORIZON_STILL`, the world's ticks in milliseconds.
-    pub(super) fn visual_millis(&self) -> i64 {
-        if self.clock.still() {
-            self.visual_ticks() as i64 * 50
-        } else {
-            self.started.elapsed().as_millis() as i64
-        }
-    }
     fn tick(&mut self) -> Result<()> {
         if self.agent.hold_server {
             return Ok(());
         }
+        self.abort_open_transactions();
         // `Player.entityInteractionRange`/`blockInteractionRange` for the tick's
         // picks: the attribute carries creative's and a server's modifiers.
         self.entity_reach = self.interaction_range("minecraft:entity_interaction_range", 3.0, 5.0);
@@ -7720,9 +8595,9 @@ impl Game<'_> {
             // infinite materials gets the survival inventory instead.
             if !self.creative {
                 if let Some(c) = self.carried.take() {
-                    let _ = self.give(c);
+                    let _ = self.add_stack_to_inventory(c);
                 }
-                self.screen = Screen::Inventory;
+                self.set_screen(Screen::Inventory);
             }
         }
         if self.remote.is_some() {
@@ -7753,7 +8628,11 @@ impl Game<'_> {
             self.load_scoreboard();
             self.tick_functions();
             self.world.game_time += 1;
-            if self.ui.rules.bool("advance_weather") {
+            if self
+                .ui
+                .rules
+                .bool_at(horizon_client::gamerules::vanilla::ADVANCE_WEATHER)
+            {
                 self.world.weather.tick_timers(&mut self.world.random);
             }
             self.world.weather.tick_levels();
@@ -7791,8 +8670,6 @@ impl Game<'_> {
         self.tick_totem();
         self.update_totem_ready();
         self.tick_command_extras();
-        self.native_tick();
-        self.tell_native_now();
         self.tick_world(running)
     }
     /// What the tick runs after the local player's own update: effects, the
@@ -7801,7 +8678,11 @@ impl Game<'_> {
         // Entities added since the last tick join the level before it ticks.
         self.native_joins_flush(false, 0);
         self.share_spawn_conditions();
-        horizon_client::mobs::sulfur_cube::set_tnt_explodes(self.ui.rules.bool("tnt_explodes"));
+        horizon_client::mobs::sulfur_cube::set_tnt_explodes(
+            self.ui
+                .rules
+                .bool_at(horizon_client::gamerules::vanilla::TNT_EXPLODES),
+        );
         self.update_chunk_tickets();
         self.score_destroyed_entities();
         horizon_client::spans::time("tick_effects", || self.tick_effects(running));
@@ -7836,11 +8717,16 @@ impl Game<'_> {
             // keep their own packet cutoff (`ordered.announced`, #10063).
             self.ticked_entities_through = self.next_entity;
         }
+        // ChunkMap still ticks while /tick freeze holds block/entity ticks.
+        if !running {
+            self.save_chunks_eagerly();
+        }
         self.begin_ordered_ticks();
         if running {
             horizon_client::spans::time("tick_paintings", || self.tick_paintings());
             horizon_client::spans::time("tick_item_frames", || self.tick_item_frames());
             self.tick_explicit_knots();
+            self.tick_summoned_eyes();
             self.ordered_before(ordered_tick::Batch::ArmorStands)?;
             horizon_client::spans::time("tick_armor_stands", || self.tick_armor_stands())?;
             horizon_client::spans::time("tick_cushions", || self.tick_cushions());
@@ -7995,6 +8881,10 @@ impl Game<'_> {
         self.title.is_some() && self.screen != Screen::DebugOptions
     }
     fn hud(&mut self, size: [u32; 2]) -> HudBatch {
+        // Off a world (title, options, Win, a prompt before joining) the HUD shows nothing to
+        // keep clear of; `hud_layers` fills it in once the world's HUD draws.
+        let gui = HudBatch::new(size, self.settings.gui_scale_inputs());
+        self.ui.room = horizon_client::hud_kit::room::Room::new(gui.width, gui.height);
         // The pack prompt replaces the connecting screen (setScreen), but
         // in game it opens over the world.
         let mut batch = if (self.server_packs.prompt.is_some()
@@ -8002,7 +8892,7 @@ impl Game<'_> {
             || self.dialog_open())
             && self.player.is_none()
         {
-            HudBatch::new(size)
+            HudBatch::new(size, self.settings.gui_scale_inputs())
         } else {
             self.hud_layers(size)
         };
@@ -8027,7 +8917,7 @@ impl Game<'_> {
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
         self.pad.guide_shown.clear();
-        let mut batch = HudBatch::new(size);
+        let mut batch = HudBatch::new(size, self.settings.gui_scale_inputs());
         batch.glint_colour = self.settings.extras.pvp.tweaks.glint_texel();
         // GlobalSettingsUniform's GameTime, for a resource pack's text shader.
         batch.game_time = ((self.world.game_time.rem_euclid(24000)) as f32
@@ -8040,10 +8930,13 @@ impl Game<'_> {
             self.show_calibration(h);
         }
         if self.screen == Screen::Win {
-            self.draw_win_screen(&mut batch);
-            // The early return skips the match below: the hook still sees the
+            let drawn = self.draw_screen_with_pre_hook(&mut batch);
+            if drawn {
+                self.draw_win_screen(&mut batch);
+            }
+            // The early return skips the match below: the hooks still see the
             // screen, after its own drawing.
-            self.fire_screen_render_post(&mut batch);
+            self.draw_screen_with_post_hook(&mut batch, drawn);
             return batch;
         }
         if self.screen == Screen::Options {
@@ -8051,13 +8944,16 @@ impl Game<'_> {
                 self.flush_skin_slots();
                 self.update_remote_skins();
             }
-            self.draw_options(&mut batch);
-            self.fire_screen_render_post(&mut batch);
+            let drawn = self.draw_screen_with_pre_hook(&mut batch);
+            if drawn {
+                self.draw_options(&mut batch);
+            }
+            self.draw_screen_with_post_hook(&mut batch, drawn);
             self.draw_split_hud(&mut batch, true);
             return batch;
         }
+        self.settle_title_toasts();
         if let Some(title) = &mut self.title {
-            title.poll_backup();
             if std::mem::take(&mut title.onboarding_finished) {
                 // Options.onboardingAccessibilityFinished.
                 self.settings.file.set(
@@ -8077,8 +8973,11 @@ impl Game<'_> {
         }
         if self.screen == Screen::DebugOptions && self.title.is_some() {
             // DebugOptionsScreen replaces the title; no level HUD is behind it.
-            self.draw_debug_options(&mut batch);
-            self.fire_screen_render_post(&mut batch);
+            let drawn = self.draw_screen_with_pre_hook(&mut batch);
+            if drawn {
+                self.draw_debug_options(&mut batch);
+            }
+            self.draw_screen_with_post_hook(&mut batch, drawn);
             self.draw_toasts(&mut batch, false);
             self.draw_tutorial_toasts(&mut batch, false);
             self.draw_pack_toasts(&mut batch, false);
@@ -8089,7 +8988,8 @@ impl Game<'_> {
             // TitleScreen.extractRenderState, then ToastManager over it: vanilla
             // draws the toast manager on every screen, so a pack download or a
             // resource-reload failure still shows on the title (#4428).
-            if let Some(title) = &self.title {
+            let drawn = self.draw_title_screen_with_pre_hook(&mut batch);
+            if drawn && let Some(title) = &self.title {
                 title.draw_with_items(
                     &self.gui.atlas,
                     Some(&self.pack.item_renderer),
@@ -8102,7 +9002,7 @@ impl Game<'_> {
             // ScreenEvent.Render.Post over the title's own screens: a mod draws
             // over them here (a pack browser over Create New World, say), and the
             // toasts still come after, as over any screen.
-            self.fire_title_screen_render_post(&mut batch);
+            self.draw_title_screen_with_post_hook(&mut batch, drawn);
             self.draw_toasts(&mut batch, false);
             self.draw_tutorial_toasts(&mut batch, false);
             self.draw_pack_toasts(&mut batch, false);
@@ -8123,9 +9023,19 @@ impl Game<'_> {
         // the sleep overlay, debug screen and open screens still draw.
         let spectator = self.spectator();
         let (wi, hi) = (w as i32, h as i32);
-        let in_studio = self.studio_replay.is_some();
-        let show_hud = !self.ui.hide_gui && !in_studio;
-        // What the gameplay guide keeps off starts after the view's full overlays.
+        let mut gui_canceled = false;
+        if !self.ui.hide_gui {
+            self.native_render_gui_pre(&mut gui_canceled);
+        }
+        // RenderGuiEvent.Pre: a mod's cancel hides the HUD as F1 does.
+        let show_hud = !self.ui.hide_gui && !gui_canceled && self.studio_replay.is_none();
+        let subtitles = subtitles(
+            show_hud,
+            in_game_ui(self.screen, self.book.is_some() || self.sign_edit.is_some()),
+        );
+        // The mods' layers (`register_gui_layers`) draw among vanilla's while the HUD shows.
+        self.hud_layer_next = show_hud.then_some(0);
+        self.ui.room = self.hud_room(w, h, show_hud);
         let mut guide_from = 0;
         if show_hud {
             self.draw_spyglass(&mut batch);
@@ -8143,7 +9053,7 @@ impl Game<'_> {
             let strength = self.hand_strength.scale(0.0, self.main_hand_attack_speed());
             // The 3D crosshair (F3) takes the 2D one's place.
             // Hud.extractCrosshair: a spectator only sees it over something to open.
-            if self.camera_type.first_person()
+            if self.camera_type.is_first_person()
                 && (!spectator || self.spectator_crosshair())
                 && !self.debug_crosshair()
             {
@@ -8226,59 +9136,14 @@ impl Game<'_> {
             } else {
                 self.draw_mount_hud(&mut batch, wi, hi)
             };
-            // The one bar above the hotbar: the mount's jump bar, the locator
-            // bar (with its background) or the experience bar, with the level
-            // number that a survival player always has.
-            self.gui_layer("minecraft:contextual_info_bar", &mut batch, |g, batch| {
-                if contextual == ContextualBar::JumpableVehicle {
-                    g.draw_jump_bar(batch, wi, hi);
-                }
-                if contextual == ContextualBar::Locator {
-                    let (sprite, [x, y, w, h]) = horizon_client::locator_bar::background(wi, hi);
-                    horizon_client::ui::nine_slice(
-                        batch,
-                        &g.gui.atlas,
-                        sprite,
-                        x as f32,
-                        y as f32,
-                        w as f32,
-                        h as f32,
-                        u32::MAX,
-                    );
-                }
-                if has_experience && g.player.is_some() {
-                    let atlas = &g.gui.atlas;
-                    let width = |s: &str| HudBatch::text_width(atlas, s) as i32;
-                    let draws = hud_layout::experience(
-                        wi,
-                        hi,
-                        g.experience.progress,
-                        g.experience.level,
-                        contextual == ContextualBar::Experience,
-                        &width,
-                    );
-                    hud_layout::paint(batch, atlas, &draws);
-                }
-                if contextual == ContextualBar::Locator {
-                    let draws = g.locator_bar_draws(wi, hi);
-                    hud_layout::paint(batch, &g.gui.atlas, &draws);
-                }
-            });
             let (visual_ticks, visual_millis) = (self.visual_ticks(), self.visual_millis());
-            if !self.creative
-                && !spectator
+            let kind = (!self.creative && !spectator)
+                .then(|| self.player_heart_kind())
+                .flatten();
+            if let Some(kind) = kind
                 && let Some(p) = &mut self.player
             {
                 let effects = &self.potions.effects;
-                let kind = if effects.get("poison").is_some() {
-                    hud_layout::HeartKind::Poisoned
-                } else if effects.get("wither").is_some() {
-                    hud_layout::HeartKind::Withered
-                } else if p.is_fully_frozen() {
-                    hud_layout::HeartKind::Frozen
-                } else {
-                    hud_layout::HeartKind::Normal
-                };
                 // Hud.extractAirBubbles: `isEyeInFluidMatching`, so the eyes are below
                 // the surface, not merely in the water block.
                 let under_water = p.is_eye_in_fluid(horizon_client::motion::WATER);
@@ -8331,6 +9196,43 @@ impl Game<'_> {
                     self.audio.capture = capture;
                 }
             }
+            // After the health rows (Hud.extractHotbarAndDecorations): jump, locator or XP bar.
+            self.gui_layer("minecraft:contextual_info_bar", &mut batch, |g, batch| {
+                if contextual == ContextualBar::JumpableVehicle {
+                    g.draw_jump_bar(batch, wi, hi);
+                }
+                if contextual == ContextualBar::Locator {
+                    let (sprite, [x, y, w, h]) = horizon_client::locator_bar::background(wi, hi);
+                    horizon_client::ui::nine_slice(
+                        batch,
+                        &g.gui.atlas,
+                        sprite,
+                        x as f32,
+                        y as f32,
+                        w as f32,
+                        h as f32,
+                        u32::MAX,
+                    );
+                }
+                if has_experience && g.player.is_some() {
+                    let atlas = &g.gui.atlas;
+                    let width = |s: &str| HudBatch::text_width(atlas, s) as i32;
+                    let draws = hud_layout::experience_colored(
+                        g.pack.polytone_colors.xp_bar(),
+                        wi,
+                        hi,
+                        g.experience.progress,
+                        g.experience.level,
+                        contextual == ContextualBar::Experience,
+                        &width,
+                    );
+                    hud_layout::paint(batch, atlas, &draws);
+                }
+                if contextual == ContextualBar::Locator {
+                    let draws = g.locator_bar_draws(wi, hi);
+                    hud_layout::paint(batch, &g.gui.atlas, &draws);
+                }
+            });
             if !spectator {
                 self.gui_layer("minecraft:selected_item_name", &mut batch, |g, batch| {
                     g.draw_selected_name(batch, !g.creative);
@@ -8352,6 +9254,13 @@ impl Game<'_> {
             self.gui_layer("minecraft:scoreboard_sidebar", &mut batch, |g, batch| {
                 g.draw_scoreboard(batch);
             });
+            if subtitles != Subtitles::Hidden {
+                self.gui_layer("minecraft:subtitle_overlay", &mut batch, |g, batch| {
+                    g.draw_subtitles(batch);
+                });
+            }
+        } else if subtitles == Subtitles::Deferred {
+            // F1 hid the HUD, but an in-game screen still shows the subtitles.
             self.gui_layer("minecraft:subtitle_overlay", &mut batch, |g, batch| {
                 g.draw_subtitles(batch);
             });
@@ -8366,6 +9275,8 @@ impl Game<'_> {
         }
         // The chat screen draws the focused chat itself; F1 hides the rest.
         if self.screen == Screen::Chat {
+            // The mod layers under the chat stay under the focused chat.
+            self.draw_mod_gui_layers(Some("minecraft:chat"), &mut batch);
             self.draw_chat(&mut batch);
         } else if show_hud {
             self.gui_layer("minecraft:chat", &mut batch, |g, batch| g.draw_chat(batch));
@@ -8373,6 +9284,9 @@ impl Game<'_> {
                 g.draw_tab_list(batch);
             });
         }
+        // The mod layers above the last vanilla layer drawn.
+        self.draw_mod_gui_layers(None, &mut batch);
+        self.hud_layer_next = None;
         // Screen.extractBlurredBackground blurs the world and HUD, while the
         // screen's background, widgets, toasts and debug overlay stay sharp.
         batch.blur_at = batch.vertices.len() as u32;
@@ -8383,11 +9297,13 @@ impl Game<'_> {
         } else {
             self.screen
         };
+        let drawn = self.draw_screen_with_pre_hook(&mut batch);
         match screen {
+            _ if !drawn => {}
             Screen::Paused if self.pause_menu => self.draw_pause_menu(&mut batch),
             // PauseScreen(false): only its title, at the top.
             Screen::Paused => {
-                let title = self.translate("menu.paused", "Game Paused");
+                let title = self.translate_with_fallback("menu.paused", "Game Paused");
                 horizon_client::widgets::begin_screen(|| {
                     horizon_client::widgets::ScreenInfo::new("paused", title.clone())
                 });
@@ -8402,7 +9318,6 @@ impl Game<'_> {
                 );
             }
             Screen::GameModeSwitcher => self.draw_gamemode_switcher(&mut batch),
-            Screen::EmoteWheel => self.draw_emote_wheel(&mut batch),
             Screen::Dead => self.draw_death_screen(&mut batch),
             Screen::Stats => self.draw_stats(&mut batch),
             Screen::Advancements => self.draw_advancements(&mut batch),
@@ -8417,6 +9332,7 @@ impl Game<'_> {
             Screen::BlockEditor => self.draw_block_editor(&mut batch),
             Screen::DebugOptions => self.draw_debug_options(&mut batch),
             Screen::HudEditor => self.draw_hud_editor(&mut batch),
+            Screen::Studio => {}
             Screen::Inventory => {
                 let from = batch.vertices.len();
                 self.draw_inventory(&mut batch);
@@ -8436,7 +9352,7 @@ impl Game<'_> {
         // tooltips, so a native mod draws over it here. Never `Playing`: the
         // prompts, books and sign editors drawn over gameplay keep it, draw
         // after this point and so over what a mod drew.
-        self.fire_screen_render_post(&mut batch);
+        self.draw_screen_with_post_hook(&mut batch, drawn);
         self.draw_saving_indicator(&mut batch);
         // ToastManager.extractRenderState: F1 hides the toasts too.
         self.draw_toasts(&mut batch, !show_hud);
@@ -8492,7 +9408,9 @@ impl Game<'_> {
             return v;
         }
         match self.container_kind() {
-            Some(BlockEntity::Chest(_)) => v.extend((0..self.container_size()).map(|i| 300 + i)),
+            Some(BlockEntity::Chest(_)) => {
+                v.extend((0..self.open_container_size()).map(|i| 300 + i))
+            }
             Some(BlockEntity::Furnace(_)) => v.extend(300..303),
             Some(BlockEntity::Brewing(_)) => v.extend(300..305),
             Some(BlockEntity::Crafter(_)) => v.extend(300..310),
@@ -8514,6 +9432,9 @@ impl Game<'_> {
                 | BlockEntity::Skull(_)
                 | BlockEntity::DaylightDetector
                 | BlockEntity::Bell
+                | BlockEntity::Conduit(_)
+                | BlockEntity::EndPortal
+                | BlockEntity::EnchantingTable
                 | BlockEntity::Campfire(_)
                 | BlockEntity::ChiseledBookshelf(_)
                 | BlockEntity::Brushable(_)
@@ -8556,7 +9477,7 @@ impl Game<'_> {
             return inventory + shown;
         }
         let container = match self.container_kind() {
-            Some(BlockEntity::Chest(_)) => self.container_size(),
+            Some(BlockEntity::Chest(_)) => self.open_container_size(),
             Some(BlockEntity::Furnace(_)) => 3,
             Some(BlockEntity::Brewing(_)) => 5,
             Some(BlockEntity::Crafter(_)) => 10,
@@ -8578,6 +9499,9 @@ impl Game<'_> {
                 | BlockEntity::Skull(_)
                 | BlockEntity::DaylightDetector
                 | BlockEntity::Bell
+                | BlockEntity::Conduit(_)
+                | BlockEntity::EndPortal
+                | BlockEntity::EnchantingTable
                 | BlockEntity::Campfire(_)
                 | BlockEntity::ChiseledBookshelf(_)
                 | BlockEntity::Brushable(_)
@@ -8648,7 +9572,7 @@ impl Game<'_> {
                     // A server's furnace menu has the title it was given.
                     let title = self.remote_menu_title().unwrap_or_else(|| {
                         horizon_client::text::Text::literal(
-                            self.container_title(self.translate(key, fallback)),
+                            self.container_title(self.translate_with_fallback(key, fallback)),
                         )
                         .resolve_legacy()
                     });
@@ -8662,7 +9586,8 @@ impl Game<'_> {
                         grey,
                         false,
                     );
-                    let inventory = self.translate("container.inventory", "Inventory");
+                    let inventory =
+                        self.translate_with_fallback("container.inventory", "Inventory");
                     batch.text(atlas, &inventory, ox + 8.0, oy + 72.0, grey, false);
                     if f.lit_remaining > 0 {
                         // AbstractFurnaceScreen: flame height ceil(lit * 13) + 1.
@@ -8713,6 +9638,9 @@ impl Game<'_> {
                     | BlockEntity::Skull(_)
                     | BlockEntity::DaylightDetector
                     | BlockEntity::Bell
+                    | BlockEntity::Conduit(_)
+                    | BlockEntity::EndPortal
+                    | BlockEntity::EnchantingTable
                     | BlockEntity::Campfire(_)
                     | BlockEntity::ChiseledBookshelf(_)
                     | BlockEntity::Brushable(_)
@@ -8732,12 +9660,13 @@ impl Game<'_> {
                         "gui/container/inventory"
                     };
                     part(batch, texture, 0.0, 0.0, 176.0, 166.0, ox, oy);
-                    let title = self.translate("container.crafting", "Crafting");
+                    let title = self.translate_with_fallback("container.crafting", "Crafting");
                     screen_info::name_container(|| title.clone());
                     let tx = if self.craft_size == 3 { 29.0 } else { 97.0 };
                     batch.text(atlas, &title, ox + tx, oy + 6.0, grey, false);
                     if self.craft_size == 3 {
-                        let inventory = self.translate("container.inventory", "Inventory");
+                        let inventory =
+                            self.translate_with_fallback("container.inventory", "Inventory");
                         batch.text(atlas, &inventory, ox + 8.0, oy + 72.0, grey, false);
                     }
                 }
@@ -8792,15 +9721,16 @@ impl Game<'_> {
         let mut returned: Vec<ItemStack> = self.carried.take().into_iter().collect();
         returned.extend(self.craft_grid.iter_mut().filter_map(Option::take));
         for stack in returned {
-            if let Some(rest) = self.give(stack)
+            if let Some(rest) = self.add_stack_to_inventory(stack)
                 && let Some(eye) = self.eye_position()
             {
                 // AbstractContainerMenu.dropOrPlaceInInventory: `drop(stack, false)`.
-                self.throw_from_eyes(rest, eye, false);
+                self.throw_from_eyes(rest, eye, false, false);
             }
         }
         self.craft_size = 2;
         self.craft_table = None;
+        self.open_container_slots = None;
         if let Some(key) = self.container.take() {
             // A cart's or chest boat's items go back to it.
             self.close_cart_container(key);
@@ -8820,13 +9750,13 @@ impl Game<'_> {
     }
     /// `quickMoveStack` of the open plain menu for a shift-click.
     fn inventory_quick_move(&mut self, slot: usize) -> bool {
-        self.menu_click(Some(slot), 0, horizon_client::menu::Input::QuickMove)
+        self.click_open_inventory(Some(slot), 0, horizon_client::menu::Input::QuickMove)
     }
     /// `AbstractContainerMenu.clicked` on the open inventory, crafting table,
     /// chest, hopper, dispenser or furnace menu, run by the verified menu
     /// engine (`horizon_client::menu`). `slot` None is outside the window.
     /// False when the open screen is not one the engine models.
-    fn menu_click(
+    fn click_open_inventory(
         &mut self,
         slot: Option<usize>,
         button: i32,
@@ -8912,7 +9842,9 @@ impl Game<'_> {
             // handleCreativeModeItemDrop: on a server the stack goes to it (SetCreativeModeSlot
             // to slot -1), which drops it; a local drop here would never reach the server.
             DisplayClick::Drop(stack) if self.remote.is_some() => self.remote_creative_throw(stack),
-            DisplayClick::Drop(stack) => self.player_drop(stack),
+            DisplayClick::Drop(stack) => {
+                self.player_drop(stack);
+            }
             _ => {}
         }
         // handleCreativeModeItemAdd / broadcastChanges: a swapped-in hotbar slot goes out now.
@@ -8980,14 +9912,18 @@ impl Game<'_> {
         } else {
             (0.8, 0.8 + self.world.random.next_float() * 0.4)
         };
-        self.audio.play(sound, Some(at), volume, pitch);
+        if self.is_logical_server() {
+            self.audio.play(sound, Some(at), volume, pitch);
+        } else {
+            self.play_client_player_sound(sound, volume, pitch);
+        }
     }
     /// The open menu as the verified engine (`horizon_client::menu`): the
     /// game's slots are copied in, `run` acts on it, and the slots, carried
     /// stack, menu data and drops are copied back when it returns Some(true)
     /// (Some(false): handled, nothing kept; None: not handled). False when the
     /// open screen is not one the engine models or `run` did not handle it.
-    pub(super) fn menu_session(
+    fn menu_session(
         &mut self,
         run: impl FnOnce(
             &mut horizon_client::menu::Menu,
@@ -9158,7 +10094,7 @@ impl Game<'_> {
             )
         } else {
             let (kind, map) = if self.container.is_some() {
-                let size = self.container_size();
+                let size = self.open_container_size();
                 let (kind, count) = match self.container_kind() {
                     Some(BlockEntity::Chest(_)) => {
                         let shulker = self.container.is_some_and(|k| {
@@ -9174,6 +10110,15 @@ impl Game<'_> {
                         (kind, size)
                     }
                     Some(BlockEntity::Brewing(_)) => (Kind::Brewing, 5),
+                    Some(BlockEntity::Mod(_)) => {
+                        match self
+                            .remote_menu_type()
+                            .and_then(horizon_client::containers::mod_menu_type)
+                        {
+                            Some(t) => (Kind::Mod(t), t.slots),
+                            None => return false,
+                        }
+                    }
                     Some(BlockEntity::Furnace(f)) => (
                         Kind::Furnace(
                             match f.kind.recipe_type().trim_start_matches("minecraft:") {
@@ -9222,6 +10167,15 @@ impl Game<'_> {
             None => game_of.iter().position(|x| *x == Some(g)),
         };
         let mut menu = Menu::new(kind);
+        let menu_id = if matches!(kind, Kind::Mount(_)) {
+            Some("horizon:mount_inventory")
+        } else if matches!(kind, Kind::Inventory | Kind::ItemPicker) {
+            None
+        } else {
+            self.remote_menu_type()
+        };
+        menu.set_registry_id(menu_id);
+        menu.brewed_potion_hook = !mod_api::__private::mods().is_empty();
         if matches!(kind, Kind::Mount(_)) {
             menu.mount = self.mount_menu_entity();
         }
@@ -9293,6 +10247,11 @@ impl Game<'_> {
             maps: Some(&maps),
         };
         let env = Env {
+            player: self
+                .lan_acting_uuid
+                .or_else(|| self.remote.as_ref().map(|r| r.profile())),
+            player_entity_id: Some(self.own_entity_id()),
+            loop_context: &self.loop_context,
             items: self.items(),
             recipes: self.recipes(),
             brewing: &self.stations().brewing,
@@ -9412,6 +10371,7 @@ impl Game<'_> {
         }
         let crafted = std::mem::take(&mut menu.crafted);
         let brewed = std::mem::take(&mut menu.brewed);
+        let brewed_potion_takes = std::mem::take(&mut menu.brewed_potion_takes);
         let equipped = std::mem::take(&mut menu.equipped);
         let item_crafted = std::mem::take(&mut menu.item_crafted);
         for (_, stack) in &item_crafted {
@@ -9427,6 +10387,12 @@ impl Game<'_> {
             self.offhand = menu.player_item(40).cloned();
         }
         if !predicting {
+            if !brewed_potion_takes.is_empty() {
+                let (player, entity_id) = (self.native_acting_id(), self.own_entity_id());
+                for stack in &brewed_potion_takes {
+                    self.native_player_brewed_potion(player, entity_id, stack);
+                }
+            }
             for stack in dropped {
                 self.player_drop(stack);
             }
@@ -9503,7 +10469,7 @@ impl Game<'_> {
                 .and_then(|k| self.world.block_entities.get_mut(&k))
         {
             // AbstractFurnaceBlockEntity.setItem: only a new input restarts cooking.
-            f.input_clicked(world_recipes!(self), before[0].clone());
+            f.input_clicked(&self.loop_context, world_recipes!(self), before[0].clone());
         }
         match equipment_before {
             Some(before) => self.player_equipment_changed(&before),
@@ -9519,6 +10485,7 @@ impl Game<'_> {
         }
         true
     }
+
     fn click_inventory(&mut self, right: bool) {
         if self.mod_browser_press(right) || self.mount_click(right) {
             return;
@@ -9539,7 +10506,7 @@ impl Game<'_> {
         else {
             return;
         };
-        let batch = HudBatch::new(size);
+        let batch = HudBatch::new(size, self.settings.gui_scale_inputs());
         let Some(slot) = self.slot_at(&batch, self.cursor.0, self.cursor.1) else {
             return;
         };
@@ -9599,7 +10566,7 @@ impl Game<'_> {
                     self.craft_size,
                 );
                 if shift {
-                    if self.give(result).is_some() {
+                    if self.add_stack_to_inventory(result).is_some() {
                         break;
                     }
                 } else {
@@ -9709,7 +10676,7 @@ impl Game<'_> {
                 .container
                 .and_then(|k| self.world.block_entities.get_mut(&k))
         {
-            f.input_clicked(world_recipes!(self), before);
+            f.input_clicked(&self.loop_context, world_recipes!(self), before);
         }
     }
     /// `Camera.setRotation`: the camera's orientation, turned round in
@@ -9717,19 +10684,22 @@ impl Game<'_> {
     pub(super) fn camera_orientation(&self) -> glam::Quat {
         if self.studio_freecam.active {
             return camera_rotation(
-                perspective::CameraType::FirstPerson,
+                horizon_client::camera::CameraType::FirstPerson,
                 self.studio_freecam.yaw,
                 self.studio_freecam.pitch,
             ) * glam::Quat::from_rotation_z(self.studio_freecam.roll.to_radians());
         }
         match self.posed_rotation {
             // The frame's camera, already turned round in front view.
-            Some((yaw, pitch)) => camera_rotation(perspective::CameraType::FirstPerson, yaw, pitch),
+            Some((yaw, pitch)) => {
+                camera_rotation(horizon_client::camera::CameraType::FirstPerson, yaw, pitch)
+            }
             None => camera_rotation(self.camera_type, self.yaw, self.pitch),
         }
     }
     /// `mark_motion` ids of entities that aren't mobs or dropped items (boats, minecarts, armor
-    /// stands, item frames, paintings, primed TNT, falling blocks): their entity id under this tag.
+    /// stands, item frames, paintings, primed TNT, falling blocks, rockets, tridents, thrown
+    /// potions): their entity id under this tag.
     pub(super) const MOTION_OBJECT: u64 = 3 << 32;
     /// An item frame's held item, apart from the frame (one id may mark one run).
     pub(super) const MOTION_FRAME_ITEM: u64 = 4 << 32;
@@ -9753,7 +10723,6 @@ impl Game<'_> {
         &mut self,
         camera: glam::DVec3,
         alpha: f64,
-        fov_degrees: f32,
         billboard_frustum: Option<horizon_client::gfx::Frustum>,
         mut out: Vec<Vertex>,
     ) -> (
@@ -9781,7 +10750,7 @@ impl Game<'_> {
         // One scan for both passes that draw them (block entities below and the
         // overlay near the end of this function).
         let cracks = self.cracks(camera);
-        let fire_yaw = if self.camera_type == perspective::CameraType::ThirdPersonFront {
+        let fire_yaw = if self.camera_type == horizon_client::camera::CameraType::ThirdPersonFront {
             self.yaw + 180.0
         } else {
             self.yaw
@@ -9932,16 +10901,13 @@ impl Game<'_> {
             self.clock.camera_fraction()
         };
         self.player_model_geometry(camera, player_alpha, &mut out);
-        // A native pack has no per-entity draws to hide it with: its shadow pass alone gets
-        // the first-person model.
+        // A native pack's shadow pass alone gets the first-person model (no per-entity draws).
         if self.pack_ids.is_none() && !self.own_body_in_view() {
             self.shadow_only_vertices
                 .borrow_mut()
                 .extend(out.drain(player_start..));
         }
         self.mark_motion(out.len(), 0);
-        // Companions in first person, trails and auras (game/cosmetics/fx.rs).
-        self.cosmetics_fx_geometry(camera, alpha, &mut out);
         self.mark_entity(out.len(), "minecraft:evoker_fangs");
         self.fangs_geometry(camera, alpha, &mut out);
         self.block_item_display_geometry(camera, alpha, &mut out);
@@ -9954,14 +10920,13 @@ impl Game<'_> {
         self.text_display_geometry(camera, alpha, &mut out, &mut see_through);
         self.see_through_vertices = see_through;
         laps.lap("eg_name_tags");
-        // Entity shadows (EntityRenderer.extractShadow).
+        // Entity shadows (EntityRenderer.extractShadow); a native pack's sun shadows replace them.
         self.mark_translucent_entity(out.len(), "minecraft:entity_shadow");
-        // A native shader pack's sun shadows already fall under the entities in the Overworld:
-        // the round blob would be a second one. The Nether and the End have no sun to cast them.
         let pack_shadows = self.renderer.as_ref().is_some_and(|r| {
             r.pack_entity_shadows() || (self.dim == Dim::Overworld && r.native_shadow())
         });
-        let shadow_sprite = (self.settings.entity_shadows && !pack_shadows)
+        let shadows = self.settings.entity_shadows && self.pack.polytone_colors.entity_shadows();
+        let shadow_sprite = (shadows && !pack_shadows)
             .then(|| self.gui.atlas.sprites.get("misc/shadow").copied())
             .flatten();
         if let Some(sprite) = shadow_sprite {
@@ -9969,7 +10934,7 @@ impl Game<'_> {
             let ambient = match self.dim {
                 Dim::Nether => 0.1,
                 Dim::End => 0.25,
-                Dim::Overworld => 0.0,
+                Dim::Overworld | Dim::Extra(_) => 0.0,
             };
             let darken = self.sky_darken();
             let a = alpha;
@@ -10240,81 +11205,19 @@ impl Game<'_> {
             }
         }
         laps.lap("eg_block_entities");
-        // Experience orbs (ExperienceOrbRenderer): pulsing billboards from a 4x4 icon sheet.
         self.mark_entity(out.len(), "minecraft:experience_orb");
-        if let Some(r) = self
-            .gui
-            .atlas
-            .sprites
-            .get("entity/experience/experience_orb")
-            .copied()
-        {
-            let (yaw, pitch) = (self.yaw.to_radians(), self.pitch.to_radians());
-            let forward = glam::Vec3::new(
-                -yaw.sin() * pitch.cos(),
-                -pitch.sin(),
-                yaw.cos() * pitch.cos(),
-            );
-            let right = forward.cross(glam::Vec3::Y).normalize_or_zero();
-            let up = right.cross(forward).normalize_or_zero();
-            let live = self.orbs.iter().map(|o| {
-                let at = [
-                    o.previous.x + (o.position.x - o.previous.x) * alpha,
-                    o.previous.y + (o.position.y - o.previous.y) * alpha,
-                    o.previous.z + (o.position.z - o.previous.z) * alpha,
-                ];
-                (o, at, alpha as f32)
-            });
-            // ItemPickupParticle: the render state extracted at partial tick 1.
-            let taken = self.pickups.live.iter().filter_map(|p| match &p.taken {
-                pickups::Taken::Orb(o) => Some((&**o, pickups::position(p, alpha), 1.0)),
-                _ => None,
-            });
-            for (o, at, partial) in live.chain(taken) {
-                let p = glam::DVec3::new(at[0], at[1] + 0.1, at[2]) - camera;
-                let icon = o.icon();
-                let (du, dv) = ((r.u1 - r.u0) / 4.0, (r.v1 - r.v0) / 4.0);
-                let (u0, v0) = (r.u0 + (icon % 4) as f32 * du, r.v0 + (icon / 4) as f32 * dv);
-                let t = (o.age as f32 + partial) / 2.0;
-                let red = ((t.sin() + 1.0) * 0.5 * 255.0) as u32;
-                let blue = (((t + 4.188_79).sin() + 1.0) * 0.1 * 255.0) as u32;
-                let color = 0x8000_0000 | blue << 16 | 255 << 8 | red;
-                // `ExperienceOrbRenderer.getBlockLightLevel` (the block light
-                // plus 7, clamped) at the block the orb's eye is in.
-                let light = self.world.light(
-                    o.position.x.floor() as i32,
-                    o.light_probe_y().floor() as i32,
-                    o.position.z.floor() as i32,
-                );
-                let packed = o.render_light(i32::from(light));
-                let c = p.as_vec3();
-                // `ExperienceOrbRenderer.submit`: the quad runs from
-                // (-0.5, -0.25) to (0.5, 0.75) and is scaled by 0.3, so the
-                // sprite hangs a quarter of its height below the orb's centre.
-                let s = horizon_client::entities::ORB_QUAD_SCALE;
-                for (k, uv) in horizon_client::entities::ORB_QUAD.iter().zip([
-                    [u0, v0 + dv],
-                    [u0 + du, v0 + dv],
-                    [u0 + du, v0],
-                    [u0, v0],
-                ]) {
-                    let v = c + right * (k[0] * s) + up * (k[1] * s);
-                    out.push(Vertex {
-                        normal: [0; 4],
-                        pos: v.to_array(),
-                        uv,
-                        // ExperienceOrbRenderer: `RenderTypes.entityTranslucent`; in HDR
-                        // output the orbs shine (entity.wgsl fs_hdr_mark).
-                        layer: horizon_client::gfx::OIT_ENTITY
-                            | u32::from(horizon_client::mesher::VERY_BRIGHT) << 16,
-                        color,
-                        light: packed,
-
-                        glint_uv: [0.0, 0.0],
-                    });
-                }
-            }
-        }
+        let orb_view = billboard_frustum
+            .as_ref()
+            .filter(|_| self.pack_ids.is_none() && self.native_shaders.picked.is_empty());
+        let live = self.orbs.iter().map(|o| {
+            let at = [
+                o.previous.x + (o.position.x - o.previous.x) * alpha,
+                o.previous.y + (o.position.y - o.previous.y) * alpha,
+                o.previous.z + (o.position.z - o.previous.z) * alpha,
+            ];
+            (o, at, alpha as f32)
+        });
+        self.orb_geometry(camera, live, orb_view, &mut out);
         laps.lap("eg_orbs");
         // Falling blocks use their baked model, including non-cubic shapes.
         self.mark_entity(out.len(), "minecraft:falling_block");
@@ -10363,7 +11266,7 @@ impl Game<'_> {
             if !falling_block_visible(f.state, self.world.block(x, y, z)) {
                 continue;
             }
-            let Some((_, tint)) = self.block_face_sprite(f.state) else {
+            let Some((_, tint)) = self.falling_block_face_sprite(f.state) else {
                 continue;
             };
             let light = self.world.light(x, y + 1, z);
@@ -10421,47 +11324,6 @@ impl Game<'_> {
         self.mark_entity(out.len(), "minecraft:splash_potion");
         self.thrown_potion_geometry(camera, alpha, &mut out);
         laps.lap("eg_objects");
-        // Particles (ParticleEngine.extract): camera-facing quads.
-        self.mark_stage(out.len(), "PARTICLES");
-        let world = &self.world;
-        let particle_mode = self.settings.horizon.particle_culling;
-        if particle_mode == horizon_client::graphics::ParticleCullingMode::Off {
-            self.particles.render(
-                camera,
-                self.yaw,
-                self.pitch,
-                alpha as f32,
-                &|b| world.light(b[0], b[1], b[2]),
-                &mut out,
-            );
-        } else {
-            let frustum = self.view_frustum;
-            let pixel_focal_length = self.renderer.as_ref().map_or(0.0, |renderer| {
-                let tangent = (f64::from(fov_degrees).to_radians() * 0.5).tan();
-                if tangent.is_finite() && tangent > 0.0 {
-                    (f64::from(renderer.config.height.max(1)) / (2.0 * tangent)) as f32
-                } else {
-                    0.0
-                }
-            });
-            {
-                let mut particle_culling = self.particle_occlusion_context(camera);
-                self.particles.render_culled(
-                    camera,
-                    self.yaw,
-                    self.pitch,
-                    alpha as f32,
-                    pixel_focal_length,
-                    true,
-                    frustum.as_ref(),
-                    &mut |min, max| particle_culling.hidden(min, max),
-                    &|b| world.light(b[0], b[1], b[2]),
-                    &mut out,
-                );
-            }
-            self.finish_async_particle_culling();
-        }
-        laps.lap("eg_particles");
         // Breaking progress overlays (destroy_stage_0..9): ours and the other players'.
         self.mark_stage(out.len(), "DESTROY");
         for &(pos, stage) in &cracks {
@@ -10495,13 +11357,182 @@ impl Game<'_> {
         laps.lap("eg_cracks");
         self.finish_async_occlusion_culling();
         laps.lap("eg_culling_finish");
-        self.native_world_geometry(camera, alpha as f32, &mut out);
         (
             out,
             static_block_entities,
             visible_static_block_entity_sections,
             static_block_entity_stats,
         )
+    }
+
+    fn orb_geometry<'a>(
+        &self,
+        camera: glam::DVec3,
+        orbs: impl Iterator<Item = (&'a horizon_client::entities::ExperienceOrb, [f64; 3], f32)>,
+        orb_view: Option<&horizon_client::gfx::Frustum>,
+        out: &mut Vec<Vertex>,
+    ) {
+        if let Some(r) = self
+            .gui
+            .atlas
+            .sprites
+            .get("entity/experience/experience_orb")
+            .copied()
+        {
+            let (yaw, pitch) = (self.yaw.to_radians(), self.pitch.to_radians());
+            let forward = glam::Vec3::new(
+                -yaw.sin() * pitch.cos(),
+                -pitch.sin(),
+                yaw.cos() * pitch.cos(),
+            );
+            let right = forward.cross(glam::Vec3::Y).normalize_or_zero();
+            let up = right.cross(forward).normalize_or_zero();
+            for (o, at, partial) in orbs {
+                let p = glam::DVec3::new(at[0], at[1] + 0.1, at[2]) - camera;
+                let c = p.as_vec3();
+                if orb_view.is_some_and(|view| {
+                    forward.dot(c) < 0.0 && !entity_culling::orb_in_view(view, c)
+                }) {
+                    continue;
+                }
+                let icon = o.icon();
+                let (du, dv) = ((r.u1 - r.u0) / 4.0, (r.v1 - r.v0) / 4.0);
+                let (u0, v0) = (r.u0 + (icon % 4) as f32 * du, r.v0 + (icon / 4) as f32 * dv);
+                let t = (o.age as f32 + partial) / 2.0;
+                let red = ((t.sin() + 1.0) * 0.5 * 255.0) as u32;
+                let blue = (((t + 4.188_79).sin() + 1.0) * 0.1 * 255.0) as u32;
+                let color = 0x8000_0000 | blue << 16 | 255 << 8 | red;
+                // `ExperienceOrbRenderer.getBlockLightLevel` (the block light
+                // plus 7, clamped) at the block the orb's eye is in.
+                let light = self.world.light(
+                    o.position.x.floor() as i32,
+                    o.light_probe_y().floor() as i32,
+                    o.position.z.floor() as i32,
+                );
+                let packed = o.render_light(i32::from(light));
+                // `ExperienceOrbRenderer.submit`: the quad runs from
+                // (-0.5, -0.25) to (0.5, 0.75) and is scaled by 0.3, so the
+                // sprite hangs a quarter of its height below the orb's centre.
+                let s = horizon_client::entities::ORB_QUAD_SCALE;
+                for (k, uv) in horizon_client::entities::ORB_QUAD.iter().zip([
+                    [u0, v0 + dv],
+                    [u0 + du, v0 + dv],
+                    [u0 + du, v0],
+                    [u0, v0],
+                ]) {
+                    let v = c + right * (k[0] * s) + up * (k[1] * s);
+                    out.push(Vertex {
+                        normal: [0; 4],
+                        pos: v.to_array(),
+                        uv,
+                        // ExperienceOrbRenderer: `RenderTypes.entityTranslucent`; in HDR
+                        // output the orbs shine (entity.wgsl fs_hdr_mark).
+                        layer: horizon_client::gfx::OIT_ENTITY
+                            | u32::from(horizon_client::mesher::VERY_BRIGHT) << 16,
+                        color,
+                        light: packed,
+
+                        glint_uv: [0.0, 0.0],
+                    });
+                }
+            }
+        }
+    }
+
+    /// Extract every particle group after the frame's entity, screen and hand callbacks.
+    /// Item model callbacks can clear during extraction too: roll back only this tail of
+    /// geometry (including GPU jobs and outlines), never the frame's ordinary entities.
+    fn client_particle_geometry(
+        &mut self,
+        camera: glam::DVec3,
+        alpha: f64,
+        fov_degrees: f32,
+        out: &mut Vec<Vertex>,
+    ) {
+        self.apply_mod_particle_clear();
+        if self.client_particle_count() == 0 {
+            return;
+        }
+        let first = out.len();
+        let skin = self.skin_frame.borrow().mark();
+        let outline_jobs = self.skin_frame.borrow().outline_jobs.len();
+        let outline_vertices = self.skin_frame.borrow().outline_vertices;
+        let spans = self.entity_spans.borrow().len();
+        let motion = self.entity_motion.borrow().len();
+        let glowing = self.glowing_vertices.borrow().len();
+        self.mark_motion(out.len(), 0);
+        // Particles (ParticleEngine.extract): camera-facing quads.
+        self.mark_stage(out.len(), "PARTICLES");
+        let world = &self.world;
+        let particle_mode = self.settings.horizon.particle_culling;
+        if particle_mode == horizon_client::graphics::ParticleCullingMode::Off {
+            self.particles.render(
+                camera,
+                self.yaw,
+                self.pitch,
+                alpha as f32,
+                &|b| world.light(b[0], b[1], b[2]),
+                out,
+            );
+        } else {
+            let frustum = self.view_frustum;
+            let pixel_focal_length = self.renderer.as_ref().map_or(0.0, |renderer| {
+                let tangent = (f64::from(fov_degrees).to_radians() * 0.5).tan();
+                if tangent.is_finite() && tangent > 0.0 {
+                    (f64::from(renderer.config.height.max(1)) / (2.0 * tangent)) as f32
+                } else {
+                    0.0
+                }
+            });
+            {
+                let mut particle_culling = self.particle_occlusion_context(camera);
+                self.particles.render_culled(
+                    camera,
+                    self.yaw,
+                    self.pitch,
+                    alpha as f32,
+                    pixel_focal_length,
+                    true,
+                    frustum.as_ref(),
+                    &mut |min, max| particle_culling.hidden(min, max),
+                    &|b| world.light(b[0], b[1], b[2]),
+                    out,
+                );
+            }
+            self.finish_async_particle_culling();
+        }
+        self.mark_entity(out.len(), "minecraft:item");
+        self.pickup_item_geometry(camera, alpha, out);
+        self.mark_motion(out.len(), 0);
+        self.mark_entity(out.len(), "minecraft:arrow");
+        self.pickup_arrow_geometry(camera, alpha, out);
+        self.mark_entity(out.len(), "minecraft:trident");
+        self.pickup_trident_geometry(camera, alpha, out);
+        self.mark_entity(out.len(), "minecraft:experience_orb");
+        // ItemPickupParticle: the render state extracted at partial tick 1.
+        let taken = self.pickups.live.iter().filter_map(|p| match &p.taken {
+            pickups::Taken::Orb(o) => Some((&**o, pickups::position(p, alpha), 1.0)),
+            _ => None,
+        });
+        self.orb_geometry(camera, taken, None, out);
+        self.mark_entity(out.len(), "minecraft:elder_guardian");
+        self.elder_apparition_geometry(alpha, out);
+        if self.mod_clear_particles.get() {
+            self.apply_mod_particle_clear();
+            out.truncate(first);
+            {
+                let mut frame = self.skin_frame.borrow_mut();
+                frame.truncate(skin);
+                frame.outline_jobs.truncate(outline_jobs);
+                frame.outline_vertices = outline_vertices;
+            }
+            self.entity_spans.borrow_mut().truncate(spans);
+            self.entity_motion.borrow_mut().truncate(motion);
+            self.glowing_vertices.borrow_mut().truncate(glowing);
+            return;
+        }
+        self.mark_motion(out.len(), 0);
+        self.mark_stage(out.len(), "NONE");
     }
 
     /// `LevelRenderer.destroyBlockProgress`: a player's crack on a block (0..=9), or none
@@ -10589,9 +11620,9 @@ impl Game<'_> {
             None => stages.push((pos, stage)),
         };
         if let Some(m) = &self.mining
-            && m.progress > 0.0
+            && let Some(stage) = m.stage()
         {
-            add(m.pos, ((m.progress * 10.0) as u32).min(9));
+            add(m.pos, u32::from(stage));
         }
         let now = self.world.game_time;
         for (pos, stage, at) in self.destroying.values() {
@@ -10606,6 +11637,10 @@ impl Game<'_> {
                     + 0.5
                     - camera;
                 d.length_squared() <= 1024.0
+            })
+            .filter(|(pos, _)| {
+                let state = self.world.block(pos[0], pos[1], pos[2]);
+                self.res.facts().get(state).destroy_overlay
             })
             .filter_map(|(pos, stage)| {
                 let name = names.get(stage as usize)?;
@@ -10623,24 +11658,27 @@ impl Game<'_> {
             let sky = self
                 .res
                 .end_environment()
-                .sample(self.world.day_time, None, None);
+                .sample(&horizon_client::environment::Sample {
+                    day_time: self.world.day_time,
+                    ..Default::default()
+                });
             // Level.updateSkyBrightness truncates (`(int)`), see `environment::sky_darken`.
             return (15.0 - 15.0 * sky.sky_light_level) as i32;
         }
         let (rain, thunder) = self.weather_levels(1.0);
-        // Sampled once per (time, weather): every mob asks each tick.
-        let key = (self.world.day_time, rain.to_bits(), thunder.to_bits());
+        // Sampled once per (dimension, time, weather): every mob asks each tick.
+        let key = (
+            self.dim,
+            self.world.day_time,
+            rain.to_bits(),
+            thunder.to_bits(),
+        );
         if let Some((k, darken)) = self.sky_darken_memo.get()
             && k == key
         {
             return darken;
         }
-        let darken = horizon_client::environment::sky_darken(
-            self.res.environment(),
-            self.world.day_time,
-            rain,
-            thunder,
-        );
+        let darken = self.sky_darken_in(&self.world, self.dim);
         self.sky_darken_memo.set(Some((key, darken)));
         darken
     }
@@ -10688,6 +11726,7 @@ impl Game<'_> {
         &mut self,
         target_kind: &str,
         living: bool,
+        victim: Option<u32>,
     ) -> (f32, f32, bool, bool) {
         if self.legacy_rules() {
             return self.legacy_melee_damage(target_kind, living);
@@ -10699,7 +11738,7 @@ impl Game<'_> {
         let scale = self.attack_strength_scale();
         // getEnchantedDamage(target, damage, source) - damage, taken before the
         // attack strength scales the base damage.
-        let enchant_bonus = self.enchanted_damage(target_kind, damage) - damage;
+        let enchant_bonus = self.enchanted_damage(target_kind, damage, victim) - damage;
         let mut amount = damage * (0.2 + scale * scale * 0.8);
         // Player.attack decides the critical hit only for a hit with base or
         // enchantment damage: checked before the mace's smash bonus is added.
@@ -10719,21 +11758,53 @@ impl Game<'_> {
         amount += enchant_bonus * scale;
         (amount, scale, crit, enchant_bonus * scale > 0.0)
     }
-    /// `Player.attack`'s sounds when a vehicle takes the hit (it always does,
-    /// and can't be hit critically): knockback when sprinting at full
-    /// strength, then strong or weak, or the sweep around the vehicle's
+    /// `Player.isSweepAttack` with the player's speed as it is, then
+    /// `native_sweep_attack`, on either side: whether the hit on `target` sweeps.
+    pub(super) fn sweep_decision(&mut self, scale: f32, crit: bool, target: &str) -> bool {
+        let Some(p) = self.player.as_ref() else {
+            return false;
+        };
+        let sword = self.held().is_some_and(|s| {
+            self.res
+                .items()
+                .item_tags
+                .get("minecraft:swords")
+                .is_some_and(|tag| tag.contains(&*s.item))
+        });
+        let vanilla = p.is_sweep_attack(scale, crit, sword);
+        let (mut sweeping, mut canceled) = (vanilla, false);
+        // `setCanceled` skips later mods and keeps the current `sweeping`.
+        self.native_sweep_attack(target, vanilla, &mut sweeping, &mut canceled);
+        sweeping
+    }
+    /// `Player.attack`'s `isSweepAttack`, decided before the hit as vanilla does
+    /// (`crit`: the hit on a living target is critical): where the sweep plays,
+    /// none without one. Reads the charge, so before the hit resets it.
+    pub(super) fn sweep_before_hit(&mut self, target: &str, crit: bool) -> Option<[f64; 3]> {
+        let scale = self.attack_strength_scale();
+        self.sweep_attack_position(scale, crit, target)
+    }
+    /// `Player.attack`'s sounds when a vehicle takes the hit (it always does, and
+    /// can't be hit critically): knockback when sprinting at full strength, then
+    /// strong or weak, or the `sweep` decided before the hit around the vehicle's
     /// box `area`. Before the hit resets the charge (`Player.onAttack`).
-    pub(super) fn vehicle_attack_sounds(&mut self, area: Aabb, magic: Option<i32>) {
-        self.attack_effects(area, None, false, mace::Spared::Nothing, magic);
+    pub(super) fn vehicle_attack_sounds(
+        &mut self,
+        area: Aabb,
+        sweep: Option<[f64; 3]>,
+        magic: Option<i32>,
+    ) {
+        self.attack_effects(area, sweep, None, false, mace::Spared::Nothing, magic);
     }
     /// `Player.attack` on a mob: the damage, knockback, sweep, particles and
     /// sounds.
-    pub(super) fn attack_mob(&mut self, index: usize) {
-        let _attacker = self.knockback_scope(self.player.as_ref().map_or(0, |p| p.entity_id));
+    fn attack_mob(&mut self, index: usize) {
+        let attack = self.attack_of(self.player.as_ref().map_or(0, |p| p.entity_id));
         let target_kind = self.mobs[index].kind.id.clone();
         let target_kind = format!("minecraft:{}", target_kind.trim_start_matches("minecraft:"));
-        let (amount, scale, crit, magic) = self.melee_damage(&target_kind, true);
-        let sweep = self.sweep_attack_position(scale, crit);
+        let (amount, scale, crit, magic) =
+            self.melee_damage(&target_kind, true, Some(self.mobs[index].id));
+        let sweep = self.sweep_attack_position(scale, crit, &target_kind);
         let (knockback, knockback_attack) = self.extra_knockback(&target_kind, scale);
         self.attack_ticks = 0;
         let player = self.player.as_ref();
@@ -10792,7 +11863,9 @@ impl Game<'_> {
                     m.velocity = Vec3::new(x, y, z);
                     m.needs_sync = true;
                 } else {
+                    let level = crate::game::entity::damage_level_of!(self, &attack);
                     self.mobs[index].knockback_effect(
+                        level,
                         f64::from(knockback),
                         xd,
                         zd,
@@ -10856,8 +11929,7 @@ impl Game<'_> {
                     randomization: 0,
                 });
             }
-            self.last_hurt_by_player
-                .insert(self.mobs[index].id, self.lan_acting);
+            self.remember_mob_player_credit(self.mobs[index].id);
             let sound = if crit {
                 "minecraft:entity.player.attack.crit"
             } else if scale > 0.9 {
@@ -10865,14 +11937,16 @@ impl Game<'_> {
             } else {
                 "minecraft:entity.player.attack.weak"
             };
-            // Player.playServerSideSound: at the player.
+            // Player.playServerSideSound: at the player. A critical hit a mod
+            // let sweep has both sounds (attackVisualEffects).
             if let Some(at) = sweep {
                 let target = (
                     self.mobs[index].bounds(),
                     mace::Spared::Mob(self.mobs[index].id),
                 );
                 self.sweep_attack(at, from, Some(target), scale);
-            } else {
+            }
+            if crit || sweep.is_none() {
                 self.audio.play(sound, from, 1.0, 1.0);
             }
             // The hurt or death sound the mob raised (getHurtSound / getDeathSound,
@@ -10913,14 +11987,16 @@ impl Game<'_> {
     /// ServerExplosion: rays from a 16^3 grid lose (resistance + 0.3) * 0.3 per step.
     /// A mob explosion (`ServerLevel.explode` with `ExplosionInteraction.MOB`:
     /// blocks are kept without mobGriefing, else the mob_explosion_drop_decay
-    /// rule picks decay).
+    /// rule picks decay). Mods are asked through `can_entity_grief` for
+    /// `source`, the exploding entity (the rule alone without one).
     fn explode(
         &mut self,
+        source: Option<u32>,
         center: [f64; 3],
         radius: f32,
-        source: explosion::ExplosionSource,
+        blast: explosion::ExplosionSource,
     ) -> Result<()> {
-        self.explode_mob(center, radius, false, source)
+        self.explode_with(source, center, radius, false, blast)
     }
     /// `ServerLevel.explode` with `ExplosionInteraction.MOB` and the caller's fire flag.
     fn explode_mob(
@@ -10928,29 +12004,40 @@ impl Game<'_> {
         center: [f64; 3],
         radius: f32,
         fire: bool,
-        source: explosion::ExplosionSource,
+        blast: explosion::ExplosionSource,
     ) -> Result<()> {
-        let interaction = if !self.ui.rules.bool("mob_griefing") {
+        self.explode_with(None, center, radius, fire, blast)
+    }
+    fn explode_with(
+        &mut self,
+        source: Option<u32>,
+        center: [f64; 3],
+        radius: f32,
+        fire: bool,
+        blast: explosion::ExplosionSource,
+    ) -> Result<()> {
+        let interaction = if !self.can_entity_grief(source) {
             explosion::BlockInteraction::Keep
         } else {
-            self.destroy_type("mob_explosion_drop_decay")
+            self.destroy_type(horizon_client::gamerules::vanilla::MOB_EXPLOSION_DROP_DECAY)
         };
-        self.server_explode_from(center, radius, interaction, fire, source)
+        self.server_explode_from(center, radius, interaction, fire, blast)
     }
     /// `SulfurCube.tickFuse`: `ExplosionInteraction.TNT` (the
     /// tnt_explosion_drop_decay rule) with mobGriefing, `NONE` without.
     fn explode_sulfur_cube(
         &mut self,
+        source: Option<u32>,
         center: [f64; 3],
         radius: f32,
-        source: explosion::ExplosionSource,
+        blast: explosion::ExplosionSource,
     ) -> Result<()> {
-        let interaction = if !self.ui.rules.bool("mob_griefing") {
+        let interaction = if !self.can_entity_grief(source) {
             explosion::BlockInteraction::Keep
         } else {
-            self.destroy_type("tnt_explosion_drop_decay")
+            self.destroy_type(horizon_client::gamerules::vanilla::TNT_EXPLOSION_DROP_DECAY)
         };
-        self.server_explode_from(center, radius, interaction, false, source)
+        self.server_explode_from(center, radius, interaction, false, blast)
     }
     /// Copies of a save batch carrying its live block entities and save data.
     fn with_entities<'a>(
@@ -10976,8 +12063,9 @@ impl Game<'_> {
             self.prune_entity_attachments();
         }
         self.native_mobs_equipment();
+        self.tick_equipment_attributes();
         self.position_rider();
-        self.tick_stats();
+        self.tick_player_stat_counters();
         self.tick_scoreboard();
         self.load_bossbars();
         self.tick_worldborder();
@@ -10985,82 +12073,7 @@ impl Game<'_> {
         self.spawn_phantoms();
         self.tick_advancements();
         self.tick_player_model();
-        self.tick_emotes();
         Ok(())
-    }
-    /// SkyRenderer.renderSunMoonAndStars: bodies on a frame rotated Y -90 then X by angle.
-    /// Returns the sun and moon quads, and the stars' frame and brightness
-    /// (the renderer keeps their geometry, built once). The bodies fade with
-    /// the rain (`rainBrightness = 1 - rainLevel`, their colour's alpha).
-    fn celestial_geometry(
-        &self,
-        sky: &horizon_client::environment::Sky,
-        rain: f32,
-    ) -> (Vec<Vertex>, Option<(glam::Mat4, f32)>) {
-        let body_color =
-            0x00FF_FFFF | (((1.0 - rain).clamp(0.0, 1.0) * 255.0).round() as u32) << 24;
-        let mut out = Vec::new();
-        let atlas = &self.gui.atlas;
-        let frame = |angle: f32| {
-            glam::Mat4::from_rotation_y((-90.0f32).to_radians())
-                * glam::Mat4::from_rotation_x(angle.to_radians())
-        };
-        let mut body = |name: &str, angle: f32, size: f32, moon: bool| {
-            let Some(r) = atlas.sprites.get(name).copied() else {
-                return;
-            };
-            // How brightly HDR output lets the body shine (mesher::hdr_tier):
-            // the moon at the low tier, not the sun's.
-            let tier = if moon {
-                horizon_client::mesher::LOW
-            } else {
-                horizon_client::mesher::VERY_BRIGHT
-            };
-            let m = frame(angle);
-            let corners = [(-size, -size), (size, -size), (size, size), (-size, size)];
-            // buildCelestialQuad (sun) vs buildMoonPhases: the moon's UVs run
-            // the other way round.
-            let uv = if moon {
-                [[r.u1, r.v1], [r.u0, r.v1], [r.u0, r.v0], [r.u1, r.v0]]
-            } else {
-                [[r.u0, r.v0], [r.u1, r.v0], [r.u1, r.v1], [r.u0, r.v1]]
-            };
-            for ((x, z), uv) in corners.iter().zip(uv) {
-                let p = m.transform_point3(glam::Vec3::new(*x, 100.0, *z));
-                out.push(Vertex {
-                    normal: [0; 4],
-                    pos: p.to_array(),
-                    uv,
-                    layer: 2 | u32::from(tier) << 16,
-                    color: body_color,
-                    light: 0,
-
-                    glint_uv: [0.0, 0.0],
-                });
-            }
-        };
-        body("environment/celestial/sun", sky.sun_angle, 30.0, false);
-        let phases = [
-            "full_moon",
-            "waning_gibbous",
-            "third_quarter",
-            "waning_crescent",
-            "new_moon",
-            "waxing_crescent",
-            "first_quarter",
-            "waxing_gibbous",
-        ];
-        let phase = phases[(self.view_day_time() / 24000).rem_euclid(8) as usize];
-        body(
-            &format!("environment/celestial/moon/{phase}"),
-            sky.moon_angle,
-            20.0,
-            true,
-        );
-        // SkyRenderer.renderStars: the static star buffer on the same frame.
-        let stars =
-            (sky.star_brightness > 0.0).then(|| (frame(sky.star_angle), sky.star_brightness));
-        (out, stars)
     }
 
     fn finish_open_world(&mut self, prepared: world_loading::PreparedWorld) -> Result<()> {
@@ -11077,10 +12090,17 @@ impl Game<'_> {
             session_lock,
             rand_sequences,
             locator,
+            loot,
+            owner_migration,
         } = prepared;
+        self.server_loot = loot;
         let dim = Dim::from_id(&level.dimension);
         self.level_shapes = shapes;
         self.world_root = save_root.clone();
+        // The root moves before the prepared level is installed. Until then a
+        // final save must not run: the lock below only marks tag tables.
+        self.world_adopted = false;
+        self.owner_migration = owner_migration;
         // The world's packs over the game's biomes (`Biomes::with_packs`),
         // the table its chunks were built with.
         self.world_biomes = self.packed_biomes();
@@ -11092,34 +12112,42 @@ impl Game<'_> {
         self.end.set_locator(locator);
         self.share_spawn_conditions();
         self.score = Default::default();
-        self.fns = Default::default();
+        let stack = self.reload_datapacks(false, &level.enabled_features)?;
+        let root = self.options.resources.clone();
         (self.world_tables, self.health_resources) =
-            self.build_world_tables(false, &level.enabled_features)?;
+            self.build_world_tables(&stack, false, &root, self.mods.data_switched)?;
         self.damage_tag_generation = self.damage_tag_generation.wrapping_add(1);
+        self.resolve_parts()?;
+        // A code-mod switch can have rebuilt the root since `Game::new`.
+        self.structure_spawns = horizon_client::mobs::spawn_selection::StructureSpawns::load(&root);
         // Native tag reads use the lock to tell that the tag tables are ready.
         self.session_lock = Some(session_lock);
         // Keep the no-pack preload; a world's packs replace it atomically.
         // A later /reload keeps this session's synchronized registries.
         lan::open_world_sync_data(
             &self.options.resources,
+            &self.res.core.item_data,
             &pack_files(&self.world_tables),
             &self.health_resources.damage,
         )
         .map_err(|e| format!("world registries: {e}"))?;
         // Warm the loot data with this world's packs before chunks decode
         // (`save::roll_loaded_loot` reads the cached copy).
-        let _ = horizon_client::structure_blocks::world_loot_data(
-            &self.options.resources,
-            &pack_files(&self.world_tables),
-        );
-        // The mods' own data folders, then TagsUpdatedEvent (SERVER_DATA_LOAD):
-        // the world's data is in, before its chunks and players are.
-        self.native_reload_listeners();
-        self.native_server_data_loaded(false);
-        self.sync_recipe_content();
+        self.load_server_loot();
+        // MinecraftServer's constructor reads CustomBossEvents before any
+        // server event.
         self.bosses = Default::default();
+        self.load_bossbars();
+        // ServerLevel's constructor reads its Raids saved data before any
+        // server event; their randoms are seeded on the first raid tick.
+        if self.remote.is_none() {
+            self.read_raids();
+        }
+        self.native_tags_updated(mod_api::TagsUpdateCause::ServerDataLoad { reload: false });
+        self.announce_data_maps_updated(mod_api::DataMapsUpdateCause::ServerReload);
+        self.sync_recipe_content();
         reset_world_progress(&mut self.adv, &mut self.stats);
-        self.prefetch_advancement_tree();
+        self.prefetch_advancement_tree(&stack);
         self.restore_player_state = true;
         self.rand_sequences = rand_sequences;
         // ServerLevel.getWorldBorder: the level in place reads its own saved
@@ -11128,29 +12156,7 @@ impl Game<'_> {
         self.border = self.load_border(dim);
         self.set_mode_id(level.mode());
         self.previous_mode = level.previous_game_mode.map(game_mode::mode_from_id);
-        let mut inventory = vec![None; 36];
-        self.armor = [None, None, None, None];
-        self.offhand = None;
-        self.ender_items = if level.ender_items.len() == 27 {
-            level.ender_items.clone()
-        } else {
-            vec![None; 27]
-        };
-        for (slot, id, count, damage) in &level.inventory {
-            let stack = ItemStack {
-                item: Arc::from(id.as_str()),
-                count: *count,
-                damage: *damage,
-                extra: level.inventory_components.get(slot).cloned(),
-            };
-            if (100..104).contains(slot) {
-                self.armor[usize::from(103 - slot)] = Some(stack);
-            } else if *slot == 150 {
-                self.offhand = Some(stack);
-            } else if let Some(cell) = inventory.get_mut(usize::from(*slot)) {
-                *cell = Some(stack);
-            }
-        }
+        let mut inventory = self.load_saved_inventory(&level);
         if self.creative && level.inventory.is_empty() && level.position.is_none() {
             for (i, name) in [
                 "minecraft:grass_block",
@@ -11185,9 +12191,18 @@ impl Game<'_> {
         self.world = world;
         self.inventory = inventory;
         self.save = save;
+        // MinecraftServer.prepareLevels: the saved tickets come back.
+        self.tickets = if self.options.execution_role.is_client() {
+            Default::default()
+        } else {
+            horizon_client::ticket_levels::ChunkTickets::with_saved_portal(
+                self.save.load_portal_tickets(),
+            )
+        };
         // The ride the player's file names, once the vehicle is in the world.
         self.pending_vehicle = level.root_vehicle;
         self.level = level;
+        self.world_adopted = true;
         // ServerRecipeBook.loadUntrusted: recipes the manager does not have are dropped.
         let index = &world_stations!(self).recipe_index;
         let book = &mut self.level.recipe_book;
@@ -11219,10 +12234,13 @@ impl Game<'_> {
             .as_ref()
             .map(respawn_anchor::RespawnConfig::from_saved);
         self.spawn_origin = None;
+        self.spawn_hook_fired = false;
+        self.spawn_hook_cancelled = false;
         self.spawn_spiral = Default::default();
         self.player_spawn = None;
         self.creatures.reset_trader();
         self.creatures.cat_tick = 0;
+        self.creatures.custom_spawners.clear();
         self.portals = Default::default();
         self.experience = Experience {
             level: self.level.xp_level,
@@ -11239,8 +12257,8 @@ impl Game<'_> {
         };
         self.carried = None;
         self.using = None;
-        self.screen = Screen::Playing;
-        self.title = None;
+        self.set_screen(Screen::Playing);
+        self.hide_title();
         self.clear_lod();
         self.pending_uploads.clear();
         if let Some(r) = self.renderer.as_mut() {
@@ -11252,7 +12270,7 @@ impl Game<'_> {
         self.load_world_state();
         // The level the world opens in, before any of its chunks.
         self.native_level_opened(dim);
-        Ok(())
+        self.open_saved_portal_levels()
     }
     /// PortalShape: an obsidian frame around 2..=21 by 3..=21 empty blocks.
     fn portal_shape(&self, start: [i32; 3], x_axis: bool) -> Option<([i32; 3], i32, i32)> {
@@ -11364,7 +12382,6 @@ impl Game<'_> {
         }
         Ok(false)
     }
-
     fn finish_close_world(&mut self) -> Result<()> {
         self.ambience.clear(&mut self.audio);
         // updateLevelInEngines(null): every sound stops; the music manager
@@ -11376,7 +12393,12 @@ impl Game<'_> {
             return self.leave_server(None);
         }
         // The save screen has finished every write before releasing storage.
+        self.ui.dispatcher = Default::default();
+        self.server_loot.set(None);
+        self.server_items = None;
         self.session_lock = None;
+        mod_api::__private::clear_game_parts();
+        self.world_adopted = false;
         self.world_icon = None;
         horizon_client::crash::clear_detail("World");
         self.debug_charts.reset();
@@ -11384,6 +12406,7 @@ impl Game<'_> {
         // GameRenderer.resetData (Minecraft.clearClientLevel).
         self.item_activation.reset();
         self.kept_block_entities.get_mut().clear();
+        self.mod_view_distances.take();
         self.bosses = Default::default();
         self.streaming.paused = true;
         self.world = World::new(self.res.facts().air, 0);
@@ -11395,7 +12418,7 @@ impl Game<'_> {
         self.sleep_timer = 0;
         self.player_beds.clear();
         self.clear_entities();
-        self.screen = Screen::Playing;
+        self.set_screen(Screen::Playing);
         self.clear_lod();
         self.pending_uploads.clear();
         if let Some(r) = self.renderer.as_mut() {
@@ -11404,23 +12427,22 @@ impl Game<'_> {
         // Clear sync data (registries, dialog tags) so dialogs don't leak
         // between worlds.
         lan::forget_sync_data();
-        self.title = Some(
-            Title::new(
-                std::env::current_dir()?.join("saves"),
-                &self.options.resources,
-            )
-            .with_user(|| self.options.player_name()),
-        );
-        if let Some(title) = &mut self.title {
-            title.last_server = self.settings.file.string("lastServer");
-            title.skip_multiplayer_warning = self.settings.file.bool("skipMultiplayerWarning");
-        }
+        lan::forget_server_sources();
+        let mut title = Title::new(
+            std::env::current_dir()?.join("saves"),
+            &self.options.resources,
+        )
+        .with_user(|| self.options.player_name());
+        title.last_server = self.settings.file.string("lastServer");
+        title.skip_multiplayer_warning = self.settings.file.bool("skipMultiplayerWarning");
+        self.show_title(title);
         self.capture(false);
         Ok(())
     }
     /// Let go of every entity of the level (saved first): the next world
     /// opened must not inherit them, nor save them as its own.
     pub(super) fn clear_entities(&mut self) {
+        self.clear_pending_mob_actions();
         self.mobs.clear();
         self.dropped.clear();
         self.orbs.clear();
@@ -11435,17 +12457,16 @@ impl Game<'_> {
         self.item_frames.clear();
         self.paintings.clear();
         self.others.clear();
-        self.dragon = None;
+        self.dragon.discard();
         self.crystals.clear();
-        self.dragon_fireballs.clear();
         self.breath_clouds.clear();
         self.tridents.clear();
         self.rockets.clear();
         self.bolts.clear();
-        self.particles.clear();
-        self.pickups.clear();
+        self.clear_client_particles();
         self.riding = None;
         self.persist = Default::default();
+        self.missing_professions.clear();
         self.entity_attachments.clear();
         self.clear_remote_objects();
         self.clear_remote_projectiles();
@@ -11480,13 +12501,21 @@ impl Game<'_> {
         equipped.push((self.inventory[self.selected].as_ref(), "mainhand"));
         equipped.push((self.offhand.as_ref(), "offhand"));
         for (stack, slot) in equipped {
-            let Some(info) = stack.and_then(|s| world_items!(self).get(&s.item)) else {
+            let Some(stack) = stack else {
                 continue;
             };
-            for (attribute, id, amount, op, group) in &info.modifiers {
+            for horizon_items::item_data::ModifierRow {
+                attribute,
+                id,
+                amount,
+                operation: op,
+                slot: group,
+            } in horizon_client::item_attributes::attribute_modifiers(stack, world_items!(self))
+                .iter()
+            {
                 // The attack code still reads the held item's attack damage and
                 // speed directly; the map copy is what `/attribute` reports.
-                if !equipment_modifier_applies(group, slot) {
+                if !horizon_client::living_attributes::modifier_applies(group, slot) {
                     continue;
                 }
                 if player
@@ -11499,56 +12528,6 @@ impl Game<'_> {
         }
         let _ = player.clamp_health_to_max();
         self.apply_enchantment_attributes();
-    }
-    /// `LivingEntity.hurtServer` with the two equipment services performed
-    /// synchronously. Keeping the acting player installed lets durability
-    /// hooks observe and modify its real inventory before this hit continues.
-    fn hurt_player_equipment(
-        &mut self,
-        source: horizon_world::damage_source::DamageTypeId,
-        amount: f32,
-        blocking: Option<horizon_client::health::Blocking>,
-        living_cause: bool,
-        causing: i32,
-    ) -> horizon_client::Result<(horizon_client::health::BlockOutcome, f32)> {
-        let mut hit = self
-            .player
-            .as_mut()
-            .ok_or("missing damage target")?
-            .prepare_equipment_hurt(
-                &self.health_resources,
-                self.world.health_rules,
-                source,
-                amount,
-                blocking,
-                living_cause,
-                causing,
-            )?;
-        if let Some(damage) = hit.helmet_damage()
-            && self.armor[0]
-                .as_ref()
-                .is_some_and(|s| s.count > 0 && &*s.item != "minecraft:air")
-        {
-            self.hurt_equipment(source, damage, &[0]);
-            hit.helmet_worn();
-            self.refresh_armor_protection();
-        }
-        let actual = hit.damage().unwrap_or(amount);
-        let armor_damage = self
-            .player
-            .as_mut()
-            .ok_or("missing damage target")?
-            .select_equipment_hurt(&self.health_resources, &mut hit)?;
-        if let Some(damage) = armor_damage {
-            self.hurt_armor(source, damage);
-            self.refresh_armor_protection();
-        }
-        let outcome = self
-            .player
-            .as_mut()
-            .ok_or("missing damage target")?
-            .finish_equipment_hurt(&self.health_resources, hit)?;
-        Ok((outcome, actual))
     }
     /// The armor hits among a tick's motion events (`Player.hurtArmor` from
     /// `getDamageAfterArmorAbsorb`), whatever the damage: a mob, an explosion,
@@ -11564,14 +12543,77 @@ impl Game<'_> {
             }
         }
     }
-    /// `Player.hurtArmor` -> `LivingEntity.doHurtEquipment`: each worn piece that
-    /// wears when its wearer is hurt loses max(1, damage / 4) durability, except
-    /// to a fire source when the piece resists fire (`ItemStack.canBeHurtBy`).
+    /// Run equipment continuations with the acting player installed on the real host.
+    #[allow(clippy::too_many_arguments)]
+    fn hurt_player_equipment(
+        &mut self,
+        source: horizon_world::damage_source::DamageTypeId,
+        amount: f32,
+        blocking: Option<horizon_client::health::Blocking>,
+        living_cause: bool,
+        causing: i32,
+        creative_source: bool,
+        attack: &horizon_client::health::Attack,
+    ) -> horizon_client::Result<horizon_client::health::BlockOutcome> {
+        let rules = self.world.health_rules;
+        let helmet = self.armor[0]
+            .as_ref()
+            .is_some_and(|s| s.count > 0 && &*s.item != "minecraft:air");
+        let mut hit = self
+            .player
+            .as_mut()
+            .ok_or("missing damage target")?
+            .start_hurt(
+                crate::game::entity::damage_level_of!(self, attack),
+                &self.motion.health,
+                rules,
+                source,
+                amount,
+                blocking,
+                living_cause,
+                causing,
+                creative_source,
+                helmet,
+            )?;
+        if let Some(damage) = hit.helmet_damage() {
+            self.hurt_helmet(source, damage);
+            self.refresh_armor_protection();
+        }
+        let armor_damage = self
+            .player
+            .as_mut()
+            .ok_or("missing damage target")?
+            .select_equipment_hurt(
+                crate::game::entity::damage_level_of!(self, attack),
+                &self.motion.health,
+                rules,
+                &mut hit,
+            )?;
+        if let Some(damage) = armor_damage {
+            self.hurt_armor(source, damage);
+            self.refresh_armor_protection();
+        }
+        self.player
+            .as_mut()
+            .ok_or("missing damage target")?
+            .finish_hurt(
+                crate::game::entity::damage_level_of!(self, attack),
+                &self.motion.health,
+                rules,
+                hit,
+            )
+    }
+    /// `Player.hurtArmor`: every armor slot wears.
     fn hurt_armor(&mut self, source: horizon_world::damage_source::DamageTypeId, damage: f32) {
         self.hurt_equipment(source, damage, &[3, 2, 1, 0]);
     }
-    /// Vanilla visits FEET, LEGS, CHEST, HEAD, applying each break before the
-    /// next slot's durability hook and enchantment random draws.
+    /// `Player.hurtHelmet`: the head slot alone wears.
+    fn hurt_helmet(&mut self, source: horizon_world::damage_source::DamageTypeId, damage: f32) {
+        self.hurt_equipment(source, damage, &[0]);
+    }
+    /// `LivingEntity.doHurtEquipment` of the `slots` of `armor`: each worn piece that
+    /// wears when its wearer is hurt loses max(1, damage / 4) durability, except
+    /// to a fire source when the piece resists fire (`ItemStack.canBeHurtBy`).
     fn hurt_equipment(
         &mut self,
         source: horizon_world::damage_source::DamageTypeId,
@@ -11581,7 +12623,6 @@ impl Game<'_> {
         if damage <= 0.0 {
             return;
         }
-        // The maximum of 1.0F and damage / 4.0F, then Java's saturating float-to-int.
         let amount = if damage.is_nan() {
             0
         } else {
@@ -11597,17 +12638,10 @@ impl Game<'_> {
             .definition(source)
             .map(|d| d.name.clone())
             .unwrap_or_default();
-        let fire = self
-            .health_resources
-            .damage
-            .in_tag(source, "minecraft:is_fire");
-        for &i in slots {
-            let Some(stack) = self.armor[i].clone() else {
-                continue;
-            };
-            let Some(info) = world_items!(self).get(&stack.item) else {
-                continue;
-            };
+        // The pieces that may wear (`doHurtEquipment`'s checks).
+        let mut eligible: [Option<ItemStack>; 4] = std::array::from_fn(|i| {
+            let stack = self.armor[i].clone().filter(|_| slots.contains(&i))?;
+            let info = world_items!(self).get(&stack.item)?;
             let component = |id| stack.data().and_then(|data| data.other(id));
             // ItemStack.isDamageableItem: component removal and
             // unbreakable are checked before enchantment RNG or hooks.
@@ -11616,33 +12650,79 @@ impl Game<'_> {
                 || component("minecraft:unbreakable").is_some()
                 || component("!minecraft:max_damage").is_some()
                 || component("!minecraft:damage").is_some()
-                || (fire && world_items!(self).resists_fire(&stack, &name))
+                || !self.stack_can_be_hurt_by(&stack, &name).unwrap_or(true)
             {
-                continue;
+                return None;
             }
             let max = match component("minecraft:max_damage") {
-                Some(horizon_world::nbt::Tag::Int(value)) => match u32::try_from(*value) {
-                    Ok(value) => value,
-                    Err(_) => continue,
-                },
+                Some(horizon_core::nbt::Tag::Int(value)) => u32::try_from(*value).ok()?,
                 _ => info.max_damage,
             };
             if max == 0 {
-                continue;
+                return None;
             }
-            let loss = self.wear(&stack, amount);
-            if loss == 0 {
-                continue;
+            Some(stack)
+        });
+        // No equipment can wear: there is no armor damage event to dispatch.
+        if eligible.iter().all(Option::is_none) {
+            return;
+        }
+        // ArmorHurtEvent: once for the pieces that would wear, a server player's only.
+        let mut amounts = [amount; 4];
+        if mod_api::__private::listened(mod_api::HookId::ArmorHurt)
+            && let (Some(uuid), Some(player)) = (self.lan_acting_uuid, self.lan_acting_entity)
+        {
+            let mut entries: Vec<mod_api::ArmorHurt> = eligible
+                .iter()
+                .enumerate()
+                .filter_map(|(i, e)| {
+                    Some(mod_api::ArmorHurt {
+                        slot: armor_slot(i),
+                        stack: e.as_ref()?.try_into_api().ok()?,
+                        damage: durability_damage(damage),
+                        new_damage: durability_damage(damage),
+                    })
+                })
+                .collect();
+            let hit = horizon_client::health::HurtSource {
+                damage_type: &name,
+                causing: 0,
+                direct: 0,
+                position: None,
+            };
+            let mut cancel = false;
+            self.native_armor_hurt(
+                Some(uuid),
+                player,
+                "minecraft:player",
+                &hit,
+                &mut entries,
+                &mut cancel,
+            );
+            if cancel {
+                return;
             }
-            let Some(worn) = self.armor[i].as_mut() else {
+            for (i, amount) in amounts.iter_mut().enumerate() {
+                *amount = answered_wear(&entries, armor_slot(i), *amount);
+            }
+        }
+        // Each break is applied before the next slot's hook and RNG draw.
+        for &index in slots {
+            let Some(before) = eligible[index].take() else {
                 continue;
             };
-            worn.damage = worn.damage.saturating_add(loss).min(max);
-            if worn.damage >= max {
-                let broken = worn.clone();
-                self.armor[i] = None;
-                self.player_equipment_broke(armor_slot(i), &broken);
-                self.apply_equipment();
+            if amounts[index] == 0 || self.armor[index].as_ref() != Some(&before) {
+                continue;
+            }
+            let (updated, broken) =
+                self.damage_stack(&before, amounts[index].min(i32::MAX as u32) as i32, true);
+            if updated.as_ref() != Some(&before) && self.armor[index].as_ref() == Some(&before) {
+                self.armor[index] = updated;
+                if let Some(stack) = broken {
+                    self.player_equipment_broke(armor_slot(index), &stack);
+                    self.award_stat("broken", &stack.item, 1);
+                    self.apply_equipment();
+                }
             }
         }
     }
@@ -11676,6 +12756,7 @@ impl Game<'_> {
                             pos: b,
                             face,
                             point: p,
+                            inside: false,
                         });
                     }
                     let above = self.world.block(b[0], b[1] + 1, b[2]);
@@ -11687,6 +12768,8 @@ impl Game<'_> {
                             pos: b,
                             face,
                             point,
+                            // A start in the shape hits at the eyes.
+                            inside: point == origin,
                         });
                     }
                 } else if !first && !self.res.facts().is_air(state) && f.fluid == Fluid::None {
@@ -11767,6 +12850,7 @@ impl Game<'_> {
             .is_some_and(|s| s.name == "minecraft:water");
         Some((state, under_water))
     }
+
     /// What `BlockTransformer.transformBlock` would do with a held axe, hoe
     /// or shovel on the block at `pos`, without doing it: the new state, its
     /// sound, loot table, the durability it costs, its particle and its
@@ -11774,10 +12858,41 @@ impl Game<'_> {
     pub(super) fn block_transform(
         &self,
         stack: &ItemStack,
-        pos: [i32; 3],
-        face: [i32; 3],
+        hit: &Hit,
+    ) -> Option<(BlockStateId, String, Option<String>, u32, String, String)> {
+        let blocking = self
+            .offhand
+            .as_ref()
+            .is_some_and(|s| self.blocks_attacks(s).is_some())
+            && !self.keys.held(Mapping::Sneak);
+        self.block_transform_in(
+            stack,
+            hit,
+            TransformContext {
+                world: &self.world,
+                player: self.player.is_some().then(|| self.own_entity_id() as u32),
+                hand: self.hand,
+                blocking,
+                simulated: false,
+            },
+        )
+    }
+
+    fn block_transform_in(
+        &self,
+        stack: &ItemStack,
+        hit: &Hit,
+        context: TransformContext<'_>,
     ) -> Option<(BlockStateId, String, Option<String>, u32, String, String)> {
         use horizon_client::block_transform::Around;
+        let TransformContext {
+            world,
+            player,
+            hand,
+            blocking,
+            simulated,
+        } = context;
+        let Hit { pos, face, .. } = *hit;
         struct Column<'w> {
             world: &'w World,
             registry: &'w horizon_world::registry::BlockRegistry,
@@ -11803,11 +12918,7 @@ impl Game<'_> {
             .and_then(|i| i.block_transformer.clone())?;
         // playerHasBlockingItemUseIntent: a shield in the off hand is raised
         // instead, unless sneaking.
-        let shield = self
-            .offhand
-            .as_ref()
-            .is_some_and(|s| self.blocks_attacks(s).is_some());
-        if shield && !self.keys.held(Mapping::Sneak) {
+        if blocking {
             return None;
         }
         let face_name = match face {
@@ -11820,42 +12931,99 @@ impl Game<'_> {
         };
         let registry = self.pack.assets.registry;
         let around = Column {
-            world: &self.world,
+            world,
             registry,
             pos,
         };
-        let (_, t, state) =
-            self.res
-                .transformers()
-                .apply(self.items(), registry, &id, face_name, &around)?;
-        let new = registry.resolve(&state).ok()?;
-        Some((
-            new,
-            t.sound.clone(),
-            t.loot.clone(),
-            t.damage,
-            t.particle.clone(),
-            t.transform_type.clone(),
-        ))
+        let vanilla = self
+            .res
+            .transformers()
+            .apply(self.items(), registry, &id, face_name, &around)
+            .and_then(|(_, t, state)| Some((registry.resolve(&state).ok()?, t)));
+        let result = |new, t: &horizon_client::block_transform::Transform| {
+            (
+                new,
+                t.sound.clone(),
+                t.loot.clone(),
+                t.damage,
+                t.particle.clone(),
+                t.transform_type.clone(),
+            )
+        };
+        if mod_api::__private::mods().is_empty() {
+            let (new, t) = vanilla?;
+            return Some(result(new, t));
+        }
+        use mod_api::ToolAbility::*;
+        let actions: &[_] = match id.as_str() {
+            "minecraft:axe" => &[AxeStrip, AxeScrape, AxeWaxOff],
+            "minecraft:shovel" => &[ShovelFlatten],
+            "minecraft:hoe" => &[HoeTill],
+            _ => return vanilla.map(|(new, t)| result(new, t)),
+        };
+        for &ability in actions {
+            let mut state = vanilla
+                .as_ref()
+                .and_then(|(state, t)| vanilla_tool_state(&id, &t.particle, ability, *state));
+            let matches_vanilla = state.is_some();
+            let mut cancel = false;
+            let tool = mod_api::ToolUse::from(mod_api::__private::built::ToolUse {
+                player,
+                hand,
+                pos,
+                face,
+                click: hit.point,
+                ability,
+                simulated,
+            });
+            self.native_block_tool_modification(stack, &tool, &mut state, &mut cancel);
+            if cancel {
+                return None;
+            }
+            if let Some(new) = state {
+                if matches_vanilla {
+                    let (_, t) = vanilla?;
+                    return Some(result(new, t));
+                }
+                let (sound, particle) = match ability {
+                    AxeStrip => ("minecraft:item.axe.strip", "none"),
+                    AxeScrape => ("minecraft:item.axe.scrape", "scrape"),
+                    AxeWaxOff => ("minecraft:item.axe.wax_off", "wax_off"),
+                    ShovelFlatten => ("minecraft:item.shovel.flatten", "none"),
+                    HoeTill => ("minecraft:item.hoe.till", "none"),
+                    ShovelDouse => unreachable!(),
+                    _ => unreachable!("ToolAbility: unhandled variant"),
+                };
+                return Some((
+                    new,
+                    sound.to_owned(),
+                    None,
+                    1,
+                    particle.to_owned(),
+                    String::new(),
+                ));
+            }
+        }
+        None
     }
     /// `BlockTransformer.TransformParticle.send`: its level event.
     pub(super) fn transform_particle(&mut self, particle: &str, pos: [i32; 3]) {
+        let source = self
+            .lan_acting_uuid
+            .map(horizon_world::level::LevelEventPlayer);
         match particle {
-            "scrape" => self.level_event_at(3005, pos, 0),
-            "wax_on" => self.level_event_at(3003, pos, 0),
-            "wax_off" => self.level_event_at(3004, pos, 0),
+            "scrape" => self.level_event_from(source, 3005, pos, 0),
+            "wax_on" => self.level_event_from(source, 3003, pos, 0),
+            "wax_off" => self.level_event_from(source, 3004, pos, 0),
             _ => {}
         }
     }
     /// `BlockTransformer.transformBlock` for a held axe, hoe or shovel.
-    fn use_block_transformer(
-        &mut self,
-        stack: &ItemStack,
-        pos: [i32; 3],
-        face: [i32; 3],
-    ) -> Result<bool> {
+    fn use_block_transformer(&mut self, stack: &ItemStack, hit: &Hit) -> Result<bool> {
+        let pos = hit.pos;
+        let face = hit.face;
         let Some((new, sound, loot, damage, particle, transform_type)) =
-            self.block_transform(stack, pos, face)
+            self.block_transform(stack, hit)
         else {
             return Ok(false);
         };
@@ -12020,7 +13188,7 @@ impl Game<'_> {
     pub(super) fn damage_held(&mut self, amount: u32) {
         self.damage_held_in_slot(
             amount,
-            horizon_world::player_inventory::EquipmentSlot::MainHand,
+            horizon_core::equipment_slot::EquipmentSlot::MainHand,
         );
     }
     /// Hurt the acting hand's stack through ordinary wear/criterion/break handling,
@@ -12028,57 +13196,19 @@ impl Game<'_> {
     pub(super) fn damage_held_in_slot(
         &mut self,
         amount: u32,
-        break_slot: horizon_world::player_inventory::EquipmentSlot,
+        break_slot: horizon_core::equipment_slot::EquipmentSlot,
     ) {
-        if self.creative {
+        let Some(stack) = self.held().cloned() else {
+            return;
+        };
+        let (updated, broken) = self.damage_stack(&stack, amount.min(i32::MAX as u32) as i32, true);
+        if self.held() != Some(&stack) {
             return;
         }
-        let amount = match self.held().cloned() {
-            Some(held) => self.wear(&held, amount),
-            None => amount,
-        };
-        let max = self.held().map_or(0, |s| {
-            if &*s.item == "minecraft:trident" {
-                self.trident_max_damage(s)
-            } else {
-                self.items().get(&s.item).map_or(0, |i| i.max_damage)
-            }
-        });
-        self.apply_held_damage(amount, max, break_slot);
-    }
-    fn damage_held_with_max(&mut self, amount: u32, max: u32) {
-        if self.creative {
-            return;
-        }
-        let amount = match self.held().cloned() {
-            Some(held) => self.wear(&held, amount),
-            None => amount,
-        };
-        self.apply_held_damage(
-            amount,
-            max,
-            horizon_world::player_inventory::EquipmentSlot::MainHand,
-        );
-    }
-    fn apply_held_damage(
-        &mut self,
-        amount: u32,
-        max: u32,
-        break_slot: horizon_world::player_inventory::EquipmentSlot,
-    ) {
-        let cell = self.held_mut();
-        if let Some(stack) = cell.as_mut()
-            && max > 0
-        {
-            stack.damage += amount;
-            if stack.damage >= max {
-                let broken = stack.item.clone();
-                let gone = stack.clone();
-                *cell = None;
-                self.award_stat("broken", &broken, 1);
-                // LivingEntity.onEquippedItemBroken: the sound and the crumbs.
-                self.player_equipment_broke(break_slot, &gone);
-            }
+        *self.held_mut() = updated;
+        if let Some(broken) = broken {
+            self.award_stat("broken", &broken.item, 1);
+            self.player_equipment_broke(break_slot, &broken);
         }
     }
     /// `ItemStack.hurtWithoutBreaking`: Unbreaking applies, but the stack stops at
@@ -12114,19 +13244,6 @@ impl Game<'_> {
                 f64::from(p[2]) + 0.5,
             ]
         };
-        if allow_block_actions
-            && let Some(hit) = self.pick()
-            && self.use_on_cauldron(hit.pos)?
-        {
-            return Ok(UseResult::Success { swing: true });
-        }
-        if allow_block_actions
-            && let Some(hit) = self.pick()
-            && let Some(placed) = self.use_on_campfire(hit.pos)?
-        {
-            // SUCCESS_SERVER swings; a full campfire's CONSUME does not.
-            return Ok(UseResult::Success { swing: placed });
-        }
         // BucketItem has no useOn: a guest's UseItemOn leaves it to UseItem.
         let bucket = horizon_client::items::bucket_contents(&stack.item);
         if matches!(self.guest_use, Some(GuestUse::OnBlock(_)))
@@ -12272,7 +13389,7 @@ impl Game<'_> {
             }
             return Ok(UseResult::Success { swing: true });
         }
-        if self.use_block_transformer(stack, hit.pos, hit.face)? {
+        if self.use_block_transformer(stack, &hit)? {
             return Ok(UseResult::Success { swing: true });
         }
         if item == "honeycomb" {
@@ -12285,7 +13402,10 @@ impl Game<'_> {
                 // HoneycombItem.useOn: ITEM_USED_ON_BLOCK before the swap.
                 self.trigger_block("minecraft:item_used_on_block", hit.pos, stack);
                 self.level_set(hit.pos, state)?;
-                self.level_event_at(3003, hit.pos, 0);
+                let source = self
+                    .lan_acting_uuid
+                    .map(horizon_world::level::LevelEventPlayer);
+                self.level_event_from(source, 3003, hit.pos, 0);
                 self.wax_on_sound(at(hit.pos));
                 // HoneycombItem.useOn's game event, and ItemStack.useOn's used statistic.
                 self.post_block_game_event(
@@ -12362,7 +13482,10 @@ impl Game<'_> {
                 hit.pos[2] + hit.face[2],
             ];
             if self.can_place_used_fire(target) {
-                if !self.try_light_portal(target)? {
+                // With mods, the fire goes in and `BaseFireBlock.onPlace`
+                // fills the frame, as vanilla's order is, so that
+                // `portal_spawn` is asked once, where vanilla asks it.
+                if !mod_api::__private::mods().is_empty() || !self.try_light_portal(target)? {
                     self.place_used_fire(target)?;
                 }
                 let sound = horizon_client::items::fire_starter_sound(item == "fire_charge");
@@ -12436,8 +13559,9 @@ impl Game<'_> {
                 if !o.bounds().intersects(area) {
                     continue;
                 }
-                let (id, orb_value, vanilla) = (o.id, o.value, o.can_merge(merge_id as u32, value));
-                if self.orb_merges(id, orb_value, 0, value, vanilla) {
+                let vanilla = o.can_merge(merge_id as u32, value as i32);
+                let (id, orb_value) = (o.id, o.points());
+                if self.orb_merges(id, orb_value as i32, 0, value as i32, vanilla) {
                     target = Some(i);
                     break;
                 }
@@ -12456,9 +13580,9 @@ impl Game<'_> {
     fn orb_merges(
         &mut self,
         into: u32,
-        into_value: u32,
+        into_value: i32,
         from: u32,
-        from_value: u32,
+        from_value: i32,
         vanilla: bool,
     ) -> bool {
         let dimension = self.dim.id();
@@ -12478,34 +13602,54 @@ impl Game<'_> {
         self.native_experience_orb_merge(dimension, into, from, from_value, &mut canceled);
         !canceled
     }
-    /// `ExperienceOrb.scanForMerges`, run by each orb on `tickCount % 20 == 1`:
-    /// it absorbs the orbs that `canMerge` within 0.5 blocks of its box,
-    /// adding their counts and keeping the smaller age. Server only.
-    fn merge_orbs(&mut self) {
-        let mut removed = vec![false; self.orbs.len()];
-        for i in 0..self.orbs.len() {
-            if removed[i] || self.orbs[i].ticks % 20 != 1 {
+    /// `ExperienceOrb.tick`'s scan before movement, once every twenty ticks.
+    /// Hooks can change the resident list, so retain join identities, not indices.
+    fn merge_orb(&mut self, i: usize) {
+        if !self.orbs[i].ticks.is_multiple_of(20) {
+            return;
+        }
+        let into_join = self.orbs[i].join;
+        let area = self.orbs[i].bounds().inflate(Vec3::new(0.5, 0.5, 0.5));
+        let candidates: Vec<_> = self
+            .orbs
+            .iter()
+            .filter(|o| o.join != into_join && o.bounds().intersects(area))
+            .map(|o| o.join)
+            .collect();
+        for from_join in candidates {
+            let Some(i) = self.orbs.locate(into_join) else {
+                return;
+            };
+            let Some(j) = self.orbs.locate(from_join) else {
+                continue;
+            };
+            let (a, b) = (&self.orbs[i], &self.orbs[j]);
+            let (into, into_value, from, from_value, vanilla) =
+                (a.id, a.value, b.id, b.value, b.can_merge(a.id, a.value));
+            if !self.orb_merges(into, into_value, from, from_value, vanilla) {
                 continue;
             }
-            let area = self.orbs[i].bounds().inflate(Vec3::new(0.5, 0.5, 0.5));
-            for j in 0..self.orbs.len() {
-                if j == i || removed[j] || !self.orbs[j].bounds().intersects(area) {
-                    continue;
-                }
-                let (a, b) = (&self.orbs[i], &self.orbs[j]);
-                let vanilla = b.can_merge(a.id, a.value);
-                let (into, into_value, from, from_value) = (a.id, a.value, b.id, b.value);
-                if !self.orb_merges(into, into_value, from, from_value, vanilla) {
-                    continue;
-                }
-                let (count, age) = (self.orbs[j].count, self.orbs[j].age);
-                self.orbs[i].count = self.orbs[i].count.saturating_add(count);
-                self.orbs[i].age = self.orbs[i].age.min(age);
-                removed[j] = true;
+            let Some(i) = self.orbs.locate(into_join) else {
+                return;
+            };
+            let Some(j) = self.orbs.locate(from_join) else {
+                continue;
+            };
+            // Refuse a stale decision rather than merging a changed pair.
+            let (a, b) = (&self.orbs[i], &self.orbs[j]);
+            if a.value != into_value
+                || b.value != from_value
+                || !b
+                    .bounds()
+                    .intersects(a.bounds().inflate(Vec3::new(0.5, 0.5, 0.5)))
+            {
+                continue;
             }
+            let (count, age) = (b.count, b.age);
+            self.orbs[i].count = self.orbs[i].count.saturating_add(count);
+            self.orbs[i].age = self.orbs[i].age.min(age);
+            self.orbs.remove(j);
         }
-        let mut removed = removed.into_iter();
-        self.orbs.retain(|_| !removed.next().unwrap_or(false));
     }
     /// `Entity.unstuckIfPossible`, which `ExperienceOrb`'s constructor runs on an
     /// orb whose box is in a block: the free spot nearest its box's centre. An
@@ -12551,6 +13695,7 @@ impl Game<'_> {
         }
         self.next_entity += 1;
         self.orbs.push(ExperienceOrb {
+            attachment_lifetime: Default::default(),
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -12558,12 +13703,14 @@ impl Game<'_> {
             position: p,
             previous: p,
             velocity,
-            value,
+            // `getExperienceValue` sizes: 1 to 2477.
+            value: value as i32,
             age: 0,
             on_ground: false,
             count: 1,
             ticks: 0,
             health: 5,
+            following: None,
         });
         // ServerLevel.addFreshEntity.
         self.native_joins_flush(false, 0);
@@ -12583,48 +13730,31 @@ impl Game<'_> {
         let state = self.with_level(|b, level, ticks| b.fire_state_for(level, ticks, pos));
         self.level_set(target, state)
     }
-    /// DropExperienceBlock / RedStoneOreBlock / SculkBlock experience ranges.
-    fn block_experience(&mut self, name: &str) -> u32 {
-        let (min, max) = match name.trim_start_matches("minecraft:") {
-            "coal_ore" | "deepslate_coal_ore" => (0, 2),
-            "nether_gold_ore" => (0, 1),
-            "lapis_ore" | "deepslate_lapis_ore" | "nether_quartz_ore" => (2, 5),
-            "diamond_ore" | "deepslate_diamond_ore" | "emerald_ore" | "deepslate_emerald_ore" => {
-                (3, 7)
-            }
-            "redstone_ore" | "deepslate_redstone_ore" => (1, 5),
-            "sculk" => (1, 1),
-            "sculk_catalyst" | "sculk_sensor" | "calibrated_sculk_sensor" | "sculk_shrieker" => {
-                (5, 5)
-            }
-            // SpawnerBlock.spawnAfterBreak: 15 + nextInt(15) + nextInt(15).
-            "spawner" => {
-                let r = &mut self.world.random;
-                let a = r.next_int_bound(15).unwrap_or(0);
-                return (15 + a + r.next_int_bound(15).unwrap_or(0)) as u32;
-            }
-            _ => (0, 0),
-        };
-        // ConstantInt.sample (sculk) does not advance the level random.
-        if min == max {
-            return min as u32;
-        }
-        (min + self.world.random.next_int_bound(max - min + 1).unwrap_or(0)) as u32
-    }
     /// `ExperienceOrb.followNearbyPlayer`'s candidates: each orb goes for the
     /// nearest living player within 8 blocks, the host's own or a guest. Each
-    /// is the player's feet and the point the orb homes on.
-    pub(super) fn orb_followed(&self) -> Vec<([f64; 3], [f64; 3])> {
+    /// is the player's feet, the point the orb homes on and the player's UUID.
+    pub(super) fn orb_followed(&self) -> Vec<xp_orb_targeting::OrbCandidate> {
         let spectator = self.spectator();
         let player = self
             .player
             .as_ref()
-            .filter(|p| !p.health.dead_or_dying() && !spectator);
-        let mut followed: Vec<([f64; 3], [f64; 3])> = player
+            .filter(|p| !p.health.dead_or_dying() && !spectator && !self.lan_acting_fake);
+        // ExperienceOrb.followNearbyPlayer: each orb goes for the nearest
+        // living player within 8 blocks, the host's own or a guest.
+        let uuid = self
+            .level
+            .player_uuid
+            .map(horizon_client::lan::playerdata::ints_uuid);
+        let mut followed: Vec<xp_orb_targeting::OrbCandidate> = player
             .map(|p| {
                 let feet = [p.position.x, p.position.y, p.position.z];
                 let eye = f64::from(p.dimensions.eye_height);
-                (feet, [feet[0], feet[1] + eye / 2.0, feet[2]])
+                (
+                    feet,
+                    [feet[0], feet[1] + eye / 2.0, feet[2]],
+                    uuid,
+                    p.entity_id as u32,
+                )
             })
             .into_iter()
             .collect();
@@ -12633,15 +13763,43 @@ impl Game<'_> {
                 host.hub
                     .guests
                     .iter()
-                    .filter(|g| g.placed && g.loaded && !g.dead && g.health > 0.0)
+                    .filter(|g| {
+                        g.placed
+                            && g.participates_in_player_simulation()
+                            && g.loaded
+                            && !g.dead
+                            && g.health > 0.0
+                    })
                     .filter(|g| !g.spectator())
                     .map(|g| {
                         let p = g.position;
-                        (p, [p[0], p[1] + g.eye_height() / 2.0, p[2]])
+                        (
+                            p,
+                            [p[0], p[1] + g.eye_height() / 2.0, p[2]],
+                            Some(g.uuid),
+                            g.entity_id as u32,
+                        )
                     }),
             );
         }
         followed
+    }
+    /// `Player.getVehicle().getBoundingBox()` for the local player's vehicle
+    /// (`riding`): a mob, one of `object_target`'s kinds (boat, cart, armour
+    /// stand, item frame, painting) or a tracked special — the same chain
+    /// `guest_target_box` resolves a guest's vehicle through.
+    fn riding_box(&self) -> Option<Aabb> {
+        let id = self.riding?;
+        if let Some(m) = self.mobs.iter().find(|m| m.id == id) {
+            return Some(m.bounds());
+        }
+        if let Some((lo, hi, _)) = self.object_target(id as i32) {
+            return Some(Aabb::new(
+                Vec3::new(lo[0], lo[1], lo[2]),
+                Vec3::new(hi[0], hi[1], hi[2]),
+            ));
+        }
+        self.tracked_special_box(id as i32)
     }
     /// The orbs' tick, but for the movement: that is `tick_ordered_before`'s,
     /// in join order with the other kinds.
@@ -12654,27 +13812,39 @@ impl Game<'_> {
             .player
             .as_ref()
             .filter(|p| !p.health.dead_or_dying() && !spectator);
-        // Player.aiStep: the pickup area is the box inflated by (1, 0.5, 1).
+        // Player.aiStep: standing, the pickup area is the player's box
+        // inflated by (1, 0.5, 1); riding, the union with the vehicle's box
+        // inflated by (1, 0, 1).
         let bounds = player.map(|p| {
             let w = f64::from(p.dimensions.width) / 2.0;
+            let own = Aabb::new(
+                Vec3::new(p.position.x - w, p.position.y, p.position.z - w),
+                Vec3::new(
+                    p.position.x + w,
+                    p.position.y + f64::from(p.dimensions.height),
+                    p.position.z + w,
+                ),
+            );
+            let area = match self.riding_box() {
+                Some(vehicle) => own.union_bounds(vehicle).inflate(Vec3::new(1.0, 0.0, 1.0)),
+                None => own.inflate(Vec3::new(1.0, 0.5, 1.0)),
+            };
             (
                 [
-                    p.position.x - w - 1.0,
-                    p.position.y - 0.5,
-                    p.position.z - w - 1.0,
+                    area.min_position().x,
+                    area.min_position().y,
+                    area.min_position().z,
                 ],
                 [
-                    p.position.x + w + 1.0,
-                    p.position.y + f64::from(p.dimensions.height) + 0.5,
-                    p.position.z + w + 1.0,
+                    area.max_position().x,
+                    area.max_position().y,
+                    area.max_position().z,
                 ],
             )
         });
-        // ExperienceOrb.scanForMerges runs on the server only.
-        if self.remote.is_none() {
-            self.merge_orbs();
-        }
-        let mut orbs = std::mem::take(&mut self.orbs);
+        let mut orbs = self.orbs.lift();
+        #[cfg(test)]
+        entity::taken_pass_tests::after_take(self);
         let mut gained = 0;
         let mut taken = Vec::new();
         if let Some((min, max)) = bounds {
@@ -12689,7 +13859,7 @@ impl Game<'_> {
                     // ExperienceOrb.playerTouch: one orb every 2 ticks; a
                     // merged orb gives its value once per count.
                     self.xp_delay = 2;
-                    gained += o.value;
+                    gained += o.points();
                     taken.push(o.clone());
                     o.count -= 1;
                     return o.count > 0;
@@ -12697,7 +13867,8 @@ impl Game<'_> {
                 true
             });
         }
-        self.orbs = orbs;
+        self.orbs
+            .restore(orbs, horizon_client::join_seq::RestoreOrder::SurvivorsFirst);
         if gained > 0 {
             gained = self.mending(gained);
         }
@@ -12716,7 +13887,7 @@ impl Game<'_> {
             self.add_pickup(pickups::Taken::Orb(Box::new(o)), pickups::Collector::Player);
         }
         if gained > 0 {
-            self.give_orb_points(gained);
+            self.give_experience_points(gained as i32);
         }
     }
     /// `FurnaceResultSlot.checkTakeAchievements`: the player took from the output of the
@@ -12740,21 +13911,35 @@ impl Game<'_> {
             self.spawn_orbs(at, xp);
         }
     }
-    /// `Player.giveExperiencePoints`, and `giveExperienceLevels`' level-up
-    /// sound every fifth level (at most every 100 ticks).
-    pub(super) fn give_orb_points(&mut self, gained: u32) {
-        let Some(gained) = self.xp_change(gained as i32) else {
+    /// `Player.giveExperiencePoints`: `add_experience_levels` runs once for each
+    /// level gained or lost, and the mods hear of the level change once.
+    pub(super) fn give_experience_points(&mut self, points: i32) {
+        let Some(points) = self.xp_change(points) else {
             return;
         };
-        let gained = gained.max(0);
         let old_level = self.experience.level;
-        let gave = self.experience.give(gained);
-        self.native_player_level_changed(old_level);
-        // Player.giveExperienceLevels runs per level, so the first multiple of 5
-        // crossed plays the sound (and starts the cooldown for the rest).
-        if let Some(level) = gave {
-            self.play_level_up(1, level);
+        self.experience.add_points(points);
+        while self.experience.progress < 0.0 {
+            let xp = &self.experience;
+            let lost = xp.progress * horizon_client::entities::Experience::needed(xp.level) as f32;
+            let had_level = xp.level > 0;
+            self.add_experience_levels(-1);
+            let xp = &mut self.experience;
+            xp.progress = if had_level {
+                1.0 + lost / horizon_client::entities::Experience::needed(xp.level) as f32
+            } else {
+                0.0
+            };
         }
+        while self.experience.progress >= 1.0 {
+            let xp = &mut self.experience;
+            xp.progress =
+                (xp.progress - 1.0) * horizon_client::entities::Experience::needed(xp.level) as f32;
+            self.add_experience_levels(1);
+            let xp = &mut self.experience;
+            xp.progress /= horizon_client::entities::Experience::needed(xp.level) as f32;
+        }
+        self.native_player_level_changed(old_level);
     }
     /// BowItem.releaseUsing: power from charge time, arrows at power * 3.
     fn release_bow(&mut self, stack: &ItemStack, ticks: u32) {
@@ -12848,8 +14033,40 @@ impl Game<'_> {
     }
     /// `renderPlayerHand` (`AvatarRenderer.renderHand`): the player's own
     /// `left` or right arm with its skin at pose `m`, in its rest pose
-    /// turned 0.1 radians outwards.
-    fn first_person_arm(&self, left: bool, m: glam::Mat4, light: u32, out: &mut Vec<Vertex>) {
+    /// turned 0.1 radians outwards. Mods are asked first (`RenderArmEvent`)
+    /// and may draw at `m` or leave the arm out.
+    fn first_person_arm(
+        &self,
+        left: bool,
+        m: glam::Mat4,
+        light: u32,
+        partial: f32,
+        out: &mut Vec<Vertex>,
+    ) {
+        if mod_api::__private::listened(mod_api::HookId::RenderArm) {
+            let eye = self.eye_position().unwrap_or_default();
+            let mut draw = BlockEntityDraw::posed(
+                partial,
+                self.world.game_time,
+                light,
+                eye.map(|c| c.floor() as i32),
+                m,
+                horizon_client::block_entity_render::diffuse_lights(self.dim == Dim::Nether),
+                std::mem::take(out),
+            );
+            let mut canceled = false;
+            self.native_render_arm(
+                self.own_uuid(),
+                self.own_entity_id(),
+                left,
+                &mut draw,
+                &mut canceled,
+            );
+            *out = draw.into_vertices();
+            if canceled {
+                return;
+            }
+        }
         let slim = self.player_model.as_ref().is_some_and(|m| m.slim);
         let Some(arm) = self.res.player_arm(slim, left).as_ref() else {
             return;
@@ -12891,7 +14108,7 @@ impl Game<'_> {
             self.ui.hands_drawn(
                 self.spectator(),
                 self.sleeping.is_some(),
-                self.camera_type.first_person(),
+                self.camera_type.is_first_person(),
                 self.player
                     .as_ref()
                     .is_some_and(|p| !p.health.dead_or_dying()),
@@ -12901,6 +14118,9 @@ impl Game<'_> {
             return (out, runs);
         }
         let a = alpha as f32;
+        let interpolated_pitch = self.player_model.as_ref().map_or(self.pitch, |model| {
+            model.previous_head_pitch + a * (self.pitch - model.previous_head_pitch)
+        });
         // FirstPersonHandsAndItemsRenderer: the swing goes to the hand that
         // swings; each hand has its inverse arm height (the swap scale is 1
         // for every item but spears).
@@ -12958,36 +14178,41 @@ impl Game<'_> {
             let attack = attacks[i];
             let inverse_height =
                 horizon_client::first_person::equip_displacement(heights[i], scale);
-            let mut canceled = false;
-            self.native_render_hand(
+            let snapshot = if mod_api::__private::listened(mod_api::HookId::RenderHand) {
+                item.as_ref()
+                    .filter(|stack| stack.count > 0)
+                    .try_into_api()
+                    .ok()
+            } else {
+                None
+            };
+            let mut render = mod_api::HandRender {
+                player: self.own_uuid(),
+                player_entity_id: self.own_entity_id(),
                 hand,
-                item.as_ref(),
-                a,
-                attack,
-                inverse_height,
-                &mut canceled,
-            );
+                stack: snapshot.as_ref().and_then(Option::as_ref),
+                partial: a,
+                interpolated_pitch,
+                swing: attack,
+                equip: inverse_height,
+                // LightCoordsUtil.pack(block, sky), as RenderHandEvent
+                // gives it, not the vertex's encoding.
+                packed_light: u32::from(light & 15) << 4 | u32::from(light >> 4) << 20,
+                translation: [0.0; 3],
+                rotation: [0.0; 3],
+                scale: 1.0,
+            };
+            let mut canceled = false;
+            if snapshot.is_some() {
+                self.native_render_hand(&mut render, &mut canceled);
+            }
             if canceled {
                 continue;
             }
-            let (mut x, mut y, mut z, mut pitch, mut yaw, mut roll, mut pose_scale) =
-                (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
-            self.native_render_hand_pose(
-                hand,
-                item.as_ref(),
-                a,
-                attack,
-                inverse_height,
-                &mut x,
-                &mut y,
-                &mut z,
-                &mut pitch,
-                &mut yaw,
-                &mut roll,
-                &mut pose_scale,
-            );
             // No mod moved the hand (always so without one): no matrices to build.
-            let pose = [x, y, z, pitch, yaw, roll, pose_scale];
+            let [x, y, z] = render.translation;
+            let [pitch, yaw, roll] = render.rotation;
+            let pose = [x, y, z, pitch, yaw, roll, render.scale];
             let to_world = if pose == [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0] {
                 to_world
             } else {
@@ -13010,7 +14235,7 @@ impl Game<'_> {
                 let m = to_world
                     * horizon_client::first_person::player_arm_pose(left, inverse_height, attack);
                 runs.push((out.len() as u32, 0));
-                self.first_person_arm(left, m, packed, &mut out);
+                self.first_person_arm(left, m, packed, a, &mut out);
                 continue;
             };
             let item_id = self.rendered_item_id(&stack.item);
@@ -13023,7 +14248,7 @@ impl Game<'_> {
                     runs.push((out.len() as u32, 0));
                     for (arm, pose) in map_arm_poses(hold, left, self.pitch, inverse_height, attack)
                     {
-                        self.first_person_arm(arm, to_world * pose, packed, &mut out);
+                        self.first_person_arm(arm, to_world * pose, packed, a, &mut out);
                     }
                 }
                 runs.push((out.len() as u32, item_id));
@@ -13060,19 +14285,20 @@ impl Game<'_> {
             let ticks_used =
                 owner.use_duration as f32 - (owner.use_item_remaining_ticks as f32 - a + 1.0);
             use horizon_client::first_person::ItemPose;
-            // ItemUseAnimation.SPEAR.
-            let spear = using
-                .then(|| horizon_client::spear::Kinetic::of(&stack.item))
-                .flatten()
-                .map(|kinetic| ItemPose::Spear {
-                    kinetic,
+            use item_use::ItemUseState;
+            let state = using.then(|| self.item_use_state(&stack));
+            use horizon_core::use_animation::UseAnimation;
+            let pose = match state {
+                Some(ItemUseState::Spear(timing)) => ItemPose::Spear {
+                    timing,
                     time_held: ticks_used,
                     ticks_since_hit: self.kinetic_hit_ticks(a),
-                });
-            let pose = match &*stack.item {
-                _ if let Some(pose) = spear => pose,
-                "minecraft:bow" if using => ItemPose::Bow { ticks_used },
-                "minecraft:crossbow" => {
+                },
+                Some(ItemUseState::Other(UseAnimation::Bow)) => ItemPose::Bow { ticks_used },
+                Some(ItemUseState::Other(UseAnimation::Crossbow)) | None
+                    if &*stack.item == "minecraft:crossbow"
+                        || state.map(ItemUseState::animation) == Some(UseAnimation::Crossbow) =>
+                {
                     let charged = stack.data().is_some_and(|d| !d.charged.is_empty());
                     ItemPose::Crossbow {
                         ticks_used: (using && !charged).then_some(ticks_used),
@@ -13081,31 +14307,20 @@ impl Game<'_> {
                         charged: charged && hand == Hand::Main,
                     }
                 }
-                "minecraft:trident" if using => ItemPose::Trident { ticks_used },
+                Some(ItemUseState::Other(UseAnimation::Trident)) => {
+                    ItemPose::Trident { ticks_used }
+                }
                 // ItemUseAnimation.BRUSH: applyBrushTransform.
-                "minecraft:brush" if using => ItemPose::Brush {
+                Some(ItemUseState::Other(UseAnimation::Brush)) => ItemPose::Brush {
                     remaining: owner.use_item_remaining_ticks as f32,
                     partial: a,
                 },
-                _ if using => {
-                    let view = horizon_client::item_render::stack_view(&stack);
-                    let mut animation = self
-                        .pack
-                        .item_renderer
-                        .models
-                        .components_view(&view)
-                        .get("minecraft:consumable")
-                        .map_or(horizon_world::consumable::UseAnimation::None, |c| {
-                            horizon_client::first_person::consumable_animation(c)
-                        });
-                    self.native_use_animation(&stack, &mut animation);
-                    item_use::use_pose(
-                        animation,
-                        owner.use_item_remaining_ticks as f32,
-                        owner.use_duration as f32,
-                        a,
-                    )
-                }
+                Some(ItemUseState::Other(animation)) => item_use::use_pose(
+                    animation,
+                    owner.use_item_remaining_ticks as f32,
+                    owner.use_duration as f32,
+                    a,
+                ),
                 _ if spinning => ItemPose::SpinAttack,
                 // ItemInHandRenderer: a STAB swing of this hand jabs.
                 _ if self
@@ -13232,8 +14447,8 @@ impl Game<'_> {
             );
             horizon_client::graphics::lose_gpu_culling();
         }
-        let screenshot = old.screenshot.take();
-        let screenshot_result = old.screenshot_result.take();
+        let (screenshot, screenshot_result) = (old.screenshot.take(), old.screenshot_result.take());
+        let display = old.display_reading();
         drop(old);
         let mut renderer = build_renderer(
             window,
@@ -13244,15 +14459,15 @@ impl Game<'_> {
             None,
             self.settings.horizon.api,
             self.settings.horizon.translucent_batching,
-            self.settings.horizon.wide_frame(),
+            &self.settings.horizon,
             shader_packs::picked_pack_shape(&self.settings),
+            display,
             (
                 self.settings.file.int("textureFiltering"),
                 self.settings.file.int("maxAnisotropyBit"),
             ),
         )?;
-        renderer.screenshot = screenshot;
-        renderer.screenshot_result = screenshot_result;
+        (renderer.screenshot, renderer.screenshot_result) = (screenshot, screenshot_result);
         self.adopt_renderer(renderer);
         log::info!("Horizon: graphics device recovered; rebuilding world meshes");
         Ok(())
@@ -13313,86 +14528,6 @@ impl Game<'_> {
         }
         // The rain sounds come with the rain splashes (`tick_particles`).
     }
-    /// WeatherEffectRenderer: rain and snow columns within the weather radius.
-    fn weather_geometry(
-        &mut self,
-        camera: glam::DVec3,
-        alpha: f64,
-    ) -> Vec<horizon_client::weather::Vertex> {
-        use horizon_client::weather;
-        let (intensity, _) = self.view_weather(alpha as f32);
-        if intensity <= 0.0 {
-            return Vec::new();
-        }
-        let atlas = &self.gui.atlas;
-        let (Some(rain_tex), Some(snow_tex)) = (
-            atlas.sprites.get("environment/rain").copied(),
-            atlas.sprites.get("environment/snow").copied(),
-        ) else {
-            return Vec::new();
-        };
-        let (cx, cy, cz) = (
-            camera.x.floor() as i32,
-            camera.y.floor() as i32,
-            camera.z.floor() as i32,
-        );
-        // The 32x32 direction table supports at most a 15-block radius.
-        let radius = self.settings.weather_radius.clamp(0, 15);
-        let eye = camera.to_array();
-        let mut rain = Vec::new();
-        let mut snow_vertices = Vec::new();
-        // Saturation keeps extreme camera coordinates from overflowing the loop.
-        for z in cz.saturating_sub(radius)..=cz.saturating_add(radius) {
-            for x in cx.saturating_sub(radius)..=cx.saturating_add(radius) {
-                let top = self.rain_height(x, z);
-                let y0 = cy.saturating_sub(radius).max(top);
-                let y1 = cy.saturating_add(radius).max(top);
-                if y1 == y0 {
-                    continue;
-                }
-                let Some(snow) = self.precipitation(x, cy, z) else {
-                    continue;
-                };
-                let parameters = self.weather_parameters.get(x, z);
-                let light = self.world.light(x, top.max(cy), z);
-                let coords = i32::from(light & 15) << 4 | i32::from(light >> 4) << 20;
-                // Only light brightening is needed here; UV phases stay zero.
-                let lc = if snow {
-                    let (block, sky) = (coords >> 4 & 15, coords >> 20 & 15);
-                    ((block * 3 + 15) / 4) << 4 | ((sky * 3 + 15) / 4) << 20
-                } else {
-                    coords
-                };
-                let column = weather::Column {
-                    x,
-                    z,
-                    bottom_y: y0,
-                    top_y: y1,
-                    u_offset: 0.0,
-                    v_offset: 0.0,
-                    light_coords: lc,
-                };
-                let r = if snow { snow_tex } else { rain_tex };
-                let vertices = weather::vertices(
-                    &column,
-                    parameters,
-                    snow,
-                    eye,
-                    radius,
-                    intensity,
-                    [r.u0, r.v0, r.u1 - r.u0, r.v1 - r.v0],
-                );
-                if snow {
-                    snow_vertices.extend(vertices);
-                } else {
-                    rain.extend(vertices);
-                }
-            }
-        }
-        // Vanilla draws every rain column before the snow ones.
-        rain.extend(snow_vertices);
-        rain
-    }
     /// A translated message for the player the game acts for: `overlay` is
     /// `sendOverlayMessage` (the action bar), else `sendSystemMessage` (chat).
     /// A guest gets a packet, so its own client translates it.
@@ -13406,7 +14541,7 @@ impl Game<'_> {
                     },
                 ));
         } else if overlay {
-            self.message = Some((self.translate(key, fallback), Instant::now()));
+            self.message = Some((self.translate_with_fallback(key, fallback), Instant::now()));
         } else {
             self.system_message(horizon_client::text::Text::translate(key, &[]));
         }
@@ -13415,6 +14550,9 @@ impl Game<'_> {
     /// and (outside creative) no monsters within 8 blocks; the bed becomes the
     /// respawn point either way.
     fn try_sleep(&mut self, pos: [i32; 3]) {
+        if self.fake_blocks(mod_api::FakeEffect::Sleep) {
+            return;
+        }
         let Some((position, yaw)) = self.player.as_ref().map(|p| (p.position, p.yaw)) else {
             return;
         };
@@ -13486,20 +14624,9 @@ impl Game<'_> {
             let moved = self
                 .respawn_config
                 .is_none_or(|c| (c.dim, c.pos) != (config.dim, config.pos));
-            let mut cancel = false;
-            if moved
-                && let (Some(player), Some(name)) =
-                    (self.lan_acting_uuid, self.lan_acting_name.clone())
-            {
-                self.native_player_spawn_point_set(
-                    player,
-                    &name,
-                    self.dim.id(),
-                    head,
-                    "bed",
-                    &mut cancel,
-                );
-            }
+            // `canSetSpawn` calls the setter every time, the same bed too (it
+            // refreshes the angle).
+            let cancel = self.spawn_point_change(self.dim, Some(head), false);
             if !cancel {
                 self.respawn_config = Some(config);
                 if moved {
@@ -13519,13 +14646,7 @@ impl Game<'_> {
                 };
             }
         }
-        if problem.is_none()
-            && !self
-                .dimension_type()
-                .bed_rule
-                .can_sleep
-                .test(self.dark_outside())
-        {
+        if problem.is_none() && !self.bed_can_sleep_now() {
             problem = Some("not_possible_now");
         }
         // Creative players skip the monster check (`!this.isCreative()`).
@@ -13579,7 +14700,12 @@ impl Game<'_> {
             return;
         }
         // ServerPlayer.startSleepInBed: a percentage above 100 cannot skip the night.
-        if self.ui.rules.int("players_sleeping_percentage") > 100 {
+        if self
+            .ui
+            .rules
+            .int_at(horizon_client::gamerules::vanilla::PLAYERS_SLEEPING_PERCENTAGE)
+            > 100
+        {
             self.tell_sleeper(
                 "sleep.not_possible",
                 "No amount of rest can pass this night",
@@ -13593,12 +14719,22 @@ impl Game<'_> {
                 return;
             }
         }
-        // LivingEntity.startSleeping: the shape the bed gives the player to
-        // lie on (`getSleepHeight`). A straw bed's head answers with its
-        // foot's shape, and with no foot of its own there is none, so the
-        // player stays up as `startSleeping` returning false leaves them.
+        if self.lie_in_bed(head) {
+            self.award_custom_stat("sleep_in_bed", 1);
+            self.trigger_player("minecraft:slept_in_bed");
+            self.stats.reset("custom", "minecraft:time_since_rest");
+        }
+    }
+    /// `LivingEntity.startSleeping`: the player takes the bed whose head
+    /// `head` names, moved onto it and asleep from now on. False when the
+    /// bed gives no shape to lie on.
+    fn lie_in_bed(&mut self, head: [i32; 3]) -> bool {
+        // The shape the bed gives the player to lie on (`getSleepHeight`).
+        // A straw bed's head answers with its foot's shape, and with no foot
+        // of its own there is none, so the player stays up as
+        // `startSleeping` returning false leaves them.
         let Some(at) = self.sleeping_position(head) else {
-            return;
+            return false;
         };
         // LivingEntity.startSleeping: stopRiding once the bed is valid.
         self.stop_riding();
@@ -13612,9 +14748,12 @@ impl Game<'_> {
         // and connection.teleport.
         if let Some(p) = self.player.as_mut() {
             p.position = at;
+
             p.velocity = Vec3::ZERO;
+            let _ = p.set_sleeping(true);
             p.pitch = 0.0;
             p.teleported = true;
+            p.teleported_delta = [false; 3];
         }
         self.pitch = 0.0;
         if self.lan_acting.is_none() {
@@ -13622,9 +14761,7 @@ impl Game<'_> {
             self.snap_player_model_pitch();
         }
         self.occupy_bed(head);
-        self.award_custom_stat("sleep_in_bed", 1);
-        self.trigger_player("minecraft:slept_in_bed");
-        self.stats.reset("custom", "minecraft:time_since_rest");
+        true
     }
     fn wake_up(&mut self) {
         if self.remote.is_some() {
@@ -13636,6 +14773,24 @@ impl Game<'_> {
             return;
         };
         self.sleep_timer = 100;
+        // The active guest's live body wakes here; the hub owns its wake
+        // animation and sleeping metadata, not the suspended outer actor.
+        if let Some(i) = self.lan_acting.and_then(|conn| self.guest_index(conn))
+            && let Some(host) = self.lan.as_mut()
+        {
+            // The live turn may have changed its bed since entry.
+            {
+                let value = Some(head);
+                host.hub.guests.update(i, |guest| guest.bed = value);
+            }
+            host.hub.wake(i);
+            // This live body applies the stand-up pose below, not the later
+            // wake_woken_guests pass over stored guest bodies.
+            {
+                let value = None;
+                host.hub.guests.update(i, |guest| guest.woke_from = value);
+            }
+        }
         let stand = self.bed_wake_pose(head, self.yaw);
         if let Some(p) = self.player.as_mut() {
             if let Some((at, yaw)) = stand {
@@ -13643,14 +14798,18 @@ impl Game<'_> {
                 p.velocity = Vec3::ZERO;
                 p.yaw = yaw;
                 p.pitch = 0.0;
+                p.teleported = true;
+                p.teleported_delta = [false; 3];
             }
             let _ = p.set_sleeping(false);
         }
         if let Some((at, yaw)) = stand {
-            self.previous_position = at;
             self.yaw = yaw;
             self.pitch = 0.0;
-            self.snap_player_model_pitch();
+            if self.lan_acting.is_none() {
+                self.previous_position = at;
+                self.snap_player_model_pitch();
+            }
         }
         if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
             self.native_player_bed_leave(player, &name, head);
@@ -13692,24 +14851,36 @@ impl Game<'_> {
         // skip to morning if `advance_time` is on, wake everyone, and
         // resetWeatherCycle if `advance_weather` is on and it is raining.
         if self.enough_slept() {
-            if self.ui.rules.bool("advance_time") {
+            if self
+                .ui
+                .rules
+                .bool_at(horizon_client::gamerules::vanilla::ADVANCE_TIME)
+            {
                 let t = self.world.day_time;
                 let mut target = t + 24000 - t.rem_euclid(24000);
                 // SleepFinishedTimeEvent: the mods may move the wake-up time,
                 // never before now (`setTimeAddition` refuses a lower one).
                 let mut asked = target;
-                self.native_sleep_finished_time(self.dim.id(), t, &mut asked);
+                let mut cancel = false;
+                self.native_sleep_finished_time(self.dim.id(), t, &mut asked, &mut cancel);
                 if asked >= t {
                     target = asked;
                 }
-                let mut cancel = false;
-                self.native_time_skip(self.dim.id(), t, target, "sleep", &mut cancel);
+                // A canceled event leaves the clock alone, so `native_time_skip` is not asked.
+                if !cancel {
+                    self.native_time_skip(self.dim.id(), t, target, "sleep", &mut cancel);
+                }
                 if !cancel {
                     self.world.day_time = target;
                 }
             }
             // Level.isRaining: the rain level is above 0.2.
-            if self.ui.rules.bool("advance_weather") && self.weather_levels(1.0).0 > 0.2 {
+            if self
+                .ui
+                .rules
+                .bool_at(horizon_client::gamerules::vanilla::ADVANCE_WEATHER)
+                && self.weather_levels(1.0).0 > 0.2
+            {
                 self.world.weather.raining = false;
                 self.world.weather.thundering = false;
                 self.world.weather.rain_time = 0;
@@ -13725,6 +14896,11 @@ impl Game<'_> {
     }
     /// Copy the live player and world state into the `Level` that gets saved.
     pub(super) fn sync_level(&mut self) {
+        self.level.player_impulse_grace = self.player.as_ref().map(|p| p.impulse.reset_grace_time);
+        self.level.player_fall_particles = self
+            .player
+            .as_ref()
+            .map(|p| p.spawn_extra_particles_on_fall);
         // Level.write saves the game rules (game_rules.dat) with the rest.
         self.level.game_rules = self.ui.rules.by_name();
         // PrimaryLevelData.setDifficulty: /difficulty and the options button change it.
@@ -13732,7 +14908,9 @@ impl Game<'_> {
             horizon_client::title::DIFFICULTIES[usize::from(self.ui.difficulty) & 3].into();
         self.level.time = self.world.game_time;
         self.level.weather = self.world.weather;
-        self.level.day_time = self.world.day_time;
+        // level.dat holds the Overworld clock's total, whichever level is in place.
+        self.level.day_time = self.command_clock_time("minecraft:overworld");
+        self.level.end_clock = Some(self.world.end_clock);
         // A server has no player of its own; `enter_guest` puts one in
         // `self.player` only while a command reads it.
         if self.player.is_none() && self.options.dedicated.is_some() {
@@ -13752,7 +14930,7 @@ impl Game<'_> {
         let level = &mut self.level;
         level.creative = self.creative;
         level.game_mode = mode;
-        level.previous_game_mode = self.previous_mode.map(game_mode::mode_id_of);
+        level.previous_game_mode = self.previous_mode.map(mod_api::GameMode::id);
         level.spawn = self.spawn.map(|s| [s.x, s.y, s.z]);
         level.respawn_elsewhere = self.respawn_config.map(|c| c.saved());
         level.rotation = [self.yaw, self.pitch];
@@ -13765,13 +14943,13 @@ impl Game<'_> {
             Some((tag, ..)) => {
                 let extra = level
                     .player_extra
-                    .get_or_insert_with(|| horizon_world::nbt::Tag::Compound(Default::default()));
-                if let horizon_world::nbt::Tag::Compound(map) = extra {
+                    .get_or_insert_with(|| horizon_core::nbt::Tag::Compound(Default::default()));
+                if let horizon_core::nbt::Tag::Compound(map) = extra {
                     map.insert("RootVehicle".into(), tag);
                 }
             }
             None if local && self.pending_vehicle.is_none() => {
-                if let Some(horizon_world::nbt::Tag::Compound(map)) = &mut level.player_extra {
+                if let Some(horizon_core::nbt::Tag::Compound(map)) = &mut level.player_extra {
                     map.remove(&"RootVehicle".into());
                 }
             }
@@ -13783,15 +14961,30 @@ impl Game<'_> {
             level.absorption = p.health.absorption();
             let extra = level
                 .player_extra
-                .get_or_insert_with(|| horizon_world::nbt::Tag::Compound(Default::default()));
-            if let horizon_world::nbt::Tag::Compound(map) = extra {
+                .get_or_insert_with(|| horizon_core::nbt::Tag::Compound(Default::default()));
+            if let horizon_core::nbt::Tag::Compound(map) = extra {
                 map.insert(
                     "Fire".into(),
-                    horizon_world::nbt::Tag::Short(
+                    horizon_core::nbt::Tag::Short(
                         p.fire_ticks.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
                     ),
                 );
-                map.insert("Air".into(), horizon_world::nbt::Tag::Short(p.air as i16));
+                map.insert("Air".into(), horizon_core::nbt::Tag::Short(p.air as i16));
+                // Entity.saveWithoutId: the `Invulnerable` flag always, its
+                // `invulnerable_time` window only while open, like a mob's
+                // save (#916).
+                map.insert(
+                    "Invulnerable".into(),
+                    horizon_core::nbt::Tag::Byte(i8::from(p.health.permanently_invulnerable)),
+                );
+                if p.health.invulnerable_time > 0 {
+                    map.insert(
+                        "invulnerable_time".into(),
+                        horizon_core::nbt::Tag::Int(p.health.invulnerable_time),
+                    );
+                } else {
+                    map.remove(&"invulnerable_time".into());
+                }
                 // LivingEntity.addAdditionalSaveData: AttributeMap.pack.
                 map.insert("attributes".into(), p.saved_attributes());
             }
@@ -13824,6 +15017,16 @@ impl Game<'_> {
                 level.inventory_components.insert(150, extra);
             }
         }
+        for (equipment_slot, s) in self.equipment.iter().enumerate() {
+            if let (Some(s), Some(slot)) = (s, horizon_client::save::saved_slot(equipment_slot)) {
+                level
+                    .inventory
+                    .push((slot, s.item.to_string(), s.count, s.damage));
+                if let Some(extra) = s.extra.clone() {
+                    level.inventory_components.insert(slot, extra);
+                }
+            }
+        }
         // Vanilla stores armor in slots 100 (feet) to 103 (head).
         for (i, s) in self.armor.iter().enumerate() {
             if let Some(s) = s {
@@ -13845,46 +15048,124 @@ impl Game<'_> {
         level.ender_items = self.ender_items.clone();
         level.active_effects = self.potions.effects.saved();
     }
-    /// The autosave doesn't `wait` for the chunks to be on disk: every
-    /// generated chunk is saved, hundreds at a time, encoded and written on
-    /// the region writer meanwhile.
-    fn save_game_with(&mut self, wait: bool) -> Result<()> {
-        if self.remote.is_some() {
-            return Ok(());
+    /// The saved player's hands, armor, body, saddle and ender chest go in
+    /// their fields; the 36 inventory slots come back.
+    fn load_saved_inventory(&mut self, level: &Level) -> Vec<Option<ItemStack>> {
+        let mut inventory = vec![None; 36];
+        self.armor = [None, None, None, None];
+        self.offhand = None;
+        self.equipment = Default::default();
+        self.ender_items = if level.ender_items.len() == 27 {
+            level.ender_items.clone()
+        } else {
+            vec![None; 27]
+        };
+        for (slot, id, count, damage) in &level.inventory {
+            let stack = ItemStack {
+                item: Arc::from(id.as_str()),
+                count: *count,
+                damage: *damage,
+                extra: level.inventory_components.get(slot).cloned(),
+            };
+            if (100..104).contains(slot) {
+                self.armor[usize::from(103 - slot)] = Some(stack);
+            } else if *slot == 150 {
+                self.offhand = Some(stack);
+            } else if let Some(equipment_slot) = horizon_client::save::equipment_slot(*slot) {
+                self.equipment.set(equipment_slot, Some(stack));
+            } else if let Some(cell) = inventory.get_mut(usize::from(*slot)) {
+                *cell = Some(stack);
+            }
         }
-        // `DedicatedServer.saveAllChunks` tells the management protocol's clients when a save starts and when
-        // it ends without failing, for every save: the command, the autosave, the pause.
-        let dedicated = self.options.dedicated.is_some();
-        if dedicated {
-            dedicated::events::record_server("saving", serde_json::json!({}));
-        }
-        self.save_level(wait)?;
-        self.save_parked_levels(wait)?;
-        self.save_game_metadata()?;
-        let _ = self.finish_player_autosaves(wait);
-        self.native_world_saved(wait);
-        if dedicated {
-            dedicated::events::record_server("saved", serde_json::json!({}));
-        }
-        Ok(())
+        inventory
     }
     /// Save the level in place: its changed chunks, its entities and its raids.
     fn save_level(&mut self, wait: bool) -> Result<()> {
+        Self::admit_entity_save()?;
         self.save_border();
+        self.save_chunk_tickets()?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match self.streaming.prepare_save(&mut self.world, wait, deadline) {
+                horizon_client::streaming::SaveStep::Full(chunk) => {
+                    self.native_late_full_chunk_snapshot(&chunk);
+                    self.streaming.save_finished(chunk);
+                }
+                horizon_client::streaming::SaveStep::Protos(protos) => {
+                    self.native_proto_snapshots(&protos);
+                    self.streaming.finish_save(protos, wait);
+                    break;
+                }
+                horizon_client::streaming::SaveStep::Pending => unreachable!(),
+            }
+        }
+        let keys: Vec<_> = self.world.modified.iter().copied().collect();
         self.save.save_attachments(&self.world.attachments)?;
-        self.save.save_forced_chunks(&self.streaming.forced)?;
-        self.streaming.save(&mut self.world, wait);
-        let keys: Vec<_> = self.world.modified.drain().collect();
+        for key in &keys {
+            self.world.modified.remove(key);
+        }
         let chunks = self.with_entities(keys.iter().filter_map(|k| self.world.chunks.get(k)));
+        self.native_full_chunk_snapshots(&chunks);
         self.save
             .save_later(&chunks, self.pack.assets.registry, world_biomes!(self))?;
         // Prepare entities while the chunk writer runs, then use one barrier.
+        if !wait {
+            self.world.modified.autosaved(&keys, Instant::now());
+        }
         self.save_entities(false)?;
         self.save_raids();
         if wait {
             self.save.flush()?;
         }
+        if mod_api::__private::listened(mod_api::HookId::LevelSave) {
+            self.native_level_save(self.dim.id());
+        }
         Ok(())
+    }
+    /// `ChunkMap.saveChunksEagerly`: snapshot only while the tick and writer
+    /// have room. NBT encoding, compression and durable writes stay on workers.
+    fn save_chunks_eagerly(&mut self) {
+        // No world open (`world_root` is set by `finish_open_world`): the save
+        // is `Game::new`'s placeholder under the working directory.
+        if self.remote.is_some()
+            || self.world_root.as_os_str().is_empty()
+            || self.agent.hold_server
+            || self.clock.sprinting()
+            || self
+                .server_lists
+                .as_ref()
+                .is_some_and(|lists| !lists.lock().unwrap().autosave)
+        {
+            return;
+        }
+        let deadline = self
+            .server_tick_deadline
+            .unwrap_or_else(|| Instant::now() + self.clock.tick_duration());
+        let mut modified = std::mem::take(&mut self.world.modified);
+        modified.save_eagerly(
+            Instant::now(),
+            || Instant::now() < deadline && self.save.active_chunk_writes() < 128,
+            |key| self.world.chunks.contains_key(&key),
+            |key| {
+                // `saveChunkIfNeeded` saves only a LevelChunk, so a lit one; a
+                // column still waiting for its light keeps its queue entry.
+                let Some(chunk) = self.world.chunks.get(&key).filter(|c| c.lit) else {
+                    return false;
+                };
+                let chunks = self.with_entities([chunk]);
+                match self
+                    .save
+                    .save_later(&chunks, self.pack.assets.registry, world_biomes!(self))
+                {
+                    Ok(_) => true,
+                    Err(e) => {
+                        log::warn!("Horizon: failed to save changed chunks: {e}");
+                        false
+                    }
+                }
+            },
+        );
+        self.world.modified = modified;
     }
     /// `GameRenderer.tryTakeScreenshotIfNeeded`: while a local world without a
     /// saved icon is on the screen, grab the rendered frame once a second until
@@ -13946,7 +15227,41 @@ impl Game<'_> {
         }
         self.render_frame()
     }
+    /// Render the frame, then its two moments after that: `render_frame_post` whatever
+    /// became of it, `flip_frame` once it was presented.
+    fn render_and_flip(&mut self, elapsed: Duration) -> Result<bool> {
+        let rendered = match self.render() {
+            // The callback can fire during this frame; rebuild on
+            // the next redraw rather than exiting on its error.
+            Err(_) if self.renderer.as_ref().is_some_and(Renderer::device_lost) => false,
+            result => result?,
+        };
+        self.native_render_frame_post(elapsed);
+        if rendered {
+            // The submit thread may still hold the frame: a listener hears it after the
+            // present, and with none the next frame keeps overlapping it.
+            if mod_api::__private::listened(mod_api::HookId::FlipFrame)
+                && let Some(renderer) = &mut self.renderer
+            {
+                renderer.wait_submissions();
+            }
+            self.native_flip_frame();
+        }
+        Ok(rendered)
+    }
     fn render_frame(&mut self) -> Result<bool> {
+        self.render_with(|renderer, frame| {
+            horizon_client::spans::time("renderer", || renderer.render(frame))
+        })
+    }
+
+    /// Build the complete frame before handing its borrowed geometry and lighting to
+    /// the consumer. Tests use the same boundary as GPU submission.
+    fn render_with(
+        &mut self,
+        consume: impl FnOnce(&mut Renderer, &Frame<'_>) -> Result<bool>,
+    ) -> Result<bool> {
+        self.prepared_model_draws.borrow_mut().clear();
         let prepare = spans::guard("prepare");
         let mut pr = spans::laps();
         // The window's GPU holds the atlas: its copy in memory is kept
@@ -13984,7 +15299,10 @@ impl Game<'_> {
                     )
                 });
                 if let Some(renderer) = &mut self.renderer {
-                    let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
+                    let mut hud = HudBatch::new(
+                        [renderer.config.width, renderer.config.height],
+                        self.settings.gui_scale_inputs(),
+                    );
                     horizon_client::level_loading::draw_file_fixer(
                         &mut hud,
                         &self.gui.atlas,
@@ -14005,7 +15323,10 @@ impl Game<'_> {
                 screen_info::level_loading(progress, &screen_info::tr)
             });
             if let Some(renderer) = &mut self.renderer {
-                let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
+                let mut hud = HudBatch::new(
+                    [renderer.config.width, renderer.config.height],
+                    self.settings.gui_scale_inputs(),
+                );
                 let (w, h) = (hud.width, hud.height);
                 horizon_client::ui::menu_background(
                     &mut hud,
@@ -14043,7 +15364,10 @@ impl Game<'_> {
                 horizon_client::widgets::begin_screen(|| {
                     screen_info::level_loading(Some(loader.progress.fraction()), &screen_info::tr)
                 });
-                let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
+                let mut hud = HudBatch::new(
+                    [renderer.config.width, renderer.config.height],
+                    self.settings.gui_scale_inputs(),
+                );
                 horizon_client::level_loading::draw_progress(
                     &mut hud,
                     &self.gui.atlas,
@@ -14060,7 +15384,10 @@ impl Game<'_> {
         // (`LoadingOverlay`) until `drive_pack_reload` applies it.
         if let Some(reload) = &self.pack_reload {
             if let Some(renderer) = &mut self.renderer {
-                let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
+                let mut hud = HudBatch::new(
+                    [renderer.config.width, renderer.config.height],
+                    self.settings.gui_scale_inputs(),
+                );
                 horizon_client::level_loading::draw_loading_overlay(
                     &mut hud,
                     &self.gui.atlas,
@@ -14086,6 +15413,7 @@ impl Game<'_> {
         // Camera.getCameraEntityPartialTicks: the view, the hand and the
         // player's own model stay smooth while the level is frozen.
         let camera_alpha = self.clock.camera_fraction();
+        self.apply_requested_camera_type();
         let vanilla = self.camera_view(camera_alpha as f32);
         let view = vanilla.map(|view| {
             if self.shows_panorama() || self.studio_freecam.active {
@@ -14153,7 +15481,7 @@ impl Game<'_> {
             .get(&(block[0] >> 4, block[2] >> 4))
             .map(|c| c.biome(block[0], block[1], block[2]))
             .unwrap_or(0);
-        let environment = self.dim_environment();
+        let environment = self.view_environment();
         // EnvironmentAttributeProbe: the spatially interpolated biome colours,
         // Gaussian-weighted over the noise biomes around the camera (plains
         // where no chunk is loaded, as ClientLevel.getUncachedNoiseBiome).
@@ -14167,24 +15495,86 @@ impl Game<'_> {
                     .map_or(plains, |c| c.biome(qx * 4, qy * 4, qz * 4))
             })
         };
-        let blend = |pick: fn(&horizon_client::biome::BiomeInfo) -> Option<u32>, base: [f32; 3]| {
-            horizon_client::biome::blend_rgb(&weights, |b| {
-                pick(biomes.get(b)).map_or(base, horizon_client::biome::rgb)
-            })
-        };
-        let biome_sky = blend(
-            |b| b.sky,
-            environment.base_rgb("minecraft:visual/sky_color"),
-        );
-        let biome_fog = blend(
-            |b| b.fog,
-            environment.base_rgb("minecraft:visual/fog_color"),
-        );
         // visual/water_fog_color: no dimension sets it, its default is #050533.
-        let water_fog = blend(|b| Some(b.water_fog), [0.0; 3]);
-        let mut sky = environment.sample(self.view_day_time(), Some(biome_sky), Some(biome_fog));
+        let water_fog = horizon_client::biome::blend_rgb(&weights, |b| {
+            horizon_client::biome::rgb(biomes.get(b).water_fog)
+        });
+        // The attribute stack, with the camera's biome mix in the probe's order; the biome
+        // maps as the packs left them.
+        let attributes_of = |b: u16| {
+            let info = biomes.get(b);
+            environment.biome(&info.name).unwrap_or(&info.attributes)
+        };
+        let mut blend = horizon_world::environment_system::BiomeBlend::default();
+        for &(b, weight) in &weights {
+            blend.accumulate(weight, attributes_of(b));
+        }
+        // The packs' biome post-process group, mixed the same way where they set one.
+        let empty = horizon_world::environment_attributes::AttributeMap::default();
+        let post_of = |b: u16| {
+            environment
+                .biome_post(&biomes.get(b).name)
+                .unwrap_or(&empty)
+        };
+        let mut post_blend = horizon_world::environment_system::BiomeBlend::default();
+        if environment.has_biome_post() {
+            for &(b, weight) in &weights {
+                post_blend.accumulate(weight, post_of(b));
+            }
+        }
         let (rain, thunder) = self.view_weather(alpha as f32);
-        horizon_client::environment::apply_weather(&mut sky, rain, thunder);
+        // What the packs' attribute expressions read (only a pack's stack has any).
+        let mut polytone_frame = None;
+        if self.pack.environments.is_some()
+            || self.pack.polytone_particles.is_some()
+            || self.pack.polytone_post.is_some()
+        {
+            let light = self.world.light(block[0], block[1], block[2]);
+            let frame = horizon_client::environment::Frame {
+                rain,
+                thunder,
+                game_time: self.world.game_time,
+                day_time: self.view_day_time(),
+                render_distance: self.streaming.radius,
+                sky_type: match self.dim {
+                    Dim::Overworld | Dim::Extra(_) => 1,
+                    Dim::End => 2,
+                    Dim::Nether => 0,
+                },
+                dimension: self.dim.id().to_owned(),
+                player: self.player.as_ref().map_or(camera.to_array(), |p| {
+                    [p.position.x, p.position.y, p.position.z]
+                }),
+                player_velocity: self
+                    .player
+                    .as_ref()
+                    .map_or([0.0; 3], |p| [p.velocity.x, p.velocity.y, p.velocity.z]),
+                player_on_ground: self.player.as_ref().is_some_and(|p| p.ground.on_ground),
+                in_water: underwater,
+                camera: camera.to_array(),
+                sky_light: i32::from(light >> 4),
+                block_light: i32::from(light & 15),
+                biome: biomes.get(biome).name.clone(),
+                temperature: biomes.get(biome).temperature,
+                downfall: biomes.get(biome).downfall,
+            };
+            if let Some(particles) = &self.pack.polytone_particles
+                && let Ok(mut f) = particles.frame.write()
+            {
+                f.clone_from(&frame);
+            }
+            polytone_frame = Some(frame.clone());
+            environment.set_frame(frame);
+        }
+        let mut sky = environment.sample(&horizon_client::environment::Sample {
+            day_time: self.view_day_time(),
+            rain,
+            thunder,
+            blend: Some(&blend),
+            biome: Some(attributes_of(biome)),
+            post_blend: Some(&post_blend),
+            post_biome: Some(post_of(biome)),
+        });
         self.end_flash_sky(&mut sky, alpha);
         if self.flash > 0 && !self.settings.file.bool("hideLightningFlashes") {
             // ClientLevel's flash layer while skyFlashTime > 0: the sky colour
@@ -14210,10 +15600,10 @@ impl Game<'_> {
         lines.extend(g.lines);
         let on_top = g.on_top;
         pr.lap("pr_debug");
-        let colored_lights = if self.title.is_none() {
-            self.native_frame_visuals(camera, alpha, &mut lines)
+        let visuals = if self.title.is_none() {
+            self.native_frame_visuals(alpha, &mut lines)
         } else {
-            Vec::new()
+            native_visuals::FrameVisuals::default()
         };
         let emissive_layers = if self.title.is_none() {
             let mut requests = Vec::new();
@@ -14233,22 +15623,16 @@ impl Game<'_> {
         } else {
             horizon_client::camera::view_matrix(view_yaw, view_pitch)
         };
-        let world_primitives = if self.title.is_none() {
-            self.world_primitive_geometry(camera, alpha, view)
-        } else {
-            Default::default()
-        };
-        pr.lap("pr_primitives");
         let at = camera.to_array();
         // GameRenderer.render3dHud: the debug crosshair, first person with the HUD shown.
         let mut crosshair = horizon_client::gizmos::Gizmos::default();
         if debug_crosshair_drawn(
             self.debug_crosshair(),
-            self.camera_type.first_person(),
+            self.camera_type.is_first_person(),
             self.ui.hide_gui,
             self.shows_panorama(),
         ) {
-            let scale = HudBatch::new(size).scale;
+            let scale = HudBatch::new(size, self.settings.gui_scale_inputs()).scale;
             crosshair.debug_crosshair(at, view_pitch, view_yaw, scale);
         }
         let debug_lines = horizon_client::gizmos::camera_relative(&lines, at, view);
@@ -14264,7 +15648,12 @@ impl Game<'_> {
         // screen does not hide it: vanilla checks the HUD and the game mode, not the screen.
         let adventure = self.mode == horizon_client::command::args::GameMode::Adventure;
         let can_build = self.may_build() || adventure;
-        let outline = if !self.ui.hide_gui && !self.entity_targeted() && can_build {
+        let outline = if block_outline_drawn(
+            self.ui.hide_gui,
+            self.entity_targeted(),
+            can_build,
+            self.shows_panorama(),
+        ) {
             self.pick()
                 .filter(|h| {
                     self.may_build()
@@ -14310,7 +15699,7 @@ impl Game<'_> {
                             .map(|e| std::array::from_fn(|i| p[i % 3] + o[i % 3] + e[i]))
                             .collect();
                     }
-                    if let Some(b) = self.context_outline(h.pos, state) {
+                    if let Some(b) = self.context_outline(h.pos, state, true, &self.be_anims) {
                         return horizon_client::blocks::cube_edges()
                             .iter()
                             .map(|e| {
@@ -14365,11 +15754,11 @@ impl Game<'_> {
         let depth_far =
             horizon_client::camera::depth_far(terrain_distance, self.settings.cloud_range);
         // Only native mods read it: no matrices or allocation per frame without one.
-        let mods_read_camera = !horizon_client::mod_api::mods().is_empty();
+        let mods_read_camera = !mod_api::__private::mods().is_empty();
         self.screen_blur_requested.set(false);
         self.native_camera_frame = (mods_read_camera && !title).then(|| {
             let partial = camera_alpha as f32;
-            horizon_client::mod_api::NativeCamera {
+            mod_api::Camera {
                 position: camera.to_array(),
                 eye_height: self.view.eye_height_old
                     + (self.view.eye_height - self.view.eye_height_old) * partial,
@@ -14400,7 +15789,36 @@ impl Game<'_> {
         pr.lap("pr_hud");
         self.locator_camera =
             (!title).then_some((camera.to_array(), view_yaw, view_pitch, fov_degrees));
-        let requested_post_effects = self.requested_post_effects();
+        let mut requested_post_effects = self.requested_post_effects();
+        // The packs' Polytone post chains, after vanilla's (#11486).
+        let game_ticks = self.world.game_time as f64 + alpha;
+        let delta_ticks = (game_ticks - self.polytone_post_ticks).clamp(0.0, 20.0) as f32;
+        self.polytone_post_ticks = game_ticks;
+        let polytone_extras = match (&self.pack.polytone_post, &polytone_frame) {
+            (Some(post), Some(frame)) => {
+                let view = bob * spin * horizon_client::camera::view_matrix(yaw, pitch);
+                let globals = horizon_client::polytone_post::PolyGlobals {
+                    // 26.3's reverse-Z projection, as the world's (and its depth) is.
+                    projection: glam::Mat4::perspective_rh(
+                        fov_degrees.to_radians(),
+                        size[0] as f32 / size[1].max(1) as f32,
+                        depth_far,
+                        0.05,
+                    ),
+                    model_view: view,
+                    sun_angle: sky.sun_angle.to_radians() - std::f32::consts::FRAC_PI_2,
+                    day_time: self.view_day_time().rem_euclid(24000) as f32,
+                    delta_time: delta_ticks,
+                    player: self.player.as_ref().map_or(camera.to_array(), |p| {
+                        [p.position.x, p.position.y, p.position.z]
+                    }),
+                };
+                let (effects, extras) = post.frame(frame, &globals);
+                requested_post_effects.extend(effects);
+                Some(extras)
+            }
+            _ => None,
+        };
         self.view_frustum = self
             .renderer
             .as_ref()
@@ -14422,10 +15840,17 @@ impl Game<'_> {
         self.glowing_vertices.get_mut().clear();
         self.shadow_only_vertices.get_mut().clear();
         pr.lap("pr_entity_setup");
+        // The pack is chosen before entity geometry, so a pack that starts this frame
+        // keeps block-entity models in the CPU stream instead of dropping them.
+        let mut pack_inputs = if title {
+            Default::default()
+        } else {
+            self.shader_pack_inputs(camera, alpha as f32, &sky)
+        };
         if !title {
             let (built, static_sections, visible_static_sections, static_stats) =
                 spans::time("entity_geometry", || {
-                    self.entity_geometry(camera, alpha, fov_degrees, billboard_frustum, entities)
+                    self.entity_geometry(camera, alpha, billboard_frustum, entities)
                 });
             entities = built;
             static_block_entities = static_sections;
@@ -14444,7 +15869,9 @@ impl Game<'_> {
         } else {
             self.bolt_instances(camera)
         };
-        let mut additive = Vec::new();
+        // Particles blended additively (resource packs' Polytone ones, #11486), from the
+        // render that built `entities`.
+        let mut additive = self.particles.take_additive();
         // The dragon is drawn in every dimension, as any entity: a dragon
         // summoned outside the End (the server's AddEntity) is shown too.
         if !title {
@@ -14482,6 +15909,7 @@ impl Game<'_> {
             self.item_activation_geometry(camera_alpha as f32, view, aspect, &mut hand);
         }
         pr.lap("pr_hand");
+        let hud_fov = self.hud_fov_degrees(camera_alpha as f32, camera.to_array());
         let screen = if title {
             Vec::new()
         } else {
@@ -14490,7 +15918,13 @@ impl Game<'_> {
                 .as_mut()
                 .and_then(|p| p.attribute("minecraft:scale").ok())
                 .unwrap_or(1.0) as f32;
-            self.screen_quads(alpha as f32, size, scale)
+            let hand_projection = horizon_client::camera::hand_projection(
+                hud_fov,
+                size[0] as f32,
+                size[1].max(1) as f32,
+                depth_far,
+            );
+            self.screen_quads(alpha as f32, size, scale, hand_projection)
         };
         if !title {
             self.end_geometry(camera, &mut entities);
@@ -14513,18 +15947,33 @@ impl Game<'_> {
             self.gather_dynamic_lights(camera, alpha);
         }
         pr.lap("pr_lights");
-        let mut pack_inputs = if title {
-            Default::default()
-        } else {
-            self.shader_pack_inputs(camera, alpha as f32, &sky)
-        };
-        pr.lap("pr_shader_inputs");
         pack_inputs.frame_timing = self
             .screenshot_sequence
             .as_ref()
             .map(screenshot_sequence::Sequence::timing);
+        pr.lap("pr_shader_inputs");
+        // Fog hooks may clear particles too. They must run before the final clear
+        // boundary, not while constructing Frame after geometry has been extracted.
+        let fog = self.frame_fog(camera, &sky, biome, water_fog);
+        if !title {
+            self.client_particle_geometry(camera, alpha, fov_degrees, &mut entities);
+        }
+        let mut world_geometry = self.world_geometry.take().expect("view storage");
+        self.fill_world_geometry(
+            title,
+            camera.to_array(),
+            view,
+            alpha,
+            &mut world_geometry,
+            &mut entities,
+        );
+        let colored_lights = if self.title.is_none() {
+            visuals.finish(self, camera)
+        } else {
+            Vec::new()
+        };
         // Map textures and font glyphs changed while building this frame's
-        // geometry (game/maps.rs, world text) upload with this batch; draining
+        // geometry (game/blocks/maps/mod.rs, world text) upload with this batch; draining
         // map_patches any earlier leaves them a frame behind.
         hud.patches.append(&mut self.map_patches);
         let entity_spans = std::mem::take(self.entity_spans.get_mut());
@@ -14588,7 +16037,7 @@ impl Game<'_> {
             environment_fog: (self.dim == Dim::Nether).then_some((sky.fog_start, sky.fog_end)),
             cave_culling,
             water_fog,
-            fog: Some(self.frame_fog(camera, &sky, biome, water_fog)),
+            fog: Some(fog),
             dark_disc: self.dark_disc(camera),
             outline,
             outline_after_terrain,
@@ -14633,7 +16082,7 @@ impl Game<'_> {
             },
             additive: &additive,
             see_through: &see_through,
-            world_primitives: world_primitives.batch(),
+            world_primitives: world_geometry.batch(),
             shadow_only: &shadow_only,
             celestial: if self.settings.horizon.sky || title {
                 &celestial
@@ -14643,7 +16092,7 @@ impl Game<'_> {
             stars: stars.filter(|_| self.settings.horizon.sky || title),
             hand: &hand,
             hand_items: &hand_items,
-            hand_fov_degrees: self.hud_fov_degrees(camera_alpha as f32, camera.to_array()),
+            hand_fov_degrees: hud_fov,
             screen: &screen,
             pack: pack_inputs,
             border,
@@ -14672,7 +16121,8 @@ impl Game<'_> {
             menu_blur: self.menu_blur(),
             post_effects: horizon_client::post_chain::Request {
                 effects: &requested_post_effects,
-                root: &self.options.resources,
+                root: &self.pack.source,
+                extras: polytone_extras.as_ref(),
                 menu_blur_radius: self.settings.menu_blur as f32,
                 // GlobalSettingsUniform.update.
                 globals: horizon_client::post_chain::Globals {
@@ -14696,6 +16146,7 @@ impl Game<'_> {
         // Renderer encoding and GPU waiting belong to render, not prepare.
         drop(prepare);
         let debug_passes = self.debug_lists_gpu_passes();
+        let mut prepared_draws = std::mem::take(&mut *self.prepared_model_draws.borrow_mut());
         let result = match self.renderer.as_mut() {
             Some(renderer) => {
                 use horizon_client::client_perf::request::GpuSwitch;
@@ -14709,15 +16160,19 @@ impl Game<'_> {
                 } else {
                     horizon_client::debug_overlay::GPU_TIMING_GAP
                 });
-                horizon_client::spans::time("renderer", || renderer.render(&frame))
+                renderer.stage_prepared_draws(&prepared_draws);
+                consume(renderer, &frame)
             }
             None => Err("renderer".into()),
         };
+        prepared_draws.clear();
+        *self.prepared_model_draws.borrow_mut() = prepared_draws;
         let _cleanup = spans::guard("pr_cleanup");
         // A frame the surface refused (occluded, lost, timed out) is `Ok(false)`.
         self.frame_drawn = matches!(result, Ok(true));
         // Restore storage even when rendering fails (for example, a lost surface).
         self.entity_vertices = entities;
+        self.world_geometry = Some(world_geometry);
         *self.entity_spans.get_mut() = entity_spans;
         *self.entity_motion.get_mut() = entity_motion;
         *self.entity_motion_posed.get_mut() = entity_motion_posed;
@@ -14738,6 +16193,7 @@ impl Game<'_> {
         self.see_through_vertices = see_through;
         result
     }
+
     fn clear_lod(&mut self) {
         // The samplers waiting on the server stop first: dropping the far
         // terrain joins them.
@@ -14859,7 +16315,7 @@ impl Game<'_> {
                     );
                     let sky_light = dimension.has_skylight;
                     let decode: terrain::DecodeChunk =
-                        Box::new(move |root: &horizon_world::nbt::NamedTag| {
+                        Box::new(move |root: &horizon_core::nbt::NamedTag| {
                             horizon_client::save::decode_lit(
                                 root, registry, &biomes, layout, sky_light,
                             )
@@ -14943,12 +16399,48 @@ impl Game<'_> {
         self.streaming
             .extra
             .extend(waiting.into_iter().map(|chunk| (chunk, 0)));
-        let (uploads, unloaded) =
-            horizon_client::spans::time("streaming", || self.streaming.update(&mut self.world));
+        let plan = horizon_client::spans::time("streaming_plan", || {
+            let mut step = self.streaming.begin_plan_update(&mut self.world);
+            loop {
+                match step {
+                    horizon_client::streaming::PlanStep::Ready(plan) => break plan,
+                    horizon_client::streaming::PlanStep::Save { chunk, resume } => {
+                        self.native_late_full_chunk_snapshot(&chunk);
+                        self.streaming.save_finished(chunk);
+                        step = self.streaming.resume_plan_update(&mut self.world, resume);
+                    }
+                }
+            }
+        });
+        let (commit, protos) = self.streaming.prepare_commit(&mut self.world, plan);
+        self.native_proto_snapshots(&protos);
+        self.streaming.submit_protos(protos);
+        let (uploads, unloaded) = horizon_client::spans::time("streaming", || {
+            self.streaming.complete_commit(&mut self.world, commit)
+        });
         self.streaming.extra.truncate(areas);
+        let dirty: Vec<_> = unloaded
+            .iter()
+            .filter(|c| self.world.modified.remove(&(c.x, c.z)))
+            .cloned()
+            .collect();
+        let modified = horizon_client::spans::time("with_entities", || self.with_entities(&dirty));
+        self.native_full_chunk_snapshots(&modified);
+        if !modified.is_empty()
+            && let Err(e) = horizon_client::spans::time("save_chunks", || {
+                self.save
+                    .save_later(&modified, self.pack.assets.registry, world_biomes!(self))
+            })
+        {
+            log::warn!("Horizon: failed to save unloaded chunks: {e}");
+        }
         self.spawn_fresh_chunks();
-        // Before the unloaded chunks' block entities are written and dropped.
-        self.native_chunks_changed(&unloaded);
+        // Vanilla saves the chunk before its unload hook and drops its block entities afterwards.
+        self.native_chunks_loaded();
+        self.native_chunks_unloaded(&unloaded);
+        for chunk in &unloaded {
+            self.world.modified.unloaded(&(chunk.x, chunk.z));
+        }
         if let Some(lod) = &mut self.lod {
             self.lod_observe
                 .extend(uploads.iter().map(|(key, _)| (key.0, key.2)));
@@ -14972,12 +16464,9 @@ impl Game<'_> {
                 }
             });
         }
-        let dirty: Vec<_> = unloaded
-            .iter()
-            .filter(|c| self.world.modified.remove(&(c.x, c.z)))
-            .cloned()
-            .collect();
-        let modified = horizon_client::spans::time("with_entities", || self.with_entities(&dirty));
+        for chunk in &unloaded {
+            self.world.modified.unloaded(&(chunk.x, chunk.z));
+        }
         horizon_client::spans::time("unload_entities", || self.unload_entities(&unloaded));
         if !unloaded.is_empty() {
             let gone: horizon_client::fast_hash::FxHashSet<(i32, i32)> =
@@ -14988,14 +16477,6 @@ impl Game<'_> {
             self.world
                 .block_names
                 .retain(|p, _| !gone.contains(&(p.0 >> 4, p.2 >> 4)));
-        }
-        if !modified.is_empty()
-            && let Err(e) = horizon_client::spans::time("save_chunks", || {
-                self.save
-                    .save_later(&modified, self.pack.assets.registry, world_biomes!(self))
-            })
-        {
-            log::warn!("Horizon: failed to save unloaded chunks: {e}");
         }
         // LevelChunk.registerTickContainerInLevel: a chunk that became
         // resident has its tick containers before a command can schedule into
@@ -15025,15 +16506,7 @@ impl Game<'_> {
             .as_ref()
             .map(|p| [p.position.x, p.position.y, p.position.z])
             .and_then(|camera| self.lod_aim(camera));
-        // A mod's hold on the terrain's picture, before this frame's uploads (`native_world_hold`).
-        let world_hold = self
-            .renderer
-            .is_some()
-            .then(|| self.native_world_hold_now());
         if let Some(renderer) = self.renderer.as_mut() {
-            if let Some(hold) = &world_hold {
-                renderer.hold_world(hold);
-            }
             // Far terrain takes in the columns the hold let go of, as the sections show.
             if !self.lod_held.is_empty() {
                 let let_go: Vec<_> = self
@@ -15080,7 +16553,15 @@ impl Game<'_> {
                     }
                 }
                 let centre = self.streaming.center;
-                let far = |k: &(i32, i32, i32)| (k.0 - centre.0).pow(2) + (k.2 - centre.1).pow(2);
+                // Section keys count from the world's bottom (`origin`'s min_y + y * 16).
+                let bottom = f64::from(self.world.bottom_y());
+                let cam_y = self
+                    .player
+                    .as_ref()
+                    .map_or(4, |p| ((p.position.y - bottom) / 16.0).floor() as i32);
+                let far = |k: &(i32, i32, i32)| {
+                    (k.0 - centre.0).pow(2) + (k.1 - cam_y).pow(2) + (k.2 - centre.1).pow(2)
+                };
                 pending.sort_unstable_by_key(|(k, _)| std::cmp::Reverse(far(k)));
                 let (limit, budget) = if budgeted {
                     (
@@ -15177,1643 +16658,11 @@ fn autosave_interval(rate: f32) -> i64 {
     i64::from((rate * 300.0) as i32).max(100)
 }
 
-/// winit's events for a window's game, with any loop: a headless client (#4951) has no
-/// winit loop and calls these from its own.
-impl Game<'_> {
-    /// One window event, in the order vanilla's `KeyboardHandler` and `MouseHandler` see it.
-    ///
-    /// A controller doesn't come through here in play: `pad_action` goes straight to the mappings
-    /// (`mapped_key`, `mouse_mapping`). So a key handled below before `mapped_key_event` (a window
-    /// shortcut, a special case) never reaches a controller. If a player could want it on one, give
-    /// it a handler both can call and a `gamepad::Route` (screenshot and fullscreen do this). A
-    /// screen's own raw keys, text and mods' key hooks stay raw on purpose.
-    fn handle_window_event_inner(&mut self, event_loop: &dyn EventLoopCtl, mut event: WindowEvent) {
-        if let WindowEvent::Focused(false) = &event {
-            self.physical_keys.clear();
-            self.physical_buttons.clear();
-            self.drag_button = None;
-        }
-        if let WindowEvent::ModifiersChanged(m) = &event {
-            self.modifiers = m.state();
-            horizon_client_input::modifiers::reconcile(
-                self.modifiers,
-                &mut self.physical_keys,
-                &self.settings.keys,
-                &mut self.toggles,
-                [self.settings.toggle_crouch, self.settings.toggle_sprint],
-                [
-                    self.pad
-                        .holds_action(&self.settings.controller, "key.sneak"),
-                    self.pad
-                        .holds_action(&self.settings.controller, "key.sprint"),
-                ],
-            );
-            self.sync_toggle(SNEAK);
-            self.sync_toggle(SPRINT);
-        }
-        // `PackSelectionScreen.onFilesDrop` on the Create New World screen.
-        if let WindowEvent::DroppedFile(path) = &event
-            && self.title_input_active()
-            && let Some(title) = &mut self.title
-        {
-            title.drop_file(path.clone());
-        }
-        // A character that comes with no key (Windows' Alt codes, `Alt` + digits on the numeric
-        // keypad: a `WM_CHAR` after the Alt is released) reaches winit as a key event with no
-        // physical key. GLFW's char callback types it in the focused text field (`charTyped`),
-        // and every screen's key handler here would drop it for want of a key code.
-        if let WindowEvent::KeyboardInput {
-            event: key_event, ..
-        } = &event
-            && key_event.state == ElementState::Pressed
-            && matches!(key_event.physical_key, PhysicalKey::Unidentified(_))
-            && let Some(text) = key_event.text.as_deref()
-        {
-            let text: String = text.chars().filter(|c| !c.is_control()).collect();
-            if !text.is_empty() && self.text_field_focused() && self.types_text() {
-                let _ = self.type_chars_into_screen(&text);
-            }
-            return;
-        }
-        // Fullscreen is a window shortcut, before screens consume keyboard input.
-        // Not Alt or Super on their own: leaving the window isn't playing with the keyboard.
-        if let WindowEvent::KeyboardInput { event, .. } = &event
-            && event.state == ElementState::Pressed
-            && !event.repeat
-            && !matches!(
-                event.physical_key,
-                PhysicalKey::Code(
-                    KeyCode::AltLeft | KeyCode::AltRight | KeyCode::SuperLeft | KeyCode::SuperRight
-                )
-            )
-        {
-            self.pad.keyboard_took_over = true;
-        }
-        if let WindowEvent::KeyboardInput { event, .. } = &event
-            && event.state == ElementState::Pressed
-            && let PhysicalKey::Code(key) = event.physical_key
-            && horizon_client::keybinds::key_name(key)
-                == Some(self.settings.keys.get("key.fullscreen"))
-            && !(self.screen == Screen::Options && self.options_waiting_for_key())
-        {
-            self.last_input = Instant::now();
-            if !event.repeat {
-                self.toggle_fullscreen();
-            }
-            return;
-        }
-        // A screenshot is a window shortcut too: vanilla takes it before a
-        // screen or a text box consumes the key (`handleGlobalKeyPress`), so
-        // it works with chat, a sign or a book open.
-        if let WindowEvent::KeyboardInput { event, .. } = &event
-            && event.state == ElementState::Pressed
-            && let PhysicalKey::Code(key) = event.physical_key
-        {
-            self.last_input = Instant::now();
-            if self.screenshot_shortcut(key, event.repeat) {
-                return;
-            }
-        }
-        // KeyboardHandler.keyPress: the debug keys come before the game's.
-        if let WindowEvent::KeyboardInput {
-            event: key_event, ..
-        } = &event
-            && let PhysicalKey::Code(key) = key_event.physical_key
-        {
-            use horizon_client::debug_keys::KeyAction;
-            let action = match (key_event.state, key_event.repeat) {
-                (ElementState::Released, _) => KeyAction::Release,
-                (_, false) => KeyAction::Press,
-                (_, true) => KeyAction::Repeat,
-            };
-            if self.debug_key(key, action) {
-                return;
-            }
-        }
-        // KeyboardHandler.keyPress: the narrator hotkey, on every screen and
-        // in game, before the screen takes the key.
-        if let WindowEvent::KeyboardInput { event, .. } = &event {
-            self.narrator_hotkey(event);
-        }
-        if matches!(
-            event,
-            WindowEvent::KeyboardInput { .. }
-                | WindowEvent::MouseInput { .. }
-                | WindowEvent::MouseWheel { .. }
-                | WindowEvent::CursorMoved { .. }
-        ) {
-            self.last_input = Instant::now();
-        }
-        if !self.pad_synthetic_input()
-            && matches!(
-                event,
-                WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. }
-            )
-        {
-            self.reassert_pointer_capture();
-        }
-        // The real mouse takes the pointer back from the keyboard's focus.
-        self.key_focus_mouse(event_loop, &event);
-        // The screen's narration hears of the input before the screen takes
-        // it; the pointer events the keyboard's focus sends aren't the mouse.
-        if !self.key_focus_quiet() {
-            narrator::narrate_input(&mut self.narration, &event, self.cursor);
-        }
-        // FileFixerProgressScreen: Cancel is the only way out (`shouldCloseOnEsc`
-        // is false), so it takes the pointer and Escape does nothing.
-        if let Some(starting) = &self.integrated_starting
-            && starting.handle.upgrade().is_file_fixing()
-        {
-            let upgrade = starting.handle.upgrade();
-            match &event {
-                WindowEvent::CursorMoved { position, .. } => {
-                    if let Some(r) = &self.renderer {
-                        let b = HudBatch::new([r.config.width, r.config.height]);
-                        self.cursor = (position.x as f32 / b.scale, position.y as f32 / b.scale);
-                    }
-                }
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                    ..
-                } if !upgrade.is_canceled() => {
-                    let (w, h) = self.gui_size();
-                    let (x, y) = horizon_client::level_loading::file_fixer_cancel(w, h);
-                    if horizon_client::ui::hovered(self.cursor, x, y, 200.0, 20.0) {
-                        self.audio.play_button_click();
-                        upgrade.set_canceled();
-                    }
-                }
-                _ => {}
-            }
-            if matches!(&event, WindowEvent::KeyboardInput { .. }) {
-                return;
-            }
-        }
-        if self.pending_entry.is_some()
-            && matches!(&event, WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
-                    && event.physical_key == PhysicalKey::Code(KeyCode::Escape))
-        {
-            self.pending_entry = None;
-            self.perf.cancel_world_opening();
-            return;
-        }
-        if (self.pending_entry.is_some() || self.integrated_starting.is_some())
-            && !matches!(
-                &event,
-                WindowEvent::CloseRequested
-                    | WindowEvent::Resized(_)
-                    | WindowEvent::RedrawRequested
-            )
-        {
-            return;
-        }
-        // The pack reload's progress overlay takes no input
-        // (`LoadingOverlay`): `spawn_pack_reload` released what was held.
-        if self.pack_reload.is_some()
-            && !matches!(
-                &event,
-                WindowEvent::CloseRequested
-                    | WindowEvent::Focused(_)
-                    | WindowEvent::Resized(_)
-                    | WindowEvent::RedrawRequested
-            )
-        {
-            return;
-        }
-        if self.pending_save.is_some() {
-            match event {
-                WindowEvent::CloseRequested => {
-                    if !self.settings.quit_shortcuts
-                        && horizon_client::input::is_quit_shortcut_down(
-                            self.modifiers,
-                            &self.physical_keys,
-                        )
-                    {
-                        return;
-                    }
-                    self.pending_save.as_mut().unwrap().quit = true;
-                }
-                WindowEvent::Focused(focused) => {
-                    self.focused = focused;
-                    if !focused {
-                        self.capture(false);
-                    }
-                }
-                WindowEvent::Resized(size) => {
-                    if let Some(r) = &mut self.renderer {
-                        r.resize(size.width, size.height);
-                    }
-                }
-                WindowEvent::RedrawRequested => {
-                    if let Err(error) = self.render_closing_save() {
-                        self.error = Some(error);
-                        self.exit_on_error(event_loop);
-                    }
-                }
-                _ => {}
-            }
-            return;
-        }
-        // ScreenEvent.KeyPressed.Pre: the open screen hears of the key before
-        // it acts on it, and a cancelled press goes no further — no focus
-        // move, no Escape-close, no inventory or hotbar key, no typing by the
-        // key itself, no `native_key`. It fires after the window's own
-        // shortcuts (fullscreen, screenshot, the debug keys, the narrator) so
-        // those keep working with a mod that cancels; the key's release still
-        // comes through.
-        //
-        // A key's characters are a separate callback of GLFW's, and it comes
-        // after the key callback (`KeyboardHandler.charTyped`): they are taken
-        // off the key here and dispatched once the screen has acted on it, on
-        // the screen that is open then (`ScreenEvent.CharacterTyped.Pre`).
-        // Options keeps its text on the key: its own key path routes a key's
-        // text between its boxes and its key-bind capture, and no key that
-        // carries text closes that screen or moves its focus. The title's
-        // screens keep theirs for the same reason: their key path types into
-        // the world name, the seed and a server's address.
-        let mut typed: Option<String> = None;
-        if let WindowEvent::KeyboardInput {
-            event: key_event, ..
-        } = &mut event
-            && key_event.state == ElementState::Pressed
-        {
-            if self.screen_hooks_open()
-                && self.screen != Screen::Options
-                && !control::title_owns_text(&self.screen, self.title.is_some())
-            {
-                typed = key_event.text.take().map(|text| text.to_string());
-            }
-            let canceled = match key_event.physical_key {
-                PhysicalKey::Code(key) => self.screen_key_pressed(key, key_event.repeat),
-                PhysicalKey::Unidentified(_) => false,
-            };
-            if self.screen == Screen::Options && self.screen_hooks_open() {
-                // The hook after the key's own, then the text the key path
-                // types in place (its own routing keeps it).
-                if let Some(text) = key_event.text.as_deref() {
-                    let left = self.screen_text_typed(text);
-                    if left.as_deref() != Some(text) {
-                        key_event.text = left.map(Into::into);
-                    }
-                }
-            }
-            // Title boxes keep their text on the key path. A field hook takes
-            // it through the same per-character editor as IME and control input.
-            if !canceled
-                && control::title_owns_text(&self.screen, self.title.is_some())
-                && self.types_text()
-                && let Some(text) = key_event.text.as_deref()
-                && let Some(result) = self.type_text_field_input(text)
-            {
-                if let Err(error) = result {
-                    log::warn!("Horizon: text input: {error}");
-                }
-                key_event.text = None;
-            }
-            if canceled {
-                // charTyped is a separate callback: the characters still
-                // reach the text box, without the key's own effects. Options'
-                // characters already passed the hook in place.
-                if let Some(text) = typed.as_deref() {
-                    self.screen_chars_typed(Some(text));
-                } else if self.screen == Screen::Options
-                    && let Some(text) = key_event.text.as_deref()
-                    && self.types_text()
-                {
-                    let text: String = text.chars().filter(|c| !c.is_control()).collect();
-                    if !text.is_empty() {
-                        // Err only says no box of the screen takes it.
-                        let _ = self.type_chars_into_screen(&text);
-                    }
-                }
-                return;
-            }
-        }
-        // Screen.keyPressed: Tab, the arrows and Enter move and press the
-        // menu's focus, unless the focused widget or the screen keeps them.
-        if let WindowEvent::KeyboardInput {
-            event: key_event, ..
-        } = &event
-            && key_event.state == ElementState::Pressed
-            && let PhysicalKey::Code(key) = key_event.physical_key
-            && self.key_focus_key(event_loop, key)
-        {
-            // The keyboard's focus took the key; its characters are a separate
-            // callback and still come (`KeyboardHandler.charTyped`).
-            self.screen_chars_typed(typed.as_deref());
-            return;
-        }
-        let result: Result<()> = (|| {
-            if let WindowEvent::MouseInput { state, button, .. } = &event
-                && !self.pad_synthetic_input()
-            {
-                self.track_drag_button(*button, *state == ElementState::Pressed);
-            }
-            // The emote key let go over the wheel, a click on it.
-            if self.screen == Screen::EmoteWheel && self.emote_wheel_event(&event) {
-                return Ok(());
-            }
-            if let WindowEvent::KeyboardInput { event, .. } = &event
-                && event.state == ElementState::Released
-                && let PhysicalKey::Code(key) = event.physical_key
-                && self.screen_key_released(key)
-            {
-                // Screen cancellation must not leave a held keyboard mapping down.
-                self.keys.remove(&key);
-                self.mapped_key_event(key, false, false)?;
-                return Ok(());
-            }
-            // ScreenEvent.MouseButtonPressed.Pre / MouseButtonReleased.Pre:
-            // the open screen hears of the press before anything reads it, and
-            // a cancelled one goes no further — no hotbar key, no slot, no
-            // button, no sort, no drag. First in the event, so none of the
-            // arms below (which hold the container hotkey and the sort and
-            // header buttons too) see it. A click the pad or the keyboard's
-            // focus made up is not the mouse: it fires nothing.
-            if let WindowEvent::MouseInput { state, button, .. } = &event
-                && !self.pad_synthetic_input()
-                && let Some(screen) = self.screen_view_now()
-            {
-                let (button, modifiers) = (glfw_button(*button), glfw_modifiers(self.modifiers));
-                let mut canceled = false;
-                if *state == ElementState::Pressed {
-                    self.native_screen_mouse_button_pressed_pre(
-                        &screen,
-                        button,
-                        modifiers,
-                        &mut canceled,
-                    );
-                } else {
-                    self.native_screen_mouse_button_released_pre(
-                        &screen,
-                        button,
-                        modifiers,
-                        &mut canceled,
-                    );
-                }
-                if canceled {
-                    return Ok(());
-                }
-            }
-            self.key_focus_mouse_press(&event);
-            match event {
-                WindowEvent::CloseRequested => {
-                    if !self.settings.quit_shortcuts
-                        && horizon_client::input::is_quit_shortcut_down(
-                            self.modifiers,
-                            &self.physical_keys,
-                        )
-                    {
-                        return Ok(());
-                    }
-                    self.begin_closing_save(true)?;
-                }
-                // Input method composition: the committed text types like a key's text.
-                WindowEvent::Ime(winit::event::Ime::Commit(text)) => self.ime_commit(&text),
-                WindowEvent::Ime(winit::event::Ime::Preedit(text, cursor)) => {
-                    self.ime_preedit(&text, cursor)
-                }
-                WindowEvent::Ime(winit::event::Ime::Disabled) => {
-                    horizon_client::preedit::set_preedit(None)
-                }
-                WindowEvent::Resized(size) => {
-                    if let Some(r) = &mut self.renderer {
-                        r.resize(size.width, size.height);
-                    }
-                    self.observe_fullscreen();
-                }
-                WindowEvent::Focused(focused) => {
-                    self.focused = focused;
-                    self.focus_lost = (!focused).then(Instant::now);
-                    if focused {
-                        self.regrab_on_refocus();
-                    } else {
-                        // A held pointer goes with the focus, wherever the
-                        // system keeps the grab: the window asks for it back
-                        // when the focus returns (`regrab_on_refocus`).
-                        let held = self.captured;
-                        if self.control.is_none() {
-                            self.keys.clear();
-                            // Latched sneak/sprint live in `toggles`, not in the
-                            // physical keys: put them back so a short alt-tab
-                            // (no pause screen) does not drop them. Only a mapping
-                            // whose toggle option is on is latched; a held one has
-                            // no state to keep, and an unfocused window never gets
-                            // its key release, so leaving it down would keep the
-                            // player sneaking or sprinting until the key is tapped.
-                            for (slot, needs_toggle) in [
-                                self.settings.toggle_crouch,
-                                self.settings.toggle_sprint,
-                                self.settings.toggle_attack,
-                                self.settings.toggle_use,
-                            ]
-                            .into_iter()
-                            .enumerate()
-                            {
-                                self.toggles.0[slot].set_down(false, needs_toggle);
-                            }
-                            self.sync_toggle(0);
-                            self.sync_toggle(1);
-                            self.left = false;
-                            self.right = false;
-                            self.capture(false);
-                        }
-                        self.regrab_on_refocus = held;
-                    }
-                }
-                WindowEvent::CursorMoved { position, .. } => {
-                    if let Some(r) = &self.renderer {
-                        let b = HudBatch::new([r.config.width, r.config.height]);
-                        let previous = self.cursor;
-                        self.cursor = (position.x as f32 / b.scale, position.y as f32 / b.scale);
-                        if self.screen == Screen::Playing
-                            && (self.studio_timeline.dragging_playhead
-                                || self.studio_timeline.dragging_keyframe.is_some())
-                        {
-                            let action = self.studio_timeline.handle_mouse_drag(
-                                self.cursor,
-                                b.width,
-                                &mut self.studio_freecam,
-                            );
-                            if matches!(
-                                action,
-                                horizon_client::studio::TimelineAction::KeyframeMoved
-                            ) {
-                                self.studio_camera_track_dirty = true;
-                            }
-                            return Ok(());
-                        }
-                        if self.screen_mouse_dragged(previous) {
-                            return Ok(());
-                        }
-                        if self.dialog_open() {
-                            self.dialog_drag();
-                        }
-                        if self.screen == Screen::BlockEditor {
-                            self.block_editor_drag();
-                        }
-                        if self.screen == Screen::Advancements {
-                            self.advancements_drag();
-                        }
-                        if self.screen == Screen::Stats {
-                            self.stats_drag();
-                        }
-                        if self.screen == Screen::DebugOptions {
-                            self.debug_options_drag();
-                        }
-                        if self.screen == Screen::HudEditor {
-                            self.hud_editor_drag();
-                        }
-                        if self.screen == Screen::WorldOptions {
-                            self.world_options_drag();
-                        }
-                        if self.screen == Screen::Creative {
-                            let (_, oy) = Self::creative_origin(&b);
-                            self.creative_screen.drag_scrollbar(self.cursor.1 - oy);
-                        }
-                        if self.screen == Screen::Inventory {
-                            self.station_drag();
-                            self.recipe_book_drag();
-                        }
-                        if matches!(self.screen, Screen::Inventory | Screen::Creative) {
-                            self.inventory_drag_move();
-                        }
-                        if self.title_input_active()
-                            && let Some(title) = &mut self.title
-                        {
-                            title.drag(self.cursor, (b.width, b.height));
-                            title.drag_field(&self.gui.atlas, self.cursor.0);
-                        }
-                        if self.dragging && self.screen == Screen::Options {
-                            let _ = b;
-                            self.options_drag()?;
-                        }
-                    }
-                }
-                WindowEvent::MouseWheel { .. }
-                    if self.screen == Screen::Playing && self.studio_replay.is_some() => {}
-                WindowEvent::MouseWheel { delta, .. } => {
-                    let (raw_x, raw_y) = match delta {
-                        MouseScrollDelta::LineDelta(x, y) => (f64::from(x), f64::from(y)),
-                        MouseScrollDelta::PixelDelta(p) => (p.x / 30.0, p.y / 30.0),
-                    };
-                    // MouseHandler.onScroll: discrete scrolling and the wheel sensitivity.
-                    let discrete = self.settings.discrete_scroll;
-                    let wheel_sensitivity = f64::from(self.settings.mouse_wheel_sensitivity);
-                    let scaled = |v: f64| {
-                        (if discrete {
-                            horizon_client::mouse::java_signum(v)
-                        } else {
-                            v
-                        }) * wheel_sensitivity
-                    };
-                    let d = scaled(raw_y) as f32;
-                    // ScreenEvent.MouseScrolled.Pre: the open screen hears of
-                    // the wheel before anything scrolls, and a cancelled turn
-                    // scrolls nothing — no bundle, no list, slider or
-                    // scrollbar. The hotbar below reads the wheel only while
-                    // playing, which the gate excludes. A wheel the pad or the
-                    // keyboard's focus made up is not the mouse: it fires
-                    // nothing.
-                    if !self.pad_synthetic_input()
-                        && let Some((id, mouse)) = self.screen_view_now().map(|s| (s.id, s.mouse))
-                    {
-                        let (scroll, modifiers) = (
-                            [scaled(raw_x), scaled(raw_y)],
-                            glfw_modifiers(self.modifiers),
-                        );
-                        let mut canceled = false;
-                        // v2 lends the game mutably, then v1 hears the
-                        // screen as v2 left it (gone, if v2 closed it).
-                        self.native_screen_mouse_scrolled_pre_v2(
-                            id,
-                            mouse,
-                            scroll,
-                            modifiers,
-                            &mut canceled,
-                        );
-                        if !canceled && let Some(screen) = self.screen_view_now() {
-                            self.native_screen_mouse_scrolled_pre(
-                                &screen,
-                                scroll,
-                                modifiers,
-                                &mut canceled,
-                            );
-                        }
-                        if canceled {
-                            return Ok(());
-                        }
-                    }
-                    // A prompt is vanilla's `Minecraft.screen`, the only one MouseHandler.onScroll
-                    // tells: the top one hears the wheel, as the click arms below pick it, and
-                    // nothing behind it does.
-                    if self.prompt_open() {
-                        if self.command_prompt.is_some() || self.link_prompt.is_some() {
-                        } else if self.code_of_conduct.is_some() {
-                            self.code_of_conduct_scroll(d);
-                        } else if self.server_packs.prompt.is_none() {
-                            self.dialog_scroll(d);
-                        }
-                        return Ok(());
-                    }
-                    let stick_scroll = self.pad_stick_scroll();
-                    let step_scroll = self.pad_step_scroll();
-                    if self.title_input_active()
-                        && self.screen != Screen::Win
-                        && let Some(title) = &mut self.title
-                    {
-                        let size = self
-                            .window
-                            .as_ref()
-                            .map(|w| w.inner_size())
-                            .unwrap_or_default();
-                        let batch = HudBatch::new([size.width, size.height]);
-                        let gui = (batch.width, batch.height);
-                        if step_scroll {
-                            title.step_scroll(d, self.cursor, gui);
-                        } else if stick_scroll {
-                            title.stick_scroll(d, self.cursor, gui);
-                        } else {
-                            title.scroll_worlds(d, self.cursor, gui);
-                        }
-                    }
-                    // MouseHandler.onScroll: the hotbar (or the spectator
-                    // menu) takes the wheel only when no screen is open; a
-                    // book, lectern, sign or prompt drawn over gameplay is one.
-                    if self.hotbar_takes_wheel()
-                        && !self.native_wheel_event(d)
-                        && let Some((wheel, (horizontal_steps, vertical_steps))) = self
-                            .mouse
-                            .on_scroll(raw_x, raw_y, discrete, wheel_sensitivity)
-                    {
-                        if !self.pad_synthetic_input()
-                            && self.hotbar_scroll_canceled(
-                                [scaled(raw_x), scaled(raw_y)],
-                                [horizontal_steps, vertical_steps],
-                            )
-                        {
-                            return Ok(());
-                        }
-                        self.hotbar_wheel_step(wheel, vertical_steps);
-                    }
-                    if self.screen == Screen::Chat && d != 0.0 {
-                        self.chat_scroll(d);
-                    }
-                    if self.screen == Screen::Social && d != 0.0 {
-                        self.social_scroll(d);
-                    }
-                    if self.screen == Screen::CommandBlock && d != 0.0 {
-                        self.command_block_scroll(d);
-                    }
-                    if self.screen == Screen::Options && d != 0.0 {
-                        self.options_scroll(d)?;
-                    }
-                    // AbstractContainerScreen.mouseScrolled: a bundle under the
-                    // cursor takes the wheel before the screen's own scrolling.
-                    let bundle = bundles::takes_bundle_wheel(self.screen)
-                        && d != 0.0
-                        && self.bundle_scroll(scaled(raw_x), scaled(raw_y));
-                    if self.screen == Screen::Creative && d != 0.0 && !bundle {
-                        self.creative_screen.wheel(f64::from(d), &self.pack.names);
-                    }
-                    if self.screen == Screen::Inventory
-                        && d != 0.0
-                        && !bundle
-                        && !self.tweak_scroll(d, self.inventory_target().0)
-                    {
-                        self.station_scroll(d);
-                    }
-                    if self.screen == Screen::Stats && d != 0.0 {
-                        self.stats_scroll(d);
-                    }
-                    if self.screen == Screen::WorldOptions && d != 0.0 {
-                        self.world_options_scroll(d);
-                    }
-                    if self.screen == Screen::ServerLinks && d != 0.0 {
-                        self.server_links_scroll(d);
-                    }
-                    if self.screen == Screen::DebugOptions && d != 0.0 {
-                        self.debug_options_scroll(d);
-                    }
-                    if self.screen == Screen::HudEditor && d != 0.0 {
-                        self.hud_editor_scroll(f64::from(d));
-                    }
-                    if self.screen == Screen::Advancements {
-                        self.advancements_scroll(scaled(raw_x) as f32, d);
-                    }
-                }
-                WindowEvent::MouseInput { state, button, .. } if self.command_prompt.is_some() => {
-                    if state == ElementState::Pressed && button == MouseButton::Left {
-                        self.command_prompt_click();
-                    }
-                }
-                WindowEvent::MouseInput { state, button, .. } if self.link_prompt.is_some() => {
-                    if state == ElementState::Pressed && button == MouseButton::Left {
-                        self.link_prompt_click();
-                    }
-                }
-                WindowEvent::MouseInput { state, button, .. } if self.code_of_conduct.is_some() => {
-                    if state == ElementState::Pressed && button == MouseButton::Left {
-                        self.code_of_conduct_click()?;
-                    }
-                }
-                WindowEvent::MouseInput { state, button, .. }
-                    if self.server_packs.prompt.is_some() =>
-                {
-                    if state == ElementState::Pressed && button == MouseButton::Left {
-                        self.pack_prompt_click()?;
-                    }
-                }
-                WindowEvent::MouseInput { state, button, .. } if self.dialog_open() => {
-                    if button == MouseButton::Left {
-                        if state == ElementState::Pressed {
-                            self.dialog_click()?;
-                        } else {
-                            self.dialog_release();
-                        }
-                    }
-                }
-                // ConnectScreen's Cancel, under the prompts and dialogs above.
-                WindowEvent::MouseInput { state, button, .. } if self.remote_loading() => {
-                    if state == ElementState::Pressed && button == MouseButton::Left {
-                        self.connect_screen_click()?;
-                    }
-                }
-                WindowEvent::MouseInput { .. } if self.screen == Screen::Win => {}
-                WindowEvent::MouseInput { state, button, .. } if self.screen == Screen::Options => {
-                    if self.options_waiting_for_key() && state == ElementState::Pressed {
-                        self.options_bind_mouse(button)?;
-                    } else if matches!(button, MouseButton::Left | MouseButton::Right) {
-                        self.options_mouse(
-                            state == ElementState::Pressed,
-                            button == MouseButton::Right,
-                        )?;
-                    }
-                }
-                WindowEvent::MouseInput {
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                    ..
-                } if self.title_input_active() && self.screen != Screen::Options => {
-                    if let Some(title) = &mut self.title {
-                        title.release();
-                        title.release_field();
-                    }
-                }
-                WindowEvent::MouseInput {
-                    state,
-                    button: MouseButton::Left,
-                    ..
-                } if self.title_input_active() && state == ElementState::Pressed => {
-                    let size = self
-                        .renderer
-                        .as_ref()
-                        .map(|r| [r.config.width, r.config.height])
-                        .unwrap_or([1, 1]);
-                    let b = HudBatch::new(size);
-                    let atlas = &self.gui.atlas;
-                    let shift = self.has_shift_down();
-                    let (action, sound) = self.title.as_mut().map_or((Action::None, false), |t| {
-                        let clicked = t.click(self.cursor.0, self.cursor.1, (b.width, b.height));
-                        t.press_field(atlas, self.cursor, (b.width, b.height), shift);
-                        let rules = t.press_rules(atlas, self.cursor, (b.width, b.height));
-                        (clicked.0, clicked.1 || rules)
-                    });
-                    self.save_title_options();
-                    if sound {
-                        self.audio.play_button_click();
-                    }
-                    self.title_action(event_loop, action)?;
-                    self.reopen_data_packs(event_loop)?;
-                }
-                // AbstractSelectionList.mouseClicked: the world list takes a
-                // click of any button, so the middle one selects its row
-                // without joining (only the left click's play icon or its
-                // click on the selected row does that).
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Middle,
-                    ..
-                } if self.title_input_active() && self.screen != Screen::Options => {
-                    let size = self
-                        .renderer
-                        .as_ref()
-                        .map(|r| [r.config.width, r.config.height])
-                        .unwrap_or([1, 1]);
-                    let b = HudBatch::new(size);
-                    if let Some(title) = self.title.as_mut() {
-                        title.select_world_at(self.cursor.0, self.cursor.1, (b.width, b.height));
-                    }
-                }
-                WindowEvent::MouseInput { .. } if self.title_input_active() => {}
-                WindowEvent::MouseInput { state, button, .. } if self.book.is_some() => {
-                    if state == ElementState::Pressed && button == MouseButton::Left {
-                        let size = self
-                            .renderer
-                            .as_ref()
-                            .map(|r| [r.config.width, r.config.height])
-                            .unwrap_or([1, 1]);
-                        self.book_click(size);
-                    }
-                }
-                WindowEvent::MouseInput { state, button, .. } if self.sign_edit.is_some() => {
-                    if state == ElementState::Pressed && button == MouseButton::Left {
-                        let size = self
-                            .renderer
-                            .as_ref()
-                            .map(|r| [r.config.width, r.config.height])
-                            .unwrap_or([1, 1]);
-                        self.sign_edit_click(size);
-                    }
-                }
-                WindowEvent::MouseInput { state, button, .. } => {
-                    let pressed = state == ElementState::Pressed;
-                    if !pressed && button == MouseButton::Left {
-                        let action = self.studio_timeline.handle_mouse_up();
-                        if !matches!(action, horizon_client::studio::TimelineAction::None) {
-                            self.handle_studio_timeline_action(action);
-                        }
-                    }
-                    if (self.studio_freecam.active || self.studio_replay.is_some())
-                        && button == MouseButton::Right
-                    {
-                        if let Some(renderer) = &self.renderer {
-                            let batch =
-                                HudBatch::new([renderer.config.width, renderer.config.height]);
-                            if self.studio_timeline.visible
-                                && self.cursor.1 >= batch.height - self.studio_timeline.height()
-                            {
-                                if pressed
-                                    && let Some(index) = self.studio_timeline.keyframe_at_cursor(
-                                        self.cursor,
-                                        batch.width,
-                                        batch.height,
-                                        &self.studio_freecam,
-                                    )
-                                {
-                                    if index < self.studio_freecam.track.keyframes.len() {
-                                        self.studio_freecam.track.keyframes.remove(index);
-                                        self.studio_camera_track_dirty = true;
-                                    }
-                                    self.studio_timeline.selected_keyframe = None;
-                                }
-                                return Ok(());
-                            }
-                        }
-                        if pressed {
-                            self.studio_topbar.close_dropdown();
-                            self.studio_rmb_down = true;
-                            self.capture(true);
-                            return Ok(());
-                        } else if self.studio_rmb_down {
-                            self.studio_rmb_down = false;
-                            self.capture(false);
-                            return Ok(());
-                        }
-                    }
-                    if pressed
-                        && button == MouseButton::Left
-                        && self.screen == Screen::Playing
-                        && (self.studio_replay.is_some() || self.studio_freecam.active)
-                    {
-                        let size = self
-                            .renderer
-                            .as_ref()
-                            .map(|renderer| [renderer.config.width, renderer.config.height])
-                            .unwrap_or([1, 1]);
-                        let batch = HudBatch::new(size);
-                        let had_open_menu = self.studio_topbar.open_menu.is_some();
-                        let topbar_action = self.studio_topbar.handle_mouse_click(
-                            self.cursor,
-                            batch.width,
-                            batch.height,
-                        );
-                        if !matches!(topbar_action, horizon_client::studio::TopBarAction::None) {
-                            self.handle_studio_topbar_action(topbar_action);
-                            return Ok(());
-                        }
-                        if had_open_menu || self.cursor.1 <= self.studio_topbar.height {
-                            return Ok(());
-                        }
-                        if self.studio_timeline.visible {
-                            let action = self.studio_timeline.handle_mouse_down(
-                                self.cursor,
-                                batch.width,
-                                batch.height,
-                                &self.studio_freecam,
-                            );
-                            if !matches!(action, horizon_client::studio::TimelineAction::None) {
-                                self.handle_studio_timeline_action(action);
-                                return Ok(());
-                            }
-                            if self.cursor.1 >= batch.height - self.studio_timeline.height() {
-                                return Ok(());
-                            }
-                        }
-                    }
-                    if self.screen == Screen::Playing && self.studio_replay.is_some() {
-                        return Ok(());
-                    }
-                    if matches!(self.screen, Screen::Inventory | Screen::Creative)
-                        && let Some(key) = self
-                            .settings
-                            .keys
-                            .container_mouse_key(button, self.creative)
-                    {
-                        if pressed && self.carried.is_none() {
-                            self.inventory_hotkey(key);
-                        }
-                        // Neither edge of a bound button is an ordinary slot click.
-                        return Ok(());
-                    }
-                    if pressed
-                        && (self.sort_mouse_press(button)
-                            || self.hdr_mouse_press(button)
-                            || self.hud_editor_key_press(&horizon_client::keybinds::mouse_name(
-                                button,
-                            )))
-                    {
-                        return Ok(());
-                    }
-                    match self.screen {
-                        Screen::Playing => {
-                            if pressed && !self.captured {
-                                self.capture(true);
-                                return Ok(());
-                            }
-                            self.extras_mouse(button, pressed);
-                            if pressed
-                                && self.settings.keys.get("key.smoothCamera")
-                                    == horizon_client::keybinds::mouse_name(button)
-                            {
-                                self.smooth_camera_action();
-                            }
-                            let input = horizon_client::keybinds::mouse_name(button);
-                            for mapped in self.settings.keys.translate_mouse_all(button) {
-                                match mapped {
-                                    Err(b)
-                                        if !self.shared_default_acts(b, Some(input.as_str())) => {}
-                                    Err(b) => self.mouse_mapping(b, pressed, Source::Keyboard)?,
-                                    Ok(k) if pressed => {
-                                        self.keys.insert(k);
-                                        self.key_pressed(k, k)?;
-                                    }
-                                    Ok(k) => {
-                                        self.keys.remove(&k);
-                                    }
-                                }
-                            }
-                        }
-                        Screen::Inventory | Screen::Creative
-                            if !matches!(button, MouseButton::Left | MouseButton::Right) =>
-                        {
-                            // AbstractContainerScreen: another button clicks
-                            // a slot only as the pick block key (its hotbar
-                            // keys were handled above).
-                            if self.settings.keys.get("key.pickItem")
-                                == horizon_client::keybinds::mouse_name(button)
-                            {
-                                if pressed {
-                                    self.inventory_pick_press();
-                                } else {
-                                    self.inventory_pick_release();
-                                }
-                                if let Some(key) = self.container {
-                                    self.container_changed(key);
-                                }
-                            }
-                        }
-                        Screen::Inventory if pressed => {
-                            self.inventory_press(button == MouseButton::Right);
-                            if let Some(key) = self.container {
-                                self.container_changed(key);
-                            }
-                        }
-                        Screen::Inventory => {
-                            self.inventory_mouse_release(button == MouseButton::Right);
-                            self.station_release();
-                            self.recipe_book_release();
-                        }
-                        Screen::Chat if pressed && button == MouseButton::Left => self.chat_click(),
-                        Screen::Creative if pressed => {
-                            self.click_creative(button == MouseButton::Right);
-                        }
-                        Screen::Creative => {
-                            if button == MouseButton::Left {
-                                self.creative_screen.release();
-                            }
-                            self.inventory_mouse_release(button == MouseButton::Right);
-                        }
-                        Screen::Paused
-                            if pressed && button == MouseButton::Left && self.pause_menu =>
-                        {
-                            self.pause_click()?
-                        }
-                        Screen::WorldOptions if pressed && button == MouseButton::Left => {
-                            self.world_options_click()
-                        }
-                        Screen::ServerLinks if pressed && button == MouseButton::Left => {
-                            self.server_links_click()?
-                        }
-                        Screen::DebugOptions if pressed && button == MouseButton::Left => {
-                            self.debug_options_click()
-                        }
-                        Screen::DebugOptions if button == MouseButton::Left => {
-                            self.debug_options_release()
-                        }
-                        Screen::HudEditor
-                            if pressed
-                                && matches!(button, MouseButton::Left | MouseButton::Right) =>
-                        {
-                            self.hud_editor_press(button == MouseButton::Right)
-                        }
-                        Screen::HudEditor if button == MouseButton::Left => {
-                            self.hud_editor_release()
-                        }
-                        Screen::ConfirmLink if pressed && button == MouseButton::Left => {
-                            self.confirm_link_click()
-                        }
-                        Screen::DialogWarning if pressed && button == MouseButton::Left => {
-                            self.dialog_warning_click()?
-                        }
-                        Screen::WorldOptions if button == MouseButton::Left => {
-                            self.world_options_release()
-                        }
-                        Screen::Friends if pressed && button == MouseButton::Left => {
-                            self.friends_screen_click()
-                        }
-                        Screen::Social if pressed && button == MouseButton::Left => {
-                            self.social_click()
-                        }
-                        Screen::CommandBlock if pressed && button == MouseButton::Left => {
-                            self.command_block_click()
-                        }
-                        Screen::BlockEditor if pressed && button == MouseButton::Left => {
-                            self.block_editor_click()
-                        }
-                        Screen::BlockEditor if button == MouseButton::Left => {
-                            self.block_editor_release()
-                        }
-                        Screen::Dead if pressed && button == MouseButton::Left => {
-                            self.death_click()?
-                        }
-                        Screen::Advancements if button == MouseButton::Left => {
-                            let size = self
-                                .renderer
-                                .as_ref()
-                                .map_or([1, 1], |r| [r.config.width, r.config.height]);
-                            self.advancements_mouse(pressed, size);
-                        }
-                        Screen::Stats if pressed && button == MouseButton::Left => {
-                            let size = self
-                                .renderer
-                                .as_ref()
-                                .map_or([1, 1], |r| [r.config.width, r.config.height]);
-                            self.stats_click(size);
-                        }
-                        Screen::Stats if button == MouseButton::Left => self.stats_release(),
-                        _ => {}
-                    }
-                }
-                // ConfirmScreen.keyPressed: Escape answers no, once its delay is over.
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.screen == Screen::Dead && self.ui.death_confirm.is_some() =>
-                {
-                    if event.state == ElementState::Pressed
-                        && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
-                        && self
-                            .ui
-                            .death_confirm
-                            .is_some_and(|t| t.elapsed().as_millis() >= 1000)
-                    {
-                        self.death_confirm_answer(false)?;
-                    }
-                }
-                // ConfirmScreen.keyPressed: Escape answers no.
-                WindowEvent::KeyboardInput { event, .. } if self.command_prompt.is_some() => {
-                    if event.state == ElementState::Pressed
-                        && let PhysicalKey::Code(key) = event.physical_key
-                    {
-                        self.command_prompt_key(key);
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. } if self.link_prompt.is_some() => {
-                    if event.state == ElementState::Pressed
-                        && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
-                    {
-                        self.answer_link_prompt(false);
-                    }
-                }
-                // CodeOfConductScreen.shouldCloseOnEsc is false: no key leaves the screen.
-                WindowEvent::KeyboardInput { .. } if self.code_of_conduct.is_some() => {}
-                WindowEvent::KeyboardInput { event, .. } if self.server_packs.prompt.is_some() => {
-                    if event.state == ElementState::Pressed
-                        && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
-                    {
-                        self.answer_pack_prompt(false)?;
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. } if self.dialog_open() => {
-                    let shortcut = self.edit_shortcut(&event);
-                    if event.state == ElementState::Pressed
-                        && let PhysicalKey::Code(key) = event.physical_key
-                    {
-                        self.dialog_key(key, shortcut, event.text.as_deref())?
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.screen == Screen::Chat && self.title.is_none() =>
-                {
-                    if let PhysicalKey::Code(key) = event.physical_key {
-                        if event.state == ElementState::Pressed {
-                            self.keys.insert(key);
-                            self.chat_key(&event);
-                        } else {
-                            self.keys.remove(&key);
-                        }
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. } if self.sign_edit.is_some() => {
-                    self.sign_edit_key(&event)
-                }
-                WindowEvent::KeyboardInput { event, .. } if self.book.is_some() => {
-                    self.book_key(&event)
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.screen == Screen::Creative
-                        && self.creative_screen.tab().search
-                        && !self.mod_browser_typing()
-                        && event.state == ElementState::Pressed
-                        && !matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
-                {
-                    if let PhysicalKey::Code(key) = event.physical_key
-                        && self.search_tab_hotbar_key(key)
-                    {
-                        // The hovered slot took the key, and its characters
-                        // go nowhere (`ignoreTextInput`).
-                        typed = None;
-                    } else if let Some(shortcut) = self.edit_shortcut(&event) {
-                        self.creative_search_shortcut(shortcut);
-                    } else if let PhysicalKey::Code(key) = event.physical_key {
-                        // EditBox.keyPressed: arrows, Home, End, Delete and Backspace.
-                        let before = self.creative_screen.search.value.clone();
-                        let (ctrl, shift) = (self.has_control_down(), self.has_shift_down());
-                        if self.creative_screen.search.key(key, ctrl, shift) {
-                            if self.creative_screen.search.value != before {
-                                self.creative_screen.scroll = 0.0;
-                            }
-                        } else {
-                            self.creative_search_edit(event.text.as_deref());
-                        }
-                    } else {
-                        self.creative_search_edit(event.text.as_deref());
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.recipe_search_focused()
-                        && event.state == ElementState::Pressed
-                        && !matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
-                {
-                    // The recipe book's search box takes every key but Escape.
-                    self.recipe_key(&event);
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.mod_browser_typing()
-                        && event.state == ElementState::Pressed
-                        && !matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
-                {
-                    // A mod's item panel's search box, as the recipe book's.
-                    self.mod_browser_key(&event);
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.station_typing()
-                        && event.state == ElementState::Pressed
-                        && !matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
-                {
-                    // The anvil rename box takes every key but Escape (AnvilScreen.keyPressed).
-                    if let Some(shortcut) = self.edit_shortcut(&event) {
-                        self.station_shortcut(shortcut);
-                    } else if let PhysicalKey::Code(key) = event.physical_key
-                        && self.station_key(key)
-                    {
-                    } else {
-                        let backspace = event.physical_key == PhysicalKey::Code(KeyCode::Backspace);
-                        self.station_text(event.text.as_deref(), backspace);
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.screen == Screen::WorldOptions
-                        && !matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
-                {
-                    self.world_options_key(&event)
-                }
-                WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::Win => {
-                    self.win_key(&event)?
-                }
-                WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::Social => {
-                    self.social_key(&event)
-                }
-                WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::CommandBlock => {
-                    self.command_block_key(&event)
-                }
-                WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::DebugOptions => {
-                    self.debug_options_key(&event)
-                }
-                WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::BlockEditor => {
-                    self.block_editor_key(&event)
-                }
-                // Options consumes presses; releases still reach the bound
-                // gameplay mapping below, including sneak/sprint toggles.
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.screen == Screen::Options && event.state == ElementState::Pressed =>
-                {
-                    if let Some(shortcut) = self.edit_shortcut(&event)
-                        && self.options_shortcut(shortcut)
-                    {
-                        return Ok(());
-                    }
-                    if let PhysicalKey::Code(key) = event.physical_key {
-                        self.options_key(key, event.text.as_deref())?;
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.screen == Screen::Paused
-                        && event.state == ElementState::Pressed
-                        && self.pause_menu
-                        && !matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
-                {
-                    if let PhysicalKey::Code(key) = event.physical_key {
-                        self.native_key_event(key, true, event.repeat);
-                    }
-                    if let PhysicalKey::Code(key) = event.physical_key {
-                        self.pause_key(key)?;
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.screen == Screen::Dead && event.state == ElementState::Pressed =>
-                {
-                    if let PhysicalKey::Code(key) = event.physical_key {
-                        self.native_key_event(key, true, event.repeat);
-                    }
-                    if let PhysicalKey::Code(key) = event.physical_key {
-                        self.death_key(key)?;
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. } if self.title_input_active() => {
-                    if event.state == ElementState::Pressed {
-                        if let Some(shortcut) = self.edit_shortcut(&event) {
-                            self.title_shortcut(shortcut);
-                            return Ok(());
-                        }
-                        // `TabNavigationBar.keyPressed` comes before the open
-                        // tab's own widgets: Ctrl plus a digit or Tab picks a
-                        // tab instead of reaching them.
-                        if let PhysicalKey::Code(key) = event.physical_key {
-                            let ctrl = self.has_control_down_with_quirk();
-                            let shift = self.has_shift_down();
-                            let tab = self
-                                .title
-                                .as_mut()
-                                .and_then(|t| t.tab_bar_key(key, ctrl, shift));
-                            if let Some(sound) = tab {
-                                if sound {
-                                    self.audio.play_button_click();
-                                }
-                                return Ok(());
-                            }
-                        }
-                        let (w, h) = self.gui_size();
-                        match event.physical_key {
-                            // `WorldListEntry.keyPressed`: Space joins too, with the button click sound.
-                            PhysicalKey::Code(
-                                code @ (KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space),
-                            ) if code != KeyCode::Space
-                                || self.title.as_mut().is_some_and(|t| {
-                                    !t.has_caret_field()
-                                        && (t.list_focused() || t.focused_button.is_some())
-                                }) =>
-                            {
-                                let (action, sound) = self
-                                    .title
-                                    .as_mut()
-                                    .map_or((Action::None, false), |t| t.confirm_key_size((w, h)));
-                                self.save_title_options();
-                                if sound {
-                                    self.audio.play_button_click();
-                                }
-                                self.title_action(event_loop, action)?;
-                            }
-                            PhysicalKey::Code(
-                                key @ (KeyCode::Backspace
-                                | KeyCode::Delete
-                                | KeyCode::ArrowLeft
-                                | KeyCode::ArrowRight
-                                | KeyCode::Home
-                                | KeyCode::End),
-                            ) if self.title.as_mut().is_some_and(|t| t.has_caret_field()) => {
-                                let (ctrl, shift) =
-                                    (self.has_control_down(), self.has_shift_down());
-                                if let Some(t) = self.title.as_mut() {
-                                    t.field_key(key, ctrl, shift);
-                                }
-                            }
-                            PhysicalKey::Code(
-                                key @ (KeyCode::ArrowLeft
-                                | KeyCode::ArrowRight
-                                | KeyCode::ArrowUp
-                                | KeyCode::ArrowDown),
-                            ) => {
-                                let shift = self.has_shift_down();
-                                if let Some(t) = self.title.as_mut() {
-                                    t.arrow_key(key, (w, h), shift);
-                                }
-                            }
-                            PhysicalKey::Code(KeyCode::Backspace) => self.title_edit(None, true),
-                            PhysicalKey::Code(KeyCode::Tab) => {
-                                let shift = self.has_shift_down();
-                                if let Some(t) = self.title.as_mut() {
-                                    t.tab_dir(shift, (w, h));
-                                }
-                            }
-                            PhysicalKey::Code(KeyCode::Escape) => {
-                                if let Some(t) = self.title.as_mut() {
-                                    t.escape();
-                                    self.reopen_data_packs(event_loop)?;
-                                }
-                                self.save_title_options();
-                            }
-                            PhysicalKey::Code(KeyCode::F5) => {
-                                if let Some(t) = self.title.as_mut() {
-                                    t.refresh_servers();
-                                }
-                            }
-                            _ => self.title_edit(event.text.as_deref(), false),
-                        }
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. } => {
-                    let PhysicalKey::Code(key) = event.physical_key else {
-                        return Ok(());
-                    };
-                    self.native_key_event(key, event.state == ElementState::Pressed, event.repeat);
-                    // Screen.keyPressed sees the physical key, repeats included.
-                    if event.state == ElementState::Pressed
-                        && self.screen == Screen::Inventory
-                        && (self.merchant_key(key) || self.recipe_book_key(key))
-                    {
-                        return Ok(());
-                    }
-                    if event.state == ElementState::Pressed
-                        && !event.repeat
-                        && horizon_client::keybinds::key_name(key)
-                            .is_some_and(|n| self.settings.keys.get("key.smoothCamera") == n)
-                    {
-                        self.smooth_camera_action();
-                    }
-                    self.mapped_key_event(key, event.state == ElementState::Pressed, event.repeat)?;
-                }
-                WindowEvent::RedrawRequested => {
-                    horizon_client::spans::time("recover_device", || self.recover_device())?;
-                    self.observe_fullscreen();
-                    self.sync_ime();
-                    let now = Instant::now();
-                    horizon_threads::work::tick_start();
-                    let elapsed = now.duration_since(self.previous);
-                    self.frame_ticks = elapsed.as_secs_f32() * 20.0;
-                    self.previous = now;
-                    if self.studio_freecam.active
-                        && self.screen == Screen::Playing
-                        && !self.dialog_open()
-                    {
-                        let held = |key| f64::from(u8::from(self.keys.raw(&key)));
-                        let forward = held(KeyCode::KeyW) - held(KeyCode::KeyS);
-                        let strafe = held(KeyCode::KeyD) - held(KeyCode::KeyA);
-                        let vertical =
-                            held(KeyCode::KeyE) - held(KeyCode::KeyQ) + held(KeyCode::Space);
-                        let fast = self.keys.raw(&KeyCode::ControlRight);
-                        self.studio_freecam.update_flight_motion(
-                            forward,
-                            strafe,
-                            vertical,
-                            fast,
-                            elapsed.as_secs_f64().min(0.1),
-                        );
-                    }
-                    // Arrow-key camera controls belong to gameplay; chat and
-                    // other screens use the same keys for their own navigation.
-                    if self.screen == Screen::Playing
-                        && self.title.is_none()
-                        && self.sign_edit.is_none()
-                        && self.book.is_none()
-                        && !self.dialog_open()
-                    {
-                        let turn = |k| f32::from(u8::from(self.keys.raw(&k)));
-                        let secs = elapsed.as_secs_f32().min(0.1);
-                        let yaw = (turn(KeyCode::ArrowRight) - turn(KeyCode::ArrowLeft)) * 90.0;
-                        let pitch = (turn(KeyCode::ArrowDown) - turn(KeyCode::ArrowUp)) * 90.0;
-                        if yaw != 0.0 || pitch != 0.0 {
-                            // 90 degrees a second, as `Entity.turn` degrees.
-                            self.turn_player(
-                                f64::from(yaw * secs / 0.15),
-                                f64::from(pitch * secs / 0.15),
-                            );
-                        }
-                    }
-                    if self.title.is_none() {
-                        horizon_client::spans::time("update_world", || self.update_world());
-                        horizon_client::spans::time("spawn_player", || self.spawn_player())?;
-                    }
-                    let updated = Instant::now();
-                    self.track_toggle_screens();
-                    self.heal_hold_latches();
-                    // For the "I'm playing" ping: an atomic, sent on when it changes.
-                    #[cfg(feature = "heartbeat")]
-                    horizon_client::heartbeat::set_lan(self.is_published());
-                    #[cfg(feature = "discord")]
-                    self.update_discord_presence();
-                    let steps = self.clock.advance(elapsed);
-                    for _ in 0..steps {
-                        let started = Instant::now();
-                        // Minecraft.tick: ClientTickEvent.Pre before any of it.
-                        self.native_client_tick_pre();
-                        if self.title.is_none() && !self.pause {
-                            if self.tick_script.armed() {
-                                self.tick_script_step(event_loop);
-                            }
-                            horizon_client::spans::time("tick", || self.tick())?;
-                            // Cave mood (a shader pack's playerMood) samples on a random
-                            // seeded from the clock: under `HORIZON_STILL` it waits for the
-                            // world and draws from its tick.
-                            if !self.clock.still() {
-                                self.tick_ambience();
-                            } else if self.clock.runs_normally() {
-                                self.ambience.reseed(self.visual_ticks() as i64);
-                                self.tick_ambience();
-                            }
-                            self.tick_fov();
-                        }
-                        self.tick_win_screen()?;
-                        self.native_configs_tick_client();
-                        // Gui.tick runs ChatListener.tick paused or not.
-                        self.tick_chat_queue();
-                        self.tick_music();
-                        self.tick_sound_engine();
-                        // ClientTickEvent.Post, the tick's work done.
-                        self.native_client_tick_post();
-                        self.clock.record(started.elapsed());
-                        if let Some(report) = self.clock.take_sprint_report() {
-                            self.sprint_report(&report);
-                        }
-                    }
-                    self.extras_frame(elapsed);
-                    self.extras_retry()?;
-                    self.apply_mouse_look();
-                    self.pad_look(elapsed.as_secs_f32());
-                    self.advance_flight();
-                    self.tick_world_icon();
-                    let ticked = Instant::now();
-                    let rendered = match self.render() {
-                        // The callback can fire during this frame; rebuild on
-                        // the next redraw rather than exiting on its error.
-                        Err(_) if self.renderer.as_ref().is_some_and(Renderer::device_lost) => {
-                            false
-                        }
-                        result => result?,
-                    };
-                    horizon_client::spans::time("pr_cursor", || self.apply_cursor_icon());
-                    // The frame's spans, taken every frame they are recorded so they never pile up.
-                    let frame_spans = if horizon_client::spans::recording_here() {
-                        horizon_client::spans::take_raw()
-                    } else {
-                        Vec::new()
-                    };
-                    let mut perf_times = None;
-                    if let Some(r) = self.renderer.as_mut() {
-                        let cpu = now.elapsed().saturating_sub(r.last_wait);
-                        horizon_threads::work::tick_end(cpu.as_nanos() as u64);
-                        if rendered {
-                            let ms = |d: Duration| d.as_secs_f32() * 1000.0;
-                            perf_times = Some((ms(cpu), r.gpu_times.last().copied()));
-                            self.frame_graph.record(
-                                ms(elapsed),
-                                ms(cpu),
-                                r.gpu_times.last().copied(),
-                            );
-                            if let Some(&gpu) = r.gpu_times.last() {
-                                self.gpu_utilization =
-                                    f64::from(gpu) * 100.0 / f64::from(ms(cpu).max(0.001));
-                            }
-                            // GPU Culling's Auto: only frames of a world that has settled
-                            // count, and only where it can be switched.
-                            if self.settings.horizon.gpu_culling
-                                == horizon_client::graphics::GpuCullingMode::Auto
-                                && self.screen == Screen::Playing
-                                && !self.streaming.terrain_loading()
-                                && horizon_client::graphics::gpu_culling_offer()
-                                    .reason()
-                                    .is_none()
-                                && let Some(on) = self.gpu_culling_auto.observe(
-                                    ms(cpu),
-                                    r.gpu_times.last().copied(),
-                                    ms(elapsed),
-                                )
-                            {
-                                log::info!(
-                                    "Horizon: GPU Culling Auto turns it {} ({})",
-                                    if on { "on" } else { "off" },
-                                    self.gpu_culling_auto.state()
-                                );
-                                if r.set_gpu_culling(on).is_err() {
-                                    self.gpu_culling_auto.reset();
-                                }
-                            }
-                            self.frame_stats.record_cpu(ms(cpu));
-                            let render = r.last_encode;
-                            self.frame_stats.record_phases([
-                                ms(updated - now),
-                                ms(ticked - updated),
-                                ms(ticked.elapsed().saturating_sub(r.last_wait + render)),
-                                ms(render),
-                            ]);
-                            self.frame_stats
-                                .record_block_entities(r.static_block_entity_frame_stats());
-                        }
-                        self.frame_stats.record_gpu(&r.gpu_times);
-                        r.gpu_times.clear();
-                    }
-                    self.limit_frame();
-                    self.pause = self.pauses_game();
-                    if let Some(server) = &self.integrated {
-                        server.set_paused(self.pause);
-                        server.set_distances(
-                            self.settings.render_distance,
-                            self.settings.simulation_distance,
-                            self.settings.entity_distance,
-                        );
-                        server.set_legacy_rules(self.settings.extras.pvp.combat.rules);
-                    }
-                    self.clock.end_frame(self.pause);
-                    let mut consumed = false;
-                    let finished = self
-                        .renderer
-                        .as_mut()
-                        .and_then(|r| r.screenshot_result.take());
-                    if let Some(result) = &finished
-                        && self.ui.screenshot_message.is_some()
-                    {
-                        self.finish_screenshot(result);
-                        consumed = true;
-                    }
-                    if let Some(result) = &finished
-                        && let Some(reply) = self.pending_screenshot.take()
-                    {
-                        let _ = reply.send(
-                            match result {
-                                Ok([w, h]) => {
-                                    serde_json::json!({ "ok": true, "width": w, "height": h })
-                                }
-                                Err(e) => serde_json::json!({ "error": e }),
-                            }
-                            .to_string(),
-                        );
-                        consumed = true;
-                    }
-                    if let Some(result) =
-                        self.renderer.as_mut().and_then(|r| r.capture_result.take())
-                        && let Some(reply) = self.pending_render_capture.take()
-                    {
-                        let value = result.unwrap_or_else(|e| serde_json::json!({ "error": e }));
-                        let _ = reply.send(value.to_string());
-                    }
-                    // A result nobody asked for was the world icon's
-                    // (`tick_world_icon`): a failure tries again a second
-                    // later, as `tryTakeScreenshotIfNeeded` does.
-                    if !consumed && let Some(Err(error)) = finished {
-                        log::warn!("Horizon: couldn't save the world icon: {error}");
-                    }
-                    if rendered {
-                        self.frame_stats.record(elapsed.as_secs_f32() * 1000.0);
-                        if let Some((cpu, gpu)) = perf_times {
-                            self.record_perf_frame(
-                                elapsed.as_secs_f32() * 1000.0,
-                                cpu,
-                                gpu,
-                                &frame_spans,
-                            );
-                        }
-                        if horizon_threads::alloc_count::ON {
-                            self.record_frame_allocs();
-                        }
-                        self.debug_charts.frame_times.log(elapsed.as_nanos() as i64);
-                        if self.frames == 0 {
-                            // The launcher times Play to this line (launcher/src/perf.rs).
-                            log::info!(
-                                "Horizon: first frame after {} ms",
-                                self.started.elapsed().as_millis()
-                            );
-                        }
-                        if self.title.is_some() {
-                            self.perf.title_shown();
-                        } else if self.screen == Screen::Playing && self.player.is_some() {
-                            self.perf
-                                .frame(elapsed.as_secs_f32() * 1000.0, &frame_spans);
-                            if startup::filling() {
-                                let mut fill: Vec<(&'static str, usize)> =
-                                    self.streaming.stages().to_vec();
-                                fill.push(("resident", self.world.chunks.len()));
-                                fill.push(("uploads", self.pending_uploads.len()));
-                                fill.push(("backlog", self.remote_backlog()));
-                                startup::counters("world.fill", &fill);
-                            }
-                            if startup::on() {
-                                startup::view_filled(
-                                    self.world.chunks.len(),
-                                    self.streaming.pending()
-                                        + self.pending_uploads.len()
-                                        + self.remote_backlog(),
-                                    self.streaming.radius.max(0) as u32,
-                                );
-                            }
-                            self.world_frames += 1;
-                        }
-                        self.frames += 1;
-                        self.fps_frames += 1;
-                        horizon_client::crash::debug_crash_tick();
-                        if self.fps_at.elapsed() >= Duration::from_secs(1) {
-                            self.fps = self.fps_frames as f32 / self.fps_at.elapsed().as_secs_f32();
-                            self.fps_frames = 0;
-                            self.fps_at = Instant::now();
-                        }
-                        if self.options.frames.is_some_and(|f| self.frames >= f)
-                            || self
-                                .options
-                                .world_frames
-                                .is_some_and(|f| self.world_frames >= f)
-                        {
-                            event_loop.exit();
-                        }
-                    }
-                }
-                _ => {}
-            }
-
-            Ok(())
-        })();
-        // ScreenEvent.CharacterTyped.Pre: GLFW's char callback comes after its
-        // key callback, so a key's characters reach the screen the key left
-        // open, after the key's own effects (`KeyboardHandler.charTyped`).
-        self.screen_chars_typed(typed.as_deref());
-        if let Err(e) = result {
-            self.error = Some(e);
-            self.exit_on_error(event_loop);
-        }
-    }
-}
 /// clouds.png as filled cells (`CloudRenderer.prepare`: alpha 10 or more).
-fn load_clouds(root: &std::path::Path) -> (u32, u32, Vec<bool>) {
-    horizon_client::hud::decode(&root.join("assets/minecraft/textures/environment/clouds.png"))
+fn load_clouds(root: &horizon_assets::resource_source::ResourceSource) -> (u32, u32, Vec<bool>) {
+    root.read("assets/minecraft/textures/environment/clouds.png")
+        .map_err(Into::into)
+        .and_then(|bytes| horizon_client::hud::decode_bytes(&bytes))
         .map(|(w, h, px)| {
             (
                 w,
@@ -16824,8 +16673,10 @@ fn load_clouds(root: &std::path::Path) -> (u32, u32, Vec<bool>) {
         .unwrap_or((1, 1, vec![false]))
 }
 /// misc/forcefield.png for the world border wall (square, power of two).
-fn load_forcefield(root: &std::path::Path) -> (u32, u32, Vec<u8>) {
-    horizon_client::hud::decode(&root.join("assets/minecraft/textures/misc/forcefield.png"))
+fn load_forcefield(root: &horizon_assets::resource_source::ResourceSource) -> (u32, u32, Vec<u8>) {
+    root.read("assets/minecraft/textures/misc/forcefield.png")
+        .map_err(Into::into)
+        .and_then(|bytes| horizon_client::hud::decode_bytes(&bytes))
         .ok()
         .filter(|(w, h, _)| w == h && w.is_power_of_two())
         .unwrap_or((1, 1, vec![0; 4]))
@@ -16842,7 +16693,20 @@ impl<'a> Game<'a> {
         audio: Audio,
         prepared: Option<GameCpuResources>,
     ) -> Result<Self> {
+        let phase = match mod_api::__private::current_phase() {
+            mod_api::__private::ModPhase::Packages if cfg!(test) => {
+                mod_api::__private::ModPhase::World
+            }
+            mod_api::__private::ModPhase::Packages => mod_api::__private::ModPhase::Setup,
+            phase => phase,
+        };
+        let mod_phase = mod_api::__private::PhaseOwner::new(phase);
+        // A scoped hook on this thread asks this game's parts.
+        mod_api::__private::mark_game_thread();
+        let standalone_geometry = native_block_entity_draw::StandaloneGeometry::new(&pack, &gui);
+        let loop_side = options.execution_role.loop_side();
         let root = options.resources.clone();
+        let mod_sources = options.mods.clone();
         let registry = pack.assets.registry;
         // Until a world is opened the streamer is idle.
         let mut streaming = Streaming::new(
@@ -16858,9 +16722,16 @@ impl<'a> Game<'a> {
                 .join(".horizon-title"),
             horizon_client::save::LevelShape::OVERWORLD,
         ));
-        let prepared = prepared
-            .map(Ok)
-            .unwrap_or_else(|| GameCpuResources::load(&root, None))?;
+        let prepared = prepared.map(Ok).unwrap_or_else(|| {
+            GameCpuResources::load(
+                &horizon_assets::resource_source::ResourceRoot::new(
+                    root.clone(),
+                    packs::cache_dir(),
+                    pack.source.clone(),
+                ),
+                None,
+            )
+        })?;
         let world = World::new(res.facts().air, 0);
         let tutorial = tutorial::Tutorial::new(tutorial::Step::from_option(
             settings.file.int("tutorialStep"),
@@ -16873,11 +16744,15 @@ impl<'a> Game<'a> {
             .spikes
             .unwrap_or(horizon_client::client_perf::SLOW_FRAME_MS);
         let particles = horizon_client::particles::ParticleEngine::new(
-            &root,
+            &pack.source,
             &gui.atlas.sprites,
             &gui.atlas.translucent,
         );
-        let mut game = Game {
+        let resource_source = pack.source.clone();
+        let game = Game {
+            structure_spawns: horizon_client::mobs::spawn_selection::StructureSpawns::load(
+                &options.resources,
+            ),
             world_biomes: None,
             world_biomes_base: None,
             res: res.clone(),
@@ -16885,7 +16760,7 @@ impl<'a> Game<'a> {
             pending_entry: None,
             debug_density: RefCell::default(),
             pending_pack_reload: false,
-            frame_followed: None,
+            frame_attempted: render_settings::FrameAttempt::default(),
             pack_folder: None,
             pack_reload: None,
             server_packs: Default::default(),
@@ -16899,8 +16774,11 @@ impl<'a> Game<'a> {
             motion: res.motion(),
             health_resources: res.motion().health.clone(),
             damage_tag_generation: 1,
+            data_map_registries: Vec::new(),
             pack,
             gui,
+            instance_groups: Default::default(),
+            standalone_geometry,
             fog: Default::default(),
             screen_fx: Default::default(),
             item_activation: Default::default(),
@@ -16940,6 +16818,7 @@ impl<'a> Game<'a> {
             last_inv_click: None,
             last_quick_moved: None,
             container: None,
+            open_container_slots: None,
             station: None,
             potions: Default::default(),
             scratch_slot: None,
@@ -16955,6 +16834,7 @@ impl<'a> Game<'a> {
             },
             keys: Default::default(),
             physical_keys: HashSet::new(),
+            rejected_keys: HashSet::new(),
             physical_buttons: HashSet::new(),
             drag_button: None,
             right_click_emulation: Default::default(),
@@ -16971,6 +16851,8 @@ impl<'a> Game<'a> {
             split_hud: Default::default(),
             split_auth: None,
             focused: true,
+            unclaimed_window: false,
+            focus_after_run: None,
             ime_allowed: false,
             ime_area: None,
             focus_lost: None,
@@ -16988,7 +16870,9 @@ impl<'a> Game<'a> {
             gpu_pass_detail: false,
             screen: Screen::Playing,
             observed_screen: None,
+            effects_layout: std::cell::Cell::new(None),
             window: None,
+            resize_state: None,
             renderer: None,
             last_device_recovery: None,
             entity_vertices: Vec::new(),
@@ -17002,6 +16886,8 @@ impl<'a> Game<'a> {
             skin_models: Default::default(),
             skin_frame: Default::default(),
             glowing_vertices: Default::default(),
+            mod_sounds: Default::default(),
+            mod_clear_particles: Default::default(),
             pack_ids: None,
             health_hud: hud_layout::HealthHud::default(),
             started: now,
@@ -17012,6 +16898,12 @@ impl<'a> Game<'a> {
             frames: 0,
             glint_frame: Default::default(),
             kept_block_entities: Default::default(),
+            prepared_model_draws: Default::default(),
+            world_geometry: Some(Default::default()),
+            debug_renderers: Vec::new(),
+            debug_renderers_version: None,
+            hud_layer_next: None,
+            mod_view_distances: Default::default(),
             item_level_cache: Default::default(),
             world_frames: 0,
             fps: 0.0,
@@ -17025,7 +16917,11 @@ impl<'a> Game<'a> {
             level,
             player_autosaves: Default::default(),
             session_lock: None,
+            world_adopted: false,
             audio,
+            loop_context: Arc::new(res.core.item_data.context().loop_context(loop_side, [])),
+            setting_overrides: Default::default(),
+            damage_hooks: native_hooks::DAMAGE_HOOKS,
             music: {
                 // The manager starts with the saved option (MusicManager's constructor).
                 let mut music = horizon_client::music::MusicManager::default();
@@ -17047,6 +16943,7 @@ impl<'a> Game<'a> {
             was_fall_flying: false,
             bee_sounds: HashMap::new(),
             guardian_sounds: HashSet::new(),
+            guardian_look_scratch: Vec::new(),
             dropped: Default::default(),
             next_entity: 0,
             ticked_entities_through: u32::MAX,
@@ -17060,7 +16957,10 @@ impl<'a> Game<'a> {
             loading_progress: 0.0,
             creation_job: None,
             loading_progress_at: None,
+            moving_pistons_stale: false,
             spawn_origin: None,
+            spawn_hook_fired: false,
+            spawn_hook_cancelled: false,
             spawn_spiral: Default::default(),
             player_spawn: None,
             spawn_wait: Vec::new(),
@@ -17092,11 +16992,13 @@ impl<'a> Game<'a> {
             title: None,
             armor: [None, None, None, None],
             offhand: None,
+            equipment: Default::default(),
             hotbar_pop: [0; 10],
             hand: Hand::Main,
             shield_cooldown: 0,
             cooldowns: Default::default(),
             command_source: None,
+            native_command_filter: false,
             titles: Default::default(),
             tool_highlight: Default::default(),
             saving_indicator: Default::default(),
@@ -17138,6 +17040,7 @@ impl<'a> Game<'a> {
             sleep_seen: (0, 0),
             dim: Dim::Overworld,
             world_root: PathBuf::new(),
+            owner_migration: None,
             world_flat: false,
             world_debug: false,
             server_trips: Vec::new(),
@@ -17158,17 +17061,17 @@ impl<'a> Game<'a> {
             level_events: Vec::new(),
             falling: Default::default(),
             transient_blocks: Default::default(),
-            paintings: Vec::new(),
+            paintings: Default::default(),
             painting_variants: prepared.painting_variants,
-            item_frames: Vec::new(),
+            item_frames: Default::default(),
             frame_model: prepared.frame_model,
             glow_frame_model: prepared.glow_frame_model,
             map_frame_model: prepared.map_frame_model,
             glow_map_frame_model: prepared.glow_map_frame_model,
             armor_stands: Default::default(),
             location_armor: Default::default(),
-            cushions: Vec::new(),
-            others: Vec::new(),
+            cushions: Default::default(),
+            others: Default::default(),
             armor_stand_assets: prepared.armor_stand_assets,
             waypoint_styles: prepared.waypoint_styles,
             waypoints: Default::default(),
@@ -17176,6 +17079,7 @@ impl<'a> Game<'a> {
             native_camera_frame: None,
             posed_rotation: None,
             post_effects: Vec::new(),
+            polytone_post_ticks: 0.0,
             spectated_post_effect: None,
             experience_display: Default::default(),
             boats: Default::default(),
@@ -17186,15 +17090,13 @@ impl<'a> Game<'a> {
             entity_models: prepared.entity_models,
             carts: Default::default(),
             watched_vehicles: Vec::new(),
-            native_moves: Vec::new(),
             jukebox_sounds: HashMap::new(),
             bolts: Vec::new(),
             maps: maps::Maps::default(),
             fight: dragon::Fight::default(),
-            dragon: None,
-            crystals: Vec::new(),
-            dragon_fireballs: Vec::new(),
-            breath_clouds: Vec::new(),
+            dragon: Default::default(),
+            crystals: Default::default(),
+            breath_clouds: Default::default(),
             dragon_model: prepared.dragon_model,
             map_patches: Vec::new(),
             name_tag_layouts: Default::default(),
@@ -17209,14 +17111,11 @@ impl<'a> Game<'a> {
                         .unwrap_or_default()
                         .join("assets/skins"),
                 );
-                downloads.set_resource_root(root.clone());
+                downloads.set_resource_root(resource_source.clone());
                 downloads
             }),
             skin_profiles: RefCell::new(horizon_client::skins::Resolver::new()),
             skin_slots: horizon_client::skins::SkinSlots::new(horizon_client::hud::SKIN_SLOTS),
-            cosmetics: Default::default(),
-            emotes: Default::default(),
-            emote_wheel: Default::default(),
             skin_3d: Default::default(),
             trim_slots: Default::default(),
             cart_models: prepared.cart_models,
@@ -17235,7 +17134,7 @@ impl<'a> Game<'a> {
             remote_hooks: Vec::new(),
             tridents: Default::default(),
             rockets: Default::default(),
-            ominous_spawners: Vec::new(),
+            ominous_spawners: Default::default(),
             creaking: Default::default(),
             spawners: Default::default(),
             spawn_scratch: Default::default(),
@@ -17244,11 +17143,15 @@ impl<'a> Game<'a> {
             bee_stinger_model: prepared.bee_stinger_model,
             tnts: Default::default(),
             hoppers: HashMap::new(),
+            transactions: Vec::new(),
+            contents_changing: Vec::new(),
             mod_screen: None,
             mod_container_viewers: HashMap::new(),
-            mod_chunk_tickets: HashMap::new(),
             item_columns: None,
+            pickup_columns: None,
             pass_mobs: None,
+            spawner_tick_positions: Vec::new(),
+            trial_spawner_tick_positions: Vec::new(),
             creative_screen: prepared.creative_screen,
             creative_ignore_text: false,
             control: None,
@@ -17256,7 +17159,6 @@ impl<'a> Game<'a> {
             agent_last: None,
             frame_stats: Default::default(),
             alloc_mark: None,
-            perf: Default::default(),
             pending_screenshot: None,
             screenshot_sequence: None,
             pending_render_capture: None,
@@ -17281,23 +17183,28 @@ impl<'a> Game<'a> {
             frame_graph: Default::default(),
             extras: Default::default(),
             pvp: Default::default(),
-            mods: Default::default(),
+            mods: mod_sources,
+            mod_jobs: Default::default(),
             recipe_tables: Default::default(),
             panel: Default::default(),
             native_shaders: Default::default(),
             native_input: Default::default(),
             native_lifecycle: Default::default(),
+            lent_mobs: Default::default(),
+            held_out: Vec::with_capacity(4),
             native_configs: Default::default(),
+            mod_phase,
             native_net: Default::default(),
-            native_player_fx: Default::default(),
-            native_packets: Default::default(),
             native_mod_screen: None,
             sky_darken_memo: Default::default(),
             water_plane_memo: Default::default(),
             water_plane_scan: Default::default(),
             vehicle_mob_reach: Default::default(),
             persist: Default::default(),
+            missing_professions: Default::default(),
             entity_attachments: Default::default(),
+            entity_initialization: Default::default(),
+            attachment_indexes: Default::default(),
             remote: None,
             studio_replay: None,
             studio_freecam: Default::default(),
@@ -17340,6 +17247,7 @@ impl<'a> Game<'a> {
             rendered_mobs: Default::default(),
             screen_blur_requested: Default::default(),
             spawn_counts: HashMap::new(),
+            spawn_policies: HashMap::new(),
             pause_menu: true,
             pause_focus: None,
             death_focus: None,
@@ -17347,10 +17255,11 @@ impl<'a> Game<'a> {
             previous_mode: None,
             gamemode_switcher: None,
             clipboard: Default::default(),
+            user_input: Default::default(),
             text_selection: Default::default(),
             saved_for_exit: false,
-            native_client_stopped: false,
             pending_save: None,
+            server_tick_deadline: None,
             frame_drawn: true,
             world_icon: None,
             forced_hit: None,
@@ -17361,7 +17270,6 @@ impl<'a> Game<'a> {
             block_reach: 4.5,
             guest_use: None,
             use_failed: false,
-            guest_inventory_resend: false,
             lan_events: Vec::new(),
             lan_songs: Vec::new(),
             lan_cushion_breaks: Vec::new(),
@@ -17377,35 +17285,39 @@ impl<'a> Game<'a> {
             lan_global_events: Vec::new(),
             lid_openers: HashMap::new(),
             lan_acting: None,
+            acting_abilities: None,
             native_commands_refresh: false,
             lan_building_boxes: Default::default(),
             save_after_guest_turn: false,
+            lan_guest_swaps: Vec::new(),
             player_attachments: Default::default(),
-            guest_attachments: HashMap::new(),
             lan_break_pos: None,
             break_collect: None,
             guest_packets: Vec::new(),
             guest_cooldowns: Vec::new(),
-            native_resend_trees: Vec::new(),
             guest_entity_events: Vec::new(),
             guest_equipment_breaks: Vec::new(),
             guest_block_sounds: Vec::new(),
             guest_player_sounds: Vec::new(),
+            bound_sounds: Vec::new(),
             lan_acting_name: None,
             lan_acting_uuid: None,
-            native_click_cursor: None,
             tnt_refused: None,
             lan_acting_permission: None,
             lan_acting_spawn_protection: None,
             lan_acting_entity: None,
-            native_login_permission: None,
+            lan_acting_fake: false,
+            fake_action: Default::default(),
             chat_capture: None,
             admin_feedback: Vec::new(),
             console_broadcast: None,
             rcon_source: false,
             server_lists: None,
             world_tables: None,
+            server_loot: Default::default(),
+            server_items: None,
             cmds: Default::default(),
+            reload_resources: Default::default(),
             ui: chat::UiState::new(),
             combat: Default::default(),
             guest_combat: Default::default(),
@@ -17430,12 +17342,10 @@ impl<'a> Game<'a> {
             adv_ui: Default::default(),
             links_ui: Default::default(),
             camera_type: Default::default(),
+            requested_camera_type: Default::default(),
             fangs: Default::default(),
             player_model: None,
         };
-        if game.native_window() {
-            game.native_client_start();
-        }
         Ok(game)
     }
 }
@@ -17495,9 +17405,10 @@ impl EntityModels {
 }
 impl GameCpuResources {
     fn load(
-        root: &std::path::Path,
+        resources: &horizon_assets::resource_source::ResourceRoot,
         document: Option<&horizon_client::mobs::EntityModelDocument>,
     ) -> Result<Self> {
+        let root = resources.prepared();
         let owned_document;
         let document = match document {
             Some(document) => Some(document),
@@ -17510,16 +17421,76 @@ impl GameCpuResources {
             },
         };
         let model = |key| document.and_then(|document| document.model(key));
+        let (
+            painting_variants,
+            frames,
+            armor_stand_assets,
+            waypoint_styles,
+            boat_models,
+            cart_models,
+            creative_screen,
+        ) = std::thread::scope(|scope| {
+            let painting_variants = named_scope(scope, "game_cpu.paintings", move || {
+                paintings::PaintingVariants::load(root)
+            });
+            let frames = named_scope(scope, "game_cpu.frames", move || {
+                frames::bake_frames(resources.source())
+            });
+            let armor_stand_assets = named_scope(scope, "game_cpu.armor_stands", move || {
+                armor_stands::ArmorStandAssets::load(resources.source(), document)
+            });
+            let waypoint_styles = named_scope(scope, "game_cpu.waypoints", move || {
+                horizon_client::locator_bar::WaypointStyles::load(resources.source())
+            });
+            let boat_models = named_scope(scope, "game_cpu.boats", move || {
+                boats::BoatModels::load(document)
+            });
+            let cart_models = named_scope(scope, "game_cpu.carts", move || {
+                minecarts::CartModels::load(document)
+            });
+            let creative_screen = named_scope(scope, "game_cpu.creative", move || {
+                Creative::load(root).map_err(|error| error.to_string())
+            });
+            (
+                painting_variants
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                frames
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                armor_stand_assets
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                waypoint_styles
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                boat_models
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                cart_models
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                creative_screen
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+            )
+        });
+        let [
+            frame_model,
+            glow_frame_model,
+            map_frame_model,
+            glow_map_frame_model,
+        ] = frames;
         Ok(Self {
-            painting_variants: paintings::PaintingVariants::load(root),
-            frame_model: frames::bake_frame(root, "item_frame"),
-            glow_frame_model: frames::bake_frame(root, "glow_item_frame"),
-            map_frame_model: frames::bake_frame(root, "item_frame_map"),
-            glow_map_frame_model: frames::bake_frame(root, "glow_item_frame_map"),
-            armor_stand_assets: armor_stands::ArmorStandAssets::load(root, document),
-            waypoint_styles: horizon_client::locator_bar::WaypointStyles::load(root),
-            boat_models: boats::BoatModels::load(document),
-            cart_models: minecarts::CartModels::load(document),
+            painting_variants,
+            frame_model,
+            glow_frame_model,
+            map_frame_model,
+            glow_map_frame_model,
+            armor_stand_assets,
+            waypoint_styles,
+            boat_models,
+            cart_models,
             crystal_model: model("minecraft:end_crystal#main"),
             cushion_model: model("minecraft:cushion#main"),
             dragon_model: model("minecraft:ender_dragon#main"),
@@ -17527,7 +17498,8 @@ impl GameCpuResources {
             bee_stinger_model: model("minecraft:bee_stinger#main"),
             trident_model: model("minecraft:trident#main"),
             entity_models: EntityModels::load(document),
-            creative_screen: Creative::load(root)?,
+            creative_screen: creative_screen
+                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?,
         })
     }
 }
@@ -17543,6 +17515,9 @@ struct Loaded {
     pack_error: Option<String>,
     resources: Arc<Resources>,
     rest_loader: Option<WorldRestLoader>,
+    /// The client reload listeners' prepared applies, staged by the loader
+    /// thread; `start_game` runs them once the game exists.
+    client_applies: Vec<client_reload::PreparedClientReload>,
     pack: PackResources,
     /// The menu bundle, for the synchronous launch; the loading screen receives
     /// it earlier through its own channel.
@@ -17595,8 +17570,6 @@ impl WorldRestLoader {
     }
 }
 
-impl Game<'_> {}
-
 /// `key.hotbar.1` to `key.hotbar.9` in a menu.
 const HOTBAR_DIGITS: [KeyCode; 9] = [
     KeyCode::Digit1,
@@ -17625,12 +17598,13 @@ const NUMERIC_KEYS: [KeyCode; 11] = [
 ];
 
 fn load_world_rest(
-    root: &std::path::Path,
+    resource_root: &horizon_assets::resource_source::ResourceRoot,
     resources: &Resources,
     assets: &Assets,
     behaviour_json: &serde_json::Value,
     gameplay_projection: &[horizon_client::blocks::GameplayProjection],
     entity_models: Option<&horizon_client::mobs::EntityModelDocument>,
+    item_defaults: &horizon_world::item_defaults::ItemDefaults,
     visibility: horizon_world::block_render::FaceVisibility,
     progress: &Progress,
     started: Instant,
@@ -17638,24 +17612,67 @@ fn load_world_rest(
     // renderer or animate tables (client-side display ticks).
     draws: bool,
 ) -> Result<WorldRest> {
+    let root = resource_root.prepared();
     let facts = resources.facts();
     let biomes = resources.biomes();
     let threads = resources.threads();
     let registry = assets.registry;
-    let overlay = &horizon_world::loot::PackOverlay::NONE;
+    let content = horizon_client::datapack::DataPack::from_source(
+        "horizon-content".into(),
+        resource_root.data_changes().clone(),
+    );
+    let files = horizon_client::datapack::DataStore::load(&[&content])
+        .files
+        .into_iter()
+        .collect::<Vec<_>>();
+    let inventory = horizon_mod_package::enabled::EnabledMods::read(root)?;
+    let conditions = horizon_world::conditions::LoadConditions::new(inventory.server_ids());
+    let overlay = &horizon_world::loot::PackOverlay {
+        conditions: &conditions,
+        files: &files,
+    };
     progress.set(6);
     // Independent tables load together, within the worker budget the settings
     // allow. Only the recipes and the stations read another table: the items.
     let load_items = || -> Result<_> {
-        let items = startup::time("rest.items", || Items::load(root, registry, facts, overlay))?;
+        let items = startup::time("rest.items", || {
+            Items::load(root, registry, facts, overlay, resources.item_defaults())
+        })?;
+        mod_api::__private::resolve_items(items.registry_order.iter().map(|id| &**id)).map_err(
+            |errors| {
+                errors
+                    .into_iter()
+                    .map(|error| {
+                        format!("mod {} requested unknown item {}", error.mod_id, error.id)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            },
+        )?;
         log::info!("load items: {:.2}s", started.elapsed().as_secs_f32());
         progress.set(7);
         // The recipe tables, the stations and the recipe book read one folder:
         // hold its files so it is read once.
         let _recipe_files = horizon_client::json_folder::read(&root.join("data/minecraft/recipe"));
-        let recipes = startup::time("rest.recipes", || Recipes::load(root, &items, overlay))?;
+        let sources = startup::time("rest.recipe_sources", || {
+            lan::load_sources(
+                root,
+                &resources.core.item_data,
+                resources.core.item_data.context().origin(),
+                overlay,
+            )
+        })?;
+        let recipes = startup::time("rest.recipes", || {
+            Recipes::from_resolved(root, &items, overlay, &sources)
+        })?;
         let stations = startup::time("rest.stations", || {
-            horizon_client::stations::StationData::load(root, &items, overlay)
+            horizon_client::stations::StationData::from_sources(
+                root,
+                &items,
+                overlay,
+                resources.item_defaults(),
+                &sources,
+            )
         });
         Ok((items, recipes, stations))
     };
@@ -17669,7 +17686,12 @@ fn load_world_rest(
         if !draws {
             return Ok(Default::default());
         }
-        let mut renderer = BlockEntityRenderer::load_with_visibility(root, registry, visibility)?;
+        let mut renderer = BlockEntityRenderer::load_with_visibility(
+            resource_root,
+            registry,
+            visibility,
+            resources.item_defaults(),
+        )?;
         renderer.add_mod_signs(facts, registry);
         Ok(renderer)
     };
@@ -17684,21 +17706,70 @@ fn load_world_rest(
     };
     let load_mobs = || -> Result<_> {
         let _step = startup::step("rest.mobs");
-        let mob_types: HashMap<_, _> = if draws {
+        let mut types = if draws {
             match entity_models {
-                Some(document) => MobTypes::load_with_document(root, document)?,
-                None => MobTypes::load(root)?,
+                Some(document) => MobTypes::load_with_document_and_defaults(
+                    root,
+                    document,
+                    item_defaults.entries(),
+                )?,
+                None => MobTypes::load_with_defaults(root, item_defaults.entries())?,
             }
         } else {
             MobTypes::load_for_server(root)?
+        };
+        // #845: the declared sets take their types' rows — the merged rows
+        // the live attribute map's catalog took in core (the template's with
+        // the declared set on top) — as their attribute map and spawn
+        // fields, so a mob of the type spawns with what the map answers.
+        for declaration in mod_api::__private::entity_attribute_declarations() {
+            let row = resources
+                .motion()
+                .attributes
+                .entity_row(&declaration.id)
+                .map(std::sync::Arc::new);
+            match (types.types.get_mut(&declaration.id), row) {
+                (Some(kind), Some(row)) => {
+                    kind.take_attribute_row(row, &resources.motion().attributes)
+                }
+                (Some(_), None) => log::warn!(
+                    "Horizon: mod entity attributes of {} never reached the catalog; ignored",
+                    declaration.id
+                ),
+                (None, _) => log::warn!(
+                    "Horizon: mod entity attributes of {} name no loaded entity type; ignored",
+                    declaration.id
+                ),
+            }
         }
-        .types
-        .into_iter()
-        .map(|(k, v)| (k, Arc::new(v)))
-        .collect();
-        let mut mob_data = horizon_client::mobs::MobData::load(root, facts);
+        // #846: the types mods added attributes to take their grown rows the
+        // same way, so a new mob of the type spawns with them.
+        resource_load::take_modified_attribute_rows(
+            &mut types.types,
+            &resources.motion().attributes,
+            mod_api::__private::entity_attribute_modifications(),
+        );
+        let mob_types: HashMap<_, _> = types
+            .types
+            .into_iter()
+            .map(|(k, v)| (k, Arc::new(v)))
+            .collect();
+        let mut mob_data = horizon_client::mobs::MobData::load(resource_root, facts);
+        // #847: the mods' spawn rules (`RegisterSpawnPlacementsEvent`) take
+        // their types' placement, heightmap and predicate here, once, so a
+        // spawn check reads one table with no pass over the mods.
+        for declaration in mod_api::__private::spawn_placement_declarations() {
+            if !mob_types.contains_key(&declaration.id) {
+                return Err(format!(
+                    "mod spawn placement of {} names no loaded entity type",
+                    declaration.id
+                )
+                .into());
+            }
+            mob_data.register_mod_spawn(&declaration.id, &declaration.rule);
+        }
         mob_data.cem = std::sync::RwLock::new(Arc::new(if draws {
-            horizon_client::mobs::cem::CemModels::load(root, &mob_types)
+            horizon_client::mobs::cem::CemModels::load(resource_root.source(), &mob_types)
         } else {
             horizon_client::mobs::cem::CemModels::default()
         }));
@@ -17729,7 +17800,19 @@ fn load_world_rest(
     ) -> std::result::Result<T, String> {
         result.map_err(|e| e.to_string())
     }
-    let (items, behaviours, block_entity_render, animate, mobs, transformers) = if threads > 1 {
+    let (
+        items,
+        behaviours,
+        block_entity_render,
+        animate,
+        mobs,
+        transformers,
+        providers,
+        music,
+        ambient,
+        nether_environment,
+        end_environment,
+    ) = if threads > 1 {
         std::thread::scope(|scope| {
             let items = named_scope(scope, "items", || text(load_items()));
             let behaviours = named_scope(scope, "behaviours", || text(load_behaviours()));
@@ -17738,14 +17821,52 @@ fn load_world_rest(
             });
             let animate = named_scope(scope, "animate", || text(load_animate()));
             let mobs = named_scope(scope, "mobs", || text(load_mobs()));
-            let transformers = text(load_transformers());
+            let transformers = named_scope(scope, "transformers", || text(load_transformers()));
+            let providers = named_scope(scope, "providers", || {
+                startup::time("rest.providers", || Providers::load(root))
+            });
+            let music = named_scope(scope, "music", || {
+                startup::time("rest.music", || {
+                    horizon_client::music::MusicTables::load(root)
+                })
+            });
+            let ambient = named_scope(scope, "ambient", || {
+                startup::time("rest.ambient", || {
+                    horizon_client::ambience::AmbientTables::load(root)
+                })
+            });
+            let nether_environment = named_scope(scope, "nether_environment", || {
+                startup::time("rest.nether_environment", || {
+                    text(Environment::load_dimension(
+                        &horizon_assets::resource_source::ResourceSource::directory(
+                            root.to_path_buf(),
+                        ),
+                        "the_nether",
+                    ))
+                })
+            });
+            let end_environment = named_scope(scope, "end_environment", || {
+                startup::time("rest.end_environment", || {
+                    text(Environment::load_dimension(
+                        &horizon_assets::resource_source::ResourceSource::directory(
+                            root.to_path_buf(),
+                        ),
+                        "the_end",
+                    ))
+                })
+            });
             (
                 items.join().unwrap(),
                 behaviours.join().unwrap(),
                 block_entity_render.join().unwrap(),
                 animate.join().unwrap(),
                 mobs.join().unwrap(),
-                transformers,
+                transformers.join().unwrap(),
+                providers.join().unwrap(),
+                music.join().unwrap(),
+                ambient.join().unwrap(),
+                nether_environment.join().unwrap(),
+                end_environment.join().unwrap(),
             )
         })
     } else {
@@ -17756,12 +17877,33 @@ fn load_world_rest(
             text(load_animate()),
             text(load_mobs()),
             text(load_transformers()),
+            Providers::load(root),
+            startup::time("rest.music", || {
+                horizon_client::music::MusicTables::load(root)
+            }),
+            startup::time("rest.ambient", || {
+                horizon_client::ambience::AmbientTables::load(root)
+            }),
+            startup::time("rest.nether_environment", || {
+                text(Environment::load_dimension(
+                    &horizon_assets::resource_source::ResourceSource::directory(root.to_path_buf()),
+                    "the_nether",
+                ))
+            }),
+            startup::time("rest.end_environment", || {
+                text(Environment::load_dimension(
+                    &horizon_assets::resource_source::ResourceSource::directory(root.to_path_buf()),
+                    "the_end",
+                ))
+            }),
         )
     };
     let (items, recipes, stations) = items?;
     let (animate, fog) = animate?;
     let (mob_types, mob_data) = mobs?;
     let (transformers, (player_type, player_arm, player_arm_slim, spin_attack)) = transformers?;
+    let nether_environment = nether_environment?;
+    let end_environment = end_environment?;
     log::info!(
         "Horizon: resources loaded in {:.1}s; {} block states, {} items, {} biomes; {} worker threads",
         started.elapsed().as_secs_f32(),
@@ -17771,20 +17913,19 @@ fn load_world_rest(
         threads
     );
     progress.set(8);
-    let _tail = startup::step("rest.tail");
     Ok(WorldRest {
         stations,
         items,
         recipes,
         transformers,
-        providers: Providers::load(root),
+        providers,
         block_entity_render: block_entity_render?,
         animate,
         fog,
-        music: horizon_client::music::MusicTables::load(root),
-        ambient: horizon_client::ambience::AmbientTables::load(root),
-        nether_environment: Environment::load_dimension(root, "the_nether", false)?,
-        end_environment: Environment::load_dimension(root, "the_end", false)?,
+        music,
+        ambient,
+        nether_environment,
+        end_environment,
         behaviours: behaviours?,
         mob_types,
         mob_data,
@@ -17872,8 +18013,6 @@ fn run_loading(
         App::Loading(loading) => leave_fullscreen_after(&result, &mut loading.settings),
     }
     result?;
-    #[cfg(feature = "discord")]
-    horizon_client::discord_presence::stop();
     match app {
         App::Ready(mut split) => {
             write_report(&split.host)?;
@@ -17892,26 +18031,18 @@ fn run_loading(
 
 pub use launch_api::{UsageError, exit_code};
 
-pub fn run_with() -> Result<()> {
-    let Some(mut options) = Options::read()? else {
-        return Ok(());
-    };
+pub(crate) fn run_with(
+    options: Options,
+    native: horizon_mod_package::runtime::Runtime,
+) -> Result<()> {
+    let mut options = Options::read(options)?;
+    options.mods.native = Arc::new(native);
     if options.execution_role == execution_role::ExecutionRole::DedicatedServer
         && !dedicated::preflight(&mut options)?
     {
         return Ok(());
     }
-    // The packets the server sends its players reach the mods that ask (native_packets.rs).
-    let _ = horizon_client::lan::conn::SERVER_PACKET.set(Game::native_server_packet);
-    let _ = horizon_client::lan::conn::ENTITY_DATA_TO.set(Game::native_entity_data_to);
-    let _ = horizon_client::health::HURT_SERVER.set(native_hooks::hurt_server);
-    let _ = horizon_client::health::DAMAGE_PRE.set(native_hooks::damage_pre);
-    let _ = horizon_client::health::DAMAGE_POST.set(native_hooks::damage_post);
-    let _ = horizon_client::block_contact::HOOK.set(native_hooks::block_contact);
-    let _ = horizon_client::health::KNOCKBACK.set(native_hooks::knockback);
-    let _ = horizon_client::lan::hub::PLAYER_MOVE.set(Game::native_player_move);
-    let _ = horizon_client::lan::hub::PLAYER_TELEPORT.set(Game::native_player_teleport);
-    let _ = horizon_client::block_contact::TRAMPLE.set(Game::native_trample);
+    let _ = horizon_client::block_contact::HOOKS.set(native_hooks::BLOCK_CONTACT_HOOKS);
     // Before any worker starts: on Linux they go behind the server thread
     // and the render thread.
     horizon_threads::put_helpers_behind();
@@ -17936,16 +18067,12 @@ pub fn run_with() -> Result<()> {
     {
         options.spikes = Some(dedicated::SLOW_TICK_MS);
     }
-    tick_profile::want_spans(tick_profile::SPANS_SPIKES, options.spikes.is_some());
-    // A player who allows performance statistics also says what their slow frames spent their
-    // time in: this thread, which draws the frames, times its steps (wall time only).
-    if options.execution_role.is_client()
-        && horizon_telemetry::Consent::load(&horizon_client::logging::game_home())
-            .allows(horizon_telemetry::Kind::Perf)
-    {
-        horizon_client::spans::record_here(true);
-    }
+    horizon_client::spans::enable(options.spikes.is_some());
     let vanilla_root = options.resources.clone();
+    // Saves from before 1.13 upgrade with vanilla's tables, prepared from the player's jar.
+    horizon_world::datafix::set_resources(
+        &std::path::absolute(&vanilla_root).unwrap_or_else(|_| vanilla_root.clone()),
+    );
     if let Some(error) = missing_resources(&vanilla_root) {
         // The game build started by hand (the release's zip), not by the
         // launcher: a window says where to get it. Scripts and servers get
@@ -17957,30 +18084,68 @@ pub fn run_with() -> Result<()> {
         }
         return Err(error.into());
     }
-    // Someone is playing: the anonymous ping behind the launcher's "N playing now", and the
-    // official server in their list (servers.dat in the game folder, the working directory). Not
-    // for a server, a benchmark, a run that quits by itself, a harness's fixture or a run that
-    // horizon-ctl drives: those start in a source checkout and wrote the list there.
-    if !options.offscreen && !synchronous_startup(&options) {
-        #[cfg(feature = "heartbeat")]
-        horizon_client::heartbeat::start();
-        let player_dir = horizon_client::logging::player_dir();
-        // horizon-extras: the official and partner servers are Horizon's (docs/forking.md).
-        if cfg!(feature = "horizon-extras")
-            && let Err(e) = horizon_client::multiplayer::add_official_server(&player_dir)
-        {
-            log::warn!("could not add the official server to servers.dat: {e}");
-        }
-        if cfg!(feature = "horizon-extras")
-            && let Err(e) = horizon_client::multiplayer::add_partner_servers(&player_dir)
-        {
-            log::warn!("could not add the partner servers to servers.dat: {e}");
-        }
+    let mut early_settings = Settings::load(&Game::options_path());
+    options
+        .mods
+        .capture_code_switches(&early_settings.mods.disabled);
+    options
+        .mods
+        .select(&std::env::current_dir()?, &early_settings.mods.enabled);
+    let mod_phase = mod_api::__private::PhaseOwner::new(mod_api::__private::ModPhase::Packages);
+    api_values::install_packages(options.mods.native.packages(), &options.mods.selected);
+    mods::install_registration_data(&vanilla_root)?;
+    {
+        use mod_api::__private::game::RegistrationContextNew;
+        let context = mod_api::RegistrationContext::new();
+        let inventory: Vec<_> = context.mods().iter().cloned().collect();
+        horizon_mod_wasm::initialize(&inventory);
+    }
+    mod_points::__private::seal();
+    mod_phase.advance(mod_api::__private::ModPhase::Registration)?;
+    if let Err(refused) = crate::game::api_values::install_parts(mod_api::__private::mods()) {
+        panic!("Mod parts refused:\n{}", refused.join("\n"));
+    }
+    // The structure types those mods registered, handed to the engine before
+    // any world opens, as its StructureRegistry reads them.
+    if horizon_world::worldgen::structure::mod_types::install_mod_structure_types(
+        native_structure_types::installed_structure_types(),
+    )
+    .is_err()
+    {
+        log::warn!("Mod structure types already installed; keeping the first table");
+    }
+    // The levels they registered, below the data packs of every world opened.
+    if horizon_world::worldgen::overrides::install_mod_dimensions(
+        native_dimensions::installed_dimensions(),
+    )
+    .is_err()
+    {
+        log::warn!("Mod dimensions already installed; keeping the first table");
+    }
+    // Their chunk generators, which those levels' and the packs' stems name.
+    if horizon_world::worldgen::mod_generators::install_mod_chunk_generators(
+        native_chunk_generator::installed_chunk_generators(),
+    )
+    .is_err()
+    {
+        log::warn!("Mod chunk generators already installed; keeping the first table");
     }
     mods::register_components(&vanilla_root)?;
-    mods::register_standalone_models();
-    mods::register_layer_definitions();
-    let mut early_settings = Settings::load(&Game::options_path());
+    mods::register_standalone_models(options.execution_role);
+    mods::register_layer_definitions(options.execution_role);
+    mods::register_debug_entries(options.execution_role);
+    mods::register_gui_layers(options.execution_role);
+    mods::register_map_decoration_types();
+    mods::register_range_select_item_model_properties(options.execution_role);
+    mods::register_select_item_model_properties(options.execution_role);
+    mods::register_resource_sources(options.execution_role);
+    mods::register_enchantment_damage_effects();
+    mods::register_client_presentations(options.execution_role);
+    mods::register_color_resolvers(options.execution_role);
+    mods::register_block_tint_sources(options.execution_role);
+    mods::register_particle_providers(options.execution_role);
+    mods::freeze_declarations();
+    mod_phase.advance(mod_api::__private::ModPhase::Setup)?;
     // Minecraft.<init>: read the last start's flag, then mark this one as not
     // finished until onGameLoadFinished. A dedicated server has no options.txt.
     if options.execution_role.is_client() {
@@ -17999,15 +18164,6 @@ pub fn run_with() -> Result<()> {
     if options.execution_role.is_client() {
         narrator::start(&early_settings);
     }
-    // "Playing Horizon" on Discord: never for a server; an automated run only talks to a test's fake Discord.
-    #[cfg(feature = "discord")]
-    if options.dedicated.is_none() {
-        let automated = options.benchmark.is_some()
-            || options.offscreen
-            || options.frames.is_some()
-            || options.world_frames.is_some();
-        horizon_client::discord_presence::start(early_settings.extras.discord_presence, automated);
-    }
     // Snapshots of derived tables live in the game folder, never beside the
     // shared resources.
     Behaviours::set_cache_dir(std::env::current_dir()?.join(".horizon-cache"));
@@ -18015,34 +18171,35 @@ pub fn run_with() -> Result<()> {
         return run_loading(options, early_settings, vanilla_root, None, started);
     }
     let mut pack_error = None;
-    options.resources = packs::startup_root(&vanilla_root, &early_settings.resource_packs, &[])
-        .unwrap_or_else(|e| {
-            log::warn!("Horizon: resource packs not applied: {e}");
-            pack_error = Some(e.to_string());
-            vanilla_root.clone()
-        });
-    options.resources = mods::content_root(
-        &options.resources,
-        &early_settings.mods.enabled,
-        &options.dev_mods,
-    );
-    let loaded = load_resources(
-        options.resources.clone(),
+    let selected_root = packs::startup_root(
+        &vanilla_root,
+        &early_settings.resource_packs,
+        &[],
+        &options.mods,
+    )
+    .or_else(|e| {
+        log::warn!("Horizon: resource packs not applied: {e}");
+        pack_error = Some(e.to_string());
+        mods::content_root(&vanilla_root, &options.mods)
+    })?;
+    let mut loaded = load_resources(
+        selected_root,
+        pack_finders::data_packs(&options.mods),
         launch_world(&options),
         &vanilla_root,
         &early_settings,
         started,
         false,
-        options.dedicated.is_some(),
+        options.execution_role,
         &Progress::new(),
         &mut |_, _| {},
     )?;
     let gui = loaded.gui.ok_or("missing menu bundle")?;
     options.resources = loaded.root.clone();
     let audio = if !options.execution_role.is_client() || options.headless {
-        Audio::silent(&options.resources)
+        Audio::silent(&loaded.pack.source)
     } else {
-        Audio::with_device(&options.resources, &early_settings.sound_device)
+        Audio::with_device(&loaded.pack.source, &early_settings.sound_device)
     };
     let resources = loaded.resources;
     let game = start_game(
@@ -18057,6 +18214,7 @@ pub fn run_with() -> Result<()> {
         loaded.rest_loader,
         None,
         None,
+        std::mem::take(&mut loaded.client_applies),
         loaded.entity_models,
     )?;
     if let Some(mut game) = game {
@@ -18091,11 +18249,15 @@ fn player_arms(
     })
 }
 
+/// The most `Player.sleepCounter` reaches: 100 asleep, then up to here over the
+/// waking fade.
+const MAX_SLEEP_TIMER: u32 = 109;
+
 // Player.tick: cap the sleeping fade at 100, then fade out over 10 waking ticks.
 fn tick_sleep_timer(timer: u32, sleeping: bool) -> u32 {
     if sleeping {
         (timer + 1).min(100)
-    } else if (1..109).contains(&timer) {
+    } else if (1..MAX_SLEEP_TIMER).contains(&timer) {
         timer + 1
     } else {
         0
@@ -18117,6 +18279,7 @@ fn outline_stop(
         pos,
         face,
         point: std::array::from_fn(|i| origin[i] + dir[i] * t),
+        inside: false,
     })
 }
 /// `VoxelShape.clip` of a fluid source's shape for a ray that starts in the
@@ -18182,112 +18345,6 @@ fn reset_world_progress(adv: &mut advancements::AdvState, stats: &mut stats::Sta
     *stats = Default::default();
 }
 
-#[cfg(test)]
-mod startup_cpu_tests {
-    use super::*;
-
-    #[test]
-    fn a_folder_without_prepared_files_is_named_before_loading() {
-        let root = std::env::temp_dir().join(format!("horizon-unprepared-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let missing = missing_resources(&root.join(".local/horizon-client/26.3"))
-            .expect("no manifest is reported");
-        assert!(missing.contains("horizon-resources.json"), "{missing}");
-        assert!(missing.contains("horizon-unprepared-"), "{missing}");
-        assert!(missing.contains("launcher"), "{missing}");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("horizon-resources.json"), "{}").unwrap();
-        assert_eq!(missing_resources(&root), None);
-
-        // A killed export leaves an empty file behind; the error names it
-        // instead of serde's "expected value at line 1 column 1".
-        std::fs::write(root.join("gameplay-facts.json"), "").unwrap();
-        let damaged = missing_resources(&root).expect("an empty prepared file is reported");
-        assert!(damaged.contains("gameplay-facts.json"), "{damaged}");
-        assert!(damaged.contains("damaged"), "{damaged}");
-        std::fs::write(root.join("gameplay-facts.json"), "{}").unwrap();
-        assert_eq!(missing_resources(&root), None);
-
-        std::fs::write(root.join("horizon-resources.json"), " \n").unwrap();
-        let damaged = missing_resources(&root).expect("an empty manifest is reported");
-        assert!(damaged.contains("horizon-resources.json"), "{damaged}");
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn worker_prepares_owned_models_and_inventory_before_handoff() {
-        let root = std::env::temp_dir().join(format!("horizon-startup-cpu-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(
-            root.join("entity-models.json"),
-            r#"{
-            "minecraft:end_crystal#main": {}, "minecraft:ender_dragon#main": {},
-            "minecraft:arrow#main": {}, "minecraft:trident#main": {},
-            "minecraft:armor_stand#main": {}, "minecraft:cushion#main": {},
-            "minecraft:leash_knot#main": {}, "minecraft:wind_charge#main": {},
-            "minecraft:shulker_bullet#main": {}, "minecraft:wither_skull#main": {},
-            "minecraft:evoker_fangs#main": {}, "minecraft:standing_banner#main": {},
-            "minecraft:standing_banner#flag": {}
-        }"#,
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("creative-tabs.json"),
-            r#"[{
-            "id":"minecraft:building_blocks", "items":["minecraft:stone"]
-        }]"#,
-        )
-        .unwrap();
-        let worker_root = root.clone();
-        let prepared = std::thread::spawn(move || {
-            GameCpuResources::load(&worker_root, None).map_err(|error| error.to_string())
-        })
-        .join()
-        .unwrap()
-        .unwrap();
-        std::fs::remove_dir_all(&root).unwrap();
-        assert!(prepared.crystal_model.is_some());
-        assert!(prepared.cushion_model.is_some());
-        let models = &prepared.entity_models;
-        assert!(models.leash_knot.is_some() && models.wind_charge.is_some());
-        assert!(models.shulker_bullet.is_some() && models.wither_skull.is_some());
-        assert!(models.evoker_fangs.is_some() && models.banner.is_some());
-        assert!(prepared.dragon_model.is_some());
-        assert!(prepared.arrow_model.is_some());
-        assert!(prepared.trident_model.is_some());
-        assert!(prepared.armor_stand_assets.main.is_some());
-        assert_eq!(
-            prepared.creative_screen.tabs[0].items[0].item.as_ref(),
-            "minecraft:stone"
-        );
-        // No documents from the old generation remain available to reload.
-        assert!(GameCpuResources::load(&root, None).is_err());
-    }
-}
-
-#[cfg(test)]
-mod runtime_reset_tests {
-    use super::*;
-    #[test]
-    fn world_entry_invalidates_loaded_progress() {
-        let mut adv = advancements::AdvState::default();
-        let mut stats = stats::Stats::default();
-        adv.loaded = true;
-        stats.loaded = true;
-        adv.progress
-            .criteria
-            .insert("minecraft:story/root".into(), Default::default());
-        stats.add("mined", "minecraft:stone", 4);
-        reset_world_progress(&mut adv, &mut stats);
-        assert!(!adv.loaded && !stats.loaded);
-        assert!(adv.progress.criteria.is_empty());
-        assert!(stats.values.is_empty());
-    }
-}
-
-#[cfg(test)]
-mod entity_model_loading_tests;
-
 /// `LocalPlayer.moveTowardsClosestSpace` at the body's four corners (aiStep, unless a spectator or a
 /// passenger): a corner inside a suffocating block sets a 0.1 speed towards the nearest side that is
 /// free, on that side's axis; a later corner overwrites an earlier one. Suffocating is a full
@@ -18344,252 +18401,11 @@ pub(crate) fn closest_space_nudge(
     out
 }
 
-/// GameRenderer.render3dHud: the debug crosshair, first person with the HUD shown, and only over
-/// a level. The F3 overlay stays on when the world closes, so it must not reach the panorama.
-fn debug_crosshair_drawn(
-    enabled: bool,
-    first_person: bool,
-    hide_gui: bool,
-    panorama: bool,
-) -> bool {
-    enabled && first_person && !hide_gui && !panorama
-}
-
-/// Blocks whose class implements `GameMasterBlock`: the command blocks, structure
-/// block, jigsaw and the test blocks.
-fn is_game_master_block(name: &str) -> bool {
-    horizon_client::command_block::Mode::of_block(name).is_some()
-        || matches!(
-            name,
-            "minecraft:structure_block"
-                | "minecraft:jigsaw"
-                | "minecraft:test_block"
-                | "minecraft:test_instance_block"
-        )
-}
-
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn weather_follows_the_dimension_type_not_the_id() {
-        use super::level_can_have_weather as w;
-        assert!(w(true, false, false)); // open sky
-        assert!(!w(true, true, false)); // ceiling (Nether, overworld_caves)
-        assert!(!w(false, false, false)); // no sky light
-        assert!(!w(true, false, true)); // the End is named by id
-    }
+use inventory_input::drop_whole_stack;
+use subtitles::{Subtitles, in_game_ui, subtitles};
 
-    use super::*;
-
-    /// A falling block is drawn moved by its column's model offset, as
-    /// `ModelBlockRenderer.tesselateBlock` does with `BlockState.getOffset`
-    /// of `BlockPos.containing(x, maxY, z)`: a pointed dripstone that breaks
-    /// off stays where it hung instead of jumping to the block's centre (#4102).
-    #[test]
-    fn a_falling_block_keeps_its_model_offset() {
-        let at = Vec3::new(3.5, 70.25, -1.5);
-        let falling = FallingBlock {
-            rotation: [0.0, 0.0],
-            join: Default::default(),
-            id: 0,
-            state: BlockStateId(7),
-            start_pos: BlockPos::new(3, 72, -2),
-            position: at,
-            previous: Vec3::new(3.5, 71.0, -1.5),
-            velocity: Vec3::ZERO,
-            age: 5,
-            no_gravity: false,
-            portal: Default::default(),
-            drop_item: true,
-            fall_distance: 0.0,
-            stuck: Vec3::ZERO,
-            damage: horizon_client::falling_block::Damage::default(),
-            saved: None,
-        };
-        // OffsetType.XZ: one offset per column (Mth.getSeed(x, 0, z)).
-        let offset = |state: BlockStateId, x: i32, z: i32| {
-            assert_eq!(state, BlockStateId(7));
-            ((x, z) == (3, -2)).then_some([0.125, 0.0, -0.0625])
-        };
-        let origin = falling.model_origin(0.5, offset);
-        assert_eq!(origin, glam::DVec3::new(3.125, 70.625, -2.0625));
-        // Blocks without a random offset are drawn centred on the entity.
-        let origin = falling.model_origin(1.0, |_, _, _| None);
-        assert_eq!(origin, glam::DVec3::new(3.0, 70.25, -2.0));
-    }
-
-    /// `FallingBlockRenderer.shouldRender` emits nothing for a falling block whose
-    /// own state is the state of the cell it is in (a `NoGravity` block, or one
-    /// that has just landed), where Horizon drew a z-fighting copy; the same block
-    /// draws its model again once that cell is cleared.
-    #[test]
-    fn a_falling_block_in_its_own_state_emits_nothing() {
-        let state = BlockStateId(7);
-        assert!(!falling_block_visible(state, state));
-        assert!(falling_block_visible(state, BlockStateId(0)));
-    }
-
-    /// A falling block does not sneak, so `Entity.isDescending()` is false.
-    /// Scaffolding top surface collides solidly with non-descending entities
-    /// so falling scaffolding lands on top of existing scaffolding instead
-    /// of falling through and breaking (#7553).
-    #[test]
-    fn falling_block_does_not_descend_through_scaffolding() {
-        let pos = BlockPos::new(0, 10, 0);
-        let scaffold = horizon_world::block_collision::ScaffoldingCollision::from_state(
-            &horizon_world::chunk::BlockState {
-                name: "minecraft:scaffolding".to_string(),
-                properties: [
-                    ("bottom".to_string(), "false".to_string()),
-                    ("distance".to_string(), "0".to_string()),
-                    ("waterlogged".to_string(), "false".to_string()),
-                ]
-                .into_iter()
-                .collect(),
-            },
-        )
-        .unwrap()
-        .expect("scaffolding collision rule");
-
-        // When a falling block is falling downward (wanted.y < 0) above the scaffolding top (y = 11.0):
-        let falling_y = 11.0;
-        let buggy_descending_context = CollisionContext::for_entity(
-            CollisionEntity {
-                identity: EntityIdentity(0),
-                kind: horizon_world::collision_context::EntityContextKind::Other,
-                y: falling_y,
-                descending: true, // the old buggy behavior: wanted.y < 0.0
-                main_hand: None,
-            },
-            false,
-        );
-        let fixed_context = CollisionContext::for_entity(
-            CollisionEntity {
-                identity: EntityIdentity(0),
-                kind: horizon_world::collision_context::EntityContextKind::Other,
-                y: falling_y,
-                descending: false, // fixed: FallingBlockEntity does not sneak
-                main_hand: None,
-            },
-            false,
-        );
-
-        // Before the fix, descending=true caused scaffolding collision to be empty:
-        assert!(buggy_descending_context.is_descending());
-        let buggy_shape = scaffold.shape(&buggy_descending_context, pos);
-        assert!(
-            buggy_shape.is_empty(),
-            "descending entities fall through scaffolding"
-        );
-
-        // With descending=false, scaffolding provides stable top collision:
-        assert!(!fixed_context.is_descending());
-        let solid_shape = scaffold.shape(&fixed_context, pos);
-        assert!(
-            !solid_shape.is_empty(),
-            "falling block must collide with scaffolding top"
-        );
-    }
-
-    #[test]
-    fn quit_shortcut_blocks_window_close_when_option_disabled() {
-        use winit::keyboard::ModifiersState;
-
-        let mut keys = HashSet::new();
-        let alt = ModifiersState::ALT;
-        let super_key = ModifiersState::SUPER;
-
-        let quit_shortcuts_enabled = true;
-        let quit_shortcuts_disabled = false;
-
-        keys.insert(if cfg!(target_os = "macos") {
-            KeyCode::KeyQ
-        } else {
-            KeyCode::F4
-        });
-        let mods = if cfg!(target_os = "macos") {
-            super_key
-        } else {
-            alt
-        };
-
-        let should_ignore =
-            |quit_shortcuts: bool, modifiers: ModifiersState, keys: &HashSet<KeyCode>| {
-                !quit_shortcuts && horizon_client::input::is_quit_shortcut_down(modifiers, keys)
-            };
-
-        // When enabled, close requests from shortcuts proceed normally.
-        assert!(!should_ignore(quit_shortcuts_enabled, mods, &keys));
-
-        // When disabled and the quit shortcut is held, close requests are ignored.
-        assert!(should_ignore(quit_shortcuts_disabled, mods, &keys));
-
-        // When disabled but shortcut NOT held (e.g. 'X' button clicked), close request proceeds.
-        assert!(!should_ignore(
-            quit_shortcuts_disabled,
-            ModifiersState::empty(),
-            &HashSet::new()
-        ));
-    }
-
-    #[test]
-    fn integrated_server_save_persists_owner_player_data() {
-        let dir = std::env::temp_dir().join(format!(
-            "horizon-integrated-player-save-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-
-        // Initial world creation writes `level.dat` before the player spawns.
-        let mut level = Level {
-            name: "Creative".into(),
-            creative: true,
-            game_mode: 1,
-            ..Level::default()
-        };
-        level.write(&dir).unwrap();
-
-        // The integrated server stores the owner's state in `level` and saves the world.
-        level.position = Some([128.5, 72.0, -64.25]);
-        level.inventory = vec![(0, "minecraft:diamond_pickaxe".into(), 1, 0)];
-        write_level_for_role(
-            &mut level,
-            &dir,
-            execution_role::ExecutionRole::IntegratedServer,
-        )
-        .unwrap();
-
-        let reopened = Level::read(&dir).unwrap();
-        assert_eq!(reopened.position, Some([128.5, 72.0, -64.25]));
-        assert_eq!(
-            reopened.inventory,
-            vec![(0, "minecraft:diamond_pickaxe".into(), 1, 0)]
-        );
-
-        // A dedicated server save updates world metadata without overwriting the player file.
-        let mut dedicated = Level {
-            player_uuid: level.player_uuid,
-            day_time: 6000,
-            ..Level::default()
-        };
-        write_level_for_role(
-            &mut dedicated,
-            &dir,
-            execution_role::ExecutionRole::DedicatedServer,
-        )
-        .unwrap();
-
-        let reopened = Level::read(&dir).unwrap();
-        assert_eq!(reopened.day_time, 6000);
-        assert_eq!(reopened.position, Some([128.5, 72.0, -64.25]));
-        assert_eq!(
-            reopened.inventory,
-            vec![(0, "minecraft:diamond_pickaxe".into(), 1, 0)]
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-}
+use hud_render::{block_outline_drawn, debug_crosshair_drawn, is_game_master_block};
 
 fn write_level_for_role(
     level: &mut Level,
@@ -18603,115 +18419,125 @@ fn write_level_for_role(
     }
 }
 
+/// A server's data load with no mods and no settings, for loaders under test.
 #[cfg(test)]
-mod inline_feature_parse_tests;
-#[cfg(test)]
-mod mannequin_save_tests;
-#[cfg(test)]
-mod storage_alias_tests;
-#[cfg(test)]
-mod sulfur_bucket_tests;
-#[cfg(test)]
-mod test_pos_guest_tests;
-#[cfg(test)]
-mod vibration_tests;
+fn test_server_load() -> horizon_world::native_load_context::LoadContext {
+    use horizon_world::native_load_context::{DataLoadOrigin, LoadContext, LoadInputs};
+    LoadContext::new(
+        DataLoadOrigin::ServerDataLoad,
+        Arc::new(LoadInputs::new(Default::default(), Default::default())),
+        [],
+    )
+}
 
 #[cfg(test)]
-mod falling_air_tick_tests {
-    use super::*;
+mod nested_orb_spawn_tests {
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn experience_pickup_keeps_nested_orbs_until_the_next_ordered_pass() {
+        crate::game::native_entity_refs::tests::with_game(|game| {
+            game.world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
+            );
+            game.block_ticks
+                .add_empty_chunk(horizon_core::position::ChunkPos::new(0, 0))
+                .unwrap();
+            for (x, value) in [(7.5, 1), (9.5, 3), (11.5, 7)] {
+                game.add_orb([x, 80.0, 3.5], value);
+            }
+            let _ = game.orbs.remove(1);
+            let mut expected: Vec<_> = game.orbs.iter().map(|o| (o.id, o.join)).collect();
+            crate::game::entity::taken_pass_tests::with_spawn(
+                |g| g.add_orb([3.5, 80.0, 3.5], 1),
+                || game.tick_experience(),
+            );
+            assert_eq!(game.orbs.len(), 3);
+            let join = game.orbs[2].join;
+            expected.push((game.orbs[2].id, join));
+            assert_eq!(
+                game.orbs.iter().map(|o| (o.id, o.join)).collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(game.orbs[2].age, 0);
+            game.ordered.announced = horizon_client::join_seq::JoinSeq::MAX;
+            game.tickets.update(None);
+            game.begin_ordered_ticks();
+            game.run_ordered_ticks(horizon_client::join_seq::JoinSeq::MAX, false)
+                .unwrap();
+            let spawned = game.orbs.iter().find(|o| o.join == join).unwrap();
+            assert_eq!(spawned.age, 1);
+            assert_eq!(
+                game.orbs.iter().map(|o| (o.id, o.join)).collect::<Vec<_>>(),
+                expected
+            );
+        });
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn in_own_process(name: &str, body: impl FnOnce()) {
+    const OWN_PROCESS: &str = "HORIZON_TEST_OWN_PROCESS";
+    if std::env::var_os(OWN_PROCESS).is_some_and(|v| v == name) {
+        return body();
+    }
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([name, "--exact", "--include-ignored", "--test-threads=1"])
+        .env(OWN_PROCESS, name)
+        .output()
+        .unwrap();
+    let report = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success() && report.contains("test result: ok. 1 passed;"),
+        "{name} failed in its own process:\n{report}"
+    );
+}
+
+#[cfg(test)]
+mod escape_tests {
+    use super::game_tests::tests::server_game;
     use horizon_client::chunk::Chunk;
-    use horizon_core::position::ChunkPos;
-    use horizon_world::nbt::Tag;
+    use horizon_client::items::ItemStack;
+    use horizon_core::random::RandomSource;
     use std::sync::Arc;
 
+    /// `Entity.moveTowardsClosestSpace` uses the item's own random, never the
+    /// level's random. Seeded Java values pin vanilla's float arithmetic (#13043).
     #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
-    fn loaded_air_is_discarded_on_first_actual_game_tick() {
-        let root = std::path::PathBuf::from(
-            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
-        );
-        let settings = Settings::default();
-        let loaded = load_resources(
-            root.clone(),
-            None,
-            &root,
-            &settings,
-            std::time::Instant::now(),
-            false,
-            true,
-            &Progress::new(),
-            &mut |_, _| unreachable!(),
-        )
-        .unwrap();
-        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
-        options.resources = root.clone();
-        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
-        let mut game = Game::new(
-            &loaded.resources,
-            loaded.pack,
-            loaded.gui.unwrap(),
-            options,
-            settings,
-            Audio::silent(&root),
-            None,
-        )
-        .unwrap();
-        game.build_registries();
-        game.set_allow_commands(true);
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn an_item_escapes_a_block_at_its_own_randoms_speed() {
+        let mut game_resources = None;
+        let mut game = server_game(&mut game_resources);
+        let feet = horizon_core::geometry::Vec3::new(8.5, 70.0, 8.5);
+        game.player = Some(horizon_client::motion::PlayerMotion::new(game.motion, feet).unwrap());
         game.world
             .chunks
             .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
-        game.block_ticks
-            .add_empty_chunk(ChunkPos::new(0, 0))
+        game.update_chunk_tickets();
+        assert!(game.entity_ticking_area()(8, 8));
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
             .unwrap();
-        assert!(game.run_command("forceload add 0 0"));
-        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
-        assert!(game.res.facts().is_air(game.world.block(4, 204, 4)));
-        assert!(game.res.facts().is_air(game.world.block(8, 204, 4)));
-        for (last, state, x) in [(1, "air", 4), (2, "sand", 8)] {
-            assert!(game.run_command(&format!(
-                "summon falling_block {x}.5 204 4.5 {{UUID:[I;97,0,0,{last}],BlockState:\"minecraft:{state}\",Time:0,NoGravity:1b,Motion:[0d,0d,0d]}}"
-            )));
-        }
-        assert_eq!(
-            game.falling.len(),
-            2,
-            "both actual command loads must be admitted"
-        );
-        let keys = [(0, 0)].into_iter().collect();
-        let ids: Vec<_> = game.falling.iter().map(|f| f.id).collect();
-        for (i, state) in ["minecraft:air", "minecraft:sand"].into_iter().enumerate() {
-            let f = &game.falling[i];
-            assert_eq!(&*game.res.facts().get(f.state).name, state);
-            assert_eq!(f.age, 0);
-            assert!(f.no_gravity);
-            assert_eq!(f.velocity, Vec3::ZERO);
-            assert_eq!(
-                f.position,
-                Vec3::new(if i == 0 { 4.5 } else { 8.5 }, 204.0, 4.5)
-            );
-            assert_eq!(game.uuid_for(ids[i]), [97, 0, 0, i as i32 + 1]);
-            let (_, saved) = game.save_falling(i, &keys).expect("actual saved state");
-            assert_eq!(saved.get("BlockState"), Some(&Tag::String(state.into())));
-            assert_eq!(saved.get("Time"), Some(&Tag::Int(0)));
-        }
-        assert!(!game.res.facts().is_air(game.world.block(4, 199, 4)));
-        let clock = game.world.game_time;
-        game.tick().unwrap();
-        assert_eq!(game.world.game_time, clock + 1);
-        let sand = game
-            .falling
-            .iter()
-            .find(|f| f.id == ids[1])
-            .expect("nonair control survives");
-        assert_eq!(&*game.res.facts().get(sand.state).name, "minecraft:sand");
-        assert_eq!(sand.age, 1);
-        assert!(sand.no_gravity);
-        assert_eq!(sand.position, Vec3::new(8.5, 204.0, 4.5));
-        assert_eq!(sand.velocity, Vec3::ZERO);
-        assert!(
-            !game.falling.iter().any(|f| f.id == ids[0]),
-            "admitted air must disappear on its first tick"
-        );
+        game.world.set(8, 64, 8, stone).unwrap();
+        let stack = ItemStack::new("minecraft:stone", 2);
+        game.spawn_item(stack, [8.5, 64.4, 8.5], [0.0, 0.0, 0.0], 10);
+        let item = game.dropped.last_mut().unwrap();
+        item.random = horizon_core::random::LegacyRandom::new(12345);
+        let mut level = game.world.random.clone();
+        game.ticked_entities_through = u32::MAX;
+        game.tick_items();
+        let item = game.dropped.last().unwrap();
+        // Up is the nearest open side. Independent Java Random(12345):
+        // nextFloat()*0.2F+0.1F, widened before multiplying by widened 0.98F.
+        assert_eq!(item.velocity.y, f64::from_bits(0x3fc5_9ef4_570f_5500));
+        assert_eq!(item.random.clone().next_float().to_bits(), 0x3f03_61b3);
+        assert_eq!(game.world.random.next_float(), level.next_float());
     }
 }

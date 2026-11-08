@@ -8,6 +8,7 @@ use super::{
     goals::{Cx, Goal, LookAtPlayer, MOVE, Panic, RandomLookAround, Stroll, goal_clone},
     nav::NavKind,
 };
+use crate::health::DamageLevel;
 use crate::items::ItemStack;
 use crate::sculk::{self, Context, Info};
 use horizon_core::geometry::trig::Mth;
@@ -248,7 +249,7 @@ fn deposit(m: &mut Mob, cx: &Cx) -> Option<[f64; 3]> {
     if !m.extra.tame {
         return None;
     }
-    let p = cx.w.player.as_ref().filter(|p| p.alive && !p.spectator)?;
+    let p = cx.w.selected_player().filter(|p| p.alive && !p.spectator)?;
     (p.position.distance_squared(m.position) <= 64.0 * 64.0).then_some([
         p.position.x,
         p.position.y,
@@ -373,6 +374,8 @@ pub fn listen(
                 pos,
                 source: ctx.source,
                 owner: ctx.owner,
+                source_uuid: ctx.source_uuid,
+                owner_uuid: ctx.owner_uuid,
             },
             now,
         );
@@ -412,15 +415,21 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
 /// `Allay.travel`: `travelFlying(input, getSpeed())` — the airborne speed is
 /// the one the move control set this tick, and no gravity applies, so an
 /// allay never falls under its own travel.
-pub fn travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) -> bool {
+pub fn travel(
+    m: &mut Mob,
+    w: &MobWorld,
+    level: &mut DamageLevel<'_>,
+    input: Vec3,
+    events: &mut Vec<MobEvent>,
+) -> bool {
     let speed = m.ai.speed;
-    m.travel_flying_speeds(w, input, events, 0.02, 0.02, speed);
+    m.travel_flying_speeds(w, level, input, events, 0.02, 0.02, speed);
     true
 }
 /// `Allay.aiStep` / `tick`: healing, cooldowns, the hold and spin clocks.
-pub fn ai_step(m: &mut Mob) {
+pub fn ai_step(m: &mut Mob, w: &MobWorld) {
     tick_liked_player(m);
-    passive_heal(m);
+    passive_heal(m, w.loop_context);
     for i in [2, 3] {
         if m.extra.ints[i] > 0 {
             m.extra.ints[i] -= 1;
@@ -466,9 +475,9 @@ pub fn forget_liked_player(m: &mut Mob) {
     }
 }
 /// `Allay.aiStep`: server-side healing runs independently of the AI gate.
-pub fn passive_heal(m: &mut Mob) {
+pub fn passive_heal(m: &mut Mob, context: &horizon_world::native_load_context::LoopContext) {
     if m.alive() && m.age.is_multiple_of(10) {
-        m.heal(1.0);
+        m.heal(context, 1.0);
     }
 }
 /// `Allay.updateDuplicationCooldown`: the server decrements positive counters,
@@ -481,7 +490,7 @@ pub fn update_duplication_cooldown(m: &mut Mob) {
 /// `Allay.tick`'s client half: the hold and spin clocks (the server's and a
 /// client's).
 pub fn animate(m: &mut Mob) {
-    let holding = m.extra.main_hand.is_some();
+    let holding = m.extra.main_hand_id().is_some();
     let v = &mut m.anim.v;
     v[HOLD] = (v[HOLD] + if holding { 1.0 } else { -1.0 }).clamp(0.0, 5.0);
     if m.extra.flag {

@@ -3,7 +3,9 @@
 //! rules used by the enchanting table, display names, and evaluation of the
 //! value/attribute effect components (`LevelBasedValue`, `EnchantmentValueEffect`
 //! and the loot-condition subset that enchantment requirements use).
+use crate::item_data::Levels;
 use crate::items::{ItemStack, Items};
+use horizon_core::nbt::Tag;
 use horizon_core::random::{LegacyRandom, RandomSource};
 use serde_json::Value;
 use std::{
@@ -14,6 +16,99 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+
+/// Load-owned custom damage effect slots. Installed before resources load.
+static DAMAGE_EFFECT_IDS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// Publish registered identifiers before enchantment content is read.
+pub fn register_damage_effects(ids: Vec<String>) {
+    assert!(
+        DAMAGE_EFFECT_IDS.set(ids).is_ok(),
+        "damage effects already registered"
+    );
+}
+
+/// A value node compiled at content load. Slots never enter content JSON or network data.
+#[derive(Clone)]
+enum DamageValueEffect {
+    Builtin(Value),
+    AllOf(Vec<Self>),
+    Custom {
+        slot: usize,
+        config: horizon_core::nbt::Tag,
+    },
+}
+impl DamageValueEffect {
+    fn resolve(effect: &Value, ids: &[String]) -> Result<Self, String> {
+        match effect["type"].as_str().unwrap_or("") {
+            "minecraft:all_of" => effect["effects"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|effect| Self::resolve(effect, ids))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Self::AllOf),
+            kind if kind.is_empty() || !kind.contains(':') || kind.starts_with("minecraft:") => {
+                Ok(Self::Builtin(effect.clone()))
+            }
+            kind => ids
+                .iter()
+                .position(|id| id == kind)
+                .ok_or_else(|| format!("unknown enchantment damage value effect {kind}"))
+                .and_then(|slot| {
+                    horizon_core::json_nbt::json_to_tag(effect)
+                        .map(|config| Self::Custom { slot, config })
+                        .map_err(|error| error.to_string())
+                }),
+        }
+    }
+    fn is_custom(&self) -> bool {
+        match self {
+            Self::Custom { .. } => true,
+            Self::AllOf(nodes) => nodes.iter().any(Self::is_custom),
+            Self::Builtin(_) => false,
+        }
+    }
+    fn apply(
+        &self,
+        level: u32,
+        random: &mut LegacyRandom,
+        value: f32,
+        custom: &mut impl FnMut(usize, &horizon_core::nbt::Tag, u32, f32) -> f32,
+    ) -> f32 {
+        match self {
+            Self::Builtin(effect) => apply_value_effect(effect, level, random, value),
+            Self::AllOf(nodes) => nodes.iter().fold(value, |value, node| {
+                node.apply(level, random, value, custom)
+            }),
+            Self::Custom { slot, config } => {
+                let result = custom(*slot, config, level, value);
+                // Bound mod output before a subsequent per-unit built-in effect.
+                if result.is_nan() {
+                    value
+                } else {
+                    result.clamp(0.0, 1024.0)
+                }
+            }
+        }
+    }
+}
+
+fn resolve_damage_effects(
+    effects: &Value,
+    ids: &[String],
+) -> Result<Option<Vec<DamageValueEffect>>, String> {
+    let nodes = effects["minecraft:damage"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|entry| DamageValueEffect::resolve(&entry["effect"], ids))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(nodes
+        .iter()
+        .any(DamageValueEffect::is_custom)
+        .then_some(nodes))
+}
 
 /// Levels as numbers in enchantment names ("Sharpness 5"): Horizon's PvP & HUD option, off by
 /// default (vanilla's numerals).
@@ -58,6 +153,8 @@ pub struct Enchantment {
     pub exclusive: HashSet<Arc<str>>,
     pub slots: Vec<String>,
     pub effects: Value,
+    /// Mod-owned post-attack payloads, converted once when the definition loads.
+    pub native_post_attack: HashMap<usize, Arc<horizon_core::nbt::Tag>>,
 }
 /// Item components the enchanting, anvil and smithing rules read.
 #[derive(Clone, Debug, Default)]
@@ -66,7 +163,8 @@ pub struct ItemProps {
     pub enchantable: u32,
     /// `minecraft:repairable.items` (ids or a `#tag`).
     pub repairable: Vec<String>,
-    pub glint: bool,
+    /// The prototype override; absence differs from an explicit false.
+    pub glint: Option<bool>,
     pub rarity: String,
     /// `minecraft:provides_trim_material`.
     pub trim_material: Option<String>,
@@ -77,6 +175,7 @@ pub struct ItemProps {
 pub struct Enchantments {
     pub list: Vec<Enchantment>,
     index: HashMap<Arc<str>, usize>,
+    custom_damage: HashMap<Arc<str>, Vec<DamageValueEffect>>,
     /// Enchantment tags in vanilla `HolderSet` order (nested tags expanded in place).
     pub tags: HashMap<String, Vec<Arc<str>>>,
     pub entity_tags: HashMap<String, HashSet<String>>,
@@ -95,7 +194,10 @@ fn string_list(v: &Value) -> Vec<String> {
         _ => vec![],
     }
 }
-fn read_tag_dir(dir: &Path) -> HashMap<String, Vec<String>> {
+fn read_tag_dir(
+    dir: &Path,
+    conditions: &horizon_world::conditions::LoadConditions,
+) -> HashMap<String, Vec<String>> {
     let Ok(folder) = horizon_world::json_folder::read(dir) else {
         return HashMap::new();
     };
@@ -104,6 +206,9 @@ fn read_tag_dir(dir: &Path) -> HashMap<String, Vec<String>> {
         .iter()
         .filter_map(|file| {
             let v = serde_json::from_slice::<Value>(file.bytes().ok()?).ok()?;
+            if !conditions.allows(&v) {
+                return None;
+            }
             let values = v["values"]
                 .as_array()
                 .into_iter()
@@ -146,7 +251,22 @@ fn parse_entry(
     v: &Value,
     tags: &HashMap<String, Vec<Arc<str>>>,
     lang: &HashMap<String, String>,
-) -> Enchantment {
+) -> crate::Result<Enchantment> {
+    let native_post_attack = v["effects"]["minecraft:post_attack"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .filter(|(_, e)| {
+            e["effect"]["type"].as_str().is_some_and(|k| {
+                k.contains(':') && !k.starts_with("minecraft:") && !k.starts_with(':')
+            })
+        })
+        .map(|(i, e)| {
+            horizon_core::json_nbt::json_to_tag(&e["effect"]).map(|tag| (i, Arc::new(tag)))
+        })
+        .collect::<Result<HashMap<_, _>, _>>()
+        .map_err(|error| format!("{id}: {error}"))?;
     let exclusive = match &v["exclusive_set"] {
         Value::String(s) if s.starts_with('#') => tags.get(&s[1..]).cloned().unwrap_or_default(),
         other => string_list(other)
@@ -155,7 +275,8 @@ fn parse_entry(
             .collect(),
     };
     let key = v["description"]["translate"].as_str().unwrap_or("");
-    Enchantment {
+    Ok(Enchantment {
+        native_post_attack,
         id: Arc::from(id),
         description: lang.get(key).cloned().unwrap_or_else(|| {
             // A data pack's entry may name itself with a literal component
@@ -177,7 +298,7 @@ fn parse_entry(
         exclusive: exclusive.into_iter().collect(),
         slots: string_list(&v["slots"]),
         effects: v["effects"].clone(),
-    }
+    })
 }
 
 impl Enchantments {
@@ -193,21 +314,33 @@ impl Enchantments {
             })
             .collect();
     }
-    pub fn load(root: &Path) -> Self {
-        Self::load_with(root, &horizon_world::loot::PackOverlay::NONE)
+    /// Refuse the load if a mod effect payload cannot be represented as NBT.
+    /// Errors identify the enchantment; arbitrary JSON payloads had no prior refusal message.
+    pub fn load(
+        root: &Path,
+        defaults: &horizon_world::item_defaults::ItemDefaults,
+    ) -> crate::Result<Self> {
+        Self::load_with(root, &horizon_world::loot::PackOverlay::NONE, defaults)
     }
     /// `RegistryDataLoader.load`: load from a resource root; `overlay` (world-pack content
     /// files) overrides definitions and joins enchantment tags in pack order, a
     /// `replace` file dropping the lower sources' (`TagLoader.load`).
-    pub fn load_with(root: &Path, overlay: &horizon_world::loot::PackOverlay) -> Self {
+    pub fn load_with(
+        root: &Path,
+        overlay: &horizon_world::loot::PackOverlay,
+        defaults: &horizon_world::item_defaults::ItemDefaults,
+    ) -> crate::Result<Self> {
         let data = root.join("data/minecraft");
-        let mut raw_tags = read_tag_dir(&data.join("tags/enchantment"));
+        let mut raw_tags = read_tag_dir(&data.join("tags/enchantment"), overlay.conditions);
         for (id, files) in overlay.tag_kind("enchantment") {
-            let slot = raw_tags.entry(id).or_default();
             for bytes in files {
                 let Ok(v) = serde_json::from_slice::<Value>(bytes) else {
                     continue;
                 };
+                if !overlay.conditions.allows(&v) {
+                    continue;
+                }
+                let slot = raw_tags.entry(id.clone()).or_default();
                 if v["replace"].as_bool() == Some(true) {
                     slot.clear();
                 }
@@ -241,7 +374,10 @@ impl Enchantments {
                 })
                 .collect()
         };
-        let entity_tags = unordered(read_tag_dir(&data.join("tags/entity_type")));
+        let entity_tags = unordered(read_tag_dir(
+            &data.join("tags/entity_type"),
+            overlay.conditions,
+        ));
         let damage_tags = match horizon_world::damage_source::Catalog::load(root, overlay) {
             Ok(catalog) => catalog
                 .tags()
@@ -253,24 +389,15 @@ impl Enchantments {
                 })
                 .collect(),
             // Small tools/fixtures may not carry the prepared catalog.
-            Err(_) => unordered(read_tag_dir(&data.join("tags/damage_type"))),
+            Err(_) => unordered(read_tag_dir(
+                &data.join("tags/damage_type"),
+                overlay.conditions,
+            )),
         };
         // The registry lists entries sorted by id, like the data-pack loader.
-        let mut files: BTreeMap<String, Value> = BTreeMap::new();
-        // The folder's own files, not its subfolders'.
-        if let Ok(folder) = horizon_world::json_folder::read(&data.join("enchantment")) {
-            for file in folder.files.iter().filter(|f| !f.name.contains('/')) {
-                if let Ok(v) = serde_json::from_slice(file.bytes().unwrap_or_default()) {
-                    files.insert(format!("minecraft:{}", file.name), v);
-                }
-            }
-        }
-        // The active pack's definition replaces the lower sources for this id.
-        for (id, entries) in overlay.kind("enchantment") {
-            if let Ok(v) = serde_json::from_slice(horizon_world::loot::PackOverlay::top(entries)) {
-                files.insert(id.to_owned(), v);
-            }
-        }
+        let files: BTreeMap<String, Value> = crate::items::data_files(root, "enchantment", overlay)
+            .into_iter()
+            .collect();
         let lang: HashMap<String, String> =
             horizon_core::prepared_files::read(&root.join("assets/minecraft/lang/en_us.json"))
                 .ok()
@@ -299,48 +426,60 @@ impl Enchantments {
                         || k.starts_with("recipe.toast.")
                 })
                 .collect();
+        let mut custom_damage = HashMap::new();
         let list = files
             .iter()
-            .map(|(id, v)| parse_entry(id, v, &tags, &lang))
-            .collect::<Vec<_>>();
+            .filter_map(|(id, v)| {
+                match resolve_damage_effects(
+                    &v["effects"],
+                    DAMAGE_EFFECT_IDS.get().map_or(&[], Vec::as_slice),
+                ) {
+                    Ok(Some(nodes)) => {
+                        custom_damage.insert(Arc::from(id.as_str()), nodes);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        eprintln!("enchantment {id}: {error}");
+                        return None;
+                    }
+                }
+                Some(parse_entry(id, v, &tags, &lang))
+            })
+            .collect::<crate::Result<Vec<_>>>()?;
         let index = list
             .iter()
             .enumerate()
             .map(|(i, e)| (e.id.clone(), i))
             .collect();
         let mut props = HashMap::new();
-        if let Ok(raw) = horizon_world::item_defaults::read(root) {
-            for (id, c) in raw {
-                props.insert(
-                    Arc::from(id.as_str()),
-                    ItemProps {
-                        enchantable: c["minecraft:enchantable"]["value"].as_u64().unwrap_or(0)
-                            as u32,
-                        repairable: string_list(&c["minecraft:repairable"]["items"]),
-                        glint: c["minecraft:enchantment_glint_override"]
-                            .as_bool()
-                            .unwrap_or(false),
-                        rarity: c["minecraft:rarity"]
-                            .as_str()
-                            .unwrap_or("common")
-                            .to_owned(),
-                        trim_material: c["minecraft:provides_trim_material"]
-                            .as_str()
-                            .map(str::to_owned),
-                        brewing_fuel: c.get("minecraft:brewing_fuel").is_some(),
-                    },
-                );
-            }
+        for (id, c) in defaults.entries() {
+            props.insert(
+                Arc::from(id.as_str()),
+                ItemProps {
+                    enchantable: c["minecraft:enchantable"]["value"].as_u64().unwrap_or(0) as u32,
+                    repairable: string_list(&c["minecraft:repairable"]["items"]),
+                    glint: c["minecraft:enchantment_glint_override"].as_bool(),
+                    rarity: c["minecraft:rarity"]
+                        .as_str()
+                        .unwrap_or("common")
+                        .to_owned(),
+                    trim_material: c["minecraft:provides_trim_material"]
+                        .as_str()
+                        .map(str::to_owned),
+                    brewing_fuel: c.get("minecraft:brewing_fuel").is_some(),
+                },
+            );
         }
-        Self {
+        Ok(Self {
             list,
             index,
+            custom_damage,
             tags,
             entity_tags,
             damage_tags,
             props,
             lang,
-        }
+        })
     }
     pub fn get(&self, id: &str) -> Option<&Enchantment> {
         self.index.get(id).map(|&i| &self.list[i])
@@ -352,18 +491,31 @@ impl Enchantments {
     pub fn with_entries<'a>(
         &self,
         entries: impl IntoIterator<Item = (&'a str, &'a Value)>,
-    ) -> Option<Self> {
+    ) -> crate::Result<Option<Self>> {
         let mut table = None::<Self>;
         for (id, v) in entries {
             if self.index.contains_key(id) {
                 continue;
             }
+            let nodes = match resolve_damage_effects(
+                &v["effects"],
+                DAMAGE_EFFECT_IDS.get().map_or(&[], Vec::as_slice),
+            ) {
+                Ok(nodes) => nodes,
+                Err(error) => {
+                    eprintln!("synced enchantment {id}: {error}; retaining display definition");
+                    None
+                }
+            };
             let t = table.get_or_insert_with(|| self.clone());
-            let e = parse_entry(id, v, &t.tags, &t.lang);
+            let e = parse_entry(id, v, &t.tags, &t.lang)?;
+            if let Some(nodes) = nodes {
+                t.custom_damage.insert(e.id.clone(), nodes);
+            }
             t.index.insert(e.id.clone(), t.list.len());
             t.list.push(e);
         }
-        table
+        Ok(table)
     }
     /// The longest `minecraft:ignite` the attacker's `minecraft:post_attack`
     /// effects (Fire Aspect) set on the victim, in seconds: the effects whose
@@ -418,11 +570,28 @@ impl Enchantments {
     pub fn enchantable(&self, item: &str) -> u32 {
         self.props(item).map_or(0, |p| p.enchantable)
     }
+    /// `ItemStack.get(DataComponents.ENCHANTABLE)`: the stack's component,
+    /// else the item's default; a removed component leaves none.
+    pub fn enchantable_of(&self, stack: &ItemStack) -> u32 {
+        let data = stack.data();
+        if data.is_some_and(|d| d.other("!minecraft:enchantable").is_some()) {
+            return 0;
+        }
+        if let Some(tag) = data.and_then(|d| d.other("minecraft:enchantable")) {
+            return match tag.get("value") {
+                Some(Tag::Byte(v)) => u32::try_from(i32::from(*v)),
+                Some(Tag::Short(v)) => u32::try_from(i32::from(*v)),
+                Some(Tag::Int(v)) => u32::try_from(*v),
+                _ => Ok(0),
+            }
+            .unwrap_or(0);
+        }
+        self.enchantable(&stack.item)
+    }
     /// Whether `item` matches an id / `#tag` list.
     pub fn item_in(items: &Items, specs: &[String], item: &str) -> bool {
-        specs.iter().any(|s| match s.strip_prefix('#') {
-            Some(tag) => items.item_tags.get(tag).is_some_and(|t| t.contains(item)),
-            None => s == item,
+        specs.iter().any(|spec| {
+            crate::properties::item_matches(spec, item, |tag| items.item_in_tag(tag, item))
         })
     }
     /// `Enchantment.canEnchant` / `isSupportedItem`.
@@ -520,7 +689,26 @@ impl Enchantments {
         bookcases: i32,
         item: &str,
     ) -> i32 {
-        if self.enchantable(item) == 0 {
+        self.enchantment_cost_with(random, slot, bookcases, self.enchantable(item))
+    }
+    /// `EnchantmentHelper.getEnchantmentCost` for a stack's own `ENCHANTABLE`.
+    pub fn enchantment_cost_of<R: RandomSource>(
+        &self,
+        random: &mut R,
+        slot: usize,
+        bookcases: i32,
+        stack: &ItemStack,
+    ) -> i32 {
+        self.enchantment_cost_with(random, slot, bookcases, self.enchantable_of(stack))
+    }
+    fn enchantment_cost_with<R: RandomSource>(
+        &self,
+        random: &mut R,
+        slot: usize,
+        bookcases: i32,
+        enchantable: u32,
+    ) -> i32 {
+        if enchantable == 0 {
             return 0;
         }
         let bookcases = bookcases.min(15);
@@ -560,16 +748,22 @@ impl Enchantments {
         random: &mut R,
         list: &[(Arc<str>, u32)],
     ) -> Option<(Arc<str>, u32)> {
-        let total: i32 = list
+        let total: i64 = list
             .iter()
-            .map(|(id, _)| self.get(id).map_or(0, |e| e.weight as i32))
+            .map(|(id, _)| self.get(id).map_or(0, |e| i64::from(e.weight)))
             .sum();
         if total <= 0 {
             return None;
         }
-        let mut index = next_int(random, total);
+        // Preserve vanilla's int draw. Oversized pack totals use one unsigned
+        // long modulo the total, a bounded, slightly biased fallback.
+        let mut index = if total <= i64::from(i32::MAX) {
+            i64::from(next_int(random, total as i32))
+        } else {
+            ((random.next_long() as u64) % total as u64) as i64
+        };
         for (id, l) in list {
-            index -= self.get(id).map_or(0, |e| e.weight as i32);
+            index -= self.get(id).map_or(0, |e| i64::from(e.weight));
             if index < 0 {
                 return Some((id.clone(), *l));
             }
@@ -585,12 +779,49 @@ impl Enchantments {
         cost: i32,
         pool: &[Arc<str>],
     ) -> Vec<(Arc<str>, u32)> {
+        self.select_with_value(items, random, item, cost, pool, self.enchantable(item))
+    }
+
+    /// Select enchantments using the stack's enchantable component.
+    pub fn select_of<R: RandomSource>(
+        &self,
+        items: &Items,
+        random: &mut R,
+        stack: &ItemStack,
+        cost: i32,
+        pool: &[Arc<str>],
+    ) -> Levels {
+        self.select_with_value(
+            items,
+            random,
+            &stack.item,
+            cost,
+            pool,
+            self.enchantable_of(stack),
+        )
+    }
+    /// Select with the enchantability of the stack after its component patch.
+    pub fn select_with_value<R: RandomSource>(
+        &self,
+        items: &Items,
+        random: &mut R,
+        item: &str,
+        cost: i32,
+        pool: &[Arc<str>],
+        value: u32,
+    ) -> Levels {
         let mut results = Vec::new();
-        let value = self.enchantable(item) as i32;
+        let Ok(value) = i32::try_from(value) else {
+            return results;
+        };
         if value == 0 {
             return results;
         }
-        let mut cost = cost + 1 + next_int(random, value / 4 + 1) + next_int(random, value / 4 + 1);
+        let bound = value / 4 + 1;
+        let mut cost = cost
+            .wrapping_add(1)
+            .wrapping_add(next_int(random, bound))
+            .wrapping_add(next_int(random, bound));
         let span = (random.next_float() + random.next_float() - 1.0) * 0.15;
         cost = ((cost as f32 + cost as f32 * span).round() as i32).max(1);
         let mut available = self.available_results(items, cost, item, pool);
@@ -628,7 +859,7 @@ impl Enchantments {
     ) -> f32 {
         let Some(stack) = stack else { return value };
         let mut value = value;
-        for (id, level) in stack.enchantments() {
+        for (id, level) in stack.all_enchantments().iter() {
             value = self.modify_value_with(id, *level, component, ctx, random, value);
         }
         value
@@ -653,17 +884,67 @@ impl Enchantments {
         }
         value
     }
-    /// Whether `stack` has any enchantment providing `component`.
+    /// Evaluate damage with a gameplay-owned callback for resolved custom nodes.
+    pub fn modify_damage(
+        &self,
+        levels: &[(Arc<str>, u32)],
+        ctx: &EffectContext<'_>,
+        random: &mut LegacyRandom,
+        mut value: f32,
+        custom: &mut impl FnMut(usize, &horizon_core::nbt::Tag, u32, f32) -> f32,
+    ) -> f32 {
+        for (id, level) in levels.iter() {
+            let Some(nodes) = self.custom_damage.get(id.as_ref()) else {
+                value = self.modify_value_with(id, *level, "minecraft:damage", ctx, random, value);
+                continue;
+            };
+            let enchantment = self.get(id).expect("compiled enchantment exists");
+            for (entry, node) in enchantment.effects["minecraft:damage"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .zip(nodes)
+            {
+                if entry
+                    .get("requirements")
+                    .is_none_or(|req| self.condition(req, *level, ctx, random))
+                {
+                    value = node.apply(*level, random, value, custom);
+                }
+            }
+        }
+        value
+    }
+    /// Whether this stack needs the gameplay callback evaluator. Keys were resolved at load.
+    pub fn has_custom_damage(&self, levels: &[(Arc<str>, u32)]) -> bool {
+        if self.custom_damage.is_empty() {
+            return false;
+        }
+        levels
+            .iter()
+            .any(|(id, _)| self.custom_damage.contains_key(id.as_ref()))
+    }
+    /// Whether loaded content contains any custom damage nodes.
+    pub fn has_custom_damage_effects(&self) -> bool {
+        !self.custom_damage.is_empty()
+    }
+    /// `EnchantmentHelper.has`: whether `stack` has any enchantment providing
+    /// `component`. It reads the stack's own component.
     pub fn has_component(&self, stack: &ItemStack, component: &str) -> bool {
         stack.enchantments().iter().any(|(id, _)| {
             self.get(id)
                 .is_some_and(|e| e.effects.get(component).is_some())
         })
     }
+    /// `EnchantmentHelper.has(stack, PREVENT_ARMOR_CHANGE)`: whether an enchantment on `stack`
+    /// keeps it on as worn armour (Curse of Binding, or a data pack's own).
+    pub fn prevents_armor_change(&self, stack: &ItemStack) -> bool {
+        self.has_component(stack, "minecraft:prevent_armor_change")
+    }
     /// `minecraft:attributes` contributions of `stack`: (attribute, id, amount, operation).
     pub fn attributes(&self, stack: &ItemStack) -> Vec<(String, String, f64, String)> {
         let mut out = Vec::new();
-        for (id, level) in stack.enchantments() {
+        for (id, level) in stack.all_enchantments().iter() {
             let Some(e) = self.get(id) else { continue };
             for a in e.effects["minecraft:attributes"]
                 .as_array()
@@ -681,12 +962,11 @@ impl Enchantments {
         out
     }
     /// `EnchantmentHelper.forEachModifier` as an item's tooltip lists them: the
-    /// `minecraft:attributes` effects of `stack`'s enchantments as rows of
-    /// (attribute, id, amount, operation, slot group), one per slot group the
-    /// enchantment lists.
-    pub fn modifier_rows(&self, stack: &ItemStack) -> Vec<(String, String, f64, String, String)> {
+    /// `minecraft:attributes` effects of `stack`'s enchantments, one row per
+    /// slot group the enchantment lists.
+    pub fn modifier_rows(&self, stack: &ItemStack) -> Vec<crate::item_data::ModifierRow> {
         let mut rows = Vec::new();
-        for (id, level) in stack.enchantments() {
+        for (id, level) in stack.all_enchantments().iter() {
             let Some(e) = self.get(id) else { continue };
             for a in e.effects["minecraft:attributes"]
                 .as_array()
@@ -694,12 +974,12 @@ impl Enchantments {
                 .flatten()
             {
                 for slot in &e.slots {
-                    rows.push((
-                        a["attribute"].as_str().unwrap_or("").to_owned(),
-                        a["id"].as_str().unwrap_or("").to_owned(),
+                    rows.push(crate::item_data::ModifierRow::new(
+                        a["attribute"].as_str().unwrap_or(""),
+                        a["id"].as_str().unwrap_or(""),
                         f64::from(level_value(&a["amount"], *level)),
-                        a["operation"].as_str().unwrap_or("add_value").to_owned(),
-                        slot.clone(),
+                        a["operation"].as_str().unwrap_or("add_value"),
+                        slot,
                     ));
                 }
             }
@@ -943,6 +1223,167 @@ pub mod tests {
     use serde_json::json;
 
     #[test]
+    fn custom_damage_output_is_bounded_before_builtin_nodes() {
+        let node = DamageValueEffect::resolve(
+            &json!({"type":"minecraft:all_of", "effects":[
+                {"type":"test:damage"}, {"type":"minecraft:remove_binomial","chance":0},
+                {"type":"minecraft:add","value":2}
+            ]}),
+            &["test:damage".into()],
+        )
+        .unwrap();
+        for (output, expected) in [
+            (f32::NAN, 9.0),
+            (f32::INFINITY, 1026.0),
+            (f32::NEG_INFINITY, 2.0),
+            (-1.0, 2.0),
+            (f32::MAX, 1026.0),
+        ] {
+            assert_eq!(
+                node.apply(1, &mut LegacyRandom::new(0), 7.0, &mut |_, _, _, _| output),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn synced_unknown_damage_retains_enchantment_definition() {
+        let definition = json!({"description":"Remote", "effects":{"minecraft:damage":[
+            {"effect":{"type":"remote:damage"}}
+        ]}});
+        let table = sample()
+            .with_entries([("remote:enchantment", &definition)])
+            .unwrap()
+            .unwrap();
+        assert!(table.get("remote:enchantment").is_some());
+    }
+
+    #[test]
+    fn legacy_value_types_remain_noops() {
+        for kind in ["minecraft:exponential", "minecraft:unknown", "add", ""] {
+            let node = DamageValueEffect::resolve(&json!({"type":kind}), &[]).unwrap();
+            assert_eq!(
+                node.apply(1, &mut LegacyRandom::new(0), 7.0, &mut |_, _, _, _| panic!(
+                    "not custom"
+                )),
+                7.0
+            );
+        }
+    }
+
+    #[test]
+    fn custom_damage_nodes_compose_with_vanilla_in_order() {
+        let mut enchantments = sample();
+        let node = json!({"type":"minecraft:all_of", "effects":[
+            {"type":"minecraft:add", "value":2},
+            {"type":"test:scale", "factor":3},
+            {"type":"minecraft:all_of", "effects":[
+                {"type":"test:offset", "value":4},
+                {"type":"minecraft:multiply", "factor":2}
+            ]}
+        ]});
+        let compiled =
+            DamageValueEffect::resolve(&node, &["test:scale".into(), "test:offset".into()])
+                .unwrap();
+        enchantments
+            .custom_damage
+            .insert("minecraft:sharpness".into(), vec![compiled]);
+        let index = enchantments.index["minecraft:sharpness"];
+        enchantments.list[index].effects = json!({"minecraft:damage":[{"effect":node}]});
+        let mut stack = ItemStack::new("minecraft:diamond_sword", 1);
+        stack.data_mut().enchantments = vec![("minecraft:sharpness".into(), 2)];
+        let mut calls = Vec::new();
+        let result = enchantments.modify_damage(
+            &stack.all_enchantments(),
+            &EffectContext::default(),
+            &mut LegacyRandom::new(0),
+            5.0,
+            &mut |slot, config, level, value| {
+                calls.push((slot, level, value));
+                let config = horizon_core::json_nbt::tag_to_json(config).unwrap();
+                match slot {
+                    0 => value * config["factor"].as_f64().unwrap() as f32,
+                    1 => value + config["value"].as_f64().unwrap() as f32,
+                    _ => panic!("unresolved slot"),
+                }
+            },
+        );
+        // ((5 + 2) * 3 + 4) * 2, including both nested custom nodes.
+        assert_eq!(result, 50.0);
+        assert_eq!(calls, [(0, 2, 7.0), (1, 2, 21.0)]);
+    }
+
+    #[test]
+    fn custom_damage_requirements_skip_callbacks_and_keep_random_order() {
+        let mut enchantments = sample();
+        let effect = json!({"type":"test:damage"});
+        enchantments.custom_damage.insert(
+            "minecraft:sharpness".into(),
+            vec![DamageValueEffect::resolve(&effect, &["test:damage".into()]).unwrap()],
+        );
+        let index = enchantments.index["minecraft:sharpness"];
+        enchantments.list[index].effects = json!({"minecraft:damage":[{
+            "effect":effect, "requirements":{"condition":"minecraft:random_chance", "chance":0.0}
+        }]});
+        let mut stack = ItemStack::new("minecraft:diamond_sword", 1);
+        stack.data_mut().enchantments = vec![("minecraft:sharpness".into(), 1)];
+        let mut random = LegacyRandom::new(42);
+        let value = enchantments.modify_damage(
+            &stack.all_enchantments(),
+            &EffectContext::default(),
+            &mut random,
+            7.0,
+            &mut |_, _, _, _| panic!("a refused node must not run"),
+        );
+        assert_eq!(value, 7.0);
+        // java.util.Random(42): nextFloat for the condition, then nextInt.
+        assert_eq!(random.next_int(), 234_785_527);
+    }
+
+    #[test]
+    fn unknown_custom_damage_is_refused_with_its_identifier() {
+        let node = json!({"type":"minecraft:all_of", "effects":[{"type":"missing:damage"}]});
+        assert_eq!(
+            DamageValueEffect::resolve(&node, &[]).err().unwrap(),
+            "unknown enchantment damage value effect missing:damage"
+        );
+    }
+
+    #[test]
+    fn damage_without_custom_nodes_preserves_vanilla_values_and_random() {
+        let enchantments = sample();
+        let mut stack = ItemStack::new("minecraft:diamond_sword", 1);
+        let mut calls = 0;
+        for (levels, expected) in [
+            (vec![], 7.0),
+            (vec![("minecraft:sharpness".into(), 3)], 9.0),
+            (vec![("minecraft:smite".into(), 2)], 12.0),
+        ] {
+            stack.data_mut().enchantments = levels;
+            let context = EffectContext {
+                this: Some("minecraft:zombie"),
+                ..Default::default()
+            };
+            let mut random = LegacyRandom::new(42);
+            assert_eq!(
+                enchantments.modify_damage(
+                    &stack.all_enchantments(),
+                    &context,
+                    &mut random,
+                    7.0,
+                    &mut |_, _, _, value| {
+                        calls += 1;
+                        value
+                    }
+                ),
+                expected
+            );
+            assert_eq!(random.next_int(), -1_170_105_035);
+        }
+        assert_eq!(calls, 0);
+    }
+
+    #[test]
     fn world_pack_definitions_join_catalog_in_overlay_priority() {
         let root = std::env::temp_dir().join(format!(
             "horizon-enchantment-overlay-{}-{}",
@@ -1012,9 +1453,18 @@ pub mod tests {
             ),
             ("tags/wpenchant:enchantment/fixture".to_owned(), vec![tag]),
         ];
-        let base = Enchantments::load(&root);
-        let loaded =
-            Enchantments::load_with(&root, &horizon_world::loot::PackOverlay { files: &files });
+        write("items.json", &json!({}));
+        let defaults = horizon_world::item_defaults::read(&root).unwrap();
+        let base = Enchantments::load(&root, &defaults).unwrap();
+        let loaded = Enchantments::load_with(
+            &root,
+            &horizon_world::loot::PackOverlay {
+                files: &files,
+                ..horizon_world::loot::PackOverlay::NONE
+            },
+            &defaults,
+        )
+        .unwrap();
         assert_eq!(
             loaded.get("minecraft:mending").unwrap().description,
             "Vanilla retained"
@@ -1048,7 +1498,90 @@ pub mod tests {
             ),
             3.0
         );
-        assert!(Enchantments::load(&root).get("wpenchant:loaded").is_none());
+        assert!(
+            Enchantments::load(&root, &defaults)
+                .unwrap()
+                .get("wpenchant:loaded")
+                .is_none()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_payloads_are_retained_and_invalid_definitions_refused() {
+        let tags = HashMap::new();
+        let lang = HashMap::new();
+        let definition = json!({"effects":{"minecraft:post_attack":[
+            {"effect":{"type":"minecraft:ignite","duration":4}},
+            {"effect":{"type":"example:charge","amount":42}}
+        ]}});
+        let entry = parse_entry("example:charge", &definition, &tags, &lang).unwrap();
+        assert!(!entry.native_post_attack.contains_key(&0));
+        let payload = &entry.native_post_attack[&1];
+        assert_eq!(
+            payload.get("amount"),
+            Some(&horizon_core::nbt::Tag::Byte(42))
+        );
+        assert!(Arc::ptr_eq(payload, &entry.clone().native_post_attack[&1]));
+        let bad = json!({"effects":{"minecraft:post_attack":[{"effect":{"type":"example:charge","bad":null}}]}});
+        assert!(parse_entry("example:charge", &bad, &tags, &lang).is_err());
+        let base = sample();
+        let before = base.list.len();
+        let error = base
+            .with_entries([("example:valid", &definition), ("example:invalid", &bad)])
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("example:invalid"));
+        assert_eq!(base.list.len(), before);
+        assert!(base.get("example:valid").is_none());
+
+        let root = std::env::temp_dir().join(format!(
+            "horizon-enchant-refusal-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("data/example/enchantment")).unwrap();
+        std::fs::write(root.join("items.json"), "{}").unwrap();
+        std::fs::write(
+            root.join("data/example/enchantment/invalid.json"),
+            bad.to_string(),
+        )
+        .unwrap();
+        let defaults = horizon_world::item_defaults::read(&root).unwrap();
+        let error = Enchantments::load(&root, &defaults).err().unwrap();
+        assert!(error.to_string().contains("example:invalid"));
+        std::fs::remove_file(root.join("data/example/enchantment/invalid.json")).unwrap();
+        let files = vec![(
+            "enchantment/example:charge".to_owned(),
+            vec![serde_json::to_vec(&definition).unwrap()],
+        )];
+        let overlay = horizon_world::loot::PackOverlay {
+            files: &files,
+            ..horizon_world::loot::PackOverlay::NONE
+        };
+        let loaded = Enchantments::load_with(&root, &overlay, &defaults).unwrap();
+        assert_eq!(
+            loaded.get("example:charge").unwrap().native_post_attack[&1].get("amount"),
+            Some(&horizon_core::nbt::Tag::Byte(42))
+        );
+        let files = vec![(
+            "enchantment/example:invalid".to_owned(),
+            vec![serde_json::to_vec(&bad).unwrap()],
+        )];
+        let overlay = horizon_world::loot::PackOverlay {
+            files: &files,
+            ..horizon_world::loot::PackOverlay::NONE
+        };
+        assert!(
+            Enchantments::load_with(&root, &overlay, &defaults)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("example:invalid")
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1074,6 +1607,15 @@ pub mod tests {
             (
                 "minecraft:feather_falling",
                 json!({"anvil_cost":2,"max_cost":{"base":11,"per_level_above_first":6},"max_level":4,"min_cost":{"base":5,"per_level_above_first":6},"supported_items":"#minecraft:enchantable/foot_armor","weight":5,"effects":{"minecraft:damage_protection":[{"effect":{"type":"minecraft:add","value":{"type":"minecraft:linear","base":3.0,"per_level_above_first":3.0}},"requirements":{"type":"minecraft:damage_source_properties","predicate":{"tags":[{"expected":true,"id":"#minecraft:is_fall"},{"expected":false,"id":"#minecraft:bypasses_invulnerability"}]}}}]}}),
+            ),
+            (
+                "minecraft:binding_curse",
+                json!({"anvil_cost":8,"description":{"translate":"enchantment.minecraft.binding_curse"},"effects":{"minecraft:prevent_armor_change":{}},"max_cost":{"base":50,"per_level_above_first":0},"max_level":1,"min_cost":{"base":25,"per_level_above_first":0},"slots":["armor"],"supported_items":"#minecraft:enchantable/equippable","weight":1}),
+            ),
+            // A data pack's own enchantment with Curse of Binding's effect under another id.
+            (
+                "test:clinging",
+                json!({"anvil_cost":8,"description":"Clinging","effects":{"minecraft:prevent_armor_change":{}},"max_cost":{"base":50,"per_level_above_first":0},"max_level":1,"min_cost":{"base":25,"per_level_above_first":0},"slots":["armor"],"supported_items":"#minecraft:enchantable/equippable","weight":1}),
             ),
         ];
         let list: Vec<Enchantment> = defs
@@ -1101,6 +1643,7 @@ pub mod tests {
                 },
                 slots: vec![],
                 effects: v["effects"].clone(),
+                native_post_attack: HashMap::new(),
             })
             .collect();
         let index = list
@@ -1158,6 +1701,7 @@ pub mod tests {
         Enchantments {
             list,
             index,
+            custom_damage: HashMap::new(),
             tags,
             entity_tags,
             damage_tags,
@@ -1415,6 +1959,7 @@ pub mod tests {
                 ("enchex:hex", &hex),
                 ("minecraft:sharpness", &other),
             ])
+            .unwrap()
             .unwrap();
         assert_eq!(synced.full_name("enchex:drill", 2).0, "Drill II");
         assert_eq!(synced.full_name("enchex:drill", 1).0, "Drill I");
@@ -1422,7 +1967,11 @@ pub mod tests {
         assert_eq!(synced.full_name("minecraft:sharpness", 1).0, "sharpness I");
         assert_eq!(synced.list.len(), e.list.len() + 2);
         // Nothing new: the game's table stays in use.
-        assert!(e.with_entries([("minecraft:sharpness", &other)]).is_none());
+        assert!(
+            e.with_entries([("minecraft:sharpness", &other)])
+                .unwrap()
+                .is_none()
+        );
     }
 
     /// The enchantment's name and its level come from the selected language,
@@ -1463,6 +2012,7 @@ mod ignite_tests {
     /// Fire Aspect as the data pack has it: 4 seconds per level.
     fn registry() -> Enchantments {
         let fire_aspect = Enchantment {
+            native_post_attack: HashMap::new(),
             id: Arc::from("minecraft:fire_aspect"),
             description: "fire_aspect".into(),
             description_key: String::new(),
@@ -1482,6 +2032,55 @@ mod ignite_tests {
             list: vec![fire_aspect],
             index,
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn weight_totals_enchantments() {
+        for weights in [
+            [0, 0, 0],
+            [1, 2, 3],
+            [7, 0, 11],
+            [i32::MAX as u32; 3],
+            [u32::MAX; 3],
+        ] {
+            let mut reg = registry();
+            let template = reg.list[0].clone();
+            reg.list.clear();
+            reg.index.clear();
+            let mut list = vec![];
+            for (i, weight) in weights.into_iter().enumerate() {
+                let mut e = template.clone();
+                e.id = Arc::from(format!("test:{i}"));
+                e.weight = weight;
+                list.push((e.id.clone(), 1));
+                reg.index.insert(e.id.clone(), i);
+                reg.list.push(e);
+            }
+            let total: i64 = weights.iter().map(|&w| i64::from(w)).sum();
+            for seed in 0..64 {
+                let mut expected = LegacyRandom::new(seed);
+                let pick = if total == 0 {
+                    None
+                } else {
+                    let mut at = if total <= i64::from(i32::MAX) {
+                        i64::from(expected.next_int_bound(total as i32).unwrap())
+                    } else {
+                        ((expected.next_long() as u64) % total as u64) as i64
+                    };
+                    weights
+                        .iter()
+                        .position(|&w| {
+                            at -= i64::from(w);
+                            at < 0
+                        })
+                        .map(|i| list[i].clone())
+                };
+                let mut random = LegacyRandom::new(seed);
+                assert_eq!(reg.weighted(&mut random, &list), pick);
+                assert_eq!(random.next_long(), expected.next_long());
+            }
+            assert!(reg.weighted(&mut LegacyRandom::new(0), &[]).is_none());
         }
     }
 

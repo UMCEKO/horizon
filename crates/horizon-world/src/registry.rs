@@ -3,7 +3,6 @@
 mod facts;
 mod json;
 pub(crate) mod snapshot;
-use crate::{DATA_VERSION, chunk::BlockState, compression::invalid, nbt::Tag};
 use horizon_core::fast_hash::FxHashMap;
 pub use json::BlockStateJsonCodec;
 pub(crate) use json::java_integer;
@@ -16,11 +15,18 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+use {
+    crate::{DATA_VERSION, chunk::BlockState, compression::invalid},
+    horizon_core::nbt::Tag,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BlockStateId(pub u32);
 
 pub struct BlockRegistry {
+    /// Game-owned, immutable mod worker metadata for this numeric registry snapshot.
+    /// Filled at resource resolution before any worker can use it; never shared across registries.
+    pub mod_worker_resource: std::sync::OnceLock<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     states: Vec<BlockState>,
     /// Ids by a hash of their state, checked against `states`: 12 bytes per
     /// state instead of a second copy of every name and property map (about
@@ -155,6 +161,7 @@ impl BlockRegistry {
             return Err(invalid("invalid registry size"));
         }
         let mut result = Self {
+            mod_worker_resource: std::sync::OnceLock::new(),
             states: Vec::with_capacity(states.len()),
             ids: HashMap::with_capacity(states.len()),
             collided: BTreeMap::new(),
@@ -381,7 +388,7 @@ impl<'r> BlockTableFile<'r> {
     /// Reads `bytes`, checking every `states` list of the root compound and
     /// of the compounds directly under it against `registry`.
     pub fn read(bytes: &[u8], registry: &'r BlockRegistry) -> io::Result<Self> {
-        let mut visit = |states: &mut crate::nbt::ListElements<'_, '_, '_>| {
+        let mut visit = |states: &mut horizon_core::nbt::ListElements<'_, '_, '_>| {
             if states.len() != registry.len() {
                 return Err(states.error("table registry size mismatch"));
             }
@@ -396,9 +403,9 @@ impl<'r> BlockTableFile<'r> {
             }
             Ok(())
         };
-        let (named, _) = crate::nbt::read_named_streaming(
+        let (named, _) = horizon_core::nbt::read_named_streaming(
             bytes,
-            crate::nbt::Limits::tables(),
+            horizon_core::nbt::Limits::tables(),
             "states",
             &mut visit,
         )
@@ -422,7 +429,7 @@ impl<'r> BlockTableFile<'r> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nbt::{Compound, JavaString};
+    use horizon_core::nbt::{Compound, JavaString};
 
     fn state(name: &str, properties: &[(&str, &str)]) -> Tag {
         let mut map = Compound::new();

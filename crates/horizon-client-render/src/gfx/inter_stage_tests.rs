@@ -128,6 +128,11 @@ fn composed() -> Vec<(&'static str, Vec<&'static str>, String)> {
             entity.clone() + include_str!("../static_entity.wgsl"),
         ),
         (
+            "prepared model",
+            vec!["entity.wgsl", "prepared_model.wgsl"],
+            entity.clone() + include_str!("../prepared_model.wgsl"),
+        ),
+        (
             "improved transparency clouds",
             vec!["entity.wgsl", "oit.wgsl", "oit_clouds.wgsl"],
             entity.clone() + include_str!("../oit.wgsl") + include_str!("../oit_clouds.wgsl"),

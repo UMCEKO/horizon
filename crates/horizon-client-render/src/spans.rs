@@ -44,8 +44,8 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 /// Record this thread's spans even with spans off, their wall time only (no CPU clock read):
-/// what the render thread's slow frames spent their time in, for the opt-in performance
-/// statistics (`telemetry::Session::frame`). The thread takes them every frame ([`take`]).
+/// what the render thread's slow frames spent their time in. The thread takes them every
+/// frame ([`take`]).
 pub fn record_here(on: bool) {
     HERE.with(|h| h.set(on));
 }

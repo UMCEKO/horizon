@@ -9,6 +9,8 @@ use crate::{
 };
 use horizon_core::random::{RandomSource, XoroshiroRandom, mix_stafford13, seed_from_hash};
 use horizon_world::loot::PackOverlay;
+mod offer;
+pub use offer::{ItemCost, MerchantOffer};
 use serde_json::Value;
 use std::{collections::HashMap, path::Path, sync::Arc};
 
@@ -31,23 +33,6 @@ pub fn max_xp(level: i32) -> i32 {
         0
     }
 }
-/// The professions with trades, as in `VillagerProfession`.
-pub const PROFESSIONS: &[&str] = &[
-    "armorer",
-    "butcher",
-    "cartographer",
-    "cleric",
-    "farmer",
-    "fisherman",
-    "fletcher",
-    "leatherworker",
-    "librarian",
-    "mason",
-    "shepherd",
-    "toolsmith",
-    "weaponsmith",
-];
-
 /// A villager's or wandering trader's trading state (`AbstractVillager.offers`
 /// and `Villager.villagerXp`); `None` on the mob until its offers are first asked for.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -119,115 +104,6 @@ pub fn update_special_prices(offers: &mut [MerchantOffer], reputation: i32, hero
         }
     }
 }
-/// An `ItemCost`: item, count and the required exact component subset,
-/// kept as the stack's component patch.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ItemCost {
-    pub stack: ItemStack,
-}
-impl ItemCost {
-    pub fn test(&self, s: &ItemStack) -> bool {
-        if s.item != self.stack.item {
-            return false;
-        }
-        // ItemCost.test / DataComponentExactPredicate.test: exact values for
-        // each required component, with unrelated components allowed.
-        let Some(horizon_world::nbt::Tag::Compound(required)) =
-            crate::item_data::components_tag(self.stack.damage, self.stack.data())
-        else {
-            return true;
-        };
-        let actual = crate::item_data::components_tag(s.damage, s.data());
-        required.iter().all(|(key, value)| {
-            matches!(&actual, Some(horizon_world::nbt::Tag::Compound(c)) if c.get(key) == Some(value))
-        })
-    }
-}
-#[derive(Clone, Debug, PartialEq)]
-pub struct MerchantOffer {
-    pub base_cost_a: ItemCost,
-    pub cost_b: Option<ItemCost>,
-    pub result: ItemStack,
-    pub uses: i32,
-    pub max_uses: i32,
-    pub reward_exp: bool,
-    pub special_price_diff: i32,
-    pub demand: i32,
-    pub price_multiplier: f32,
-    pub xp: i32,
-}
-impl MerchantOffer {
-    fn max_stack(items: &Items, s: &ItemStack) -> u32 {
-        items.get(&s.item).map_or(64, |i| i.max_stack)
-    }
-    /// `getModifiedCostCount` for cost A.
-    pub fn cost_a_count(&self, items: &Items) -> u32 {
-        let base = self.base_cost_a.stack.count as i32;
-        // Mth.floor(basePrice * demand * priceMultiplier): an int product, then the float.
-        let demand_diff =
-            ((base.wrapping_mul(self.demand) as f32 * self.price_multiplier).floor() as i32).max(0);
-        (base + demand_diff + self.special_price_diff)
-            .clamp(1, Self::max_stack(items, &self.base_cost_a.stack) as i32) as u32
-    }
-    pub fn cost_a(&self, items: &Items) -> ItemStack {
-        ItemStack {
-            count: self.cost_a_count(items),
-            ..self.base_cost_a.stack.clone()
-        }
-    }
-    pub fn cost_b(&self) -> Option<ItemStack> {
-        self.cost_b.as_ref().map(|c| c.stack.clone())
-    }
-    pub fn out_of_stock(&self) -> bool {
-        self.uses >= self.max_uses
-    }
-    /// `MerchantOffer.updateDemand` (on restock).
-    pub fn update_demand(&mut self) {
-        self.demand = self.demand + self.uses - (self.max_uses - self.uses);
-    }
-    /// `satisfiedBy(buyA, buyB)`.
-    pub fn satisfied_by(
-        &self,
-        items: &Items,
-        a: Option<&ItemStack>,
-        b: Option<&ItemStack>,
-    ) -> bool {
-        let Some(a) = a else { return false };
-        if !self.base_cost_a.test(a) || a.count < self.cost_a_count(items) {
-            return false;
-        }
-        match (&self.cost_b, b) {
-            (None, b) => b.is_none(),
-            (Some(c), Some(b)) => c.test(b) && b.count >= c.stack.count,
-            (Some(_), None) => false,
-        }
-    }
-    /// `MerchantOffer.take`: consume the payment; false when not satisfied.
-    pub fn take(
-        &self,
-        items: &Items,
-        a: &mut Option<ItemStack>,
-        b: &mut Option<ItemStack>,
-    ) -> bool {
-        if !self.satisfied_by(items, a.as_ref(), b.as_ref()) {
-            return false;
-        }
-        let n = self.cost_a_count(items);
-        if let Some(s) = a.as_mut() {
-            s.count -= n;
-            if s.count == 0 {
-                *a = None;
-            }
-        }
-        if let (Some(c), Some(s)) = (&self.cost_b, b.as_mut()) {
-            s.count -= c.stack.count;
-            if s.count == 0 {
-                *b = None;
-            }
-        }
-        true
-    }
-}
 /// `MerchantOffers.getRecipeFor`: a hint past the first offer names the only
 /// offer that may match; otherwise the first offer that fits.
 pub fn recipe_for(
@@ -296,6 +172,7 @@ pub enum Event {
     Traded(usize, Box<MerchantOffer>),
 }
 /// What the world lends a trading session for offers made while it is open.
+#[derive(Clone, Copy)]
 pub struct TradeEnv<'a> {
     pub trades: &'a Trades,
     pub enchantments: &'a Enchantments,
@@ -362,7 +239,7 @@ impl Session {
     /// The trade sets whose sequences a villager of `profession` at `level`
     /// may draw while trading: those of the levels above it.
     pub fn sequences_needed(trades: &Trades, profession: &str, level: i32) -> Vec<String> {
-        (level + 1..=5)
+        (level.saturating_add(1)..=5)
             .filter_map(|l| trades.sequence(&Trades::set_for(profession, l)))
             .collect()
     }
@@ -590,10 +467,11 @@ impl Trades {
     }
     /// `VillagerProfession.getTrades(level)`.
     pub fn set_for(profession: &str, level: i32) -> String {
-        format!(
-            "minecraft:{}/level_{level}",
-            profession.trim_start_matches("minecraft:")
-        )
+        let name = profession.trim_start_matches("minecraft:");
+        let base = crate::mobs::villager::profession_index(name)
+            .and_then(|index| crate::mobs::villager::profession(index).trade_set)
+            .unwrap_or(name);
+        format!("minecraft:{base}/level_{level}")
     }
     fn trade_list(&self, spec: &Value) -> Vec<String> {
         match spec {
@@ -658,6 +536,8 @@ pub struct TradeContext<'a> {
 /// `ExplorationMapFunction`: `ServerLevel.findNearestMapStructure` and the
 /// map it makes, for the world the merchant is in.
 pub trait MapMaker {
+    /// Stage maps and id reservations with a menu edit.
+    fn with_staged(&self, edit: &mut dyn FnMut(&dyn MapMaker) -> bool) -> bool;
     /// The map for the nearest structure in `destination` (a structure tag)
     /// within `radius` chunks of `origin`, or the stack unchanged when none is
     /// found.
@@ -1252,7 +1132,7 @@ mod tests {
         bottle
             .data_mut()
             .potion_extra
-            .push(("custom_color".into(), horizon_world::nbt::Tag::Int(123)));
+            .push(("custom_color".into(), horizon_core::nbt::Tag::Int(123)));
         assert!(!o.base_cost_a.test(&bottle));
     }
 

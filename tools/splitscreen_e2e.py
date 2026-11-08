@@ -492,7 +492,7 @@ def scenario_setup():
     def labels():
         return [w.get('label', '') for w in g.ctl(1, 'ui')['widgets']]
     def enabled(label):
-        return next(w['enabled'] for w in g.ctl(1, 'ui')['widgets'] if w['label'] == label)
+        return next(w['enabled'] for w in g.ctl(1, 'ui')['widgets'] if w.get('label') == label)
     def page():
         g.ctl(1, 'options', 'horizon')
         g.press(1, 'Splitscreen...')

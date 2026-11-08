@@ -164,19 +164,21 @@ impl Tree {
         if overlay.kind("advancement").next().is_some() {
             return Arc::new(Tree::load_with(data, overlay));
         }
-        static TREES: Mutex<Vec<(PathBuf, Weak<Tree>)>> = Mutex::new(Vec::new());
+        type TreeKey = (PathBuf, horizon_world::conditions::LoadConditions);
+        static TREES: Mutex<Vec<(TreeKey, Weak<Tree>)>> = Mutex::new(Vec::new());
         // Held while loading: a second reader waits for the first one's tree.
+        let key = (data.to_path_buf(), overlay.conditions.clone());
         let mut trees = TREES.lock().unwrap_or_else(|e| e.into_inner());
         trees.retain(|(_, tree)| tree.strong_count() > 0);
         if let Some(tree) = trees
             .iter()
-            .find(|(path, _)| path == data)
+            .find(|(held, _)| held == &key)
             .and_then(|(_, tree)| tree.upgrade())
         {
             return tree;
         }
-        let tree = Arc::new(Tree::load(data));
-        trees.push((data.to_path_buf(), Arc::downgrade(&tree)));
+        let tree = Arc::new(Tree::load_with(data, overlay));
+        trees.push((key, Arc::downgrade(&tree)));
         tree
     }
     /// Loads `<data>/<namespace>/advancement/**/*.json`.
@@ -214,6 +216,9 @@ impl Tree {
             }
         }
         for (id, v) in json {
+            if !overlay.conditions.allows(&v) {
+                continue;
+            }
             if let Some(a) = parse(&id, &v) {
                 let index = tree.list.len();
                 for (ci, c) in a.criteria.iter().enumerate() {
@@ -625,7 +630,12 @@ pub trait World {
     fn smokey(&self, pos: [i32; 3]) -> bool;
     fn in_tag(&self, registry: &str, tag: &str, id: &str) -> bool;
     /// The block entity's `saveWithFullMetadata` at `pos`, `None` without one.
-    fn block_entity_nbt(&self, _pos: [i32; 3]) -> Option<horizon_world::nbt::Tag> {
+    fn block_entity_nbt(&self, _pos: [i32; 3]) -> Option<horizon_core::nbt::Tag> {
+        None
+    }
+    /// Read-only contents of a loaded named predicate, when this context
+    /// supplies a predicate registry. Other contexts keep references absent.
+    fn predicate(&self, _id: &str) -> Option<&Value> {
         None
     }
 }
@@ -640,11 +650,20 @@ pub struct ItemView {
     pub custom_name: bool,
     /// Typed snapshot for supported mob equipment views. `None` leaves this
     /// family unprojected and unsupported; an empty compound is actual absence.
-    pub custom_data: Option<horizon_world::nbt::Tag>,
+    pub custom_data: Option<horizon_core::nbt::Tag>,
 }
+/// Query snapshot of supported known movement, in blocks/tick, and actual fall distance.
+#[derive(Clone, Copy, Debug)]
+pub struct MovementView {
+    pub per_tick: [f64; 3],
+    pub fall_distance: f64,
+}
+
 /// An entity as predicates see it.
 #[derive(Clone, Debug, Default)]
 pub struct EntityView {
+    /// None is unprojected/unsupported, not a fabricated stationary entity.
+    pub movement: Option<MovementView>,
     pub kind: String,
     pub position: [f64; 3],
     pub on_fire: bool,
@@ -683,7 +702,7 @@ pub struct EntityView {
     pub custom_name: Option<Value>,
     /// The entity as saved (`NbtPredicate.getEntityTagToCompare`), for
     /// `minecraft:nbt`; built only when a criterion may ask (`Tree::tests_nbt`).
-    pub nbt: Option<horizon_world::nbt::Tag>,
+    pub nbt: Option<horizon_core::nbt::Tag>,
     /// `Entity.getTeam().getName()` (a tamed pet answers its owner's team);
     /// `None` without a team or where the identity is not bound.
     pub team: Option<String>,
@@ -860,7 +879,7 @@ pub fn item(v: &Value, it: &ItemView, w: &dyn World) -> bool {
     if let Some(pattern) = keyed(preds, "minecraft:custom_data").and_then(Value::as_str)
         && let Some(actual) = it.custom_data.as_ref()
     {
-        let Ok(pattern @ horizon_world::nbt::Tag::Compound(_)) =
+        let Ok(pattern @ horizon_core::nbt::Tag::Compound(_)) =
             crate::command::snbt::parse_fully(pattern)
         else {
             return false;
@@ -911,7 +930,7 @@ pub fn block(v: &Value, pos: [i32; 3], w: &dyn World) -> bool {
     // `matchesBlockEntity`: the block entity's data holds the pattern
     // (`NbtPredicate.matches`, `NbtUtils.compareNbt`); no block entity fails.
     if let Some(nbt) = v["nbt"].as_str() {
-        let Ok((pattern, _)) = horizon_world::nbt::parse_snbt(nbt) else {
+        let Ok((pattern, _)) = horizon_core::nbt::parse_snbt(nbt) else {
             return false;
         };
         if !crate::nbt_path::compare_nbt(&pattern, w.block_entity_nbt(pos).as_ref()) {
@@ -1010,6 +1029,51 @@ pub fn distance(v: &Value, a: [f64; 3], b: [f64; 3]) -> bool {
             (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt(),
         )
 }
+/// `MinMaxBounds.Doubles.matches` and `matchesSqr`, only for movement predicates.
+fn movement_range(v: &Value, value: f64, squared: bool) -> bool {
+    let (mut min, mut max) = match v {
+        Value::Null => (None, None),
+        Value::Number(n) => {
+            let Some(n) = n.as_f64() else { return false };
+            (Some(n), Some(n))
+        }
+        Value::Object(o) => {
+            let read = |key| match o.get(key) {
+                None => Some(None),
+                Some(n) => n.as_f64().map(Some),
+            };
+            let (Some(min), Some(max)) = (read("min"), read("max")) else {
+                return false;
+            };
+            (min, max)
+        }
+        _ => return false,
+    };
+    if squared {
+        min = min.map(|n| n * n);
+        max = max.map(|n| n * n);
+    }
+    if min.is_some_and(|n| n > value) {
+        return false;
+    }
+    max.is_none_or(|n| n >= value)
+}
+
+/// `MovementPredicate.matches`: known movement is scaled by 20 before the ordered tests.
+fn movement(p: &Value, m: MovementView) -> bool {
+    if !p.is_object() {
+        return false;
+    }
+    let [x, y, z] = m.per_tick.map(|v| v * 20.0);
+    movement_range(&p["x"], x, false)
+        && movement_range(&p["y"], y, false)
+        && movement_range(&p["z"], z, false)
+        && movement_range(&p["speed"], x * x + y * y + z * z, true)
+        && movement_range(&p["horizontal_speed"], x * x + z * z, true)
+        && movement_range(&p["vertical_speed"], y.abs(), false)
+        && movement_range(&p["fall_distance"], m.fall_distance, false)
+}
+
 /// `EntityPredicate` (26.x keyed sub-predicates).
 pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> bool {
     if v.is_null() {
@@ -1027,6 +1091,7 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
                 location(p, [e.position[0], e.position[1] - 0.5, e.position[2]], w)
             }
             "minecraft:distance" => distance(p, e.position, origin),
+            "minecraft:movement" => e.movement.is_some_and(|m| movement(p, m)),
             "minecraft:flags" => {
                 let f = |k: &str, have: bool| p[k].as_bool().is_none_or(|want| want == have);
                 f("is_on_fire", e.on_fire)
@@ -1069,7 +1134,7 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
             // `EntityNbtPredicate.matches`: the entity's compound holds the
             // pattern (`NbtUtils.compareNbt`); no compound known fails.
             "minecraft:nbt" => p.as_str().is_some_and(|s| {
-                horizon_world::nbt::parse_snbt(s).is_ok_and(|(pattern, _)| {
+                horizon_core::nbt::parse_snbt(s).is_ok_and(|(pattern, _)| {
                     crate::nbt_path::compare_nbt(&pattern, e.nbt.as_ref())
                 })
             }),
@@ -1402,9 +1467,63 @@ pub fn recipe_ingredients(v: &Value, used: &[ItemView], w: &dyn World) -> bool {
 }
 
 /// A `ContextAwarePredicate`: a list of loot conditions (or one condition).
-/// Existing callers have no random context and keep their leaf behavior.
+/// Invalid references are distinct from false: inversion must not accept them.
 pub fn conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
-    conditions_with(v, ctx, &mut |v, ctx| condition_leaf(v, ctx, w))
+    references_valid(v, w) && conditions_with(v, ctx, &mut |v, ctx| condition_leaf(v, ctx, w))
+}
+
+/// Every named predicate `v` reaches is loaded, and none reaches itself.
+pub fn references_valid(v: &Value, w: &dyn World) -> bool {
+    predicate_references(v, w, &mut BTreeSet::new()).is_ok()
+}
+
+enum InvalidReference {
+    Missing,
+    Cycle,
+}
+
+/// `Validatable.validateHolder`'s active-name rule, as a defensive check on
+/// this evaluation context. Check every typed reference before boolean
+/// short-circuiting; this does not implement registry/startup admission.
+fn predicate_references(
+    v: &Value,
+    w: &dyn World,
+    active: &mut BTreeSet<String>,
+) -> Result<(), InvalidReference> {
+    match v {
+        Value::String(id) => {
+            let id = full(id).into_owned();
+            if !active.insert(id.clone()) {
+                return Err(InvalidReference::Cycle);
+            }
+            let result = w
+                .predicate(&id)
+                .ok_or(InvalidReference::Missing)
+                .and_then(|v| predicate_references(v, w, active));
+            active.remove(&id);
+            result
+        }
+        Value::Array(list) => list
+            .iter()
+            .try_for_each(|v| predicate_references(v, w, active)),
+        Value::Object(o) => {
+            let kind = o
+                .get("condition")
+                .or_else(|| o.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            match &*full(kind) {
+                "minecraft:inverted" => predicate_references(&v["term"], w, active),
+                "minecraft:all_of" | "minecraft:any_of" => v["terms"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .try_for_each(|v| predicate_references(v, w, active)),
+                _ => Ok(()),
+            }
+        }
+        _ => Ok(()),
+    }
 }
 
 /// The existing condition traversal with a caller-owned leaf context.
@@ -1534,6 +1653,10 @@ fn condition_leaf(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
         }
         // An inline entity predicate (old-style).
         Value::Object(_) => ctx.this.is_some_and(|e| entity(v, e, w, ctx.origin)),
+        // A named predicate reference: its loaded definition, walked like any other.
+        Value::String(id) => w
+            .predicate(&full(id))
+            .is_some_and(|v| conditions_with(v, ctx, &mut |v, ctx| condition_leaf(v, ctx, w))),
         _ => false,
     }
 }
@@ -1839,6 +1962,54 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn conditional_advancements_select_before_filtering_and_cache_by_inventory() {
+        let data = std::env::temp_dir().join(format!(
+            "horizon-advancement-conditions-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&data);
+        std::fs::create_dir_all(data.join("demo/advancement")).unwrap();
+        let plain = json!({"criteria":{"never":{"trigger":"minecraft:impossible"}}});
+        let mut conditional = plain.clone();
+        conditional["neoforge:conditions"] =
+            json!([{"type":"neoforge:mod_loaded","modid":"provider"}]);
+        std::fs::write(
+            data.join("demo/advancement/entry.json"),
+            conditional.to_string(),
+        )
+        .unwrap();
+        let enabled = horizon_world::conditions::LoadConditions::new(["provider"]);
+        let off = Tree::shared(&data, &horizon_world::loot::PackOverlay::NONE);
+        let on_overlay = horizon_world::loot::PackOverlay {
+            conditions: &enabled,
+            ..horizon_world::loot::PackOverlay::NONE
+        };
+        let on = Tree::shared(&data, &on_overlay);
+        assert!(off.get("demo:entry").is_none());
+        assert!(on.get("demo:entry").is_some());
+        assert!(!Arc::ptr_eq(&off, &on));
+        assert!(Arc::ptr_eq(&on, &Tree::shared(&data, &on_overlay)));
+        let files = [(
+            "advancement/demo:entry".into(),
+            vec![
+                plain.to_string().into_bytes(),
+                json!({"neoforge:conditions":[{"type":"unsupported"}]})
+                    .to_string()
+                    .into_bytes(),
+            ],
+        )];
+        let overridden = Tree::shared(
+            &data,
+            &horizon_world::loot::PackOverlay {
+                files: &files,
+                ..on_overlay
+            },
+        );
+        assert!(overridden.get("demo:entry").is_none());
+        std::fs::remove_dir_all(data).unwrap();
+    }
+
+    #[test]
     fn advancement_reward_function_is_optional_and_namespaced() {
         for (raw, expected) in [
             ("parity:reward", "parity:reward"),
@@ -2015,8 +2186,8 @@ mod tests {
             fn in_tag(&self, _: &str, _: &str, _: &str) -> bool {
                 false
             }
-            fn block_entity_nbt(&self, _: [i32; 3]) -> Option<horizon_world::nbt::Tag> {
-                horizon_world::nbt::parse_snbt(r#"{id:"minecraft:beacon",x:0,y:0,z:0,Levels:0}"#)
+            fn block_entity_nbt(&self, _: [i32; 3]) -> Option<horizon_core::nbt::Tag> {
+                horizon_core::nbt::parse_snbt(r#"{id:"minecraft:beacon",x:0,y:0,z:0,Levels:0}"#)
                     .ok()
                     .map(|(t, _)| t)
             }
@@ -2194,7 +2365,7 @@ mod tests {
     /// pattern (`NbtUtils.compareNbt(…, true)`); without one it fails.
     #[test]
     fn an_entity_predicates_nbt_tests_the_saved_compound() {
-        let snbt = |s: &str| horizon_world::nbt::parse_snbt(s).unwrap().0;
+        let snbt = |s: &str| horizon_core::nbt::parse_snbt(s).unwrap().0;
         let view = |kind: &str, nbt: &str| EntityView {
             kind: kind.into(),
             nbt: Some(snbt(nbt)),
@@ -3492,5 +3663,67 @@ mod tests {
             assert!(!conditions(&v, &ctx, &Flat));
         }
         assert_eq!(draws, 0);
+    }
+
+    #[cfg(test)]
+    mod movement_model_tests {
+        use super::*;
+        use serde_json::json;
+
+        #[test]
+        fn added_model_movement_units_exact_bounds_and_squared_bounds() {
+            // Source-derived model proof; no moving Java/runtime claim.
+            let m = MovementView {
+                per_tick: [3.0 / 20.0, -4.0 / 20.0, 0.0],
+                fall_distance: 7.25,
+            };
+            assert_eq!(m.per_tick.map(|n| n * 20.0), [3.0, -4.0, 0.0]);
+            for p in [
+                json!({"x":3.0,"y":-4.0,"z":0.0}),
+                json!({"x":{"min":3.0,"max":3.0}}),
+                json!({"speed":5.0,"horizontal_speed":3.0,"vertical_speed":4.0,"fall_distance":7.25}),
+                json!({"speed":{"min":5.0,"max":5.0}}),
+                // Doubles boundsSqr maps each bound through Mth.square, including its sign.
+                json!({"speed":-5.0,"horizontal_speed":{"max":-3.0}}),
+                json!({}),
+            ] {
+                assert!(movement(&p, m), "{p}");
+            }
+            for p in [
+                json!({"x":3.0000000001}),
+                json!({"x":{"min":3.0000000001}}),
+                json!({"y":{"max":-4.0000000001}}),
+                json!({"speed":{"max":4.9999999999}}),
+                json!({"horizontal_speed":{"min":-4.0}}),
+                json!({"vertical_speed":-4.0}),
+                json!({"fall_distance":{"max":7.2499999999}}),
+            ] {
+                assert!(!movement(&p, m), "{p}");
+            }
+            assert!(!movement_range(&json!(3.0000000001), 3.0, false));
+            assert!(
+                range_f(&json!(3.0000000001), 3.0),
+                "existing global tolerance is untouched"
+            );
+        }
+
+        #[test]
+        fn added_model_unprojected_is_distinct_from_actual_stationary() {
+            let p = json!({"minecraft:movement":{}});
+            let view = EntityView {
+                kind: "minecraft:pig".into(),
+                ..Default::default()
+            };
+            // Unprojected is explicitly unsupported, not claimed Java-correct.
+            assert!(!entity(&p, &view, &super::Flat, [0.0; 3]));
+            let view = EntityView {
+                movement: Some(MovementView {
+                    per_tick: [0.0; 3],
+                    fall_distance: 0.0,
+                }),
+                ..view
+            };
+            assert!(entity(&p, &view, &super::Flat, [0.0; 3]));
+        }
     }
 }

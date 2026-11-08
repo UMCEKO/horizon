@@ -218,9 +218,11 @@ mod tests {
 
     /// A Ui over a `size` window at GUI scale 1, the cursor at `cursor` pixels.
     fn with_ui<R>(size: [u32; 2], cursor: (f32, f32), f: impl FnOnce(&mut Ui) -> R) -> R {
-        let atlas =
-            HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap();
-        let mut batch = HudBatch::new(size);
+        let atlas = HudAtlas::build(&horizon_assets::resource_source::ResourceSource::directory(
+            (std::path::Path::new("/nonexistent/horizon-test-assets")).to_owned(),
+        ))
+        .unwrap();
+        let mut batch = HudBatch::scratch(size);
         let cursor = (cursor.0 / batch.scale, cursor.1 / batch.scale);
         let mut ui = Ui::new(&atlas, &mut batch, cursor);
         f(&mut ui)
@@ -259,6 +261,35 @@ mod tests {
                     "{size:?}"
                 );
             });
+        }
+    }
+
+    #[test]
+    fn scaled_draw_and_click_agree() {
+        let screen = NoResources::new(std::path::Path::new("."));
+        let atlas = HudAtlas::build(&horizon_assets::resource_source::ResourceSource::directory(
+            std::path::PathBuf::from("/nonexistent/horizon-test-assets"),
+        ))
+        .unwrap();
+        for unicode in [false, true] {
+            let settings = crate::hud::GuiScale {
+                requested: 3,
+                unicode,
+            };
+            let mut draw = HudBatch::new([960, 720], settings);
+            assert_eq!(draw.scale, if unicode { 4.0 } else { 3.0 });
+            let mut ui = Ui::new(&atlas, &mut draw, (0.0, 0.0));
+            let layout = screen.layout(&ui);
+            let button = &layout.buttons[0];
+            let physical = (
+                (button.x + button.w / 2.0) * ui.density,
+                (button.y + CONTROL / 2.0) * ui.density,
+            );
+            screen.draw(&mut ui);
+            let mut hit = HudBatch::new([960, 720], settings);
+            let cursor = (physical.0 / hit.scale, physical.1 / hit.scale);
+            let ui = Ui::new(&atlas, &mut hit, cursor);
+            assert_eq!(screen.click(&ui), Some(Action::Download));
         }
     }
 

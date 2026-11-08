@@ -674,12 +674,16 @@ impl Launcher {
             Support::Partial(_) => t.warn,
             Support::No(_) => t.muted,
         };
-        let back = button("mods-back", "Back to results", Kind::Ghost, &t).on_click(cx.listener(
-            |this, _: &ClickEvent, _, cx| {
-                this.mods.browse.open = None;
-                cx.notify();
-            },
-        ));
+        let back = button(
+            "mods-back",
+            format!("← {}", tr("Back to results")),
+            Kind::Secondary,
+            &t,
+        )
+        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+            this.mods.browse.open = None;
+            cx.notify();
+        }));
         let details = o.details.clone();
         let versions = o.versions.clone();
         let version_list = o.version_list.clone();
@@ -688,17 +692,13 @@ impl Launcher {
             &[("count", &thousands(p.downloads))],
         )];
         if let Some(Ok(d)) = &details {
-            // A registry project has no followers: its source repository's stars stand there.
-            match &d.github {
-                Some(g) => meta.push(trf(
-                    "{count} stars on GitHub",
-                    &[("count", &thousands(g.stars))],
-                )),
-                None if p.source != SourceId::Horizon => meta.push(trf(
+            // A registry project has no followers: its source repository's stars stand beside its
+            // rating instead, as a star and a number (`mods_page::stars`).
+            if p.source != SourceId::Horizon {
+                meta.push(trf(
                     "{count} followers",
                     &[("count", &thousands(d.followers))],
-                )),
-                None => {}
+                ));
             }
             if let Some(day) = d.updated.get(..10) {
                 meta.push(trf("updated {date}", &[("date", day)]));

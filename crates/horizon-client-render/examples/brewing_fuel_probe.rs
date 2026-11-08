@@ -16,7 +16,8 @@ use std::{
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().collect();
     let root = Path::new(&args[1]);
-    let items = Items::catalog(root, &PackOverlay::NONE)?;
+    let defaults = horizon_world::item_defaults::read(root)?;
+    let items = Items::catalog(root, &PackOverlay::NONE, &defaults)?;
     let providers = Providers::load(root);
     let brewing = Brewing {
         recipes: vec![],

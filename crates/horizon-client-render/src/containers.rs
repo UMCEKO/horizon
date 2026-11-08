@@ -1,6 +1,7 @@
 //! Container block entities: chests/barrels (27 slots) and the three furnace
 //! kinds, ticking as `AbstractFurnaceBlockEntity.serverTick` with fuel times
 //! from the data-driven `context_int_provider`/`context_float_provider` files.
+
 pub use crate::chunk::block_entity::{
     Banner, Beacon, BlockEntity, Brushable, Campfire, ChiseledBookshelf, Crafter, CreakingHeart,
     EndGateway, Furnace, FurnaceKind, Jukebox, Lectern, MOD_MENUS, ModBlockEntity,
@@ -124,7 +125,7 @@ impl FurnaceKind {
         self != Self::Furnace
     }
     pub fn from_block(name: &str) -> Option<Self> {
-        match name {
+        match crate::block_entity_types::factory_block(name) {
             "minecraft:furnace" => Some(Self::Furnace),
             "minecraft:blast_furnace" => Some(Self::BlastFurnace),
             "minecraft:smoker" => Some(Self::Smoker),
@@ -171,7 +172,7 @@ pub fn default_name_key(block: &str) -> Option<&'static str> {
 /// `BaseContainerBlockEntity.getDisplayName` (`getName`), the title of the
 /// `ClientboundOpenScreenPacket` that opens it: the block entity's custom
 /// name (`CustomName`, a literal), else its default name.
-pub fn display_name(custom: Option<&str>, default_key: &str) -> horizon_world::nbt::Tag {
+pub fn display_name(custom: Option<&str>, default_key: &str) -> horizon_core::nbt::Tag {
     match custom {
         Some(name) => horizon_protocol::text::literal(name),
         None => horizon_protocol::text::translatable(default_key, &[]),
@@ -181,15 +182,15 @@ pub fn display_name(custom: Option<&str>, default_key: &str) -> horizon_world::n
 /// `ChestBlock.MENU_PROVIDER_COMBINER`'s `getDisplayName` for a double chest:
 /// the first half's custom name (the right half, `DoubleBlockCombiner`'s
 /// `FIRST`), else the second's, else `container.chestDouble`.
-pub fn double_chest_name(first: Option<&str>, second: Option<&str>) -> horizon_world::nbt::Tag {
+pub fn double_chest_name(first: Option<&str>, second: Option<&str>) -> horizon_core::nbt::Tag {
     display_name(first.or(second), "container.chestDouble")
 }
 
 /// `BaseContainerBlockEntity.sendChestLockedNotifications`: the action bar
 /// message of a container that refuses to open, `container.isLocked` naming it
 /// by its display name.
-pub fn locked_message(title: &horizon_world::nbt::Tag) -> horizon_world::nbt::Tag {
-    use horizon_world::nbt::Tag;
+pub fn locked_message(title: &horizon_core::nbt::Tag) -> horizon_core::nbt::Tag {
+    use horizon_core::nbt::Tag;
     Tag::compound([
         ("translate", Tag::String("container.isLocked".into())),
         ("with", Tag::List(vec![title.clone()])),
@@ -259,7 +260,10 @@ impl Campfire {
         for i in 0..4 {
             if self.progress[i] > 0 {
                 changed = true;
-                self.progress[i] = (self.progress[i] - 2).clamp(0, self.total[i]);
+                // `Mth.clamp(value, 0, cookingTime)`: min(max(value, 0), time).
+                // A negative time a command saved answers itself, where
+                // i32::clamp would panic (min > max).
+                self.progress[i] = (self.progress[i] - 2).max(0).min(self.total[i]);
             }
         }
         changed
@@ -274,9 +278,9 @@ impl Campfire {
 }
 impl Skull {
     pub fn new(
-        profile: Option<horizon_world::nbt::Tag>,
+        profile: Option<horizon_core::nbt::Tag>,
         note_block_sound: Option<String>,
-        custom_name: Option<horizon_world::nbt::Tag>,
+        custom_name: Option<horizon_core::nbt::Tag>,
     ) -> Self {
         let skin = profile.as_ref().map(SkullSkin::of);
         Self {
@@ -288,7 +292,7 @@ impl Skull {
     }
 }
 impl SkullSkin {
-    pub fn of(profile: &horizon_world::nbt::Tag) -> Self {
+    pub fn of(profile: &horizon_core::nbt::Tag) -> Self {
         let download = crate::skins::profile_skin_url_nbt(profile).and_then(|url| {
             let location = crate::skins::skin_location(&crate::skins::texture_hash(&url)?);
             Some((url, location))
@@ -316,7 +320,10 @@ impl SkullSkin {
 /// The item slots of the container `name`'s block carries, if any.
 fn container_size(name: &str) -> Option<usize> {
     match name {
-        "minecraft:chest" | "minecraft:trapped_chest" | "minecraft:barrel" => Some(27),
+        "minecraft:chest"
+        | "minecraft:trapped_chest"
+        | "minecraft:barrel"
+        | "minecraft:ender_chest" => Some(27),
         n if n.ends_with("copper_chest") => Some(27),
         "minecraft:hopper" => Some(HOPPER_SLOTS),
         "minecraft:dispenser" | "minecraft:dropper" => Some(9),
@@ -368,6 +375,14 @@ impl Crafter {
 }
 impl BlockEntity {
     pub fn for_block(name: &str) -> Option<Self> {
+        let factory = crate::block_entity_types::factory_block(name);
+        if crate::block_entity_types::factory_valid(name) == Some(false) {
+            return None;
+        }
+        Self::for_factory(factory)
+    }
+
+    fn for_factory(name: &str) -> Option<Self> {
         if let Some(hanging) = crate::signs::sign_kind(name) {
             return Some(Self::Sign(crate::signs::SignData {
                 hanging,
@@ -444,8 +459,22 @@ impl BlockEntity {
         if name == "minecraft:bell" {
             return Some(Self::Bell);
         }
+        if name == "minecraft:conduit" {
+            return Some(Self::Conduit(None));
+        }
+        if name == "minecraft:enchanting_table" {
+            return Some(Self::EnchantingTable);
+        }
         if name == "minecraft:daylight_detector" {
             return Some(Self::DaylightDetector);
+        }
+        if name == "minecraft:ender_chest" {
+            // EnderChestBlock.newBlockEntity: 27 slots, player-specific inventory.
+            return Some(Self::Chest(vec![None; 27]));
+        }
+        if name == "minecraft:end_portal" {
+            // EndPortalBlock.newBlockEntity: no data, only identity.
+            return Some(Self::EndPortal);
         }
         if name.ends_with("copper_golem_statue") {
             return Some(Self::CopperGolemStatue(Default::default()));
@@ -502,9 +531,19 @@ impl BlockEntity {
     /// only when its type is in the block's set, and drops it for the
     /// block's own otherwise. Each kind fits the blocks `for_block` maps to
     /// it (a furnace is its kind's, a sign only its standing or hanging
-    /// kind); a mod block's own can't tell its block here, so a non-vanilla
-    /// name is trusted — a name change drops it either way.
+    /// kind); native types use the accepted declaration's valid blocks.
     pub fn fits(&self, name: &str) -> bool {
+        if crate::block_entity_types::additional_valid(name, self.id())
+            || (!name.starts_with("minecraft:")
+                && crate::block_entity_types::valid(name, self.id()) == Some(true))
+        {
+            return true;
+        }
+        let factory = crate::block_entity_types::factory_block(name);
+        if factory != name {
+            return crate::block_entity_types::factory_valid(name) == Some(true)
+                && self.fits(factory);
+        }
         match self {
             Self::Chest(items) => container_size(name) == Some(items.len()),
             Self::Furnace(f) => FurnaceKind::from_block(name) == Some(f.kind),
@@ -517,7 +556,7 @@ impl BlockEntity {
             Self::Banner(_) => name.ends_with("_banner"),
             Self::CopperGolemStatue(_) => name.ends_with("copper_golem_statue"),
             Self::Shelf(_) => name == "minecraft:shelf" || name.ends_with("_shelf"),
-            Self::Mod(_) => !name.starts_with("minecraft:"),
+            Self::Mod(m) => crate::block_entity_types::type_for(name) == Some(m.id()),
             Self::Beehive(_) => matches!(name, "minecraft:beehive" | "minecraft:bee_nest"),
             Self::Campfire(_) => {
                 matches!(name, "minecraft:campfire" | "minecraft:soul_campfire")
@@ -540,6 +579,9 @@ impl BlockEntity {
             Self::EndGateway(_) => name == "minecraft:end_gateway",
             Self::DaylightDetector => name == "minecraft:daylight_detector",
             Self::Bell => name == "minecraft:bell",
+            Self::Conduit(_) => name == "minecraft:conduit",
+            Self::EndPortal => name == "minecraft:end_portal",
+            Self::EnchantingTable => name == "minecraft:enchanting_table",
             Self::StructureBlock(_) => name == "minecraft:structure_block",
             Self::TestBlock(_) => name == "minecraft:test_block",
             Self::TestInstanceBlock(_) => name == "minecraft:test_instance_block",
@@ -579,11 +621,14 @@ impl BlockEntity {
             Self::EndGateway(_) => "minecraft:end_gateway",
             Self::DaylightDetector => "minecraft:daylight_detector",
             Self::Bell => "minecraft:bell",
+            Self::Conduit(_) => "minecraft:conduit",
+            Self::EndPortal => "minecraft:end_portal",
+            Self::EnchantingTable => "minecraft:enchanting_table",
             Self::Brushable(_) => "minecraft:brushable_block",
             Self::Campfire(_) => "minecraft:campfire",
             Self::ChiseledBookshelf(_) => "minecraft:chiseled_bookshelf",
             Self::Shelf(_) => "minecraft:shelf",
-            Self::Mod(m) => &m.id,
+            Self::Mod(m) => m.id(),
             Self::PotentSulfur(_) => "minecraft:potent_sulfur",
             Self::StructureBlock(_) => "minecraft:structure_block",
             Self::JigsawBlock(_) => "minecraft:jigsaw",
@@ -614,6 +659,9 @@ impl BlockEntity {
             | Self::TestInstanceBlock(_)
             | Self::DaylightDetector
             | Self::Bell
+            | Self::Conduit(_)
+            | Self::EndPortal
+            | Self::EnchantingTable
             | Self::Brushable(_) => Vec::new(),
             Self::Mod(m) => m.items.iter().flatten().cloned().collect(),
             Self::Lectern(l) => l.book.iter().cloned().collect(),
@@ -645,6 +693,9 @@ impl BlockEntity {
             | Self::TestInstanceBlock(_)
             | Self::DaylightDetector
             | Self::Bell
+            | Self::Conduit(_)
+            | Self::EndPortal
+            | Self::EnchantingTable
             | Self::Brushable(_) => &[],
             Self::Jukebox(j) => &j.items,
             Self::Crafter(c) => &c.items,
@@ -681,6 +732,9 @@ impl BlockEntity {
             | Self::TestInstanceBlock(_)
             | Self::DaylightDetector
             | Self::Bell
+            | Self::Conduit(_)
+            | Self::EndPortal
+            | Self::EnchantingTable
             | Self::Brushable(_) => &mut [],
             Self::Jukebox(j) => &mut j.items,
             Self::Crafter(c) => &mut c.items,
@@ -932,5 +986,56 @@ mod tests {
             .sum();
         assert!((250..450).contains(&paid), "{paid}");
         assert!((0..100).all(|_| (1..=2).contains(&create_experience(1, 1.7, &mut random))));
+    }
+
+    /// An ender chest placed with /setblock gets its block entity (`EnderChestBlock.newBlockEntity`),
+    /// so `/data get block` answers with the entity and the chunk saves it.
+    #[test]
+    fn an_ender_chest_starts_as_a_block_entity() {
+        let entity = BlockEntity::for_block("minecraft:ender_chest").expect("an ender chest");
+        // `Chest` variant with 27 slots; `id()` reports the chest kind, block name comes from NBT.
+        assert_eq!(entity.id(), "minecraft:chest");
+        assert_eq!(entity.slots().len(), 27);
+        assert!(entity.slots()[0].is_none());
+        assert!(matches!(entity, BlockEntity::Chest(_)));
+        // `fits`: an ender chest entity fits an ender chest block.
+        assert!(entity.fits("minecraft:ender_chest"));
+        // A stone block is not an ender chest.
+        assert!(BlockEntity::for_block("minecraft:stone").is_none());
+    }
+
+    /// An end portal placed with /setblock gets its block entity (`EndPortalBlock.newBlockEntity`),
+    /// so `/data get block` answers with the entity and the chunk saves it.
+    #[test]
+    fn an_end_portal_starts_as_a_block_entity() {
+        let entity = BlockEntity::for_block("minecraft:end_portal").expect("an end portal");
+        assert_eq!(entity.id(), "minecraft:end_portal");
+        assert_eq!(entity.slots().len(), 0);
+        assert!(matches!(entity, BlockEntity::EndPortal));
+        // `fits`: an end portal entity fits an end portal block.
+        assert!(entity.fits("minecraft:end_portal"));
+        // A stone block is not an end portal.
+        assert!(BlockEntity::for_block("minecraft:stone").is_none());
+    }
+}
+
+#[cfg(test)]
+mod cooldown_negative_tests {
+    use super::*;
+
+    /// `CampfireBlockEntity.cooldownTick` clamps with `Mth.clamp(progress, 0,
+    /// cookingTime)` = `min(max(progress, 0), cookingTime)`. A cooking time a
+    /// command saved as negative answers itself, where `i32::clamp` (which
+    /// needs min <= max) would panic.
+    #[test]
+    fn a_negative_cooking_time_cools_to_itself() {
+        let mut c = Campfire::default();
+        c.progress[0] = 5;
+        c.total[0] = -1;
+        assert!(c.cooldown_tick());
+        assert_eq!(
+            c.progress[0], -1,
+            "Mth.clamp(3, 0, -1) is -1, as vanilla answers"
+        );
     }
 }

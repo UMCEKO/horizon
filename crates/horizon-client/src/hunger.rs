@@ -3,9 +3,13 @@
 //! is mid-tick, preserving damage callbacks and the following timer reset.
 use crate::{
     Result,
-    health::{Attributes, Environment, HealthEvent, HealthResources, HealthRules, State, Updates},
+    health::{
+        Attributes, DamageLevel, Environment, HealthEvent, HealthResources, HealthRules, State,
+        Updates,
+    },
     motion::{MotionEvent, PlayerMotion},
 };
+use horizon_world::native_load_context::LoopContext;
 use horizon_world::{
     food::{Difficulty, FoodData, FoodWorld},
     player_health::{PlayerAttributeHealth, PlayerFloatIds},
@@ -14,10 +18,10 @@ use horizon_world::{
 };
 
 /// A living entity is about to heal. Mods may change the amount or cancel.
-/// `entity` identifies the affected entity. 358.
+/// `entity` identifies the affected entity.
 #[inline(never)]
-pub fn native_living_heal(entity: u32, amount: &mut f32, cancel: &mut bool) {
-    crate::native_client_hooks::living_heal(entity, amount, cancel);
+pub fn native_living_heal(context: &LoopContext, entity: u32, amount: &mut f32, cancel: &mut bool) {
+    crate::native_client_hooks::living_heal(context, entity, amount, cancel);
 }
 
 impl PlayerMotion {
@@ -32,7 +36,11 @@ impl PlayerMotion {
     /// ServerPlayer.tickRegeneration, dispatched from Player.aiStep before
     /// inventory and living movement. The separately invoked food tick follows
     /// movement in ServerPlayer.doTick.
-    pub fn peaceful_regeneration(&mut self, rules: HealthRules) -> Result<()> {
+    pub fn peaceful_regeneration(
+        &mut self,
+        context: &LoopContext,
+        rules: HealthRules,
+    ) -> Result<()> {
         if rules.difficulty != Difficulty::Peaceful || !rules.natural_regeneration {
             return Ok(());
         }
@@ -42,7 +50,7 @@ impl PlayerMotion {
             if health < maximum {
                 let mut amount = 1.0;
                 let mut cancel = false;
-                native_living_heal(self.entity_id as u32, &mut amount, &mut cancel);
+                native_living_heal(context, self.entity_id as u32, &mut amount, &mut cancel);
                 if !cancel {
                     let h = &mut self.health;
                     let mut observer = Updates(&mut self.events);
@@ -66,13 +74,24 @@ impl PlayerMotion {
         }
         Ok(())
     }
-    pub fn food_tick(&mut self, resources: &HealthResources, rules: HealthRules) -> Result<()> {
+    /// `FoodData.tick` in `level`, where starvation hurts.
+    pub fn food_tick(
+        &mut self,
+        context: &LoopContext,
+        level: &mut DamageLevel<'_>,
+        resources: &HealthResources,
+        rules: HealthRules,
+    ) -> Result<()> {
         if self.client_side {
             return Ok(());
         }
+        let victim = self.victim();
         let h = &mut self.health;
         let mut world = TickWorld {
+            context,
+            level: level.reborrow(),
             entity: self.entity_id,
+            victim,
             resources,
             rules,
             invulnerable: self.invulnerable || self.spectator,
@@ -91,7 +110,10 @@ impl PlayerMotion {
     }
 }
 struct TickWorld<'a> {
+    context: &'a LoopContext,
+    level: DamageLevel<'a>,
     entity: i32,
+    victim: crate::health::Victim,
     resources: &'a HealthResources,
     rules: HealthRules,
     invulnerable: bool,
@@ -131,7 +153,7 @@ impl FoodWorld for TickWorld<'_> {
     }
     fn heal(&mut self, _: &mut FoodData, mut amount: f32) -> Result<()> {
         let mut cancel = false;
-        native_living_heal(self.entity as u32, &mut amount, &mut cancel);
+        native_living_heal(self.context, self.entity as u32, &mut amount, &mut cancel);
         if cancel {
             return Ok(());
         }
@@ -165,9 +187,14 @@ impl FoodWorld for TickWorld<'_> {
         self.events
             .push(MotionEvent::Health(HealthEvent::StarvationDamage(amount)));
         let mut environment = Environment {
+            level: self.level.reborrow(),
             entity: self.entity,
+            victim: self.victim,
             causing: 0,
             invulnerable: false,
+            permanently_invulnerable: false,
+            invulnerable_time: false,
+            creative_source: false,
             client_loaded: self.client_loaded,
             rules: self.rules,
             source: self
@@ -181,14 +208,18 @@ impl FoodWorld for TickWorld<'_> {
             sync_velocity: self.sync_velocity,
             game_time: self.game_time,
             status: Default::default(),
+            helmet: false,
             blocking: None,
             blocked: 0.0,
+            shield_damage: 0,
             fully_blocked: false,
             block_sound: false,
             knocked: false,
             totem: false,
+            totem_off_hand: false,
             totem_fired: false,
             canceled: false,
+            dealt: 0.0,
         };
         if ServerPlayerCombat::new(self.attributes, self.data, food, self.ids, &mut environment)?
             .hurt(self.hurt, amount)?

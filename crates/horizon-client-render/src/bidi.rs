@@ -272,18 +272,21 @@ pub fn visual(text: &Text) -> Cow<'_, Text> {
         return Cow::Borrowed(text);
     }
     let chars: Vec<char> = text.chars().map(|(c, _)| c).collect();
-    let styles: Vec<_> = text.chars().map(|(_, style)| style).collect();
-    let mut out = Text::default();
+    let spans: Vec<_> = text
+        .spans
+        .iter()
+        .flat_map(|span| span.text.chars().map(move |_| span))
+        .collect();
+    let mut out: Vec<Span> = Vec::new();
     for (c, at) in reorder(&chars, default_rtl) {
-        match out.spans.last_mut() {
-            Some(span) if span.style == *styles[at] => span.text.push(c),
-            _ => out.spans.push(Span {
-                text: c.to_string(),
-                style: styles[at].clone(),
-            }),
+        match out.last_mut() {
+            Some(span) if span.style == spans[at].style && span.origin() == spans[at].origin() => {
+                span.text.push(c)
+            }
+            _ => out.push(spans[at].with_text(c.to_string())),
         }
     }
-    Cow::Owned(out)
+    Cow::Owned(Text::from_spans(out))
 }
 
 /// The same for a plain string.
@@ -299,4 +302,18 @@ pub fn visual_str(s: &str) -> Cow<'_, str> {
             .map(|(c, _)| c)
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+    #[test]
+    fn visual_order_preserves_origin_when_equal_styles_cross() {
+        let text = Text::literal("א").append(Text::untrusted("ב"));
+        let reordered = visual(&text);
+        assert_eq!(reordered.plain(), "בא");
+        assert_eq!(reordered.spans.len(), 2);
+        assert_eq!(reordered.spans[0].origin(), crate::text::Origin::Remote);
+        assert_eq!(reordered.spans[1].origin(), crate::text::Origin::Local);
+    }
 }

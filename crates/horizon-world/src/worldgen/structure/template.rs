@@ -1,17 +1,23 @@
 //! StructureTemplate: NBT loading, palettes, transforms and bounding boxes.
-use super::{BoundingBox, Mirror, Rotation, StateTransforms};
-use crate::{
-    chunk::BlockState,
-    nbt::{Compound, Tag},
-    registry::{BlockRegistry, BlockStateId},
-};
 use std::sync::{Arc, OnceLock};
+use {
+    super::{Mirror, Rotation, StateTransforms},
+    horizon_core::bounding_box::BoundingBox,
+};
+use {
+    crate::{
+        chunk::BlockState,
+        registry::{BlockRegistry, BlockStateId},
+    },
+    horizon_core::nbt::{Compound, Tag},
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlockInfo {
     pub pos: [i32; 3],
     pub state: BlockStateId,
-    pub nbt: Option<Compound>,
+    /// Boxed: nearly no block has any, and a template holds thousands of these for the session.
+    pub nbt: Option<Box<Compound>>,
 }
 #[derive(Clone, Debug)]
 pub struct JigsawInfo {
@@ -68,7 +74,7 @@ fn string(tag: Option<&Tag>) -> Option<String> {
     }
 }
 fn get<'a>(compound: &'a Compound, key: &str) -> Option<&'a Tag> {
-    compound.get(&crate::nbt::JavaString::from(key))
+    compound.get(&horizon_core::nbt::JavaString::from(key))
 }
 /// NbtUtils.readBlockState: unknown blocks read as air; missing or invalid
 /// properties keep the block's defaults.
@@ -172,7 +178,7 @@ pub fn save_nbt(
         tag.insert("pos".into(), int_list(block.pos));
         tag.insert("state".into(), Tag::Int(index as i32));
         if let Some(nbt) = &block.nbt {
-            tag.insert("nbt".into(), Tag::Compound(nbt.clone()));
+            tag.insert("nbt".into(), Tag::Compound((**nbt).clone()));
         }
         block_list.push(Tag::Compound(tag));
     }
@@ -260,7 +266,7 @@ impl StructureTemplate {
                     .copied()
                     .unwrap_or(air);
                 let nbt = match get(block, "nbt") {
-                    Some(Tag::Compound(c)) => Some(c.clone()),
+                    Some(Tag::Compound(c)) => Some(Box::new(c.clone())),
                     _ => None,
                 };
                 let class = if nbt.is_some() {
@@ -510,11 +516,12 @@ mod save_tests {
             &[],
             DATA_VERSION,
         );
-        let named = crate::nbt::NamedTag {
+        let named = horizon_core::nbt::NamedTag {
             name: "".into(),
             tag,
         };
-        let raw = crate::nbt::write_named(&named, crate::nbt::Limits::templates()).unwrap();
+        let raw =
+            horizon_core::nbt::write_named(&named, horizon_core::nbt::Limits::templates()).unwrap();
         let file = crate::compression::Compression::Gzip.encode(&raw).unwrap();
         let resources = super::super::StructureResources::new(
             registry,
@@ -543,7 +550,7 @@ mod save_tests {
             nbt: nbt.then(|| {
                 let mut c = Compound::new();
                 c.insert("id".into(), Tag::String("minecraft:chest".into()));
-                c
+                Box::new(c)
             }),
         };
         let blocks = vec![

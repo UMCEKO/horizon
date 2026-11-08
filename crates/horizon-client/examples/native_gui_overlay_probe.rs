@@ -2,9 +2,10 @@
 //! `cargo run -p horizon-client --example native_gui_overlay_probe --
 //! --resources PATH --world OverlayProbe --creative --world-frames 120`.
 //! Every world frame turns the camera 90 degrees; GUI callbacks assert that
-//! Host::camera already sees that frame. A magenta square stays above menus/F1.
-use horizon_client::mod_api::{
-    CameraPoseEvent, GuiRenderPostEvent, Hooks, Host, HudEvent, ScreenRenderPostEvent,
+//! ClientHost::camera already sees that frame. A magenta square stays above menus/F1.
+use mod_api::{
+    CameraPoseEvent, ClientHost, GuiRenderPostEvent, Hooks, ModEntry, RenderGuiPostEvent,
+    ScreenRenderPostEvent,
 };
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -14,7 +15,7 @@ struct Probe {
 }
 
 impl Probe {
-    fn observe(&self, host: &dyn Host, phase: &str, flags: Option<(bool, bool)>) {
+    fn observe(&self, host: &dyn ClientHost, phase: &str, flags: Option<(bool, bool)>) {
         let camera = host.camera();
         if let Some(camera) = &camera {
             assert_eq!(
@@ -40,28 +41,27 @@ impl Probe {
     }
 }
 
+#[mod_api::__subscriptions]
 impl Hooks for Probe {
-    fn camera_pose(&self, _: &dyn Host, event: &mut CameraPoseEvent<'_>) {
+    fn camera_pose(&self, _: &dyn ClientHost, event: &mut CameraPoseEvent<'_>) {
         let frame = self.frame.fetch_add(1, Ordering::SeqCst);
         event.yaw = [0.0_f32, 90.0, 180.0, -90.0][frame as usize % 4];
         self.yaw.store(event.yaw.to_bits(), Ordering::SeqCst);
     }
 
-    fn hud(&self, host: &mut dyn Host, _: &mut HudEvent<'_>) {
-        self.observe(host, "hud", None);
+    fn render_gui_post(&self, host: &dyn ClientHost, _: &mut RenderGuiPostEvent<'_>) {
+        self.observe(host, "render_gui_post", None);
     }
 
-    fn screen_render_post(&self, host: &dyn Host, event: &mut ScreenRenderPostEvent<'_>) {
+    fn screen_render_post(&self, host: &dyn ClientHost, event: &mut ScreenRenderPostEvent<'_>) {
         self.observe(host, event.screen.id, None);
     }
 
-    fn gui_render_post(&self, host: &dyn Host, event: &mut GuiRenderPostEvent<'_>) {
-        let (w, h) = (event.batch.width, event.batch.height);
-        host.fill(
-            event.batch,
-            [w * 0.5 - 8.0, h - 24.0, 16.0, 16.0],
-            0xffff00ff,
-        );
+    fn gui_render_post(&self, host: &dyn ClientHost, event: &mut GuiRenderPostEvent<'_>) {
+        let [w, h] = event.batch.size();
+        event
+            .batch
+            .fill([w * 0.5 - 8.0, h - 24.0, 16.0, 16.0], 0xffff00ff);
         self.observe(
             host,
             "gui_render_post",
@@ -71,11 +71,17 @@ impl Hooks for Probe {
 }
 
 fn main() {
+    let startup = horizon_client::entry::prepare();
     horizon_client::entry::main_with(
-        vec![Box::new(Probe {
-            frame: AtomicU32::new(0),
-            yaw: AtomicU32::new(0),
-        }) as Box<dyn Hooks>]
-        .into(),
+        vec![ModEntry::new(
+            "gui_overlay_probe",
+            Box::new(Probe {
+                frame: AtomicU32::new(0),
+                yaw: AtomicU32::new(0),
+            }),
+        )],
+        &[],
+        &[],
+        startup,
     );
 }

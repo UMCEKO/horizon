@@ -67,7 +67,13 @@ fn picture(gpu: &Gpu, boss_world_fog: bool) -> Vec<[u8; 4]> {
         },
     );
     assert!(post.sky.is_some(), "{:?}", post.notes);
-    let hud = HudBatch::new(SIZE);
+    let hud = HudBatch::new(
+        SIZE,
+        crate::hud::GuiScale {
+            requested: 0,
+            unicode: false,
+        },
+    );
     let mut frame = fixture_frame(&hud);
     frame.title = false;
     frame.end_sky = true;

@@ -353,9 +353,15 @@ fn boolean(json: &Json) -> Result<bool, String> {
 /// decimal text to a float once; this rounds through a double, which differs only for decimals
 /// a hair from a float midpoint.)
 fn float(json: &Json) -> Result<f32, String> {
-    json.as_f64()
+    let value = json
+        .as_f64()
         .map(|f| f as f32)
-        .ok_or_else(|| format!("not a number: {json}"))
+        .ok_or_else(|| format!("not a number: {json}"))?;
+    // A server's or a pack's `1e300` would be an infinite attribute for `Range::Any` ones.
+    if !value.is_finite() {
+        return Err(format!("{json} is not a finite float"));
+    }
+    Ok(value)
 }
 
 /// `Codec.INT` of a JSON number (`Number.intValue`: truncated).
@@ -433,6 +439,25 @@ pub enum Entry {
     /// A modifier of a type not ported yet (`ListModifier.append`, `MobSpawnSettingsModifier`
     /// `overlay`): kept, and applying it leaves the value as it was.
     Unported(Json),
+    /// An entry computed when it applies, from the value so far (not vanilla: a resource pack's
+    /// expression). `None` leaves the value as it was.
+    Dynamic(Dynamic),
+}
+
+/// The function behind [`Entry::Dynamic`]; two are equal when they are the same function.
+#[derive(Clone)]
+pub struct Dynamic(pub std::sync::Arc<dyn Fn(&Value) -> Option<Entry> + Send + Sync>);
+
+impl std::fmt::Debug for Dynamic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Dynamic")
+    }
+}
+
+impl PartialEq for Dynamic {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 /// `BooleanModifier`.
@@ -621,6 +646,10 @@ impl Entry {
         };
         match (self, subject) {
             (Self::Override(v), _) => v.clone(),
+            (Self::Dynamic(f), subject) => match (f.0)(subject) {
+                Some(entry) => entry.apply(subject),
+                None => subject.clone(),
+            },
             (Self::AlphaBlendFloat { value, alpha }, Float(s)) => Float(s + alpha * (value - s)),
             (Self::Add(Float(b)), Float(a)) => Float(a + b),
             (Self::Subtract(Float(b)), Float(a)) => Float(a - b),
@@ -731,6 +760,14 @@ fn java_max(a: f32, b: f32) -> f32 {
 #[derive(Clone, Default)]
 pub struct AttributeMap(Vec<(&'static Attribute, Entry)>);
 
+impl std::fmt::Debug for AttributeMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.0.iter().map(|(a, _)| a.id))
+            .finish()
+    }
+}
+
 impl AttributeMap {
     /// `EnvironmentAttributeMap.CODEC`: a JSON object from attribute id to entry.
     pub fn parse(json: &Json) -> Result<Self, String> {
@@ -754,6 +791,21 @@ impl AttributeMap {
             map.0.push((attribute, entry));
         }
         map
+    }
+
+    /// Sets the attribute's entry, replacing the one it had.
+    pub fn set(&mut self, attribute: &'static Attribute, entry: Entry) {
+        self.0.retain(|(a, _)| a.id != attribute.id);
+        self.0.push((attribute, entry));
+    }
+
+    /// Drops the attribute's entry.
+    pub fn remove(&mut self, attribute: &Attribute) {
+        self.0.retain(|(a, _)| a.id != attribute.id);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
     pub fn get(&self, attribute: &Attribute) -> Option<&Entry> {
@@ -829,5 +881,18 @@ impl Attribute {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod finite_tests {
+    use super::AttributeMap;
+    use serde_json::json;
+
+    #[test]
+    fn a_float_that_overflows_is_refused() {
+        let refused = AttributeMap::parse(&json!({"minecraft:visual/cloud_height": 1e300}));
+        assert!(refused.unwrap_err().contains("not a finite float"));
+        assert!(AttributeMap::parse(&json!({"minecraft:visual/cloud_height": 192.5})).is_ok());
     }
 }

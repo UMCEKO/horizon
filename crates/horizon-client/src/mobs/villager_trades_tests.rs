@@ -41,11 +41,12 @@ fn displayed_trade_items_have_no_drop_chance_and_clear_restores_it() {
             ..Trader::default()
         }));
         mem(&mut m).interaction_target.set(Who::Player);
-        let mut lr = LegacyRandom::new(1);
+        let mut test_level = crate::health::TestLevel::new(1);
+        let level = &mut test_level.level();
         let mut events = Vec::new();
         let mut cx = Bx {
             w: &w,
-            lr: &mut lr,
+            level,
             events: &mut events,
             now: 0,
             refresh: false,
@@ -53,23 +54,23 @@ fn displayed_trade_items_have_no_drop_chance_and_clear_restores_it() {
         let mut behavior = show_trades();
         assert!(behavior.try_start(&mut m, &mut cx));
         behavior.tick_or_stop(&mut m, &mut cx);
-        assert_eq!(m.extra.main_hand.as_deref(), Some("minecraft:bread"));
+        assert_eq!(m.extra.main_hand_id(), Some("minecraft:bread"));
         assert_eq!(super::super::drops::drop_chance(&m, "mainhand"), 0.0);
         for _ in 1..40 {
             behavior.tick_or_stop(&mut m, &mut cx);
         }
-        assert_eq!(m.extra.main_hand.as_deref(), Some("minecraft:arrow"));
+        assert_eq!(m.extra.main_hand_id(), Some("minecraft:arrow"));
         assert_eq!(super::super::drops::drop_chance(&m, "mainhand"), 0.0);
         let mut no_match = w.clone();
         no_match.player.as_mut().unwrap().main_hand = Some("minecraft:stick".into());
         cx.w = &no_match;
         behavior.tick_or_stop(&mut m, &mut cx);
-        assert!(m.extra.main_hand.is_none());
+        assert!(m.extra.main_hand_id().is_none());
         assert_eq!(super::super::drops::drop_chance(&m, "mainhand"), 0.085);
         cx.w = &w;
         behavior.tick_or_stop(&mut m, &mut cx);
         behavior.do_stop(&mut m, &mut cx);
-        assert!(m.extra.main_hand.is_none());
+        assert!(m.extra.main_hand_id().is_none());
         assert_eq!(super::super::drops::drop_chance(&m, "mainhand"), 0.085);
     });
     // Without the vanilla data under .local/horizon-client the world

@@ -24,7 +24,10 @@ fn fixture() -> (BlockRegistry, Biomes) {
     let folder = root.join("data/minecraft/worldgen/biome");
     fs::create_dir_all(&folder).unwrap();
     fs::write(folder.join("plains.json"), "{}").unwrap();
-    let biomes = Biomes::load(&root).unwrap();
+    let biomes = Biomes::load(&horizon_assets::resource_source::ResourceRoot::directory(
+        root.to_path_buf(),
+    ))
+    .unwrap();
     fs::remove_dir_all(&root).unwrap();
     let registry = BlockRegistry::from_nbt(&Tag::compound([
         ("DataVersion", Tag::Int(DATA_VERSION)),
@@ -198,5 +201,86 @@ fn opened_loot_parity_fixture() {
             u8::from(source.get("LootTableSeed").is_some())
         )
         .unwrap();
+    }
+}
+
+#[test]
+fn eager_save_edits_reach_disk_during_ticks_and_again_after_cooldown() {
+    use crate::world::ModifiedChunks;
+    use std::time::{Duration, Instant};
+    let (registry, biomes) = fixture();
+    let registry = Box::leak(Box::new(registry));
+    let biomes = Arc::new(biomes);
+    let dir = std::env::temp_dir().join(format!("horizon-eager-edits-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+    let mut chunk = Chunk::empty(0, 0);
+    let mut dirty = ModifiedChunks::default();
+    let now = Instant::now();
+    for tick in [0, 1, 199, 200] {
+        if tick <= 1 {
+            chunk.set(1, 64, 2, if tick == 0 { 1 } else { 0 });
+            dirty.insert((0, 0));
+        }
+        dirty.save_eagerly(
+            now + Duration::from_millis(tick * 50),
+            || save.active_chunk_writes() < 128,
+            |_| true,
+            |_| {
+                save.save_later(&[Arc::new(chunk.clone())], registry, &biomes)
+                    .unwrap();
+                true
+            },
+        );
+        save.flush().unwrap(); // only a barrier: no quit/autosave submission
+        let reopened = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        assert_eq!(
+            reopened
+                .load(0, 0, registry, &biomes)
+                .unwrap()
+                .get(1, 64, 2),
+            if tick < 200 { 1 } else { 0 }
+        );
+    }
+    drop(save);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn container_limit_survives_chunk_save_and_reload() {
+    let (registry, biomes) = fixture();
+    let pos = (1, 64, 2);
+    let mut chunk = Chunk::empty(0, 0);
+    chunk.set(1, 64, 2, 1);
+    chunk
+        .block_entities
+        .push((pos, crate::containers::BlockEntity::Chest(vec![None; 27])));
+    chunk.saved = Some(Arc::new(ChunkExtras {
+        block_entity_sources: vec![(pos, Tag::compound([("horizon:stack_limit", Tag::Int(10))]))],
+        ..Default::default()
+    }));
+    let encoded = encode(&chunk, &registry, &biomes);
+    let loaded = decode(&encoded, &registry, &biomes).unwrap();
+    assert_eq!(
+        loaded.saved.as_ref().unwrap().block_entity_sources[0]
+            .1
+            .get("horizon:stack_limit"),
+        Some(&Tag::Int(10))
+    );
+}
+
+#[test]
+fn unmodified_container_nbt_has_no_stack_limit() {
+    let (registry, biomes) = fixture();
+    let mut chunk = Chunk::empty(0, 0);
+    chunk.set(1, 64, 2, 1);
+    chunk.block_entities.push((
+        (1, 64, 2),
+        crate::containers::BlockEntity::Chest(vec![None; 27]),
+    ));
+    let loaded = decode(&encode(&chunk, &registry, &biomes), &registry, &biomes).unwrap();
+    assert_eq!(loaded.saved.as_ref().unwrap().block_entity_sources.len(), 1);
+    for (_, tag) in &loaded.saved.as_ref().unwrap().block_entity_sources {
+        assert!(tag.get("horizon:stack_limit").is_none());
     }
 }

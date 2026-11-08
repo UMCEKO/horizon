@@ -1,16 +1,16 @@
-//! The native mods horizon-mixins compiled into a workspace, read from the record it leaves there.
+//! The native mods horizon-mods compiled into a workspace, read from the record it leaves there.
 use std::{collections::BTreeSet, path::Path};
 
-/// What horizon-mixins writes at the root of a workspace it changed: each injection and module it
+/// What horizon-mods writes at the root of a workspace it changed: each injection and module it
 /// applied, with its mod's `[mod] id`. The launcher's native builds have one, and so has a bundle
 /// applied by hand or by a mod's own script, which has no `native-mods.json` beside its game.
-pub const MIXINS_STAGE: &str = ".horizon-mixins-stage.json";
+pub const MODS_STAGE: &str = ".horizon-mods-stage.json";
 
-/// The ids of the mods whose injections or modules horizon-mixins applied to the workspace at
+/// The ids of the mods whose injections or modules horizon-mods applied to the workspace at
 /// `root`, sorted: none for a workspace it never changed, a record that names no mod, or one that
 /// does not parse.
 pub fn staged_mods(root: &Path) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(root.join(MIXINS_STAGE)) else {
+    let Ok(text) = std::fs::read_to_string(root.join(MODS_STAGE)) else {
         return Vec::new();
     };
     let Ok(record) = serde_json::from_str::<serde_json::Value>(&text) else {
@@ -31,21 +31,19 @@ mod tests {
     use super::*;
 
     fn workspace(name: &str, record: Option<&str>) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "horizon-mixins-stage-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("horizon-mods-stage-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         if let Some(record) = record {
-            std::fs::write(dir.join(MIXINS_STAGE), record).unwrap();
+            std::fs::write(dir.join(MODS_STAGE), record).unwrap();
         }
         dir
     }
 
     #[test]
     fn the_mods_of_every_injection_and_module_once() {
-        // The shape horizon-mixins 0.6.0 writes (schema 6), trimmed to the fields read here.
+        // The shape horizon-mods 0.6.0 writes (schema 6), trimmed to the fields read here.
         let dir = workspace(
             "mods",
             Some(

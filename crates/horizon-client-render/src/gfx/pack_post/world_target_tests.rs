@@ -80,7 +80,7 @@ fn a_scaled_picture_fills_the_whole_window() {
             ),
         ],
     );
-    let hud = HudBatch::new(window);
+    let hud = HudBatch::scratch(window);
     let pixels = render(
         &device,
         &queue,
@@ -118,7 +118,7 @@ fn replacement(change: Change, final_shader: bool) {
     let mut depth = texture(&device, size, T::Depth32Float);
     clear(&device, &queue, &colour, &depth, [32, 64, 16, 255], 0.25);
     let mut post = pack(&device, &queue, &adapter, &colour, final_shader);
-    let hud = HudBatch::new(size);
+    let hud = HudBatch::scratch(size);
     let frame = frame(&hud);
     let initial = render(
         &device, &queue, &mut post, &colour, &depth, &frame, size, size,

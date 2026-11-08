@@ -52,7 +52,7 @@ fn a_float_output_into_an_integer_buffer_writes_its_bits() {
         },
         horizon_shaders::GameInputs::default(),
     );
-    let hud = HudBatch::new(SIZE);
+    let hud = HudBatch::scratch(SIZE);
     let mut frame = fixture_frame(&hud);
     frame.title = false;
     let pixels = gpu.render(&mut post, &color, &depth, &frame, &mut |_, _, _, _| {});

@@ -30,7 +30,7 @@ pub struct Entry {
     pub removed: bool,
     pub local: bool,
 }
-/// What the screen shows (game/social.rs fills it).
+/// What the screen shows (game/network/social.rs fills it).
 #[derive(Clone, Debug, Default)]
 pub struct SocialView {
     pub page: Page,

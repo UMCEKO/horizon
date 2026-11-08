@@ -19,10 +19,9 @@ use horizon_protocol::{
     servers::parse_address,
     text::{Language, plain, translatable},
 };
-use horizon_world::nbt::{JavaString, Tag};
+use std::path::Path;
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, Ordering},
@@ -30,6 +29,10 @@ use std::{
     },
     thread::JoinHandle,
     time::Duration,
+};
+use {
+    horizon_core::nbt::{JavaString, Tag},
+    horizon_world::item_defaults::ItemData,
 };
 
 /// `CommonListenerCookie.serverCookies`: cookies the server asked the client
@@ -71,7 +74,7 @@ pub enum Event {
     /// ClientboundResourcePackPopPacket: one pack, or every pack.
     PackPop(Option<u128>),
     /// `show_dialog` in configuration: the dialog itself.
-    ShowDialog(horizon_world::nbt::Tag),
+    ShowDialog(horizon_core::nbt::Tag),
     /// `clear_dialog` in configuration.
     ClearDialog,
     /// ClientboundCodeOfConductPacket: the game shows it and answers with
@@ -119,6 +122,8 @@ pub struct Session {
     /// Active packet recorder for Studio replay recordings.
     pub recorder: Arc<Mutex<Option<StudioRecorder>>>,
 }
+use std::path::PathBuf;
+
 impl Session {
     /// The negotiated wire release, once the connection has been established.
     pub fn server_version(&self) -> horizon_protocol::adapter::ServerVersion {
@@ -144,7 +149,7 @@ impl Session {
         auth: Option<Arc<AuthSession>>,
         info: cfg::ClientInformation,
         lang: Arc<Language>,
-        resources: PathBuf,
+        resources: Arc<ItemData>,
     ) -> Self {
         Self::start(
             address, name, auth, info, lang, None, None, resources, false,
@@ -159,7 +164,7 @@ impl Session {
         auth: Option<Arc<AuthSession>>,
         info: cfg::ClientInformation,
         lang: Arc<Language>,
-        resources: PathBuf,
+        resources: Arc<ItemData>,
     ) -> Self {
         Self::start(address, name, auth, info, lang, None, None, resources, true)
     }
@@ -172,7 +177,7 @@ impl Session {
         info: cfg::ClientInformation,
         lang: Arc<Language>,
         cookies: Cookies,
-        resources: PathBuf,
+        resources: Arc<ItemData>,
     ) -> Self {
         Self::start(
             address,
@@ -186,18 +191,22 @@ impl Session {
             false,
         )
     }
-    /// Join an integrated server through memory (`Connection.connectToLocalServer`).
+    /// Join an integrated server through memory (`Connection.connectToLocalServer`). The
+    /// hello still names the signed-in account (`Minecraft.handleClientLogin`'s
+    /// `ServerboundHelloPacket(getUser().getName(), getUser().getProfileId())`), so the
+    /// world's `players/data/<uuid>.dat` and `singleplayer_uuid` are the account's.
     pub fn connect_local(
         pipe: horizon_protocol::connection::Pipe,
         name: &str,
+        auth: Option<Arc<AuthSession>>,
         info: cfg::ClientInformation,
         lang: Arc<Language>,
-        resources: PathBuf,
+        resources: Arc<ItemData>,
     ) -> Self {
         Self::start(
             "local",
             name,
-            None,
+            auth,
             info,
             lang,
             Some(pipe),
@@ -231,7 +240,7 @@ impl Session {
         lang: Arc<Language>,
         local: Option<horizon_protocol::connection::Pipe>,
         cookies: Option<Cookies>,
-        resources: PathBuf,
+        resources: Arc<ItemData>,
         lan: bool,
     ) -> Self {
         let (send, events) = channel();
@@ -253,6 +262,7 @@ impl Session {
         let thread = std::thread::Builder::new()
             .name("horizon-net".into())
             .spawn(move || {
+                horizon_threads::favour_current();
                 let result = run(
                     local,
                     &address_owned,
@@ -442,7 +452,7 @@ impl Session {
     }
     /// ServerboundCustomClickActionPacket (a dialog's answer), in whichever
     /// phase the connection is.
-    pub fn send_custom_click(&self, id: &str, payload: Option<horizon_world::nbt::Tag>) {
+    pub fn send_custom_click(&self, id: &str, payload: Option<horizon_core::nbt::Tag>) {
         let click = cfg::CustomClickAction {
             id: id.to_owned(),
             payload,
@@ -775,7 +785,7 @@ fn run(
     cookies: &Cookies,
     far: &crate::lod_net::Inbox,
     transferred: bool,
-    resources: &Path,
+    resources: &ItemData,
     lan: bool,
     recorder: &Arc<Mutex<Option<StudioRecorder>>>,
 ) -> Result<Reason, Reason> {
@@ -977,7 +987,7 @@ fn receive_play(
     send: &Sender<Event>,
     cookies: &Cookies,
     far: &crate::lod_net::Inbox,
-    resources: &Path,
+    resources: &ItemData,
     recorder: &Arc<Mutex<Option<StudioRecorder>>>,
 ) -> Result<Reason, Reason> {
     loop {
@@ -1133,7 +1143,7 @@ fn configure(
     lang: &Language,
     send: &Sender<Event>,
     cookies: &Cookies,
-    resources: &Path,
+    resources: &ItemData,
 ) -> Result<Dynamic, Reason> {
     let mut registries = Dynamic::default();
     let mut content_verified = false;
@@ -1154,23 +1164,15 @@ fn configure(
         {
             cfg::Clientbound::KeepAlive(k) => reply(cfg::Serverbound::KeepAlive(k))?,
             cfg::Clientbound::CustomPayload(p) if p.channel == crate::content_identity::CHANNEL => {
-                let hash = crate::content_identity::identity(resources)
-                    .map_err(|_| Reason::plain(crate::content_identity::MISMATCH.to_string()))?;
+                let hash =
+                    crate::content_identity::identity(resources.root(), resources.defaults())
+                        .map_err(|_| {
+                            Reason::plain(crate::content_identity::MISMATCH.to_string())
+                        })?;
                 content_verified = p.data == hash;
                 reply(cfg::Serverbound::CustomPayload(cfg::CustomPayload {
                     channel: crate::content_identity::CHANNEL.into(),
                     data: hash.to_vec(),
-                }))?;
-            }
-            // The server names its mods; the answer is ours, and the server judges.
-            cfg::Clientbound::CustomPayload(p)
-                if p.channel == horizon_protocol::mod_list::CHANNEL =>
-            {
-                reply(cfg::Serverbound::CustomPayload(cfg::CustomPayload {
-                    channel: horizon_protocol::mod_list::CHANNEL.into(),
-                    data: horizon_protocol::mod_list::encode(&horizon_protocol::mod_list::shared(
-                        &horizon_protocol::mod_list::local(),
-                    )),
                 }))?;
             }
             cfg::Clientbound::CustomPayload(p) => {
@@ -1189,6 +1191,14 @@ fn configure(
                         channel: "minecraft:brand".into(),
                         data: w.data,
                     }))?;
+                    // Announce before replying to known packs, even when the
+                    // server has no mods. Never disclose this to vanilla servers.
+                    reply(cfg::Serverbound::CustomPayload(cfg::CustomPayload {
+                        channel: horizon_protocol::mod_list::CHANNEL.into(),
+                        data: horizon_protocol::mod_list::encode(
+                            &horizon_protocol::mod_list::local(),
+                        ),
+                    }))?;
                 }
                 receive_brand(&p, send);
             }
@@ -1202,7 +1212,7 @@ fn configure(
                 let _ = send.send(Event::Features(p.features));
             }
             cfg::Clientbound::RegistryData(mut r) => {
-                fill_known_entries(&mut r, resources);
+                fill_known_entries(&mut r, resources.root());
                 registries.add(r);
             }
             cfg::Clientbound::UpdateTags(t) => registries.add_tags(&t),
@@ -1270,6 +1280,21 @@ fn select_known_packs(offered: Vec<cfg::KnownPack>) -> Vec<cfg::KnownPack> {
         .collect()
 }
 
+fn valid_resource_segment(s: &str, allow_slash: bool) -> bool {
+    !s.is_empty()
+        && !s.starts_with('/')
+        && !s.ends_with('/')
+        && !s.contains("//")
+        && s.split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+        && s.bytes().all(|b| {
+            b.is_ascii_lowercase()
+                || b.is_ascii_digit()
+                || matches!(b, b'_' | b'-' | b'.')
+                || (allow_slash && b == b'/')
+        })
+}
+
 /// `RegistryDataCollector`: an entry of a pack both sides know comes without
 /// its data, which the client reads from its own copy of the pack
 /// (`data/<namespace>/<registry path>/<path>.json`, `Registries.elementsDirPath`).
@@ -1278,6 +1303,9 @@ fn fill_known_entries(r: &mut cfg::RegistryData, resources: &Path) {
         .registry
         .split_once(':')
         .unwrap_or(("minecraft", r.registry.as_str()));
+    if !valid_resource_segment(registry_ns, false) || !valid_resource_segment(registry_path, true) {
+        return;
+    }
     let dir = if registry_ns == "minecraft" {
         registry_path.to_owned()
     } else {
@@ -1288,6 +1316,9 @@ fn fill_known_entries(r: &mut cfg::RegistryData, resources: &Path) {
             .id
             .split_once(':')
             .unwrap_or(("minecraft", entry.id.as_str()));
+        if !valid_resource_segment(ns, false) || !valid_resource_segment(path, true) {
+            continue;
+        }
         let file = resources
             .join("data")
             .join(ns)
@@ -1508,6 +1539,108 @@ fn continues_after_failed_join(lan: bool, signed_in: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horizon_world::native_load_context::DataLoadOrigin;
+
+    fn empty_item_data(name: &str) -> (PathBuf, Arc<ItemData>) {
+        let root =
+            std::env::temp_dir().join(format!("horizon-net-data-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("items.json"), "{}").unwrap();
+        let data = crate::test_resources::item_data(&root, DataLoadOrigin::ClientPreload).unwrap();
+        (root, data)
+    }
+
+    #[test]
+    fn configuration_keeps_mod_lists_private_until_the_server_identifies_as_horizon() {
+        for server_brand in ["vanilla", "horizon"] {
+            let (root, data) = empty_item_data(&format!("mod-list-{server_brand}"));
+            let (client, server) = horizon_protocol::connection::Pipe::pair();
+            let (mut reader, writer) = Connection::local(client).split();
+            reader
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let thread = std::thread::spawn(move || {
+                let (send, _events) = channel();
+                configure(
+                    &mut reader,
+                    &Mutex::new(Some(writer)),
+                    &AtomicBool::new(true),
+                    &Language::new(),
+                    &send,
+                    &Cookies::default(),
+                    &data,
+                )
+            });
+            let mut server = Connection::local(server);
+            server
+                .reader
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            // A payload alone must not solicit private identities.
+            server
+                .send(
+                    &cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+                        channel: horizon_protocol::mod_list::CHANNEL.into(),
+                        data: horizon_protocol::mod_list::encode(&[]),
+                    })
+                    .encode(),
+                )
+                .unwrap();
+            server
+                .send(&cfg::Clientbound::Ping(cfg::Ping { id: 17 }).encode())
+                .unwrap();
+            let (id, body) = server.recv().unwrap();
+            assert_eq!(
+                cfg::Serverbound::decode(id, &body).unwrap(),
+                cfg::Serverbound::Pong(cfg::Ping { id: 17 }),
+                "an unidentified server received a mod announcement"
+            );
+            let mut brand = horizon_protocol::buf::Writer::new();
+            brand.string(server_brand);
+            server
+                .send(
+                    &cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+                        channel: "minecraft:brand".into(),
+                        data: brand.data,
+                    })
+                    .encode(),
+                )
+                .unwrap();
+            server
+                .send(
+                    &cfg::Clientbound::SelectKnownPacks(cfg::SelectKnownPacks { packs: vec![] })
+                        .encode(),
+                )
+                .unwrap();
+            let mut declared_mods = false;
+            loop {
+                let (id, body) = server.recv().unwrap();
+                match cfg::Serverbound::decode(id, &body).unwrap() {
+                    cfg::Serverbound::CustomPayload(p)
+                        if p.channel == horizon_protocol::mod_list::CHANNEL =>
+                    {
+                        declared_mods = true;
+                    }
+                    cfg::Serverbound::SelectKnownPacks(_) => break,
+                    _ => {}
+                }
+            }
+            assert_eq!(declared_mods, server_brand == "horizon");
+            server
+                .send(&cfg::Clientbound::FinishConfiguration(Empty).encode())
+                .unwrap();
+            let (id, body) = server.recv().unwrap();
+            assert_eq!(
+                cfg::Serverbound::decode(id, &body).unwrap(),
+                cfg::Serverbound::FinishConfiguration(Empty)
+            );
+            thread
+                .join()
+                .unwrap()
+                .unwrap_or_else(|reason| panic!("configuration failed: {}", reason.text));
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
 
     fn pack(namespace: &str, id: &str, version: &str) -> cfg::KnownPack {
         cfg::KnownPack {
@@ -1766,6 +1899,7 @@ mod tests {
 
     #[test]
     fn direct_login_preserves_hostname_and_negotiates_brand() {
+        let (root, data) = empty_item_data("brand");
         for server_brand in [
             b"\x07vanilla".as_slice(),
             b"\x07horizon",
@@ -1780,7 +1914,7 @@ mod tests {
                 None,
                 cfg::ClientInformation::new(8),
                 Arc::new(Language::new()),
-                PathBuf::new(),
+                Arc::clone(&data),
             );
             let (stream, _) = listener.accept().unwrap();
             stream
@@ -1853,16 +1987,22 @@ mod tests {
                     })
                 );
             }
-            // The response to the pack query proves any brand reply precedes it.
-            // Non-Horizon servers must receive no additional brand announcement.
-            let (id, body) = server.recv().unwrap();
-            assert_eq!(
-                cfg::Serverbound::decode(id, &body).unwrap(),
-                cfg::Serverbound::SelectKnownPacks(cfg::SelectKnownPacks { packs: vec![] })
-            );
+            // Wait for the pack reply without pinning unrelated extension payloads.
+            // The negotiated brand must not be announced a second time.
+            loop {
+                let (id, body) = server.recv().unwrap();
+                match cfg::Serverbound::decode(id, &body).unwrap() {
+                    cfg::Serverbound::SelectKnownPacks(_) => break,
+                    cfg::Serverbound::CustomPayload(p) => {
+                        assert_ne!(p.channel, "minecraft:brand");
+                    }
+                    packet => panic!("unexpected configuration reply: {packet:?}"),
+                }
+            }
             drop(server);
             drop(session);
         }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1924,6 +2064,7 @@ mod tests {
         let (c, _, _) = connect_tcp("127.0.0.1", port, true, Duration::from_millis(300)).unwrap();
         let _server = held.join().unwrap().unwrap();
         let (mut reader, writer) = c.split();
+        let (root, data) = empty_item_data("timeout");
         let (done, result) = channel();
         std::thread::spawn(move || {
             let (send, _events) = channel();
@@ -1935,7 +2076,7 @@ mod tests {
                 &send,
                 &Cookies::default(),
                 &crate::lod_net::Inbox::default(),
-                Path::new("."),
+                &data,
                 &Arc::new(Mutex::new(None)),
             ));
         });
@@ -1946,6 +2087,7 @@ mod tests {
             ended.map(|r| r.text).map_err(|r| r.text),
             Err("Timed out".to_owned())
         );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1973,7 +2115,9 @@ mod tests {
             br#"{"states":[["minecraft:stone",false,false,"Block{minecraft:stone}",{"id":"minecraft:stone"}]]}"#,
         )
         .unwrap();
-        let expected = crate::content_identity::identity(&root).unwrap();
+        std::fs::write(root.join("items.json"), "{}").unwrap();
+        let data = crate::test_resources::item_data(&root, DataLoadOrigin::ClientPreload).unwrap();
+        let expected = crate::content_identity::identity(&root, data.defaults()).unwrap();
         let (client, server) = horizon_protocol::connection::Pipe::pair();
         let (mut reader, writer) = Connection::local(client).split();
         let writer = Mutex::new(Some(writer));
@@ -1986,7 +2130,7 @@ mod tests {
                 &Language::new(),
                 &send,
                 &Cookies::default(),
-                &root,
+                &data,
             )
         });
         let mut server = Connection::local(server);
@@ -2091,6 +2235,7 @@ mod tests {
 
     #[test]
     fn pings_wait_behind_teleports_but_keepalives_do_not_wait_for_the_game() {
+        let (root, data) = empty_item_data("pings");
         let (client, server) = horizon_protocol::connection::Pipe::pair();
         let (mut reader, writer) = Connection::local(client).split();
         let writer = Arc::new(Mutex::new(Some(writer)));
@@ -2105,7 +2250,7 @@ mod tests {
                 &send,
                 &Cookies::default(),
                 &crate::lod_net::Inbox::default(),
-                Path::new("."),
+                &data,
                 &Arc::new(Mutex::new(None)),
             )
         });
@@ -2141,10 +2286,12 @@ mod tests {
         );
         writer.lock().unwrap().take().unwrap().shutdown();
         assert!(thread.join().unwrap().is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn play_packets_wait_out_a_reconfiguration() {
+        let (root, data) = empty_item_data("reconfiguration");
         let (client, server) = horizon_protocol::connection::Pipe::pair();
         let (mut reader, writer) = Connection::local(client).split();
         let (send, events) = channel();
@@ -2175,7 +2322,7 @@ mod tests {
                 &send,
                 &Cookies::default(),
                 &crate::lod_net::Inbox::default(),
-                Path::new("."),
+                &data,
                 &thread_recorder,
             )
         });
@@ -2205,10 +2352,12 @@ mod tests {
         assert_eq!(play::Serverbound::decode(id, &body).unwrap(), tick_end);
         drop(session);
         assert!(thread.join().unwrap().is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn play_answers_cookie_requests_from_stored_cookies_and_follows_transfers() {
+        let (root, data) = empty_item_data("cookies");
         let (client, server) = horizon_protocol::connection::Pipe::pair();
         let (mut reader, writer) = Connection::local(client).split();
         let writer = Arc::new(Mutex::new(Some(writer)));
@@ -2224,7 +2373,7 @@ mod tests {
                 &send,
                 &thread_cookies,
                 &crate::lod_net::Inbox::default(),
-                Path::new("."),
+                &data,
                 &Arc::new(Mutex::new(None)),
             )
         });
@@ -2270,6 +2419,7 @@ mod tests {
             cookies.lock().unwrap().get("proxy:session"),
             Some(&vec![1, 2, 3])
         );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2295,6 +2445,7 @@ mod tests {
     /// client login listener by test_lan_auth_parity.py.
     #[test]
     fn lan_login_continues_after_authentication_failure() {
+        let (root, data) = empty_item_data("lan-auth");
         for lan in [true, false] {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -2361,7 +2512,7 @@ mod tests {
                 None,
                 cfg::ClientInformation::new(8),
                 Arc::new(lang),
-                PathBuf::new(),
+                Arc::clone(&data),
             );
             let reason = loop {
                 if let Event::Disconnected { reason, .. } = session
@@ -2387,10 +2538,12 @@ mod tests {
                 !goes_on
             );
         }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn session_studio_recording_tap_records_packets_to_mcpr() {
+        let (root, data) = empty_item_data("studio_recording");
         let (client, server) = horizon_protocol::connection::Pipe::pair();
         let (mut reader, writer) = Connection::local(client).split();
         let (send, events) = channel();
@@ -2437,7 +2590,7 @@ mod tests {
                 &send,
                 &Cookies::default(),
                 &crate::lod_net::Inbox::default(),
-                Path::new("."),
+                &data,
                 &thread_recorder,
             )
         });
@@ -2480,6 +2633,7 @@ mod tests {
         assert_eq!(decoded1, pos_pkt);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2577,6 +2731,46 @@ mod tests {
         assert_eq!(decoded_swing, swing_pkt);
         let decoded_data = play::Clientbound::decode(packets[1].id, &packets[1].payload).unwrap();
         assert_eq!(decoded_data, data_pkt);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn fill_known_entries_rejects_path_traversal_and_reads_valid_entries() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("horizon-net-reg-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let resources = temp_dir.join("res");
+        let valid_dir = resources.join("data/minecraft/worldgen/biome");
+        std::fs::create_dir_all(&valid_dir).unwrap();
+        std::fs::write(
+            valid_dir.join("plains.json"),
+            br#"{"has_precipitation":true}"#,
+        )
+        .unwrap();
+        std::fs::write(temp_dir.join("secret.json"), br#"{"leaked":true}"#).unwrap();
+
+        let mut reg = cfg::RegistryData {
+            registry: "minecraft:worldgen/biome".into(),
+            entries: vec![
+                cfg::RegistryEntry {
+                    id: "minecraft:plains".into(),
+                    data: None,
+                },
+                cfg::RegistryEntry {
+                    id: "minecraft:../../../../secret".into(),
+                    data: None,
+                },
+                cfg::RegistryEntry {
+                    id: "..:plains".into(),
+                    data: None,
+                },
+            ],
+        };
+        fill_known_entries(&mut reg, &resources);
+        assert!(reg.entries[0].data.is_some());
+        assert!(reg.entries[1].data.is_none());
+        assert!(reg.entries[2].data.is_none());
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

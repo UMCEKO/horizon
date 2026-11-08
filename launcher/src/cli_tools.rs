@@ -34,7 +34,6 @@ pub const DESTRUCTIVE: &[&str] = &[
     "mods remove",
     "servers forget",
     "account sign-out",
-    "data delete",
     "worlds delete",
     "multiplayer remove",
     "screenshots delete",
@@ -46,14 +45,7 @@ pub const DESTRUCTIVE: &[&str] = &[
 ];
 
 /// Commands that send something or reach other people: only when the player asks.
-pub const OPEN_WORLD: &[&str] = &[
-    "data allow",
-    "data send",
-    "data bug",
-    "data benchmark",
-    "servers create",
-    "share-log",
-];
+pub const OPEN_WORLD: &[&str] = &["servers create", "share-log"];
 
 /// A generated tool: its name, the CLI words it runs and the clap command behind them.
 pub struct Tool {
@@ -323,6 +315,9 @@ With No AI on, `mcp` and `agent-config` are hidden and refuse; every other comma
         if !args.is_empty() {
             out += "\n";
         }
+        if let Some(after_help) = cmd.get_after_help() {
+            out += &format!("{after_help}\n\n");
+        }
         let mcp = if generated.contains(&words) {
             let path: Vec<String> = words.split(' ').map(str::to_owned).collect();
             let mut text = format!("`{}`", tool_name(&path));
@@ -393,8 +388,7 @@ mod tests {
             "modpack_import",
             "servers_create",
             "servers_run",
-            "data_status",
-            "data_bug",
+            "bug_report",
             "account_select",
             "benchmark",
         ] {

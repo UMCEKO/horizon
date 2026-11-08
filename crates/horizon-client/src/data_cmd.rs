@@ -7,7 +7,7 @@ use crate::{
     snbt::to_snbt,
     text::Text,
 };
-use horizon_world::nbt::{Compound, Tag};
+use horizon_core::nbt::{Compound, Tag};
 
 /// `CompoundTag.merge`: compounds merge recursively, anything else replaces.
 pub fn merge_compound(target: &mut Compound, source: &Compound) {
@@ -204,7 +204,7 @@ pub fn scale_text(scale: f64) -> Text {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horizon_world::nbt::parse_snbt;
+    use horizon_core::nbt::parse_snbt;
 
     fn tag(s: &str) -> Tag {
         parse_snbt(s).unwrap().0

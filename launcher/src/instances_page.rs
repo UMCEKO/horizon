@@ -122,8 +122,7 @@ impl Launcher {
 
     pub(super) fn select_instance(&mut self, instance: &Instance) {
         // A native build's warning names the mods of the instance it was opened for.
-        self.native_confirm = None;
-        self.native_update = None;
+        self.pending_consent = None;
         self.settings.instance =
             (instance.kind != InstanceKind::Default).then(|| instance.id.clone());
         self.save_settings();

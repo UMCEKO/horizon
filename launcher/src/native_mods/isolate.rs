@@ -2,11 +2,10 @@
 //! the same support module as another mod) is left out, with the mods that need it, and the
 //! build runs again without them: the player still gets a game with the others, and is told
 //! which mods were left out and why.
-use super::dependencies::Dependency;
 use super::Bundle;
 use crate::i18n::trf;
+use horizon_mod_package::dependencies::Dependency;
 use std::collections::BTreeSet;
-use std::fs;
 
 /// Why a mod was left out of a build.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,8 +29,8 @@ pub struct LeftOut {
 impl LeftOut {
     pub(super) fn new(bundle: &Bundle, why: Why) -> Self {
         Self {
-            id: bundle.id.clone(),
-            version: bundle.version.clone(),
+            id: bundle.manifest.id.clone(),
+            version: bundle.manifest.version.clone(),
             why,
         }
     }
@@ -80,18 +79,11 @@ impl LeftOut {
 
 /// The support modules a bundle declares, as (destination file, module name).
 fn modules(bundle: &Bundle) -> Vec<(String, String)> {
-    let text = fs::read_to_string(bundle.dir.join(super::MANIFEST)).unwrap_or_default();
-    let table: toml::Table = text.parse().unwrap_or_default();
-    let entries = table.get("module").and_then(|m| m.as_array());
-    entries
-        .into_iter()
-        .flatten()
-        .filter_map(|m| {
-            Some((
-                m.get("file")?.as_str()?.into(),
-                m.get("name")?.as_str()?.into(),
-            ))
-        })
+    bundle
+        .native()
+        .module
+        .iter()
+        .map(|module| (module.file.clone(), module.name.clone()))
         .collect()
 }
 
@@ -102,6 +94,14 @@ fn modules(bundle: &Bundle) -> Vec<(String, String)> {
 /// this Horizon may not have); between two mods, neither: the later one is left out.
 pub(super) fn from_mixins(output: &str, mods: &[Bundle]) -> Option<LeftOut> {
     let value: serde_json::Value = serde_json::from_str(&output[output.find('{')?..]).ok()?;
+    // A helper that breaks a rule of the format is the mod's own source: every
+    // Horizon refuses it, so no version it could be built on would take it.
+    // The build fails with the tool's diagnostic (which names the helper, the
+    // injection and the code) instead of leaving the mod out as made for
+    // another Horizon version (#13971).
+    if value["code"].as_str() == Some("E_INVALID_HELPER") {
+        return None;
+    }
     let message = value["message"].as_str().unwrap_or_default();
     let declared: Vec<(&Bundle, Vec<(String, String)>)> =
         mods.iter().map(|b| (b, modules(b))).collect();
@@ -110,13 +110,15 @@ pub(super) fn from_mixins(output: &str, mods: &[Bundle]) -> Option<LeftOut> {
         let own = modules(bundle);
         declared
             .iter()
-            .find(|(other, theirs)| other.id != bundle.id && theirs.iter().any(|m| own.contains(m)))
-            .map(|(other, _)| other.id.clone())
+            .find(|(other, theirs)| {
+                other.manifest.id != bundle.manifest.id && theirs.iter().any(|m| own.contains(m))
+            })
+            .map(|(other, _)| other.manifest.id.clone())
     };
     let named = value["mod_id"]
         .as_str()
         .or_else(|| value["file"].as_str().and_then(super::mod_id_from_file))
-        .and_then(|id| mods.iter().find(|b| b.id == id))
+        .and_then(|id| mods.iter().find(|b| b.manifest.id == id))
         .or_else(|| {
             let name = message
                 .split("support module '")
@@ -151,7 +153,7 @@ pub(super) fn from_mixins(output: &str, mods: &[Bundle]) -> Option<LeftOut> {
     // Two mods' modules: the later of the first pair declaring the same one.
     let later = declared.iter().enumerate().find_map(|(i, (bundle, _))| {
         clash(bundle)
-            .filter(|first| declared[..i].iter().any(|(b, _)| b.id == *first))
+            .filter(|first| declared[..i].iter().any(|(b, _)| b.manifest.id == *first))
             .map(|first| LeftOut::new(bundle, Why::Clash(first)))
     });
     later
@@ -160,7 +162,11 @@ pub(super) fn from_mixins(output: &str, mods: &[Bundle]) -> Option<LeftOut> {
 /// The mods the compiler's errors were traced to (`owners`, as `id version`), among `mods`.
 pub(super) fn from_compiler(owners: &[String], mods: &[Bundle]) -> Vec<LeftOut> {
     mods.iter()
-        .filter(|b| owners.iter().any(|o| o.split(' ').next() == Some(&b.id)))
+        .filter(|b| {
+            owners
+                .iter()
+                .any(|o| o.split(' ').next() == Some(&b.manifest.id))
+        })
         .map(|b| LeftOut::new(b, Why::OtherVersion))
         .collect()
 }
@@ -173,7 +179,7 @@ pub(super) fn with_dependents(left: &[LeftOut], mods: &[(&Bundle, &[Dependency])
     loop {
         let next = mods.iter().find_map(|(bundle, deps)| {
             let needed = deps.iter().find(|d| !d.optional && gone.contains(&d.id))?;
-            (!gone.contains(&bundle.id))
+            (!gone.contains(&bundle.manifest.id))
                 .then(|| LeftOut::new(bundle, Why::Needs(needed.id.clone())))
         });
         let Some(next) = next else {
@@ -191,25 +197,17 @@ mod tests {
 
     fn bundle(root: &Path, id: &str, modules: &[(&str, &str)]) -> Bundle {
         let dir = root.join(id);
-        fs::create_dir_all(&dir).unwrap();
-        let mut text = format!("[mod]\nid = \"{id}\"\nversion = \"1.0.0\"\n");
+        super::super::tests::write_bundle(&dir, id, "fn hook() {}");
+        let path = dir.join(super::super::NATIVE_MANIFEST);
+        let mut text = std::fs::read_to_string(&path).unwrap();
         for (file, name) in modules {
             text += &format!(
-                "[[module]]\nid = \"m\"\nfile = \"{file}\"\nname = \"{name}\"\nsource = \"m.rs\"\n"
+                "[[native.module]]\nid = \"m\"\nfile = \"{file}\"\nname = \"{name}\"\nsource = \"src/m.rs\"\n"
             );
         }
-        fs::write(dir.join(super::super::MANIFEST), text).unwrap();
-        Bundle {
-            id: id.into(),
-            version: "1.0.0".into(),
-            dir,
-            horizon: None,
-            mixins: None,
-            hooks: None,
-            api: None,
-            mixins_content: true,
-            injections: Vec::new(),
-        }
+        std::fs::write(&path, text).unwrap();
+        std::fs::write(dir.join("src/m.rs"), "pub fn helper() {}").unwrap();
+        super::super::bundle_in(&dir).unwrap().unwrap()
     }
 
     #[test]
@@ -242,6 +240,25 @@ mod tests {
             None
         );
         assert_eq!(from_mixins("no diagnostic", &mods), None);
+    }
+
+    /// A helper that breaks a rule of the format is the mod's own source, not
+    /// a Horizon it doesn't fit: the build fails with the tool's diagnostic
+    /// (which names the injection and the code) rather than leaving the mod out
+    /// as "made for another Horizon version" (#13971).
+    #[test]
+    fn an_invalid_helper_fails_the_build_instead_of_leaving_its_mod_out() {
+        let root = super::super::tests::dir("isolate-invalid-helper");
+        let mods = [bundle(&root, "armor_hud", &[])];
+        // Two functions in one helper: horizon-mixins refuses the bundle.
+        let output = r#"{
+  "code": "E_INVALID_HELPER",
+  "message": "helper 'x.rs' must contain exactly one function",
+  "file": "mixins.incoming/armor_hud/x.rs",
+  "mod_id": "armor_hud",
+  "injection_id": "hud"
+}"#;
+        assert_eq!(from_mixins(output, &mods), None);
     }
 
     #[test]

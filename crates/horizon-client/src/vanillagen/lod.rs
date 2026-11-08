@@ -701,89 +701,7 @@ impl VanillaLodSampler {
 
 #[cfg(test)]
 mod tests {
-    /// Either dampening lights everything under a run the same, so seabeds
-    /// and the ground under canopies keep the light they had; `PerRun` spends
-    /// one span on the run itself where `PerLevel` spends one a level.
-    #[test]
-    fn a_run_passes_on_the_same_light_however_much_of_it_it_records() {
-        use super::*;
-        let span = |min: i16, max: i16, state: u32| Span {
-            min,
-            max,
-            state: BlockStateId(state),
-            biome: 0,
-            light: 240,
-        };
-        // State 1 dampens (water), state 2 does not (sand).
-        let dampens = |id: BlockStateId| id == BlockStateId(1);
-        let sky = |span: &Span| (span.light & 0xf0) >> 4;
-        for depth in [1i16, 2, 5, 14, 15, 16, 40] {
-            let bed = span(0, 4, 2);
-            let water = span(4, 4 + depth, 1);
-            let mut level = Column {
-                surface: None,
-                spans: vec![bed, water].into(),
-            };
-            let mut run = level.clone();
-            shade_runs(&mut level, dampens, Dampening::PerLevel);
-            shade_runs(&mut run, dampens, Dampening::PerRun);
-
-            // The bed is one span either way, lit identically: this is what
-            // the per-level walk was added for.
-            assert_eq!(level.spans[0], run.spans[0], "depth {depth}: the bed");
-            assert_eq!(
-                sky(&level.spans[0]),
-                15u16.saturating_sub(depth.max(0) as u16),
-                "depth {depth}: the bed takes the light the run let through"
-            );
-            // The run's top face is the topmost span's, and takes the light
-            // arriving at the top of the run: full sky, nothing above it.
-            assert_eq!(sky(level.spans.last().unwrap()), 15, "depth {depth}");
-            assert_eq!(sky(run.spans.last().unwrap()), 15, "depth {depth}");
-            assert_eq!(level.spans.last().unwrap().max, 4 + depth);
-            assert_eq!(run.spans.last().unwrap().max, 4 + depth);
-            // One span for the run, against one a level down to the dark.
-            assert_eq!(run.spans.len(), 2, "depth {depth}");
-            // A span a block while the sky lasts (15 levels), then one for
-            // whatever of the run is left below the dark.
-            let walked = if depth <= 15 { depth as usize } else { 16 };
-            assert_eq!(
-                level.spans.len(),
-                1 + walked,
-                "depth {depth}: a span a level, then the rest in one"
-            );
-            // Neither invents or loses ground: the spans still cover the
-            // column exactly, bottom to top, without a gap or an overlap.
-            for shaded in [&level, &run] {
-                assert_eq!(shaded.spans.first().unwrap().min, 0);
-                assert_eq!(shaded.spans.last().unwrap().max, 4 + depth);
-                for pair in shaded.spans.windows(2) {
-                    assert_eq!(pair[0].max, pair[1].min, "depth {depth}");
-                }
-            }
-        }
-    }
-    /// A solid run takes no light from what passes down it, under either
-    /// dampening: only fluids and leaves dim the column.
-    #[test]
-    fn solid_runs_are_one_span_and_dim_nothing() {
-        use super::*;
-        let stone = Span {
-            min: 0,
-            max: 60,
-            state: BlockStateId(2),
-            biome: 0,
-            light: 240,
-        };
-        for dampening in [Dampening::PerLevel, Dampening::PerRun] {
-            let mut column = Column {
-                surface: None,
-                spans: vec![stone].into(),
-            };
-            shade_runs(&mut column, |_| false, dampening);
-            assert_eq!(column.spans, [stone], "{dampening:?}");
-        }
-    }
+    use horizon_world::native_load_context::DataLoadOrigin;
     /// The all-cached path must return exactly the per-cell reductions the
     /// old override produced, including negative chunk coordinates.
     #[test]
@@ -825,13 +743,18 @@ mod tests {
             std::env::var_os("HORIZON_TEST_RESOURCES").expect("resources"),
         );
         let assets = crate::assets::Assets::load(&root)?;
-        let biomes = crate::biome::Biomes::load(&root)?;
-        let terrain = Arc::new(VanillaTerrain::new(
-            &root.join("worldgen"),
-            assets.registry,
-            &biomes,
-            1234,
-        )?);
+        let biomes = crate::biome::Biomes::load(
+            &horizon_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
+        )?;
+        let item_data = crate::test_resources::item_data(&root, DataLoadOrigin::ServerDataLoad)?;
+        let terrain_resources = crate::vanillagen::TerrainResources {
+            data: None,
+            dir: &root.join("worldgen"),
+            registry: assets.registry,
+            biomes: &biomes,
+            item_data: &item_data,
+        };
+        let terrain = Arc::new(VanillaTerrain::new(terrain_resources, 1234)?);
         let mut sampler = VanillaLodSampler::new(terrain.clone());
         // This bounded test waits for decoration. Idle workers can be starved
         // by other tests, so keep the real request/result path at normal priority.
@@ -1141,11 +1064,19 @@ mod tests {
             std::env::var_os("HORIZON_TEST_RESOURCES").expect("resources"),
         );
         let assets = crate::assets::Assets::load(&root)?;
-        let biomes = crate::biome::Biomes::load(&root)?;
+        let biomes = crate::biome::Biomes::load(
+            &horizon_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
+        )?;
+        let item_data = crate::test_resources::item_data(&root, DataLoadOrigin::ServerDataLoad)?;
+        let terrain_resources = crate::vanillagen::TerrainResources {
+            data: None,
+            dir: &root.join("worldgen"),
+            registry: assets.registry,
+            biomes: &biomes,
+            item_data: &item_data,
+        };
         let terrain = Arc::new(VanillaTerrain::for_dimension(
-            &root.join("worldgen"),
-            assets.registry,
-            &biomes,
+            terrain_resources,
             1234,
             "minecraft:the_end",
         )?);
@@ -1216,11 +1147,19 @@ mod tests {
             std::env::var_os("HORIZON_TEST_RESOURCES").expect("resources"),
         );
         let assets = crate::assets::Assets::load(&root)?;
-        let biomes = crate::biome::Biomes::load(&root)?;
+        let biomes = crate::biome::Biomes::load(
+            &horizon_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
+        )?;
+        let item_data = crate::test_resources::item_data(&root, DataLoadOrigin::ServerDataLoad)?;
+        let terrain_resources = crate::vanillagen::TerrainResources {
+            data: None,
+            dir: &root.join("worldgen"),
+            registry: assets.registry,
+            biomes: &biomes,
+            item_data: &item_data,
+        };
         let terrain = Arc::new(VanillaTerrain::for_dimension(
-            &root.join("worldgen"),
-            assets.registry,
-            &biomes,
+            terrain_resources,
             1234,
             "minecraft:the_end",
         )?);
@@ -1301,11 +1240,19 @@ mod tests {
             std::env::var_os("HORIZON_TEST_RESOURCES").expect("resources"),
         );
         let assets = crate::assets::Assets::load(&root)?;
-        let biomes = crate::biome::Biomes::load(&root)?;
+        let biomes = crate::biome::Biomes::load(
+            &horizon_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
+        )?;
+        let item_data = crate::test_resources::item_data(&root, DataLoadOrigin::ServerDataLoad)?;
+        let terrain_resources = crate::vanillagen::TerrainResources {
+            data: None,
+            dir: &root.join("worldgen"),
+            registry: assets.registry,
+            biomes: &biomes,
+            item_data: &item_data,
+        };
         let terrain = Arc::new(VanillaTerrain::for_dimension(
-            &root.join("worldgen"),
-            assets.registry,
-            &biomes,
+            terrain_resources,
             1234,
             "minecraft:the_end",
         )?);

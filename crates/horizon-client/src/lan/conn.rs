@@ -12,7 +12,6 @@ use super::{
     forwarding,
     io_pool::{self, Session as _},
 };
-use horizon_client_core::text::Text;
 use horizon_protocol::{
     PROTOCOL_VERSION,
     connection::{ConnWriter, Connection, Counters},
@@ -49,7 +48,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// resource pack downloads in configuration).
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// Vanilla's server-side disconnect during login is a JSON component.
-fn login_disconnect(c: &mut Connection, reason: &horizon_world::nbt::Tag) {
+fn login_disconnect(c: &mut Connection, reason: &horizon_core::nbt::Tag) {
     let json = component_json(reason);
     let _ =
         c.send(&login::Clientbound::Disconnect(login::Disconnect { reason_json: json }).encode());
@@ -58,12 +57,12 @@ fn login_disconnect(c: &mut Connection, reason: &horizon_world::nbt::Tag) {
 /// A component as ComponentSerialization.CODEC writes it with JsonOps (and
 /// Gson without HTML escaping): plain text collapses to a string, the
 /// content fields come first, then `extra`, then the style.
-pub fn component_json(tag: &horizon_world::nbt::Tag) -> String {
+pub fn component_json(tag: &horizon_core::nbt::Tag) -> String {
     component_value(tag).compact()
 }
-fn component_value(tag: &horizon_world::nbt::Tag) -> crate::server::json::Json {
+fn component_value(tag: &horizon_core::nbt::Tag) -> crate::server::json::Json {
     use crate::server::json::Json;
-    use horizon_world::nbt::Tag;
+    use horizon_core::nbt::Tag;
     const ORDER: &[&str] = &[
         "type",
         "text",
@@ -103,7 +102,7 @@ fn component_value(tag: &horizon_world::nbt::Tag) -> crate::server::json::Json {
         Tag::List(items) => Json::Array(items.iter().map(component_value).collect()),
         Tag::Compound(map) => {
             if map.len() == 1
-                && let Some(Tag::String(t)) = map.get(&horizon_world::nbt::JavaString::from("text"))
+                && let Some(Tag::String(t)) = map.get(&horizon_core::nbt::JavaString::from("text"))
             {
                 return Json::String(t.to_string_lossy());
             }
@@ -112,7 +111,7 @@ fn component_value(tag: &horizon_world::nbt::Tag) -> crate::server::json::Json {
             Json::Object(
                 keys.into_iter()
                     .map(|k| {
-                        let v = &map[&horizon_world::nbt::JavaString::from(k.as_str())];
+                        let v = &map[&horizon_core::nbt::JavaString::from(k.as_str())];
                         let value = match v {
                             Tag::Byte(b) => Json::Bool(*b != 0),
                             Tag::Int(i) => Json::Number(i.to_string()),
@@ -134,9 +133,9 @@ fn component_value(tag: &horizon_world::nbt::Tag) -> crate::server::json::Json {
 /// prompt) as ComponentSerialization.CODEC writes it with NbtOps. An array is
 /// its first component with the rest appended (`createFromList`); a list of
 /// components mixing plain strings and objects has the strings as `{text}`.
-pub fn component_tag(v: &crate::server::json::Json) -> horizon_world::nbt::Tag {
+pub fn component_tag(v: &crate::server::json::Json) -> horizon_core::nbt::Tag {
     use crate::server::json::Json;
-    use horizon_world::nbt::{JavaString, Tag};
+    use horizon_core::nbt::{JavaString, Tag};
     fn list(items: &[Json]) -> Tag {
         same_kind(items.iter().map(component_tag).collect())
     }
@@ -237,75 +236,6 @@ impl Drop for Holding {
     }
 }
 
-/// The game's hook on every play packet the server sends a player (`native_server_packet`), set
-/// once by the game: the player, the packet (which it may change) and cancel.
-pub type ServerPacketHook = fn(u128, &mut play::Clientbound, &mut bool);
-pub static SERVER_PACKET: std::sync::OnceLock<ServerPacketHook> = std::sync::OnceLock::new();
-/// The game's hook on the entity data a player is sent (`native_entity_data_to`), set once by
-/// the game: the viewer, the entity's network id and its values (which it may change).
-pub type EntityDataHook = fn(u128, i32, &mut Vec<(u8, i32, horizon_protocol::entity_data::Value)>);
-pub static ENTITY_DATA_TO: std::sync::OnceLock<EntityDataHook> = std::sync::OnceLock::new();
-/// What a mod asked to hear of the packets [`PlayerSender::send`] sends
-/// (`native_watch_server_packets`, `native_watch_entity_data`): [`WATCH_ALL`] and
-/// [`WATCH_ENTITY_DATA`]. Nothing until a mod asks: until then each packet costs this one
-/// load, and its bytes go out untouched.
-pub static WATCHED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-/// Every play packet reaches [`SERVER_PACKET`].
-pub const WATCH_ALL: u8 = 1;
-/// Each `ClientboundSetEntityDataPacket` reaches [`ENTITY_DATA_TO`], and no other packet is
-/// decoded for it.
-pub const WATCH_ENTITY_DATA: u8 = 2;
-
-/// A body about to be sent to `player`, past the hooks a mod asked for ([`WATCHED`]): None
-/// when one canceled it. Bytes that don't decode, and a packet no hook changed, go out as they
-/// were; a changed one is encoded again.
-fn outgoing(player: u128, body: Vec<u8>) -> Option<Vec<u8>> {
-    let watched = WATCHED.load(Ordering::Relaxed);
-    if watched == 0 {
-        return Some(body);
-    }
-    watched_outgoing(player, body, watched)
-}
-
-#[cold]
-fn watched_outgoing(player: u128, body: Vec<u8>, watched: u8) -> Option<Vec<u8>> {
-    let head = {
-        let mut r = horizon_protocol::buf::Reader::new(&body);
-        r.varint().ok().map(|id| (id, r.position()))
-    };
-    let Some((id, at)) = head else {
-        return Some(body);
-    };
-    let all = SERVER_PACKET.get().filter(|_| watched & WATCH_ALL != 0);
-    let data = ENTITY_DATA_TO.get().filter(|_| {
-        watched & WATCH_ENTITY_DATA != 0
-            && id == horizon_protocol::ids::play::clientbound::SET_ENTITY_DATA
-    });
-    if all.is_none() && data.is_none() {
-        return Some(body);
-    }
-    let Ok(sent) = play::Clientbound::decode(id, &body[at..]) else {
-        return Some(body);
-    };
-    let mut packet = sent.clone();
-    // The typed shortcut first, so the packet hook sees what the client will get.
-    if let (Some(hook), play::Clientbound::SetEntityData(p)) = (data, &mut packet) {
-        hook(player, p.id, &mut p.values);
-    }
-    if let Some(hook) = all {
-        let mut cancel = false;
-        hook(player, &mut packet, &mut cancel);
-        if cancel {
-            return None;
-        }
-    }
-    Some(if packet == sent {
-        body
-    } else {
-        packet.encode()
-    })
-}
-
 /// The packets (and their bytes) a connection's network thread has handed the hub and the hub hasn't
 /// taken from its channel yet. The hub's inbox caps apply only as it drains that channel, at the start
 /// of a tick: while a tick runs long (an autosave, chunk generation) a client could otherwise queue
@@ -340,8 +270,6 @@ impl Undrained {
 /// The sending half given to the game thread.
 #[derive(Clone)]
 pub struct PlayerSender {
-    /// The player it sends to, for the hooks on what it sends ([`outgoing`]); 0 for a test's.
-    player: u128,
     /// What the player's network thread has handed the hub and the hub hasn't taken yet.
     pub undrained: Arc<Undrained>,
     /// The bytes of the bodies sent and not framed yet.
@@ -354,6 +282,8 @@ pub struct PlayerSender {
 }
 #[derive(Clone)]
 enum To {
+    /// A connectionless actor: nothing is ever delivered.
+    Disabled,
     /// A test's channel.
     Channel(Sender<Out>),
     /// A connection on the network threads, and its keep-alive clock.
@@ -363,7 +293,6 @@ impl PlayerSender {
     /// A sender whose packets go to `tx` (a test's).
     pub fn new(tx: Sender<Out>, pending: Arc<AtomicUsize>) -> Self {
         Self {
-            player: 0,
             undrained: Arc::default(),
             pending,
             held: Arc::default(),
@@ -371,8 +300,17 @@ impl PlayerSender {
             wire: None,
         }
     }
-    /// The bytes received from and sent to the client on the wire so far, where the
-    /// connection counts them.
+    /// A connectionless actor has no writer, queue or packet delivery.
+    pub fn disabled() -> Self {
+        Self {
+            undrained: Arc::default(),
+            pending: Arc::default(),
+            held: Arc::default(),
+            to: To::Disabled,
+            wire: None,
+        }
+    }
+    /// The bytes received from and sent to the client on the wire so far.
     pub fn wire_bytes(&self) -> Option<(u64, u64)> {
         self.wire.as_ref().map(|c| {
             (
@@ -380,15 +318,6 @@ impl PlayerSender {
                 c.bytes_out.load(Ordering::Relaxed).max(0) as u64,
             )
         })
-    }
-    /// The play packets sent to and received from the client since the last call while
-    /// [`count_packets`] is on, each as (packet id, body bytes): those sent, then those
-    /// received. Empty for a test's channel.
-    pub fn take_packets(&self) -> [Vec<(i32, usize)>; 2] {
-        match &self.to {
-            To::Pool(outbox, _) => outbox.take_packets(),
-            To::Channel(_) => Default::default(),
-        }
     }
     /// Whether the client has answered no keep-alive for too long.
     pub fn timed_out(&self) -> bool {
@@ -404,15 +333,16 @@ impl PlayerSender {
         self.held.lock().unwrap_or_else(PoisonError::into_inner)
     }
     pub fn send(&self, body: Vec<u8>) {
-        let Some(body) = outgoing(self.player, body) else {
+        if matches!(self.to, To::Disabled) {
             return;
-        };
+        }
         self.pending.fetch_add(body.len(), Ordering::Relaxed);
         if HOLDING.get() {
             self.held().push(body);
         } else {
             self.flush();
             match &self.to {
+                To::Disabled => {}
                 To::Channel(tx) => drop(tx.send(Out::Packet(body))),
                 To::Pool(outbox, _) => outbox.send(vec![body], None),
             }
@@ -421,8 +351,10 @@ impl PlayerSender {
     /// Several packets in order, as [`Self::send`] each: under one lock
     /// while the tick holds them.
     pub fn send_many(&self, bodies: impl IntoIterator<Item = Vec<u8>>) {
-        // A mod hearing what is sent (`outgoing`) does so outside the lock.
-        if !HOLDING.get() || WATCHED.load(Ordering::Relaxed) != 0 {
+        if matches!(self.to, To::Disabled) {
+            return;
+        }
+        if !HOLDING.get() {
             bodies.into_iter().for_each(|body| self.send(body));
             return;
         }
@@ -437,6 +369,7 @@ impl PlayerSender {
         let held = std::mem::take(&mut *self.held());
         if !held.is_empty() {
             match &self.to {
+                To::Disabled => {}
                 To::Channel(tx) => drop(tx.send(Out::Packets(held))),
                 To::Pool(outbox, _) => outbox.send(held, None),
             }
@@ -444,9 +377,10 @@ impl PlayerSender {
     }
     /// Send a play disconnect with this reason after what was sent before,
     /// then close.
-    pub fn disconnect(&self, reason: horizon_world::nbt::Tag) {
+    pub fn disconnect(&self, reason: horizon_core::nbt::Tag) {
         self.flush();
         match &self.to {
+            To::Disabled => {}
             To::Channel(tx) => drop(tx.send(Out::Disconnect(reason))),
             To::Pool(outbox, _) => {
                 let body = play::Clientbound::Disconnect(cfg::Disconnect { reason }).encode();
@@ -455,17 +389,6 @@ impl PlayerSender {
             }
         }
     }
-}
-
-/// Keep (or stop keeping) every play connection's packet ids and sizes on the network threads,
-/// for [`PlayerSender::take_packets`]: `native_server_packets`. Off, a packet costs one relaxed
-/// load.
-pub fn count_packets(on: bool) {
-    io_pool::count_packets(on);
-}
-/// Whether [`count_packets`] is on.
-pub fn counting_packets() -> bool {
-    io_pool::counting_packets()
 }
 
 /// Hand every player's held packets to their network threads, waking each
@@ -480,6 +403,7 @@ pub fn flush_all<'a>(senders: impl IntoIterator<Item = &'a PlayerSender>) {
             continue;
         }
         match &s.to {
+            To::Disabled => {}
             To::Channel(tx) => drop(tx.send(Out::Packets(held))),
             To::Pool(outbox, _) => {
                 if let Some(worker) = outbox.push(held, None)
@@ -603,26 +527,6 @@ pub fn serve_local(
     serve_connection(Connection::local(pipe), MEMORY_ADDRESS, shared, None)
 }
 
-/// A client's handshake (`ClientIntentionPacket`) reached the server, on the connection's own thread, before
-/// the server acts on its `intent` (1 status, 2 login, 3 transfer): `address` is the peer's (behind a proxy, the
-/// proxy's), `host` the server address the client says it connects to, with whatever a proxy put after it
-/// (Floodgate's data). A mod may rewrite `host` (the server itself reads nothing from it; later mods see the new
-/// one), or set `cancel` to refuse the connection: a login or a transfer is disconnected with `reason` (a plain
-/// "Disconnected" if it is left unset), a status ping is closed unanswered. Once for each network connection, the
-/// legacy server list ping (`0xFE`) and an integrated server's own player excepted. There is no `Game` on this
-/// thread: no helper works, and the hook must not block for long (the connection waits for it). API
-/// @API:handshake@.
-#[inline(never)]
-pub fn native_handshake(
-    address: std::net::SocketAddr,
-    host: &mut String,
-    intent: i32,
-    cancel: &mut bool,
-    reason: &mut Option<Text>,
-) {
-    crate::native_client_hooks::handshake(address, host, intent, cancel, reason);
-}
-
 fn serve_connection(
     mut c: Connection,
     address: std::net::SocketAddr,
@@ -632,12 +536,11 @@ fn serve_connection(
     let e = |e: horizon_protocol::Error| e.to_string();
     c.reader.set_read_timeout(Some(LOGIN_TIMEOUT)).map_err(e)?;
     let (id, payload) = c.recv().map_err(e)?;
-    // Behind a proxy (forwarding on, see `serve_login`) the host may be as long as Paper takes it there, for the
-    // data a proxy puts after it (Floodgate's); otherwise vanilla's 255.
+    // Proxy forwarding carries data after the host (for example Floodgate's).
     let forwarding = shared.config.forwarding_secret.is_some()
         && shared.config.online.is_none()
         && !c.is_memory();
-    let mut intention = if forwarding {
+    let intention = if forwarding {
         handshake::decode_intention(id, &payload, handshake::PROXY_HOST_LIMIT).map_err(e)?
     } else {
         match handshake::Serverbound::decode(id, &payload).map_err(e)? {
@@ -645,27 +548,6 @@ fn serve_connection(
             _ => return Err("expected a handshake".into()),
         }
     };
-    // Native mods, on this connection's thread, before the intent is acted on.
-    if !c.is_memory() {
-        let (mut cancel, mut reason) = (false, None);
-        native_handshake(
-            address,
-            &mut intention.host,
-            intention.intent,
-            &mut cancel,
-            &mut reason,
-        );
-        if cancel {
-            if matches!(intention.intent, handshake::LOGIN | handshake::TRANSFER) {
-                let reason = match reason {
-                    Some(text) => super::data::component_nbt(&text.component()),
-                    None => translatable("multiplayer.disconnect.generic", &[]),
-                };
-                login_disconnect(&mut c, &reason);
-            }
-            return Ok(());
-        }
-    }
     match intention.intent {
         // ServerHandshakePacketListenerImpl: a server that does not reply
         // to status requests closes the connection.
@@ -765,7 +647,7 @@ fn refuse(
     shared: &Shared,
     thread: &str,
     user: &str,
-    reason: &horizon_world::nbt::Tag,
+    reason: &horizon_core::nbt::Tag,
 ) -> String {
     let text = shared
         .config
@@ -887,63 +769,6 @@ fn authenticate(
     }
 }
 
-/// A player logging in, on the connection's own thread, after the session service (online mode) or the proxy
-/// (forwarding) has named them and before the server's own checks (name, whitelist, bans, player limit), as
-/// Bukkit's `AsyncPlayerPreLoginEvent`: `address` is theirs (behind a proxy, the one it forwarded). A mod that
-/// needs time (a database load) or may refuse pushes a receiver onto `defer` and answers on it, from any thread:
-/// `Ok` lets the player on to the server's checks, `Err` refuses them with that reason. The login waits for every
-/// answer, 20 s at most in all (a vanilla client gives up after 30 s of silence); an answer that doesn't come by
-/// then, or whose sender is dropped, refuses them with a plain "Disconnected". Mods answer without waiting on
-/// each other, so loads run side by side. Once for each player who logs in over the network, the integrated
-/// server's own player excepted. There is no `Game` on this thread: no helper works. API
-/// @API:player_pre_login@.
-#[inline(never)]
-pub fn native_player_pre_login(
-    player: u128,
-    name: &str,
-    address: std::net::SocketAddr,
-    defer: &mut Vec<std::sync::mpsc::Receiver<Result<(), horizon_client_core::text::Text>>>,
-) {
-    crate::native_client_hooks::player_pre_login(player, name, address, defer);
-}
-
-/// How long a login waits in all for the mods' answers to `native_player_pre_login`.
-const PRE_LOGIN_WAIT: Duration = Duration::from_secs(20);
-
-/// The refusal among the mods' answers to `native_player_pre_login`, each waited for until
-/// [`PRE_LOGIN_WAIT`] is up: an `Err`'s reason, or a plain "Disconnected" for an answer that didn't come in
-/// time or never will. None lets the player in.
-fn pre_login_refusal(
-    defer: Vec<std::sync::mpsc::Receiver<Result<(), horizon_client_core::text::Text>>>,
-) -> Option<horizon_world::nbt::Tag> {
-    let until = Instant::now() + PRE_LOGIN_WAIT;
-    for answer in defer {
-        match answer.recv_timeout(until.saturating_duration_since(Instant::now())) {
-            Ok(Ok(())) => {}
-            Ok(Err(text)) => return Some(super::data::component_nbt(&text.component())),
-            Err(_) => return Some(translatable("multiplayer.disconnect.generic", &[])),
-        }
-    }
-    None
-}
-
-/// A joining player's profile, on the connection's own thread, once the server has let them in (the name,
-/// whitelist, ban and server-full checks have passed) and before it sends `LoginFinished`: `properties` are
-/// what the session service (online mode) or the proxy (forwarding) gave, none in offline mode. A mod may
-/// change, add or remove them (a skin's `textures`), within `GameProfile`'s limits (a name of up to 64
-/// characters, a signature of up to 1024): the player's own client and every player list then get the new
-/// ones. Once for each player who logs in over the network, the integrated server's own player excepted.
-/// There is no `Game` on this thread: no helper works. The hook may block for a lookup (a database's); the
-/// login waits for it, but a vanilla client gives up after 30 s of silence. API @API:player_profile@.
-#[inline(never)]
-pub fn native_player_profile(
-    player: u128,
-    name: &str,
-    properties: &mut Vec<horizon_protocol::packets::login::Property>,
-) {
-    crate::native_client_hooks::player_profile(player, name, properties);
-}
-
 fn serve_login(
     mut c: Connection,
     address: std::net::SocketAddr,
@@ -990,7 +815,18 @@ fn serve_login(
         .forwarding_secret
         .as_deref()
         .filter(|_| online.is_none() && !c.is_memory());
-    let (uuid, mut properties) = match (online, forwarding) {
+    // `ServerLoginPacketListenerImpl.handleHello`: the integrated server's own player
+    // (the name matches `getSingleplayerProfile`) logs in as that profile — the account's
+    // UUID — never as an offline profile made from the name. Every other memory player
+    // (a splitscreen seat) stays offline; a LAN guest could not own the name in online
+    // mode, and this keeps an offline host's name from being taken over a memory room.
+    let singleplayer = shared
+        .config
+        .singleplayer_profile
+        .as_ref()
+        .filter(|(owner_name, _)| c.is_memory() && hello.name.eq_ignore_ascii_case(owner_name))
+        .map(|(owner_name, uuid)| (owner_name.clone(), *uuid));
+    let (uuid, properties) = match (online, forwarding) {
         (Some(online), _) => {
             match authenticate(&mut c, shared, online, &hello.name, address, &user) {
                 Ok(Ok(profile)) => profile,
@@ -1035,28 +871,26 @@ fn serve_login(
                 return Err(err);
             }
         },
-        (None, None) => (offline_uuid(&hello.name), Vec::new()),
+        (None, None) => match singleplayer {
+            Some((owner_name, owner_uuid)) => {
+                name = owner_name;
+                let properties = shared
+                    .config
+                    .owner_profile
+                    .as_ref()
+                    .map(|profile| profile.properties().to_vec())
+                    .unwrap_or_default();
+                (owner_uuid, properties)
+            }
+            None => (offline_uuid(&hello.name), Vec::new()),
+        },
     };
-    // The mods may hold the login for their answers, or refuse it, before the server's checks.
-    if !c.is_memory() {
-        let mut defer = Vec::new();
-        native_player_pre_login(uuid, &name, address, &mut defer);
-        if let Some(reason) = pre_login_refusal(defer) {
-            let text = refuse(&mut c, shared, "Server thread", &user, &reason);
-            lost(shared, &user, &text);
-            return Ok(());
-        }
-    }
     // verifyLoginAndFinishConnectionSetup: PlayerList.canPlayerLogin, then
     // duplicates and a full server.
     if let Some(reason) = shared.try_admit(address, uuid, &name) {
         let text = refuse(&mut c, shared, "Server thread", &user, &reason);
         lost(shared, &user, &text);
         return Ok(());
-    }
-    // The mods may change the profile's properties before anyone is sent them.
-    if !c.is_memory() {
-        native_player_profile(uuid, &name, &mut properties);
     }
     // A player a proxy said would arrive (`player-expect`) uses the expectation up
     // here, as the login starts: one that ran out while the player was still in
@@ -1137,17 +971,6 @@ struct Parts {
     properties: Vec<login::Property>,
     info: ClientInformation,
     brand: String,
-    configured: super::Configured,
-}
-
-/// A configuration packet that registers or unregisters plugin channels, kept for the game
-/// (`super::Configured`); vanilla reads none of them.
-fn note_channels(configured: &mut super::Configured, packet: &cfg::Serverbound) {
-    if let cfg::Serverbound::CustomPayload(p) = packet
-        && let Some(register) = super::channel_registration(&p.channel)
-    {
-        super::apply_channels(&mut configured.channels, &p.data, register);
-    }
 }
 
 fn login_and_configure(
@@ -1220,6 +1043,10 @@ fn login_and_configure(
             features: sync.features.clone(),
         }),
     )?;
+    // Horizon clients announce their list after recognizing our brand, before
+    // answering known packs. That reply orders the announcement without a ping.
+    let server_mods = horizon_protocol::mod_list::local();
+    let mut client_mods = Vec::new();
     let core = KnownPack {
         namespace: CORE_PACK.0.into(),
         id: CORE_PACK.1.into(),
@@ -1233,17 +1060,41 @@ fn login_and_configure(
     )?;
     let mut info = ClientInformation::new(10);
     let mut brand = String::from("vanilla");
-    let mut configured = super::Configured::default();
     let known_pack = loop {
         let (id, payload) = c.recv().map_err(e)?;
-        let packet = decode_config(id, &payload).map_err(e)?;
-        note_channels(&mut configured, &packet);
-        match packet {
+        match decode_config(id, &payload).map_err(e)? {
             cfg::Serverbound::ClientInformation(i) => info = i,
             cfg::Serverbound::CustomPayload(p) if p.channel == "minecraft:brand" => {
                 brand = horizon_protocol::buf::Reader::new(&p.data)
                     .string(32767)
                     .unwrap_or(brand);
+                if brand == "horizon" {
+                    send(
+                        c,
+                        cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+                            channel: horizon_protocol::mod_list::CHANNEL.into(),
+                            data: horizon_protocol::mod_list::encode(&server_mods),
+                        }),
+                    )?;
+                }
+            }
+            cfg::Serverbound::CustomPayload(p)
+                if p.channel == horizon_protocol::mod_list::CHANNEL =>
+            {
+                match horizon_protocol::mod_list::decode(&p.data) {
+                    Ok(list) => client_mods = list,
+                    Err(error) => {
+                        let text = mod_list_unreadable(&error);
+                        let reason = super::data::component_nbt(&text.component());
+                        let _ = send(c, cfg::Clientbound::Disconnect(cfg::Disconnect { reason }));
+                        lost(
+                            shared,
+                            &format!("{name} ({})", uuid_string(uuid)),
+                            &text.plain(),
+                        );
+                        return Ok(None);
+                    }
+                }
             }
             cfg::Serverbound::SelectKnownPacks(p) => break p.packs == vec![core.clone()],
             _ => {}
@@ -1255,34 +1106,13 @@ fn login_and_configure(
         && !shared.config.older_clients_play
     {
         let text = super::OLDER_CLIENTS_UNFINISHED;
-        let reason = horizon_world::nbt::Tag::String(horizon_world::nbt::JavaString::from(text));
+        let reason = horizon_core::nbt::Tag::String(horizon_core::nbt::JavaString::from(text));
         let _ = send(c, cfg::Clientbound::Disconnect(cfg::Disconnect { reason }));
         if let Some(log) = &shared.config.log {
             let line = format!(
                 "Disconnecting {name}: its client is on protocol {} ({text})",
                 version.protocol()
             );
-            (log.write)("Server thread", "INFO", &line);
-        }
-        lost(shared, &format!("{name} ({})", uuid_string(uuid)), text);
-        return Ok(None);
-    }
-    // Custom component IDs need Horizon's registry check. The server may also
-    // require Horizon clients even when it has no custom components.
-    if brand != "horizon"
-        && (shared.config.horizon_clients_only
-            || horizon_protocol::item::custom::entries().next().is_some())
-    {
-        let text = if shared.config.horizon_clients_only {
-            super::HORIZON_CLIENTS_ONLY_REASON
-        } else {
-            crate::content_identity::MISMATCH
-        };
-        let reason = horizon_world::nbt::Tag::String(horizon_world::nbt::JavaString::from(text));
-        let _ = send(c, cfg::Clientbound::Disconnect(cfg::Disconnect { reason }));
-        if let Some(log) = &shared.config.log {
-            let line =
-                format!("Disconnecting {name}: its client is \"{brand}\", not Horizon ({text})");
             (log.write)("Server thread", "INFO", &line);
         }
         lost(shared, &format!("{name} ({})", uuid_string(uuid)), text);
@@ -1317,47 +1147,38 @@ fn login_and_configure(
             }),
         )?;
     }
-    // The mods that must be the same on both sides, named when they are not
-    // (horizon_protocol::mod_list); the registry hash below only sees ids.
-    let server_mods = horizon_protocol::mod_list::local();
-    if brand == "horizon" && !server_mods.is_empty() {
-        send(
-            c,
-            cfg::Clientbound::CustomPayload(cfg::CustomPayload {
-                channel: horizon_protocol::mod_list::CHANNEL.into(),
-                data: horizon_protocol::mod_list::encode(&horizon_protocol::mod_list::shared(
-                    &server_mods,
-                )),
-            }),
-        )?;
-        send(c, cfg::Clientbound::Ping(cfg::Ping { id: 1 }))?;
-        // A client that does not answer has no mods to offer.
-        let mut client_mods = Vec::new();
-        loop {
-            let (id, payload) = c.recv().map_err(e)?;
-            let packet = decode_config(id, &payload).map_err(e)?;
-            note_channels(&mut configured, &packet);
-            match packet {
-                cfg::Serverbound::CustomPayload(p)
-                    if p.channel == horizon_protocol::mod_list::CHANNEL =>
-                {
-                    client_mods = horizon_protocol::mod_list::decode(&p.data).unwrap_or_default();
-                }
-                cfg::Serverbound::Pong(p) if p.id == 1 => break,
-                cfg::Serverbound::ClientInformation(i) => info = i,
-                _ => {}
-            }
+    let difference = horizon_protocol::mod_list::compare(&server_mods, &client_mods);
+    if !difference.is_empty() {
+        let text = mod_mismatch(&difference);
+        let reason = super::data::component_nbt(&text.component());
+        let _ = send(c, cfg::Clientbound::Disconnect(cfg::Disconnect { reason }));
+        lost(
+            shared,
+            &format!("{name} ({})", uuid_string(uuid)),
+            &text.plain(),
+        );
+        return Ok(None);
+    }
+    // Custom component IDs need Horizon's registry check. The server may also
+    // require Horizon clients even when it has no custom components.
+    if brand != "horizon"
+        && (shared.config.horizon_clients_only
+            || horizon_protocol::item::custom::entries().next().is_some())
+    {
+        let text = if shared.config.horizon_clients_only {
+            super::HORIZON_CLIENTS_ONLY_REASON
+        } else {
+            crate::content_identity::MISMATCH
+        };
+        let reason = horizon_core::nbt::Tag::String(horizon_core::nbt::JavaString::from(text));
+        let _ = send(c, cfg::Clientbound::Disconnect(cfg::Disconnect { reason }));
+        if let Some(log) = &shared.config.log {
+            let line =
+                format!("Disconnecting {name}: its client is \"{brand}\", not Horizon ({text})");
+            (log.write)("Server thread", "INFO", &line);
         }
-        let difference = horizon_protocol::mod_list::compare(&server_mods, &client_mods);
-        if !difference.is_empty() {
-            let text = difference.reason();
-            let reason = horizon_world::nbt::Tag::String(horizon_world::nbt::JavaString::from(
-                text.as_str(),
-            ));
-            let _ = send(c, cfg::Clientbound::Disconnect(cfg::Disconnect { reason }));
-            lost(shared, &format!("{name} ({})", uuid_string(uuid)), &text);
-            return Ok(None);
-        }
+        lost(shared, &format!("{name} ({})", uuid_string(uuid)), text);
+        return Ok(None);
     }
     if brand == "horizon"
         && let Some(hash) = sync.content_identity
@@ -1373,9 +1194,7 @@ fn login_and_configure(
         let mut content_match = false;
         loop {
             let (id, payload) = c.recv().map_err(e)?;
-            let packet = decode_config(id, &payload).map_err(e)?;
-            note_channels(&mut configured, &packet);
-            match packet {
+            match decode_config(id, &payload).map_err(e)? {
                 cfg::Serverbound::CustomPayload(p)
                     if p.channel == crate::content_identity::CHANNEL =>
                 {
@@ -1387,7 +1206,7 @@ fn login_and_configure(
             }
         }
         if !content_match {
-            let reason = horizon_world::nbt::Tag::String(horizon_world::nbt::JavaString::from(
+            let reason = horizon_core::nbt::Tag::String(horizon_core::nbt::JavaString::from(
                 crate::content_identity::MISMATCH,
             ));
             let _ = send(c, cfg::Clientbound::Disconnect(cfg::Disconnect { reason }));
@@ -1407,10 +1226,10 @@ fn login_and_configure(
     if let Some(text) =
         super::code_of_conduct::pick(&shared.config.code_of_conducts, &info.language)
     {
-        accept_code_of_conduct(c, text, &mut info, &mut configured)?;
+        accept_code_of_conduct(c, text, &mut info)?;
     }
     if let Some(pack) = &shared.config.resource_pack
-        && let Some(rejected) = offer_pack(c, pack, &mut info, &mut configured)?
+        && let Some(rejected) = offer_pack(c, pack, &mut info)?
     {
         let (reason, text) = pack_rejected(shared, name, rejected);
         let _ = send(c, cfg::Clientbound::Disconnect(cfg::Disconnect { reason }));
@@ -1420,9 +1239,7 @@ fn login_and_configure(
     send(c, cfg::Clientbound::FinishConfiguration(Empty))?;
     loop {
         let (id, payload) = c.recv().map_err(e)?;
-        let packet = decode_config(id, &payload).map_err(e)?;
-        note_channels(&mut configured, &packet);
-        match packet {
+        match decode_config(id, &payload).map_err(e)? {
             cfg::Serverbound::FinishConfiguration(_) => break,
             cfg::Serverbound::ClientInformation(i) => info = i,
             _ => {}
@@ -1434,16 +1251,61 @@ fn login_and_configure(
         properties,
         info,
         brand,
-        configured,
     }))
 }
 
 /// ServerboundResourcePackPacket.Action.DECLINED.
 const PACK_DECLINED: i32 = 1;
 
+fn mod_mismatch(difference: &horizon_protocol::mod_list::Difference) -> crate::text::Text {
+    use crate::{lang::Language, text::Text};
+    // Vanilla has no Horizon keys. Keep English fallbacks on the wire, while a
+    // Horizon client resolves each component in its own selected language.
+    let english = Language::load(&[], crate::lang::DEFAULT);
+    let translated = |key: &str, args: &[Text]| {
+        Text::translate_with_fallback(key, english.get(key).unwrap(), args)
+    };
+    let mut text = translated("horizon.mods.mismatch", &[]);
+    for (key, names) in [
+        ("horizon.mods.missing", &difference.missing),
+        ("horizon.mods.extra", &difference.extra),
+    ] {
+        if !names.is_empty() {
+            text = text
+                .append("\n")
+                .append(translated(key, &[Text::literal(names.join("\n"))]));
+        }
+    }
+    for changed in &difference.changed {
+        text = text.append("\n").append(translated(
+            "horizon.mods.version",
+            &[
+                Text::literal(&changed.id),
+                Text::literal(&changed.server),
+                Text::literal(&changed.client),
+            ],
+        ));
+    }
+    text
+}
+
+/// A mod list that breaks a cap is refused whole, never compared in part or
+/// read as empty: like a mismatch, the reason reaches the client as a
+/// configuration disconnect naming the decode error, and the join never
+/// reaches play.
+fn mod_list_unreadable(error: &horizon_protocol::Error) -> crate::text::Text {
+    use crate::{lang::Language, text::Text};
+    let english = Language::load(&[], crate::lang::DEFAULT);
+    Text::translate_with_fallback(
+        "horizon.mods.unreadable",
+        english.get("horizon.mods.unreadable").unwrap(),
+        &[Text::literal(error.to_string())],
+    )
+}
+
 /// ServerCommonPacketListenerImpl.handleResourcePackResponse: a player who
 /// declined the required pack is disconnected. The reason and its text.
-fn pack_rejected(shared: &Shared, name: &str, pack: u128) -> (horizon_world::nbt::Tag, String) {
+fn pack_rejected(shared: &Shared, name: &str, pack: u128) -> (horizon_core::nbt::Tag, String) {
     let reason = translatable("multiplayer.requiredTexturePrompt.disconnect", &[]);
     let Some(log) = &shared.config.log else {
         return (reason, String::new());
@@ -1462,7 +1324,7 @@ fn pack_rejected(shared: &Shared, name: &str, pack: u128) -> (horizon_world::nbt
 /// vanilla's kick logs it.
 /// The kick for a client whose packets wait past [`Undrained`]'s caps: the same message as the
 /// hub's own inbox check, and a line in the log.
-fn undrained_exceeded(shared: &Shared, name: &str) -> (horizon_world::nbt::Tag, String) {
+fn undrained_exceeded(shared: &Shared, name: &str) -> (horizon_core::nbt::Tag, String) {
     let reason = translatable("disconnect.exceeded_packet_rate", &[]);
     let Some(log) = &shared.config.log else {
         return (reason, String::new());
@@ -1474,7 +1336,7 @@ fn undrained_exceeded(shared: &Shared, name: &str) -> (horizon_world::nbt::Tag, 
     (reason, text)
 }
 
-fn rate_exceeded(shared: &Shared, average: f32) -> (horizon_world::nbt::Tag, String) {
+fn rate_exceeded(shared: &Shared, average: f32) -> (horizon_core::nbt::Tag, String) {
     let reason = translatable("disconnect.exceeded_packet_rate", &[]);
     let Some(log) = &shared.config.log else {
         return (reason, String::new());
@@ -1498,7 +1360,6 @@ fn offer_pack(
     c: &mut Connection,
     pack: &crate::server::properties::ResourcePackInfo,
     info: &mut ClientInformation,
-    configured: &mut super::Configured,
 ) -> Result<Option<u128>, String> {
     let e = |e: horizon_protocol::Error| e.to_string();
     let push = cfg::ResourcePackPush {
@@ -1511,12 +1372,7 @@ fn offer_pack(
     c.send(&cfg::Clientbound::ResourcePackPush(push).encode())
         .map_err(e)?;
     wait_alive(c, |packet| match packet {
-        // Every answer is kept for the mods (native_resource_pack_status_v2).
-        Ok(cfg::Serverbound::ResourcePack(r)) => {
-            configured.pack_answers.push((r.id, r.action));
-            if matches!(r.action, 3 | 4) {
-                return None;
-            }
+        Ok(cfg::Serverbound::ResourcePack(r)) if !matches!(r.action, 3 | 4) => {
             let rejected = r.action == PACK_DECLINED && pack.required;
             Some(Ok(rejected.then_some(r.id)))
         }
@@ -1524,10 +1380,7 @@ fn offer_pack(
             *info = i;
             None
         }
-        Ok(packet) => {
-            note_channels(configured, &packet);
-            None
-        }
+        Ok(_) => None,
         Err(err) => Some(Err(err)),
     })
 }
@@ -1541,7 +1394,6 @@ fn accept_code_of_conduct(
     c: &mut Connection,
     text: &str,
     info: &mut ClientInformation,
-    configured: &mut super::Configured,
 ) -> Result<(), String> {
     let e = |e: horizon_protocol::Error| e.to_string();
     c.send(&cfg::Clientbound::CodeOfConduct(cfg::CodeOfConduct { text: text.into() }).encode())
@@ -1555,10 +1407,7 @@ fn accept_code_of_conduct(
             *info = i;
             None
         }
-        Ok(packet) => {
-            note_channels(configured, &packet);
-            None
-        }
+        Ok(_) => None,
         Err(err) => Some(Err(err)),
     })
 }
@@ -1605,8 +1454,11 @@ fn play(
     counted: Option<super::Counted>,
     expected: bool,
 ) {
+    let Some(conn) = shared.next_id() else {
+        shared.release(parts.uuid);
+        return;
+    };
     shared.entered_play();
-    let conn = shared.next_id();
     let pending = Arc::new(AtomicUsize::new(0));
     let outbox = match io_pool::Outbox::new(pending.clone()) {
         Ok(outbox) => outbox,
@@ -1623,7 +1475,6 @@ fn play(
     });
     let undrained = Arc::<Undrained>::default();
     let sender = PlayerSender {
-        player: parts.uuid,
         undrained: undrained.clone(),
         pending,
         held: Arc::default(),
@@ -1660,7 +1511,6 @@ fn play(
         latency,
         address,
         expected,
-        configured: parts.configured,
     };
     let mut session = Box::new(session);
     if shared
@@ -1700,7 +1550,7 @@ impl io_pool::Session for PlayConn {
     /// required resource pack declined, a rate-limit excess, a malformed packet.
     fn packet(&mut self, id: i32, payload: Vec<u8>) -> io_pool::Verdict {
         use io_pool::Verdict;
-        let kick = |(reason, text): (horizon_world::nbt::Tag, String)| {
+        let kick = |(reason, text): (horizon_core::nbt::Tag, String)| {
             let body = play::Clientbound::Disconnect(cfg::Disconnect { reason }).encode();
             Verdict::Kick(text, body)
         };
@@ -2007,6 +1857,32 @@ mod tests {
     }
     use super::*;
 
+    #[test]
+    fn mod_refusal_translates_on_the_client_and_names_every_difference() {
+        use horizon_protocol::mod_list::{Difference, VersionDifference};
+        let difference = Difference {
+            missing: (0..9).map(|i| format!("missing_{i} 1.0")).collect(),
+            extra: vec!["extra 2.0".into()],
+            changed: vec![VersionDifference {
+                id: "changed".into(),
+                server: "3.0".into(),
+                client: "2.9".into(),
+            }],
+        };
+        let reason = crate::lan::data::component_nbt(&mod_mismatch(&difference).component());
+        let french = crate::lang::Language::load(&[], "fr_fr");
+        let text = horizon_protocol::text::plain(&reason, french.map());
+        assert!(text.starts_with("Vos mods ne correspondent"));
+        assert!(text.contains("changed (serveur 3.0, votre version 2.9)"));
+        assert!(text.contains("extra 2.0"));
+        let vanilla = horizon_protocol::text::plain(&reason, &Default::default());
+        assert!(vanilla.starts_with("Your mods don't match"));
+        for name in &difference.missing {
+            assert!(text.contains(name));
+            assert!(vanilla.contains(name));
+        }
+    }
+
     /// Having tables for Horizon to join an old server does not make the reverse direction supported.
     #[test]
     fn nbt_item_clients_are_refused_even_when_older_clients_are_enabled() {
@@ -2057,7 +1933,7 @@ mod tests {
     }
 
     /// Logs in through `c` and answers the `LoginFinished` profile.
-    fn login_profile(mut c: Connection, name: &str) -> login::GameProfile {
+    fn login_profile(c: &mut Connection, name: &str) -> login::GameProfile {
         c.send(
             &handshake::Serverbound::Intention(handshake::Intention {
                 protocol: horizon_protocol::PROTOCOL_VERSION,
@@ -2152,6 +2028,168 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_server_checks_a_horizon_clients_extra_mods() {
+        use horizon_protocol::mod_list::{self, Entry, Side};
+        let config = crate::lan::NetConfig {
+            announce: false,
+            listen: false,
+            ..crate::lan::NetConfig::lan(0, "Owner - World".into(), 8)
+        };
+        let lan = crate::lan::Lan::start_with(Arc::new(SyncData::empty()), config).unwrap();
+        let mut c = Connection::local(lan.connect_local().unwrap());
+        c.reader
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        login_profile(&mut c, "Owner");
+        c.send(&login::Serverbound::LoginAcknowledged(horizon_protocol::packets::Empty).encode())
+            .unwrap();
+        let mut brand = horizon_protocol::buf::Writer::new();
+        brand.string("horizon");
+        c.send(
+            &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
+                channel: "minecraft:brand".into(),
+                data: brand.data,
+            })
+            .encode(),
+        )
+        .unwrap();
+        c.send(
+            &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
+                channel: mod_list::CHANNEL.into(),
+                data: mod_list::encode(&[Entry {
+                    id: "shared_extra".into(),
+                    version: "2.0".into(),
+                    side: Side::Both,
+                }]),
+            })
+            .encode(),
+        )
+        .unwrap();
+        loop {
+            let (id, payload) = c.recv().unwrap();
+            match cfg::Clientbound::decode(id, &payload).unwrap() {
+                cfg::Clientbound::SelectKnownPacks(p) => c
+                    .send(&cfg::Serverbound::SelectKnownPacks(p).encode())
+                    .unwrap(),
+                cfg::Clientbound::Disconnect(d) => {
+                    assert!(
+                        horizon_protocol::text::plain(&d.reason, &Default::default())
+                            .contains("shared_extra 2.0")
+                    );
+                    break;
+                }
+                cfg::Clientbound::FinishConfiguration(_) => panic!("extra mod was accepted"),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn vanilla_configuration_does_not_disclose_horizon_mods() {
+        let config = crate::lan::NetConfig {
+            announce: false,
+            listen: false,
+            ..crate::lan::NetConfig::lan(0, "Owner - World".into(), 8)
+        };
+        let lan = crate::lan::Lan::start_with(Arc::new(SyncData::empty()), config).unwrap();
+        let mut c = Connection::local(lan.connect_local().unwrap());
+        c.reader
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        login_profile(&mut c, "Owner");
+        c.send(&login::Serverbound::LoginAcknowledged(horizon_protocol::packets::Empty).encode())
+            .unwrap();
+        let mut data = horizon_protocol::buf::Writer::new();
+        data.string("vanilla");
+        c.send(
+            &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
+                channel: "minecraft:brand".into(),
+                data: data.data,
+            })
+            .encode(),
+        )
+        .unwrap();
+        loop {
+            let (id, payload) = c.recv().unwrap();
+            match cfg::Clientbound::decode(id, &payload).unwrap() {
+                cfg::Clientbound::CustomPayload(p) => {
+                    assert_ne!(p.channel, horizon_protocol::mod_list::CHANNEL);
+                }
+                cfg::Clientbound::SelectKnownPacks(p) => {
+                    c.send(&cfg::Serverbound::SelectKnownPacks(p).encode())
+                        .unwrap();
+                }
+                cfg::Clientbound::Disconnect(d) => panic!("unexpected refusal: {:?}", d.reason),
+                cfg::Clientbound::FinishConfiguration(_) => {
+                    c.send(
+                        &cfg::Serverbound::FinishConfiguration(horizon_protocol::packets::Empty)
+                            .encode(),
+                    )
+                    .unwrap();
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn a_malformed_mod_list_gets_a_disconnect_reason() {
+        use horizon_protocol::mod_list;
+        let config = crate::lan::NetConfig {
+            announce: false,
+            listen: false,
+            ..crate::lan::NetConfig::lan(0, "Owner - World".into(), 8)
+        };
+        let lan = crate::lan::Lan::start_with(Arc::new(SyncData::empty()), config).unwrap();
+        let mut c = Connection::local(lan.connect_local().unwrap());
+        c.reader
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        login_profile(&mut c, "Owner");
+        c.send(&login::Serverbound::LoginAcknowledged(horizon_protocol::packets::Empty).encode())
+            .unwrap();
+        let mut brand = horizon_protocol::buf::Writer::new();
+        brand.string("horizon");
+        c.send(
+            &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
+                channel: "minecraft:brand".into(),
+                data: brand.data,
+            })
+            .encode(),
+        )
+        .unwrap();
+        let mut malformed = mod_list::encode(&[]);
+        malformed.push(0); // Trailing bytes: the list is refused whole, not read as empty.
+        c.send(
+            &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
+                channel: mod_list::CHANNEL.into(),
+                data: malformed,
+            })
+            .encode(),
+        )
+        .unwrap();
+        loop {
+            let (id, payload) = c.recv().unwrap();
+            match cfg::Clientbound::decode(id, &payload).unwrap() {
+                // The server may refuse the list and close before these replies land, so a
+                // failed reply send is not the test's concern: the Disconnect below is.
+                cfg::Clientbound::SelectKnownPacks(p) => {
+                    let _ = c.send(&cfg::Serverbound::SelectKnownPacks(p).encode());
+                }
+                cfg::Clientbound::Disconnect(d) => {
+                    let text = horizon_protocol::text::plain(&d.reason, &Default::default());
+                    assert!(text.contains("couldn't be read"));
+                    assert!(text.contains("trailing bytes"));
+                    break;
+                }
+                cfg::Clientbound::FinishConfiguration(_) => panic!("malformed list was accepted"),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
     fn payloads_and_suggestions_past_vanillas_limits_are_malformed() {
         let payload = |len: usize| {
             play::Serverbound::CustomPayload(cfg::CustomPayload {
@@ -2218,7 +2256,10 @@ mod tests {
             crate::lan::Lan::start_with(Arc::new(crate::lan::data::SyncData::empty()), config)
                 .unwrap();
         let start = Instant::now();
-        let owner = login_profile(Connection::local(lan.connect_local().unwrap()), "Owner");
+        let owner = login_profile(
+            &mut Connection::local(lan.connect_local().unwrap()),
+            "Owner",
+        );
         assert!(
             start.elapsed() < Duration::from_secs(1),
             "{:?}",
@@ -2226,6 +2267,30 @@ mod tests {
         );
         assert_eq!(owner.uuid, offline_uuid("Owner"));
         assert!(owner.properties.is_empty());
+    }
+
+    /// `ServerLoginPacketListenerImpl.handleHello`: the integrated server's own player
+    /// logs in as `getSingleplayerProfile`'s UUID, not the offline one its name makes;
+    /// anyone else through memory keeps the offline profile.
+    #[test]
+    fn the_integrated_owners_login_is_the_singleplayer_profile() {
+        let owner_uuid = 0x0123_4567_89ab_cdef_0123_4567_89ab_cdefu128;
+        let config = crate::lan::NetConfig {
+            announce: false,
+            listen: false,
+            singleplayer_profile: Some(("Owner".into(), owner_uuid)),
+            ..crate::lan::NetConfig::loopback(0, "Owner - World".into(), 8)
+        };
+        let lan =
+            crate::lan::Lan::start_with(Arc::new(crate::lan::data::SyncData::empty()), config)
+                .unwrap();
+        let owner = login_profile(
+            &mut Connection::local(lan.connect_local().unwrap()),
+            "Owner",
+        );
+        assert_eq!(owner.uuid, owner_uuid);
+        let guest = login_profile(&mut Connection::local(lan.connect_local().unwrap()), "Alex");
+        assert_eq!(guest.uuid, offline_uuid("Alex"));
     }
 
     fn unpack(out: Out) -> Vec<Vec<u8>> {
@@ -2264,7 +2329,7 @@ mod tests {
         sender.send(vec![9]);
         drop(holding);
         flush_all([&sender]);
-        sender.disconnect(horizon_world::nbt::Tag::Byte(0));
+        sender.disconnect(horizon_core::nbt::Tag::Byte(0));
         let next = || unpack(rx.recv_timeout(Duration::from_secs(10)).unwrap());
         assert_eq!(next(), [vec![9]]);
         assert_eq!(next(), [b"disconnect".to_vec()]);
@@ -2351,7 +2416,7 @@ mod tests {
         assert_eq!(bodies(&rx), [vec![vec![2], vec![3]], vec![vec![4]]]);
         let holding = Holding::start();
         sender.send(vec![5]);
-        sender.disconnect(horizon_world::nbt::Tag::Byte(0));
+        sender.disconnect(horizon_core::nbt::Tag::Byte(0));
         drop(holding);
         sender.flush();
         assert_eq!(bodies(&rx), [vec![vec![5]], vec![b"disconnect".to_vec()]]);

@@ -245,7 +245,7 @@ keep vanilla's names and formats, so going back to vanilla works too.
 
 A native-mods build exports a standalone engine
 (`horizon-launcher native-build FOLDER --server-output DIR --version TAG --trust-native-code`;
-see [Native mods](native-mods.md#standalone-server-export)). Point the server at it:
+see [Native mods](modding/src/how-to/native-mods.md#standalone-server-export)). Point the server at it:
 
     horizon-server --dir SERVER config set engine.path=/absolute/export/horizon-engine
     horizon-server --dir SERVER restart
@@ -702,9 +702,8 @@ docker run -d --name horizon -p 25565:25565 --stop-timeout 180 \
 The latest bot benchmark compares Horizon with vanilla 26.3, Paper and Fabric + Lithium:
 [benchmarks/server-four-way-2026-10-19](https://github.com/horizon-rust/horizon/blob/main/benchmarks/server-four-way-2026-10-19/README.md).
 It ran release v2026.10.19 on a 4-thread laptop CPU (i7-7500U), with 1 to 50 players walking, exploring and
-standing around spawn, the bots on another machine. All four servers did the same work. Earlier
-measurements are in [docs/server.md](https://github.com/horizon-rust/horizon/blob/main/docs/server.md). In
-short:
+standing around spawn, the bots on another machine. All four servers did the same work. Against
+Pumpkin: [performance/server-vs-pumpkin.md](performance/server-vs-pumpkin.md). In short:
 
 - **Memory:** 0.7 GB with one player and 1.1 GB with 50, against 3.4 to 4.5 GB for the Java servers
   (each with a 4 GB heap): 3.8 to 4.8 times less.

@@ -2,7 +2,7 @@
 //! error messages and completion suggestions, producing NBT tags.
 use super::packrat::{Grammar, Reason, State, Sugg, Term, Value, alt, ch, chs, look, opt, seq};
 use super::{CmdResult, CommandError, Reader, SuggestionsBuilder};
-use horizon_world::nbt::{Compound, JavaString, Tag};
+use horizon_core::nbt::{Compound, JavaString, Tag};
 use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1034,7 +1034,7 @@ mod tests {
 #[cfg(test)]
 mod floating_zero_tests {
     use super::*;
-    use horizon_world::nbt::{Limits, read_network};
+    use horizon_core::nbt::{Limits, read_network};
 
     fn cases() -> Vec<(&'static str, Tag)> {
         vec![
@@ -1070,7 +1070,7 @@ mod floating_zero_tests {
     #[test]
     fn world_text_keeps_tag_factory_zero_and_nonzero_bits() {
         for (text, expected) in cases() {
-            let (actual, used) = horizon_world::nbt::parse_snbt(text).unwrap();
+            let (actual, used) = horizon_core::nbt::parse_snbt(text).unwrap();
             assert_eq!(used, text.len(), "{text}");
             assert_eq!(actual, expected, "{text}");
         }

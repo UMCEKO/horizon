@@ -5,11 +5,14 @@
 //! state is driven by the game thread (`hub`), which only ever exchanges
 //! decoded packets with these threads, so a world that is not open to the
 //! network pays nothing.
+pub mod abilities;
 mod advancements;
+pub use advancements::ServerAdvancements;
 pub mod anticheat;
 pub mod arrivals;
 pub mod attributes;
 pub mod border;
+pub mod chunk_watch;
 pub mod chunks;
 pub mod code_of_conduct;
 mod command_order;
@@ -23,6 +26,7 @@ pub mod entity;
 pub mod far;
 pub mod forwarding;
 pub mod guest;
+pub mod guest_list;
 pub mod handoff;
 pub mod hub;
 pub mod import;
@@ -85,62 +89,6 @@ pub struct Joined {
     /// The login used up an expectation of a proxy's (`player-expect`) when it
     /// started (`arrivals`).
     pub expected: bool,
-    /// What the client said during its configuration that the game hears once it joined.
-    pub configured: Configured,
-}
-
-/// What a client said during its configuration, kept for the game (`native_packets.rs`): the
-/// plugin channels it registered (`minecraft:register`), in order, and its answers to the
-/// server's resource pack (pack id, `ServerboundResourcePackPacket.Action` id), in order.
-#[derive(Clone, Debug, Default)]
-pub struct Configured {
-    pub channels: Vec<String>,
-    pub pack_answers: Vec<(u128, i32)>,
-}
-
-/// The most plugin channels kept for one client ([`apply_channels`]).
-pub const MAX_CHANNELS: usize = 128;
-/// The longest plugin channel name kept, in bytes.
-pub const MAX_CHANNEL_NAME: usize = 256;
-
-/// Whether a plugin channel message on `channel` registers channels (`minecraft:register`,
-/// true) or unregisters them (`minecraft:unregister`, false), as Bukkit's and Fabric's
-/// clients and proxies send them; None for any other channel. Vanilla reads neither.
-pub fn channel_registration(channel: &str) -> Option<bool> {
-    match channel {
-        "minecraft:register" => Some(true),
-        "minecraft:unregister" => Some(false),
-        _ => None,
-    }
-}
-
-/// Applies a register or unregister message's NUL-separated channel names to `channels`: the
-/// names it added or removed, in the message's order. A name that isn't printable ASCII with a
-/// `:`, is longer than [`MAX_CHANNEL_NAME`], or would take `channels` past [`MAX_CHANNELS`] is
-/// skipped; a name already registered, or not registered, changes nothing.
-pub fn apply_channels(channels: &mut Vec<String>, data: &[u8], register: bool) -> Vec<String> {
-    let mut changed = Vec::new();
-    for name in data.split(|b| *b == 0) {
-        let Ok(name) = std::str::from_utf8(name) else {
-            continue;
-        };
-        if name.len() > MAX_CHANNEL_NAME
-            || !name.contains(':')
-            || !name.bytes().all(|b| b.is_ascii_graphic())
-        {
-            continue;
-        }
-        if register {
-            if channels.len() < MAX_CHANNELS && !channels.iter().any(|c| c == name) {
-                channels.push(name.to_owned());
-                changed.push(name.to_owned());
-            }
-        } else if let Some(at) = channels.iter().position(|c| c == name) {
-            channels.remove(at);
-            changed.push(name.to_owned());
-        }
-    }
-    changed
 }
 /// What a [`PlayerSender`] made for a test's channel gives it.
 pub enum Out {
@@ -149,13 +97,13 @@ pub enum Out {
     /// Packet bodies held during a tick, in order.
     Packets(Vec<Vec<u8>>),
     /// Send a play disconnect with this component, then close.
-    Disconnect(horizon_world::nbt::Tag),
+    Disconnect(horizon_core::nbt::Tag),
 }
 
 /// PlayerList.canPlayerLogin for a dedicated server: the disconnect reason
 /// (bans, whitelist) for a profile connecting from an address, if refused.
 pub type LoginGate =
-    Arc<dyn Fn(SocketAddr, u128, &str) -> Option<horizon_world::nbt::Tag> + Send + Sync>;
+    Arc<dyn Fn(SocketAddr, u128, &str) -> Option<horizon_core::nbt::Tag> + Send + Sync>;
 
 /// online-mode=true: the key pair the server made at startup
 /// (MinecraftServer.initializeKeyPair) and how players are verified.
@@ -268,6 +216,10 @@ pub struct NetConfig {
     /// An integrated server's owner profile: the properties the window's own
     /// (memory) connection logs in with.
     pub owner_profile: Option<Arc<OwnerProfile>>,
+    /// `IntegratedServer.getSingleplayerProfile` (`Minecraft.getGameProfile`): the
+    /// integrated server's own player's name and UUID. A memory login whose name matches
+    /// is that profile (the account's UUID); every other login derives the offline one.
+    pub singleplayer_profile: Option<(String, u128)>,
     /// `horizon-clients-only` (Horizon's own server.properties key, off): a
     /// client whose `minecraft:brand` isn't Horizon's is turned away during
     /// configuration. A brand can be spoofed: a gate, not security.
@@ -334,6 +286,7 @@ impl NetConfig {
             lod_distance: crate::lod_net::DEFAULT_DISTANCE,
             levels: crate::chunk::LevelShapes::VANILLA,
             owner_profile: None,
+            singleplayer_profile: None,
         }
     }
 }
@@ -463,8 +416,20 @@ impl Shared {
     pub fn set_sync(&self, sync: Arc<data::SyncData>) {
         *self.sync.lock().unwrap_or_else(|e| e.into_inner()) = sync;
     }
-    pub fn next_id(&self) -> u32 {
-        self.next.fetch_add(1, Ordering::Relaxed)
+    /// Allocate from the shared network and connectionless actor namespace.
+    /// Exhaustion is permanent for this server; never wrap and reuse a token.
+    pub fn next_id(&self) -> Option<u32> {
+        let mut id = self.next.load(Ordering::Relaxed);
+        loop {
+            let next = id.checked_add(1)?;
+            match self
+                .next
+                .compare_exchange_weak(id, next, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => return Some(id),
+                Err(current) => id = current,
+            }
+        }
     }
     /// PlayerList.canPlayerLogin then disconnectAllPlayersWithProfile: the
     /// refusal reason, or None once the profile holds a place. A profile
@@ -474,7 +439,7 @@ impl Shared {
         address: SocketAddr,
         uuid: u128,
         name: &str,
-    ) -> Option<horizon_world::nbt::Tag> {
+    ) -> Option<horizon_core::nbt::Tag> {
         if self.shutting_down.load(Ordering::Relaxed) {
             return Some(translatable("multiplayer.disconnect.server_shutdown", &[]));
         }
@@ -1049,37 +1014,6 @@ pub(super) fn test_loopback() -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn channel_messages_register_and_unregister_each_name_once() {
-        let mut channels = Vec::new();
-        let added = super::apply_channels(
-            &mut channels,
-            b"fabric:registry/sync\0voxy:info\0voxy:info\0nocolon\0bad name:x",
-            true,
-        );
-        assert_eq!(added, ["fabric:registry/sync", "voxy:info"]);
-        assert_eq!(channels, ["fabric:registry/sync", "voxy:info"]);
-        let removed = super::apply_channels(&mut channels, b"voxy:info\0other:one", false);
-        assert_eq!(removed, ["voxy:info"]);
-        assert_eq!(channels, ["fabric:registry/sync"]);
-        let many: Vec<u8> = (0..200)
-            .map(|i| format!("m:c{i}"))
-            .collect::<Vec<_>>()
-            .join("\0")
-            .into_bytes();
-        super::apply_channels(&mut channels, &many, true);
-        assert_eq!(channels.len(), super::MAX_CHANNELS);
-        assert_eq!(
-            super::channel_registration("minecraft:register"),
-            Some(true)
-        );
-        assert_eq!(
-            super::channel_registration("minecraft:unregister"),
-            Some(false)
-        );
-        assert_eq!(super::channel_registration("minecraft:brand"), None);
-    }
-
-    #[test]
     fn a_local_server_accepts_only_the_requested_loopback_address() {
         let lan = super::Lan::start_with(
             std::sync::Arc::new(super::data::SyncData::empty()),
@@ -1100,6 +1034,19 @@ mod tests {
     use super::conn::MEMORY_ADDRESS;
     use super::*;
     use std::{io::Read, time::Instant};
+
+    #[test]
+    fn actor_ids_never_wrap() {
+        let config = NetConfig {
+            announce: false,
+            ..NetConfig::lan(0, "ids".into(), 1)
+        };
+        let lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
+        lan.shared.next.store(u32::MAX - 1, Ordering::Relaxed);
+        assert_eq!(lan.shared.next_id(), Some(u32::MAX - 1));
+        assert_eq!(lan.shared.next_id(), None);
+        assert_eq!(lan.shared.next_id(), None);
+    }
 
     /// Sockets that never say a word each hold a connection thread until their read times out: past
     /// the player limit and [`SPARE_CONNECTIONS`], a new one is closed at once instead of taking one

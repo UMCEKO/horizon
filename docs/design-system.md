@@ -147,14 +147,14 @@ Geist (400, 500, 600) and Geist Mono (400), bundled under the SIL Open Font Lice
   sunset) behind the hero. Light and dark follow the system, with a toggle. A giant wordmark in
   pixels sits in the footer.
 - **Game**: vanilla's screens. The on-screen keyboard is a rounded plate of keys in the page
-  colour, the focused key in the accent. Horizon's graphics, controller and Extras settings
-  screens take the Blocks palette below in a lighter form (`graphics_style.rs`; Extras through
+  colour, the focused key in the accent. Horizon's graphics, controller, Extras and Shaders
+  settings screens take the Blocks palette below in a lighter form (`graphics_style.rs`, through
   the shared `settings_shell.rs`).
 
 ## Blocks
 
 A blocky, Minecraft-like look in Horizon's purple, for the website, the redesigned launcher and
-the game's graphics, controller and Extras settings screens:
+the game's graphics, controller, Extras and Shaders settings screens:
 Minecraft's inventory rather than a document. Its colours are `horizon_theme::Blocks`
 (`BLOCKS_LIGHT`, `BLOCKS_DARK`), which `tokens.css` carries under the same names as before plus
 `--panel`, `--raised`, `--button`, `--well`, `--bevel`, `--lip`, `--outline` and the `--face`
@@ -180,16 +180,8 @@ than Pixelify. Hover and focus are vanilla's white edge.
   ships no third-party pictures. Plain Minecraft shows Horizon's own grass block
   (`tools/launcher_grass_block.py`), Horizon the brand icon (`docs/media/brand/icon.svg`). Sources are named in text ("from Modrinth"): Modrinth's logo is
   all rights reserved, so it is not shown.
-- **Partner banner**: the one exception to shipping no third-party pictures. Sculk, a server host,
-  sponsors Horizon: its banner (`launcher/assets/sculk-banner.webp`, `launcher/src/partner.rs`) sits
-  under a muted mono "Partner" label at the end of the Servers page and opens Sculk's page in the
-  browser. The sidebar of the other pages shows a card made for its width instead: Sculk's characters
-  and logo cropped from the same banner, and the text drawn by the launcher in its language, so it
-  stays readable; it keeps Sculk's dark card, cyan and rounded corners in both themes, as an ad does,
-  and turns compact (characters beside the text) when the window is too short. After three minutes
-  on screen, over every start and on any page, a "Hide" appears beside the label of the card and of
-  the Servers banner alike; either one hides both for good (`Settings::partner_hidden`). The website shows the
-  banner the same way on Home and the hosting docs, as a `rel="sponsored"` link.
+- **No ads.** The fork's launcher has no partner banners, sponsor links or upstream Discord links.
+  This diverges from upstream.
 - **Pixel art drawn in code.** The stone behind the pages is close shades of the page colour
   (`TILE_SHADES`), never Minecraft's stone; the landscape is a banded sky, a sun cut in slices like
   the mark, hills and square trees (a sunset in dark, a dawn in light). The launcher bakes them in

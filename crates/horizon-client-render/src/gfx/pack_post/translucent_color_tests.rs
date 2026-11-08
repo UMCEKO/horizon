@@ -2,7 +2,7 @@
 //! Original programs and independently calculated colors; no shader-pack assets.
 use super::depth_test::{Gpu, SIZE, VERTEX, fixture_frame};
 use super::*;
-use crate::hud::HudBatch;
+use crate::hud::{GuiScale, HudBatch};
 use wgpu::{TextureFormat as T, util::DeviceExt};
 
 #[test]
@@ -122,7 +122,13 @@ fn translucent_draws_sample_the_color_written_by_deferred() {
                 };
                 expected[0] += if blended { 0.0625 } else { 0.125 };
                 let expected = expected.map(|c| (c * 255.0).round() as u8);
-                let hud = HudBatch::new(SIZE);
+                let hud = HudBatch::new(
+                    SIZE,
+                    GuiScale {
+                        requested: 0,
+                        unicode: false,
+                    },
+                );
                 for frame in 0..2 {
                     let pixels = gpu.render(
                         &mut post,

@@ -1,5 +1,5 @@
 //! Play with Friends: Horizon's own sharing of the open world behind an
-//! invite code (`game/friends.rs`). The pause menu's Friends button, the icon
+//! invite code (`game/network/friends.rs`). The pause menu's Friends button, the icon
 //! vanilla's PauseScreen already has, opens it. It is drawn the way a mod adds
 //! a screen to vanilla: the menu background, a centred title and text,
 //! vanilla's buttons and Done in the footer.
@@ -20,7 +20,7 @@ fn tr(key: &str, english: &str) -> String {
 pub fn title() -> String {
     tr("horizon.friends.title", TITLE)
 }
-/// What the screen shows (game/friends.rs fills it).
+/// What the screen shows (game/network/friends.rs fills it).
 #[derive(Clone, Debug, Default)]
 pub struct FriendsView {
     /// A singleplayer world (not a server): sharing is offered.
@@ -283,7 +283,10 @@ mod tests {
     use super::*;
 
     fn atlas() -> HudAtlas {
-        HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap()
+        HudAtlas::build(&horizon_assets::resource_source::ResourceSource::directory(
+            (std::path::Path::new("/nonexistent/horizon-test-assets")).to_owned(),
+        ))
+        .unwrap()
     }
 
     #[test]

@@ -153,7 +153,7 @@ fn strips_of(
             usage: wgpu::BufferUsages::VERTEX,
         });
     let undrawn = (!post.has_terrain()).then(|| post.notes.clone());
-    let hud = HudBatch::new(SIZE);
+    let hud = HudBatch::scratch(SIZE);
     let frame = fixture_frame(&hud);
     let pixels = gpu.render(&mut post, &color, &depth, &frame, &mut |rp, list, _, _| {
         if list == TerrainList::Solid {

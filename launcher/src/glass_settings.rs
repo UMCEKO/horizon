@@ -4,8 +4,7 @@
 //! `SettingRow`s ([`glass_ui::flat_rows`]).
 //!
 //! Not in the mockup, kept in its patterns: the appearance, the Home background, the data and
-//! logs folders and the applications menu (About's rows), the AI clients, data collection (its own
-//! entry in the list) and the hidden developer options. The mockup's About tiles for Horizon and
+//! logs folders and the applications menu (About's rows), the AI clients and the hidden developer options. The mockup's About tiles for Horizon and
 //! the launcher open Updates here, beside the switches that decide how updates install. The mockup's Native mods switch is the
 //! native mods' build profile here: they are always on.
 
@@ -13,16 +12,16 @@ use super::*;
 use crate::glass_ui::{self as ui, white};
 use horizon_theme::glass::{fill, ink, radius};
 
-/// The list's entries: name and icon. The mockup's seven, then data collection.
+/// The list's entries: name and icon. The settings sections.
 const SECTIONS: [(&str, &str); 8] = [
     ("Account", "user"),
     ("Updates", "refresh"),
     ("Launcher", "computer"),
     ("Network", "globe-02"),
     ("Game", "game-controller-01"),
+    ("Storage", "computer"),
     ("AI", "ai-chat-02"),
     ("About", "information-circle"),
-    ("Data collection", "view"),
 ];
 
 /// What `settings_page` builds before it knows which look draws it.
@@ -96,6 +95,9 @@ fn note(s: &str) -> Option<AnyElement> {
 
 impl Launcher {
     pub(super) fn glass_settings(&mut self, b: Built, cx: &mut Context<Self>) -> Div {
+        if self.storage_report.is_none() && !self.storage_pending && self.storage_error.is_none() {
+            self.refresh_storage(None, false);
+        }
         let t = self.theme;
         let sections = ui::flat_rows(|| self.glass_settings_sections(b, cx));
         let active = self.settings_section(sections.len());
@@ -249,7 +251,7 @@ impl Launcher {
             Some(
                 div()
                     .child(tr(
-                        "At start and before you play, what you installed from Horizon's registry moves to its newest version for this game. Never inside a modpack, and an update that would remove blocks or items waits for you.",
+                        "At start and before you play, content installed from Horizon's registry moves to its newest version for this game. Never inside a modpack. Code mods and updates that would remove blocks or items wait for you.",
                     ))
                     .into_any_element(),
             ),
@@ -265,17 +267,15 @@ impl Launcher {
         )
     }
 
-    /// The Game card's Native mods row. The mockup has an on/off switch; native mods are always
-    /// on here, so the row picks the profile they build with, as the Mods page does.
+    /// The selected instance's saved preference, also offered by a needed Mods picker.
     fn native_mods_row(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
-        let profile = native_mods::Profile::chosen(&self.settings);
+        let profile = self.native_profile();
         let picker = segments(
             "settings-native-profile",
             &[
-                (native_mods::Profile::Performance, "Performance build"),
-                (native_mods::Profile::Dev, "Dev build"),
-                (native_mods::Profile::Release, "Release build"),
+                (native_mods::Profile::Optimized, "Optimized"),
+                (native_mods::Profile::Balanced, "Balanced"),
             ],
             profile,
             &t,
@@ -283,31 +283,23 @@ impl Launcher {
                 let this = cx.entity().downgrade();
                 move |choice, _, cx| {
                     let _ = this.update(cx, |this, cx| {
-                        this.settings.native_profile = Some(choice);
-                        this.settings.native_release = false;
-                        this.native_done = None;
-                        this.save_settings();
+                        this.choose_native_profile(choice);
                         cx.notify();
                     });
                 }
             },
         );
-        let said = match profile {
-            native_mods::Profile::Performance => tr("The everyday build for playing with mods"),
-            native_mods::Profile::Dev => tr(
-                "For developing a mod: about 6× faster to rebuild a mod edit, game logic up to about twice as slow",
-            ),
-            native_mods::Profile::Release => {
-                tr("Release build: slower to build, slightly faster game")
-            }
-        };
+        let said = crate::build_mode::mode_note(profile);
+        let instance = self
+            .selected_instance()
+            .map_or(tr("Default"), |i| i.name.as_str());
         ui::setting_row(
             tr("Native mods"),
             Some(
                 div()
-                    .child(format!(
-                        "{} {said}.",
-                        tr("Experimental. Builds the native mods you trust into a game of their own.")
+                    .child(trf(
+                        "Build-mode preference for {instance}. {detail}",
+                        &[("instance", instance), ("detail", said)],
                     ))
                     .into_any_element(),
             ),
@@ -506,8 +498,16 @@ impl Launcher {
                 ))
             })
             .children(self.dev_options_section(cx));
-        let data = card().child(self.collection_section(cx));
-        vec![account, updates, launcher, network, game, ai, about, data]
+        vec![
+            account,
+            updates,
+            launcher,
+            network,
+            game,
+            self.glass_storage(cx),
+            ai,
+            about,
+        ]
     }
 }
 
@@ -515,11 +515,11 @@ impl Launcher {
 mod tests {
     use super::spy;
 
-    /// A 600 px pane over the mockup's eight cards: tall ones, then About and Data collection,
-    /// too short for their tops ever to reach 30 % of the pane.
-    const TOPS: [f32; 8] = [0., 420., 700., 1000., 1300., 1600., 1900., 2100.];
+    /// A 600 px pane over the eight settings cards: tall ones, then About, too short for its
+    /// top ever to reach 30 % of the pane.
+    const TOPS: [f32; 8] = [0., 420., 700., 1000., 1300., 1600., 1900., 2200.];
     const HEIGHT: f32 = 600.;
-    const MAX: f32 = 2300. - HEIGHT;
+    const MAX: f32 = 2400. - HEIGHT;
 
     fn at(scrolled: f32) -> usize {
         let tops: Vec<f32> = TOPS.iter().map(|t| t - scrolled).collect();
@@ -544,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn near_the_end_each_short_section_comes_in_turn() {
+    fn near_the_end_the_short_last_section_is_marked_for_a_stretch() {
         let seen: Vec<usize> = (0..=MAX as usize)
             .step_by(10)
             .map(|s| at(s as f32))
@@ -554,7 +554,7 @@ mod tests {
         order.dedup();
         assert_eq!(order, (0..8).collect::<Vec<_>>());
         // About is marked for a stretch of scroll before the end, not for one step.
-        let about = seen.iter().filter(|&&s| s == 6).count();
+        let about = seen.iter().filter(|&&s| s == 7).count();
         assert!(about >= 8, "About marked for {about} steps of 10 px");
         assert_eq!(at(MAX), 7);
     }

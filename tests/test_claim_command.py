@@ -35,9 +35,10 @@ def thread(state="open", holders=(), pr=False, locked=False):
 
 
 class Fake:
-    def __init__(self, threads=None, claims=0, assignable=True):
+    def __init__(self, threads=None, assignable=True):
+        self.repo = "arismoko/horizon"
         self.threads = {5: thread()} if threads is None else threads
-        self.claims, self.assignable, self.calls = claims, assignable, []
+        self.assignable, self.calls = assignable, []
 
     def issue(self, n):
         return self.threads.get(n)
@@ -48,9 +49,6 @@ class Fake:
 
     def unassign(self, n, login):
         self.calls.append(("unassign", n, login))
-
-    def open_claims(self, login):
-        return self.claims
 
     def comment(self, n, text):
         self.calls.append(("comment", n, text))
@@ -122,19 +120,6 @@ class ClaimTests(unittest.TestCase):
         with self.assertRaisesRegex(cc.Refused, "no such"):
             do("/claim", Fake({}))
 
-    def test_five_claims_at_most(self):
-        api = Fake(claims=cc.MAX_CLAIMS)
-        with self.assertRaisesRegex(cc.Refused, "8 open issues"):
-            do("/claim", api)
-        self.assertEqual(api.calls, [])
-        do("/claim", Fake(claims=cc.MAX_CLAIMS - 1))
-
-    def test_team_has_no_limit_unless_paused(self):
-        do("/claim", Fake(claims=50), login="ludovic111")
-        do("/claim", Fake(claims=50), login="RdbtCVS")
-        with self.assertRaises(cc.Refused):
-            do("/claim", Fake(claims=50), login="rdbtCVS", reviewers=listing("rdbtCVS", "paused"))
-
     def test_github_dropped_the_assignee(self):
         with self.assertRaisesRegex(cc.Refused, "didn't assign"):
             do("/claim", Fake(assignable=False))
@@ -157,6 +142,11 @@ class UnclaimTests(unittest.TestCase):
         self.assertEqual(api.calls, [])
         text, api = do("/unclaim @other", Fake({5: thread(holders=("Other",))}), login="kacpherek")
         self.assertIn("released @Other's claim, on behalf of @kacpherek", text)
+        self.assertEqual(api.calls, [("unassign", 5, "Other")])
+
+    def test_repository_owner_releases_another_claim(self):
+        text, api = do("/unclaim @other", Fake({5: thread(holders=("Other",))}), login="Arismoko")
+        self.assertIn("released @Other's claim", text)
         self.assertEqual(api.calls, [("unassign", 5, "Other")])
 
     def test_someone_who_holds_nothing(self):

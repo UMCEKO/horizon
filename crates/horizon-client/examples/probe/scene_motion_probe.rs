@@ -246,7 +246,9 @@ pub fn main() -> Result<()> {
     let root = PathBuf::from(&args[0]);
     let dir = PathBuf::from(&args[1]);
     let assets = Assets::load(&root)?;
-    let render = assets.reload(&root)?;
+    let render = assets.reload(&horizon_assets::resource_source::ResourceRoot::directory(
+        root.to_path_buf(),
+    ))?;
     let mut scene = World::test_scene(&assets, &render, 1)?;
     let binding = collisions::load(&root, assets.registry)?;
     let resources = MotionResources::load(&root, &assets)?;
@@ -325,6 +327,10 @@ pub fn main() -> Result<()> {
                 collision_binding: &binding,
                 resources: &resources,
                 health: &resources.health,
+                tag_items: None,
+                block_registries: None,
+                loop_context: crate::test_resources::server_loop_context(),
+                damage_hooks: &horizon_client::health::DamageHooks::NONE,
             };
             match op["mode"].as_str().unwrap() {
                 "shift" => world.player.shift_key_down = op["value"].as_bool().unwrap(),
@@ -391,12 +397,15 @@ pub fn main() -> Result<()> {
                     op["nutrition"].as_i64().unwrap() as i32,
                     single(&op["value"]),
                 ),
-                "food_tick" => world
-                    .player
-                    .food_tick(&resources.health, world.scene.health_rules)?,
+                "food_tick" => world.player.food_tick(
+                    world.loop_context,
+                    &mut horizon_client::health::TestLevel::new(0).level(),
+                    &resources.health,
+                    world.scene.health_rules,
+                )?,
                 "peaceful" => world
                     .player
-                    .peaceful_regeneration(world.scene.health_rules)?,
+                    .peaceful_regeneration(world.loop_context, world.scene.health_rules)?,
                 "simulation_tick" => {
                     let v = vector(&op["value"]);
                     world.simulation_tick(
@@ -429,6 +438,7 @@ pub fn main() -> Result<()> {
                         },
                     ));
                     world.player.hurt(
+                        &mut horizon_client::health::TestLevel::new(0).level(),
                         &resources.health,
                         world.scene.health_rules,
                         source,

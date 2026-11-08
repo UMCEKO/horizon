@@ -23,7 +23,7 @@ const CLIENT_JUMP_TICKS: usize = 4;
 const CLIENT_JUMP_DURATION: usize = 5;
 
 /// The killer bunny's variant id (`Rabbit.Variant.EVIL`).
-const EVIL: u8 = 99;
+pub const EVIL: u8 = 99;
 
 /// Rabbit.registerGoals.
 pub fn register(m: &mut Mob) {
@@ -98,7 +98,7 @@ impl Goal for RaidGarden {
             self.block.next_start -= 1;
             return false;
         }
-        if !cx.w.mob_griefing {
+        if !cx.w.can_grief(m.id) {
             return false;
         }
         self.can_raid = false;
@@ -505,6 +505,7 @@ mod tests {
             step_sound: None,
             food: Arc::default(),
             tempt: Arc::default(),
+            passenger_attachments: Vec::new(),
         });
         Mob::new(1, kind, Vec3::ZERO, 0.0)
     }
@@ -521,7 +522,7 @@ mod tests {
             .insert("rabbit_baby#main".into(), kind.model.clone());
         let types = HashMap::from([(kind.id.clone(), template.kind.clone())]);
         for (age, baby) in [(-24000, true), (-1, true), (0, false), (6000, false)] {
-            let (tag, _) = horizon_world::nbt::parse_snbt(&format!(
+            let (tag, _) = horizon_core::nbt::parse_snbt(&format!(
                 "{{id:\"minecraft:rabbit\",Pos:[0.0d,0.0d,0.0d],Age:{age}}}"
             ))
             .unwrap();
@@ -567,7 +568,7 @@ mod tests {
         let mut m = rabbit();
         m.extra.in_love = 570;
         let tag = crate::entity_nbt::mob_to_nbt(&m, [0, 0, 0, 1], None, None, |_| None);
-        assert_eq!(tag.get("InLove"), Some(&horizon_world::nbt::Tag::Int(570)));
+        assert_eq!(tag.get("InLove"), Some(&horizon_core::nbt::Tag::Int(570)));
         let types = HashMap::from([(m.kind.id.clone(), m.kind.clone())]);
         let back = crate::entity_nbt::mob_from_nbt(&tag, &types, 2, None).unwrap();
         assert_eq!(back.extra.in_love, 570);
@@ -708,7 +709,11 @@ mod tests {
         m.horizontal_collision = true;
         near(f64::from(jump_power(&m, 1.0)), 0.5);
         m.attrs.jump_strength = 0.84;
-        m.extra.effects.push(("minecraft:jump_boost", 100, 1));
+        m.extra.effects.push(crate::mobs::StoredEffect::new(
+            "minecraft:jump_boost",
+            100,
+            1,
+        ));
         near(f64::from(jump_power(&m, 0.5)), 0.7);
         apply_jump(&mut m, 0.2);
         near(m.velocity.z, 0.1 / 3.25_f64.sqrt());

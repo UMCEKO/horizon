@@ -124,8 +124,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     // the `open` property, the barrel's own sound and the
                     // container game events are its whole report.
                     if let Some((previous, count)) = self.level.recheck_container_openers(pos) {
-                        if previous != count {
-                            let open = count > 0;
+                        // ContainerOpenersCounter.recheckOpeners calls onOpen
+                        // or onClose only when the count crosses zero;
+                        // openerCountChanged (empty for a barrel) is what
+                        // hears any other change.
+                        let was_open = previous > 0;
+                        let open = count > 0;
+                        if was_open != open {
                             let sound: Arc<str> = if open {
                                 "minecraft:block.barrel.open".into()
                             } else {
@@ -292,8 +297,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         }
         // Only lava's fluid state ticks randomly. A lava block is ticked twice
         // (LiquidBlock.randomTick, then FluidState.randomTick), as in vanilla.
-        let fluid = self.b.fluid(state).kind();
-        if matches!(fluid, FluidKind::Lava | FluidKind::FlowingLava) {
+        if super::fluids::fluid_randomly_ticks(self.b.fluid(state).kind()) {
             self.lava_random_tick(pos);
         }
     }
@@ -315,14 +319,18 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     }
                 }
                 Class::BambooStalk => {
-                    if b.table.int(state, p.stage) == 0
-                        && self.rand_int(3) == 0
-                        && self.is_empty_block(above(pos))
-                        && self.raw_brightness(above(pos), 0) >= 9
-                    {
-                        let height = self.bamboo_height_below(pos) + 1;
-                        if height < 16 {
-                            self.bamboo_grow(state, pos, height);
+                    if b.table.int(state, p.stage) == 0 {
+                        // Vanilla's roll comes first, in vanilla's order, before
+                        // the crop hook is asked.
+                        let roll = self.rand_int(3) == 0;
+                        if self.is_empty_block(above(pos))
+                            && self.raw_brightness(above(pos), 0) >= 9
+                        {
+                            let height = self.bamboo_height_below(pos) + 1;
+                            if height < 16 && self.level.crop_grow_pre(pos, state, roll) {
+                                self.bamboo_grow(state, pos, height);
+                                self.level.crop_grow_post(pos, state);
+                            }
                         }
                     }
                 }
@@ -336,11 +344,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 Class::Cactus => self.cactus_random_tick(state, pos),
                 Class::ChorusFlower => self.chorus_flower_random_tick(state, pos),
                 Class::Cocoa => {
-                    if self.rand_int(5) == 0 {
-                        let age = b.table.int(state, p.age);
-                        if age < 2 {
-                            self.set_block(pos, b.table.set_int(state, p.age, age + 1), 2);
-                        }
+                    let roll = self.rand_int(5) == 0;
+                    let age = b.table.int(state, p.age);
+                    if age < 2 && self.level.crop_grow_pre(pos, state, roll) {
+                        self.set_block(pos, b.table.set_int(state, p.age, age + 1), 2);
+                        self.level.crop_grow_post(pos, state);
                     }
                 }
                 Class::Farmland => self.farmland_random_tick(state, pos),
@@ -363,13 +371,17 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     }
                 }
                 Class::GrowingPlantHead => {
-                    if b.table.int(state, p.age) < 25
-                        && self.random().next_double() < data.grow_probability
-                    {
+                    if b.table.int(state, p.age) < 25 {
+                        let roll = self.random().next_double() < data.grow_probability;
                         let growth = rel(pos, data.growth_direction);
-                        if self.growing_plant_can_grow_into(state, self.state(growth)) {
+                        if self.level.crop_grow_pre(growth, state, roll)
+                            && self.growing_plant_can_grow_into(state, self.state(growth))
+                        {
                             let next = self.growing_plant_grow_into_state(state);
                             self.set_block_and_update(growth, next);
+                            // The hook gets the new head as the original state.
+                            let grown = self.state(growth);
+                            self.level.crop_grow_post(growth, grown);
                         }
                     }
                 }
@@ -412,8 +424,12 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 Class::Mushroom => self.mushroom_random_tick(state, pos),
                 Class::NetherWart => {
                     let age = b.table.int(state, p.age);
-                    if age < 3 && self.rand_int(10) == 0 {
-                        self.set_block(pos, b.table.set_int(state, p.age, age + 1), 2);
+                    if age < 3 {
+                        let roll = self.rand_int(10) == 0;
+                        if self.level.crop_grow_pre(pos, state, roll) {
+                            self.set_block(pos, b.table.set_int(state, p.age, age + 1), 2);
+                            self.level.crop_grow_post(pos, state);
+                        }
                     }
                 }
                 Class::Nylium => {
@@ -451,10 +467,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                         while b.is_block(self.state(pos.offset(0, -height, 0)), block) {
                             height += 1;
                         }
-                        if height < 3 {
+                        if height < 3 && self.level.crop_grow_pre(pos, state, true) {
                             let age = b.table.int(state, p.age);
                             if age == 15 {
                                 self.set_block_and_update(above(pos), b.default_of(block));
+                                self.level.crop_grow_post(above(pos), b.default_of(block));
                                 self.set_block(pos, b.table.set_int(state, p.age, 0), 260);
                             } else {
                                 self.set_block(pos, b.table.set_int(state, p.age, age + 1), 260);
@@ -464,10 +481,17 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 }
                 Class::SweetBerryBush => {
                     let age = b.table.int(state, p.age);
-                    if age < 3 && self.rand_int(5) == 0 && self.raw_brightness(above(pos), 0) >= 9 {
-                        let next = b.table.set_int(state, p.age, age + 1);
-                        self.set_block(pos, next, 2);
-                        self.game_event(pos, "minecraft:block_change");
+                    if age < 3 {
+                        // Vanilla rolls before the light check.
+                        let roll = self.rand_int(5) == 0;
+                        if self.raw_brightness(above(pos), 0) >= 9
+                            && self.level.crop_grow_pre(pos, state, roll)
+                        {
+                            let next = b.table.set_int(state, p.age, age + 1);
+                            self.set_block(pos, next, 2);
+                            self.game_event(pos, "minecraft:block_change");
+                            self.level.crop_grow_post(pos, state);
+                        }
                     }
                 }
                 Class::Vine => self.vine_random_tick(state, pos),
@@ -860,9 +884,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let max = self.crop_max_age(state);
         if age < max {
             let speed = self.crop_growth_speed(b.block(state), pos);
-            if self.rand_int((25.0 / speed) as i32 + 1) == 0 {
+            let roll = self.rand_int((25.0 / speed) as i32 + 1) == 0;
+            if self.level.crop_grow_pre(pos, state, roll) {
                 let next = self.crop_state_for_age(state, age + 1);
                 self.set_block(pos, next, 2);
+                self.level.crop_grow_post(pos, state);
             }
         }
     }
@@ -872,9 +898,15 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             return;
         }
         let speed = self.crop_growth_speed(b.block(state), pos);
-        if self.rand_int((25.0 / speed) as i32 + 1) != 0 {
+        let roll = self.rand_int((25.0 / speed) as i32 + 1) == 0;
+        if !self.level.crop_grow_pre(pos, state, roll) {
             return;
         }
+        self.stem_grow(state, pos);
+        self.level.crop_grow_post(pos, state);
+    }
+    fn stem_grow(&mut self, state: BlockStateId, pos: BlockPos) {
+        let b = self.b;
         let age = b.table.int(state, b.props.age);
         if age < 7 {
             self.set_block(pos, b.table.set_int(state, b.props.age, age + 1), 2);
@@ -966,7 +998,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let b = self.b;
         let block = b.block(state);
         let above_pos = above(pos);
-        if !self.is_empty_block(above_pos) {
+        if !self.is_empty_block(above_pos) || !self.level.crop_grow_pre(above_pos, state, true) {
             return;
         }
         let mut height = 1;
@@ -991,6 +1023,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         if age < 15 {
             self.set_block(pos, b.table.set_int(state, b.props.age, age + 1), 260);
         }
+        self.level.crop_grow_post(pos, state);
     }
     fn farmland_random_tick(&mut self, state: BlockStateId, pos: BlockPos) {
         let b = self.b;
@@ -1400,16 +1433,23 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     fn chorus_flower_random_tick(&mut self, state: BlockStateId, pos: BlockPos) {
         let b = self.b;
         let p = b.props;
-        let block = b.block(state);
-        let plant = b.named.chorus_plant;
         let above_pos = above(pos);
         if !self.is_empty_block(above_pos) || above_pos.y > self.level.max_y() - 1 {
             return;
         }
         let age = b.table.int(state, p.age);
-        if age >= 5 {
+        if age >= 5 || !self.level.crop_grow_pre(above_pos, state, true) {
             return;
         }
+        self.chorus_flower_grow(state, pos, age);
+        self.level.crop_grow_post(pos, state);
+    }
+    fn chorus_flower_grow(&mut self, state: BlockStateId, pos: BlockPos, age: i32) {
+        let b = self.b;
+        let p = b.props;
+        let block = b.block(state);
+        let plant = b.named.chorus_plant;
+        let above_pos = above(pos);
         let mut grow_up = false;
         let mut pillar_on_support = false;
         let below_state = self.below_state(pos);
@@ -1778,7 +1818,7 @@ impl Behaviours {
             horizon_threads::work::set_chunk(tick.pos.x >> 4, tick.pos.z >> 4);
             horizon_threads::work::set_block(self.block(state).0);
             let fluid = self.fluid(state).kind();
-            if TickTypeId(fluid as u32) == tick.kind {
+            if TickTypeId(fluid.tick_id()) == tick.kind {
                 sim.fluid_tick(tick.pos);
             }
         }
@@ -1830,7 +1870,7 @@ impl Behaviours {
             horizon_threads::work::set_chunk(tick.pos.x >> 4, tick.pos.z >> 4);
             horizon_threads::work::set_block(self.block(state).0);
             let fluid = self.fluid(state).kind();
-            if TickTypeId(fluid as u32) == tick.kind {
+            if TickTypeId(fluid.tick_id()) == tick.kind {
                 sim.fluid_tick(tick.pos);
             }
         } else {
@@ -1923,10 +1963,7 @@ impl Behaviours {
     /// ticks a randomly ticking block, then lava's fluid.
     pub fn random_tick_candidate(&self, state: BlockStateId) -> bool {
         self.is_randomly_ticking(state)
-            || matches!(
-                self.fluid(state).kind(),
-                FluidKind::Lava | FluidKind::FlowingLava
-            )
+            || super::fluids::fluid_randomly_ticks(self.fluid(state).kind())
     }
     /// Random-tick a single position (block then fluid), as `tickChunk` does.
     pub fn random_tick<L: LevelAccess + ?Sized>(
@@ -1945,6 +1982,19 @@ impl Behaviours {
         struck: BlockPos,
     ) {
         self.sim(level, ticks).lightning_clear_copper(struck);
+    }
+    /// `ServerLevel.tickBlock` for the block at `pos` now, as a due tick from the queue runs it:
+    /// the level's say first (a mod block's part), else `BlockState.tick`. The queue is not
+    /// read or changed.
+    pub fn due_block_tick<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+    ) {
+        let mut sim = self.sim(level, ticks);
+        let state = sim.state(pos);
+        sim.tick_due_block(state, pos);
     }
     /// Run one scheduled block tick at `pos` immediately (no queue check).
     pub fn scheduled_block_tick<L: LevelAccess + ?Sized>(

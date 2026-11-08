@@ -361,6 +361,17 @@ impl ResourceSource for Bundled {
         vec!["horizon".into()]
     }
 }
+impl ResourceSource for horizon_assets::resource_source::ResourceSource {
+    fn read(&self, path: &str) -> Option<Vec<u8>> {
+        self.read(path).ok()
+    }
+    fn exists(&self, path: &str) -> bool {
+        self.contains(path)
+    }
+    fn namespaces(&self) -> Vec<String> {
+        self.namespaces("assets")
+    }
+}
 impl ResourceSource for std::path::PathBuf {
     fn read(&self, path: &str) -> Option<Vec<u8>> {
         std::fs::read(self.join(path)).ok()
@@ -434,6 +445,15 @@ pub fn read_lang_file(bytes: &[u8], map: &mut HashMap<String, String>) {
 }
 
 impl Language {
+    /// A language holding only `entries` (key, template), as `code`: the part of the current
+    /// language a text needs, carried where no language is loaded.
+    pub fn of(code: &str, entries: impl IntoIterator<Item = (String, String)>) -> Self {
+        Self {
+            code: code.to_owned(),
+            bidirectional: false,
+            map: entries.into_iter().collect(),
+        }
+    }
     /// ClientLanguage.loadFrom: en_us first, then the selected language, each
     /// from every namespace and every source in priority order (later sources
     /// override).
@@ -651,10 +671,10 @@ mod tests {
         assert_eq!(zh.get("Preset"), Some("预设"));
         assert_eq!(zh.get("%s chunks"), Some("%s 个区块"));
         // Not every bundle is complete: the en_us layer is in every map, so a
-        // missing key falls back to English (`horizon.mods.not_built` is not
-        // in ru_ru either).
+        // missing key falls back to English (no bundle exists for xx_xx).
         assert_eq!(zh.get("LOD Distance"), Some("LOD 距离"));
-        assert_eq!(ru.get("horizon.mods.not_built"), Some(" (Not built)"));
+        let xx = Language::load(&[&empty], "xx_xx");
+        assert_eq!(xx.get("horizon.mods.not_built"), Some(" (Not built)"));
         let pl = Language::load(&[&empty], "pl_pl");
         assert_eq!(pl.get("horizon.options.controller"), Some("Kontroler"));
         assert_eq!(pl.get("horizon.options.vibration"), Some("Wibracje"));
@@ -1081,5 +1101,29 @@ mod tests {
             }
         }
         assert!(failed.is_empty(), "{failed:?}");
+    }
+}
+
+#[cfg(test)]
+mod shared_source_tests {
+    use super::*;
+    #[test]
+    fn selected_language_and_english_fallback_read_resolved_resources() {
+        use horizon_assets::resource_source::{Resource, ResourceSource};
+        let source = ResourceSource::indexed(std::collections::BTreeMap::from([
+            (
+                "assets/reader/lang/en_us.json".into(),
+                Resource::bytes(
+                    br#"{"reader.hello":"Hello","reader.only":"English fallback"}"#.to_vec(),
+                ),
+            ),
+            (
+                "assets/reader/lang/fr_fr.json".into(),
+                Resource::bytes(br#"{"reader.hello":"Bonjour"}"#.to_vec()),
+            ),
+        ]));
+        let language = Language::load(&[&source], "fr_fr");
+        assert_eq!(language.map["reader.hello"], "Bonjour");
+        assert_eq!(language.map["reader.only"], "English fallback");
     }
 }

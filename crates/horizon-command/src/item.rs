@@ -7,7 +7,7 @@ use super::args::{
 use super::codec::{either, is_number, not_map, snbt};
 use super::packrat::{Grammar, Reason, State, Sugg, Term, Value, alt, ch, opt, seq};
 use super::{CmdResult, CommandError, Reader, SuggestionsBuilder};
-use horizon_world::nbt::{Compound, Tag};
+use horizon_core::nbt::{Compound, Tag};
 use std::rc::Rc;
 
 fn int_of(t: &Tag) -> Option<i64> {
@@ -69,11 +69,7 @@ pub fn decode_component(id: &str, t: &Tag, reg: &Registries) -> Result<(), Strin
                     } else {
                         format!("minecraft:{id}")
                     };
-                    let known = horizon_client_core::block_entity_nbt::TYPES
-                        .iter()
-                        .chain(&horizon_client_core::block_entity_nbt::NEWEST)
-                        .any(|k| *k == id);
-                    if known {
+                    if horizon_client_core::block_entity_nbt::is_known_type(&id) {
                         Ok(())
                     } else {
                         Err(format!(
@@ -741,7 +737,7 @@ mod tests {
     }
 
     fn check(snbt: &str) -> Result<(), String> {
-        let tag = horizon_world::nbt::parse_snbt(snbt).expect("snbt").0;
+        let tag = horizon_core::nbt::parse_snbt(snbt).expect("snbt").0;
         decode_component(
             "minecraft:block_entity_data",
             &tag,
@@ -759,6 +755,38 @@ mod tests {
         assert_eq!(
             check("{id:\"minecraft:stone\"}"),
             Err("Unknown registry key in ResourceKey[minecraft:root / minecraft:block_entity_type]: minecraft:stone".into())
+        );
+    }
+
+    #[test]
+    fn block_entity_data_takes_a_type_a_mod_declared() {
+        // The declared types are frozen once per process: install them in a fresh one.
+        const CHILD: &str = "HORIZON_TEST_DECLARED_BLOCK_ENTITY_DATA";
+        if std::env::var_os(CHILD).is_none() {
+            assert!(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "item::tests::block_entity_data_takes_a_type_a_mod_declared",
+                        "--nocapture"
+                    ])
+                    .env(CHILD, "1")
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            return;
+        }
+        use horizon_client_core::block_entity_types::{self, BlockEntityTypes};
+        block_entity_types::install(BlockEntityTypes::new(
+            [("example:crate".into(), "example:crate".into())].into(),
+            vec!["example:crate".into()],
+        ))
+        .unwrap();
+        assert_eq!(check("{id:\"example:crate\",Tank:1}"), Ok(()));
+        assert_eq!(
+            check("{id:\"example:nope\"}"),
+            Err("Unknown registry key in ResourceKey[minecraft:root / minecraft:block_entity_type]: example:nope".into())
         );
     }
 }

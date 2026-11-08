@@ -1,0 +1,381 @@
+use super::*;
+use crate::game::{
+    Dim,
+    native_entity_refs::tests::{with_client_game, with_game},
+};
+use horizon_core::nbt::Tag;
+use mod_api::{AttachmentType, EntityConstructingEvent, Hooks, HostSide};
+use std::sync::{Arc, Mutex};
+
+const VALUE: AttachmentType<i32> = AttachmentType {
+    namespace: "constructing",
+    name: "value",
+    default: || 0,
+    codec: None,
+    copy_on_death: false,
+    sync: false,
+};
+type Calls = Arc<Mutex<Vec<(bool, Holder)>>>;
+
+struct Listener(Calls);
+
+#[mod_api::__subscriptions]
+impl Hooks for Listener {
+    fn entity_constructing(&self, host: HostSide<'_>, event: &mut EntityConstructingEvent) {
+        self.0
+            .lock()
+            .unwrap()
+            .push((matches!(host, HostSide::Client(_)), event.holder));
+        // Both a read and a write inside dispatch must reach the canonical map
+        // without recursively constructing the same entity.
+        match host {
+            HostSide::Server(host) => {
+                let _ = VALUE.get(host, event.holder).unwrap();
+                VALUE.set(host, event.holder, 41).unwrap();
+            }
+            HostSide::Client(host) => {
+                let _ = VALUE.get(host, event.holder).unwrap();
+                VALUE.set(host, event.holder, 41).unwrap();
+            }
+        }
+    }
+}
+
+fn observe(test: impl FnOnce(Calls)) {
+    let calls = Calls::default();
+    let mods = vec![mod_api::ModEntry::new(
+        "constructing",
+        Box::new(Listener(calls.clone())),
+    )]
+    .into();
+    mod_api::testing::with_mods(mods, || test(calls));
+}
+
+fn tag(kind: &str, uuid: i32) -> Tag {
+    Tag::compound([
+        ("id", Tag::String(kind.into())),
+        ("UUID", Tag::IntArray(vec![uuid, 2, 3, 4])),
+        (
+            "Pos",
+            Tag::List(
+                [1.0f64, 70.0, 3.0]
+                    .map(|v| Tag::Double(v.to_bits()))
+                    .to_vec(),
+            ),
+        ),
+    ])
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn spawn_summon_and_disk_load_initialize_before_first_attachment_read() {
+    observe(|calls| {
+        with_game(|game| {
+            game.options.dedicated = Some(Vec::new());
+            let spawn = game
+                .spawn_mob_spawned(
+                    "cow",
+                    [1.0, 70.0, 3.0],
+                    crate::game::creatures::SpawnSite::Plain,
+                )
+                .unwrap();
+            assert_eq!(VALUE.get(game, Holder::Entity(spawn)), Ok(41));
+            game.spawn_entity_from_nbt(tag("minecraft:pig", 100));
+            let summoned = game
+                .persist
+                .uuids
+                .iter()
+                .find(|(_, uuid)| **uuid == [100, 2, 3, 4])
+                .map(|(id, _)| *id)
+                .unwrap();
+            assert_eq!(VALUE.get(game, Holder::Entity(summoned)), Ok(41));
+            for (i, kind) in [
+                "minecraft:zombie",
+                "minecraft:arrow",
+                "minecraft:snowball",
+                "minecraft:oak_boat",
+                "minecraft:minecart",
+                "minecraft:armor_stand",
+                "minecraft:marker",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let uuid = 101 + i as i32;
+                game.world
+                    .loaded_entities
+                    .push(((0, 0), vec![tag(kind, uuid)]));
+                game.spawn_loaded_entities();
+                let id = *game
+                    .persist
+                    .uuids
+                    .iter()
+                    .find(|(_, value)| **value == [uuid, 2, 3, 4])
+                    .unwrap()
+                    .0;
+                assert_eq!(VALUE.get(game, Holder::Entity(id)), Ok(41), "{kind}");
+                assert_eq!(
+                    calls
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|(_, h)| *h == Holder::Entity(id))
+                        .count(),
+                    1,
+                    "{kind}"
+                );
+            }
+            let count = calls.lock().unwrap().len();
+            game.native_joins_flush(false, 0);
+            game.native_joins_flush(true, 0);
+            game.entity_chunks(&HashSet::from([(0, 0)]), false);
+            game.remember_uuid(summoned, Some([100, 2, 3, 4]), &tag("minecraft:pig", 100));
+            assert_eq!(calls.lock().unwrap().len(), count);
+            assert!(calls.lock().unwrap().iter().all(|(client, _)| !client));
+        })
+    });
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn borrowed_spawn_first_read_and_dimension_transfer_keep_one_initialization() {
+    observe(|calls| {
+        with_game(|game| {
+            game.options.dedicated = Some(Vec::new());
+            // A borrowed simulation pass can insert without running Game's spawn helper.
+            let kind = game.res.mob_types().get("minecraft:cow").unwrap().clone();
+            let id = game.take_entity_id();
+            game.mobs.push(horizon_client::mobs::Mob::new(
+                id,
+                kind,
+                horizon_core::geometry::Vec3::new(1.0, 70.0, 3.0),
+                0.0,
+            ));
+            assert_eq!(VALUE.get(game, Holder::Entity(id)), Ok(41));
+            game.native_joins_flush(false, 0);
+            assert_eq!(calls.lock().unwrap().len(), 1);
+            let uuid = game.uuid_for(id);
+            let saved = game
+                .entity_chunks(&HashSet::from([(0, 0)]), false)
+                .into_iter()
+                .flat_map(|(_, tags)| tags)
+                .find(|t| horizon_client::entity_nbt::uuid(t) == Some(uuid))
+                .unwrap();
+            // Portals move a live entity using its saved representation, retaining its map.
+            game.mobs.retain(|mob| mob.id != id);
+            game.detach_entity(id);
+            game.enter_level(Dim::Nether).unwrap();
+            let moved = game.load_mob(saved, None).unwrap();
+            assert_eq!(VALUE.get(game, Holder::Entity(moved)), Ok(41));
+            assert_eq!(calls.lock().unwrap().len(), 1);
+            game.forget_entity(moved);
+            game.mobs.retain(|mob| mob.id != moved);
+            let replacement = game.load_mob(tag("minecraft:cow", uuid[0]), None).unwrap();
+            assert_eq!(VALUE.get(game, Holder::Entity(replacement)), Ok(41));
+            assert_eq!(calls.lock().unwrap().len(), 2);
+        })
+    });
+}
+
+fn spawn_info() -> horizon_protocol::packets::play::SpawnInfo {
+    horizon_protocol::packets::play::SpawnInfo {
+        dimension_type: 0,
+        dimension: "minecraft:overworld".into(),
+        seed: 1,
+        game_type: 0,
+        previous_game_type: None,
+        debug: false,
+        flat: false,
+        last_death: None,
+        portal_cooldown: 0,
+        sea_level: 63,
+    }
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn client_login_tracking_and_retracking_initialize_the_client_store_once() {
+    use horizon_protocol::packets::play::{self, Clientbound as C};
+    observe(|calls| {
+        with_client_game(|game| {
+            let (pipe, _server) = horizon_protocol::connection::Pipe::pair();
+            game.connect_local(pipe, "Steve").unwrap();
+            game.handle_packet(C::Login(play::Login {
+                player_id: 7,
+                hardcore: false,
+                levels: vec!["minecraft:overworld".into()],
+                max_players: 20,
+                chunk_radius: 8,
+                simulation_distance: 8,
+                reduced_debug_info: false,
+                show_death_screen: true,
+                limited_crafting: false,
+                spawn: spawn_info(),
+                online_mode: false,
+                enforces_secure_chat: false,
+            }))
+            .unwrap();
+            let profile = game.remote.as_ref().unwrap().profile;
+            assert_eq!(VALUE.get(game, Holder::Player(profile)), Ok(41));
+            let registry = game
+                .remote
+                .as_ref()
+                .unwrap()
+                .builtin
+                .get("minecraft:entity_type")
+                .unwrap()
+                .clone();
+            for (id, kind) in [
+                (20, "minecraft:pig"),
+                (21, "minecraft:arrow"),
+                (22, "minecraft:player"),
+            ] {
+                let packet = || {
+                    C::AddEntity(play::AddEntity {
+                        id,
+                        uuid: id as u128,
+                        kind: registry.id(kind).unwrap(),
+                        position: [1.0, 70.0, 3.0],
+                        velocity: [0.0; 3],
+                        pitch: 0,
+                        yaw: 0,
+                        head_yaw: 0,
+                        data: 0,
+                    })
+                };
+                game.handle_packet(packet()).unwrap();
+                let holder = if kind == "minecraft:player" {
+                    Holder::Player(id as u128)
+                } else {
+                    Holder::Entity(id as u32)
+                };
+                assert_eq!(VALUE.get(game, holder), Ok(41));
+                game.handle_packet(packet()).unwrap();
+                assert_eq!(
+                    calls
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|(_, h)| *h == holder)
+                        .count(),
+                    1
+                );
+            }
+            assert!(calls.lock().unwrap().iter().all(|(client, _)| *client));
+            assert_eq!(calls.lock().unwrap().len(), 4);
+        })
+    });
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn server_players_initialize_on_join_and_new_respawn_but_not_rebind() {
+    observe(|calls| {
+        crate::game::native_guest_turn_tests::with_guests(|game| {
+            game.options.dedicated = Some(Vec::new());
+            game.world_root = game.save.root.clone();
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .guests
+                .update_all(|guest| guest.placed = false);
+            game.lan_guest_joined(12, &[], [0.5, 64.0, 0.5]);
+            assert_eq!(VALUE.get(game, Holder::Player(12)), Ok(41));
+            game.bind_player_attachments(12, false);
+            game.initialize_server_player(12, 12);
+            assert_eq!(
+                calls.lock().unwrap().as_slice(),
+                &[(false, Holder::Player(12))]
+            );
+            game.lan
+                .as_mut()
+                .unwrap()
+                .hub
+                .guests
+                .update(0, |guest| guest.dead = true);
+            game.guest_respawn(12);
+            assert_eq!(VALUE.get(game, Holder::Player(12)), Ok(41));
+            assert_eq!(
+                calls.lock().unwrap().as_slice(),
+                &[(false, Holder::Player(12)), (false, Holder::Player(12))]
+            );
+        })
+    });
+}
+
+fn encode(n: &i32) -> Result<horizon_core::nbt::Compound, mod_api::AttachmentError> {
+    Ok([("value".into(), Tag::Int(*n))].into())
+}
+fn decode(c: &horizon_core::nbt::Compound) -> Result<i32, mod_api::AttachmentError> {
+    match c.get(&"value".into()) {
+        Some(Tag::Int(n)) => Ok(*n),
+        _ => Err(mod_api::AttachmentError::Decode),
+    }
+}
+const SAVED: AttachmentType<i32> = AttachmentType {
+    namespace: "constructing",
+    name: "saved",
+    default: || 0,
+    codec: Some(mod_api::AttachmentCodec { encode, decode }),
+    copy_on_death: false,
+    sync: false,
+};
+type Kinds = Arc<Mutex<Vec<(Holder, String)>>>;
+
+struct Saving(Kinds);
+
+#[mod_api::__subscriptions]
+impl Hooks for Saving {
+    fn entity_constructing(&self, host: HostSide<'_>, event: &mut EntityConstructingEvent) {
+        self.0
+            .lock()
+            .unwrap()
+            .push((event.holder, event.kind.to_owned()));
+        if let HostSide::Server(host) = host {
+            SAVED.set(host, event.holder, 41).unwrap();
+            VALUE.set(host, event.holder, 41).unwrap();
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_loaded_entity_reads_its_saved_attachments_over_the_listeners_and_is_named_by_type() {
+    let kinds = Kinds::default();
+    let mods = vec![mod_api::ModEntry::new(
+        "constructing",
+        Box::new(Saving(kinds.clone())),
+    )]
+    .into();
+    mod_api::testing::with_mods(mods, || {
+        with_game(|game| {
+            game.options.dedicated = Some(Vec::new());
+            let mut saved = horizon_mod_runtime::attachments::Attachments::default();
+            SAVED.set(&mut saved, Holder::Level, 7).unwrap();
+            let mut pig = tag("minecraft:pig", 200);
+            if let Tag::Compound(c) = &mut pig {
+                c.insert(
+                    horizon_mod_runtime::attachments::ATTACHMENTS_KEY.into(),
+                    Tag::Compound(saved.to_nbt()),
+                );
+            }
+            game.world.loaded_entities.push(((0, 0), vec![pig]));
+            game.spawn_loaded_entities();
+            let id = *game
+                .persist
+                .uuids
+                .iter()
+                .find(|(_, value)| **value == [200, 2, 3, 4])
+                .unwrap()
+                .0;
+            // `Entity.load` after `EntityConstructing`: the saved value wins, the unsaved one stays.
+            assert_eq!(SAVED.get(game, Holder::Entity(id)), Ok(7));
+            assert_eq!(VALUE.get(game, Holder::Entity(id)), Ok(41));
+            assert_eq!(
+                kinds.lock().unwrap().as_slice(),
+                &[(Holder::Entity(id), "minecraft:pig".to_owned())]
+            );
+        })
+    });
+}

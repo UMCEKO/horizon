@@ -53,6 +53,9 @@ pub(super) fn open(cx: &mut App, path: &Path) {
 impl Launcher {
     /// From the drain: whether the line changed (a new one, or the last one gone).
     pub(super) fn toast_tick(&mut self) -> bool {
+        if let Some(message) = horizon_launcher::storage::eviction::take_toast() {
+            say(message);
+        }
         let now = current().map(|l| l.1);
         let changed = now != self.toast_seen;
         self.toast_seen = now;

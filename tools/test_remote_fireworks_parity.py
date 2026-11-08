@@ -18,7 +18,7 @@ def main():
     ctl = lab.ROOT / metadata['target_directory'] / 'fast' / 'horizon-ctl'
     # CI supplies the display; each game still gets fresh scratch homes.
     lan.game_env = lambda _screen, home: lab.game_env(
-        HORIZON_HOME=home, HORIZON_TELEMETRY_URL='off')
+        HORIZON_HOME=home)
     out = lab.LOCAL / 'remote-fireworks-parity'
     out.mkdir(parents=True, exist_ok=True)
     report = lan.run(ctl, out, lab.RESOURCES.resolve(), ['fireworks'])

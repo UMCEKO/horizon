@@ -72,11 +72,11 @@ LAUNCHER_PATHS = [
     "crates/horizon-friends/",
     "crates/horizon-mcp/",
     "crates/horizon-mod-api-gen/",
-    "crates/horizon-mods/",
+    "crates/horizon-mod-package/",
     "crates/horizon-port-pack/",
     "crates/horizon-prepare/",
     "crates/horizon-release-sign/",
-    "crates/horizon-telemetry/",
+    "crates/horizon-system/",
     "crates/horizon-theme/",
     # Its icon, its menu entries and its AppImage are compiled or packaged into a release
     # (launcher/build.rs, src/desktop.rs, packaging/linux/appimage.sh).

@@ -21,10 +21,10 @@ PARITY_RUST_SCOPE = [
     'crates/horizon-client/src/health',
     'crates/horizon-client/src/health.rs',
     'crates/horizon-client/src/game.rs',
-    'crates/horizon-client/src/game/creatures.rs',
-    'crates/horizon-client/src/game/potions.rs',
-    'crates/horizon-client/src/game/falling_damage',
-    'crates/horizon-client/src/game/falling_damage.rs',
+    'crates/horizon-client/src/game/mobs/creatures',
+    'crates/horizon-client/src/game/items/potions.rs',
+    'crates/horizon-client/src/game/entities/falling_damage',
+    'crates/horizon-client/src/game/entities/falling_damage.rs',
 ]
 TEST = 'game::falling_damage::helmet_tests::falling_impacts_wear_the_helmet_before_normal_armor_and_reduction'
 
@@ -80,7 +80,9 @@ def main():
         scope='Real Player.hurtHelmet, Player.hurtArmor, LivingEntity.doHurtEquipment, ItemStack durability, '
               'onEquippedItemBroken modifier removal and armor reduction versus the production Game falling-hit path. '
               'Includes bare heads, nondamageable head items, breaks in both equipment phases, ordinary armor '
-              'breaks, all three falling sources, a generic-source control and seeded Unbreaking with next RNG state. '
+              'breaks, all three falling sources, a generic-source control, an ordinary mob_attack hit that breaks '
+              'a boot (whose reduction must not apply to that hit) beside one that leaves it worn (#11696), and '
+              'seeded Unbreaking with next RNG state. '
               'Vanilla outer hurt guards/cooldown, effects, health storage, transport and player notifications '
               'are not compared by this oracle; the Game test also checks both falling impacts and the /damage player path, '
               'cooldown-sensitive repeat hits and that draining events cannot wear equipment twice.'))

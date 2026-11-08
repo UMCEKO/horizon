@@ -12,12 +12,13 @@ dimensions at the same time.
 - [Cost of an extra level](#cost-of-an-extra-level)
 - [Saving](#saving)
 - [What's checked](#whats-checked)
+- [A data pack's levels](#a-data-packs-levels)
 - [Not done yet](#not-done-yet)
 
 ## How the single-level `Game` maps onto vanilla's levels
 
 The game's tick code reads one level: the one held in `Game`'s own fields (the world, its streaming
-and save, block ticks, entities, block entities and their per-level queues). `game/levels.rs` keeps
+and save, block ticks, entities, block entities and their per-level queues). `game/world/levels.rs` keeps
 the other dimensions' levels as `Parked` values and swaps one into place (`enter_level`). The swap is
 `mem::swap` of each per-level field, so the tick code runs unchanged, one level at a time.
 
@@ -93,6 +94,17 @@ the Nether, or whose host saves and quits, joins again in the Nether where it wa
   - The guest takes an End portal, an End gateway and then the exit portal alone.
   - The host saves, quits and opens the world again with the guest in the Nether, and the guest
     joins again there.
+
+## A data pack's levels
+
+A world's enabled data pack adds a level with `data/<ns>/dimension/<path>.json` and, unless its
+stem names a vanilla type, `data/<ns>/dimension_type/<path>.json`. `world_loading::level_shapes`
+reads them into `LevelShapes::extra`, and `Dim::Extra` names them. They open, tick, close and save
+as the Nether and the End do, in `dimensions/<ns>/<path>/`, and a player saved in one comes back
+there. `execute in` reaches them; the pack's dimension type goes to clients in the registry, so a
+client takes the level's build height from it. The generator reads the stem as it does a vanilla
+level's, so only `minecraft:noise` generators and those a native mod registered work. The sky and
+the fog are the Overworld's.
 
 ## Not done yet
 

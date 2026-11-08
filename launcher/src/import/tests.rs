@@ -46,6 +46,7 @@ fn maker(root: &Path) -> impl Fn(&str) -> Result<Instance, String> + '_ {
             icon: None,
             group: None,
             version: None,
+            native_profile: crate::native_mods::Profile::Balanced,
             played: Duration::ZERO,
             last_played: None,
             launch: Default::default(),
@@ -68,7 +69,7 @@ fn fake_program() -> Vec<u8> {
         b"ELF"
     };
     let mut bytes = magic.to_vec();
-    bytes.extend_from_slice(&horizon_mods::api_level::MARK);
+    bytes.extend_from_slice(&horizon_mod_package::game_identity::MARK);
     bytes
 }
 

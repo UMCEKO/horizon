@@ -44,7 +44,7 @@ pub enum Source {
 }
 
 /// A pack as the screen shows it.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PackInfo {
     pub id: String,
     pub title: Text,
@@ -120,6 +120,40 @@ fn scale_icon((w, h, rgba): (u32, u32, Vec<u8>)) -> Option<Arc<[u8]>> {
         }
     }
     Some(out.into())
+}
+/// Points the icon blits of `draws` at the atlas's pack icon slots and writes the `icons` they
+/// name into them, one slot per blit (vanilla registers a texture per icon). Icons past the last
+/// slot keep `unknown_pack`.
+pub fn bind_icon_slots(
+    icons: &HashMap<String, Arc<[u8]>>,
+    draws: &mut [Draw],
+    atlas: &HudAtlas,
+    patches: &mut Vec<Patch>,
+) {
+    let mut slots = 0..PACK_ICON_SLOTS;
+    for draw in draws {
+        let Draw::Blit { texture, .. } = draw else {
+            continue;
+        };
+        let Some(icon) = icons.get(texture.as_str()) else {
+            continue;
+        };
+        let Some(slot) = slots.next() else {
+            return;
+        };
+        let sprite = format!("horizon/pack-icon{slot}");
+        let Some(rect) = atlas.sprites.get(&sprite) else {
+            return;
+        };
+        patches.push(Patch {
+            x: (rect.u0 * atlas.width as f32).round() as u32,
+            y: (rect.v0 * atlas.height as f32).round() as u32,
+            width: PACK_ICON_SIZE,
+            height: PACK_ICON_SIZE,
+            rgba: icon.to_vec(),
+        });
+        *texture = sprite;
+    }
 }
 /// `PackSelectionScreen.loadPackIcon`'s texture for a pack with an icon.
 pub fn icon_texture(id: &str) -> String {
@@ -320,6 +354,8 @@ pub enum Action {
     OpenFolder,
     /// The Done button (`onClose`: commit).
     Done,
+    /// Horizon's own: the options button on the card of this pack, which has Polytone options.
+    Options(String),
     /// Horizon's own: a Modrinth hit the player picked, to download into the
     /// packs folder. The screen does not know where that is.
     BrowsePick(usize),
@@ -359,6 +395,8 @@ pub struct PackScreen {
     browser_icons: Vec<String>,
     /// Whether that button is drawn at all.
     pub browsing_allowed: bool,
+    /// The packs with Polytone options (#11486): their cards carry an options button.
+    pub with_options: std::collections::BTreeSet<String>,
     /// The browser's own search box, separate from the one that filters the
     /// player's installed packs.
     browser_search: TextField,
@@ -374,6 +412,8 @@ fn tr(key: &str) -> Text {
 /// height of 20; drawn shorter, neither it nor its label sits right, so the
 /// button keeps that height and is centred on the shorter search box.
 const ADD_SIZE: i32 = 20;
+/// The options button on a pack's card.
+const OPTIONS_SIZE: i32 = 16;
 /// A card in the grid: its icon beside its name, author and description.
 const ROW_H: i32 = 74;
 /// The air around a card's contents.
@@ -440,6 +480,7 @@ impl PackScreen {
             confirm: None,
             browser: None,
             browsing_allowed: false,
+            with_options: Default::default(),
             backdrop: Backdrop::None,
             browser_icons: Vec::new(),
             browser_search: {
@@ -632,6 +673,12 @@ impl PackScreen {
             }
             let l = &self.lists[side];
             let hit = l.entry_at(x as i32, y as i32);
+            if let Some(i) = hit
+                && let Some((id, bx, by)) = self.options_button(side, i)
+                && d::inside((x as i32, y as i32), bx, by, OPTIONS_SIZE, OPTIONS_SIZE)
+            {
+                return Action::Options(id);
+            }
             let mut took = false;
             if let Some(i) = hit {
                 took = true;
@@ -921,30 +968,7 @@ impl PackScreen {
     /// writes the icons into them, one slot per icon drawn (vanilla registers a
     /// texture per pack). Icons past the last slot keep `unknown_pack`.
     pub fn bind_icons(&self, draws: &mut [Draw], atlas: &HudAtlas, patches: &mut Vec<Patch>) {
-        let mut slots = 0..PACK_ICON_SLOTS;
-        for draw in draws {
-            let Draw::Blit { texture, .. } = draw else {
-                continue;
-            };
-            let Some(icon) = self.icons.get(texture.as_str()) else {
-                continue;
-            };
-            let Some(slot) = slots.next() else {
-                return;
-            };
-            let sprite = format!("horizon/pack-icon{slot}");
-            let Some(rect) = atlas.sprites.get(&sprite) else {
-                return;
-            };
-            patches.push(Patch {
-                x: (rect.u0 * atlas.width as f32).round() as u32,
-                y: (rect.v0 * atlas.height as f32).round() as u32,
-                width: PACK_ICON_SIZE,
-                height: PACK_ICON_SIZE,
-                rgba: icon.to_vec(),
-            });
-            *texture = sprite;
-        }
+        bind_icon_slots(&self.icons, draws, atlas, patches);
     }
 
     /// The shown screen's calls (`Screen.extractRenderState`); `blink_ms`
@@ -1362,6 +1386,45 @@ impl PackScreen {
             );
         }
     }
+    /// The options button on the card of row `i` of list `side`, when its pack has
+    /// Polytone options: the pack and the button's corner, at the card's right edge.
+    fn options_button(&self, side: usize, i: usize) -> Option<(String, i32, i32)> {
+        let l = &self.lists[side];
+        let e = l.entries.get(i)?;
+        let Row::Pack(id) = &e.row else { return None };
+        if !self.with_options.contains(id) {
+            return None;
+        }
+        let x = l.row_left() + l.entry_width() - OPTIONS_SIZE - 2;
+        let y = e.y + (e.height - OPTIONS_SIZE) / 2;
+        Some((id.clone(), x, y))
+    }
+    /// The options button of a card: a small button with a sliders glyph.
+    fn draw_options_button(out: &mut Vec<Draw>, x: i32, y: i32, hover: bool) {
+        crate::widgets::narratable(|| {
+            crate::widgets::Narratable::button(
+                tr("horizon.pack.options").plain(),
+                [x as f32, y as f32, OPTIONS_SIZE as f32, OPTIONS_SIZE as f32],
+                true,
+            )
+        });
+        let sprite = if hover {
+            "widget/button_highlighted"
+        } else {
+            "widget/button"
+        };
+        d::sprite(out, sprite, x, y, OPTIONS_SIZE, OPTIONS_SIZE);
+        let (line, knob) = if hover {
+            (0xFF_C6_C6_C6u32 as i32, -1)
+        } else {
+            (0xFF_A0_A0_A0u32 as i32, 0xFF_E0_E0_E0u32 as i32)
+        };
+        // Three sliders, their knobs at different places.
+        for (row, at) in [(4, 8), (8, 4), (12, 9)] {
+            d::fill(out, x + 3, y + row, x + 13, y + row + 1, line);
+            d::fill(out, x + at, y + row - 1, x + at + 2, y + row + 2, knob);
+        }
+    }
     /// The Add button, just right of the search box.
     fn add_button(&self, m: &Measure) -> (i32, i32) {
         let (sx, sy) = self.header(m)[2];
@@ -1470,6 +1533,7 @@ impl PackScreen {
         });
         let (left, w) = (l.row_left(), l.entry_width());
         let narrow = if l.scrollable() { 6 } else { 0 };
+        let mut tooltip = None;
         for (i, e) in l.entries.iter().enumerate() {
             if e.y + e.height < l.y || e.y > l.bottom() {
                 continue;
@@ -1560,7 +1624,16 @@ impl PackScreen {
                             }
                         }
                     }
-                    let max = 157 - narrow;
+                    let mut max = 157 - narrow;
+                    if let Some((_, bx, by)) = self.options_button(side, i) {
+                        let hover = hovered == Some(i)
+                            && d::inside(mouse, bx, by, OPTIONS_SIZE, OPTIONS_SIZE);
+                        Self::draw_options_button(out, bx, by, hover);
+                        if hover {
+                            tooltip = Some(tr("horizon.pack.optionsInfo"));
+                        }
+                        max -= OPTIONS_SIZE + 2;
+                    }
                     d::string_widget(out, m, &name, cx + 34, cy + 1, max);
                     let lines = d::label_lines(m, &desc, max, 2, &desc_style);
                     d::label(out, &lines, cx + 34, cy + 12, max, false);
@@ -1568,6 +1641,9 @@ impl PackScreen {
             }
         }
         out.push(Draw::NoScissor);
+        if let Some(t) = tooltip {
+            d::tooltip(out, m, &t, mouse);
+        }
         d::blit(
             out,
             &format!("textures/gui/{prefix}header_separator.png"),
@@ -1652,13 +1728,58 @@ mod icon_tests {
         assert!(load_icon(b"not a png").is_none());
     }
 
+    /// A pack with Polytone options carries an options button on its card, which opens
+    /// that pack's options and nothing else; a pack without options has none.
+    #[test]
+    fn a_card_with_options_opens_its_own_pack_options() {
+        let atlas = crate::hud::HudAtlas::build(
+            &horizon_assets::resource_source::ResourceSource::directory(
+                "/nonexistent/horizon-test-assets".into(),
+            ),
+        )
+        .unwrap();
+        let m = Measure(&atlas.font);
+        let packs = vec![pack("file/Configurable", None), pack("file/Plain", None)];
+        let mut screen = PackScreen::new(&m, tr("resourcePack.title"), 480, 320, false, packs, &[]);
+        screen.with_options.insert("file/Configurable".into());
+        let row = |screen: &PackScreen, id: &str| {
+            screen.lists[0]
+                .entries
+                .iter()
+                .position(|e| e.row == Row::Pack(id.into()))
+                .unwrap()
+        };
+        assert!(
+            screen
+                .options_button(0, row(&screen, "file/Plain"))
+                .is_none()
+        );
+        let (id, bx, by) = screen
+            .options_button(0, row(&screen, "file/Configurable"))
+            .unwrap();
+        assert_eq!(id, "file/Configurable");
+        let (cx, cy) = (bx + OPTIONS_SIZE / 2, by + OPTIONS_SIZE / 2);
+        // Hovered, it explains itself.
+        let draws = screen.draw(&m, (cx, cy), 0, 0);
+        assert!(draws.iter().any(|d| matches!(d, Draw::Tooltip { .. })));
+        assert_eq!(
+            screen.click(&m, cx as f64, cy as f64),
+            Action::Options("file/Configurable".into())
+        );
+        // The press opened the options, it did not move the pack.
+        assert!(screen.commit().is_empty());
+    }
+
     /// Programmer Art and High Contrast draw their own `pack.png`; a pack
     /// without one keeps `unknown_pack`.
     #[test]
     fn drawn_icons_take_atlas_slots() {
-        let atlas =
-            crate::hud::HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets"))
-                .unwrap();
+        let atlas = crate::hud::HudAtlas::build(
+            &horizon_assets::resource_source::ResourceSource::directory(
+                (std::path::Path::new("/nonexistent/horizon-test-assets")).to_owned(),
+            ),
+        )
+        .unwrap();
         let m = Measure(&atlas.font);
         let dirt = load_icon(&png(1, 1, &[134, 96, 67, 255])).unwrap();
         let contrast = load_icon(&png(1, 1, &[0, 0, 0, 255])).unwrap();
@@ -1710,9 +1831,12 @@ mod click_sound_tests {
 
     #[test]
     fn a_cards_parts_do_not_overlap_each_other() {
-        let atlas =
-            crate::hud::HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets"))
-                .unwrap();
+        let atlas = crate::hud::HudAtlas::build(
+            &horizon_assets::resource_source::ResourceSource::directory(
+                (std::path::Path::new("/nonexistent/horizon-test-assets")).to_owned(),
+            ),
+        )
+        .unwrap();
         let m = Measure(&atlas.font);
         // Both a wide window (two columns) and a narrow one (one column).
         for (w, h) in [(480, 320), (260, 320)] {
@@ -1751,9 +1875,12 @@ mod click_sound_tests {
 
     #[test]
     fn the_browsers_search_button_submits_what_was_typed() {
-        let atlas =
-            crate::hud::HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets"))
-                .unwrap();
+        let atlas = crate::hud::HudAtlas::build(
+            &horizon_assets::resource_source::ResourceSource::directory(
+                (std::path::Path::new("/nonexistent/horizon-test-assets")).to_owned(),
+            ),
+        )
+        .unwrap();
         let m = Measure(&atlas.font);
         let mut screen = PackScreen::new(
             &m,
@@ -1789,9 +1916,12 @@ mod click_sound_tests {
 
     #[test]
     fn only_footer_and_confirmation_buttons_request_a_click_sound() {
-        let atlas =
-            crate::hud::HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets"))
-                .unwrap();
+        let atlas = crate::hud::HudAtlas::build(
+            &horizon_assets::resource_source::ResourceSource::directory(
+                (std::path::Path::new("/nonexistent/horizon-test-assets")).to_owned(),
+            ),
+        )
+        .unwrap();
         let m = Measure(&atlas.font);
         let title = tr("resourcePack.title");
         let mut screen = PackScreen::new(&m, title, 480, 320, false, Vec::new(), &[]);
@@ -1888,9 +2018,12 @@ mod footer_label_tests {
     /// does not panic and scrolls; the short "Done" keeps its centre.
     #[test]
     fn a_footer_label_wider_than_its_button_scrolls() {
-        let atlas =
-            crate::hud::HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets"))
-                .unwrap();
+        let atlas = crate::hud::HudAtlas::build(
+            &horizon_assets::resource_source::ResourceSource::directory(
+                (std::path::Path::new("/nonexistent/horizon-test-assets")).to_owned(),
+            ),
+        )
+        .unwrap();
         let m = Measure(&atlas.font);
         let wide = Text::literal("Otvori papku s paketami resursov, i jos nesto");
         assert!(m.width(&wide) > 146);
@@ -1927,7 +2060,10 @@ mod footer_label_tests {
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                     .join("../../.local/horizon-client/26.3")
             });
-        let atlas = crate::hud::HudAtlas::build(&root).unwrap();
+        let atlas = crate::hud::HudAtlas::build(
+            &horizon_assets::resource_source::ResourceSource::directory(root.to_path_buf()),
+        )
+        .unwrap();
         let m = Measure(&atlas.font);
         let before = lang::code();
         let mut codes: Vec<String> = std::fs::read_dir(root.join("assets/minecraft/lang"))

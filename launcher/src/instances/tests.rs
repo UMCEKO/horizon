@@ -44,7 +44,6 @@ fn player_home(home: &Path) {
     put(&home.join("resourcepacks/faithful.zip"), "pack");
     put(&home.join("logs/latest.log"), "log");
     put(&home.join("sessions/a.json"), "token");
-    put(&home.join("telemetry/consent.json"), "{}");
     let pack = horizon_port_pack::import::Pack {
         name: "Small Pack".into(),
         ..Default::default()
@@ -65,6 +64,64 @@ fn player_home(home: &Path) {
         &home.join("horizon-packs/cozy/home/saves/Cozy/level.dat"),
         "cozy",
     );
+}
+
+#[test]
+fn build_choices_start_balanced_and_are_remembered_per_instance() {
+    use crate::native_mods::Profile;
+    let root = scratch("native-build-choices");
+    let game = root.join("game");
+    let data = root.join("launcher");
+    for id in ["first", "second"] {
+        fs::create_dir_all(game.join("instances").join(id)).unwrap();
+    }
+    for instance in list_in(&game, &data) {
+        assert_eq!(instance.native_profile, Profile::Balanced);
+    }
+    let choose = |id, profile| {
+        edit_in(&game, &data, id, |meta| meta.native_profile = Some(profile)).unwrap()
+    };
+    choose("first", Profile::Developer);
+    choose("second", Profile::Optimized);
+    let before = fs::read(data.join("instances.json")).unwrap();
+    for unknown in [serde_json::json!("future"), serde_json::json!(42)] {
+        let mut stored: serde_json::Value = serde_json::from_slice(&before).unwrap();
+        stored["instances"]["first"]["native_profile"] = unknown;
+        stored["instances"]["first"]["version"] = serde_json::json!("kept-version");
+        fs::write(
+            data.join("instances.json"),
+            serde_json::to_vec(&stored).unwrap(),
+        )
+        .unwrap();
+        edit_in(&game, &data, "second", |meta| {
+            meta.name = Some("Still here".into())
+        })
+        .unwrap();
+        let loaded = list_in(&game, &data);
+        assert_eq!(
+            find_in(&loaded, "first").unwrap().native_profile,
+            Profile::Balanced
+        );
+        assert_eq!(
+            find_in(&loaded, "first").unwrap().version.as_deref(),
+            Some("kept-version")
+        );
+        let neighbour = find_in(&loaded, "second").unwrap();
+        assert_eq!(neighbour.native_profile, Profile::Optimized);
+        assert_eq!(neighbour.name, "Still here");
+    }
+    fs::write(data.join("instances.json"), before).unwrap();
+    choose("second", Profile::Balanced);
+    let again = list_in(&game, &data);
+    assert_eq!(
+        find_in(&again, "first").unwrap().native_profile,
+        Profile::Developer
+    );
+    assert_eq!(
+        find_in(&again, "second").unwrap().native_profile,
+        Profile::Balanced
+    );
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -204,7 +261,6 @@ fn an_instance_follows_the_players_answers() {
     let (main, own) = (root.join("main"), root.join("own"));
     put(&main.join("options.txt"), "fov:90\n");
     put(&main.join("horizon-player.txt"), "name:Player123\n");
-    put(&main.join("telemetry/consent.json"), r#"{"version":1}"#);
     horizon_core::no_ai::set(&main, true).unwrap();
     put(&own.join("options.txt"), "fov:70\n");
     follow_player(&main, &own);
@@ -215,10 +271,6 @@ fn an_instance_follows_the_players_answers() {
     assert_eq!(
         fs::read_to_string(own.join("horizon-player.txt")).unwrap(),
         "name:Player123\n"
-    );
-    assert_eq!(
-        fs::read_to_string(own.join("telemetry/consent.json")).unwrap(),
-        r#"{"version":1}"#
     );
     assert!(horizon_core::no_ai::is_on(&own));
     horizon_core::no_ai::set(&main, false).unwrap();
@@ -444,7 +496,20 @@ fn switching_what_an_instance_plays_keeps_its_worlds_mods_and_settings() {
     let made = create_in(&home, &data, "Mine", None, None).unwrap();
     put(&made.home.join("saves/Base/level.dat"), "base");
     put(&made.home.join("saves/Base/region/r.0.0.mca"), "region");
-    put(&made.home.join("mods/minimap.hmod"), "hmod");
+    put(
+        &made
+            .home
+            .join(crate::browser::java::MODS_DIR)
+            .join("minimap.hmod"),
+        "content hmod",
+    );
+    put(
+        &made
+            .home
+            .join(crate::native_mods::INSTALLED)
+            .join("treefall.hmod"),
+        "native hmod",
+    );
     put(&made.home.join("options.txt"), "fov:90");
     edit_in(&home, &data, &made.id, |m| {
         m.version = Some("nightly-2026-11-01-c9d474d".into())
@@ -459,13 +524,13 @@ fn switching_what_an_instance_plays_keeps_its_worlds_mods_and_settings() {
         }),
     };
 
-    // Horizon to Fabric: Horizon's mod stops loading; its world is opened by another version.
+    // Horizon to Fabric: both kinds of Horizon mod stop loading; its world changes version.
     let now = find_in(&list_in(&home, &data), &made.id).unwrap();
     assert_eq!(
         unkept(&now, &fabric("1.21.1"), "26.3"),
         [
             Unkept::Mods {
-                count: 1,
+                count: 2,
                 made_for: "Horizon".into()
             },
             Unkept::Worlds {

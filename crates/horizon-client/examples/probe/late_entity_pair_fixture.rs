@@ -45,6 +45,7 @@ pub fn main() -> Result<()> {
                 let chunks = [(0, 0), (-1, -1), (0, -1), (-1, 0)].into_iter().collect();
                 let mut viewers = [Viewer {
                     entity_id: 1,
+                    horizon: true,
                     spectator: false,
                     permission: 0,
                     moved: false,

@@ -1,7 +1,7 @@
 //! World-list operations. Metadata edits preserve every other NBT field;
 //! backups use vanilla's ZIP layout and never include the session lock.
 use crate::save::{read_dat, write_dat};
-use horizon_world::nbt::Tag;
+use horizon_core::nbt::Tag;
 use std::{
     fs,
     io::{self, Seek, Write},

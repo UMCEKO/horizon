@@ -269,7 +269,7 @@ impl Fixture {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let hud = HudBatch::new(size);
+        let hud = HudBatch::scratch(size);
         let mut encoder = self.device.create_command_encoder(&Default::default());
         post.run(
             &self.device,

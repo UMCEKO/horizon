@@ -9,7 +9,7 @@ use crate::{
     packet, packet_enum,
     packets::Empty,
 };
-use horizon_world::nbt::Tag;
+use horizon_core::nbt::Tag;
 
 packet!(CookieRequest { key: String => Ident });
 packet!(CustomPayload { channel: String => Ident, data: Vec<u8> => Rest });

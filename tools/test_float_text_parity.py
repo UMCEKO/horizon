@@ -60,7 +60,7 @@ def main():
     report = build / 'report.json'
     report.unlink(missing_ok=True)
     paths = ['crates/horizon-world/src/snbt_text.rs', 'crates/horizon-world/src/datafix/json.rs',
-             'crates/horizon-world/src/nbt.rs', 'crates/horizon-world/examples/probe/main.rs',
+             'crates/horizon-core/src/nbt.rs', 'crates/horizon-world/examples/probe/main.rs',
              'crates/horizon-world/examples/probe/float_text_fixture.rs',
              'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaFloatTextOracle.java',
              'tools/test_float_text_parity.py']

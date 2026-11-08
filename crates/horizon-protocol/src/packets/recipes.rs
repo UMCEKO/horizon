@@ -6,7 +6,7 @@ use crate::{
     buf::{Codec, Reader, Writer},
     item::{Stack, Template},
 };
-use horizon_world::nbt::Tag;
+use horizon_core::nbt::Tag;
 
 /// `HolderSet<Item>` on the network: a tag by name, or item ids.
 #[derive(Clone, Debug, PartialEq)]

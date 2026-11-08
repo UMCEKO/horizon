@@ -1127,7 +1127,10 @@ mod button_label_tests {
     use super::*;
 
     fn atlas() -> HudAtlas {
-        HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap()
+        HudAtlas::build(&horizon_assets::resource_source::ResourceSource::directory(
+            (std::path::Path::new("/nonexistent/horizon-test-assets")).to_owned(),
+        ))
+        .unwrap()
     }
     /// A label made of `n` copies of one letter.
     fn label(n: usize) -> Text {
@@ -1216,7 +1219,7 @@ mod button_label_tests {
             assert_eq!(draws[3], Draw::NoScissor);
             assert_eq!(draws.len(), 4);
             // Painted, no vertex of the label leaves the box.
-            let mut batch = HudBatch::new([320, 240]);
+            let mut batch = HudBatch::scratch([320, 240]);
             paint(&mut batch, &atlas, &draws[1..]);
             assert!(!batch.vertices.is_empty());
             for v in &batch.vertices {
@@ -1274,7 +1277,7 @@ mod button_label_tests {
             for w in [-5, 0, 1, 2, 3, 4, 5, 150] {
                 for ms in [0, 1, 1499, 1500, 123_456_789] {
                     let draws = draw(&m, &text, w, ms);
-                    let mut batch = HudBatch::new([320, 240]);
+                    let mut batch = HudBatch::scratch([320, 240]);
                     paint(&mut batch, &atlas, &draws);
                     if let Some([x0, _, x1, _]) = scissor_of(&draws) {
                         // Whatever scrolled is clipped to the (maybe empty) box.
@@ -1297,7 +1300,7 @@ mod button_label_tests {
 
     /// The vertices of the button's sprite alone.
     fn sprite_vertices(atlas: &HudAtlas, w: i32) -> usize {
-        let mut batch = HudBatch::new([320, 240]);
+        let mut batch = HudBatch::scratch([320, 240]);
         let mut out = Vec::new();
         sprite(&mut out, "widget/button", 10, 20, w, 20);
         paint(&mut batch, atlas, &out);
@@ -1310,7 +1313,10 @@ mod scissor_tests {
     use super::*;
 
     fn atlas() -> HudAtlas {
-        HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap()
+        HudAtlas::build(&horizon_assets::resource_source::ResourceSource::directory(
+            std::path::PathBuf::from("/nonexistent/horizon-test-assets"),
+        ))
+        .unwrap()
     }
 
     /// The bounds of every quad's six vertices, in draw order.
@@ -1354,7 +1360,7 @@ mod scissor_tests {
     #[test]
     fn a_nested_scissor_is_intersected_with_the_one_around_it() {
         let atlas = atlas();
-        let mut batch = HudBatch::new([320, 240]);
+        let mut batch = HudBatch::scratch([320, 240]);
         paint(
             &mut batch,
             &atlas,
@@ -1383,7 +1389,7 @@ mod scissor_tests {
     #[test]
     fn a_scissor_wider_than_the_screen_is_cut_to_it() {
         let atlas = atlas();
-        let mut batch = HudBatch::new([320, 240]);
+        let mut batch = HudBatch::scratch([320, 240]);
         paint(
             &mut batch,
             &atlas,
@@ -1402,7 +1408,7 @@ mod scissor_tests {
     #[test]
     fn a_scissor_outside_the_one_around_it_draws_nothing() {
         let atlas = atlas();
-        let mut batch = HudBatch::new([320, 240]);
+        let mut batch = HudBatch::scratch([320, 240]);
         paint(
             &mut batch,
             &atlas,

@@ -20,6 +20,8 @@ fn run(cwd: &Path, args: &[&str]) -> Output {
         .args(args)
         .current_dir(cwd)
         .env("HORIZON_HOME", cwd.join("env home"))
+        .env("HORIZON_LAUNCHER_HOME", cwd.join("launcher"))
+        .env("HORIZON_LAUNCHER_NO_SELF_UPDATE", "1")
         .env("XDG_DATA_HOME", cwd.join("xdg data"))
         .env("XDG_CONFIG_HOME", cwd.join("xdg config"))
         .env("HORIZON_NO_AUDIO", "1")
@@ -35,6 +37,38 @@ fn last_stderr_line(output: &Output) -> String {
         .last()
         .unwrap_or_default()
         .to_string()
+}
+
+#[test]
+fn documented_switches_do_not_consume_the_following_option() {
+    let dir = scratch("switches");
+    let output = run(&dir, &["--help"]);
+    assert!(output.status.success());
+    let help = String::from_utf8(output.stdout).unwrap();
+    let switches: Vec<_> = help
+        .lines()
+        .filter_map(|line| {
+            let (usage, _) = line.trim_start().split_once("  ")?;
+            (usage.starts_with("--") && !usage.contains(char::is_whitespace)).then_some(usage)
+        })
+        .collect();
+    assert!(!switches.is_empty(), "help must describe startup switches");
+    // Separate processes also isolate --pregen's global command toggle.
+    for switch in switches {
+        let output = run(&dir, &[switch, "--help"]);
+        assert!(
+            output.status.success(),
+            "{switch}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if switch == "--launch-api" {
+            let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert!(reply["launch_api"].is_string());
+        } else {
+            assert_eq!(String::from_utf8(output.stdout).unwrap(), help, "{switch}");
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

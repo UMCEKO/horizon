@@ -18,19 +18,21 @@
 //! NAME X Y Z PRIORITY` line per scheduled tick.
 use crate::support::common::tag;
 use horizon_core::position::ChunkPos;
-use horizon_world::{
-    DATA_VERSION,
-    nbt::Tag,
-    registry::BlockRegistry,
-    worldgen::{
-        biome::BiomeId,
-        blending::{BlendingData, Direction8, OldChunk, OldWorld, Sides},
-        generator::{FlatSettings, GeneratorData, OverworldGenerator, ProtoChunk},
-        overrides::{PackFile, WorldgenOverrides},
-    },
-};
 use serde_json::Value;
 use std::{collections::HashMap, fmt::Write as _, fs, io::Write as _, path::Path, sync::Arc};
+use {
+    horizon_core::nbt::Tag,
+    horizon_world::{
+        DATA_VERSION,
+        registry::BlockRegistry,
+        worldgen::{
+            biome::BiomeId,
+            blending::{BlendingData, Direction8, OldChunk, OldWorld, Sides},
+            generator::{FlatSettings, GeneratorData, OverworldGenerator, ProtoChunk},
+            overrides::{PackFile, WorldgenOverrides},
+        },
+    },
+};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 

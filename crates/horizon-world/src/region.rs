@@ -2,21 +2,30 @@
 //! as vanilla's `RegionFile` makes them (a file opened with `open_writable`).
 //! Exports never overwrite a file: use a separate directory for offline
 //! edits and copied .mcc data.
-use crate::{
-    compression::{Compression, invalid},
-    nbt::{self, Limits, NamedTag},
-};
 use horizon_core::position::ChunkPos;
 use std::{
+    cell::RefCell,
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU32, Ordering},
 };
+use {
+    crate::compression::{Compression, invalid},
+    horizon_core::{
+        nbt,
+        nbt::{Limits, NamedTag},
+    },
+};
 
 const SECTOR: usize = 4096;
 const HEADER: usize = SECTOR * 2;
 const MAX_COMPRESSED: usize = 64 * 1024 * 1024;
+
+thread_local! {
+    /// Decompression storage retained by each region-reading worker.
+    static NBT_DECODE_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
 
 #[derive(Clone, Debug)]
 pub struct ChunkRecord {
@@ -41,14 +50,16 @@ impl ChunkRecord {
     /// `RegionFileStorage.read`: the root read straight off the decompressing
     /// stream, so bytes after it, and a damaged stream past it, are never read.
     pub fn nbt(&self, limits: Limits) -> io::Result<NamedTag> {
-        let mut bytes = Vec::new();
-        let decoded = self
-            .compression
-            .decode_into(&self.compressed, limits.max_bytes, &mut bytes);
-        match nbt::read_named(&bytes, limits) {
-            Ok((root, _)) => Ok(root),
-            Err(e) => Err(decoded.err().unwrap_or_else(|| invalid(e.to_string()))),
-        }
+        NBT_DECODE_BUFFER.with_borrow_mut(|bytes| {
+            bytes.clear();
+            let decoded = self
+                .compression
+                .decode_into(&self.compressed, limits.max_bytes, bytes);
+            match nbt::read_named(bytes, limits) {
+                Ok((root, _)) => Ok(root),
+                Err(e) => Err(decoded.err().unwrap_or_else(|| invalid(e.to_string()))),
+            }
+        })
     }
 }
 

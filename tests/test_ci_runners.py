@@ -65,11 +65,51 @@ def routed():
 
 
 class OwnRunnerTests(unittest.TestCase):
+    def test_wasm_fixture_routes_by_repository_identity(self):
+        workflow = (WORKFLOWS / "wasm-mods.yml").read_text()
+        expression = runs_on(dict(jobs(workflow))["fixture"])
+        self.assertTrue(expression.startswith("${{ "))
+        self.assertTrue(expression.endswith(" }}"))
+        expression = expression[4:-3]
+        # Evaluate the actual workflow expression, not a duplicate routing rule.
+        # These operators have the same precedence and truthy-string behavior
+        # in Python and Actions. Missing PR properties evaluate to empty strings.
+        for event, head, expected in (
+            ("pull_request", "arismoko/horizon", "dyna-large"),
+            ("pull_request", "contributor/horizon", "ubuntu-latest"),
+            ("push", "", "dyna-large"),
+            ("workflow_dispatch", "", "dyna-large"),
+        ):
+            with self.subTest(event=event, head=head):
+                values = {
+                    "github.event_name": event,
+                    "github.event.pull_request.head.repo.full_name": head,
+                    "github.repository": "arismoko/horizon",
+                }
+                evaluated = re.sub(
+                    r"github\.[a-z_.]+", lambda match: repr(values[match[0]]), expression
+                ).replace("&&", " and ").replace("||", " or ")
+                self.assertEqual(eval(evaluated, {"__builtins__": {}}), expected)
+
+    def test_workflows_do_not_classify_pull_requests_by_fork_flag(self):
+        for path in sorted(WORKFLOWS.glob("*.y*ml")):
+            with self.subTest(workflow=path.name):
+                self.assertNotIn("head.repo.fork", path.read_text())
+
     def test_every_job_on_our_runners_can_go_back_to_github(self):
         count = 0
         for where, _, _, _, value, pools in routed():
             count += 1
-            self.assertIn("vars.SELF_HOSTED_CI != 'off'", value, where)
+            # dyna-ci.yml (ours) routes through the changes job's self_hosted
+            # output and dyna-medium, or SELF_HOSTED_CI=all with the fork guard
+            # before the playhorizon-ci labels; the carried upstream files use
+            # SELF_HOSTED_CI != 'off'. Both fall back to GitHub's runners.
+            if "dyna-ci.yml" in where:
+                self.assertIn("needs.changes.outputs.self_hosted == 'true'", value, where)
+                self.assertIn("vars.SELF_HOSTED_CI == 'all'", value, where)
+                self.assertIn(FORK_GUARD, value, where)
+            else:
+                self.assertIn("vars.SELF_HOSTED_CI != 'off'", value, where)
             self.assertTrue(value.endswith("|| 'ubuntu-latest' }}"), where)
             if "checks" in pools:
                 # The desktop paused: every checks job back to GitHub, the bots stay.
@@ -77,12 +117,16 @@ class OwnRunnerTests(unittest.TestCase):
         self.assertGreaterEqual(count, 10)
 
     def test_light_runners_take_main_code_only(self):
-        for where, on, _, block, _, pools in routed():
+        for where, on, _, block, value, pools in routed():
             if "light" not in pools:
                 continue
             if "pull_request" in on:
-                job_if = next((l for l in block.splitlines() if l.strip().startswith("if:")), "")
-                self.assertIn(FORK_GUARD, job_if, f"{where}: a fork's pull request")
+                # The guard lives in the job's `if` upstream; dyna-ci.yml (ours)
+                # puts it in `runs-on`, before the self-hosted labels.
+                guarded = FORK_GUARD in next(
+                    (l for l in block.splitlines() if l.strip().startswith("if:")), ""
+                ) or FORK_GUARD in value
+                self.assertTrue(guarded, f"{where}: a fork's pull request")
             if "pull_request_target" in on:
                 # main's code only: every checkout is main's.
                 self.assertEqual(block.count("uses: actions/checkout"), block.count("ref: main"), where)

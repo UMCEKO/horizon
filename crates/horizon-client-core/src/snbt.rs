@@ -2,9 +2,10 @@
 //! `TextComponentTagVisitor` (the coloured form commands print), plus Java's
 //! number formatting.
 use crate::text::{self, Style, Text};
-use horizon_world::nbt::Tag;
+pub use horizon_core::java_number::{java_double, java_float};
+use horizon_core::nbt::Tag;
 use horizon_world::snbt_text::string_of;
-pub use horizon_world::snbt_text::{java_double, java_float, quote_and_escape, to_snbt};
+pub use horizon_world::snbt_text::{quote_and_escape, to_snbt};
 
 // ---- the coloured form -----------------------------------------------------
 
@@ -14,6 +15,8 @@ pub enum PistonPart {
     Entity,
     State,
     Properties,
+    /// Any other block entity's whole compound (`BlockEntity.saveWithFullMetadata`).
+    BlockEntity,
 }
 
 struct Pretty {
@@ -151,7 +154,7 @@ impl Pretty {
             self.lit("]", None);
         }
     }
-    fn compound(&mut self, c: &horizon_world::nbt::Compound) {
+    fn compound(&mut self, c: &horizon_core::nbt::Compound) {
         if c.is_empty() {
             self.lit("{", None);
             self.lit("}", None);
@@ -209,7 +212,7 @@ impl Pretty {
         }
     }
 }
-fn hash_bucket(len: usize, key: &horizon_world::nbt::JavaString) -> usize {
+fn hash_bucket(len: usize, key: &horizon_core::nbt::JavaString) -> usize {
     let mut capacity = 16usize;
     while len > capacity * 3 / 4 {
         capacity *= 2;
@@ -220,9 +223,9 @@ fn hash_bucket(len: usize, key: &horizon_world::nbt::JavaString) -> usize {
     ((h ^ (h >> 16)) as usize) & (capacity - 1)
 }
 fn piston_hash_order(
-    c: &horizon_world::nbt::Compound,
+    c: &horizon_core::nbt::Compound,
     part: PistonPart,
-) -> Vec<(&horizon_world::nbt::JavaString, &Tag)> {
+) -> Vec<(&horizon_core::nbt::JavaString, &Tag)> {
     let mut entries: Vec<_> = c.iter().collect();
     match part {
         PistonPart::Entity => {
@@ -255,6 +258,20 @@ fn piston_hash_order(
             entries.sort_by_key(|(k, _)| (hash_bucket(c.len(), k), std::cmp::Reverse(*k)));
         }
         PistonPart::State => return java_hash_order(c),
+        PistonPart::BlockEntity => {
+            // saveAdditional's fields, then `components`, then saveMetadata's
+            // id and position; the fields keep the default order among them.
+            const METADATA: [&str; 5] = ["components", "id", "x", "y", "z"];
+            let mut entries = java_hash_order(c);
+            entries.sort_by_key(|(k, _)| {
+                let key = string_of(k);
+                (
+                    hash_bucket(c.len(), k),
+                    METADATA.iter().position(|m| *m == key).map_or(0, |i| i + 1),
+                )
+            });
+            return entries;
+        }
     }
     entries
 }
@@ -262,8 +279,8 @@ fn piston_hash_order(
 /// for a map that grew to its size by insertion: buckets by
 /// `HashMap.hash(String.hashCode())`, keys sharing a bucket in key order.
 pub fn java_hash_order(
-    c: &horizon_world::nbt::Compound,
-) -> Vec<(&horizon_world::nbt::JavaString, &Tag)> {
+    c: &horizon_core::nbt::Compound,
+) -> Vec<(&horizon_core::nbt::JavaString, &Tag)> {
     // Keys sharing a bucket iterate in insertion order: the order vanilla's
     // savers write them, as far as it is known here.
     const WRITE_ORDER: &[&str] = &[
@@ -313,10 +330,18 @@ pub fn java_hash_order(
         "NoBasePlate",
         "Marker",
         "Pose",
+        // Mannequin.addAdditionalSaveData.
+        "profile",
+        "hidden_layers",
+        "main_hand",
+        "pose",
+        "immovable",
+        "description",
+        "hide_description",
     ];
     // BlockEntity.saveMetadata writes the position after the entity's data.
     const AFTER: &[&str] = &["x", "y", "z"];
-    let rank = |k: &horizon_world::nbt::JavaString| {
+    let rank = |k: &horizon_core::nbt::JavaString| {
         let k = string_of(k);
         WRITE_ORDER
             .iter()
@@ -364,7 +389,7 @@ pub fn pretty_piston(tag: &Tag, part: PistonPart) -> Text {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horizon_world::nbt::parse_snbt;
+    use horizon_core::nbt::parse_snbt;
 
     fn rt(s: &str) -> String {
         to_snbt(&parse_snbt(s).unwrap().0)
@@ -395,6 +420,21 @@ mod tests {
             r#"{facing: "east", short: "false", type: "normal"}"#
         );
         assert_eq!(pretty(&tag).plain(), ordinary);
+    }
+    #[test]
+    fn mannequin_compound_orders_pose_before_immovable_in_shared_bucket() {
+        let tag = parse_snbt(
+            r#"{AbsorptionAmount:0.0f,Air:300s,Brain:{memories:{}},DeathTime:0s,FallFlying:0b,Fire:0s,Health:20.0f,HurtTime:0s,Invulnerable:0b,Motion:[0.0d,0.0d,0.0d],OnGround:0b,PortalCooldown:0,Pos:[2.5d,100.0d,2.5d],Rotation:[0.0f,0.0f],UUID:[I;369,0,0,1],attributes:[],current_impulse_context_reset_grace_time:0,description:{text:"Guard"},hide_description:1b,immovable:1b,pose:"crouching",profile:{name:"alex"}}"#,
+        )
+        .unwrap()
+        .0;
+        let rendered = pretty(&tag).plain();
+        let pose_idx = rendered.find("pose: \"crouching\"").unwrap();
+        let immovable_idx = rendered.find("immovable: 1b").unwrap();
+        assert!(
+            pose_idx < immovable_idx,
+            "expected `pose` before `immovable` in bucket 5, got: {rendered}"
+        );
     }
     #[test]
     fn compact_form_matches_vanilla() {
@@ -440,5 +480,19 @@ mod tests {
         assert!(colors.contains(&text::GOLD));
         let long = parse_snbt("{l:[{a:1},{b:2}]}").unwrap().0;
         assert_eq!(pretty(&long).plain(), "{l: [{a: 1}, {b: 2}]}");
+    }
+    #[test]
+    fn block_entity_metadata_follows_its_fields() {
+        // A conduit's `/data get block`, as vanilla 26.3 printed it: `Target`
+        // and `components` share a bucket, and saveAdditional wrote `Target` first.
+        let tag = parse_snbt(
+            r#"{id:"minecraft:conduit",x:4098,y:300,z:4098,components:{},Target:[I;1,2,3,4]}"#,
+        )
+        .unwrap()
+        .0;
+        assert_eq!(
+            pretty_piston(&tag, PistonPart::BlockEntity).plain(),
+            r#"{Target: [I; 1, 2, 3, 4], components: {}, x: 4098, y: 300, z: 4098, id: "minecraft:conduit"}"#,
+        );
     }
 }

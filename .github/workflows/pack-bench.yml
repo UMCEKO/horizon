@@ -17,7 +17,6 @@ on:
 permissions:
   contents: read
 env:
-  HORIZON_TELEMETRY_URL: "off"
   CARGO_TERM_COLOR: never
 
 jobs:

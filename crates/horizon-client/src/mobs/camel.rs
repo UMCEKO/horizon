@@ -11,6 +11,7 @@ use super::{
 use horizon_core::geometry::trig::Mth;
 use horizon_core::geometry::{Aabb, Vec3};
 use horizon_core::random::RandomSource;
+use horizon_world::native_load_context::LoopContext;
 use std::collections::HashMap;
 
 // Camel state: `egg_time` the mob age of the last pose change (it may be
@@ -416,7 +417,7 @@ fn animation_states(m: &mut Mob, pose_time: i64, sitting: bool) {
 /// jump is used up: it is, by a dash or when the camel cannot dash at all (cooling down,
 /// refusing to move: `onPlayerJump` would not have taken it); it waits while the camel is off
 /// the ground (`AbstractHorse.tickRidden` runs a pending jump when it lands).
-pub fn dash(m: &mut Mob, amount: f32, events: &mut Vec<MobEvent>) -> bool {
+pub fn dash(m: &mut Mob, context: &LoopContext, amount: f32, events: &mut Vec<MobEvent>) -> bool {
     if m.extra.anim_ticks > 0 || refuse_to_move(m) {
         return true;
     }
@@ -432,7 +433,7 @@ pub fn dash(m: &mut Mob, amount: f32, events: &mut Vec<MobEvent>) -> bool {
     m.velocity.y += 1.4285 * a * 0.42;
     m.extra.anim_ticks = DASH_COOLDOWN;
     m.extra.flag2 = true;
-    crate::motion::native_living_jump(m.id, &m.kind.id);
+    crate::motion::native_living_jump(context, m.id, &m.kind.id);
     sound(m, voice(m, 3), events);
     true
 }
@@ -533,11 +534,12 @@ mod tests {
             m.on_ground = true;
             let mut started = false;
             with_test_world(&seen, |w, _| {
-                let mut lr = horizon_core::random::LegacyRandom::new(0);
+                let mut test_level = crate::health::TestLevel::new(0);
+                let level = &mut test_level.level();
                 let mut events = Vec::new();
                 let mut cx = Cx {
                     w,
-                    lr: &mut lr,
+                    level,
                     events: &mut events,
                 };
                 started = (0..64).any(|_| RandomSitting.can_use(&mut m, &mut cx));
@@ -599,6 +601,7 @@ mod tests {
             step_sound: None,
             food: Arc::default(),
             tempt: Arc::default(),
+            passenger_attachments: Vec::new(),
         });
         Mob::new(1, kind, horizon_core::geometry::Vec3::ZERO, 0.0)
     }
@@ -653,7 +656,7 @@ mod tests {
         register(&mut m);
         let types = types(&m);
         let load = |tick: i64, now: i64| {
-            let (tag, _) = horizon_world::nbt::parse_snbt(&format!(
+            let (tag, _) = horizon_core::nbt::parse_snbt(&format!(
                 "{{id:\"minecraft:camel\",Pos:[0.0d,0.0d,0.0d],LastPoseTick:{tick}L}}"
             ))
             .unwrap();
@@ -674,8 +677,7 @@ mod tests {
         assert_eq!(pose_time(&m), 5);
         // No tag: standing.
         let (tag, _) =
-            horizon_world::nbt::parse_snbt("{id:\"minecraft:camel\",Pos:[0.0d,0.0d,0.0d]}")
-                .unwrap();
+            horizon_core::nbt::parse_snbt("{id:\"minecraft:camel\",Pos:[0.0d,0.0d,0.0d]}").unwrap();
         let mut m = crate::entity_nbt::mob_from_nbt(&tag, &types, 2, None).unwrap();
         finish_load(&mut m, 5000);
         assert!(!refuse_to_move(&m));
@@ -705,11 +707,11 @@ mod tests {
         };
         let partner = b.seen(None);
         let mut events = Vec::new();
-        let mut lr = horizon_core::random::LegacyRandom::new(0);
+        let mut fixture = crate::health::TestLevel::new(0);
         let ran = with_test_world(&[partner], |w, _| {
             let mut cx = Cx {
                 w,
-                lr: &mut lr,
+                level: &mut fixture.level(),
                 events: &mut events,
             };
             let mut breed = Breed::new(1.0);
@@ -777,10 +779,10 @@ mod tests {
                 let mut blocked = sitting_camel(1, 0.5);
                 let mut open = sitting_camel(2, 5.5);
                 let mut events = Vec::new();
-                let mut lr = horizon_core::random::LegacyRandom::new(0);
+                let mut fixture = crate::health::TestLevel::new(0);
                 let mut cx = Cx {
                     w,
-                    lr: &mut lr,
+                    level: &mut fixture.level(),
                     events: &mut events,
                 };
                 let mut goal = RandomSitting;

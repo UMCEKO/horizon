@@ -7,7 +7,7 @@
 //! the pick), so a frog that is not walking croaks in three of four idle
 //! picks: `Croak` takes those, and the frog's stroll then follows at once.
 use super::{
-    Mob, MobEvent, MobWorld, Species, Who,
+    DamageLevel, Mob, MobEvent, MobWorld, Species, Who,
     goals::{
         Breed, Cx, Float, Goal, LOOK, LookAtPlayer, MOVE, Panic, RandomLookAround, Stroll, Tempt,
         goal_clone,
@@ -19,6 +19,7 @@ use horizon_core::{
     geometry::Vec3,
     random::{LegacyRandom, RandomSource},
 };
+use mod_api::SoundSource;
 use std::fmt::Debug;
 
 const JUMP: usize = 0;
@@ -94,6 +95,11 @@ pub struct State {
     pub discard_friction: bool,
 }
 
+/// The frog brain's attack target, while its tongue behavior is active.
+pub fn attack_target(m: &Mob) -> Option<Who> {
+    m.extra.frog.target.map(Who::Mob)
+}
+
 pub fn register(m: &mut Mob) {
     let food = m.kind.food.clone();
     // `Frog()`: SmoothSwimmingMoveControl(85, 10, 0.02, 0.1, true). The
@@ -167,12 +173,18 @@ pub fn tick(m: &mut Mob) {
 /// `Frog.travelInWater`: `moveRelative(getSpeed(), input)`, the move, then
 /// the motion scaled by 0.9. `getSpeed` is the speed the move control stored.
 /// Out of water the usual travel runs.
-pub fn travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) -> bool {
+pub fn travel(
+    m: &mut Mob,
+    w: &MobWorld,
+    level: &mut DamageLevel<'_>,
+    input: Vec3,
+    events: &mut Vec<MobEvent>,
+) -> bool {
     if !m.fluids.in_water {
         return false;
     }
     m.move_relative(m.ai.speed, input);
-    m.do_move(w, events);
+    m.do_move(w, level, events);
     m.velocity = m.velocity.scale(0.9);
     true
 }
@@ -400,10 +412,11 @@ impl LaySpawn {
                 if let Some(state) = cx.w.registry.default_state("minecraft:frogspawn") {
                     cx.events.push(MobEvent::SetBlock { pos: spawn, state });
                 }
-                cx.events.push(MobEvent::entity_sound(
+                // level.playSound(null, body, FROG_LAY_SPAWN, BLOCKS, 1, 1).
+                cx.events.push(MobEvent::bound_sound(
                     m,
                     "entity.frog.lay_spawn",
-                    6,
+                    SoundSource::Blocks,
                     1.0,
                     1.0,
                 ));
@@ -560,8 +573,14 @@ impl Goal for ShootTongue {
         match m.extra.frog.phase {
             Phase::MoveToTarget => {
                 if pos.distance_squared(m.position) < EATING_DISTANCE * EATING_DISTANCE {
-                    cx.events
-                        .push(MobEvent::entity_sound(m, "entity.frog.tongue", 6, 2.0, 1.0));
+                    // level.playSound(null, body, tongueSound, NEUTRAL, 2, 1).
+                    cx.events.push(MobEvent::bound_sound(
+                        m,
+                        "entity.frog.tongue",
+                        SoundSource::Neutral,
+                        2.0,
+                        1.0,
+                    ));
                     set_pose(m, sync::USING_TONGUE);
                     // `target.setDeltaMovement(vectorTo(frog).normalize().scale(0.75))`: the
                     // target's own motion is replaced, and it is drawn in.
@@ -586,8 +605,13 @@ impl Goal for ShootTongue {
                 if f.eat_timer > 6 {
                     f.phase = Phase::EatAnimation;
                     // eatEntity.
-                    cx.events
-                        .push(MobEvent::entity_sound(m, "entity.frog.eat", 6, 2.0, 1.0));
+                    cx.events.push(MobEvent::bound_sound(
+                        m,
+                        "entity.frog.eat",
+                        SoundSource::Neutral,
+                        2.0,
+                        1.0,
+                    ));
                     super::ai::do_hurt_target(m, Who::Mob(id), cx);
                     // `if (!target.isAlive()) target.remove(KILLED)`: no death animation.
                     cx.events.push(MobEvent::RemoveKilled { target: id });
@@ -810,11 +834,16 @@ impl LongJump {
                 } else {
                     "entity.frog.step"
                 };
-                cx.events
-                    .push(MobEvent::entity_sound(m, landing, 6, 2.0, 1.0));
+                cx.events.push(MobEvent::bound_sound(
+                    m,
+                    landing,
+                    mod_api::SoundSource::Neutral,
+                    2.0,
+                    1.0,
+                ));
             }
             set_jump_pose(m, cx.w, sync::STANDING);
-            sample_cooldown(m, cx.lr, 1);
+            sample_cooldown(m, cx.level.random(), 1);
         }
         set_discard_friction(m, false);
         *self = Self::default();
@@ -891,7 +920,7 @@ impl Goal for LongJump {
             && !m.fluids.in_lava
             && cx.w.block_name(x, y, z) != "minecraft:honey_block";
         if !can {
-            sample_cooldown(m, cx.lr, 2);
+            sample_cooldown(m, cx.level.random(), 2);
         }
         can
     }
@@ -942,7 +971,7 @@ impl Goal for LongJump {
             && !m.fluids.in_water
             && !(self.chosen.is_none() && self.candidates.is_empty());
         if !valid {
-            sample_cooldown(m, cx.lr, 2);
+            sample_cooldown(m, cx.level.random(), 2);
         }
         valid
     }
@@ -955,7 +984,7 @@ impl Goal for LongJump {
         }
         let Some(jump) = self.chosen else {
             self.tries -= 1;
-            self.pick(m, cx.w, cx.lr);
+            self.pick(m, cx.w, cx.level.random());
             return;
         };
         m.look_at(self.look);
@@ -972,12 +1001,13 @@ impl Goal for LongJump {
             .extra
             .effects
             .iter()
-            .find(|e| e.0 == "minecraft:jump_boost")
-            .map_or(0.0, |e| f64::from(0.1_f32 * (e.2 + 1) as f32));
+            .find(|e| e.id == "minecraft:jump_boost")
+            .map_or(0.0, |e| f64::from(0.1_f32 * (e.amplifier + 1) as f32));
         m.velocity = jump.scale((len + boost) / len);
         self.mid_jump = true;
-        cx.events
-            .push(MobEvent::entity_sound(m, jump_sound(m), 6, 1.0, 1.0));
+        // level.playSound(null, body, getJumpSound(body), NEUTRAL, 1, 1).
+        let sound = MobEvent::bound_sound(m, jump_sound(m), SoundSource::Neutral, 1.0, 1.0);
+        cx.events.push(sound);
     }
 }
 
@@ -1007,9 +1037,11 @@ mod tests {
             m.yaw = 0.0;
             m.velocity = Vec3::new(1.0, -0.5, 0.125);
             let kept = m.velocity;
+            let mut test_level = crate::health::TestLevel::new(0);
             assert!(!travel(
                 &mut m,
                 w,
+                &mut test_level.level(),
                 Vec3::new(0.0, 0.0, 1.0),
                 &mut Vec::new()
             ));
@@ -1017,7 +1049,12 @@ mod tests {
 
             m.fluids.in_water = true;
             m.position = Vec3::new(0.5, 80.0, 0.5);
-            m.travel(w, Vec3::new(0.0, 0.0, 1.0), &mut Vec::new());
+            m.travel(
+                w,
+                &mut test_level.level(),
+                Vec3::new(0.0, 0.0, 1.0),
+                &mut Vec::new(),
+            );
             // (1, -0.5, 0.125) + (0, 0, getSpeed 0.25) = (1, -0.5, 0.375),
             // then * 0.9 = (0.9, -0.45, 0.3375).
             assert!((m.velocity.x - 0.9).abs() < 1.0e-9, "{}", m.velocity.x);
@@ -1181,10 +1218,10 @@ mod tests {
                     i64::from(m.age),
                 ));
                 let mut events = Vec::new();
-                let mut lr = LegacyRandom::new(0);
+                let mut fixture = crate::health::TestLevel::new(0);
                 let mut cx = Cx {
                     w,
-                    lr: &mut lr,
+                    level: &mut fixture.level(),
                     events: &mut events,
                 };
                 let mut goals = std::mem::take(&mut m.ai.goals);
@@ -1196,5 +1233,44 @@ mod tests {
             },
         );
         let _ = ran;
+    }
+
+    /// `Frog` keeps its pregnancy as the `IS_PREGNANT` brain memory, and
+    /// `Brain.Packed` saves every memory: `mob_to_nbt`/`mob_from_nbt` are the
+    /// pair `Game::mob_tree_nbt` and `Game::load_mob` go through. Horizon read
+    /// the memory back but wrote no `Brain` for a frog, so a frog made
+    /// pregnant in play that unloaded with its chunk came back unpregnant and
+    /// never laid its frogspawn.
+    #[test]
+    fn a_pregnant_frog_keeps_its_pregnancy_through_a_save() {
+        use crate::entity_nbt::{mob_from_nbt, mob_to_nbt};
+        use horizon_core::nbt::Tag;
+        let memory = |tag: &Tag| {
+            tag.get("Brain")
+                .and_then(|b| b.get("memories"))
+                .and_then(|b| b.get("minecraft:is_pregnant"))
+                .cloned()
+        };
+        let mut m = frog();
+        set_pregnant(&mut m, true);
+        let saved = mob_to_nbt(&m, [1, 2, 3, 4], None, None, |_| None);
+        assert_eq!(
+            memory(&saved),
+            Some(Tag::compound([(
+                "value",
+                Tag::Compound(Default::default())
+            )])),
+            "the save names the pregnancy"
+        );
+        let types = std::collections::HashMap::from([(m.kind.id.clone(), m.kind.clone())]);
+        let back = mob_from_nbt(&saved, &types, 2, None).unwrap();
+        assert!(is_pregnant(&back), "the reloaded frog is pregnant");
+        // A frog that laid its spawn saves no memory, even over a compound
+        // that still names one.
+        set_pregnant(&mut m, false);
+        let saved = mob_to_nbt(&m, [1, 2, 3, 4], Some(&saved), None, |_| None);
+        assert_eq!(memory(&saved), None, "a laid frog saves no pregnancy");
+        let back = mob_from_nbt(&saved, &types, 3, None).unwrap();
+        assert!(!is_pregnant(&back), "and does not come back pregnant");
     }
 }

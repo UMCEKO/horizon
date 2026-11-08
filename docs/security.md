@@ -67,7 +67,8 @@ and some are waiting for Ludovic:
   a secret of GitHub's `release` environment, which only real releases from main can use. The job that signs runs
   nothing from the repository but a short script calling OpenSSL, so no pull request can read the key by changing
   the code that gets built. Nobody, Ludovic included, ever needs to see it.
-- **Nightly signatures.** A Nightly carries two signatures over the same `SHA256SUMS`. `SHA256SUMS.sig` is signed
+- **Nightly signatures.** This describes upstream's Nightly channel, not the fork's daily-only prebuilt schedule and publishing policy; this sync enables no new release trigger or keys.
+  A Nightly carries two signatures over the same `SHA256SUMS`. `SHA256SUMS.sig` is signed
   for the channel (`horizon release nightly`), for launchers and servers from before this change, which read only
   that one. `SHA256SUMS.v2.sig` is signed for the Nightly's own version (`horizon release nightly-<date>-<commit>`),
   which its release title names (`Nightly <date> · <commit>`). Current launchers, `horizon-server update` and
@@ -78,9 +79,8 @@ and some are waiting for Ludovic:
   or picked with `--version` any more; they leave GitHub with the 7-day rotation. Until a v2 Nightly exists, a
   launcher has nothing to update to, so the first Nightly is built right after this merges. A server can still go back
   to a build it already has with `horizon-server rollback`, which checks nothing it hasn't already checked.
-  **When the old signature can go:** once every launcher and server still updating reads v2. That is, when the
-  telemetry live count shows no launcher (and the server update log no `horizon-server`) older than the first build
-  with this change, or at the latest 60 days after it shipped. Then drop `SHA256SUMS.sig` from nightly-build.yml's
+  **When the old signature can go:** once support for launchers and servers predating v2 is retired. The fork
+  collects no telemetry, so it cannot determine this from usage data. Then drop `SHA256SUMS.sig` from nightly-build.yml's
   publish step and the `--tag nightly` check before it, and remove `NIGHTLY` from horizon-release-sign. Releases (not
   Nightlies) keep their single `SHA256SUMS.sig`, which is already signed for their tag.
 - **The release machinery needs Ludovic.** The workflows, the release and signing tools, the update-checking code

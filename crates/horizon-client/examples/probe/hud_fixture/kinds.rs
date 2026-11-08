@@ -144,7 +144,7 @@ fn boss(c: &Value, w: i32, h: i32, atlas: &HudAtlas) -> Vec<GuiDraw> {
             overlay: b["overlay"].as_u64().unwrap_or(0) as usize,
         })
         .collect();
-    hud_overlays::boss_overlay(w, h, &bars, &atlas.font)
+    hud_overlays::boss_overlay(w, h, &bars, &atlas.font, |_, _| true)
 }
 
 /// A `NumberFormat` from the case: null, `{type: blank}`, `{type: fixed,

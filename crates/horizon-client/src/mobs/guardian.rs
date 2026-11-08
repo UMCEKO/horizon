@@ -12,6 +12,7 @@ use super::{
     nav::NavKind,
     path::PathType,
 };
+use crate::health::DamageLevel;
 use horizon_core::geometry::trig::Mth;
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use std::f32::consts::PI;
@@ -51,8 +52,7 @@ pub fn register(m: &mut Mob) {
     m.ai.targets.add(
         1,
         NearestTarget::player(true).when(|m, w| {
-            w.player
-                .as_ref()
+            w.selected_player()
                 .is_some_and(|p| p.position.distance_squared(m.position) > 9.0)
         }),
     );
@@ -94,9 +94,9 @@ impl Goal for GuardianAttack {
             m.look_at_speed([t.position.x, t.eye_y, t.position.z], 90.0, 90.0);
         }
     }
-    fn stop(&mut self, m: &mut Mob, _cx: &mut Cx) {
+    fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         m.extra.flag = false;
-        m.ai.target = None;
+        m.set_ai_target(cx.w, None);
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let (Some(who), Some(t)) = (m.ai.target, m.target_info(cx.w)) else {
@@ -105,7 +105,7 @@ impl Goal for GuardianAttack {
         m.ai.nav.stop();
         m.look_at_speed([t.position.x, t.eye_y, t.position.z], 90.0, 90.0);
         if !m.sees(cx.w, who) {
-            m.ai.target = None;
+            m.set_ai_target(cx.w, None);
             return;
         }
         self.attack_time += 1;
@@ -128,12 +128,14 @@ impl Goal for GuardianAttack {
                 + if is_elder(m) { 2.0 } else { 0.0 };
             let from = [m.position.x, m.position.y, m.position.z];
             match who {
-                Who::Player => cx.events.push(MobEvent::DamagePlayer {
-                    amount: magic,
-                    from,
-                    kind: "minecraft:indirect_magic",
-                }),
-                Who::Mob(id) => cx.events.push(MobEvent::AttackMob {
+                Who::Player => cx
+                    .events
+                    .push(cx.w.route_player_event(MobEvent::DamagePlayer {
+                        amount: magic,
+                        from,
+                        kind: "minecraft:indirect_magic",
+                    })),
+                Who::Mob(id) => cx.events.push(MobEvent::DamageMob {
                     target: id,
                     amount: magic,
                     source: Damage {
@@ -145,7 +147,7 @@ impl Goal for GuardianAttack {
                 }),
             }
             super::ai::do_hurt_target(m, who, cx);
-            m.ai.target = None;
+            m.set_ai_target(cx.w, None);
         }
     }
 }
@@ -203,12 +205,18 @@ pub fn move_control(m: &mut Mob) {
     m.extra.flag2 = true;
 }
 /// `Guardian.travelInWater`; on land the usual travel.
-pub fn travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) -> bool {
+pub fn travel(
+    m: &mut Mob,
+    w: &MobWorld,
+    level: &mut DamageLevel<'_>,
+    input: Vec3,
+    events: &mut Vec<MobEvent>,
+) -> bool {
     if !m.fluids.in_water {
         return false;
     }
     m.move_relative(0.1, input);
-    m.do_move(w, events);
+    m.do_move(w, level, events);
     m.velocity = m.velocity.scale(0.9);
     if !m.extra.flag2 && m.ai.target.is_none() {
         m.velocity.y -= 0.005;
@@ -283,7 +291,7 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     // The eye follows the active target, else the player (the camera).
     let look = match m.target_info(w).filter(|_| m.extra.flag) {
         Some(t) => Some([t.position.x, t.eye_y, t.position.z]),
-        None => w.player.as_ref().map(|p| p.eye),
+        None => w.selected_player().map(|p| p.eye),
     };
     if let Some(look) = look {
         look_at(m, look);
@@ -302,12 +310,14 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     {
         let from = [m.position.x, m.position.y, m.position.z];
         match d.attacker {
-            Some(Who::Player) => events.push(MobEvent::DamagePlayer {
-                amount: 2.0,
-                from,
-                kind: "minecraft:thorns",
-            }),
-            Some(Who::Mob(id)) => events.push(MobEvent::AttackMob {
+            Some(Who::Player) => {
+                events.push(w.route_initial_player_event(MobEvent::DamagePlayer {
+                    amount: 2.0,
+                    from,
+                    kind: "minecraft:thorns",
+                }))
+            }
+            Some(Who::Mob(id)) => events.push(MobEvent::DamageMob {
                 target: id,
                 amount: 2.0,
                 source: Damage {
@@ -365,7 +375,6 @@ pub fn elder_server_ai_step(m: &mut Mob, cx: &mut Cx) {
 mod elder_home_tests {
     use super::*;
     use crate::mobs::world::with_test_world;
-    use horizon_core::random::LegacyRandom;
     use std::sync::Arc;
 
     /// `ElderGuardian.customServerAiStep`: with no home yet, `setHomeTo(blockPosition(), 16)`,
@@ -374,14 +383,15 @@ mod elder_home_tests {
     fn an_elder_guardian_homes_where_it_stands() {
         with_test_world(&[], |w, types| {
             let kind = Arc::new(types.types["minecraft:elder_guardian"].clone());
-            let mut lr = LegacyRandom::new(0);
+            let mut test_level = crate::health::TestLevel::new(0);
+            let mut level = test_level.level();
             let mut events = Vec::new();
             let mut m = Mob::new(1, kind.clone(), Vec3::new(10.7, 64.2, -20.9), 0.0);
             elder_server_ai_step(
                 &mut m,
                 &mut Cx {
                     w,
-                    lr: &mut lr,
+                    level: &mut level,
                     events: &mut events,
                 },
             );
@@ -395,7 +405,7 @@ mod elder_home_tests {
                 &mut kept,
                 &mut Cx {
                     w,
-                    lr: &mut lr,
+                    level: &mut level,
                     events: &mut events,
                 },
             );
@@ -410,7 +420,8 @@ mod elder_home_tests {
     fn a_silent_elder_guardian_curses_without_the_sound() {
         with_test_world(&[], |w, types| {
             let kind = Arc::new(types.types["minecraft:elder_guardian"].clone());
-            let mut lr = LegacyRandom::new(0);
+            let mut fixture = crate::health::TestLevel::new(0);
+            let mut level = fixture.level();
             for silent in [false, true] {
                 let mut events = Vec::new();
                 let mut m = Mob::new(1200, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
@@ -419,7 +430,7 @@ mod elder_home_tests {
                     &mut m,
                     &mut Cx {
                         w,
-                        lr: &mut lr,
+                        level: &mut level,
                         events: &mut events,
                     },
                 );
@@ -578,7 +589,10 @@ pub fn attack_scale(m: &Mob) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mobs::world::with_test_world;
+    use crate::mobs::{
+        player_selection::{PlayerSelection, TickPlayer},
+        world::{test_player, with_test_world},
+    };
     use std::sync::Arc;
 
     fn flop(kind: &str, silent: bool) -> Option<(Mob, Vec<MobEvent>)> {
@@ -628,5 +642,46 @@ mod tests {
                 assert_eq!(sounds, heard, "{kind} silent={silent}");
             }
         }
+    }
+
+    #[test]
+    #[ignore = "requires prepared entity resources"]
+    fn thorns_return_to_attacker_after_target_changes() {
+        assert!(with_test_world(&[], |world, types| {
+            let selection = PlayerSelection::new(
+                vec![
+                    TickPlayer {
+                        entity_id: 1,
+                        connection: Some(11),
+                        view: test_player(Vec3::new(1.0, 64.0, 0.0)),
+                    },
+                    TickPlayer {
+                        entity_id: 2,
+                        connection: Some(22),
+                        view: test_player(Vec3::new(2.0, 64.0, 0.0)),
+                    },
+                ],
+                Some(1),
+            )
+            .unwrap();
+            let mut world = world.clone();
+            world.player_selection = Some(&selection);
+            let mut mob = Mob::new(
+                7,
+                Arc::new(types.types["minecraft:guardian"].clone()),
+                Vec3::new(0.0, 64.0, 0.0),
+                0.0,
+            );
+            mob.hurt_time = 10;
+            mob.last_damage = Some((Damage::player([1.0, 64.0, 0.0]), 0));
+            assert!(selection.select(2));
+            let mut events = Vec::new();
+            ai_step(&mut mob, &world, &mut events);
+            assert!(events.iter().any(|event| matches!(
+                event,
+                MobEvent::ForPlayer { conn: Some(11), event }
+                    if matches!(event.as_ref(), MobEvent::DamagePlayer { kind: "minecraft:thorns", .. })
+            )));
+        }));
     }
 }

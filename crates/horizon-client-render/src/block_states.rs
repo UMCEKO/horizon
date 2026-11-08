@@ -165,16 +165,20 @@ mod tests {
                 std::env::var_os("HORIZON_TEST_RESOURCES").expect("HORIZON_TEST_RESOURCES"),
             );
             let assets = Arc::new(Assets::load(&root).unwrap());
-            let render = Arc::new(assets.reload(&root).unwrap());
+            let source = crate::resource_source::ResourceRoot::directory(root.clone());
+            let render = Arc::new(assets.reload(&source).unwrap());
             let facts = BlockFacts::load(&root, assets.registry).unwrap();
             let collision = crate::collisions::load(&root, assets.registry).unwrap();
             let visibility = crate::models::load_visibility(&root, assets.registry).unwrap();
             let context = Arc::new(WorkerContext {
                 light: Arc::new(LightTables::load(&root, assets.registry, &facts).unwrap()),
-                tables: Arc::new(MeshTables::new(&assets, &render, &facts, visibility).unwrap()),
+                tables: Arc::new(
+                    MeshTables::new(&assets, &render, &facts, visibility, None).unwrap(),
+                ),
                 assets: assets.clone(),
                 render,
-                biomes: Arc::new(Biomes::load(&root).unwrap()),
+                biomes: Arc::new(Biomes::load(&source).unwrap()),
+                hidden_states: Arc::from([]),
             });
             BlockStates::new(&facts, &collision, context, SMALL_SPLIT)
         })

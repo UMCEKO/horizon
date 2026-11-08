@@ -7,10 +7,11 @@
 //! offline UUID, is still refused. There the offline entry is written to whitelist.json and the game
 //! reloads it (`whitelist reload`), as it would be written while the server is stopped.
 
-use crate::{config, supervisor};
+use crate::supervisor;
 use horizon_server_files::user_lists::{
     BanEntry, BanList, IpBanList, NameAndId, OpEntry, OpList, WhiteEntry, WhiteList,
 };
+use horizon_server_launch::config;
 use std::path::Path;
 
 pub fn run(dir: &Path, command: &str, args: &[String]) -> Result<(), String> {

@@ -1,6 +1,6 @@
 //! `events <jar or folder>`: the NeoForge events a mod listens to and the
-//! capabilities it uses, looked up in the hook catalog. `native-hooks.json`
-//! names each hook's NeoForge counterpart (docs/native-hooks-neoforge.md);
+//! capabilities it uses, looked up in the hook catalog. The Rust hook declarations
+//! name each hook's NeoForge counterpart; the generator exports them at build time;
 //! this reads a jar's class files (`classes`: `@SubscribeEvent` methods,
 //! method references and lambdas that take one event, `Capabilities` fields)
 //! and finds the hooks for each name. Over a folder of jars it ranks the
@@ -16,7 +16,7 @@ use std::{
 };
 
 /// The hook catalog this build was made from.
-pub const CATALOG: &str = include_str!("../../../native-hooks.json");
+pub const CATALOG: &str = include_str!(concat!(env!("OUT_DIR"), "/hook-counterparts.json"));
 
 /// Names NeoForge changed after 1.21.1, which packs such as ATM10 still use
 /// (NeoForge's documentation for both versions): a name the catalog lacks is
@@ -61,6 +61,28 @@ const DATA: [(&str, &[&str]); 2] = [
     ("WandererTradesEvent", &["trade_set", "villager_trade"]),
 ];
 
+/// Mod-loading events Horizon has no hook for by design, and where a port
+/// does their work. The modding book's load phases: "There is no separate
+/// common-setup, load-complete or intermod event: registration and the first
+/// server reload cover common setup, […] and dependencies express intermod
+/// ordering. Load complete is the edge after initial Config and before
+/// `server_about_to_start`, not a hook." Its mod extensions design drops
+/// `InterModComms` (sent in `InterModEnqueueEvent`, read in
+/// `InterModProcessEvent`): "IMC isn't needed, because dependents call the
+/// library directly in dependency order".
+const LOADING: [(&str, &str); 4] = [
+    (
+        "FMLCommonSetupEvent",
+        "`Hooks::register`, then the first server reload",
+    ),
+    (
+        "FMLLoadCompleteEvent",
+        "after the initial config, before `server_about_to_start`",
+    ),
+    ("InterModEnqueueEvent", "a direct call, in dependency order"),
+    ("InterModProcessEvent", "a direct call, in dependency order"),
+];
+
 /// The catalog's NeoForge names: the hooks that are each name's
 /// counterpart, and the hooks whose `none (…)` label mentions it.
 #[derive(Debug, Default)]
@@ -83,6 +105,9 @@ pub enum Status {
     /// No hook is needed: the registries (`DATA`) that took the event's
     /// place.
     Data(Vec<String>),
+    /// No hook by design: where the load phases (`LOADING`) do the event's
+    /// work.
+    Loading(String),
     Missing,
 }
 
@@ -124,11 +149,12 @@ impl Catalog {
                 }
             }
         }
-        match DATA.iter().find(|(event, _)| *event == name) {
-            Some((_, registries)) => (
-                Status::Data(registries.iter().map(|r| (*r).to_owned()).collect()),
-                None,
-            ),
+        if let Some((_, registries)) = DATA.iter().find(|(event, _)| *event == name) {
+            let registries = registries.iter().map(|r| (*r).to_owned()).collect();
+            return (Status::Data(registries), None);
+        }
+        match LOADING.iter().find(|(event, _)| *event == name) {
+            Some((_, place)) => (Status::Loading((*place).to_owned()), None),
             None => (Status::Missing, None),
         }
     }
@@ -182,9 +208,10 @@ fn is_name(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_')
 }
 
-/// The names a label gives (`ServerTickEvent.Pre / .Post`): notes in
-/// brackets and a leading package dropped, a name that starts with `.` taken
-/// as a sibling of the one before it.
+/// The names a label gives (`ServerTickEvent.Pre / .Post`, or
+/// `EntityJoinLevelEvent, FinalizeSpawnEvent`): notes in brackets and a
+/// leading package dropped, a name that starts with `.` taken as a sibling
+/// of the one before it.
 fn counterparts(label: &str) -> Vec<String> {
     let mut plain = String::new();
     let mut depth = 0u32;
@@ -197,7 +224,11 @@ fn counterparts(label: &str) -> Vec<String> {
         }
     }
     let mut out: Vec<String> = Vec::new();
-    for part in plain.split(" / ").map(str::trim) {
+    for part in plain
+        .split(" / ")
+        .flat_map(|part| part.split(','))
+        .map(str::trim)
+    {
         let full = match (part.strip_prefix('.'), out.last()) {
             (Some(rest), Some(prev)) => match prev.rsplit_once('.') {
                 Some((parent, _)) => format!("{parent}.{rest}"),
@@ -314,7 +345,7 @@ pub fn table(mods: &BTreeMap<String, BTreeSet<String>>, catalog: &Catalog) -> St
         let hooks: Vec<String> = hooks.iter().map(|h| format!("`{h}`")).collect();
         hooks.join(", ")
     };
-    let mut counts = [0usize; 5];
+    let mut counts = [0usize; 6];
     let mut body = String::new();
     for (name, ids) in &rows {
         let (status, under) = catalog.status(name);
@@ -323,7 +354,8 @@ pub fn table(mods: &BTreeMap<String, BTreeSet<String>>, catalog: &Catalog) -> St
             Status::Phase(h) => (1, format!("other phase: {}", code(h))),
             Status::Noted(h) => (2, format!("not quite: {}", code(h))),
             Status::Data(r) => (3, format!("data: {}", code(r))),
-            Status::Missing => (4, "none".to_owned()),
+            Status::Loading(place) => (4, format!("load phases: {place}")),
+            Status::Missing => (5, "none".to_owned()),
         };
         counts[i] += 1;
         let under = under.map(|u| format!(" (as `{u}`)")).unwrap_or_default();
@@ -337,7 +369,7 @@ pub fn table(mods: &BTreeMap<String, BTreeSet<String>>, catalog: &Catalog) -> St
     let listening = mods.values().filter(|names| !names.is_empty()).count();
     format!(
         "{} mods; {listening} listen to NeoForge events or use its capabilities.\n\
-         {} names: {} with a hook, {} with another phase's, {} noted as not quite one, {} made data, {} with none.\n\n\
+         {} names: {} with a hook, {} with another phase's, {} noted as not quite one, {} made data, {} answered by the load phases, {} with none.\n\n\
          | Mods | NeoForge | Hooks | Used by |\n|---:|---|---|---|\n{body}",
         mods.len(),
         rows.len(),
@@ -346,5 +378,6 @@ pub fn table(mods: &BTreeMap<String, BTreeSet<String>>, catalog: &Catalog) -> St
         counts[2],
         counts[3],
         counts[4],
+        counts[5],
     )
 }

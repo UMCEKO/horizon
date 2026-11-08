@@ -61,7 +61,7 @@ fn picture(gpu: &Gpu, blend: &str) -> Vec<[u8; 4]> {
         },
     );
     assert!(post.sky.is_some(), "{:?}", post.notes);
-    let hud = HudBatch::new(SIZE);
+    let hud = HudBatch::scratch(SIZE);
     let mut frame = fixture_frame(&hud);
     frame.title = false;
     frame.skybox = true;

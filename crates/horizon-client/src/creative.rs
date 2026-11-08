@@ -1,13 +1,13 @@
 //! Creative inventory (CreativeModeInventoryScreen): vanilla's tabs and their
 //! contents as built by the game's own display generators
 //! (`creative-inventory.json`), a 9x5 scrolling grid and the search tab.
-use crate::{Result, items::ItemStack, ui::EditBox};
+use crate::{Result, enchant::Enchantments, items::ItemStack, lang, ui::EditBox};
 use serde_json::Value;
 use std::{
     collections::HashMap,
     fs,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 #[derive(Clone, Debug)]
@@ -81,6 +81,8 @@ pub struct Creative {
     /// The search tab's stacks, in its display order.
     search_items: Vec<ItemStack>,
     search_index: Vec<SearchEntry>,
+    /// The session's enchantment registry, shared with the hover tooltips.
+    enchantments: Arc<Enchantments>,
     /// Every exported tab, and the search tab's stacks with their entries and
     /// whether only permissions list them: `rebuild` keeps what is shown.
     exported: Vec<Exported>,
@@ -88,21 +90,25 @@ pub struct Creative {
     /// The `hasPermissions` the tabs were last built with
     /// (`CreativeModeTabs.tryRebuildTabContents`).
     permissions: bool,
+    /// Whether the game built the tabs since they loaded (`build`), which
+    /// asks the mods for their stacks: until then only the exported ones.
+    built: bool,
+    /// The stacks mods added to item tabs in the last build
+    /// (`BuildCreativeModeTabContentsEvent`), by tab id, in the order asked.
+    added: Vec<(String, Vec<ItemStack>)>,
     /// ItemPickerMenu.items: what the grid shows, filled when the tab or the
     /// search changes (selectTab, refreshSearchResults), not on every frame.
     shown: Mutex<Option<Shown>>,
     /// SessionSearchTrees.creativeByNameSearch: the lower-cased tooltip lines
-    /// of every search item in one language (keyed by the `itemGroup.search`
-    /// string), built on the first search and kept until the language or the
-    /// item list changes.
-    lines_cache: Mutex<Option<(String, Arc<[Vec<String>]>)>>,
+    /// of every search item, built on the first search and kept until the
+    /// translations, item list or enchantment registry change.
+    lines_cache: Mutex<Option<(u64, Arc<[Vec<String>]>)>>,
 }
 /// The grid's stacks for one tab, search text and language.
 struct Shown {
     tab: usize,
     search: String,
-    /// A display name, so a language change refills the search results.
-    language: String,
+    language_generation: u64,
     items: Arc<[ItemStack]>,
 }
 /// Display names from the pinned en_us language file.
@@ -111,16 +117,20 @@ pub struct Names {
     map: HashMap<String, String>,
 }
 impl Names {
-    pub fn load(root: &Path) -> Self {
+    pub fn load(root: &horizon_assets::resource_source::ResourceSource) -> Self {
         let read = |namespace: &str| {
-            fs::read(root.join(format!("assets/{namespace}/lang/en_us.json")))
+            root.read(&format!("assets/{namespace}/lang/en_us.json"))
                 .ok()
                 .and_then(|b| serde_json::from_slice::<HashMap<String, String>>(&b).ok())
                 .unwrap_or_default()
         };
         let mut map = read("minecraft");
         // Content mods' names (docs/modpacks.md); none in a vanilla root.
-        for namespace in crate::mod_content::namespaces(root) {
+        for namespace in root
+            .namespaces("assets")
+            .into_iter()
+            .filter(|ns| ns != "minecraft")
+        {
             map.extend(read(&namespace));
         }
         Self { map }
@@ -182,6 +192,8 @@ pub fn item_group_key(id: &str) -> Option<&'static str> {
 impl Creative {
     pub const WIDTH: f32 = 195.0;
     pub const HEIGHT: f32 = 136.0;
+    /// How far a tab row reaches outside the window, above or below it.
+    pub const TAB_ROW_DEPTH: f32 = 28.0;
     pub const TRASH_POSITION: (f32, f32) = (173.0, 112.0);
 
     /// Visible player slots in the creative inventory tab (game slot ids).
@@ -374,9 +386,12 @@ impl Creative {
             },
             search_items: Vec::new(),
             search_index: Vec::new(),
+            enchantments: Arc::default(),
             exported,
             exported_search,
             permissions: false,
+            built: false,
+            added: Vec::new(),
             shown: Mutex::new(None),
             lines_cache: Mutex::new(None),
         };
@@ -386,18 +401,30 @@ impl Creative {
     /// `CreativeModeTabs.buildAllTabContents` with `permissions`: the operator
     /// tab's display items generator lists its stacks only with them
     /// (`hasPermissions`), and the search tab with it; a category tab is
-    /// shown with a stack (`CreativeModeTab.shouldDisplay`).
+    /// shown with a stack (`CreativeModeTab.shouldDisplay`). The stacks mods
+    /// added (`added`) follow each tab's own, then join the end of the search
+    /// tab; a stack already listed there (same item and components) and an
+    /// empty one are left out.
     fn rebuild(&mut self) {
         let permissions = self.permissions;
         let keep = |operator: bool| permissions || !operator;
+        let usable = |s: &&ItemStack| s.count > 0 && s.item.as_ref() != "minecraft:air";
+        let added = &self.added;
         self.tabs = self
             .exported
             .iter()
             .filter_map(|e| {
-                let items: Vec<ItemStack> = (e.tab.items.iter().zip(&e.operator))
+                let mut items: Vec<ItemStack> = (e.tab.items.iter().zip(&e.operator))
                     .filter(|(_, o)| keep(**o))
                     .map(|(s, _)| s.clone())
                     .collect();
+                for (_, stacks) in added.iter().filter(|(tab, _)| *tab == e.tab.id) {
+                    for stack in stacks.iter().filter(usable) {
+                        if !items.iter().any(|s| s.same_item_same_components(stack)) {
+                            items.push(stack.clone());
+                        }
+                    }
+                }
                 (!e.category || !items.is_empty()).then(|| Tab {
                     items,
                     ..e.tab.header()
@@ -411,22 +438,65 @@ impl Creative {
             .filter(|(_, _, o)| keep(*o))
             .map(|(s, e, _)| (s.clone(), e.clone()))
             .unzip();
+        for stack in added.iter().flat_map(|(_, stacks)| stacks).filter(usable) {
+            if !self
+                .search_items
+                .iter()
+                .any(|s| s.same_item_same_components(stack))
+            {
+                // No exported tooltip lines or tags: searched by its name.
+                let (namespace, path) = split_id(&java_lower(&stack.item));
+                self.search_index.push(SearchEntry {
+                    namespace,
+                    path,
+                    ..Default::default()
+                });
+                self.search_items.push(stack.clone());
+            }
+        }
         self.forget_items();
     }
     /// `CreativeModeInventoryScreen.tryRefreshInvalidatedTabs`, which its
     /// constructor and `containerTick` run with `hasPermissions`
     /// (`Player.canUseGameMasterBlocks` and the Operator Items Tab option):
-    /// when that changed, the tabs are built again. A selected tab left
-    /// without stacks (the operator tab) gives way to the default tab; any
-    /// other keeps its first row (`refreshCurrentTabContents`). True when the
-    /// tabs were rebuilt.
-    pub fn set_permissions(&mut self, permissions: bool, names: &Names) -> bool {
-        if permissions == self.permissions {
-            return false;
+    /// the item tabs to build, by id, when the tabs need building, the first
+    /// time since they loaded and whenever `permissions` changed; None when
+    /// they are current. The game asks the mods for each tab's stacks
+    /// (`BuildCreativeModeTabContentsEvent`) and hands them to `build`.
+    pub fn tabs_to_build(&self, permissions: bool) -> Option<Vec<String>> {
+        if self.built && permissions == self.permissions {
+            return None;
         }
+        Some(
+            self.exported
+                .iter()
+                .filter(|e| !e.tab.search && !e.tab.inventory && !e.tab.hotbar)
+                .map(|e| e.tab.id.clone())
+                .collect(),
+        )
+    }
+    /// Invalidate collected contents after client resources are published, even
+    /// when permissions have not changed. The next refresh recollects mod stacks.
+    pub fn invalidate_build(&mut self) {
+        self.built = false;
+        self.forget_items();
+    }
+    /// `CreativeModeTabs.buildAllTabContents` with `permissions` and the
+    /// stacks mods add (`added`, by tab id, for the tabs `tabs_to_build`
+    /// named). A selected tab left without stacks (the operator tab) gives
+    /// way to the default tab; any other keeps its first row
+    /// (`refreshCurrentTabContents`).
+    pub fn build(
+        &mut self,
+        permissions: bool,
+        added: Vec<(String, Vec<ItemStack>)>,
+        names: &Names,
+    ) {
         let selected = self.tab().id.clone();
         let row = self.first_row(names);
         self.permissions = permissions;
+        self.built = true;
+        self.added = added;
         self.rebuild();
         match self.tabs.iter().position(|t| t.id == selected) {
             Some(tab) => {
@@ -448,7 +518,6 @@ impl Creative {
                 self.select(default.unwrap_or(0));
             }
         }
-        true
     }
     /// Where a stack comes in the creative tabs (the search tab lists them
     /// all, in tab order): the same stack's place, else its item's first.
@@ -465,6 +534,25 @@ impl Creative {
         self.tabs.iter().map(Tab::header).collect()
     }
     pub fn tab(&self) -> &Tab {
+        if self.tabs.is_empty() {
+            // An empty export (`{"tabs":[]}`) or a rebuild that filtered
+            // every category tab away leaves no tabs. `tabs.len() - 1`
+            // would underflow; return a shared empty tab instead, so
+            // `set_permissions`/`select`/`items` keep working.
+            static EMPTY_TAB: OnceLock<Tab> = OnceLock::new();
+            return EMPTY_TAB.get_or_init(|| Tab {
+                id: String::new(),
+                title: String::new(),
+                icon: "minecraft:stone".to_owned(),
+                items: Vec::new(),
+                top: true,
+                column: 0,
+                search: false,
+                inventory: false,
+                hotbar: false,
+                page: 0,
+            });
+        }
         &self.tabs[self.selected.min(self.tabs.len() - 1)]
     }
     /// The search tab's index (`CreativeModeTabs.searchTab`), the tab the chat
@@ -528,6 +616,17 @@ impl Creative {
     pub fn search_items(&self) -> &[ItemStack] {
         &self.search_items
     }
+    /// Use the active session's registry to resolve enchantments in search tooltips.
+    pub fn set_enchantments(&mut self, enchantments: Arc<Enchantments>) {
+        if !Arc::ptr_eq(&self.enchantments, &enchantments) {
+            self.enchantments = enchantments;
+            *self
+                .lines_cache
+                .get_mut()
+                .unwrap_or_else(|e| e.into_inner()) = None;
+            self.forget_items();
+        }
+    }
     /// Opening the screen: vanilla rebuilds CreativeModeInventoryScreen, whose
     /// init() makes a fresh search box and a zeroed scrollbar; only the tab
     /// persists (its static selectedTab). selectTab on the reopened screen
@@ -541,41 +640,45 @@ impl Creative {
             self.search.reset_blink();
         }
     }
-    /// Indices into `search_items` that CreativeModeInventoryScreen.refreshSearchResults
-    /// shows for `term`: the whole tab when empty, the tag tree after `#`, else
-    /// the name tree, both over vanilla's suffix arrays (substring matches,
-    /// results in the tab's order).
+    /// `CreativeModeInventoryScreen.refreshSearchResults`: indices into `search_items`,
+    /// matching tag text after `#` or tooltip text and ids in the name search.
     pub fn search_results(&self, term: &str, names: &Names) -> Vec<usize> {
-        let english =
-            names.display_get("itemGroup.search").as_deref() == names.get("itemGroup.search");
+        let english = lang::code() == lang::DEFAULT
+            && names.display_get("itemGroup.search").as_deref() == names.get("itemGroup.search");
         let local = if term.is_empty() || term.starts_with('#') {
             Arc::from([])
         } else if english && self.search_index.iter().all(|e| !e.lines.is_empty()) {
             // The exported English lines are the whole index.
             Arc::from([])
         } else {
-            let language = names.display_get("itemGroup.search").unwrap_or_default();
+            let generation = lang::generation();
             let mut cache = self.lines_cache.lock().unwrap_or_else(|e| e.into_inner());
-            match cache.as_ref().filter(|(l, _)| *l == language) {
+            match cache.as_ref().filter(|(built, _)| *built == generation) {
                 Some((_, lines)) => lines.clone(),
                 None => {
                     let lines = self.localized_lines(&|k| names.display_get(k));
-                    *cache = Some((language, lines.clone()));
+                    *cache = Some((generation, lines.clone()));
                     lines
                 }
             }
         };
         self.search_results_in(term, names, &local, english)
     }
-    /// Every search item's tooltip lines through `translate`, lower-cased.
+    /// `SessionSearchTrees.getTooltipLines`: the translated tooltip lines for the name search.
     fn localized_lines(&self, translate: &dyn Fn(&str) -> Option<String>) -> Arc<[Vec<String>]> {
         self.search_items
             .iter()
             .map(|s| {
-                crate::item_tooltip::lines(s, None, translate)
-                    .iter()
-                    .map(|l| java_lower(l))
-                    .collect()
+                crate::item_tooltip::lines(
+                    s,
+                    None,
+                    &crate::item_tooltip::NoAttributeListener,
+                    &self.enchantments,
+                    translate,
+                )
+                .iter()
+                .map(|l| java_lower(l))
+                .collect()
             })
             .collect()
     }
@@ -642,18 +745,21 @@ impl Creative {
     /// Items shown by the selected tab (the search tab filters by `search`),
     /// worked out again only when the tab, the search or the language changed.
     pub fn items(&self, names: &Names) -> Arc<[ItemStack]> {
+        if self.tabs.is_empty() {
+            return Arc::from([]);
+        }
         let tab = self.selected.min(self.tabs.len() - 1);
         let search = if self.tab().search {
             self.search.value.as_str()
         } else {
             ""
         };
-        let language = names.display_get("itemGroup.search").unwrap_or_default();
+        let language_generation = lang::generation();
         let mut shown = self.shown.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(s) = shown.as_ref()
             && s.tab == tab
             && s.search == search
-            && s.language == language
+            && s.language_generation == language_generation
         {
             return s.items.clone();
         }
@@ -668,7 +774,7 @@ impl Creative {
         *shown = Some(Shown {
             tab,
             search: search.to_owned(),
-            language,
+            language_generation,
             items: items.clone(),
         });
         items
@@ -807,7 +913,11 @@ impl Creative {
             // Right-aligned tabs (search, operator, inventory).
             x = Self::WIDTH - 27.0 * (7 - tab.column) as f32 + 1.0;
         }
-        let y = if tab.top { -28.0 } else { Self::HEIGHT - 4.0 };
+        let y = if tab.top {
+            -Self::TAB_ROW_DEPTH
+        } else {
+            Self::HEIGHT - 4.0
+        };
         (x, y)
     }
     /// `CreativeModeInventoryScreen.extractTabButton`'s cursor: an unselected
@@ -976,7 +1086,7 @@ pub fn click_display(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horizon_world::nbt::Tag;
+    use horizon_core::nbt::Tag;
 
     fn stack(item: &str, count: u32) -> ItemStack {
         ItemStack {
@@ -1346,6 +1456,36 @@ mod tests {
         c.tabs.iter().map(|t| t.id.as_str()).collect()
     }
 
+    /// The game's `refresh_creative_tabs`, with `mods` answering each tab
+    /// (`BuildCreativeModeTabContentsEvent`): true when the tabs were built.
+    fn refresh_with(
+        c: &mut Creative,
+        permissions: bool,
+        names: &Names,
+        mods: &dyn Fn(&str, bool) -> Vec<ItemStack>,
+    ) -> bool {
+        let Some(tabs) = c.tabs_to_build(permissions) else {
+            return false;
+        };
+        let added = tabs
+            .into_iter()
+            .map(|tab| {
+                let items = mods(&tab, permissions);
+                (tab, items)
+            })
+            .collect();
+        c.build(permissions, added, names);
+        true
+    }
+
+    fn refresh(c: &mut Creative, permissions: bool, names: &Names) -> bool {
+        refresh_with(c, permissions, names, &|_, _| Vec::new())
+    }
+
+    fn ids(items: &[ItemStack]) -> Vec<&str> {
+        items.iter().map(|s| s.item.as_ref()).collect()
+    }
+
     #[test]
     fn operator_stacks_stay_out_without_permissions() {
         let c = with_operator_tab();
@@ -1367,9 +1507,11 @@ mod tests {
     fn operator_tab_comes_and_goes_with_permissions() {
         let mut c = with_operator_tab();
         let names = Names::default();
-        assert!(!c.set_permissions(false, &names));
-        assert!(c.set_permissions(true, &names));
-        assert!(!c.set_permissions(true, &names));
+        // The first build after loading, then only when permissions change.
+        assert!(refresh(&mut c, false, &names));
+        assert!(!refresh(&mut c, false, &names));
+        assert!(refresh(&mut c, true, &names));
+        assert!(!refresh(&mut c, true, &names));
         assert_eq!(
             tab_ids(&c),
             [
@@ -1386,17 +1528,149 @@ mod tests {
         // The search tab keeps its place across the rebuild.
         c.select(2);
         c.search.set_value("block");
-        assert!(c.set_permissions(false, &names));
+        assert!(refresh(&mut c, false, &names));
         assert!(c.tab().search);
         assert_eq!(c.search.value, "block");
         assert!(c.items(&names).is_empty());
         // The selected operator tab is left empty: the default tab instead.
-        c.set_permissions(true, &names);
+        refresh(&mut c, true, &names);
         c.select(1);
         assert_eq!(c.items(&names).len(), 2);
-        c.set_permissions(false, &names);
+        refresh(&mut c, false, &names);
         assert_eq!(c.tab().id, "minecraft:building_blocks");
         assert_eq!(c.items(&names)[0].item.as_ref(), "minecraft:stone");
+    }
+
+    #[test]
+    fn mods_are_asked_for_each_item_tab_only() {
+        let mut c = with_operator_tab();
+        let names = Names::default();
+        let asked = std::cell::RefCell::new(Vec::new());
+        refresh_with(&mut c, false, &names, &|tab, permissions| {
+            asked.borrow_mut().push((tab.to_owned(), permissions));
+            Vec::new()
+        });
+        // Not the search or survival inventory tabs; the operator tab even
+        // without permissions, as vanilla builds it (and leaves it empty).
+        assert_eq!(
+            *asked.borrow(),
+            [
+                ("minecraft:building_blocks".to_owned(), false),
+                ("minecraft:op_blocks".to_owned(), false)
+            ]
+        );
+    }
+
+    #[test]
+    fn mods_stacks_follow_the_tabs_own_and_join_the_search_tab() {
+        let mut c = with_operator_tab();
+        let names = Names::default();
+        let mods = |tab: &str, _: bool| match tab {
+            "minecraft:building_blocks" => vec![
+                ItemStack::new("ae2:sky_stone_block", 1),
+                // Already in the tab and the search tab: not listed twice.
+                ItemStack::new("minecraft:stone", 1),
+                // Empty stacks are left out.
+                ItemStack::new("ae2:quartz_block", 0),
+                ItemStack::new("minecraft:air", 1),
+                // Listed once, though accepted twice.
+                ItemStack::new("ae2:sky_stone_block", 1),
+            ],
+            _ => Vec::new(),
+        };
+        assert!(refresh_with(&mut c, false, &names, &mods));
+        assert_eq!(
+            ids(&c.tabs[0].items),
+            ["minecraft:stone", "ae2:sky_stone_block"]
+        );
+        assert_eq!(
+            ids(c.search_items()),
+            ["minecraft:stone", "ae2:sky_stone_block"]
+        );
+        // Searched by its name, which it has no exported line for.
+        assert_eq!(c.search_results("sky", &names), [1]);
+        assert_eq!(c.search_results("ae2:", &names), [1]);
+        c.select(0);
+        assert_eq!(
+            ids(&c.items(&names)),
+            ["minecraft:stone", "ae2:sky_stone_block"]
+        );
+    }
+
+    #[test]
+    fn resource_reload_recollects_with_unchanged_permissions() {
+        let mut c = with_operator_tab();
+        let names = Names::default();
+        refresh_with(&mut c, false, &names, &|_, _| {
+            vec![ItemStack::new("example:old", 1)]
+        });
+        assert!(c.tabs_to_build(false).is_none());
+        c.invalidate_build();
+        refresh_with(&mut c, false, &names, &|_, _| {
+            vec![ItemStack::new("example:new", 1)]
+        });
+        assert_eq!(ids(c.search_items()), ["minecraft:stone", "example:new"]);
+        assert!(c.tabs_to_build(false).is_none());
+    }
+
+    #[test]
+    fn a_rebuild_asks_the_mods_again() {
+        let mut c = with_operator_tab();
+        let names = Names::default();
+        // An operator-only stack a mod lists with permissions alone.
+        let mods = |tab: &str, permissions: bool| {
+            if tab == "minecraft:op_blocks" && permissions {
+                vec![ItemStack::new("ae2:debug_card", 1)]
+            } else {
+                Vec::new()
+            }
+        };
+        refresh_with(&mut c, false, &names, &mods);
+        assert_eq!(
+            tab_ids(&c),
+            [
+                "minecraft:building_blocks",
+                "minecraft:search",
+                "minecraft:inventory"
+            ]
+        );
+        refresh_with(&mut c, true, &names, &mods);
+        assert_eq!(
+            ids(&c.tabs[1].items),
+            [
+                "minecraft:command_block",
+                "minecraft:barrier",
+                "ae2:debug_card"
+            ]
+        );
+        assert_eq!(
+            ids(c.search_items()),
+            [
+                "minecraft:stone",
+                "minecraft:command_block",
+                "minecraft:barrier",
+                "ae2:debug_card"
+            ]
+        );
+        // Without permissions the mod's stack goes with the tab.
+        refresh_with(&mut c, false, &names, &mods);
+        assert_eq!(ids(c.search_items()), ["minecraft:stone"]);
+    }
+
+    #[test]
+    fn a_mods_stack_brings_back_an_empty_category_tab() {
+        let mut c = with_operator_tab();
+        let names = Names::default();
+        // `shouldDisplay`: a category tab with a stack is shown, whoever added it.
+        refresh_with(&mut c, false, &names, &|tab, _| {
+            if tab == "minecraft:op_blocks" {
+                vec![ItemStack::new("ae2:creative_energy_cell", 1)]
+            } else {
+                Vec::new()
+            }
+        });
+        assert_eq!(tab_ids(&c)[1], "minecraft:op_blocks");
+        assert_eq!(ids(&c.tabs[1].items), ["ae2:creative_energy_cell"]);
     }
 
     #[test]
@@ -1667,5 +1941,37 @@ mod tests {
         assert!(!Creative::tab_wants_hand(&b, false, (169.0, 140.0)));
         assert!(Creative::tab_wants_hand(&b, false, (170.0, 140.0)));
         assert!(!Creative::tab_wants_hand(&b, false, (180.0, 132.0)));
+    }
+
+    /// An empty export (`{"tabs":[]}`) leaves no tabs. `tab()` and
+    /// `items()` used `tabs.len() - 1`, which underflows and panics;
+    /// both now handle the empty case.
+    #[test]
+    fn empty_creative_tabs_do_not_panic_on_tab_or_items() {
+        let c = Creative::from_json(&serde_json::json!({"tabs": []})).unwrap();
+        assert!(c.tabs.is_empty());
+        // Fallback tab: no panic, empty id, not search.
+        assert_eq!(c.tab().id, "");
+        assert!(!c.tab().search);
+        let names = Names {
+            map: HashMap::new(),
+        };
+        assert!(c.items(&names).is_empty());
+        assert!(c.tab_headers().is_empty());
+        assert_eq!(c.search_tab(), None);
+    }
+}
+
+#[cfg(test)]
+mod source_name_tests {
+    #[test]
+    fn item_names_read_selected_namespace_resources_without_files() {
+        use horizon_assets::resource_source::{Resource, ResourceSource};
+        let source = ResourceSource::indexed(std::collections::BTreeMap::from([(
+            "assets/reader/lang/en_us.json".into(),
+            Resource::bytes(br#"{"item.reader.widget":"Selected widget"}"#.to_vec()),
+        )]));
+        let names = super::Names::load(&source);
+        assert_eq!(names.item("reader:widget"), "Selected widget");
     }
 }

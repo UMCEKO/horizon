@@ -415,9 +415,12 @@ impl Menu {
         post
     }
 
-    /// Move one set of ingredients from the player's real inventory and grid.
+    /// Move one set of ingredients from the player's real inventory and grid,
+    /// or with `all` as many as they allow (`useMaxItems`: the largest count
+    /// every grid slot can take, alternatives shared out by
+    /// `StackedItemContents`, capped at the ingredients' stack size).
     /// The viewer leaves both alone on failure, including in creative mode.
-    pub fn transfer_recipe(&mut self, env: &Env, id: &str) -> Result<(), TransferError> {
+    pub fn transfer_recipe(&mut self, env: &Env, id: &str, all: bool) -> Result<(), TransferError> {
         if !(matches!(self.kind, Kind::Inventory | Kind::Crafting) || self.mod_crafting().is_some())
             || self.carried.is_some()
         {
@@ -447,7 +450,7 @@ impl Menu {
         let previous = self.containers.clone();
         let sources = self.sources.clone();
         let (drops, dropped) = (self.drops.len(), self.dropped.len());
-        self.place(env, &grid, &placement, &mut stacked, false, false);
+        self.place(env, &grid, &placement, &mut stacked, all, false);
         let no_room = self.dropped.len() != dropped;
         if no_room || !self.recipe_in_grid(env, id) {
             self.containers = previous;
@@ -473,13 +476,16 @@ impl Menu {
                     env.recipes.cooking.iter().find(|c| c.id == name),
                     self.containers[MAIN][0].as_ref(),
                 ) {
-                    (Some(c), Some(input)) => c.ingredient.test(input),
+                    (Some(c), Some(input)) => c.ingredient.test_in(env.loop_context, input),
                     _ => false,
                 }
             }
-            _ => env
-                .recipes
-                .recipe_matches(id, &self.containers[GRID], self.grid_size),
+            _ => env.recipes.recipe_matches(
+                env.loop_context,
+                id,
+                &self.containers[GRID],
+                self.grid_size,
+            ),
         }
     }
 
@@ -577,6 +583,22 @@ impl Menu {
         let Some((source, i)) = found else {
             return -1;
         };
+        let requested = count;
+        let slot = self.slots[target];
+        let count = if slot.container == super::MAIN {
+            match self.container_limits.get(slot.index).copied().flatten() {
+                Some(limit) => {
+                    let room = limit.saturating_sub(existing.as_ref().map_or(0, |s| s.count));
+                    if room == 0 {
+                        return -1;
+                    }
+                    count.min(room as i32)
+                }
+                None => count,
+            }
+        } else {
+            count
+        };
         let cell = match source {
             None => &mut self.containers[PLAYER][i],
             Some(k) => &mut self.sources[k][i],
@@ -592,7 +614,7 @@ impl Menu {
             None => self.containers[slot.container][slot.index] = Some(taken),
             Some(have) => have.count += taken.count,
         }
-        count - taken_count
+        requested - taken_count
     }
 
     /// `clearGrid`: the slots to clear go back to the inventory (or drop),
@@ -715,6 +737,9 @@ impl Menu {
 }
 
 #[cfg(test)]
+mod transfer_all_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -773,7 +798,7 @@ mod tests {
     #[test]
     fn damaged_or_named_stacks_are_not_counted() {
         let mut named = ItemStack::new("minecraft:stick", 4);
-        named.data_mut().custom_name = Some(horizon_world::nbt::Tag::String("x".into()));
+        named.data_mut().custom_name = Some(horizon_core::nbt::Tag::String("x".into()));
         let mut damaged = ItemStack::new("minecraft:iron_sword", 1);
         damaged.damage = 3;
         let mut s = Stacked::default();
@@ -783,5 +808,23 @@ mod tests {
         assert_eq!(s.keys().len(), 1);
         assert!(s.can_craft(&[&ing(&["minecraft:stick"]), &ing(&["minecraft:stick"])]));
         assert!(!s.can_craft(&[&ing(&["minecraft:stick"]); 3]));
+    }
+}
+
+#[cfg(test)]
+mod container_limit_tests {
+    #[test]
+    fn recipe_placement_stops_at_the_container_override() {
+        let mut menu = super::Menu::new(super::Kind::Furnace("smelting"));
+        menu.set_container_limits(vec![Some(10); 3]);
+        menu.containers[super::PLAYER][0] =
+            Some(crate::items::ItemStack::new("minecraft:stick", 20));
+        assert_eq!(menu.move_item_to_grid(0, "minecraft:stick", 20), 10);
+        assert_eq!(menu.slot(0).unwrap().count, 10);
+        assert_eq!(menu.move_item_to_grid(0, "minecraft:stick", 10), -1);
+        assert_eq!(
+            menu.containers[super::PLAYER][0].as_ref().unwrap().count,
+            10
+        );
     }
 }

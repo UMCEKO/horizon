@@ -7,7 +7,7 @@ use crate::{
     registries::Registries,
     text::{self, Style, Text},
 };
-use horizon_world::nbt::Tag;
+use horizon_core::nbt::Tag;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -26,7 +26,7 @@ pub fn bracketed(inner: Text) -> Text {
 }
 fn hover_name(text: Text, name: &str) -> Text {
     text.with_style(&Style {
-        hover: Some(Box::new(Text::literal(name))),
+        hover: Some(std::sync::Arc::new(Text::untrusted(name))),
         ..Style::default()
     })
 }
@@ -733,7 +733,7 @@ impl ScoreEntry {
     pub fn owner_name(&self) -> Text {
         match &self.display {
             Some(d) => comp_text(d),
-            None => Text::literal(self.owner.clone()),
+            None => Text::untrusted(self.owner.clone()),
         }
     }
     pub fn format_value(&self, default: &NumberFormat) -> Text {
@@ -1532,15 +1532,15 @@ mod tests {
         let back = Scoreboard::unpack(&sb.pack());
         assert_eq!(back, sb);
         // And through the binary NBT format.
-        let bytes = horizon_world::nbt::write_named(
-            &horizon_world::nbt::NamedTag {
+        let bytes = horizon_core::nbt::write_named(
+            &horizon_core::nbt::NamedTag {
                 name: "".into(),
                 tag: sb.pack(),
             },
             Default::default(),
         )
         .unwrap();
-        let (named, _) = horizon_world::nbt::read_named(&bytes, Default::default()).unwrap();
+        let (named, _) = horizon_core::nbt::read_named(&bytes, Default::default()).unwrap();
         assert_eq!(Scoreboard::unpack(&named.tag), sb);
     }
 

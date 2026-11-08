@@ -391,7 +391,7 @@ def impl_targets(header, text, workspace):
 def narrow_rust_sources(sources, scope):
     """Drop the workspace Rust sources a harness's declared PARITY_RUST_SCOPE proves it can't reach.
 
-    The scope lists source prefixes (crates/horizon-world/src/nbt.rs,
+    The scope lists source prefixes (crates/horizon-core/src/nbt.rs,
     crates/horizon-world/src/datafix/). It applies only if it is closed: no
     file in it names a module, crate item or macro outside it (crate::,
     super::, other workspace crates), declares a module it doesn't cover, or

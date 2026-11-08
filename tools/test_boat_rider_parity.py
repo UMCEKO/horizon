@@ -33,11 +33,11 @@ except ImportError:
 
 SOURCES = [
     'crates/horizon-client/src/game.rs',
-    'crates/horizon-client/src/game/boat_rider_fixture.rs',
-    'crates/horizon-client/src/game/remote_vehicles.rs',
-    'crates/horizon-client/src/game/boats.rs',
-    'crates/horizon-client/src/game/remote_objects.rs',
-    'crates/horizon-client/src/game/hand.rs',
+    'crates/horizon-client/src/game/entities/boat_rider_fixture.rs',
+    'crates/horizon-client/src/game/network/remote_vehicles.rs',
+    'crates/horizon-client/src/game/entities/boats/mod.rs',
+    'crates/horizon-client/src/game/network/remote_objects.rs',
+    'crates/horizon-client/src/game/items/hand.rs',
     'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaBoatRiderOracle.java',
     'mods/horizon/src/test/java/dev/horizonlab/parity/ParityData.java',
     'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaVehicleContainerOracle.java',

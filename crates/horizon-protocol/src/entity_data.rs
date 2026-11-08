@@ -8,7 +8,7 @@ use crate::{
     buf::{Codec, Reader, Writer},
     item::{Slot, Stack, Template},
 };
-use horizon_world::nbt::Tag;
+use horizon_core::nbt::Tag;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -182,6 +182,12 @@ pub enum PositionSource {
     Entity { id: i32, y_offset: f32 },
 }
 impl Particle {
+    /// A native mod's particle travels as `MOD_PARTICLE_ID` (-1) plus its name.
+    /// Vanilla reads the id with `IdMap.byIdOrThrow`, which throws on -1 and
+    /// drops the connection, so such a particle may only go to Horizon clients.
+    pub fn horizon_only(&self) -> bool {
+        matches!(self.data, Some(ParticleData::Mod(_)))
+    }
     pub fn read(r: &mut Reader) -> Result<Particle> {
         let id = r.varint()?;
         let id = if matches!(

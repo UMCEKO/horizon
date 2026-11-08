@@ -2,7 +2,7 @@
 //! decodes from a `show_dialog` packet, the values its inputs hold, and the
 //! click event an action makes of them (`Action.createAction`).
 use crate::text::Text;
-use horizon_world::nbt::Tag;
+use horizon_core::nbt::Tag;
 use serde_json::{Value, json};
 
 /// `CommonDialogData` and the type's own fields.

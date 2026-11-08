@@ -228,6 +228,7 @@ pub(super) fn read_stack(r: &mut Reader) -> Result<Option<Stack>> {
 }
 
 fn from_tag(saved: &Tag, known: Option<(i32, i32)>) -> Result<Stack> {
+    let _nested = super::Nested::enter()?;
     let _pinned = ids::unrenumbered();
     let (item, count) = match known {
         Some(values) => values,
@@ -614,7 +615,7 @@ fn predicates(value: &Tag) -> Result<Component> {
         if let Some(nbt) = nbt {
             let parsed;
             let nbt = if let Some(snbt) = text(Some(nbt)) {
-                let (value, used) = horizon_world::nbt::parse_snbt(&snbt).map_err(Error::new)?;
+                let (value, used) = horizon_core::nbt::parse_snbt(&snbt).map_err(Error::new)?;
                 if used != snbt.len() {
                     return Err(Error::new("trailing predicate SNBT"));
                 }
@@ -738,7 +739,7 @@ fn json_text(value: &Tag) -> Tag {
     }
     let mut json = datafix::json::from_nbt(value);
     fix(&mut json);
-    Tag::String(horizon_world::nbt::JavaString(
+    Tag::String(horizon_core::nbt::JavaString(
         datafix::json::to_stable_string(&json),
     ))
 }
@@ -1303,7 +1304,7 @@ fn legacy_raw(tag: &mut Tag, kind: i32, bytes: &[u8]) -> Result<()> {
                     tag,
                     "BlockEntityTag",
                     "Lock",
-                    Tag::String(horizon_world::nbt::JavaString(name)),
+                    Tag::String(horizon_core::nbt::JavaString(name)),
                 );
             }
         }

@@ -53,14 +53,20 @@ pub struct ConfirmExperimentsScreen {
 impl ConfirmExperimentsScreen {
     /// `ConfirmExperimentalFeaturesScreen::new`: the picked selection's
     /// feature packs, each with the flags it asks for.
-    pub fn new(resources: &std::path::Path, selected: &[String]) -> Self {
-        let entries = crate::datapack::feature_packs(resources)
+    pub fn new(
+        resources: &std::path::Path,
+        selected: &[String],
+        additional: &[std::sync::Arc<crate::datapack::DataPack>],
+    ) -> Self {
+        let entries = crate::datapack::feature_repository(resources, additional)
             .into_iter()
             .filter(|p| selected.contains(&p.id))
             .filter(|p| !p.features().is_empty())
             .map(|p| {
                 let name = format!("dataPack.{}.name", p.id);
-                let title = (if crate::lang::has(&name) {
+                let title = (if let Some(info) = &p.selection {
+                    info.title.clone()
+                } else if crate::lang::has(&name) {
                     Text::translate(&name, &[])
                 } else {
                     Text::literal(p.id.clone())

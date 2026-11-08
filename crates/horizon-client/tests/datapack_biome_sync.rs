@@ -26,6 +26,7 @@ fn write_base(root: &std::path::Path) -> Biomes {
     std::fs::create_dir_all(&maps).unwrap();
     std::fs::create_dir_all(&biome_dir).unwrap();
     std::fs::write(root.join("registries.json"), "{}").unwrap();
+    std::fs::write(root.join("items.json"), "{}").unwrap();
     for name in ["grass", "foliage", "dry_foliage"] {
         let file = std::fs::File::create(maps.join(format!("{name}.png"))).unwrap();
         let mut png = png::Encoder::new(file, 1, 1);
@@ -37,7 +38,10 @@ fn write_base(root: &std::path::Path) -> Biomes {
     for name in ["plains", "river"] {
         std::fs::write(biome_dir.join(format!("{name}.json")), "{}").unwrap();
     }
-    Biomes::load(root).unwrap()
+    Biomes::load(&horizon_assets::resource_source::ResourceRoot::directory(
+        root.to_path_buf(),
+    ))
+    .unwrap()
 }
 
 #[test]
@@ -47,8 +51,19 @@ fn a_pack_biome_is_sent_with_its_data_and_read_back_by_a_client() {
     let base = write_base(&root);
     let pack: Value = serde_json::from_str(r##"{"effects":{"grass_color":"#123456"}}"##).unwrap();
     let world = base.with_packs([("minecraft:tundra_x", &pack)]);
-    let sync =
-        SyncData::load_with(&root, &horizon_world::loot::PackOverlay::NONE, Some(&world)).unwrap();
+    let defaults = horizon_world::item_defaults::read(&root).unwrap();
+    let sync = SyncData::load_with(
+        &root,
+        &horizon_world::loot::PackOverlay::NONE,
+        Some(&world),
+        &defaults,
+        &horizon_client::crafting::ResolvedSources::load_or_empty(
+            &root,
+            &horizon_world::loot::PackOverlay::NONE,
+            &server_load(),
+        ),
+    )
+    .unwrap();
 
     // The encoder numbers a biome by its place in this list: none may be
     // missing, and the pack's is not the first.
@@ -118,4 +133,13 @@ fn recolouring_twice_starts_from_the_biome_files_each_time() {
     let lighter = |_: &str, c: &mut BiomeColors| c.grass += 0x10;
     let next = base.recolored_from(&once, lighter).unwrap();
     assert_eq!(grass(&next), grass(&base) + 0x10);
+}
+
+fn server_load() -> horizon_world::native_load_context::LoadContext {
+    use horizon_world::native_load_context::{DataLoadOrigin, LoadContext, LoadInputs};
+    LoadContext::new(
+        DataLoadOrigin::ServerDataLoad,
+        std::sync::Arc::new(LoadInputs::new(Default::default(), Default::default())),
+        [],
+    )
 }

@@ -22,8 +22,20 @@ impl MotionWorld<'_, '_, '_> {
             .damage
             .id(source)
             .ok_or("missing environment damage type")?;
-        self.player
-            .hurt(self.health, self.scene.health_rules, id, damage)?;
+        let rules = self.scene.health_rules;
+        self.player.hurt(
+            &mut crate::health::DamageLevel::of(
+                self.scene,
+                self.assets.registry,
+                self.tag_items,
+                self.block_registries,
+                self.damage_hooks,
+            ),
+            self.health,
+            rules,
+            id,
+            damage,
+        )?;
         Ok(())
     }
     pub(super) fn tick_remaining_fire(&mut self) -> Result<()> {
@@ -95,10 +107,16 @@ impl MotionWorld<'_, '_, '_> {
         let breath = if self.player.client_side {
             vanilla
         } else {
-            breathe(self.player.entity_id as u32, "minecraft:player", vanilla)
+            breathe(
+                self.loop_context,
+                self.player.entity_id as u32,
+                "minecraft:player",
+                vanilla,
+            )
         };
         // LivingDrownEvent, likewise.
         if let Some(drowning) = drown(
+            self.loop_context,
             self.player.entity_id as u32,
             "minecraft:player",
             &mut self.player.air,
@@ -130,8 +148,20 @@ impl MotionWorld<'_, '_, '_> {
                 .damage
                 .id("minecraft:out_of_world")
                 .ok_or("missing environment damage type")?;
-            self.player
-                .hurt(self.health, self.scene.health_rules, id, 4.0)?;
+            let rules = self.scene.health_rules;
+            self.player.hurt(
+                &mut crate::health::DamageLevel::of(
+                    self.scene,
+                    self.assets.registry,
+                    self.tag_items,
+                    self.block_registries,
+                    self.damage_hooks,
+                ),
+                self.health,
+                rules,
+                id,
+                4.0,
+            )?;
         }
         if in_wall {
             self.environment_hurt("minecraft:in_wall", 1.0)?;

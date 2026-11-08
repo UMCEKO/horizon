@@ -449,6 +449,8 @@ mod tests {
 
     #[test]
     fn invisible_mobs_cast_no_shadow() {
+        let mut test_level = crate::health::TestLevel::new(0);
+        let level = &mut test_level.level();
         use horizon_core::geometry::Vec3;
         let kind = crate::mobs::sensor_scan_tests::kind();
         let mut seen = Mob::new(1, kind.clone(), Vec3::new(1.0, 64.0, 1.0), 0.0);
@@ -459,6 +461,12 @@ mod tests {
         flagged.invisible = true;
         let mut potion = Mob::new(3, kind, Vec3::ZERO, 0.0);
         potion.add_effect("minecraft:invisibility", 600, 0);
+        crate::mobs::ai::tick_effects(
+            &mut potion,
+            crate::test_resources::server_loop_context(),
+            level,
+            None,
+        );
         let mobs = [seen, flagged, potion];
         let casters: Vec<_> = mob_casters(&mobs, 0.5).collect();
         assert_eq!(
