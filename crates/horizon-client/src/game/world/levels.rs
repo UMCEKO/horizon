@@ -710,6 +710,7 @@ impl Game<'_> {
                 Dim::Overworld => 1,
                 Dim::Nether => 2,
                 Dim::End => 3,
+                Dim::Extra(_) => 0,
             });
             let _level_span = horizon_client::spans::guard(match dim {
                 Dim::Overworld => "level_overworld",
@@ -825,9 +826,8 @@ impl Game<'_> {
         if self.options.spikes.is_none() && !horizon_client::spans::recording_here() {
             return self.tick_server(paused);
         }
-        // Spans recorded since the last tick ran between ticks (the chunk pump of the wait): they
-        // stay in the tick's list, but only the tick's own count as recorded in it.
-        let between = horizon_client::spans::take_raw();
+        // Discard spans from the wait between ticks so the capture records only this tick.
+        let _ = horizon_client::spans::take_raw();
         let (started, cpu) = (Instant::now(), horizon_client::spans::thread_cpu());
         let result = self.tick_server(paused);
         let wall = started.elapsed().as_secs_f32() * 1000.0;
@@ -836,11 +836,6 @@ impl Game<'_> {
             .map(|(end, start)| (end - start).as_secs_f32() * 1000.0);
         // Taken every tick: nothing else takes this thread's spans.
         let raw = horizon_client::spans::take_raw();
-        let spans = if between.is_empty() {
-            horizon_client::spans::merge(&raw)
-        } else {
-            horizon_client::spans::merge(&[&between[..], &raw[..]].concat())
-        };
         // The spans go to the slow ring; whose packets or events took the tick stays in the owner's log.
         let notes = horizon_client::spans::take_notes();
         if let Some(threshold) = self.options.spikes
@@ -1206,13 +1201,14 @@ mod tests {
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
         let loaded = load_resources(
-            root.clone(),
+            horizon_assets::resource_source::ResourceRoot::directory(root.clone()),
+            Vec::new(),
             None,
             &root,
             &settings,
             Instant::now(),
             false,
-            true,
+            crate::game::execution_role::ExecutionRole::IntegratedServer,
             &Progress::new(),
             &mut |_, _| unreachable!(),
         )
@@ -1227,7 +1223,9 @@ mod tests {
             loaded.gui.unwrap(),
             options,
             settings,
-            Audio::silent(&root),
+            Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+                root.clone(),
+            )),
             None,
         )
         .unwrap();

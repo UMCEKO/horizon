@@ -399,7 +399,7 @@ impl Game<'_> {
         self.profile.server_only = None;
         let start = client_perf::start_message(
             self.integrated.is_some(),
-            None::<String>.as_deref(),
+            self.renderer.as_ref().map(|r| r.info.name.as_str()),
         );
         let t = self.profile.perf.now();
         let path =

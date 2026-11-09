@@ -36,6 +36,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "integrated/capture.rs"]
 pub(super) mod capture;
 
 /// How long the window waits for the server thread to answer a `call`.

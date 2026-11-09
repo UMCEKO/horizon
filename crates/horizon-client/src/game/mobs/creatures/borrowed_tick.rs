@@ -377,6 +377,9 @@ impl Game<'_> {
                         m.ai.last_hurt_by_player == 1
                     };
                     ticked.insert(m.id);
+                    horizon_threads::work::set_entity(horizon_threads::work::entity_id(
+                        &mobs[i].kind.id,
+                    ));
                     // `horizon-report`'s cost by mob type (tick_profile.rs).
                     let sampled = if resuming {
                         resume_sampled.take()

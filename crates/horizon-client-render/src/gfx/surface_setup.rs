@@ -132,7 +132,7 @@ pub(super) async fn open_adapter(
     // atomics on images: their buffers and images. Filtering 32-bit float textures: shader
     // packs' RGBA32F buffers, which GL filters and mipmaps. Count draws: GPU culling's (`gpu_culling`).
     let features = timing::GpuTimer::features(adapter)
-        | pack_timing::PassTiming::features(adapter)
+        | super::pack_timing::PassTiming::features(adapter)
         | cull::Cull::features(adapter)
         | oit::features(adapter)
         | (adapter.features()

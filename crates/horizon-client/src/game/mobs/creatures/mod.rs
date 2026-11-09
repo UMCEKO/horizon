@@ -1506,6 +1506,7 @@ impl Game<'_> {
             // phases still advance; mob-specific follow-up must not reuse old ticks.
             self.creatures.ticked.clear();
             let primable = self.sulfur_cubes_adopted_explosive();
+            horizon_threads::work::clear_work();
             self.deliver_pending_mob_actions(level_id)?;
             return self.finish_creature_entities(&mut laps, &primable);
         }
@@ -1721,6 +1722,7 @@ impl Game<'_> {
             let bounds = m.bounds();
             self.effects_on_death(&names, bounds, false, Some(m.id), Some(&mut m.random));
         }
+        horizon_threads::work::clear_work();
         self.deliver_pending_mob_actions(level_id)?;
         self.finish_creature_entities(&mut laps, &primable)
     }
@@ -1770,6 +1772,7 @@ impl Game<'_> {
         laps.lap("creature_events");
         self.ordered_before(super::ordered_tick::Batch::Projectiles)?;
         self.tick_projectiles()?;
+        horizon_threads::work::clear_work();
         self.drain_entity_inside();
         self.tick_fangs();
         laps.lap("creature_projectiles");
@@ -5133,6 +5136,9 @@ impl Game<'_> {
                 }
                 let mut redirect = None;
                 projectiles.update(i, |p| {
+                    horizon_threads::work::set_entity(horizon_threads::work::entity_id(
+                        p.kind.id(),
+                    ));
                     if vanish
                         && matches!(p.kind, ProjectileKind::EnderPearl)
                         && p.owner == Some(Who::Player)

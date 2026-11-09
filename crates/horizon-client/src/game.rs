@@ -3196,7 +3196,7 @@ struct Game<'a> {
     input_trace: input_trace::InputTrace,
     /// A repro recording, export or replay (game/runtime/repro.rs).
     repro: repro::Repro,
-    /// The health history and client captures (game/profile_capture.rs).
+    /// The health history and client captures (game/runtime/profile_capture.rs).
     profile: profile_capture::Profile,
     /// `HORIZON_TICK_SCRIPT`'s scenario (game/tick_script.rs).
     tick_script: tick_script::TickScript,
@@ -18067,7 +18067,7 @@ pub(crate) fn run_with(
     {
         options.spikes = Some(dedicated::SLOW_TICK_MS);
     }
-    horizon_client::spans::enable(options.spikes.is_some());
+    tick_profile::want_spans(tick_profile::SPANS_SPIKES, options.spikes.is_some());
     let vanilla_root = options.resources.clone();
     // Saves from before 1.13 upgrade with vanilla's tables, prepared from the player's jar.
     horizon_world::datafix::set_resources(

@@ -77,7 +77,6 @@ pub fn main_with(
     };
     horizon_threads::configure_allocator();
     horizon_client::spans::startup::init(std::time::Instant::now());
-    horizon_client::spans::trace::start_from_env();
     let wasm = horizon_mod_wasm::load_installed(&launch.context.game_dir, &launch.context.dev_mods);
     let mut mods = mods;
     mods.extend(wasm.mods);

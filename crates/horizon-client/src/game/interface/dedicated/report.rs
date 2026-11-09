@@ -426,7 +426,7 @@ impl Game<'_> {
     pub(in crate::game) fn capture_end(&self, recording: &Recording) -> CaptureEnd {
         let span_ns = span_cost_nanos();
         let mob_ns = tick_profile::sample_cost_nanos();
-        // Off unless `HORIZON_SPIKES` or a mod (`native_spans`) still wants them.
+        // The slow ring keeps spans on after an all-thread capture ends.
         if recording.all_threads {
             tick_profile::want_spans(tick_profile::SPANS_REPORT, false);
         }
@@ -556,13 +556,14 @@ mod tests {
         use super::super::super::{Audio, Options, Progress, Settings, load_resources};
         let settings = Settings::default();
         let loaded = load_resources(
-            root.to_path_buf(),
+            horizon_assets::resource_source::ResourceRoot::directory(root.to_path_buf()),
+            Vec::new(),
             None,
             root,
             &settings,
             Instant::now(),
             false,
-            true,
+            super::super::super::execution_role::ExecutionRole::IntegratedServer,
             &Progress::new(),
             &mut |_, _| unreachable!(),
         )
@@ -578,7 +579,9 @@ mod tests {
             loaded.gui.unwrap(),
             options,
             settings,
-            Audio::silent(root),
+            Audio::silent(&horizon_assets::resource_source::ResourceSource::directory(
+                root.to_path_buf(),
+            )),
             None,
         )
         .unwrap()

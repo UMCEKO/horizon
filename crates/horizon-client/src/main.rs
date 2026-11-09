@@ -1,10 +1,6 @@
 //! Horizon: native Rust client for Minecraft Java Edition 26.3 gameplay.
 #![forbid(unsafe_code)]
 
-#[cfg(not(feature = "system-allocator"))]
-#[global_allocator]
-static ALLOCATOR: horizon_threads::GameAllocator = horizon_threads::GAME_ALLOCATOR;
-
 /// Identifies this executable as the game for launcher imports. `main` reads it so the
 /// linker keeps it; it carries neither an API version nor a per-build id.
 static GAME_IDENTITY: [u8; horizon_mod_package::game_identity::MARK.len()] =

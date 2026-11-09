@@ -21,8 +21,8 @@ use horizon_client::{
     },
     text::Text,
 };
-use horizon_perf_format::v1::{StopReason, Trigger};
 use horizon_core::nbt::{JavaString, Tag};
+use horizon_perf_format::v1::{StopReason, Trigger};
 use horizon_protocol::text::translatable;
 use mod_api::PermissionLevel;
 use std::{
@@ -1496,9 +1496,6 @@ impl Game<'_> {
                     &overload_warning(behind, self.clock.tick_duration()),
                 );
             }
-        }
-        if let Some(watchdog) = &watchdog {
-            watchdog.running.store(false, Ordering::Relaxed);
         }
         self.finish_perf_capture(&mut state, StopReason::Shutdown);
         let done = report::log_saved(&mut state.perf, true);

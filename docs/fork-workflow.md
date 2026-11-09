@@ -1,7 +1,8 @@
 # Working on sunrise-org/horizon (the perf platform fork)
 
 The perf platform ([perf-platform.md](perf-platform.md)) is built on this fork. Its default branch is `perf-platform`:
-upstream `main` plus the platform's work. The fork's `main` stays an exact mirror of upstream `main`.
+`arismoko/horizon`'s `main` plus the platform's work. The fork's `main` stays an exact mirror of
+`horizon-rust/horizon`'s `main`.
 
 ## Taking a piece
 

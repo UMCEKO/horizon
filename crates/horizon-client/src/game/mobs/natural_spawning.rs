@@ -1275,6 +1275,7 @@ impl<'a> Game<'a> {
                         }
                         spawned
                     };
+                    horizon_threads::work::set_chunk(chunk.0, chunk.1);
                     spawn_selection::spawn_for_chunk(
                         &level,
                         &mut random,
@@ -1290,6 +1291,7 @@ impl<'a> Game<'a> {
             let rides = std::mem::take(&mut *level.rides.borrow_mut());
             (created, rides)
         };
+        horizon_threads::work::clear_work();
         spawn_selection::attempt_counters(true);
         laps.lap("sn_attempts");
         self.world.random = random;

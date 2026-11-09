@@ -24,10 +24,9 @@ thread_local! {
     static COSTS: RefCell<FxHashMap<(&'static str, usize), Cost>> = RefCell::default();
 }
 
-/// Users of the tick spans: the slow ring, a recording, or a mod.
+/// Users of the tick spans: the slow ring or a recording.
 pub(super) const SPANS_SPIKES: u8 = 1;
 pub(super) const SPANS_REPORT: u8 = 2;
-pub(super) const SPANS_MOD: u8 = 4;
 static SPAN_USERS: AtomicU8 = AtomicU8::new(0);
 
 /// `user` wants the spans recorded, or no longer does: they stay on while anyone does.

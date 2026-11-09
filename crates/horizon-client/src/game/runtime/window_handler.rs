@@ -1546,12 +1546,8 @@ impl Game<'_> {
                     self.observe_fullscreen();
                     self.sync_ime();
                     let now = Instant::now();
-                    let frame_cpu = self
-                        .options
-                        .spikes
-                        .and_then(|_| horizon_client::spans::thread_cpu());
+                    horizon_threads::work::tick_start();
                     let elapsed = now.duration_since(self.previous);
-                    let between = now.saturating_duration_since(self.frame_end);
                     self.frame_ticks = elapsed.as_secs_f32() * 20.0;
                     self.previous = now;
                     if self.studio_freecam.active
@@ -1644,46 +1640,19 @@ impl Game<'_> {
                     let ticked = Instant::now();
                     let rendered = self.render_and_flip(elapsed)?;
                     horizon_client::spans::time("pr_cursor", || self.apply_cursor_icon());
-                    // The frame's spans, taken every frame they are recorded so they never
-                    // pile up: the slow-frame line's.
+                    // Take recorded spans every frame so they never pile up.
                     let frame_spans = if horizon_client::spans::recording_here() {
                         horizon_client::spans::take_raw()
                     } else {
                         Vec::new()
                     };
-                    if horizon_client::spans::trace::due() {
-                        horizon_client::spans::trace::stop();
-                    }
-                    if let Some(threshold) = self.options.spikes
-                        && let Some(r) = self.renderer.as_ref()
-                    {
-                        let cpu = now.elapsed().saturating_sub(r.last_wait).as_secs_f32() * 1000.0;
-                        // Spans timed between frames (`idle`) come first.
-                        let spans = horizon_client::spans::merge(&frame_spans);
-                        let between = between.as_secs_f32() * 1000.0;
-                        if cpu > threshold || between > threshold {
-                            // The render thread's own CPU time in the frame:
-                            // far below the wall time, the frame waited.
-                            let worked = horizon_client::spans::thread_cpu()
-                                .zip(frame_cpu)
-                                .map_or_else(String::new, |(end, start)| {
-                                    format!(", cpu {:.1} ms", (end - start).as_secs_f32() * 1000.0)
-                                });
-                            let gap = if between > threshold {
-                                format!(", {between:.1} ms before it")
-                            } else {
-                                String::new()
-                            };
-                            log::info!(
-                                "Horizon: slow frame {cpu:.1} ms{worked}{gap} ({steps} ticks): {}",
-                                horizon_client::spans::describe(&spans)
-                            );
-                        }
-                    }
+                    let mut perf_times = None;
                     if let Some(r) = self.renderer.as_mut() {
                         let cpu = now.elapsed().saturating_sub(r.last_wait);
+                        horizon_threads::work::tick_end(cpu.as_nanos() as u64);
                         if rendered {
                             let ms = |d: Duration| d.as_secs_f32() * 1000.0;
+                            perf_times = Some((ms(cpu), r.gpu_times.last().copied()));
                             self.frame_graph.record(
                                 ms(elapsed),
                                 ms(cpu),
@@ -1792,8 +1761,17 @@ impl Game<'_> {
                         log::warn!("Horizon: couldn't save the world icon: {error}");
                     }
                     if rendered {
-                        self.record_frame_allocs();
-                        self.record_perf_frame(elapsed.as_secs_f64() * 1000.0, ms(cpu), rendered, now);
+                        if horizon_threads::alloc_count::ON {
+                            self.record_frame_allocs();
+                        }
+                        if let Some((cpu, gpu)) = perf_times {
+                            self.record_perf_frame(
+                                elapsed.as_secs_f32() * 1000.0,
+                                cpu,
+                                gpu,
+                                &frame_spans,
+                            );
+                        }
                         self.frame_stats.record(elapsed.as_secs_f32() * 1000.0);
                         self.debug_charts.frame_times.log(elapsed.as_nanos() as i64);
                         if self.frames == 0 {
@@ -1834,7 +1812,6 @@ impl Game<'_> {
                             self.fps_frames = 0;
                             self.fps_at = Instant::now();
                         }
-                        self.frame_end = Instant::now();
                         if self.options.frames.is_some_and(|f| self.frames >= f)
                             || self
                                 .options
@@ -1877,6 +1854,7 @@ impl Game<'_> {
         if let Err(e) = self.save_for_exit() {
             log::warn!("Horizon: failed to save the world on exit: {e}");
         }
+        self.finish_profile();
         // The client's last moment: its world is left and saved, its options and
         // resources are still held. A dedicated server and a splitscreen guest skip
         // it, as `client_setup` does.

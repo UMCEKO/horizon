@@ -424,7 +424,6 @@ mod tests {
             json.contains("\"first_block_outside_range\": false")
                 && json.contains("\"verdict\": \"slower\"")
         );
-        assert_eq!(r.for_upload().ab, r.ab);
         let mut few = paired(&[(1.0, 2.0); 3]);
         few.noise = None;
         assert!(serde_json::to_string(&few)

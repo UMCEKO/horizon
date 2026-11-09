@@ -128,7 +128,7 @@ impl LaunchArguments {
                 }
                 "--fullscreen" | "--session-stdin" | "--creative" | "--test-terrain"
                 | "--no-pause" | "--offscreen" | "--headless" | "--control" | "--server-thread"
-                | "--in-frame" | "--no-server-thread" | "--pregen" => {
+                | "--in-frame" | "--no-server-thread" | "--pregen" | "--profile" => {
                     rest.push(Argument::Switch(arg));
                 }
                 _ => {
