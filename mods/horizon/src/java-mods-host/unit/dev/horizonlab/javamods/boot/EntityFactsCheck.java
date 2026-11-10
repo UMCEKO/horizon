@@ -33,6 +33,9 @@ public final class EntityFactsCheck {
     public static void main(String[] args) throws Exception {
         var log = new ArrayList<String>();
         var world = new EntityFacts.World() {
+            public boolean client() {
+                return false;
+            }
             public int listeners(String event) {
                 return switch (event) {
                     case "r/tick/Post", "r/Leave", "r/Unknown", "r/Parent", "r/Child" -> 1 + (event.equals("r/Leave") ? 1 : 0);
@@ -104,7 +107,32 @@ public final class EntityFactsCheck {
         refused("{\"opaque\": [\"mek: service ClassProcessorProvider: x.Provider\"]}", "mek: service ClassProcessorProvider");
         var ambiguous = FACTS.replace("\"handler\": \"head\"", "\"handler\": \"ret\", \"x\": 1").replace("\"mixin\": \"a.M\", \"handler\": \"ret\", \"at\": \"RETURN\"", "\"mixin\": \"z.M\", \"handler\": \"ret\", \"at\": \"RETURN\"");
         refusedBuild(ambiguous, world, "z.M.ret");
+        sides(world);
         System.out.println("EntityFactsCheck ok");
+    }
+
+    private static String sided(String side) {
+        var handler = "{\"mixin\": \"s.M\", \"handler\": \"away\", \"at\": \"HEAD\", \"cancellable\": false, \"conditional\": false, \"side\": \"" + side + "\"}";
+        var body = "{\"mixin\": \"s.M\", \"handler\": \"away\", \"conditional\": false, \"side\": \"" + side + "\"}";
+        return FACTS.replace("{\"mixin\": \"b.M\", \"handler\": \"gone\", \"at\": \"HEAD\", \"cancellable\": false, \"conditional\": true}", handler)
+            .replace("[{\"mixin\": \"b.M\", \"handler\": \"gone\", \"conditional\": true}]", "[" + body + "]");
+    }
+
+    private static void sides(EntityFacts.World server) throws Exception {
+        var clientWorld = new EntityFacts.World() {
+            public boolean client() { return true; }
+            public int listeners(String event) { return server.listeners(event); }
+            public List<String> busEvents(String root, List<String> prefixes) { return server.busEvents(root, prefixes); }
+            public List<String[]> merged(String target, String handler) { return server.merged(target, handler); }
+        };
+        var log = new ArrayList<String>();
+        var wrongDist = sided("client");
+        var bytes = EntityFacts.build(JsonParser.parseString(wrongDist).getAsJsonObject(), server, log::add, List.of());
+        expect(bytes.length > 0 && log.stream().anyMatch(l -> l.equals("s.M.away is not merged into " + ITEM + ": it is a client mixin")), "a client mixin is skipped on the server: " + log);
+        expect(log.stream().anyMatch(l -> l.startsWith("body routes of ") && l.contains("#other()V")), "a body key of the other dist only is left out: " + log);
+        refusedBuild(sided("server"), server, "s.M.away");
+        refusedBuild(wrongDist, clientWorld, "s.M.away");
+        EntityFacts.build(JsonParser.parseString(sided("server")).getAsJsonObject(), clientWorld, line -> {}, List.of());
     }
 
     private static void refused(String json, String named) throws Exception {

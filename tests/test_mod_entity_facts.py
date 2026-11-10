@@ -91,9 +91,9 @@ LEDGER = {'methods': {}, 'fns': []}
 ITEM = 'net.minecraft.world.entity.item.ItemEntity'
 
 
-def mixin(handler, method, at, kind='inject', config='fix.mixins.json'):
+def mixin(handler, method, at, kind='inject', config='fix.mixins.json', side='common'):
     return {'mod': 'fix', 'config': config, 'mixin': 'fixture.mixin.ItemMixin', 'handler': handler, 'kind': kind, 'target_class': [ITEM],
-            'target_method': [method], 'at': [at], 'side': 'common', 'access': False}
+            'target_method': [method], 'at': [at], 'side': side, 'access': False}
 
 
 @unittest.skipUnless(javac(), 'needs javac')
@@ -123,7 +123,7 @@ class Facts(unittest.TestCase):
                                              'META-INF/services/net.neoforged.neoforgespi.transformation.ClassProcessorProvider': 'x.Provider\n'})
         cls.install, cls.root = install, root
         cls.entries = [mixin('head', 'tick', 'HEAD'), mixin('ret', 'tick', 'RETURN'), mixin('captured', 'tick', 'HEAD'), mixin('middle', 'hurt', 'INVOKE', config='cond.mixins.json'),
-                       mixin('pick', 'tryPick', 'HEAD')]
+                       mixin('pick', 'tryPick', 'HEAD', side='client')]
         cls.result = mr.analyse(install, root / 'out', LEDGER, entries=cls.entries, host=[], log=lambda *_: None)
         cls.facts = cls.result['entity_facts']
 
@@ -211,7 +211,13 @@ class Routes(Facts):
 
     def test_body_handlers_of_a_config_plugin_mixin_are_listed_for_boot_to_check(self):
         item = self.edge()
-        self.assertEqual(item['body_conditional'], {'net/minecraft/world/entity/item/ItemEntity#hurt(F)Z': [{'mixin': 'fixture.mixin.ItemMixin', 'handler': 'middle', 'conditional': True}]})
+        self.assertEqual(item['body_conditional'], {'net/minecraft/world/entity/item/ItemEntity#hurt(F)Z': [{'mixin': 'fixture.mixin.ItemMixin', 'handler': 'middle', 'conditional': True, 'side': 'common'}]})
+
+    def test_a_handler_carries_the_side_of_its_mixin(self):
+        pick = self.edge()['edge']['net/minecraft/world/entity/item/ItemEntity#tryPick(I)Z']
+        self.assertEqual([(h['handler'], h['side']) for h in pick], [('pick', 'client')])
+        tick = self.edge()['edge']['net/minecraft/world/entity/item/ItemEntity#tick()V']
+        self.assertEqual({h['side'] for h in tick}, {'common'})
 
     def test_own_type_overrides_are_keyed_by_the_mod_class(self):
         self.assertEqual(self.facts['overrides'], {'fixture/Zom': ['net/minecraft/world/entity/Entity#tick()V']})

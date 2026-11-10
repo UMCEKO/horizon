@@ -397,7 +397,7 @@ def handler_method(archives, mod, mixin, handler):
 def route_facts(archives, hier, methods):
     """routes[class] = {edge: {key: [handler]}, body: [key], body_conditional: {key: [handler]}}.
 
-    A handler of a config-plugin mixin is `conditional`; a body key whose changes are all conditional lists them in body_conditional, for boot to check."""
+    A handler of a config-plugin mixin is `conditional`, and carries the `side` of its mixin (common, client, server); a body key whose changes are all conditional or sided lists them in body_conditional, for boot to check."""
     routes = collections.defaultdict(lambda: {'edge': collections.defaultdict(list), 'body': {}})
     for key, row in methods.items():
         owner, _, name = key.partition('#')
@@ -416,18 +416,19 @@ def route_facts(archives, hier, methods):
                 args = hp[:-1] if edge else None
             keys = [f'{owner}#{name}{d or ""}' for d in library_target(hier, owner, name, change['desc'], args)]
             conditional = bool(change.get('conditional'))
+            side = change['side']
             if edge:
                 cancellable = bool((found[0]['annos'].get(INJECT) or {}).get('cancellable'))
                 for at in change['at']:
-                    routes[owner]['edge'][keys[0]].append({'mixin': mixin, 'handler': handler, 'at': at, 'cancellable': cancellable, 'conditional': conditional})
+                    routes[owner]['edge'][keys[0]].append({'mixin': mixin, 'handler': handler, 'at': at, 'cancellable': cancellable, 'conditional': conditional, 'side': side})
             else:
                 for k in keys:
-                    routes[owner]['body'].setdefault(k, []).append({'mixin': mixin, 'handler': handler, 'conditional': conditional})
+                    routes[owner]['body'].setdefault(k, []).append({'mixin': mixin, 'handler': handler, 'conditional': conditional, 'side': side})
     out = {}
     for cls, r in sorted(routes.items()):
         body = r['body']
         out[cls] = {'edge': dict(sorted(r['edge'].items())), 'body': sorted(body),
-                    'body_conditional': {k: v for k, v in sorted(body.items()) if all(h['conditional'] for h in v)}}
+                    'body_conditional': {k: v for k, v in sorted(body.items()) if all(h['conditional'] or h['side'] != 'common' for h in v)}}
     return out
 
 

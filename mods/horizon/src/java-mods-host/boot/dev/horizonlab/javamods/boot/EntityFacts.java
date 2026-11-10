@@ -47,6 +47,9 @@ public final class EntityFacts {
 
         /** The names of the target class's methods that end with `$handler`, with the mixin class each was merged from (null when unknown). */
         List<String[]> merged(String target, String handler);
+
+        /** Whether this JVM is the client dist. */
+        boolean client();
     }
 
     private static volatile byte[] bin = new byte[0];
@@ -98,6 +101,10 @@ public final class EntityFacts {
                     var handler = h.getAsJsonObject();
                     var name = handler.get("handler").getAsString();
                     var mixin = handler.get("mixin").getAsString();
+                    if (otherDist(handler, world)) {
+                        log.accept(mixin + "." + name + " is not merged into " + target + ": it is a " + handler.get("side").getAsString() + " mixin");
+                        continue;
+                    }
                     var found = mergedName(world, target, name, mixin);
                     if (found == null) {
                         if (handler.get("conditional").getAsBoolean()) {
@@ -229,9 +236,15 @@ public final class EntityFacts {
         return Routing.mergedName(world.merged(target, handler), mixin);
     }
 
+    private static boolean otherDist(JsonObject handler, World world) {
+        var side = handler.get("side");
+        return side != null && !"common".equals(side.getAsString()) && !side.getAsString().equals(world.client() ? "client" : "server");
+    }
+
     private static boolean anyMerged(World world, String target, JsonArray handlers) {
         for (JsonElement h : handlers) {
             var o = h.getAsJsonObject();
+            if (otherDist(o, world)) continue;
             if (mergedName(world, target, o.get("handler").getAsString(), o.get("mixin").getAsString()) != null) return true;
         }
         return false;
@@ -342,6 +355,11 @@ public final class EntityFacts {
         @Override
         public List<String[]> merged(String target, String handler) {
             return Routing.merged(target, handler);
+        }
+
+        @Override
+        public boolean client() {
+            return net.neoforged.fml.loading.FMLEnvironment.getDist().isClient();
         }
     }
 
