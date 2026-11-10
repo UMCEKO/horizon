@@ -301,7 +301,11 @@ impl<T> StateValues<T> {
 
 impl BlockShapes {
     fn check(&self) -> Result<(), String> {
-        self.check_selection("shapes")?;
+        self.check_as("shapes")
+    }
+
+    fn check_as(&self, label: &str) -> Result<(), String> {
+        self.check_selection(label)?;
         for boxes in self.values.values().chain(self.default.iter()) {
             if boxes.len() > 16
                 || boxes.iter().any(|bounds| {
@@ -397,10 +401,18 @@ struct BlockFile {
     collision_context_shapes: BTreeMap<ShapeEntityKind, BlockShapes>,
     interaction_shapes: Option<BlockShapes>,
     state_light: Option<StateLight>,
+    light_dampening: Option<StateValues<u8>>,
+    skylight_down: Option<StateValues<bool>>,
+    solid_render: Option<StateValues<bool>>,
+    can_occlude: Option<StateValues<bool>>,
+    shape_occlusion: Option<StateValues<bool>>,
+    occlusion: Option<BlockShapes>,
     #[serde(default)]
     state_properties: BTreeMap<String, StateProperty>,
     #[serde(default)]
     default_state: BTreeMap<String, String>,
+    #[serde(default)]
+    replace_template_properties: bool,
     #[serde(default)]
     connects_to: Option<String>,
     #[serde(default)]
@@ -451,10 +463,24 @@ pub struct Block {
     pub interaction_shapes: Option<BlockShapes>,
     /// Per-state emission; takes precedence over `properties.light`.
     pub state_light: Option<StateLight>,
+    /// `BlockState.getLightDampening` per state, 0 to 15.
+    pub light_dampening: Option<StateValues<u8>>,
+    /// `BlockState.propagatesSkylightDown` per state.
+    pub skylight_down: Option<StateValues<bool>>,
+    /// `BlockState.isSolidRender` per state.
+    pub solid_render: Option<StateValues<bool>>,
+    /// `BlockState.canOcclude` per state.
+    pub can_occlude: Option<StateValues<bool>>,
+    /// `BlockState.useShapeForLightOcclusion` per state.
+    pub shape_occlusion: Option<StateValues<bool>>,
+    /// `BlockState.getOcclusionShape` per state.
+    pub occlusion: Option<BlockShapes>,
     /// State properties of its own, which its template does not have.
     pub state_properties: BTreeMap<String, StateProperty>,
     /// State properties overlaid on the template default.
     pub default_state: BTreeMap<String, String>,
+    /// `state_properties` replace the template's: each combination copies the template state that agrees on the names they share.
+    pub replace_template_properties: bool,
     /// Also add a block item with the same id.
     pub item: bool,
     /// The sound event a fence gate plays opening, instead of its wood's
@@ -908,6 +934,20 @@ enum Source {
     Code,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DataComponentTypeFile {
+    persistent: bool,
+}
+
+/// A data component type the mod's code registers: only its id and whether stacks save it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DataComponentType {
+    pub id: String,
+    /// It has a codec (`!DataComponentType.isTransient()`).
+    pub persistent: bool,
+}
+
 /// A mod's content: its files and declarations.
 #[derive(Debug)]
 pub struct Content {
@@ -925,6 +965,7 @@ pub struct Content {
     /// Block entity types declared by native code, not content files.
     pub block_entity_types: Vec<BlockEntityType>,
     pub menu_types: Vec<MenuType>,
+    pub data_component_types: Vec<DataComponentType>,
     /// The namespaces it owns: the mod id, then the manifest's `namespaces`.
     pub namespaces: Vec<String>,
 }
@@ -1049,6 +1090,7 @@ impl Content {
             entity_types: Vec::new(),
             block_entity_types: Vec::new(),
             menu_types: Vec::new(),
+            data_component_types: Vec::new(),
             namespaces: manifest.owned_namespaces().map(str::to_owned).collect(),
         };
         content.check(manifest, declared)?;
@@ -1069,6 +1111,7 @@ impl Content {
             entity_types: Vec::new(),
             block_entity_types: Vec::new(),
             menu_types: Vec::new(),
+            data_component_types: Vec::new(),
             namespaces: vec![namespace.to_owned()],
         }
     }
@@ -1179,6 +1222,7 @@ impl Content {
         let mut fluids = Vec::new();
         let mut types = Vec::new();
         let mut menus = Vec::new();
+        let mut component_types = Vec::new();
         for name in &self.files {
             let mut parts = name.splitn(3, '/');
             let (top, namespace, rest) = (
@@ -1215,9 +1259,11 @@ impl Content {
                 types.push((kind, name.clone()));
             } else if let Some(menu) = parse("menu") {
                 menus.push((menu, name.clone()));
+            } else if let Some(kind) = parse("data_component_type") {
+                component_types.push((kind, name.clone()));
             } else {
                 return Err(format!(
-                    "{name}: data/{id}/horizon/ holds block/, item/, mob_effect/, creative_tab/, fluid/, entity_type/ and menu/*.json only"
+                    "{name}: data/{id}/horizon/ holds block/, item/, mob_effect/, creative_tab/, fluid/, entity_type/, menu/ and data_component_type/*.json only"
                 ));
             }
         }
@@ -1248,8 +1294,15 @@ impl Content {
                 collision_context_shapes: file.collision_context_shapes,
                 interaction_shapes: file.interaction_shapes,
                 state_light: file.state_light,
+                light_dampening: file.light_dampening,
+                skylight_down: file.skylight_down,
+                solid_render: file.solid_render,
+                can_occlude: file.can_occlude,
+                shape_occlusion: file.shape_occlusion,
+                occlusion: file.occlusion,
                 state_properties: file.state_properties,
                 default_state: file.default_state,
+                replace_template_properties: file.replace_template_properties,
                 item: file.item,
                 open_sound: file.open_sound,
                 close_sound: file.close_sound,
@@ -1266,6 +1319,10 @@ impl Content {
                 sign_text_glow: file.sign_text_glow,
                 base_block: file.base_block,
             };
+            if let Err(e) = check_state_format(&block) {
+                log::warn!("skipping block {}: {name}: {e}", block.id);
+                continue;
+            }
             check_block(&block).map_err(|e| format!("{name}: {e}"))?;
             if block.item {
                 ids.insert(block.id.clone());
@@ -1519,6 +1576,14 @@ impl Content {
             }
             self.menu_types.push(MenuType { id: menu, ..file });
         }
+        for (kind, name) in component_types {
+            let file: DataComponentTypeFile =
+                serde_json::from_slice(&reader.read(&name)?).map_err(|e| format!("{name}: {e}"))?;
+            self.data_component_types.push(DataComponentType {
+                id: kind,
+                persistent: file.persistent,
+            });
+        }
         Ok(())
     }
 }
@@ -1574,6 +1639,38 @@ fn check_item(item: &Item) -> Result<(), String> {
     check_components(&item.components, &["max_stack_size", "rarity"])
 }
 
+/// The per-state lighting and occlusion fields and `replace_template_properties`.
+fn check_state_format(file: &Block) -> Result<(), String> {
+    if let Some(dampening) = &file.light_dampening {
+        dampening.check_selection("light_dampening")?;
+        if dampening
+            .values
+            .values()
+            .chain(dampening.default.iter())
+            .any(|v| *v > 15)
+        {
+            return Err("light_dampening values are integers 0 to 15".into());
+        }
+    }
+    for (label, flags) in [
+        ("skylight_down", &file.skylight_down),
+        ("solid_render", &file.solid_render),
+        ("can_occlude", &file.can_occlude),
+        ("shape_occlusion", &file.shape_occlusion),
+    ] {
+        if let Some(flags) = flags {
+            flags.check_selection(label)?;
+        }
+    }
+    if let Some(occlusion) = &file.occlusion {
+        occlusion.check_as("occlusion")?;
+    }
+    if file.replace_template_properties && file.state_properties.is_empty() {
+        return Err("replace_template_properties needs state_properties".into());
+    }
+    Ok(())
+}
+
 /// A block's fields, as a file or code gives them (`connects_to` without
 /// its `#`).
 fn check_block(file: &Block) -> Result<(), String> {
@@ -1596,6 +1693,7 @@ fn check_block(file: &Block) -> Result<(), String> {
     if let Some(light) = &file.state_light {
         light.check()?;
     }
+    check_state_format(file)?;
     for (name, property) in &file.state_properties {
         if !state_name(name) {
             return Err(format!(
@@ -2060,6 +2158,76 @@ capabilities = ["registries"]
     }
 
     #[test]
+    fn per_state_lighting_fields_and_template_replacement_load() {
+        let block = br#"{"template":"minecraft:furnace","replace_template_properties":true,
+            "state_properties":{"facing":{"type":"enum","values":["north","south"]},"active":{"type":"boolean"}},
+            "light_dampening":{"property":"active","values":{"true":3},"default":15},
+            "solid_render":{"default":false},
+            "occlusion":{"default":[[0,0,0,1,0.5,1]]}}"#;
+        let files: &[(&str, &[u8])] = &[("data/ruby/horizon/block/machine.json", block)];
+        let content = hmod("per-state-lighting", MANIFEST_TEXT, files).unwrap();
+        let b = &content.blocks[0];
+        assert!(b.replace_template_properties);
+        assert_eq!(b.light_dampening.as_ref().unwrap().values["true"], 3);
+        assert_eq!(b.solid_render.as_ref().unwrap().default, Some(false));
+        assert_eq!(
+            b.occlusion
+                .as_ref()
+                .unwrap()
+                .default
+                .as_ref()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_bad_block_is_skipped_and_the_rest_load() {
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/horizon/block/bad.json",
+                br#"{"template":"minecraft:stone","light_dampening":{"default":16}}"#,
+            ),
+            (
+                "data/ruby/horizon/block/empty.json",
+                br#"{"template":"minecraft:stone","replace_template_properties":true}"#,
+            ),
+            (
+                "data/ruby/horizon/block/good.json",
+                br#"{"template":"minecraft:stone","can_occlude":{"default":false}}"#,
+            ),
+        ];
+        let content = hmod("bad-block-skipped", MANIFEST_TEXT, files).unwrap();
+        let ids: Vec<_> = content.blocks.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, ["ruby:good"]);
+    }
+
+    #[test]
+    fn data_component_types_are_declared_by_id() {
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/horizon/data_component_type/mode.json",
+                br#"{"persistent": true}"#,
+            ),
+            (
+                "data/ruby/horizon/data_component_type/cache.json",
+                br#"{"persistent": false}"#,
+            ),
+        ];
+        let content = hmod("component-types", MANIFEST_TEXT, files).unwrap();
+        let mut got: Vec<_> = content
+            .data_component_types
+            .iter()
+            .map(|t| (t.id.as_str(), t.persistent))
+            .collect();
+        got.sort();
+        assert_eq!(got, [("ruby:cache", false), ("ruby:mode", true)]);
+        let files: &[(&str, &[u8])] = &[("data/ruby/horizon/data_component_type/mode.json", b"{}")];
+        assert!(hmod("component-types-bad", MANIFEST_TEXT, files).is_err());
+    }
+
+    #[test]
     fn place_block_checks_files_and_native_declarations() {
         for (i, target) in ["ruby:frame", "minecraft:stone"].iter().enumerate() {
             let text = format!(r#"{{"template":"minecraft:stick","block":"{target}"}}"#);
@@ -2203,6 +2371,13 @@ capabilities = ["registries"]
                 collision_context_shapes: BTreeMap::new(),
                 interaction_shapes: None,
                 state_light: None,
+                light_dampening: None,
+                skylight_down: None,
+                solid_render: None,
+                can_occlude: None,
+                shape_occlusion: None,
+                occlusion: None,
+                replace_template_properties: false,
                 state_properties: BTreeMap::new(),
                 default_state: BTreeMap::new(),
                 properties: BlockProperties {

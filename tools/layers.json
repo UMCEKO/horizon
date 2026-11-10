@@ -29,6 +29,7 @@
     "horizon-command": "engine",
     "horizon-core": "engine",
     "horizon-items": "engine",
+    "horizon-java-host": "engine",
     "horizon-narrator": "engine",
     "horizon-prepare": "engine",
     "horizon-protocol": "engine",
@@ -109,6 +110,10 @@
     ]
   },
   "optional": [
+    {
+      "edge": "horizon-client -> horizon-port-pack",
+      "reason": "Feature java-mods only: the Java boot capture is carried into content packs in-process (game/java/java_content.rs)."
+    },
     {
       "edge": "horizon-mod-package -> horizon-shader-api",
       "reason": "The optional `index` feature validates shader packages in the registry index; the portable crates take horizon-mod-package without it."
