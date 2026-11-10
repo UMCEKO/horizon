@@ -612,7 +612,7 @@ impl Game<'_> {
         if m.species() == Species::HappyGhast {
             // The attachment of the player's seat on the harnessed back.
             let seat = self.remote.as_ref().map_or(0, |r| r.passenger_index);
-            let a = horizon_client::mobs::riders::happy_ghast_attachment(seat);
+            let a = horizon_client::mobs::riders::passenger_attachment_at(m, seat);
             let turned = Vec3::new(a[0], a[1], a[2])
                 .rotate_y(-m.yaw * (std::f64::consts::PI / 180.0) as f32);
             at = Vec3::new(

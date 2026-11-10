@@ -4,7 +4,7 @@
 //! the rider's goals use), and the saved jockey fields. The game links the
 //! two (`game/entities/passengers.rs`) and spawns the jockeys.
 use super::{
-    Mob, MobWorld, Seen, Species,
+    Mob, MobWorld, Seen, Species, attachments,
     goals::{JUMP, LOOK, MOVE, TARGET},
 };
 use crate::join_seq::JoinList;
@@ -23,10 +23,6 @@ const MAX_PASSENGERS_ON_ONE_HOGLIN: i32 = 3;
 pub(super) fn scale(m: &Mob) -> f64 {
     f64::from(m.model_scale())
 }
-/// Players and mannequins (`Avatar`).
-fn avatar(m: &Mob) -> bool {
-    matches!(&*m.kind.id, "minecraft:player" | "minecraft:mannequin")
-}
 /// `EntityType` passenger attachment of a vehicle (before rotation): where a
 /// rider's attachment point sits relative to the vehicle's feet, in its
 /// scale (`getDimensions` scales the attachments with the box).
@@ -35,166 +31,44 @@ pub fn passenger_attachment(v: &Mob) -> [f64; 3] {
 }
 /// Passenger attachment for seat `index`, clamped to the vehicle's last seat.
 pub fn passenger_attachment_at(v: &Mob, index: usize) -> [f64; 3] {
-    let [x, y, z] = base_attachment_at(v, index);
-    let s = scale(v);
+    // Camel.getPassengerAttachmentPoint reads the scaled box itself.
+    let [x, y, z] = if super::camel::is_camel(v.species()) {
+        super::camel::passenger_attachment(v)
+    } else if matches!(
+        v.species(),
+        Species::Slime | Species::MagmaCube | Species::SulfurCube
+    ) {
+        // AbstractCubeMob: a hair below the top of its box.
+        let hair = 0.015625 * f64::from(v.extra.size) * f64::from(v.model_scale());
+        [0.0, f64::from(v.height()) - hair, 0.0]
+    } else {
+        attachments::of(v).passenger_point(index)
+    };
     // AbstractHorse.getPassengerAttachmentPoint: a rearing horse slides it,
     // after the scaled attachment (`rear_offset` scales with age itself).
     let rear = super::equine::rear_offset(v);
-    [x * s + rear[0], y * s + rear[1], z * s + rear[2]]
-}
-pub(crate) fn parse_passenger_attachments(value: &serde_json::Value) -> Vec<[f32; 3]> {
-    value.as_array().map_or_else(Vec::new, |a| {
-        a.iter()
-            .filter_map(|p| match p {
-                serde_json::Value::Array(c) if c.len() == 3 => Some([
-                    c[0].as_f64()? as f32,
-                    c[1].as_f64()? as f32,
-                    c[2].as_f64()? as f32,
-                ]),
-                serde_json::Value::Number(y) => Some([0.0, y.as_f64()? as f32, 0.0]),
-                _ => None,
-            })
-            .collect()
-    })
-}
-/// An `EntityType` attachment point: the builder takes floats, so the double
-/// the position math sees is the float's widening (`Vec3(x, y, z)` of
-/// `0.86875F` is `0.8687499761581421`).
-fn pt(x: f32, y: f32, z: f32) -> [f64; 3] {
-    [f64::from(x), f64::from(y), f64::from(z)]
-}
-/// `EntityTypes` `passengerAttachments(y)` with one height.
-fn up(y: f32) -> [f64; 3] {
-    pt(0.0, y, 0.0)
-}
-/// `EntityType.HAPPY_GHAST` `passengerAttachments`: four seats at the corners
-/// of the back (front, left, back, right), picked by the rider's place in
-/// `getPassengers` (`EntityAttachments.get` clamps the index to the last).
-pub fn happy_ghast_attachment(index: usize) -> [f64; 3] {
-    const SEATS: [[f32; 3]; 4] = [
-        [0.0, 4.0, 1.7],
-        [-1.7, 4.0, 0.0],
-        [0.0, 4.0, -1.7],
-        [1.7, 4.0, 0.0],
-    ];
-    let [x, y, z] = SEATS[index.min(SEATS.len() - 1)];
-    pt(x, y, z)
-}
-/// `Pig.getDefaultDimensions` and other species' age-specific passenger attachments.
-fn base_attachment_at(v: &Mob, index: usize) -> [f64; 3] {
-    let baby = v.is_baby();
-    // Players and mannequins have no `passengerAttachments`: their box top.
-    if avatar(v) {
-        return [0.0, f64::from(v.height()) / scale(v), 0.0];
-    }
-    if !v.kind.passenger_attachments.is_empty() {
-        let i = index.min(v.kind.passenger_attachments.len() - 1);
-        let [x, y, z] = v.kind.passenger_attachments[i];
-        return pt(x, y, z);
-    }
-    match v.species() {
-        Species::Chicken => pt(0.0, 0.7, -0.1),
-        Species::Spider => up(0.765),
-        Species::Ravager => pt(0.0, 2.2625, -0.0625),
-        Species::Horse => up(1.44375),
-        Species::Donkey => up(1.1125),
-        Species::Mule => up(1.2125),
-        Species::SkeletonHorse | Species::ZombieHorse => up(1.31875),
-        Species::Pig if baby => up(0.5),
-        Species::Pig => up(0.86875),
-        // `Hoglin.BABY_DIMENSIONS` and `EntityType.HOGLIN`.
-        Species::Hoglin if baby => up(0.875),
-        Species::Hoglin => up(1.49375),
-        Species::Zoglin if !baby => up(1.49375),
-        Species::Nautilus | Species::ZombieNautilus => up(1.1375),
-        Species::Camel | Species::CamelHusk => super::camel::passenger_attachment(v),
-        // The rest of the `passengerAttachments(...)` in `EntityTypes`. The
-        // humanoids' babies carry their own dimensions (the default below).
-        Species::Cat => up(0.5125),
-        Species::Cow | Species::Mooshroom => up(1.36875),
-        Species::Sheep => up(1.2375),
-        Species::Goat => up(1.1125),
-        Species::Ocelot => up(0.6375),
-        Species::Parrot => up(0.4625),
-        Species::Phantom => up(0.3375),
-        Species::Vex => up(0.7375),
-        Species::Guardian => up(0.975),
-        Species::ElderGuardian => up(2.350625),
-        Species::Endermite | Species::Silverfish => up(0.2375),
-        Species::Enderman => up(2.80625),
-        Species::Ghast => up(4.0625),
-        Species::HappyGhast => happy_ghast_attachment(index),
-        Species::Warden => up(3.15),
-        Species::Sniffer => up(2.09375),
-        Species::Fox => pt(0.0, 0.6375, -0.25),
-        Species::Frog => pt(0.0, 0.375, -0.25),
-        Species::Llama | Species::TraderLlama => pt(0.0, 1.37, -0.3),
-        Species::Turtle => pt(0.0, 0.55625, -0.25),
-        Species::Wolf => pt(0.0, 0.81875, -0.0625),
-        Species::Witch => up(2.2625),
-        Species::Evoker | Species::Illusioner | Species::Pillager | Species::Vindicator => up(2.0),
-        Species::ZombifiedPiglin if !baby => up(2.0),
-        Species::Zombie | Species::Drowned | Species::Piglin | Species::PiglinBrute if !baby => {
-            up(2.0125)
-        }
-        Species::Husk if !baby => up(2.075),
-        Species::ZombieVillager if !baby => up(2.125),
-        // The default attachments: the top of the bounding box, before
-        // `passenger_attachment`'s scale — `height()` carries
-        // `minecraft:scale` since `getDimensions` grew every living entity's
-        // box, so the box's own height divides it out again.
-        _ => [0.0, f64::from(v.height()) / scale(v), 0.0],
-    }
+    [x + rear[0], y + rear[1], z + rear[2]]
 }
 /// The rider's own `VEHICLE` attachment height (`ridingOffset`): how far
 /// below the vehicle's attachment point its feet hang, in its scale.
 /// `vehicle_width` is the vehicle's `getBbWidth`, which a spider's own rule
 /// reads.
 pub fn vehicle_attachment(r: &Mob, vehicle_width: f32) -> f64 {
-    unscaled_vehicle_attachment(r, vehicle_width) * scale(r)
-}
-fn unscaled_vehicle_attachment(r: &Mob, vehicle_width: f32) -> f64 {
-    use Species as S;
-    // Avatar.DEFAULT_VEHICLE_ATTACHMENT.
-    if avatar(r) {
-        return f64::from(0.6_f32);
-    }
     // `Spider.getVehicleAttachmentPoint` and `CaveSpider.getVehicleAttachmentPoint`:
     // a vehicle no wider than the rider takes the spider's fixed seat, and a
     // wider one the type's default. A cave spider's super call reaches the
     // spider's rule, which then sees the same width and takes the default too.
     if vehicle_width <= r.width() {
-        match r.species() {
-            S::CaveSpider => return 0.21875,
-            S::Spider => return 0.3125,
-            _ => {}
+        let fixed = match r.species() {
+            Species::CaveSpider => Some(0.21875),
+            Species::Spider => Some(0.3125),
+            _ => None,
+        };
+        if let Some(y) = fixed {
+            return y * f64::from(r.model_scale());
         }
     }
-    match r.species() {
-        S::Zombie | S::Husk | S::Drowned if r.is_baby() => 0.1875,
-        S::ZombieVillager if r.is_baby() => 0.125,
-        // `Piglin.BABY_DIMENSIONS`' vehicle attachment.
-        S::Piglin if r.is_baby() => 0.1875,
-        S::Zombie
-        | S::Husk
-        | S::Drowned
-        | S::ZombieVillager
-        | S::ZombifiedPiglin
-        | S::Piglin
-        | S::PiglinBrute
-        | S::Skeleton
-        | S::Stray
-        | S::Bogged
-        | S::Parched => f64::from(0.7_f32),
-        S::WitherSkeleton => f64::from(0.875_f32),
-        // `ridingOffset(0.5F)` and kin: a negative seat offset lifts the rider.
-        S::Ghast | S::HappyGhast => f64::from(-0.5_f32),
-        S::Allay | S::Vex => f64::from(-0.04_f32),
-        S::Phantom => f64::from(0.125_f32),
-        S::Giant => f64::from(3.75_f32),
-        S::Pillager | S::Vindicator | S::Evoker | S::Illusioner => f64::from(0.6_f32),
-        _ => 0.0,
-    }
+    attachments::of(r).vehicle[1]
 }
 /// `Vec3.yRot(-yaw)` of an attachment point.
 fn rotated([x, y, z]: [f64; 3], yaw: f32) -> [f64; 3] {
@@ -921,83 +795,219 @@ mod tests {
         m.extra.mount = None;
         assert!(close(super::super::anim::body_rot(&m, 0.5), 0.0));
     }
-    fn npc(scale: f32) -> Mob {
+    /// The prepared types, or `None` without the extracted data.
+    fn exported() -> Option<serde_json::Value> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        let bytes = std::fs::read(root.join("entity-types.json")).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+    fn npc(scale: f32) -> Option<Mob> {
+        let types = exported()?;
         let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
         kind.id = "minecraft:player".into();
+        kind.attachments = attachments::TypeAttachments::parse(
+            "minecraft:player",
+            &types["minecraft:player"],
+            crate::mobs::species::Baby::None,
+        )
+        .unwrap();
         let mut m = Mob::new(1, std::sync::Arc::new(kind), Vec3::ZERO, 0.0);
         m.extra.model_scale = scale;
+        Some(m)
+    }
+    fn typed(types: &crate::mobs::MobTypes, name: &str, baby: bool) -> Mob {
+        let kind = std::sync::Arc::new(types.types[&format!("minecraft:{name}")].clone());
+        let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
+        if baby {
+            m.extra.age = -24000;
+        }
         m
     }
     /// An NPC plugin's enlarged fake player: the name it carries sits on the
     /// top of its scaled box, and on a seat it hangs `Avatar`'s 0.6 lower, scaled too.
     #[test]
     fn a_scaled_player_carries_and_sits_in_its_scale() {
+        let (Some(unit), Some(big)) = (npc(0.0), npc(1.5)) else {
+            return;
+        };
         let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
-        assert!(close(passenger_attachment(&npc(0.0))[1], 1.8));
-        assert!(close(passenger_attachment(&npc(1.5))[1], 2.7));
-        assert!(close(vehicle_attachment(&npc(0.0), 1.375), 0.6));
-        assert!(close(vehicle_attachment(&npc(1.5), 1.375), 0.9));
+        assert!(close(passenger_attachment(&unit)[1], 1.8));
+        assert!(close(passenger_attachment(&big)[1], 2.7));
+        assert!(close(vehicle_attachment(&unit, 1.375), 0.6));
+        assert!(close(vehicle_attachment(&big, 1.375), 0.9));
         // On a seat at y 55 (a text display, whose attachment is its feet):
         // a 1.5 NPC's feet at 54.1, where the server puts it.
         let seat = seat(
             [0.0; 3],
-            vehicle_attachment(&npc(1.5), 1.375),
+            vehicle_attachment(&big, 1.375),
             Vec3::new(0.0, 55.0, 0.0),
             0.0,
         );
         assert!(close(seat.y, 54.1));
+    }
+    /// A swimming avatar hangs at the swimming box's vehicle point, not the standing 0.6.
+    #[test]
+    fn an_avatar_sits_by_its_pose() {
+        let Some(mut p) = npc(1.0) else { return };
+        p.extra.avatar_pose = crate::pose::Pose::Swimming;
+        assert_eq!(vehicle_attachment(&p, 1.375), 0.0);
+        assert!((passenger_attachment(&p)[1] - 0.6).abs() < 1e-6);
     }
     /// A scaled vehicle that is not an avatar: `remote_mob_attributes` puts
     /// `minecraft:scale` on any living entity, so the seat rides at the scaled
     /// box height on a cow as on a fake player.
     #[test]
     fn a_scaled_vehicle_seat_stays_scaled() {
-        let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
-        let mut cow = Mob::new(1, crate::mobs::sensor_scan_tests::kind(), Vec3::ZERO, 0.0);
-        // `EntityTypes.COW`: passengerAttachments(1.36875F).
-        assert!(close(passenger_attachment(&cow)[1], 1.36875));
-        cow.extra.model_scale = 2.0;
-        assert!(close(passenger_attachment(&cow)[1], 2.7375));
+        let _ = crate::mobs::world::with_test_world(&[], |_, types| {
+            let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
+            let mut cow = typed(types, "cow", false);
+            // `EntityTypes.COW`: passengerAttachments(1.36875F).
+            assert!(close(passenger_attachment(&cow)[1], 1.36875));
+            cow.extra.model_scale = 2.0;
+            assert!(close(passenger_attachment(&cow)[1], 2.7375));
+        });
     }
-    /// The attachments are `EntityTypes` floats widened to double, and a
+    /// The points are `EntityTypes` floats widened to double, and a
     /// zombie's seat (2.0125) is above its box (1.95).
     #[test]
     fn seats_are_the_entity_type_floats() {
-        let close = |a: f64, b: f64| (a - b).abs() < 1e-12;
-        assert!(close(up(0.86875)[1], 0.868_749_976_158_142_1));
-        assert!(close(f64::from(0.7_f32), 0.699_999_988_079_071));
-        assert!(close(
-            up(2.0125)[1] - f64::from(0.7_f32),
-            1.312_500_059_604_645
-        ));
+        let _ = crate::mobs::world::with_test_world(&[], |_, types| {
+            let pig = typed(types, "pig", false);
+            assert_eq!(passenger_attachment(&pig)[1], f64::from(0.86875_f32));
+            let zombie = typed(types, "zombie", false);
+            assert_eq!(passenger_attachment(&zombie)[1], f64::from(2.0125_f32));
+            assert_eq!(vehicle_attachment(&zombie, 100.0), f64::from(0.7_f32));
+        });
     }
     /// `Pig.getDefaultDimensions`: BABY_DIMENSIONS overrides PASSENGER.
     #[test]
     fn a_baby_pig_uses_its_own_passenger_attachment() {
-        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
-        kind.id = "minecraft:pig".into();
-        kind.species = Species::Pig;
-        let kind = std::sync::Arc::new(kind);
-        let mut vehicle = Mob::new(1, kind.clone(), Vec3::new(4.5, 200.0, 4.5), 0.0);
-        let rider = Mob::new(2, kind, Vec3::ZERO, 0.0);
-        for (scale, baby_y, adult_y) in [
-            (0.0, 0.5, 0.868_749_976_158_142_1),
-            (1.0, 0.5, 0.868_749_976_158_142_1),
-            (2.0, 1.0, 1.737_499_952_316_284_2),
-        ] {
-            vehicle.extra.model_scale = scale;
-            for (age, expected) in [(-24000, baby_y), (-1, baby_y), (0, adult_y), (42, adult_y)] {
-                vehicle.extra.age = age;
-                let attachment = passenger_attachment(&vehicle);
-                assert_eq!(attachment, [0.0, expected, 0.0], "age={age}, scale={scale}");
-                let offset = vehicle_attachment(&rider, vehicle.width());
-                assert_eq!(offset, 0.0);
-                assert_eq!(
-                    seat(attachment, offset, vehicle.position, vehicle.yaw),
-                    Vec3::new(4.5, 200.0 + expected, 4.5)
+        let _ = crate::mobs::world::with_test_world(&[], |_, types| {
+            let mut vehicle = typed(types, "pig", false);
+            vehicle.position = Vec3::new(4.5, 200.0, 4.5);
+            let rider = typed(types, "pig", false);
+            for (scale, baby_y, adult_y) in [
+                (0.0, 0.5, 0.868_749_976_158_142_1),
+                (1.0, 0.5, 0.868_749_976_158_142_1),
+                (2.0, 1.0, 1.737_499_952_316_284_2),
+            ] {
+                vehicle.extra.model_scale = scale;
+                for (age, expected) in [(-24000, baby_y), (-1, baby_y), (0, adult_y), (42, adult_y)]
+                {
+                    vehicle.extra.age = age;
+                    let attachment = passenger_attachment(&vehicle);
+                    assert_eq!(attachment, [0.0, expected, 0.0], "age={age}, scale={scale}");
+                    let offset = vehicle_attachment(&rider, vehicle.width());
+                    assert_eq!(offset, 0.0);
+                    assert_eq!(
+                        seat(attachment, offset, vehicle.position, vehicle.yaw),
+                        Vec3::new(4.5, 200.0 + expected, 4.5)
+                    );
+                }
+            }
+        });
+    }
+    #[test]
+    fn scaling_leaves_fixed_dimensions_alone() {
+        let a = attachments::Attachments {
+            passenger: vec![[0.0, 1.0, 0.5]],
+            vehicle: [0.0, 0.2, 0.0],
+            fixed: false,
+        };
+        assert_eq!(a.scaled(0.5).passenger, vec![[0.0, 0.5, 0.25]]);
+        assert!((a.scaled(0.5).vehicle[1] - 0.1).abs() < 1e-9);
+        assert_eq!(a.scaled_by(2.0, 1.0).passenger, vec![[0.0, 1.0, 1.0]]);
+        let fixed = attachments::Attachments { fixed: true, ..a };
+        assert_eq!(fixed.scaled(0.5).passenger, vec![[0.0, 1.0, 0.5]]);
+    }
+    #[test]
+    fn a_seat_past_the_last_takes_the_last() {
+        let a = attachments::Attachments {
+            passenger: vec![[0.0, 1.0, 0.5], [0.0, 2.0, -0.5]],
+            vehicle: [0.0; 3],
+            fixed: false,
+        };
+        assert_eq!(a.passenger_point(5), [0.0, 2.0, -0.5]);
+        assert_eq!(a.passenger_point(0), [0.0, 1.0, 0.5]);
+    }
+    /// The hand tables the exported points replaced, in vanilla's float values.
+    #[test]
+    fn the_exported_points_match_the_hand_tables_they_replace() {
+        let _ = crate::mobs::world::with_test_world(&[], |_, types| {
+            let seats: [(&str, bool, [f64; 3]); 12] = [
+                ("chicken", false, [0.0, 0.7, -0.1]),
+                ("spider", false, [0.0, 0.765, 0.0]),
+                ("ravager", false, [0.0, 2.2625, -0.0625]),
+                ("horse", false, [0.0, 1.44375, 0.0]),
+                ("donkey", false, [0.0, 1.1125, 0.0]),
+                ("mule", false, [0.0, 1.2125, 0.0]),
+                ("skeleton_horse", false, [0.0, 1.31875, 0.0]),
+                ("zombie_horse", false, [0.0, 1.31875, 0.0]),
+                ("pig", false, [0.0, 0.86875, 0.0]),
+                ("hoglin", true, [0.0, 0.875, 0.0]),
+                ("hoglin", false, [0.0, 1.49375, 0.0]),
+                ("nautilus", false, [0.0, 1.1375, 0.0]),
+            ];
+            for (name, baby, row) in seats {
+                let got = attachments::of(&typed(types, name, baby)).passenger_point(0);
+                assert!(
+                    got.iter().zip(row).all(|(a, b)| (a - b).abs() < 1e-6),
+                    "{name}: {got:?} vs {row:?}"
                 );
             }
-        }
+            let rows: [(&str, bool, f64); 21] = [
+                ("zombie", true, 0.1875),
+                ("husk", true, 0.1875),
+                ("drowned", true, 0.1875),
+                ("zombie_villager", true, 0.125),
+                ("piglin", true, 0.1875),
+                ("zombie", false, 0.7),
+                ("zombie_villager", false, 0.7),
+                ("zombified_piglin", false, 0.7),
+                ("piglin", false, 0.7),
+                ("piglin_brute", false, 0.7),
+                ("skeleton", false, 0.7),
+                ("stray", false, 0.7),
+                ("bogged", false, 0.7),
+                ("wither_skeleton", false, 0.875),
+                ("pillager", false, 0.6),
+                ("vindicator", false, 0.6),
+                ("evoker", false, 0.6),
+                ("ghast", false, -0.5),
+                ("allay", false, -0.04),
+                ("phantom", false, 0.125),
+                ("chicken", false, 0.0),
+            ];
+            for (name, baby, y) in rows {
+                let got = vehicle_attachment(&typed(types, name, baby), 100.0);
+                assert!((got - y).abs() < 1e-6, "{name}: {got} vs {y}");
+            }
+        });
+    }
+    /// `Horse` and `Chicken` declare their own `BABY_DIMENSIONS` attachments.
+    #[test]
+    fn a_baby_uses_the_attachments_of_its_baby_dimensions() {
+        let _ = crate::mobs::world::with_test_world(&[], |_, types| {
+            let horse = attachments::of(&typed(types, "horse", true));
+            assert!((horse.passenger[0][1] - 1.0325).abs() < 1e-6);
+            let chicken = attachments::of(&typed(types, "chicken", true));
+            assert!((chicken.passenger[0][1] - 0.375).abs() < 1e-6);
+        });
+    }
+    /// `AbstractCubeMob.getPassengerAttachmentPoint`: a hair below the top of its box.
+    #[test]
+    fn a_cube_mob_carries_its_rider_a_hair_below_its_top() {
+        let _ = crate::mobs::world::with_test_world(&[], |_, types| {
+            let mut slime = typed(types, "slime", false);
+            crate::mobs::cube::set_size(&mut slime, 4);
+            let at = passenger_attachment(&slime);
+            assert!((at[1] - (f64::from(slime.height()) - 0.015625 * 4.0)).abs() < 1e-9);
+            slime.extra.model_scale = 2.0;
+            let at = passenger_attachment(&slime);
+            assert!((at[1] - (f64::from(slime.height()) - 0.015625 * 4.0 * 2.0)).abs() < 1e-9);
+        });
     }
 
     #[test]
@@ -1123,16 +1133,20 @@ mod tests {
 
 #[cfg(test)]
 mod happy_ghast_seat_tests {
-    use super::happy_ghast_attachment;
+    use super::*;
 
     #[test]
     fn passengers_take_separate_seats() {
-        assert_eq!(happy_ghast_attachment(0), [0.0, 4.0, f64::from(1.7_f32)]);
-        let seats: Vec<_> = (0..4).map(happy_ghast_attachment).collect();
-        for (i, a) in seats.iter().enumerate() {
-            assert!(seats[i + 1..].iter().all(|b| a != b));
-        }
-        assert_eq!(happy_ghast_attachment(9), seats[3]);
+        let _ = crate::mobs::world::with_test_world(&[], |_, types| {
+            let kind = std::sync::Arc::new(types.types["minecraft:happy_ghast"].clone());
+            let ghast = Mob::new(1, kind, Vec3::ZERO, 0.0);
+            assert_eq!(passenger_attachment_at(&ghast, 0), [0.0, 4.0, 1.7]);
+            let seats: Vec<_> = (0..4).map(|i| passenger_attachment_at(&ghast, i)).collect();
+            for (i, a) in seats.iter().enumerate() {
+                assert!(seats[i + 1..].iter().all(|b| a != b));
+            }
+            assert_eq!(passenger_attachment_at(&ghast, 9), seats[3]);
+        });
     }
 
     #[test]
@@ -1141,7 +1155,8 @@ mod happy_ghast_seat_tests {
         let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
         kind.id = "ruby:bird".into();
         kind.species = super::Species::Zombie;
-        kind.passenger_attachments = vec![[0.0, 0.7, -0.1], [0.0, 0.9, 0.2]];
+        kind.attachments.adult.passenger = vec![[0.0, 0.7, -0.1], [0.0, 0.9, 0.2]];
+        kind.attachments.adult.fixed = false;
         let kind = std::sync::Arc::new(kind);
 
         let vehicle = super::Mob::new(1, kind.clone(), horizon_core::geometry::Vec3::ZERO, 0.0);

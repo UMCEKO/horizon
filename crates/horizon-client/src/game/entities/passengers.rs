@@ -206,15 +206,9 @@ impl Game<'_> {
                         vehicle, seat, count, animal,
                     );
                 }
-                if vehicle.species() == horizon_client::mobs::Species::HappyGhast {
-                    // EntityType.HAPPY_GHAST: four seats, by the rider's place
-                    // in `getPassengers`.
-                    let seat = self.mobs[..i]
-                        .iter()
-                        .filter(|r| r.extra.mount == Some(v))
-                        .count();
-                    attach = riders::happy_ghast_attachment(seat);
-                } else if vehicle.kind.passenger_attachments.len() > 1 {
+                if horizon_client::mobs::attachments::of(vehicle).passenger.len() > 1 {
+                    // A vehicle with several seats (a happy ghast's four): by the
+                    // rider's place in `getPassengers`.
                     let seat = self.mobs[..i]
                         .iter()
                         .filter(|r| r.extra.mount == Some(v))
@@ -586,7 +580,7 @@ mod content_seat_tests {
         super::super::native_entity_refs::tests::with_game(|game| {
             use std::sync::Arc;
             let mut kind = game.res.mob_types().get("minecraft:cow").unwrap().clone();
-            Arc::make_mut(&mut kind).passenger_attachments =
+            Arc::make_mut(&mut kind).attachments.adult.passenger =
                 vec![[1.0, 2.0, 3.0], [-1.0, 4.0, 5.0]];
             let vehicle = horizon_client::mobs::Mob::new(1, kind, Vec3::ZERO, 0.0);
             assert_eq!(
