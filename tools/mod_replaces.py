@@ -63,6 +63,7 @@ STATUS_ORDER = ('ported', 'mapped', 'named', 'structural', 'linked', 'inferred',
 OWNED = ('ported', 'mapped', 'named', 'structural', 'linked')
 ROUTING_ORDER = ('java', 'java-own-type', 'undecided', 'java-already', 'native-hook', 'inert')
 WEAK_STATUSES = ('mentioned', 'inferred', 'absent', 'none', 'unknown')
+NO_LEDGER = 'no port ledger: run python3 tools/port_ledger.py build first (the boot jar carries what it says)'
 PORT_MAP = ROOT / 'tools' / 'port_map'
 OPAQUE_PACKAGES = ('net/neoforged/neoforgespi/transformation/', 'net/neoforged/neoforgespi/coremod/', 'cpw/mods/modlauncher/api/', 'org/spongepowered/asm/service/')
 OPAQUE_SERVICES = ('net.neoforged.neoforgespi.transformation.ClassProcessorProvider', 'net.neoforged.neoforgespi.coremod.ICoreMod')
@@ -851,9 +852,11 @@ def install_analysis(install, cache=None, log=print):
     install = Path(install)
     out = install / 'analysis'
     sources = ''.join(hashlib.sha256((Path(__file__).resolve().parent / name).read_bytes()).hexdigest() for name in ('mod_replaces.py', 'mod_entity_facts.py', 'mod_routing.py', 'mod_parity.py'))
-    ledger = json.loads(LEDGER_JSON.read_text()) if LEDGER_JSON.is_file() else {}
+    if not LEDGER_JSON.is_file():
+        sys.exit(NO_LEDGER)
+    ledger = json.loads(LEDGER_JSON.read_text())
     verdicts = read_verdicts()
-    sources += hashlib.sha256(json.dumps([LEDGER_JSON.stat().st_mtime_ns if LEDGER_JSON.is_file() else 0, sorted(verdicts.items())]).encode()).hexdigest()
+    sources += hashlib.sha256(json.dumps([LEDGER_JSON.stat().st_mtime_ns, sorted(verdicts.items())]).encode()).hexdigest()
     jars = [(j.name, j.stat().st_size, j.stat().st_mtime_ns) for j in sorted((install / 'mods').glob('*.jar'))]
     stamp = hashlib.sha256(json.dumps([jars, sources]).encode()).hexdigest()
     if (out / 'stamp').is_file() and (out / 'stamp').read_text() == stamp and (out / 'entity-facts.json').is_file() and (out / 'routing.json').is_file():
