@@ -102,7 +102,11 @@ fn clip_triangle(tri: [Point; 3], rect: [f32; 4]) -> Vec<Point> {
 
 /// RGBA vertex colour of a lit quad: `minecraft_mix_light` on the tint.
 pub fn lit_color(q: &ItemQuad, lights: (Vec3, Vec3)) -> u32 {
-    let light = crate::block_entity_render::diffuse(q.normal, lights);
+    let light = if q.normal == Vec3::ZERO {
+        1.0
+    } else {
+        crate::block_entity_render::diffuse(q.normal, lights)
+    };
     let [a, r, g, b] = q.color.to_be_bytes();
     let c = |v: u8| (f32::from(v) * light) as u8;
     crate::hud::rgba(c(r), c(g), c(b), a)
@@ -554,6 +558,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_a_two_sided_quad_draws_from_behind() {
+        let facing_away = |two_sided: bool| ItemQuad {
+            pos: [
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(1.0, 1.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+            ],
+            uv: [[0.0; 2]; 4],
+            foil_uv: [[0.0; 2]; 4],
+            normal: Vec3::Z,
+            color: u32::MAX,
+            foil: Foil::None,
+            light_emission: 0,
+            cull_back: !two_sided,
+            two_sided,
+            translucent: false,
+            gui_glint_uv: None,
+            oit: false,
+        };
+        assert!(depth::sort(&[facing_away(false)]).is_empty());
+        assert_eq!(depth::sort(&[facing_away(true)]).len(), 1);
+    }
+    #[test]
+    fn an_unlit_quad_keeps_its_colour() {
+        let quad = ItemQuad {
+            pos: [Vec3::ZERO; 4],
+            uv: [[0.0; 2]; 4],
+            foil_uv: [[0.0; 2]; 4],
+            normal: Vec3::ZERO,
+            color: 0xFF80_4020,
+            foil: Foil::None,
+            light_emission: 0,
+            cull_back: false,
+            two_sided: false,
+            translucent: false,
+            gui_glint_uv: None,
+            oit: false,
+        };
+        assert_eq!(
+            lit_color(&quad, items_3d_lights()),
+            crate::hud::rgba(0x80, 0x40, 0x20, 0xFF)
+        );
+    }
+
+    #[test]
     fn enchanting_book_pages_turn_with_the_flip() {
         let close = |flip: f32, want: (f32, f32)| {
             let (a, b) = enchanting_book_pages(flip);
@@ -594,6 +644,7 @@ mod tests {
             foil: Foil::None,
             light_emission: 0,
             cull_back: false,
+            two_sided: false,
             translucent: false,
             oit: false,
         }
