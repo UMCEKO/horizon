@@ -1,0 +1,95 @@
+[
+  {
+    "name": "creative"
+  },
+  {
+    "command": "/gamemode creative"
+  },
+  {
+    "wait": 10
+  },
+  {
+    "name": "floor"
+  },
+  {
+    "command": "/fill -8 99 -8 8 99 8 minecraft:stone"
+  },
+  {
+    "command": "/fill -8 100 -8 8 110 8 minecraft:air"
+  },
+  {
+    "wait": 20
+  },
+  {
+    "name": "tp"
+  },
+  {
+    "tp": [
+      0.5,
+      100,
+      0.5
+    ]
+  },
+  {
+    "wait": 120
+  },
+  {
+    "check": {
+      "near": [
+        0.5,
+        100,
+        0.5
+      ],
+      "radius": 1
+    }
+  },
+  {
+    "name": "fixtures"
+  },
+  {
+    "command": "/setblock 2 100 -3 minecraft:campfire"
+  },
+  {
+    "command": "/fill 3 99 3 5 99 5 minecraft:lava"
+  },
+  {
+    "command": "/setblock -3 100 4 ae2:charger"
+  },
+  {
+    "command": "/setblock 0 100 -5 mekanism:metallurgic_infuser"
+  },
+  {
+    "wait": 400
+  },
+  {
+    "name": "routing"
+  },
+  {
+    "check": {
+      "log": "block states run animateTick in Java",
+      "since": "start"
+    }
+  },
+  {
+    "check": {
+      "log": "animateTick of ae2:charger runs in Java",
+      "since": "start"
+    }
+  },
+  {
+    "check": {
+      "log": "animateTick of minecraft:",
+      "present": false,
+      "since": "start"
+    }
+  },
+  {
+    "check": {
+      "no_exceptions": true,
+      "since": "start"
+    }
+  },
+  {
+    "quit": true
+  }
+]

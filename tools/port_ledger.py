@@ -342,6 +342,7 @@ SKIP_REASONS = {
     "debug": "debug and developer tooling",
     "service": "an online service Horizon doesn't offer: Realms, telemetry, chat reporting, social",
     "server": "dedicated-server and JVM tooling: RCON, JMX, the server GUI, profilers",
+    "java-serves": "Java mods: the embedded JVM's own copy runs it for the mods that touch it, and native gains nothing",
     "other": "see the note",
 }
 
@@ -1600,8 +1601,10 @@ def build(sources, jars, jobs):
                 continue
             mapped[k] = {"fn": hit[0], "verdict": verdict, "note": row["note"], "src": row["src"]}
         elif verdict == "missing":
+            skipped.pop(k, None)
             absent[k] = {"note": row["note"], "src": row["src"]}
         elif verdict.startswith("skip:") and verdict[5:] in SKIP_REASONS:
+            absent.pop(k, None)
             skipped[k] = {"reason": verdict[5:], "note": row["note"], "src": row["src"]}
         else:
             map_problems.append({**row, "problem": f"unknown verdict {verdict}"})

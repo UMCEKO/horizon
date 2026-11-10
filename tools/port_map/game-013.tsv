@@ -3,7 +3,7 @@ AbstractNautilus.canBeAffected	port	crates/horizon-client/src/mobs.rs::Mob::can_
 AbstractNautilus.checkNautilusSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	S::Nautilus arm: sea level minus 25 to minus 5, water below and above; only the nautilus has a placement (the zombie nautilus has none of its own)
 AbstractNautilus.canUseSlot	port	crates/horizon-client/src/game/blocks/dispenser.rs::mob_can_use_slot	saddle and body slots need an alive, grown, tame nautilus
 AbstractNautilus.canDispenserEquipIntoSlot	port	crates/horizon-client/src/game/blocks/dispenser.rs::mob_can_dispenser_equip	body and saddle always, other slots only with pick_up_loot
-AbstractNautilus.getControllingPassenger	port	crates/horizon-client/src/mobs/nautilus.rs::controlled	a rider on a saddled nautilus
+AbstractNautilus.getControllingPassenger	port	crates/horizon-client/src/mobs/riders.rs::controlling_passenger	a player on a saddled nautilus
 AbstractNautilus.getRiddenSpeed	inline	crates/horizon-client/src/mobs/nautilus.rs::ridden	0.0325 in water, 0.02 on land, times the movement speed
 AbstractNautilus.doPlayerRide	inline	crates/horizon-client/src/game/mobs/nautili.rs::Game::interact_nautilus	the player mounts it and a lead breaks; there is no home to clear
 AbstractNautilus.getNautilusRestrictionRadius	port	crates/horizon-client/src/mobs/nautilus.rs::restriction_radius	ticked in #3512; `AbstractNautilus.getNautilusRestrictionRadius` is cited at crates/horizon-client/src/mobs/nautilus.rs:231

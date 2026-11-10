@@ -1,0 +1,15 @@
+net/minecraft/world/item/ItemStack#hurtAndBreak	java-body	runs on the real stack; ItemDurabilityTrigger.trigger is bridged, so only the break callback (onEquippedItemBroken, broadcastEntityEvent) needs the chunk source
+net/minecraft/world/level/block/Block#getDrops	java-body	builds LootParams and calls state.getDrops, which reaches the bridged BlockBehaviour.getDrops
+net/minecraft/world/level/block/Block#popResourceFromFace	java-body	computes the spot, then reaches the bridged popResource sink
+net/minecraft/world/level/storage/loot/providers/number/ints/ResolvableInt#getFromItem	false-match	reads one component and a loot value; the ledger's burn_time is a different thing
+net/minecraft/core/dispenser/DefaultDispenseItemBehavior#dispense	java-body	a mod's behaviour overrides execute; spawns through the bridged addFreshEntity and levelEvent
+net/minecraft/core/dispenser/DefaultDispenseItemBehavior#execute	java-body	a mod calls super.execute on its own BlockSource; spawnItem and levelEvent are served
+net/minecraft/core/dispenser/DefaultDispenseItemBehavior#spawnItem	java-body	an ItemEntity added through the bridged addFreshEntity
+net/minecraft/core/dispenser/ProjectileDispenseBehavior#playSound	java-body	one levelEvent, which is bridged
+net/minecraft/world/level/Level#explode	java-body	every overload ends in ServerLevel.explode, which is bridged
+net/minecraft/world/damagesource/DamageSources#explosion	java-object	picks a damage type from the registries the real level holds
+net/minecraft/world/damagesource/DamageSources#source	java-object	builds a DamageSource from a registry holder
+net/minecraft/world/DifficultyInstance#getSpecialMultiplier	java-object	arithmetic on its own field
+net/minecraft/world/item/BlockItem#place	java-body	setBlock, sounds and game events are bridged; needs Level.getEntities (entities) and PLACED_BLOCK's trigger (items)
+net/minecraft/world/level/Explosion#getIndirectSourceEntity	java-object	type tests on the source entity
+net/minecraft/world/level/storage/loot/LootTable#getRandomItems	needs-server	LootContext.Builder.create reads level.getServer(); a LootTable carries no id Rust's tables could be asked by
