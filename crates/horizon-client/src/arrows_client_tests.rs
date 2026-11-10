@@ -231,13 +231,20 @@ impl OwnerLookup for ArmorStand {
     }
 }
 fn primes_tnt(owner_uuid: Option<[i32; 4]>, mob_griefing: bool) -> bool {
+    primes_tnt_owned(None, owner_uuid, mob_griefing)
+}
+fn primes_tnt_owned(
+    owner: Option<EventSource>,
+    owner_uuid: Option<[i32; 4]>,
+    mob_griefing: bool,
+) -> bool {
     let rules = Rules {
         mob_griefing,
         owners: &ArmorStand,
         server: true,
     };
     let steps = run_in(&[([1, 18, 0], TNT)], 2, false, rules, |p| {
-        p.owner_uuid = owner_uuid;
+        (p.owner, p.owner_uuid) = (owner, owner_uuid);
     });
     steps
         .iter()
@@ -259,6 +266,14 @@ fn an_arrow_owned_by_an_armor_stand_needs_mob_griefing_to_prime_tnt() {
     // An owner that isn't loaded is no owner (getOwner is null).
     assert!(primes_tnt(Some([9, 9, 9, 9]), false));
     assert!(primes_tnt(None, false));
+}
+#[test]
+fn a_loaded_entity_owner_needs_mob_griefing_and_a_player_owner_does_not() {
+    let stand = Some(EventSource::Entity(5));
+    assert!(!primes_tnt_owned(stand, Some([1, 2, 3, 4]), false));
+    assert!(primes_tnt_owned(stand, Some([1, 2, 3, 4]), true));
+    let player = Some(EventSource::Player);
+    assert!(primes_tnt_owned(player, Some([7, 7, 7, 7]), false));
 }
 
 #[test]

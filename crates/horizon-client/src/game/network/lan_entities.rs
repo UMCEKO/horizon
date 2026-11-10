@@ -764,7 +764,7 @@ impl Game<'_> {
             let kind = p.entity_type();
             let data = match p.guest.and_then(|conn| hub.guest(conn)) {
                 Some(g) => g.entity_id,
-                None => owner(p.owner),
+                None => owner(p.who()),
             };
             let e = add_state(out, p.id, kind, at(p.position), p.yaw, p.on_ground);
             e.pitch = p.pitch;

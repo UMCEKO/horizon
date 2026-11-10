@@ -8220,7 +8220,7 @@ mod fireball_nbt_tests {
             assert_eq!(number(tag.get("HasBeenShot")), Some(1));
             assert_eq!(uuid_from_tag(tag.get("Owner")), player);
             let back = throwable_from_nbt(&tag, player).unwrap();
-            assert_eq!((back.kind, back.owner), (kind, Some(Who::Player)));
+            assert_eq!((back.who(), back.kind), (Some(Who::Player), kind));
             assert_eq!((back.position, back.velocity), (p.position, p.velocity));
             assert_eq!(
                 ([back.yaw, back.pitch], back.left_owner),

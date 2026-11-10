@@ -2,13 +2,17 @@
 //! arrow's pickup, damage and critical flag. They cover the projectile list
 //! and the player-thrown tridents and firework rockets, which Horizon keeps
 //! in lists of their own.
-use super::{Game, commands::Target};
+use super::{
+    Game,
+    commands::{Target, non_player_entity_id},
+};
 use horizon_client::{
     arrows::Pickup,
     lan::playerdata::{ints_uuid, uuid_ints},
     mobs::Who,
     projectiles::{OwnerFields, Projectile, ProjectileKind, Turn},
 };
+use horizon_client_core::who::EventSource;
 use horizon_core::geometry::Vec3;
 use mod_api::{ArrowPickup, Deflection, EntityRef, PierceLevelError, ProjectileRef};
 
@@ -63,6 +67,22 @@ impl Game<'_> {
             .map(|_| projectile)
     }
 
+    /// The owner a target names as a projectile stores it, with the guest when it is one.
+    pub(in crate::game) fn projectile_owner_of(
+        &self,
+        target: Target,
+    ) -> Option<(EventSource, Option<u32>)> {
+        Some(match target {
+            Target::Player => (EventSource::Player, self.lan_acting),
+            Target::Guest(conn) => (EventSource::Player, Some(conn)),
+            Target::Mob(id) => (EventSource::Mob(id), None),
+            other => (
+                EventSource::Entity(u32::try_from(non_player_entity_id(other)?).ok()?),
+                None,
+            ),
+        })
+    }
+
     /// The owner a target names, as a resolved entity in the level in place.
     fn native_owner_entity(&self, target: Target) -> Option<EntityRef> {
         if self.target_level(target) != self.dim {
@@ -77,8 +97,14 @@ impl Game<'_> {
     pub(super) fn projectile_owner(&self, projectile: ProjectileRef) -> Option<EntityRef> {
         let target = match self.native_projectile_backing(projectile)? {
             Backing::List(i) => {
-                let uuid = self.creatures.projectiles[i].owner_uuid?;
-                self.target_by_uuid(ints_uuid(uuid))?
+                let p = &self.creatures.projectiles[i];
+                match p.owner {
+                    // A loaded owner other than a player shares the projectile's level.
+                    Some(EventSource::Mob(id) | EventSource::Entity(id)) => return self.entity(id),
+                    Some(EventSource::Player) | None => {
+                        self.target_by_uuid(ints_uuid(p.owner_uuid?))?
+                    }
+                }
             }
             // A trident belongs to the guest who threw it, else the host.
             Backing::Trident(i) => self.tridents[i].guest.map_or(Target::Player, Target::Guest),
@@ -94,45 +120,29 @@ impl Game<'_> {
         self.native_owner_entity(target)
     }
 
-    /// Resolves hit credit, persistent identity, and a separate non-living
-    /// vehicle identity for collision exclusion. None for a stale owner or hook.
-    fn native_projectile_owner_fields(
-        &mut self,
-        owner: Option<EntityRef>,
-    ) -> Option<(OwnerFields, Option<u32>)> {
+    /// The owner (any entity), its UUID and the guest's connection. None for a stale owner or a hook.
+    fn native_projectile_owner_fields(&mut self, owner: Option<EntityRef>) -> Option<OwnerFields> {
         let Some(owner) = owner else {
-            return Some(((None, None, None), None));
+            return Some((None, None, None));
         };
         let target = self.native_entity_target(owner)?;
-        let vehicle = match target {
-            Target::Boat(id) | Target::Cart(id) => Some(id),
-            _ => None,
-        };
-        let (who, guest) = match target {
-            Target::Player => (Some(Who::Player), self.lan_acting),
-            Target::Guest(conn) => (Some(Who::Player), Some(conn)),
-            Target::Mob(id) => (Some(Who::Mob(id)), None),
-            Target::Hook(_) => return None,
-            _ => (None, None),
-        };
+        if matches!(target, Target::Hook(_)) {
+            return None;
+        }
+        let (source, guest) = self.projectile_owner_of(target)?;
         let uuid = uuid_ints(self.entity_uuid(owner)?);
-        Some(((who, Some(uuid), guest), vehicle))
+        Some((Some(source), Some(uuid), guest))
     }
 
     /// `Projectile.setOwner` on the thing a handle names. False when the
     /// owner does not fit: a trident a player threw always has a player owner.
-    fn native_projectile_apply_owner(
-        &mut self,
-        backing: Backing,
-        owner: (OwnerFields, Option<u32>),
-    ) -> bool {
-        let (fields, vehicle) = owner;
-        let (who, uuid, guest) = fields;
+    fn native_projectile_apply_owner(&mut self, backing: Backing, fields: OwnerFields) -> bool {
+        let (owner, uuid, guest) = fields;
+        let who = owner.and_then(EventSource::actor);
         match backing {
             Backing::List(i) => {
                 self.creatures.projectiles.update(i, |p| {
                     (p.owner, p.owner_uuid, p.guest) = fields;
-                    p.owner_vehicle = vehicle;
                     // `AbstractArrow.setOwner(Entity)`: a player's arrow may be picked up.
                     if let Some(a) = &mut p.arrow {
                         a.set_owner(who);
@@ -140,7 +150,7 @@ impl Game<'_> {
                 });
             }
             Backing::Trident(i) => {
-                if who != Some(Who::Player) {
+                if owner != Some(EventSource::Player) {
                     return false;
                 }
                 self.tridents[i].guest = guest;
@@ -192,7 +202,7 @@ impl Game<'_> {
         let Some(backing) = self.native_projectile_backing(projectile) else {
             return false;
         };
-        let Some((owner, vehicle)) = self.native_projectile_owner_fields(new_owner) else {
+        let Some(owner) = self.native_projectile_owner_fields(new_owner) else {
             return false;
         };
         if !power.iter().all(|v| v.is_finite()) {
@@ -218,15 +228,12 @@ impl Game<'_> {
         match backing {
             // `deflect` takes the `EntityReference` overload of `setOwner`: an
             // arrow's pickup does not change, unlike `set_owner`.
-            Backing::List(i) => self.creatures.projectiles.update(i, |p| {
-                let applied = p.deflect(turn, power, owner, by_attack);
-                if applied {
-                    p.owner_vehicle = vehicle;
-                }
-                applied
-            }),
+            Backing::List(i) => self
+                .creatures
+                .projectiles
+                .update(i, |p| p.deflect(turn, power, owner, by_attack)),
             Backing::Trident(i) => {
-                if owner.0 != Some(Who::Player) {
+                if owner.0 != Some(EventSource::Player) {
                     return false;
                 }
                 let t = &mut self.tridents[i];
@@ -242,7 +249,7 @@ impl Game<'_> {
                 if let Some((velocity, _)) = turn.apply(r.velocity, power, &mut r.random) {
                     r.velocity = velocity;
                 }
-                r.set_owner(owner.0, owner.1, owner.2);
+                r.set_owner(owner.0.and_then(EventSource::actor), owner.1, owner.2);
                 true
             }
         }
@@ -427,10 +434,11 @@ mod tests {
             let scene = Air(game.vehicle_targets());
             let mut p = game.creatures.projectiles[0].clone();
             assert!(!p.left_owner);
-            assert_eq!(p.owner, None, "a vehicle must not credit a living attacker");
+            assert_eq!(p.owner, Some(EventSource::Entity(boat_id)));
+            assert_eq!(p.who(), None, "a vehicle must not credit a living attacker");
             assert_eq!(p.owner_uuid, Some(game.uuid_for(boat_id)));
             let mut control = p.clone();
-            control.owner = Some(Who::Mob(boat_id));
+            control.owner = Some(EventSource::Mob(boat_id));
             assert_eq!(control.tick(&scene).1, Hit::None);
             let mut returned = p.clone();
             returned.left_owner = true;
@@ -446,7 +454,7 @@ mod tests {
                 .unwrap();
             let mut loaded = game.creatures.projectiles[0].clone();
             assert!(!loaded.left_owner);
-            assert_eq!(loaded.owner, None);
+            assert_eq!(loaded.owner, Some(EventSource::Entity(boat_id)));
             assert_eq!(loaded.tick(&scene).1, Hit::None);
         });
     }
@@ -526,7 +534,7 @@ mod tests {
             assert_eq!(game.creatures.projectiles[0].owner, None);
             assert!(handle.set_owner(game, Some(mob)));
             assert_eq!(handle.owner(game), Some(mob));
-            assert_eq!(game.creatures.projectiles[0].owner, Some(Who::Mob(99)));
+            assert_eq!(game.creatures.projectiles[0].owner, Some(EventSource::Mob(99)));
             // A non-living owner has collision identity but no living hit credit.
             let boat_id = game.take_entity_id();
             game.boats.push(super::super::boats::Boat::new(
@@ -538,8 +546,8 @@ mod tests {
             let boat = game.entity(boat_id).unwrap();
             assert!(handle.set_owner(game, Some(boat)));
             assert_eq!(handle.owner(game), Some(boat));
-            assert_eq!(game.creatures.projectiles[0].owner, None);
-            assert_eq!(game.creatures.projectiles[0].owner_vehicle, Some(boat_id));
+            assert_eq!(game.creatures.projectiles[0].owner, Some(EventSource::Entity(boat_id)));
+            assert_eq!(game.creatures.projectiles[0].who(), None);
             let saved = game.uuid_for(boat_id);
             assert_eq!(game.creatures.projectiles[0].owner_uuid, Some(saved));
             assert!(handle.set_owner(game, Some(mob)));
@@ -600,7 +608,7 @@ mod tests {
                 p.velocity,
                 Vec3::new(look[0] * 2.0, look[1] * 2.0, look[2] * 2.0)
             );
-            assert_eq!(p.owner, Some(Who::Mob(99)));
+            assert_eq!(p.owner, Some(EventSource::Mob(99)));
 
             // MOMENTUM_DEFLECT of a mob that has not moved has no direction.
             assert!(handle.deflect(
@@ -800,7 +808,7 @@ mod tests {
                 assert!(!charge.deflect(game, Deflection::Reverse, None, None, true, [1.0; 3]));
                 let p = &game.creatures.projectiles[0];
                 assert_eq!(p.velocity, Vec3::new(0.0, 1.0, 0.0));
-                assert_eq!(p.owner, Some(Who::Mob(99)));
+                assert_eq!(p.owner, Some(EventSource::Mob(99)));
                 assert_eq!(p.random.0.clone().next_float(), random);
             }
             game.creatures
@@ -909,14 +917,14 @@ mod tests {
                 game.creatures.projectiles[i].velocity,
                 Vec3::new(0.0, 1.0, 0.0)
             );
-            assert_eq!(game.creatures.projectiles[i].owner, Some(Who::Mob(99)));
+            assert_eq!(game.creatures.projectiles[i].owner, Some(EventSource::Mob(99)));
             game.creatures
                 .projectiles
                 .update(i, |p| p.no_deflect_ticks = 0);
             game.attack_ticks = 50;
             assert!(game.deflect(i));
             assert_eq!(game.attack_ticks, 0);
-            assert_eq!(game.creatures.projectiles[i].owner, Some(Who::Player));
+            assert_eq!(game.creatures.projectiles[i].owner, Some(EventSource::Player));
         });
     }
 }

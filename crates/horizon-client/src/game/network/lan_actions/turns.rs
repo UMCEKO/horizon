@@ -658,7 +658,7 @@ impl Game<'_> {
         // What the guest shot is theirs (Projectile.setOwner).
         for i in projectiles..self.creatures.projectiles.len() {
             self.creatures.projectiles.update(i, |p| {
-                if p.owner == Some(horizon_client::mobs::Who::Player) && p.guest.is_none() {
+                if p.who() == Some(horizon_client::mobs::Who::Player) && p.guest.is_none() {
                     p.guest = Some(conn);
                 }
             });

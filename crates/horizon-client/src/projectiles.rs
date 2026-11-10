@@ -5,6 +5,7 @@
 //! The game applies the effects of a hit.
 use crate::entity_rules::EntityRules;
 use crate::mobs::Who;
+use horizon_client_core::who::EventSource;
 use horizon_core::{
     geometry::{Aabb, Direction, Vec3},
     position::BlockPos,
@@ -79,8 +80,8 @@ impl Turn {
     }
 }
 
-/// A new owner as a projectile stores it: who, UUID and the guest's connection.
-pub type OwnerFields = (Option<Who>, Option<[i32; 4]>, Option<u32>);
+/// A new owner as a projectile stores it: the entity, its UUID and the guest's connection.
+pub type OwnerFields = (Option<EventSource>, Option<[i32; 4]>, Option<u32>);
 
 /// `AbstractArrow.startFalling`'s per-axis random velocity damping.
 pub fn start_falling_velocity(
@@ -283,9 +284,8 @@ pub struct Projectile {
     /// The entity id a server tracks it by (0 until it is tracked).
     pub id: u32,
     pub kind: ProjectileKind,
-    pub owner: Option<Who>,
-    /// A non-living vehicle owner, for collision exclusion only, never hit credit.
-    pub owner_vehicle: Option<u32>,
+    /// `Projectile.owner` while it is loaded: a player, a mob or any other entity.
+    pub owner: Option<EventSource>,
     /// `Projectile.owner`'s UUID, kept while the owner is away (a guest who
     /// left, a mob not loaded): what its save writes as `Owner`.
     pub owner_uuid: Option<[i32; 4]>,
@@ -520,9 +520,39 @@ impl Projectile {
             Vec3::new(p.x + half, bottom + height, p.z + half),
         )
     }
-    /// The collision target of the owner, independent of living damage credit.
-    pub fn collision_owner(&self) -> Option<Who> {
-        self.owner_vehicle.map(Who::Mob).or(self.owner)
+    /// The owner as hit and damage credit take it: a player or a mob, never another entity.
+    pub fn who(&self) -> Option<Who> {
+        self.owner.and_then(EventSource::actor)
+    }
+    /// The owner among a tick's targets, where every entity but a player is `Who::Mob`.
+    pub fn target(&self) -> Option<Who> {
+        self.owner.map(|o| match o {
+            EventSource::Player => Who::Player,
+            EventSource::Mob(id) | EventSource::Entity(id) => Who::Mob(id),
+        })
+    }
+    /// `EntityReference.getEntity`: an owner known only by UUID turns live once `player` (the guest's connection, None for the host) or `entity` knows it.
+    pub fn resolve(
+        &mut self,
+        player: impl FnOnce([i32; 4]) -> Option<Option<u32>>,
+        entity: impl FnOnce([i32; 4]) -> Option<EventSource>,
+    ) {
+        let (None, Some(uuid)) = (self.owner, self.owner_uuid) else {
+            return;
+        };
+        if let Some(guest) = player(uuid) {
+            (self.owner, self.guest) = (Some(EventSource::Player), guest);
+        } else if let Some(found) = entity(uuid) {
+            (self.owner, self.guest) = (Some(found), None);
+        }
+    }
+    /// `setLastHurtByPlayer` for a hit it made: the shooter (a guest's connection, None for the host), whoever's turn it is now.
+    pub fn credited_player(&self) -> Option<Option<u32>> {
+        (self.owner == Some(EventSource::Player)).then_some(self.guest)
+    }
+    /// The guest a player's projectile belongs to; None for the host's or a non-player's.
+    pub fn guest(&self) -> Option<u32> {
+        self.credited_player().flatten()
     }
     pub fn new(kind: ProjectileKind, position: Vec3, owner: Option<Who>) -> Self {
         let kind_is_arrow = matches!(kind, ProjectileKind::Arrow { .. } | ProjectileKind::Trident);
@@ -549,8 +579,7 @@ impl Projectile {
             join: Default::default(),
             id: 0,
             kind,
-            owner,
-            owner_vehicle: None,
+            owner: owner.map(EventSource::from),
             owner_uuid: None,
             guest: None,
             position,
@@ -631,7 +660,6 @@ impl Projectile {
             self.needs_sync = true;
         }
         (self.owner, self.owner_uuid, self.guest) = owner;
-        self.owner_vehicle = None;
         if self.is_hurting() {
             self.acceleration = if by_attack {
                 0.1
@@ -1210,7 +1238,7 @@ impl Projectile {
         let margin = self.hit_margin();
         let mut best: Option<(Who, Vec3, f64)> = None;
         for (who, b) in w.targets() {
-            if Some(*who) == self.collision_owner() && !self.left_owner {
+            if Some(*who) == self.target() && !self.left_owner {
                 continue;
             }
             if let Some(at) = b.inflate(Vec3::new(margin, margin, margin)).clip(from, end) {
@@ -1224,7 +1252,7 @@ impl Projectile {
             let owner_box = w
                 .targets()
                 .iter()
-                .find(|(who, _)| Some(*who) == self.collision_owner())
+                .find(|(who, _)| Some(*who) == self.target())
                 .map(|(_, b)| *b);
             self.left_owner =
                 owner_box.is_none_or(|b| !b.inflate(Vec3::new(1.0, 1.0, 1.0)).contains(from));
@@ -1572,7 +1600,7 @@ impl Projectile {
         let margin = self.hit_margin();
         let mut best: Option<(Who, Vec3, f64)> = None;
         for (who, b) in w.targets() {
-            if Some(*who) == self.collision_owner() && !self.left_owner {
+            if Some(*who) == self.target() && !self.left_owner {
                 continue;
             }
             let inflated = b.inflate(Vec3::new(margin, margin, margin));
@@ -1588,7 +1616,7 @@ impl Projectile {
             let owner_box = w
                 .targets()
                 .iter()
-                .find(|(who, _)| Some(*who) == self.collision_owner())
+                .find(|(who, _)| Some(*who) == self.target())
                 .map(|(_, b)| *b);
             self.left_owner = owner_box
                 .is_none_or(|b| !b.inflate(Vec3::new(1.0, 1.0, 1.0)).contains(self.position));
@@ -1601,7 +1629,7 @@ impl Projectile {
         if impact
             && self.kind == ProjectileKind::DragonFireball
             && let Some((who, at, _)) = best
-            && self.owner == Some(who)
+            && self.target() == Some(who)
         {
             self.position = at;
             self.touching_water = w.in_water(self.bounds());
@@ -1740,6 +1768,57 @@ impl Projectile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn owned(owner: Option<EventSource>, uuid: Option<[i32; 4]>, guest: Option<u32>) -> Projectile {
+        let mut p = Projectile::new(ProjectileKind::Snowball, Vec3::ZERO, None);
+        (p.owner, p.owner_uuid, p.guest) = (owner, uuid, guest);
+        p
+    }
+
+    #[test]
+    fn an_entity_owner_is_a_collision_target_without_hit_credit() {
+        let p = owned(Some(EventSource::Entity(4)), Some([1; 4]), None);
+        assert_eq!(p.target(), Some(Who::Mob(4)));
+        assert_eq!(
+            (p.who(), p.credited_player(), p.guest()),
+            (None, None, None)
+        );
+        let mob = owned(Some(EventSource::Mob(4)), Some([1; 4]), None);
+        assert_eq!(
+            (mob.who(), mob.target()),
+            (Some(Who::Mob(4)), Some(Who::Mob(4)))
+        );
+    }
+
+    #[test]
+    fn a_player_owner_credits_the_guest_or_the_host() {
+        let guest = owned(Some(EventSource::Player), Some([2; 4]), Some(2));
+        assert_eq!(guest.credited_player(), Some(Some(2)));
+        assert_eq!((guest.guest(), guest.who()), (Some(2), Some(Who::Player)));
+        let host = owned(Some(EventSource::Player), Some([3; 4]), None);
+        assert_eq!((host.credited_player(), host.guest()), (Some(None), None));
+    }
+
+    #[test]
+    fn an_unloaded_owner_resolves_when_its_uuid_loads() {
+        let stand = |u: [i32; 4]| (u == [1, 2, 3, 4]).then_some(EventSource::Entity(11));
+        let guest = |u: [i32; 4]| (u == [1, 2, 3, 4]).then_some(Some(3));
+        let mut away = owned(None, Some([1, 2, 3, 4]), None);
+        away.resolve(|_| None, |_| None);
+        assert_eq!((away.owner, away.target()), (None, None));
+        away.resolve(|_| None, stand);
+        assert_eq!(away.owner, Some(EventSource::Entity(11)));
+        let mut player = owned(None, Some([1, 2, 3, 4]), None);
+        player.resolve(guest, stand);
+        assert_eq!(
+            (player.owner, player.guest),
+            (Some(EventSource::Player), Some(3))
+        );
+        let mut loaded = owned(Some(EventSource::Mob(6)), Some([1, 2, 3, 4]), None);
+        loaded.resolve(guest, stand);
+        assert_eq!(loaded.owner, Some(EventSource::Mob(6)));
+    }
+
     struct Empty(Vec<(Who, Aabb)>);
     impl ProjectileWorld for Empty {
         fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
@@ -2787,7 +2866,7 @@ mod deflect_tests {
         for left in (1..=5).rev() {
             let (velocity, random) = (p.velocity, p.random.0.clone());
             assert!(!p.deflect(Turn::Reverse, [1.0; 3], none(), true));
-            assert_eq!((p.velocity, p.owner), (velocity, Some(Who::Mob(3))));
+            assert_eq!((p.velocity, p.who()), (velocity, Some(Who::Mob(3))));
             assert_eq!(p.random.0.clone().next_float(), random.clone().next_float());
             assert_eq!(p.no_deflect_ticks, left);
             p.tick(&w);

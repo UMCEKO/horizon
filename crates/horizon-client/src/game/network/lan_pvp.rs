@@ -260,7 +260,7 @@ impl Game<'_> {
 
     /// The player a player's projectile hit, when it hit one.
     pub(super) fn projectile_pvp_victim(&self, p: &Projectile, hit: Hit) -> Option<Victim> {
-        if p.owner != Some(Who::Player) || !meets_players(&p.kind) {
+        if p.who() != Some(Who::Player) || !meets_players(&p.kind) {
             return None;
         }
         let Hit::Entity { who, .. } = hit else {

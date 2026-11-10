@@ -769,25 +769,24 @@ impl Game<'_> {
                     .and_then(|p| {
                         // Projectile.getOwner resolves EntityReference<Entity>,
                         // including loaded owners that cannot be a Who.
-                        let Some(owner) = p.owner else {
-                            return p.owner_uuid.and_then(|uuid| {
-                                self.target_by_uuid(horizon_client::lan::playerdata::ints_uuid(
-                                    uuid,
-                                ))
-                            });
-                        };
-                        match (owner, p.guest) {
-                            // A guest's shot: `Who::Player` is them.
-                            (horizon_client::mobs::Who::Player, Some(conn))
+                        use horizon_client_core::who::EventSource;
+                        match (p.owner, p.guest) {
+                            // A guest's shot: `EventSource::Player` is them.
+                            (Some(EventSource::Player), Some(conn))
                                 if self.lan_acting == Some(conn) =>
                             {
                                 Some(Target::Player)
                             }
-                            (horizon_client::mobs::Who::Player, Some(conn)) => {
-                                Some(Target::Guest(conn))
+                            (Some(EventSource::Player), Some(conn)) => Some(Target::Guest(conn)),
+                            (Some(EventSource::Player), None) => Some(Target::Player),
+                            (Some(EventSource::Mob(id)), _) => Some(Target::Mob(id)),
+                            (Some(EventSource::Entity(_)) | None, _) => {
+                                p.owner_uuid.and_then(|uuid| {
+                                    self.target_by_uuid(horizon_client::lan::playerdata::ints_uuid(
+                                        uuid,
+                                    ))
+                                })
                             }
-                            (horizon_client::mobs::Who::Player, None) => Some(Target::Player),
-                            (horizon_client::mobs::Who::Mob(id), _) => Some(Target::Mob(id)),
                         }
                     })
                     .into_iter()

@@ -1533,7 +1533,7 @@ impl Game<'_> {
             .filter(|p| ticks(p.position))
             .filter_map(|p| {
                 let pos = horizon_client::end_gateway::pearl_gateway(p, |b| is_gateway(self, b))?;
-                Some((p.id, p.owner, p.guest, pos))
+                Some((p.id, p.who(), p.guest, pos))
             })
             .collect();
         for (id, owner, guest, pos) in pearls {
