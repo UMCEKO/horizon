@@ -2125,6 +2125,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-java-analysis"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml",
+ "zip",
+]
+
+[[package]]
 name = "horizon-java-host"
 version = "0.0.0"
 dependencies = [
