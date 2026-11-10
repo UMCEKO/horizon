@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use std::path::PathBuf;
 
 use horizon_java_analysis::class::{self, Parse};
-use horizon_java_analysis::{jars, libraries};
+use horizon_java_analysis::{jars, libraries, mixins};
 use serde_json::json;
 
 fn main() -> ExitCode {
@@ -26,9 +26,16 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("mixins") => match write_mixins(&args.collect::<Vec<_>>()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("horizon-java-analysis: {e}");
+                ExitCode::FAILURE
+            }
+        },
         _ => {
             eprintln!(
-                "usage: horizon-java-analysis dump-classes JAR... | dump-libraries --install DIR [--cache C] | dump-jars --install DIR"
+                "usage: horizon-java-analysis dump-classes JAR... | dump-libraries --install DIR [--cache C] | dump-jars --install DIR | mixins --install DIR --out OUT"
             );
             ExitCode::from(2)
         }
@@ -118,4 +125,23 @@ fn dump_install(cmd: &str, args: &[String]) -> Result<(), String> {
     let mut out = std::io::BufWriter::new(stdout.lock());
     writeln!(out, "{doc}").map_err(|e| e.to_string())?;
     out.flush().map_err(|e| e.to_string())
+}
+
+/// `mixins --install DIR --out OUT`: writes `mixins.json` and `mixins.md`.
+fn write_mixins(args: &[String]) -> Result<(), String> {
+    let (mut install, mut out) = (None, None);
+    let mut it = args.iter();
+    while let Some(flag) = it.next() {
+        let value = it.next().ok_or_else(|| format!("{flag} needs a value"))?;
+        match flag.as_str() {
+            "--install" => install = Some(PathBuf::from(value)),
+            "--out" => out = Some(PathBuf::from(value)),
+            other => return Err(format!("unknown argument {other}")),
+        }
+    }
+    let install = install.ok_or("--install DIR is required")?;
+    let out = out.ok_or("--out OUT is required")?;
+    let mut warnings = Vec::new();
+    let (entries, classes) = mixins::scan_install(&install, &mut warnings)?;
+    mixins::write_mixins(&out, &entries, classes, &warnings)
 }

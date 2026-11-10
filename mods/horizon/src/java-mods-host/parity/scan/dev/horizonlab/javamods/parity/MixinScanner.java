@@ -55,7 +55,7 @@ public final class MixinScanner {
                 for (Object v : list(a, "value")) if (v instanceof String s) methods.add(s);
                 List<String> at = new ArrayList<>();
                 for (Object v : list(a, "at")) if (v instanceof AnnotationNode n) at.add(at(n));
-                for (Object v : list(a, "constant")) if (v instanceof AnnotationNode n) at.add("CONSTANT:" + n.values);
+                for (Object v : list(a, "constant")) if (v instanceof AnnotationNode n) at.add("CONSTANT:" + render(n.values));
                 out.append(String.join("\t", mod, config, side, node.name.replace('/', '.'), m.name, kind,
                     String.join(",", targets), String.join(",", methods), String.join("|", at))).append('\n');
             }
@@ -68,6 +68,20 @@ public final class MixinScanner {
         var all = new ArrayList<AnnotationNode>();
         for (var l : lists) if (l != null) all.addAll(l);
         return all;
+    }
+
+    private static String render(List<Object> values) {
+        var parts = new ArrayList<String>();
+        if (values != null) for (int i = 0; i + 1 < values.size(); i += 2) parts.add(values.get(i) + "=" + one(values.get(i + 1)));
+        return String.join(",", parts);
+    }
+
+    private static String one(Object v) {
+        if (v instanceof Type t) return t.getDescriptor();
+        if (v instanceof String[] e) return e[0] + "." + e[1];
+        if (v instanceof AnnotationNode n) return "@" + n.desc;
+        if (v instanceof List<?> l) return "[" + String.join(",", l.stream().map(MixinScanner::one).toList()) + "]";
+        return String.valueOf(v);
     }
 
     private static String at(AnnotationNode n) {
