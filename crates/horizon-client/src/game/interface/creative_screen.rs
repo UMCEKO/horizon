@@ -43,6 +43,9 @@ impl Game<'_> {
         if let Some((name, _)) = &tab.name {
             return name.clone();
         }
+        if let Some(title) = Creative::java_title(tab) {
+            return title;
+        }
         match horizon_client::creative::item_group_key(&tab.id) {
             Some(key) => self.translate_with_fallback(key, &tab.title),
             None => {
@@ -133,13 +136,13 @@ impl Game<'_> {
                 }
             }
         }
-        let background = if tab.search {
+        let background = tab.look.background.as_deref().unwrap_or(if tab.search {
             "gui/container/creative_inventory/tab_item_search"
         } else if tab.inventory {
             "gui/container/creative_inventory/tab_inventory"
         } else {
             "gui/container/creative_inventory/tab_items"
-        };
+        });
         if let Some(mut r) = self.gui.atlas.sprites.get(background).copied() {
             r.u1 = r.u0 + (r.u1 - r.u0) * Creative::WIDTH / r.w as f32;
             r.v1 = r.v0 + (r.v1 - r.v0) * Creative::HEIGHT / r.h as f32;
@@ -149,12 +152,12 @@ impl Game<'_> {
         batch.sprite(&self.gui.atlas, &tab_sprite(tab, true), ox + tx, oy + ty);
         for t in tabs.iter().filter(|t| self.creative_screen.on_page(t)) {
             let (tx, ty) = Creative::tab_position(t);
-            let stack = ItemStack {
+            let stack = t.look.icon.clone().unwrap_or_else(|| ItemStack {
                 item: Arc::from(t.icon.as_str()),
                 count: 1,
                 damage: 0,
                 extra: None,
-            };
+            });
             self.draw_item(
                 batch,
                 &stack,
@@ -163,7 +166,7 @@ impl Game<'_> {
             );
         }
         let atlas = &self.gui.atlas;
-        if !tab.inventory {
+        if !tab.inventory && !tab.look.hide_title {
             let title = self.creative_tab_title(tab);
             batch.text(
                 atlas,
@@ -173,6 +176,7 @@ impl Game<'_> {
                 tab.name
                     .as_ref()
                     .and_then(|n| n.1)
+                    .or(tab.look.label_color)
                     .map_or(rgba(64, 64, 64, 255), |c| {
                         rgba((c >> 16) as u8, (c >> 8) as u8, c as u8, 255)
                     }),
@@ -255,7 +259,10 @@ impl Game<'_> {
             }
             let scrollable = self.creative_screen.rows(&self.pack.names) > 5;
             let scroller = if scrollable {
-                "gui/sprites/container/creative_inventory/scroller"
+                tab.look
+                    .scroller
+                    .as_deref()
+                    .unwrap_or("gui/sprites/container/creative_inventory/scroller")
             } else {
                 "gui/sprites/container/creative_inventory/scroller_disabled"
             };
