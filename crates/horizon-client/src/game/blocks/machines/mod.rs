@@ -769,6 +769,13 @@ impl Game<'_> {
         }
         entity.slots_mut().get_mut(i)
     }
+    /// `RandomizableContainer.unpackLootTable(null)` for every block entity of a
+    /// container a hopper, a dropper or a dispenser reads.
+    fn unpack_view_loot(&mut self, view: &View) {
+        for &(pos, _) in &view.parts {
+            self.unpack_loot_table(pos);
+        }
+    }
     /// `BlockEntity.setChanged` for every block entity of a container.
     fn view_changed(&mut self, view: &View) {
         // A composter's containers change its block state instead.
@@ -1029,6 +1036,7 @@ impl Game<'_> {
         if self.hoppers.get(&pos).is_some_and(|h| h.cooldown > 0) || !enabled {
             return;
         }
+        self.unpack_view_loot(&view);
         self.native_prepare_hopper_transfer([pos.0, pos.1, pos.2]);
         let c = self.containers();
         let mut changed = false;
@@ -1114,6 +1122,8 @@ impl Game<'_> {
         let Some(view) = c.view(pos, false) else {
             return false;
         };
+        self.unpack_view_loot(&view);
+        let c = self.containers();
         let mut changed = false;
         if !c.is_empty(&view) {
             changed = self.hopper_eject(pos, &view);
@@ -1295,6 +1305,7 @@ impl Game<'_> {
             return self.eject_into_part(hopper, &part, at);
         }
         if let Some(target) = self.containers().hopper_insertion_view(front) {
+            self.unpack_view_loot(&target);
             self.native_hopper_inventory_search(
                 [pos.0, pos.1, pos.2],
                 Some([front.0, front.1, front.2]),
@@ -1471,6 +1482,7 @@ impl Game<'_> {
             Some([above.0, above.1, above.2]),
             None,
         );
+        self.unpack_view_loot(&source);
         if let Kind::Composter(level) = source.kind {
             if level != 8 {
                 return Some(false);
@@ -1635,6 +1647,7 @@ impl Game<'_> {
             return Some(f(self, ContainerTarget::Part(part)));
         }
         if let Some(view) = self.containers().view(pos, false) {
+            self.unpack_view_loot(&view);
             return Some(f(self, ContainerTarget::View(&view)));
         }
         let centre = [
@@ -1658,6 +1671,7 @@ impl Game<'_> {
         f: impl FnOnce(&mut Self, &View) -> R,
     ) -> Option<R> {
         let mut items = if let Some(i) = self.carts.iter().position(|c| c.id == id) {
+            self.unpack_cart_loot_at(i, false);
             self.carts.update(i, |c| std::mem::take(&mut c.items))
         } else {
             let i = self.boats.iter().position(|b| b.id == id)?;
@@ -1782,6 +1796,7 @@ impl Game<'_> {
         // The cart's slots are edited as a container under the placeholder key
         // its menu uses; when that menu is open the placeholder is the live copy.
         let key = (i32::MAX - 15, super::minecarts::CART_KEY_Y, cart.id as i32);
+        self.unpack_cart(cart, 0.0);
         let (view, open) = self.lend_items(key, &mut cart.items);
         let p = cart.position;
         // getLevelY is the cart's y + 0.5, so the container is the block at
@@ -1830,6 +1845,7 @@ impl Game<'_> {
         let Some(view) = self.containers().view(key, false) else {
             return Ok(());
         };
+        self.unpack_view_loot(&view);
         // DispenserBlockEntity.getRandomSlot
         let mut slot = None;
         let mut odds = 1;

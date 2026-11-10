@@ -3117,67 +3117,10 @@ impl Game<'_> {
         self.load_block_entity_tag(pos, tag)
     }
 
-    /// `RandomizableContainer.unpackLootTable` for a player who opens a
-    /// container: a roll the container still holds fires
-    /// `player_generates_container_loot` for its table, and from then on the
-    /// container saves its items, not the table.
-    pub(super) fn unpack_opened_loot(&mut self, key: (i32, i32, i32), name: &str) {
-        let Some(rolled) = self
-            .world
-            .chunks
-            .get(&(key.0 >> 4, key.2 >> 4))
-            .and_then(|c| c.saved.as_ref())
-            .and_then(|s| s.rolled_loot.iter().find(|r| r.pos == key))
-            .cloned()
-        else {
-            return;
-        };
-        // The roll is still there only while the container holds exactly its items.
-        let still_rolled = self
-            .world
-            .block_entities
-            .get_mut(&key)
-            .is_some_and(|entity| {
-                let mut tag = horizon_client::save::encode_block_entity(key, entity, name);
-                match &mut tag {
-                    horizon_core::nbt::Tag::Compound(map) => rolled.restore(map),
-                    _ => false,
-                }
-            });
-        if still_rolled {
-            self.trigger_loot_table(&rolled.table);
-        }
-        let Some(chunk) = self.world.chunks.get_mut(&(key.0 >> 4, key.2 >> 4)) else {
-            return;
-        };
-        let chunk = std::sync::Arc::make_mut(chunk);
-        let mut extras = chunk
-            .saved
-            .take()
-            .map(std::sync::Arc::unwrap_or_clone)
-            .unwrap_or_default();
-        horizon_client::save::consume_container_loot(&mut extras, key);
-        chunk.saved = Some(std::sync::Arc::new(extras));
-        self.world.modified.insert((key.0 >> 4, key.2 >> 4));
-        // `ChestBlock.getMenuProvider` unpacks both halves of a double chest:
-        // the other half's table, if it still holds one, rolls too. The own roll
-        // is consumed above, so the partner's call does not come back here.
-        if let Some((other, _)) = self.chest_partner(key) {
-            let other_name = self
-                .res
-                .facts()
-                .get(self.world.block(other.0, other.1, other.2))
-                .name
-                .to_string();
-            self.unpack_opened_loot(other, &other_name);
-        }
-    }
     /// RandomizableContainer.tryLoadLootTable for a tag a command gives a
-    /// container (`setblock`, `data`): an empty container with a `LootTable`
-    /// is rolled now, as a loaded chunk's are (`save::roll_loaded_loot`), and
-    /// the roll is kept with its chunk, so that the container saves, and
-    /// `data get` shows, its table and seed until its items change. A tag
-    /// without one drops what the container had. True when it had a table.
+    /// container (`setblock`, `data`): a container with a `LootTable` keeps it
+    /// to unpack at its first access, and a tag without one drops what the
+    /// container had. True when the pending table changed.
     pub(super) fn take_loot_table(
         &mut self,
         key: (i32, i32, i32),
@@ -3185,33 +3128,26 @@ impl Game<'_> {
         entity: &mut horizon_client::containers::BlockEntity,
     ) -> bool {
         use horizon_client::{containers::BlockEntity, save, structure_blocks};
-        let table = save::text(tag.get("LootTable"))
-            .and_then(|id| horizon_client_core::identifier::normalize_id(&id));
-        let rolled = match (table, entity) {
-            (Some(table), BlockEntity::Chest(slots)) if slots.iter().all(Option::is_none) => {
-                let loot = self.server_loot.get();
-                let at = Vec3::new(f64::from(key.0), f64::from(key.1), f64::from(key.2));
-                let biome = self.biome_name_at(at).unwrap_or_default();
-                Some(structure_blocks::roll_container(
-                    slots,
-                    loot.as_deref(),
-                    table,
-                    structure_blocks::loot_seed(tag),
-                    key,
-                    &biome,
-                ))
-            }
+        let pending = match (save::text(tag.get("LootTable")), &*entity) {
+            (Some(table), BlockEntity::Chest(_)) => horizon_client_core::identifier::normalize_id(
+                &table,
+            )
+            .map(|table| save::PendingLoot {
+                pos: key,
+                table,
+                seed: structure_blocks::loot_seed(tag),
+            }),
             _ => None,
         };
         let Some(chunk) = self.world.chunks.get_mut(&(key.0 >> 4, key.2 >> 4)) else {
             return false;
         };
-        let held = |c: &horizon_client::chunk::Chunk| {
-            c.saved
-                .as_ref()
-                .is_some_and(|s| s.rolled_loot.iter().any(|r| r.pos == key))
-        };
-        if rolled.is_none() && !held(chunk) {
+        let held = chunk
+            .saved
+            .as_ref()
+            .and_then(|s| s.pending_loot.iter().find(|r| r.pos == key))
+            .cloned();
+        if held == pending {
             return false;
         }
         let chunk = std::sync::Arc::make_mut(chunk);
@@ -3220,14 +3156,13 @@ impl Game<'_> {
             .take()
             .map(std::sync::Arc::unwrap_or_clone)
             .unwrap_or_default();
-        save::consume_container_loot(&mut extras, key);
-        let taken = rolled.is_some();
-        extras.rolled_loot.extend(rolled);
+        save::take_pending_loot(&mut extras, key);
+        extras.pending_loot.extend(pending);
         chunk.saved = Some(std::sync::Arc::new(extras));
-        taken
+        true
     }
-    /// The loot table and seed a container still holding its roll saves
-    /// (`RolledLoot::restore`), in place of its items.
+    /// `RandomizableContainer.trySaveLootTable`: the loot table and seed a
+    /// container still holds, in place of its items.
     pub(super) fn restore_loot_table(
         world: &horizon_client::world::World,
         key: (i32, i32, i32),
@@ -3236,13 +3171,13 @@ impl Game<'_> {
         let horizon_core::nbt::Tag::Compound(map) = tag else {
             return;
         };
-        let rolled = world
+        let pending = world
             .chunks
             .get(&(key.0 >> 4, key.2 >> 4))
             .and_then(|c| c.saved.as_ref())
-            .and_then(|s| s.rolled_loot.iter().find(|r| r.pos == key));
-        if let Some(r) = rolled {
-            r.restore(map);
+            .and_then(|s| s.pending_loot.iter().find(|r| r.pos == key));
+        if let Some(r) = pending {
+            r.save_into(map);
         }
     }
     fn cmd_fill(&mut self, ctx: &Context) -> R<i32> {

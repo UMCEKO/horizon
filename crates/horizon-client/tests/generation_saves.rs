@@ -600,12 +600,15 @@ fn persistent_forwards_the_block_entities_decoration_made_in_a_final_chunk() {
         fn final_block_entities(
             &self,
             entries: &[(&Proto, &[([i32; 3], u32)])],
-        ) -> Vec<((i32, i32, i32), BlockEntity)> {
-            entries
-                .iter()
-                .flat_map(|(_, writes)| writes.iter())
-                .map(|([x, y, z], _)| ((*x, *y, *z), BlockEntity::Chest(Vec::new())))
-                .collect()
+        ) -> horizon_client::streaming::FinalBlockEntities {
+            horizon_client::streaming::FinalBlockEntities {
+                entities: entries
+                    .iter()
+                    .flat_map(|(_, writes)| writes.iter())
+                    .map(|([x, y, z], _)| ((*x, *y, *z), BlockEntity::Chest(Vec::new())))
+                    .collect(),
+                pending_loot: Vec::new(),
+            }
         }
     }
     let Some(root) = resources() else {
@@ -630,7 +633,9 @@ fn persistent_forwards_the_block_entities_decoration_made_in_a_final_chunk() {
         biomes,
     };
     let proto = Box::new(()) as Proto;
-    let made = generator.final_block_entities(&[(&proto, &[([1, 64, 2], 5)])]);
+    let made = generator
+        .final_block_entities(&[(&proto, &[([1, 64, 2], 5)])])
+        .entities;
     assert_eq!(made.len(), 1, "Persistent drops the block entities");
     assert_eq!(made[0].0, (1, 64, 2));
     let _ = std::fs::remove_dir_all(&dir);
