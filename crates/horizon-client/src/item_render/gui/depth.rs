@@ -69,10 +69,11 @@ pub(super) fn sort(quads: &[ItemQuad]) -> Vec<Face> {
         .filter_map(|(i, q)| {
             let normal = (q.pos[2] - q.pos[0]).cross(q.pos[3] - q.pos[1]);
             // Front faces wind counter-clockwise on screen with Y up.
-            if normal.z >= 0.0 {
+            if normal.z >= 0.0 && !(q.two_sided && normal.z > 0.0) {
                 return None;
             }
-            let normal = -normal.normalize();
+            // The plane faces the viewer, whichever side of a two-sided quad that is.
+            let normal = if normal.z > 0.0 { normal } else { -normal }.normalize();
             planes[i] = normal.extend(-normal.dot(q.pos[0]));
             Some(Face {
                 quad: i,

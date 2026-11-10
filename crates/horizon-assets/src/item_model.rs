@@ -12,8 +12,8 @@ use crate::{
 };
 use serde_json::{Map, Value};
 use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
+    collections::{BTreeMap, HashSet},
+    sync::{Arc, LazyLock, Mutex},
 };
 
 mod component_predicate;
@@ -28,8 +28,7 @@ pub use special::{SpecialKind, SpecialModel};
 
 type Result<T> = std::result::Result<T, DecodeError>;
 
-/// `BuiltInRegistries.DATA_COMPONENT_TYPE`, which `has_component` and the
-/// `component` select validate against (checked by the harness).
+/// Vanilla's `BuiltInRegistries.DATA_COMPONENT_TYPE` (checked by the harness).
 pub const DATA_COMPONENT_TYPES: [&str; 122] = [
     "minecraft:additional_trade_cost",
     "minecraft:attack_animation",
@@ -155,6 +154,25 @@ pub const DATA_COMPONENT_TYPES: [&str; 122] = [
     "minecraft:zombie_nautilus/variant",
 ];
 
+/// The loaded `BuiltInRegistries.DATA_COMPONENT_TYPE` (vanilla's and the mods'), as `byNameCodec` decodes with.
+#[derive(Clone, Debug)]
+pub struct ComponentTypes(HashSet<String>);
+impl ComponentTypes {
+    pub fn new(ids: impl IntoIterator<Item = String>) -> Self {
+        Self(ids.into_iter().collect())
+    }
+    /// Vanilla's registry alone.
+    pub fn vanilla() -> &'static Self {
+        static VANILLA: LazyLock<ComponentTypes> = LazyLock::new(|| {
+            ComponentTypes::new(DATA_COMPONENT_TYPES.iter().map(|s| (*s).to_owned()))
+        });
+        &VANILLA
+    }
+    pub fn contains(&self, id: &str) -> bool {
+        self.0.contains(id)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Display contexts
 // ---------------------------------------------------------------------------
@@ -279,9 +297,9 @@ pub fn identifier(name: &str) -> Result<String> {
 fn ident(v: &Value) -> Result<String> {
     identifier(&string(v)?)
 }
-fn component_type(v: &Value) -> Result<String> {
+fn component_type(v: &Value, types: &ComponentTypes) -> Result<String> {
     let id = ident(v)?;
-    if DATA_COMPONENT_TYPES.contains(&id.as_str()) {
+    if types.contains(&id) {
         Ok(id)
     } else {
         Err(err("unknown data component type"))
@@ -371,13 +389,20 @@ pub struct ClientItem {
 impl ClientItem {
     pub const DEFAULT_PROPERTIES: (bool, bool, f32) = (true, false, 1.0);
     pub fn from_json(text: &str) -> Result<Self> {
+        Self::from_json_in(text, ComponentTypes::vanilla())
+    }
+    /// A definition read against the loaded registry of component types.
+    pub fn from_json_in(text: &str, types: &ComponentTypes) -> Result<Self> {
         let value: Value = serde_json::from_str(text.strip_prefix('\u{feff}').unwrap_or(text))?;
-        Self::decode(&value)
+        Self::decode_in(&value, types)
     }
     pub fn decode(value: &Value) -> Result<Self> {
+        Self::decode_in(value, ComponentTypes::vanilla())
+    }
+    pub fn decode_in(value: &Value, types: &ComponentTypes) -> Result<Self> {
         let m = object(value)?;
         Ok(Self {
-            model: ItemModelNode::decode(required(m, "model")?)?,
+            model: ItemModelNode::decode_in(required(m, "model")?, types)?,
             hand_animation_on_swap: get(m, "hand_animation_on_swap").map_or(Ok(true), boolean)?,
             oversized_in_gui: get(m, "oversized_in_gui").map_or(Ok(false), boolean)?,
             swap_animation_scale: get(m, "swap_animation_scale").map_or(Ok(1.0), float)?,
@@ -435,6 +460,10 @@ pub struct SwitchCase {
 
 impl ItemModelNode {
     pub fn decode(v: &Value) -> Result<Self> {
+        Self::decode_in(v, ComponentTypes::vanilla())
+    }
+    pub fn decode_in(v: &Value, types: &ComponentTypes) -> Result<Self> {
+        let decode = |v: &Value| Self::decode_in(v, types);
         let m = object(v)?;
         let kind = ident(required(m, "type")?)?;
         if kind == "minecraft:condition" {
@@ -443,8 +472,8 @@ impl ItemModelNode {
                 return Ok(Self::Condition {
                     transformation: optional_transformation(m)?,
                     property: ConditionProperty::Custom(property),
-                    on_true: Box::new(Self::decode(required(m, "on_true")?)?),
-                    on_false: Box::new(Self::decode(required(m, "on_false")?)?),
+                    on_true: Box::new(decode(required(m, "on_true")?)?),
+                    on_false: Box::new(decode(required(m, "on_false")?)?),
                 });
             }
         }
@@ -464,19 +493,19 @@ impl ItemModelNode {
             "minecraft:composite" => Self::Composite {
                 models: list(required(m, "models")?)?
                     .iter()
-                    .map(Self::decode)
+                    .map(decode)
                     .collect::<Result<_>>()?,
                 transformation: optional_transformation(m)?,
             },
             "minecraft:condition" if foreign::property_is_foreign(m)? => foreign::wrap(
-                Self::decode(required(m, "on_false")?)?,
+                decode(required(m, "on_false")?)?,
                 optional_transformation(m)?,
             ),
             "minecraft:condition" => Self::Condition {
                 transformation: optional_transformation(m)?,
-                property: ConditionProperty::decode(m)?,
-                on_true: Box::new(Self::decode(required(m, "on_true")?)?),
-                on_false: Box::new(Self::decode(required(m, "on_false")?)?),
+                property: ConditionProperty::decode(m, types)?,
+                on_true: Box::new(decode(required(m, "on_true")?)?),
+                on_false: Box::new(decode(required(m, "on_false")?)?),
             },
             // A mod's registered property is read per stack; no case matches any other foreign one.
             "minecraft:select"
@@ -484,15 +513,15 @@ impl ItemModelNode {
                     && !is_select_property(&ident(required(m, "property")?)?) =>
             {
                 // No case can match a property Horizon cannot read.
-                let fallback = get(m, "fallback").map(Self::decode).transpose()?;
+                let fallback = get(m, "fallback").map(decode).transpose()?;
                 foreign::wrap(fallback.unwrap_or(Self::Empty), optional_transformation(m)?)
             }
             "minecraft:select" => {
                 let transformation = optional_transformation(m)?;
-                let property = SelectProperty::decode(m)?;
+                let property = SelectProperty::decode(m, types)?;
                 let cases = list(required(m, "cases")?)?
                     .iter()
-                    .map(|c| SwitchCase::decode(&property, c))
+                    .map(|c| SwitchCase::decode(&property, c, types))
                     .collect::<Result<Vec<_>>>()?;
                 if cases.is_empty() {
                     return Err(err("empty case list"));
@@ -509,7 +538,7 @@ impl ItemModelNode {
                     property,
                     cases,
                     fallback: get(m, "fallback")
-                        .map(|f| Self::decode(f).map(Box::new))
+                        .map(|f| decode(f).map(Box::new))
                         .transpose()?,
                 }
             }
@@ -523,7 +552,7 @@ impl ItemModelNode {
                         let e = object(e)?;
                         Ok((
                             float(required(e, "threshold")?)?,
-                            Self::decode(required(e, "model")?)?,
+                            decode(required(e, "model")?)?,
                         ))
                     })
                     .collect::<Result<Vec<_>>>()?;
@@ -531,7 +560,7 @@ impl ItemModelNode {
                 entries.sort_by(|a, b| f64::from(a.0).total_cmp(&f64::from(b.0)));
                 if foreign_property {
                     // A property Horizon cannot read is 0.
-                    let fallback = get(m, "fallback").map(Self::decode).transpose()?;
+                    let fallback = get(m, "fallback").map(decode).transpose()?;
                     let chosen = last_index_less_or_equal(&entries, 0.0)
                         .map(|i| entries.swap_remove(i).1)
                         .or(fallback);
@@ -546,7 +575,7 @@ impl ItemModelNode {
                     scale: get(m, "scale").map_or(Ok(1.0), float)?,
                     entries,
                     fallback: get(m, "fallback")
-                        .map(|f| Self::decode(f).map(Box::new))
+                        .map(|f| decode(f).map(Box::new))
                         .transpose()?,
                 }
             }
@@ -565,7 +594,7 @@ impl ItemModelNode {
                 model: SpecialModel::decode(required(m, "model")?)?,
             },
             "minecraft:bundle/selected_item" => Self::BundleSelectedItem,
-            other if foreign::is_foreign(other) => foreign::decode_node(other, m),
+            other if foreign::is_foreign(other) => foreign::decode_node(other, m, types),
             _ => return Err(err("unknown item model type")),
         })
     }
@@ -598,7 +627,7 @@ impl ItemModelNode {
     }
 }
 impl SwitchCase {
-    fn decode(property: &SelectProperty, v: &Value) -> Result<Self> {
+    fn decode(property: &SelectProperty, v: &Value, types: &ComponentTypes) -> Result<Self> {
         let m = object(v)?;
         let when = required(m, "when")?;
         // `compactListCodec`: a list, or one value; the list must not be empty.
@@ -612,7 +641,7 @@ impl SwitchCase {
                 .into_iter()
                 .map(|v| property.decode_value(v))
                 .collect::<Result<_>>()?,
-            model: ItemModelNode::decode(required(m, "model")?)?,
+            model: ItemModelNode::decode_in(required(m, "model")?, types)?,
         })
     }
 }
@@ -709,7 +738,7 @@ pub enum ConditionProperty {
     Component(Value),
 }
 impl ConditionProperty {
-    fn decode(m: &Map<String, Value>) -> Result<Self> {
+    fn decode(m: &Map<String, Value>, types: &ComponentTypes) -> Result<Self> {
         Ok(match ident(required(m, "property")?)?.as_str() {
             "minecraft:custom_model_data" => {
                 Self::CustomModelData(get(m, "index").map_or(Ok(0), non_negative)?)
@@ -719,7 +748,7 @@ impl ConditionProperty {
             "minecraft:damaged" => Self::Damaged,
             "minecraft:fishing_rod/cast" => Self::FishingRodCast,
             "minecraft:has_component" => Self::HasComponent {
-                component: component_type(required(m, "component")?)?,
+                component: component_type(required(m, "component")?, types)?,
                 ignore_default: get(m, "ignore_default").map_or(Ok(false), boolean)?,
             },
             "minecraft:bundle/has_selected_item" => Self::BundleHasSelectedItem,
@@ -728,7 +757,7 @@ impl ConditionProperty {
             "minecraft:extended_view" => Self::ExtendedView,
             "minecraft:keybind_down" => Self::KeybindDown(string(required(m, "keybind")?)?),
             "minecraft:view_entity" => Self::ViewEntity,
-            "minecraft:component" => Self::Component(component_predicate::decode(m)?),
+            "minecraft:component" => Self::Component(component_predicate::decode(m, types)?),
             _ => return Err(err("unknown condition property")),
         })
     }
@@ -755,7 +784,7 @@ pub enum SelectProperty {
     Component(String),
 }
 impl SelectProperty {
-    fn decode(m: &Map<String, Value>) -> Result<Self> {
+    fn decode(m: &Map<String, Value>, types: &ComponentTypes) -> Result<Self> {
         let property = ident(required(m, "property")?)?;
         if is_select_property(&property) {
             return Ok(Self::Custom(property));
@@ -778,7 +807,9 @@ impl SelectProperty {
             },
             "minecraft:context_entity_type" => Self::ContextEntityType,
             "minecraft:context_dimension" => Self::ContextDimension,
-            "minecraft:component" => Self::Component(component_type(required(m, "component")?)?),
+            "minecraft:component" => {
+                Self::Component(component_type(required(m, "component")?, types)?)
+            }
             _ => return Err(err("unknown select property")),
         })
     }

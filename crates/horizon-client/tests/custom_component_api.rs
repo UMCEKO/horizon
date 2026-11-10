@@ -14,19 +14,20 @@ use std::path::Path;
 
 #[test]
 fn registration_limits_and_defaults_are_bound_to_the_connection() {
+    let vanilla = || vec![String::new(); 122];
     assert_eq!(
-        custom::install(122, vec!["minecraft:no".into()]),
+        custom::install(vanilla(), vec!["minecraft:no".into()]),
         Err(InstallError::InvalidName)
     );
     assert_eq!(
-        custom::install(122, vec!["sample:x".into(), "sample:x".into()]),
+        custom::install(vanilla(), vec!["sample:x".into(), "sample:x".into()]),
         Err(InstallError::DuplicateName)
     );
-    custom::install(122, vec!["sample:z".into(), "sample:a".into()]).unwrap();
+    custom::install(vanilla(), vec!["sample:z".into(), "sample:a".into()]).unwrap();
     assert_eq!(custom::id("sample:a"), Some(122));
     assert_eq!(custom::id("sample:z"), Some(123));
     assert_eq!(
-        custom::install(122, vec![]),
+        custom::install(vanilla(), vec![]),
         Err(InstallError::AlreadyInstalled)
     );
 

@@ -295,6 +295,19 @@ pub fn mouse_button(name: &str) -> Option<MouseButton> {
 }
 pub use horizon_client_core::key_display::display_name;
 
+/// The character the layout writes on this key without modifiers, when it is one.
+pub fn layout_char(event: &winit::event::KeyEvent) -> Option<char> {
+    use winit::keyboard::Key;
+    use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+    match event.key_without_modifiers() {
+        Key::Character(text) => {
+            let mut chars = text.chars();
+            chars.next().filter(|_| chars.next().is_none())
+        }
+        _ => None,
+    }
+}
+
 /// A key event: what the layout writes on its key, without modifiers, names
 /// that key from now on (`key_display::learn_layout`), so an AZERTY player's
 /// Q key shows A.

@@ -1068,6 +1068,21 @@ impl Font {
         }
         None
     }
+    /// The default font's advance of every code point, as `glyph` gives it,
+    /// without rasterizing any.
+    pub fn advances(&self) -> Vec<f32> {
+        let mut cache = self.cache.borrow_mut();
+        let Some((_, set)) = cache.sets.iter_mut().find(|(k, _)| k == DEFAULT) else {
+            return vec![self.missing.advance; 0x11_0000];
+        };
+        (0..0x11_0000)
+            .map(|c| {
+                char::from_u32(c)
+                    .and_then(|c| self.provider_advance(set, c))
+                    .unwrap_or(self.missing.advance)
+            })
+            .collect()
+    }
     /// Atlas pixels rasterized since the last call.
     pub fn take_patches(&self) -> Vec<Patch> {
         std::mem::take(&mut self.cache.borrow_mut().region.pending)
@@ -1699,6 +1714,27 @@ mod tests {
         assert_eq!(font.width_text(&text), 10.0);
         assert_eq!(font.random_glyph(&alt, 7.0).advance, 7.0);
         assert!(!font.take_patches().is_empty());
+    }
+
+    #[test]
+    fn the_advance_table_matches_drawn_glyphs_without_rasterizing() {
+        let sheet = png(16, 8, |x, _| x < 2 || (8..14).contains(&x));
+        let default = br#"{"providers":[{"type":"space","advances":{" ":4}},{"type":"bitmap","file":"minecraft:font/a.png","ascent":7,"chars":["ab"]}]}"#;
+        let root = root(
+            "advances",
+            &[
+                ("assets/minecraft/font/default.json", default),
+                ("assets/minecraft/textures/font/a.png", &sheet),
+            ],
+        );
+        let font = load(&root);
+        let table = font.advances();
+        assert_eq!(table.len(), 0x11_0000);
+        assert!(font.take_patches().is_empty());
+        for c in [' ', 'a', 'b', 'z', '\u{4e2d}'] {
+            assert_eq!(table[c as usize], font.glyph(c).advance, "{c:?}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// `FontSet.computeGlyphInfo`: `SelectedGlyphs.any` is the first provider's glyph, fishy

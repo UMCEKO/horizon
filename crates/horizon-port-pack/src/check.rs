@@ -141,6 +141,7 @@ pub fn check(jar_path: &Path, out: &Path) -> Result<Check, String> {
         &info,
         out,
         None,
+        None,
         &|_| true,
         &pack,
         &BTreeMap::new(),
