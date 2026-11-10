@@ -89,8 +89,7 @@ fn a_mob_moved_into_a_wall_stops_and_flags_it() {
         return;
     };
     assert!(game.run_command("fill 8 100 0 8 102 15 stone"));
-    assert!(game.run_command("summon zombie 4.5 100 4.5 {NoAI:1b}"));
-    let id = game.mobs[0].id;
+    let id = game.spawn_mob_raw("zombie", [4.5, 100.0, 4.5], true).unwrap();
     assert!(game.entity_move(
         Target::Mob(id),
         MoverType::SelfMovement,
