@@ -55,19 +55,13 @@ pub struct AmbientTables {
 impl AmbientTables {
     pub fn load(root: &Path) -> Self {
         let read = |dir: &str| -> HashMap<String, AmbientSounds> {
-            let Ok(folder) =
-                horizon_world::json_folder::read(&root.join("data/minecraft").join(dir))
-            else {
-                return HashMap::new();
-            };
-            folder
-                .files
-                .iter()
-                .filter_map(|file| {
-                    let json: Value = serde_json::from_slice(file.bytes().ok()?).ok()?;
+            let files = horizon_world::damage_source::resource_files(root, dir).unwrap_or_default();
+            files
+                .into_iter()
+                .filter_map(|(id, bytes)| {
+                    let json: Value = serde_json::from_slice(&bytes).ok()?;
                     let v = &json["attributes"]["minecraft:audio/ambient_sounds"];
-                    (!v.is_null())
-                        .then(|| (format!("minecraft:{}", file.name), AmbientSounds::parse(v)))
+                    (!v.is_null()).then(|| (id, AmbientSounds::parse(v)))
                 })
                 .collect()
         };
@@ -521,5 +515,22 @@ mod tests {
         assert!((5990..=6010).contains(&ticks), "{ticks}");
         assert_eq!(engine.notifications[0].identifier, "minecraft:ambient.cave");
         assert_eq!(a.moodiness, 0.0);
+    }
+
+    #[test]
+    fn mod_namespace_biome_ambience_is_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let biomes = dir.path().join("data/modns/worldgen/biome");
+        std::fs::create_dir_all(&biomes).unwrap();
+        std::fs::write(
+            biomes.join("b.json"),
+            r#"{"attributes": {"minecraft:audio/ambient_sounds": {"loop": "minecraft:ambient.crimson_forest.loop"}}}"#,
+        )
+        .unwrap();
+        let tables = AmbientTables::load(dir.path());
+        assert_eq!(
+            tables.get("minecraft:overworld", "modns:b").r#loop.as_deref(),
+            Some("minecraft:ambient.crimson_forest.loop")
+        );
     }
 }
