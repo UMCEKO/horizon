@@ -399,6 +399,9 @@ impl Game<'_> {
         if let Some(value) = self.studio_control(&words)? {
             return Ok(Some(value));
         }
+        if let Some(value) = self.worldgen_control(&words, line)? {
+            return Ok(Some(value));
+        }
         match self.agent_command(&words, line, reply, event_loop)? {
             super::agent::Handled::Reply(value) => return Ok(Some(value)),
             super::agent::Handled::Deferred => return Ok(None),
@@ -422,6 +425,7 @@ impl Game<'_> {
                 .chain(super::input_trace::HELP)
                 .chain(super::repro::HELP)
                 .chain(super::studio::HELP)
+                .chain(super::worldgen_control::HELP)
                 .collect::<Vec<_>>() }))),
             "setblock" | "fill" | "particle" | "signedit" => self.render_command(&words),
             "section-draws" => {
@@ -1309,7 +1313,7 @@ impl Game<'_> {
         self.save_game()
     }
 
-    fn require_world(&self) -> Result<()> {
+    pub(super) fn require_world(&self) -> Result<()> {
         if self.title.is_some() {
             return Err("no world open; use: open WORLD [SEED] [creative]".into());
         }

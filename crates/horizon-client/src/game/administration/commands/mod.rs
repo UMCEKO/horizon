@@ -310,7 +310,7 @@ impl Game<'_> {
     /// `run_command` with its output suppressed
     /// (`CommandSourceStack.withSuppressedOutput`): the player's own source,
     /// rights and checks, no feedback and no failure in the chat.
-    pub(super) fn run_command_quietly(&mut self, command: &str) -> bool {
+    pub(in crate::game) fn run_command_quietly(&mut self, command: &str) -> bool {
         let quiet = execute::Source {
             silent: true,
             ..self.player_source()
