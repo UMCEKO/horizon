@@ -1,0 +1,11 @@
+[package]
+name = "horizon-java-host"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+horizon-core = { path = "../horizon-core" }
+horizon-world = { path = "../horizon-world" }
+jni = { version = "0.21.1", features = ["invocation"] }
+serde_json = "1.0.151"
