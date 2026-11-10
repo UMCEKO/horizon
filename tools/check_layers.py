@@ -98,7 +98,7 @@ def crossings(config, graph):
     return out
 
 
-def check(config, graph, base=None, optional=frozenset()):
+def check(config, graph, base=None, optional=frozenset(), upstream=None):
     """(problems, notes): problems fail the check, notes are only printed. `optional` is optional_edges()."""
     may = config["may_depend"]
     layers = config["crates"]
@@ -134,6 +134,10 @@ def check(config, graph, base=None, optional=frozenset()):
                         f"extension point the other side plugs into")
     if base is not None:
         base_layers = base.get("crates", {})
+        if upstream is not None:
+            for crate, layer in sorted(layers.items()):
+                if crate not in base_layers and upstream.get("crates", {}).get(crate) != layer:
+                    problems.append(f"{crate}: new layer assignment is not listed verbatim in verified upstream")
         # An exception may move between the lists (an `allowed` edge put behind a feature), but not appear.
         base_exceptions = set(base.get("allowed", [])) | optional_rows(base)
         for key, entries in (("allowed", allowed), ("optional", recorded_optional)):
@@ -141,7 +145,9 @@ def check(config, graph, base=None, optional=frozenset()):
                 crate, dep = edge.split(" -> ")
                 # A crate new since the base (split out of another, or renamed) may carry its old crate's
                 # exceptions; a new dependency target excuses nothing.
-                if crate in base_layers:
+                restored = (key == "allowed" and upstream is not None
+                            and edge in upstream.get("allowed", []))
+                if not restored and (crate in base_layers or upstream is not None):
                     problems.append(f"{edge}: added to '{key}' in {CONFIG_PATH}. The exceptions only shrink; "
                                     f"see {DOC}{SECTION.get(layers.get(crate), '')}")
     notes = [f"{edge}: no longer a dependency; you can remove it from 'allowed' in {CONFIG_PATH}"
@@ -197,7 +203,17 @@ def main(argv=None):
         for edge in ups:
             print(f"  {edge}")
         return 0
-    problems, notes = check(config, graph, base_config(args.base) if args.base else None, optional_edges(packages))
+    if args.base:
+        if __package__:
+            from . import check_file_size
+        else:
+            import check_file_size
+        upstream, provenance = check_file_size.verified_sync_config(args.base, CONFIG_PATH)
+    else:
+        upstream, provenance = None, []
+    problems, notes = check(config, graph, base_config(args.base) if args.base else None,
+                            optional_edges(packages), upstream)
+    problems = provenance + problems
     problems += portable(config, packages)
     for note in notes:
         print(f"note: {note}")

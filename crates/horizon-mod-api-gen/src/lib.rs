@@ -10,6 +10,7 @@ mod host;
 mod layout;
 mod named_hooks;
 mod parts;
+pub mod wire_types;
 pub use catalog::DECLARATIONS;
 use catalog::{Catalog, Contract, DrawContext, Hook, HostAccess, PartKind, PhaseContext, Side};
 use heck::ToSnakeCase;

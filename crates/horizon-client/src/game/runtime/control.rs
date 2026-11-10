@@ -888,6 +888,23 @@ impl Game<'_> {
                 self.previous_position = to;
                 ok()
             }
+            "emote" => match words.get(1).copied() {
+                None => {
+                    let owned: Vec<String> =
+                        self.owned_emotes().iter().map(|i| i.id.clone()).collect();
+                    Ok(Some(
+                        json!({ "owned": owned, "playing": self.emote_playing() }),
+                    ))
+                }
+                Some("stop") => {
+                    self.stop_emote();
+                    ok()
+                }
+                Some(id) if self.play_emote(id) => ok(),
+                Some(id) => {
+                    Err(format!("can't play emote {id} now (not owned, or not standing)").into())
+                }
+            },
             "hotbar" => {
                 let slot: usize = arg(1)?.parse()?;
                 if !(1..=9).contains(&slot) {
@@ -1380,6 +1397,7 @@ impl Game<'_> {
             Screen::Mod => "mod",
             Screen::HudEditor => "hud-editor",
             Screen::Studio => "studio",
+            Screen::EmoteWheel => "emote-wheel",
         }
     }
 

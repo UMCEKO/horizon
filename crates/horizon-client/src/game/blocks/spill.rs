@@ -445,18 +445,21 @@ pub(super) fn put_saved_entity(
 }
 
 impl GameLevel<'_> {
-    /// `Block.popResource(level, pos, stack)` with the broken block's copied components.
     fn pop_resource(&mut self, pos: [i32; 3], mut stack: ItemStack) {
         self.pending.attach(pos, &mut stack);
         let at = pop_position(&mut self.world.random, pos);
-        self.spill.spawns.push(Spawn {
-            random: None,
-            stack,
-            pos: at,
-            motion: None,
-            delay: 10,
-        });
+        if self.rules.block_drops {
+            self.spill.spawns.push(Spawn {
+                random: None,
+                stack,
+                pos: at,
+                motion: None,
+                delay: 10,
+            });
+        }
     }
+
+    /// `Block.popResource(level, pos, stack)` with the broken block's copied components.
     /// `Block.popResource(level, pos, new ItemStack(block))`.
     pub(super) fn pop_block_item(&mut self, pos: BlockPos, state: BlockStateId) {
         let item = self.facts.get(state).item.clone();

@@ -2,6 +2,7 @@
 //! updates. The GUI, the CLI and the MCP server all go through this module. Functions here
 //! block; the GUI runs them on threads and reads their messages.
 use crate::{account, mojang, sources};
+use horizon_platform::{prepare, prepared_files};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -854,25 +855,30 @@ pub fn installable_updates(releases: &[Release]) -> Vec<Release> {
 /// How often a launcher left open looks for new releases: they come out several times a day.
 pub const CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
-/// The website, roadmap and documentation links, from `launcher/links.json` on the fork's main, so
-/// they can change without a launcher release. An empty address hides its link.
-#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+/// The community, sponsor and website links and the official server's address, from
+/// `launcher/links.json` on main, so they can change without a launcher release. An empty address
+/// hides its button (an empty `official_server`: no official server offered).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Links {
+    pub discord: String,
+    pub sponsor: String,
     pub website: String,
-    /// The roadmap: the project board every open item lives on.
+    /// The fork project board.
     pub roadmap: String,
     /// The modding book.
     pub docs: String,
+    /// The official server's address, as servers.dat lists it (`server_list::add_official`).
+    pub official_server: String,
+    /// The addresses it had before: a list holding one moves to `official_server`. A move appends
+    /// the old address here.
+    pub official_server_previous: Vec<String>,
 }
 
 impl Default for Links {
     /// What the launcher uses until (or unless) it can read links.json.
     fn default() -> Self {
-        Self {
-            website: "https://playhorizon.dev".into(),
-            roadmap: "https://github.com/users/arismoko/projects/1".into(),
-            docs: "https://arismoko.github.io/horizon/".into(),
-        }
+        serde_json::from_str(include_str!("../links.json"))
+            .expect("embedded launcher links must match Links")
     }
 }
 
@@ -883,12 +889,26 @@ impl Links {
         let mut links = Self::default();
         if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(text) {
             for (key, slot) in [
+                ("discord", &mut links.discord),
+                ("sponsor", &mut links.sponsor),
                 ("website", &mut links.website),
                 ("roadmap", &mut links.roadmap),
                 ("docs", &mut links.docs),
+                ("official_server", &mut links.official_server),
             ] {
                 if let Some(url) = map.get(key).and_then(|v| v.as_str()) {
                     *slot = url.trim().to_string();
+                }
+            }
+            // A list of addresses; anything else keeps the built-in one.
+            if let Some(serde_json::Value::Array(previous)) = map.get("official_server_previous") {
+                if previous.iter().all(serde_json::Value::is_string) {
+                    links.official_server_previous = previous
+                        .iter()
+                        .filter_map(|a| a.as_str())
+                        .map(|a| a.trim().to_string())
+                        .filter(|a| !a.is_empty())
+                        .collect();
                 }
             }
         }
@@ -1267,7 +1287,7 @@ fn read_json(path: &Path) -> Option<serde_json::Value> {
 fn game_version_at(dir: &Path) -> String {
     read_json(&dir.join("research-lock.json"))
         .and_then(|v| v["minecraft"]["version"].as_str().map(String::from))
-        .unwrap_or_else(|| horizon_core::VANILLA_VERSION.into())
+        .unwrap_or_else(|| horizon_platform::version::VANILLA_VERSION.into())
 }
 
 pub fn resources(tag: &str) -> PathBuf {
@@ -1500,11 +1520,11 @@ const LEGACY_EXPORTERS: [&str; 18] = [
 ];
 
 /// A version folder's preparer as the launchers before `OUTPUT_VERSION` compared it: the digest
-/// of its sources (`horizon_prepare::sources_sha256`) and of the exporters it ran, line endings
+/// of its sources (`prepare::sources_sha256`) and of the exporters it ran, line endings
 /// as checked out ignored.
 fn legacy_fingerprint(dir: &Path) -> Option<String> {
     use sha2::Digest;
-    let sources = horizon_prepare::sources_sha256(&dir.join(PREPARER_CRATE))?;
+    let sources = prepare::sources_sha256(&dir.join(PREPARER_CRATE))?;
     let mut hash = sha2::Sha256::new();
     hash.update(sources.as_bytes());
     for name in LEGACY_EXPORTERS {
@@ -1606,7 +1626,7 @@ pub(crate) fn copy_dir_except(from: &Path, to: &Path, skip: Option<&Path>) -> st
         if entry.file_type()?.is_dir() {
             copy_dir_except(&entry.path(), &target, skip)?;
         } else {
-            horizon_prepare::clone_or_copy(&entry.path(), &target)?;
+            prepare::clone_or_copy(&entry.path(), &target)?;
         }
     }
     Ok(())
@@ -1642,7 +1662,7 @@ fn reuse_prepared(versions: &Path, tag: &str) -> Option<String> {
         let partial = to.with_file_name(format!(".{version}.partial-{}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&partial);
         // Without the data file: it names its own root, so the copy could not use it.
-        let data_file = from.join(horizon_core::prepared_files::FILE_NAME);
+        let data_file = from.join(prepared_files::FILE_NAME);
         let copied = copy_dir_except(&from, &partial, Some(&data_file)).and_then(|_| {
             if to.join(RESOURCES_MANIFEST).exists() {
                 return Ok(false); // Prepared meanwhile, by another copy or the player.
@@ -1688,7 +1708,6 @@ pub(crate) fn reuse_prepared_for(tag: &str) {
 /// The game still writes it when this didn't finish. Only looks for the file, as
 /// `prepared_files::open` keeps it open for the whole run, which would stop a removal on Windows.
 fn write_data_file(resources: &Path) -> std::io::Result<()> {
-    use horizon_core::prepared_files;
     if !prepared_at(resources) || resources.join(prepared_files::FILE_NAME).exists() {
         return Ok(());
     }
@@ -1787,28 +1806,24 @@ fn complete_reports(versions: &Path, tag: &str) -> bool {
 
 /// What a prepared version may lack that the launcher adds without preparing again, each copied
 /// from the player's own Minecraft asset store as `horizon-prepare <kind>` does: what the
-/// player misses without it, its kind (`horizon_prepare::missing_extras`, the same check as
+/// player misses without it, its kind (`prepare::missing_extras`, the same check as
 /// `horizon-prepare --check`), and the copy.
 type Completion = (
     &'static str,
     &'static str,
-    fn(&Path, Option<&Path>, horizon_prepare::Log) -> Result<PathBuf, String>,
+    fn(&Path, Option<&Path>, prepare::Log) -> Result<PathBuf, String>,
 );
 
 const COMPLETIONS: [Completion; 5] = [
     // Preparers before #1538 left the built-in packs out.
-    (
-        "Programmer Art and High Contrast",
-        "packs",
-        horizon_prepare::packs,
-    ),
+    ("Programmer Art and High Contrast", "packs", prepare::packs),
     // A preparation that could not read the asset store keeps the client jar's 1x1 grey
     // placeholders, its English alone, and no sounds (#1867: Prism Launcher installs prepared
     // since 0.2.48).
-    ("The title panorama", "panorama", horizon_prepare::panorama),
-    ("The Unifont glyphs", "fonts", horizon_prepare::fonts),
-    ("The languages", "languages", horizon_prepare::languages),
-    ("The sounds", "sounds", horizon_prepare::sounds),
+    ("The title panorama", "panorama", prepare::panorama),
+    ("The Unifont glyphs", "fonts", prepare::fonts),
+    ("The languages", "languages", prepare::languages),
+    ("The sounds", "sounds", prepare::sounds),
 ];
 
 /// Adds what a prepared version lacks of `COMPLETIONS`: a new version reuses the resources of the
@@ -1830,7 +1845,7 @@ fn refill_own_store(tag: &str) {
     let own = data_dir().join("minecraft");
     let resources = resources_at(&versions_dir().join(tag));
     if !own.join("assets/indexes").is_dir()
-        || !horizon_prepare::missing_extras(&resources)
+        || !prepare::missing_extras(&resources)
             .iter()
             .any(|(kind, _)| matches!(*kind, "languages" | "sounds"))
         || ASKED.swap(true, std::sync::atomic::Ordering::Relaxed)
@@ -1871,7 +1886,7 @@ fn complete_assets_in(
         if !resources.join(RESOURCES_MANIFEST).exists() {
             return Vec::new();
         }
-        let missing = horizon_prepare::missing_extras(&resources);
+        let missing = prepare::missing_extras(&resources);
         COMPLETIONS
             .iter()
             .filter(|(_, kind, _)| missing.iter().any(|(m, _)| m == kind))
@@ -1907,7 +1922,7 @@ fn complete_assets_in(
     // The data file answers "missing" for what it lacks, so one from before these copies would
     // hide them. Only when something was added: a version that stays lacking keeps its file.
     if lacking().len() < lacked {
-        let data_file = resources.join(horizon_core::prepared_files::FILE_NAME);
+        let data_file = resources.join(prepared_files::FILE_NAME);
         if let Err(e) = fs::remove_file(&data_file) {
             if e.kind() != std::io::ErrorKind::NotFound {
                 log(format!("{}: not removed: {e}", data_file.display()));
@@ -1923,7 +1938,7 @@ fn complete_assets_in(
 fn minecraft_folders() -> Vec<PathBuf> {
     let mut folders: Vec<PathBuf> = Settings::load().minecraft_dir.into_iter().collect();
     folders.extend([
-        horizon_prepare::artifacts::minecraft_dir(None),
+        prepare::artifacts::minecraft_dir(None),
         data_dir().join("linked-minecraft"),
         data_dir().join("minecraft"),
     ]);
@@ -1974,7 +1989,7 @@ fn python() -> Option<&'static str> {
 /// How a version's resources are prepared.
 pub enum Preparer {
     /// horizon-prepare, linked into the launcher: the version ships the same preparer sources.
-    InProcess(horizon_prepare::Options),
+    InProcess(prepare::Options),
     /// The version's own preparer: its horizon-prepare binary when its sources differ from the
     /// launcher's (a newer or older release), or the Python script of versions made before it.
     Process(Command),
@@ -2190,9 +2205,9 @@ fn java(
     log: &dyn Fn(String),
 ) -> Result<PathBuf, String> {
     let find = if compiler {
-        horizon_prepare::java::find
+        prepare::java::find
     } else {
-        horizon_prepare::java::find_runtime
+        prepare::java::find_runtime
     };
     if let Ok(jdk) = find(major, &[]) {
         return Ok(jdk.home());
@@ -2200,7 +2215,7 @@ fn java(
     let mut runtimes: Vec<PathBuf> = Vec::new();
     for home in games
         .iter()
-        .flat_map(|game| horizon_prepare::java::minecraft_runtimes(&game.join("runtime")))
+        .flat_map(|game| prepare::java::minecraft_runtimes(&game.join("runtime")))
     {
         if !runtimes.contains(&home) {
             runtimes.push(home);
@@ -2341,7 +2356,7 @@ pub fn preparer(
     set_prepare_step(PrepareStep::Files);
     let version = game_version(tag);
     let dir = version_dir(tag);
-    let reused = horizon_prepare::artifacts::reuse_imported(&dir, &|line| log(line.to_string()))?;
+    let reused = prepare::artifacts::reuse_imported(&dir, &|line| log(line.to_string()))?;
     let chosen = minecraft.to_path_buf();
     // Resolved even when the game files are reused: the assets still come from the install.
     let minecraft = {
@@ -2413,7 +2428,7 @@ pub fn preparer(
     set_prepare_step(PrepareStep::Java);
     let java_home = java(
         major,
-        !horizon_prepare::exporters::available(&dir),
+        !prepare::exporters::available(&dir),
         &games,
         &manifest,
         log,
@@ -2441,10 +2456,10 @@ pub fn preparer(
             .map_err(|e| e.to_string())?;
     }
     if let Some(binary) = binary {
-        if horizon_prepare::sources_sha256(&dir.join(PREPARER_CRATE)).as_deref()
-            == Some(horizon_prepare::SOURCES_SHA256)
+        if prepare::sources_sha256(&dir.join(PREPARER_CRATE)).as_deref()
+            == Some(prepare::SOURCES_SHA256)
         {
-            let options = horizon_prepare::Options {
+            let options = prepare::Options {
                 root: dir,
                 import: !reused,
                 minecraft_dir: Some(minecraft.clone()),
@@ -2482,8 +2497,8 @@ pub fn preparer(
 /// the sounds where the launcher's preparer puts them.
 pub fn sounds(tag: &str, minecraft: &Path, log: &dyn Fn(String)) {
     let dir = version_dir(tag);
-    let own = horizon_prepare::sources_sha256(&dir.join(PREPARER_CRATE)).as_deref()
-        == Some(horizon_prepare::SOURCES_SHA256);
+    let own = prepare::sources_sha256(&dir.join(PREPARER_CRATE)).as_deref()
+        == Some(prepare::SOURCES_SHA256);
     let binary = preparer_binary(&dir).filter(|binary| {
         !own && crate::process::command(binary)
             .arg("--help")
@@ -2513,7 +2528,7 @@ pub fn sounds(tag: &str, minecraft: &Path, log: &dyn Fn(String)) {
                 }
             }),
         None => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            horizon_prepare::sounds(&dir, Some(minecraft), &|line| log(line.to_string()))
+            prepare::sounds(&dir, Some(minecraft), &|line| log(line.to_string()))
         }))
         .unwrap_or_else(|_| Err("The sound copy stopped unexpectedly".into()))
         .map(|_| ()),
@@ -2525,12 +2540,9 @@ pub fn sounds(tag: &str, minecraft: &Path, log: &dyn Fn(String)) {
 
 /// Runs `Preparer::InProcess` on this thread, each progress line to `log`. A panic is an
 /// error like any other, so the window never waits on a preparation that died.
-pub fn prepare_in_process(
-    options: &horizon_prepare::Options,
-    log: &dyn Fn(String),
-) -> Result<(), String> {
+pub fn prepare_in_process(options: &prepare::Options, log: &dyn Fn(String)) -> Result<(), String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        horizon_prepare::prepare(options, &|line| log(line.to_string()))
+        prepare::prepare(options, &|line| log(line.to_string()))
     }))
     .unwrap_or_else(|_| Err("The preparation stopped unexpectedly".into()))
     .map(|_| ())
@@ -2553,15 +2565,15 @@ pub fn game_home() -> PathBuf {
         .join("horizon")
 }
 
-/// Whether No AI is on: every AI feature hidden and off (`horizon_core::no_ai`, kept in the
+/// Whether No AI is on: every AI feature hidden and off (`horizon_platform::no_ai`, kept in the
 /// game's `horizon-extras.txt` so the game reads the same switch).
 pub fn no_ai() -> bool {
-    horizon_core::no_ai::is_on(&game_home())
+    horizon_platform::no_ai::is_on(&game_home())
 }
 
 /// Turns No AI on or off for the launcher and the game.
 pub fn set_no_ai(on: bool) -> Result<(), String> {
-    horizon_core::no_ai::set(&game_home(), on).map_err(|e| format!("Could not save No AI: {e}"))
+    horizon_platform::no_ai::set(&game_home(), on).map_err(|e| format!("Could not save No AI: {e}"))
 }
 
 // ----- Logs and crash reports ---------------------------------------------------------------------
@@ -3036,7 +3048,7 @@ pub fn minecraft_dir(requested: Option<PathBuf>) -> Result<PathBuf, String> {
     Ok(requested
         .or(Settings::load().minecraft_dir)
         .or_else(default_minecraft_dir)
-        .unwrap_or_else(|| horizon_prepare::artifacts::minecraft_dir(None)))
+        .unwrap_or_else(|| prepare::artifacts::minecraft_dir(None)))
 }
 
 /// The server folder: the one given, the one chosen in the launcher, or `server/` in the data folder.
@@ -4115,6 +4127,8 @@ pub enum Job {
 }
 
 pub enum Msg {
+    Playing(Option<u64>),
+    OfficialPlayers(Option<u64>),
     Storage(Result<Box<crate::storage::Report>, String>),
     Releases(Result<Vec<Release>, String>),
     Links(Links),
@@ -4372,10 +4386,21 @@ pub struct Settings {
     /// Dark, Light, or the system's: the launcher's look. Dark by default.
     #[serde(default)]
     pub appearance: Appearance,
+    /// The player has read what the "I'm playing" ping holds (`telemetry::PING`): on the
+    /// first-run question, or on the Play page once if they answered that before it existed.
+    #[serde(default)]
+    pub ping_notice_seen: bool,
     /// The player without an account that owns the game has read, once, why the launcher needs
     /// one now (the owner gate's screen).
     #[serde(default)]
     pub owner_notice_seen: bool,
+    /// Seconds a partner banner (the sidebar's card or the Servers page's banner) has been on
+    /// screen, over every start, up to `partner::SEEN_BEFORE_HIDE`: only then can the player hide it.
+    #[serde(default)]
+    pub partner_seen_secs: u64,
+    /// The player hid a partner banner: the sidebar's card and the Servers page's banner are both gone for good.
+    #[serde(default)]
+    pub partner_hidden: bool,
     /// What the window does while the game runs. Stays by default.
     #[serde(default)]
     pub while_playing: WhilePlaying,
@@ -6267,27 +6292,37 @@ pub fn {f}("
     #[test]
     fn links_fall_back_to_the_built_in_ones() {
         let defaults = Links::default();
+        assert_eq!(defaults.discord, "https://discord.gg/playhorizon");
+        assert_eq!(defaults.sponsor, "https://github.com/sponsors/ludovic111");
         assert_eq!(defaults.website, "https://playhorizon.dev");
+        assert_eq!(
+            Links::parse(r#"{"roadmap":"https://example.org/tasks","docs":" "}"#),
+            Links {
+                roadmap: "https://example.org/tasks".into(),
+                docs: String::new(),
+                ..defaults.clone()
+            }
+        );
         // The file on main says the same thing as the defaults.
         assert_eq!(Links::parse(include_str!("../links.json")), defaults);
         // Unreadable or missing, offline included: the defaults.
         assert_eq!(Links::parse(""), defaults);
         assert_eq!(Links::parse("<html>404</html>"), defaults);
         assert_eq!(Links::parse("[1]"), defaults);
-        assert_eq!(Links::parse(r#"{"roadmap": 5}"#), defaults);
+        assert_eq!(Links::parse(r#"{"discord": 5}"#), defaults);
         // A key that is missing keeps its default; a new address replaces it; empty hides it.
         assert_eq!(
-            Links::parse(r#"{"roadmap": "https://x.y/z"}"#),
+            Links::parse(r#"{"discord": "https://x.y/z"}"#),
             Links {
-                roadmap: "https://x.y/z".into(),
+                discord: "https://x.y/z".into(),
                 ..defaults.clone()
             }
         );
         assert_eq!(
-            Links::parse(r#"{"roadmap": "", "docs": " "}"#),
+            Links::parse(r#"{"discord": "", "sponsor": " "}"#),
             Links {
-                roadmap: String::new(),
-                docs: String::new(),
+                discord: String::new(),
+                sponsor: String::new(),
                 ..defaults.clone()
             }
         );
@@ -6391,7 +6426,7 @@ pub fn {f}("
 
     #[test]
     fn a_prepared_version_gets_a_data_file_that_holds_its_files() {
-        use horizon_core::prepared_files::FILE_NAME;
+        use horizon_platform::prepared_files::FILE_NAME;
         let resources =
             std::env::temp_dir().join(format!("horizon-launcher-data-file-{}", std::process::id()));
         let _ = fs::remove_dir_all(&resources);
@@ -6460,7 +6495,7 @@ pub fn {f}("
         release("v2026.10.12", "26.2");
         prepared("v2026.10.12", "26.2");
         // A data file names its own root: the new version writes its own.
-        let data_file = horizon_core::prepared_files::FILE_NAME;
+        let data_file = horizon_platform::prepared_files::FILE_NAME;
         write(
             "v2026.10.13",
             &format!(".local/horizon-client/26.3/{data_file}"),
@@ -6707,7 +6742,7 @@ pub fn {f}("
             data.push(n);
             data
         };
-        let mut assets: Vec<(String, Vec<u8>)> = horizon_prepare::BUILT_IN_PACKS
+        let mut assets: Vec<(String, Vec<u8>)> = prepare::BUILT_IN_PACKS
             .iter()
             .map(|name| (name.to_string(), name.as_bytes().to_vec()))
             .collect();
@@ -6782,7 +6817,7 @@ pub fn {f}("
 
         // Resources prepared without any of them: a folder without an asset store is skipped.
         release("v0.2.1", true);
-        let data_file = horizon_core::prepared_files::FILE_NAME;
+        let data_file = horizon_platform::prepared_files::FILE_NAME;
         write(
             resources_at(&versions.join("v0.2.1")).join(data_file),
             b"older",

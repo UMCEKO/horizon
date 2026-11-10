@@ -16,6 +16,8 @@ use horizon_world::level::flags as level_flags;
 
 #[derive(Clone, Debug)]
 pub(super) struct PrimedTnt {
+    /// Entity-owned registration metadata; content clones are detached.
+    pub(super) attachment_lifetime: horizon_mod_runtime::attachments::AttachmentLifetime,
     /// `Entity.yRot` and `xRot` (`/tp`, `/data get ... Rotation`).
     pub rotation: [f32; 2],
     /// When it joined its list (`horizon_client::join_seq`); set by the list.
@@ -389,6 +391,7 @@ impl Game<'_> {
             horizon_client::save::insecure_uuid(&mut horizon_client::random_source::entity());
         self.persist.uuids.insert(self.next_entity, uuid);
         self.tnts.push(PrimedTnt {
+            attachment_lifetime: Default::default(),
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -837,6 +840,7 @@ mod tests {
         ]))
         .unwrap();
         let mut tnt = PrimedTnt {
+            attachment_lifetime: Default::default(),
             rotation: [0.0, 0.0],
             join: Default::default(),
             id: 1,
@@ -905,6 +909,7 @@ mod tests {
         use horizon_core::geometry::Direction;
         use horizon_world::piston_push::bounce_velocity;
         let mut tnt = PrimedTnt {
+            attachment_lifetime: Default::default(),
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -955,6 +960,7 @@ mod tests {
         for bordered in [false, true] {
             let at = Vec3::new(24.0, 4.0, 20.5);
             let mut tnt = PrimedTnt {
+                attachment_lifetime: Default::default(),
                 rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: false,
@@ -1034,6 +1040,7 @@ mod tests {
             }
             let at = Vec3::new(19.5, top, 20.5);
             let mut tnt = PrimedTnt {
+                attachment_lifetime: Default::default(),
                 rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: false,
@@ -1109,6 +1116,7 @@ mod tests {
         world.set(21, 4, 20, flowing).unwrap();
         let at = Vec3::new(20.5, 4.0, 20.5);
         let mut tnt = PrimedTnt {
+            attachment_lifetime: Default::default(),
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -1271,6 +1279,7 @@ mod tests {
         // (Entity.handleOnInsideBubbleColumn / handleOnAboveBubbleColumn).
         let at = Vec3::new(20.5, 6.0, 20.5);
         let mut tnt = PrimedTnt {
+            attachment_lifetime: Default::default(),
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -1379,6 +1388,7 @@ mod tests {
         world.set(20, 2, 20, soul_sand).unwrap();
         let at = Vec3::new(20.5, 6.0, 20.5);
         let primed = || PrimedTnt {
+            attachment_lifetime: Default::default(),
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -1492,10 +1502,16 @@ mod tests {
             .unwrap(),
         );
         game.options.dedicated = Some(Vec::new());
-        game.world.chunks.insert(
-            (0, 0),
-            std::sync::Arc::new(horizon_client::chunk::Chunk::empty(0, 0)),
-        );
+        // Entity ticking waits for every chunk within 2 columns
+        // (`ChunkMap.prepareEntityTickingChunk`).
+        for z in -2..=2 {
+            for x in -2..=2 {
+                game.world.chunks.insert(
+                    (x, z),
+                    std::sync::Arc::new(horizon_client::chunk::Chunk::empty(x, z)),
+                );
+            }
+        }
         game.streaming.forced.insert((0, 0));
         Some(game)
     }
@@ -1973,6 +1989,31 @@ mod tests {
         game.particles.requested.as_ref().unwrap().len()
     }
 
+    /// #13852: a chunk enters entity ticking only once every chunk within 2
+    /// columns is loaded (`ChunkMap.prepareEntityTickingChunk`), so TNT beside
+    /// a missing chunk keeps its fuse until the neighbourhood is whole.
+    #[test]
+    fn tnt_waits_while_a_chunk_two_columns_away_is_missing() {
+        let mut resources = None;
+        let Some(mut game) = server_game(&mut resources) else {
+            return;
+        };
+        game.world.chunks.remove(&(2, 0));
+        game.add_primed_tnt(BlockPos::new(8, 64, 8), 0.0, 80, None, None);
+        game.tnts[0].no_gravity = true;
+        game.tnts[0].velocity = Vec3::ZERO;
+        for _ in 0..3 {
+            game.tick_world(true).unwrap();
+        }
+        assert_eq!(game.tnts[0].fuse, 80, "no entity ticking yet");
+        game.world.chunks.insert(
+            (2, 0),
+            std::sync::Arc::new(horizon_client::chunk::Chunk::empty(2, 0)),
+        );
+        game.tick_world(true).unwrap();
+        assert!(game.tnts[0].fuse < 80, "ticks once the chunk is back");
+    }
+
     /// #10063: TNT lit between level ticks (flint and steel, a command) has its
     /// first tick in the next level tick, so its fuse reads 79 after it, and it
     /// explodes on the 80th (`PrimedTnt.tick`). Horizon held every TNT that
@@ -2046,6 +2087,7 @@ mod tests {
     }
 }
 horizon_client::impl_joined!(PrimedTnt);
+horizon_mod_runtime::impl_attachment_lifetime!(PrimedTnt);
 
 #[cfg(test)]
 mod entity_collision_tests {

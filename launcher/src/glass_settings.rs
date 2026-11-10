@@ -13,7 +13,7 @@ use crate::glass_ui::{self as ui, white};
 use horizon_theme::glass::{fill, ink, radius};
 
 /// The list's entries: name and icon. The settings sections.
-const SECTIONS: [(&str, &str); 8] = [
+const SECTIONS: [(&str, &str); 9] = [
     ("Account", "user"),
     ("Updates", "refresh"),
     ("Launcher", "computer"),
@@ -22,6 +22,7 @@ const SECTIONS: [(&str, &str); 8] = [
     ("Storage", "computer"),
     ("AI", "ai-chat-02"),
     ("About", "information-circle"),
+    ("Data collection", "view"),
 ];
 
 /// What `settings_page` builds before it knows which look draws it.
@@ -507,6 +508,7 @@ impl Launcher {
             self.glass_storage(cx),
             ai,
             about,
+            card().child(self.collection_section(cx)),
         ]
     }
 }

@@ -442,9 +442,7 @@ pub fn remove(home: &Path, pack: &Pack) -> Result<(), String> {
         set_enabled(home, pack, false)?;
     }
     crate::desktop_seams::to_trash(&pack.path)
-        .map_err(|e| format!("Could not move {} to the trash: {e}", pack.file))?;
-    crate::storage::eviction::request_cleanup();
-    Ok(())
+        .map_err(|e| format!("Could not move {} to the trash: {e}", pack.file))
 }
 
 #[cfg(test)]

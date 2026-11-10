@@ -9,6 +9,8 @@
 
 # Concepts
 
+- [Wire types](how-to/wire-types.md)
+
 <!-- Per-concept child chapters are discovered at build time; keep these aggregate links for published anchors. -->
 
 - [Trait mods, Parts and attachments](concepts/trait-mods.md)

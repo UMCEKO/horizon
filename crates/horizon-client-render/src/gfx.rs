@@ -1731,6 +1731,8 @@ pub struct Renderer {
     output_caps: output::OutputCapabilities,
     /// An output that failed to apply, not tried again until something it needs changes.
     output_rejected: Option<output_apply::Rejected>,
+    /// Since when Auto keeps HDR on through the display's loss of its report.
+    auto_off_since: Option<std::time::Instant>,
     /// The output applied (`update_output`), with the frame every pipeline that draws it
     /// targets: the swapchain's 8-bit format, or `Rgba16Unorm` when the renderer was made with
     /// HDR output on and Smooth Gradients and the device draws and blends into it, or
@@ -2340,6 +2342,35 @@ struct Opened {
     configured: Option<(wgpu::SurfaceConfiguration, wgpu::SurfaceCapabilities)>,
 }
 /// Logs the adapter and records it for crash reports.
+#[derive(Clone, Debug, Default)]
+pub struct Adapter {
+    pub name: String,
+    pub vendor: String,
+    /// `integrated`, `discrete`, `virtual`, `cpu` or `other`.
+    pub kind: String,
+    pub driver: String,
+    pub backend: String,
+}
+
+static ADAPTER: std::sync::Mutex<Option<Adapter>> = std::sync::Mutex::new(None);
+
+/// The adapter, once the renderer has one.
+pub fn adapter() -> Option<Adapter> {
+    ADAPTER.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// wgpu's device type in the words reports use.
+pub fn gpu_kind(device_type: &str) -> &'static str {
+    match device_type {
+        "IntegratedGpu" => "integrated",
+        "DiscreteGpu" => "discrete",
+        "VirtualGpu" => "virtual",
+        "Cpu" => "cpu",
+        _ => "other",
+    }
+}
+
+/// Logs the adapter and records it ([`adapter`]) for crash reports and telemetry.
 fn describe_adapter(adapter: &wgpu::Adapter) {
     let info = adapter.get_info();
     log::info!(
@@ -2348,6 +2379,15 @@ fn describe_adapter(adapter: &wgpu::Adapter) {
         info.backend,
         info.device_type
     );
+    *ADAPTER.lock().unwrap_or_else(|e| e.into_inner()) = Some(Adapter {
+        name: info.name.clone(),
+        vendor: horizon_system::gpu_vendor(&info.name, info.vendor).to_owned(),
+        kind: gpu_kind(&format!("{:?}", info.device_type)).to_owned(),
+        driver: format!("{} {}", info.driver, info.driver_info)
+            .trim()
+            .to_owned(),
+        backend: format!("{:?}", info.backend),
+    });
     crate::crash::set_detail(
         "Graphics Adapter",
         format!(
@@ -2508,7 +2548,7 @@ async fn open_device(
         api.with_env(),
         std::env::consts::OS,
         // The machine's: the x64 build emulated on a Windows ARM64 PC has its GPU too (#7513).
-        horizon_system::system::machine_arch(),
+        horizon_system::machine_arch(),
         wgpu_backend,
     ) {
         match open_device_with(window, offscreen, &order, layers, allow_cpu).await {
@@ -5467,6 +5507,7 @@ impl Renderer {
             emission_stats,
             output_caps,
             output_rejected: None,
+            auto_off_since: None,
             // Nothing is presented as HDR yet: `update_output` applies the settings.
             output: output::resolve_output(settings, output_caps, display, frame, false),
             frame_kept_logged: false,
@@ -7206,11 +7247,6 @@ impl Renderer {
             horizon_hdr::set_metadata(&self.device, surface, hdr.declared_peak(), hdr.black);
         }
     }
-    /// The swapchain's configuration: `config` (what every pipeline draws in), or
-    /// HDR10 or scRGB while HDR output is on.
-    fn surface_config(&self) -> wgpu::SurfaceConfiguration {
-        output_apply::surface_config(&self.config, self.hdr.as_ref().map(|hdr| hdr.output))
-    }
     /// This renderer's output as applied, with what its destination offers and reports.
     pub fn output(&self) -> &output::EffectiveOutput {
         &self.output
@@ -7266,7 +7302,7 @@ impl Renderer {
             settings,
             request,
             self.caps_for(settings),
-            self.reading,
+            output_apply::graced(self.auto_off_since, self.reading, &self.output),
             self.config.format,
         )
     }
@@ -15933,11 +15969,11 @@ mod shadow_caster_tests {
     #[test]
     fn the_shadow_pass_draws_terrain_outside_the_pack_s_planes() {
         let kept = |near: Option<f32>, far: Option<f32>, y: f64, min: [f32; 3], depth: bool| {
-            let shadow = horizon_shaders::Shadow {
+            let shadow = horizon_render_pipeline::Shadow {
                 distance: 128.0,
                 near,
                 far,
-                ..horizon_shaders::Shadow::default()
+                ..horizon_render_pipeline::Shadow::default()
             };
             let camera = DVec3::new(13.5, y + 1.62, -13.5);
             let view = pack_post::ShadowView {

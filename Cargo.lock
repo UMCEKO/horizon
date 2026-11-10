@@ -1824,9 +1824,11 @@ dependencies = [
  "horizon-client-render",
  "horizon-command",
  "horizon-core",
+ "horizon-cosmetics",
  "horizon-dualsense",
  "horizon-friends",
  "horizon-hdr",
+ "horizon-hooks",
  "horizon-items",
  "horizon-mod-api",
  "horizon-mod-api-gen",
@@ -1845,6 +1847,7 @@ dependencies = [
  "horizon-shader-api",
  "horizon-shaders",
  "horizon-system",
+ "horizon-telemetry",
  "horizon-theme",
  "horizon-threads",
  "horizon-world",
@@ -1918,6 +1921,7 @@ dependencies = [
  "horizon-dualsense",
  "horizon-friends",
  "horizon-hdr",
+ "horizon-hooks",
  "horizon-items",
  "horizon-mcp",
  "horizon-mod-api",
@@ -1932,6 +1936,7 @@ dependencies = [
  "horizon-shader-api",
  "horizon-shaders",
  "horizon-system",
+ "horizon-telemetry",
  "horizon-theme",
  "horizon-threads",
  "horizon-world",
@@ -1975,6 +1980,7 @@ dependencies = [
  "horizon-client-input",
  "horizon-command",
  "horizon-core",
+ "horizon-cosmetics",
  "horizon-hdr",
  "horizon-items",
  "horizon-mod-api",
@@ -1988,6 +1994,7 @@ dependencies = [
  "horizon-perf-format",
  "horizon-polytone",
  "horizon-protocol",
+ "horizon-render-pipeline",
  "horizon-shader-api",
  "horizon-shaders",
  "horizon-system",
@@ -2037,6 +2044,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-cosmetics"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "glam",
+ "horizon-addresses",
+ "png",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "horizon-dualsense"
 version = "0.1.0"
 dependencies = [
@@ -2062,6 +2082,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-game"
+version = "0.1.0"
+dependencies = [
+ "horizon-client",
+ "horizon-mod-package",
+ "horizon-threads",
+]
+
+[[package]]
 name = "horizon-hdr"
 version = "0.1.0"
 dependencies = [
@@ -2071,6 +2100,19 @@ dependencies = [
  "wayland-protocols",
  "wgpu",
 ]
+
+[[package]]
+name = "horizon-heartbeat"
+version = "0.1.0"
+dependencies = [
+ "horizon-platform",
+ "horizon-telemetry",
+ "log",
+]
+
+[[package]]
+name = "horizon-hooks"
+version = "0.1.0"
 
 [[package]]
 name = "horizon-internals"
@@ -2299,6 +2341,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-official"
+version = "0.1.0"
+dependencies = [
+ "horizon-game",
+ "horizon-heartbeat",
+ "horizon-platform",
+ "log",
+ "winresource",
+]
+
+[[package]]
 name = "horizon-optifine"
 version = "0.1.0"
 dependencies = [
@@ -2340,7 +2393,13 @@ dependencies = [
 name = "horizon-platform"
 version = "0.1.0"
 dependencies = [
+ "horizon-core",
+ "horizon-hooks",
+ "horizon-prepare",
+ "horizon-protocol",
+ "horizon-server-files",
  "horizon-system",
+ "horizon-world",
 ]
 
 [[package]]
@@ -2416,6 +2475,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-render-pipeline"
+version = "0.1.0"
+
+[[package]]
 name = "horizon-server"
 version = "0.1.0"
 dependencies = [
@@ -2424,13 +2487,11 @@ dependencies = [
  "chrono",
  "getrandom 0.3.4",
  "horizon-bench",
- "horizon-core",
  "horizon-mcp",
  "horizon-perf-format",
+ "horizon-platform",
  "horizon-release-sign",
- "horizon-server-files",
  "horizon-server-launch",
- "horizon-world",
  "libc",
  "p12-keystore",
  "png",
@@ -2466,6 +2527,7 @@ dependencies = [
  "horizon-anticheat",
  "horizon-chat-filter",
  "horizon-core",
+ "horizon-platform",
  "horizon-server-files",
  "serde",
  "toml",
@@ -2493,6 +2555,7 @@ version = "0.1.0"
 dependencies = [
  "half",
  "horizon-core",
+ "horizon-render-pipeline",
  "naga",
  "png",
  "zip",
@@ -2501,6 +2564,19 @@ dependencies = [
 [[package]]
 name = "horizon-system"
 version = "0.1.0"
+
+[[package]]
+name = "horizon-telemetry"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.4",
+ "horizon-addresses",
+ "horizon-platform",
+ "ruzstd",
+ "serde",
+ "serde_json",
+ "ureq",
+]
 
 [[package]]
 name = "horizon-theme"
@@ -4774,6 +4850,15 @@ name = "rusty-opus"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "46604e6809c06441da1cfdde1f0cc25a4f2bf42c7d005aa387c2875c02d78762"
+
+[[package]]
+name = "ruzstd"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5"
+dependencies = [
+ "twox-hash",
+]
 
 [[package]]
 name = "ryu"

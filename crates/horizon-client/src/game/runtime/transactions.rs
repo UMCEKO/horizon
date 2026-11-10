@@ -309,11 +309,13 @@ impl Game<'_> {
         if level.attachments.contains_key(&holder) {
             return;
         }
-        let painting_bound = if let Holder::Entity(id) = holder {
-            self.paintings
-                .iter()
-                .find(|painting| painting.id == id)
-                .map(|painting| painting.attachment_lifetime.is_bound())
+        let entity_bound = if let Holder::Entity(id) = holder {
+            std::num::NonZeroU32::new(id).and_then(|id| {
+                match self.with_resident_slot(&self.dim.key(), id, |slot| slot.is_bound()) {
+                    super::entity_residency::SlotAccess::Done(bound) => Some(bound),
+                    _ => None,
+                }
+            })
         } else {
             None
         };
@@ -321,7 +323,7 @@ impl Game<'_> {
             .attachment_slot(holder, mod_api::AttachmentAccess::Existing)
             .map(|map| KeptAttachments {
                 contents: map.clone(),
-                indexed: painting_bound.unwrap_or_else(|| map.has_index_binding()),
+                indexed: entity_bound.unwrap_or_else(|| map.has_index_binding()),
             })
         else {
             return;
@@ -643,9 +645,11 @@ impl Game<'_> {
             }
             if !kept.indexed
                 && let Holder::Entity(id) = holder
-                && let Some(painting) = self.paintings.iter_mut().find(|painting| painting.id == id)
+                && let Some(id) = std::num::NonZeroU32::new(id)
             {
-                painting.attachment_lifetime = Default::default();
+                self.with_resident_slot(&self.dim.key(), id, |slot| {
+                    *slot = Default::default();
+                });
             }
         }
         for (uuid, kept) in level.players {

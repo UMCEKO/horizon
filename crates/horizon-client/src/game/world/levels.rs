@@ -12,10 +12,19 @@
 //! game rules, the scoreboard, the maps and the entities waiting to arrive
 //! through a portal.
 
+use super::commands::Target;
+use super::entity_residency::{define_resident_access, resident_owners};
 use super::{
     Dim, ExperienceOrb, FallingBlock, Game, ItemEntity, Mob, boats, commands,
     creaking::CreakingState, dragon, fireworks, lightning, machines, minecarts,
     ominous_item_spawner, persist, raids::Raiding, sculk::SculkState, tnt, trident,
+};
+use horizon_client::join_seq::{
+    Joined,
+    residency::{
+        Journal, Kind, Owner,
+        table::{EntityLookup, Location, SourceEntity},
+    },
 };
 use horizon_client::{
     Result,
@@ -29,6 +38,7 @@ use horizon_client::{
     world::World,
 };
 use horizon_world::level::{LevelEvent, Ticks};
+use mod_api::DimensionKey;
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -76,6 +86,7 @@ pub(super) struct Parked {
     pub(super) mobs: horizon_client::join_seq::JoinList<Mob>,
     /// The entity ids of the level's fence knots (`knot_ids`).
     knot_ids: HashMap<[i32; 3], u32>,
+    knots: horizon_client::join_seq::JoinList<super::leads::Knot>,
     projectiles: horizon_client::join_seq::JoinList<horizon_client::projectiles::Projectile, false>,
     dropped: horizon_client::join_seq::JoinList<ItemEntity>,
     orbs: horizon_client::join_seq::JoinList<ExperienceOrb>,
@@ -102,6 +113,171 @@ pub(super) struct Parked {
     /// last told of it (`LanHost::border_sent`).
     border: horizon_client::worldborder::WorldBorder,
     border_sent: Option<horizon_client::lan::border::Sent>,
+}
+
+impl Parked {
+    resident_owners!(define_resident_access, self, projectiles, knots);
+}
+
+impl Game<'_> {
+    /// Resolve through the exact owner, never by trying dimension swaps.
+    pub(super) fn locate_server_resident_owner(
+        &self,
+        at: Location,
+    ) -> Option<SourceEntity<(Target, bool)>> {
+        if matches!(
+            at.owner.kind,
+            horizon_client::join_seq::residency::Kind::Player
+                | horizon_client::join_seq::residency::Kind::Hook
+        ) {
+            return self.locate_specialized_resident_owner(at);
+        }
+        if at.owner.dimension == self.dim.key() {
+            return self.locate_resident_owner(at);
+        }
+        let dim = match at.owner.dimension {
+            DimensionKey::OVERWORLD => Dim::Overworld,
+            DimensionKey::NETHER => Dim::Nether,
+            DimensionKey::END => Dim::End,
+            key => Dim::Extra(key),
+        };
+        self.levels.parked.get(&dim)?.locate_resident_owner(at)
+    }
+
+    pub(super) fn resident_source_target_visible(
+        &self,
+        dimension: DimensionKey,
+        target: Target,
+    ) -> bool {
+        if dimension == self.dim.key() {
+            return !self.persist.removals.contains(&target);
+        }
+        let dim = match dimension {
+            DimensionKey::OVERWORLD => Dim::Overworld,
+            DimensionKey::NETHER => Dim::Nether,
+            DimensionKey::END => Dim::End,
+            key => Dim::Extra(key),
+        };
+        self.levels
+            .parked
+            .get(&dim)
+            .is_none_or(|parked| !parked.persist.removals.contains(&target))
+    }
+
+    /// Visit exactly the actual physical lifetime slot. Resolution releases the
+    /// table and its journal before lending storage; no lift, swap or replacement
+    /// occurs, including when the visitor unwinds. Logical visibility is a caller
+    /// policy, just as for the underlying owner resolver. The visitor must not
+    /// call entity lookup or recursively enter this seam.
+    pub(super) fn with_resident_slot<R>(
+        &mut self,
+        dimension: &mod_api::DimensionKey,
+        id: std::num::NonZeroU32,
+        visit: impl FnOnce(&mut horizon_mod_runtime::attachments::AttachmentLifetime) -> R,
+    ) -> super::entity_residency::SlotAccess<R> {
+        use super::entity_residency::SlotAccess;
+        let resolved = {
+            self.resident_entities
+                .table
+                .borrow_mut()
+                .entity_lookup(dimension, id.get(), |at| {
+                    self.locate_server_resident_owner(at)
+                })
+        };
+        let location = match resolved {
+            EntityLookup::Found { location, .. } => location,
+            EntityLookup::Taken => return SlotAccess::Taken,
+            EntityLookup::Missing => return SlotAccess::Missing,
+        };
+        debug_assert!(self.resident_entities.table.try_borrow_mut().is_ok());
+        if matches!(
+            location.owner.kind,
+            horizon_client::join_seq::residency::Kind::Player
+                | horizon_client::join_seq::residency::Kind::Hook
+        ) {
+            if *dimension != self.dim.key() {
+                let dim = match *dimension {
+                    DimensionKey::OVERWORLD => Dim::Overworld,
+                    DimensionKey::NETHER => Dim::Nether,
+                    DimensionKey::END => Dim::End,
+                    key => Dim::Extra(key),
+                };
+                if !self.levels.parked.contains_key(&dim) {
+                    return SlotAccess::Missing;
+                }
+            }
+            return self.with_specialized_resident_slot(location, visit);
+        }
+        if *dimension == self.dim.key() {
+            self.with_resident_owner_slot(location, visit)
+        } else {
+            let dim = match *dimension {
+                mod_api::DimensionKey::OVERWORLD => Dim::Overworld,
+                mod_api::DimensionKey::NETHER => Dim::Nether,
+                mod_api::DimensionKey::END => Dim::End,
+                key => Dim::Extra(key),
+            };
+            self.levels
+                .parked
+                .get_mut(&dim)
+                .map_or(SlotAccess::Missing, |parked| {
+                    parked.with_resident_owner_slot(location, visit)
+                })
+        }
+    }
+
+    pub(super) fn server_resident_entity(&self, id: u32) -> EntityLookup<Target> {
+        let found = self
+            .resident_entities
+            .table
+            .borrow_mut()
+            .server_entity_lookup(id, |at| self.locate_server_resident_owner(at));
+        match found {
+            EntityLookup::Found {
+                location,
+                value: (value, true),
+            } => EntityLookup::Found { location, value },
+            EntityLookup::Found {
+                value: (_, false), ..
+            }
+            | EntityLookup::Missing => EntityLookup::Missing,
+            EntityLookup::Taken => EntityLookup::Taken,
+        }
+    }
+    /// Find the canonical level without swapping or probing physical families.
+    pub(super) fn resident_target_dimension(&self, target: Target) -> Option<Dim> {
+        let id = self.resident_target_id(target)?;
+        let found = match self.server_resident_entity(id) {
+            EntityLookup::Found { location, value }
+                if value == target
+                    || matches!(
+                        (value, target),
+                        (Target::Player, Target::Guest(_)) | (Target::Guest(_), Target::Player)
+                    ) =>
+            {
+                location
+            }
+            _ => return None,
+        };
+        Some(match found.owner.dimension {
+            DimensionKey::OVERWORLD => Dim::Overworld,
+            DimensionKey::NETHER => Dim::Nether,
+            DimensionKey::END => Dim::End,
+            key => Dim::Extra(key),
+        })
+    }
+
+    /// A new epoch invalidates every old producer before rebinding retained levels.
+    pub(super) fn reset_entity_residency(&mut self) {
+        let table = self.resident_entities.table.get_mut();
+        table.reset();
+        let journal = table.producer();
+        self.bind_resident_owners(&journal, self.dim.key());
+        self.bind_specialized_resident_owners(&journal);
+        for (dim, parked) in &mut self.levels.parked {
+            parked.bind_resident_owners(&journal, dim.key());
+        }
+    }
 }
 
 /// Which passes of the server tick the level in place runs: the first
@@ -367,6 +543,7 @@ impl Game<'_> {
             hoppers: HashMap::new(),
             mobs: Default::default(),
             knot_ids: HashMap::new(),
+            knots: Default::default(),
             projectiles: Default::default(),
             dropped: Default::default(),
             orbs: Default::default(),
@@ -516,6 +693,7 @@ impl Game<'_> {
         swap(&mut self.hoppers, &mut p.hoppers);
         swap(&mut self.mobs, &mut p.mobs);
         swap(&mut self.knot_ids, &mut p.knot_ids);
+        swap(&mut self.resident_entities.knots, &mut p.knots);
         swap(&mut self.creatures.projectiles, &mut p.projectiles);
         swap(&mut self.dropped, &mut p.dropped);
         swap(&mut self.orbs, &mut p.orbs);
@@ -660,6 +838,10 @@ impl Game<'_> {
     /// run. The native server tick hook brackets it (`ServerTickStart` before
     /// the first level, `ServerTickEnd` after the last).
     pub(super) fn tick_server(&mut self, paused: bool) -> Result<()> {
+        self.with_residency_tick(|game| game.tick_server_body(paused))
+    }
+
+    fn tick_server_body(&mut self, paused: bool) -> Result<()> {
         // `tickRateManager.tick()` once per server tick, before any level
         // (each `ServerLevel.tick` only reads `runsNormally`), and the native
         // `ServerTickStart` before that level work (NeoForge's
@@ -1008,6 +1190,12 @@ impl Game<'_> {
             || self.levels.heard_open.contains(&dim)
         {
             return;
+        }
+        let journal = self.resident_entities.table.borrow().producer();
+        if dim == self.dim {
+            self.bind_resident_owners(&journal, dim.key());
+        } else if let Some(parked) = self.levels.parked.get_mut(&dim) {
+            parked.bind_resident_owners(&journal, dim.key());
         }
         self.bind_dimension_attachments(dim);
         self.levels.heard_open.push(dim);

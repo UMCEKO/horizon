@@ -13,6 +13,18 @@ use horizon_client::{
 use horizon_core::nbt::Tag;
 use mod_api::LootDrops;
 
+/// Natural fence knot: the fence is its authoritative position, not a render cache.
+/// Its JoinList carries the common residency binding and journal.
+pub(super) struct Knot {
+    /// Entity-owned registration metadata; content clones are detached.
+    pub(super) attachment_lifetime: horizon_mod_runtime::attachments::AttachmentLifetime,
+    pub id: u32,
+    pub join: horizon_client::join_seq::JoinSeq,
+    pub fence: [i32; 3],
+}
+horizon_client::impl_joined!(Knot);
+horizon_mod_runtime::impl_attachment_lifetime!(Knot);
+
 /// The item context of a leash success (`InteractionResult.Success`): tying
 /// held mobs to this one and the holder's detach are `withoutItem`, so item
 /// criteria see an empty hand; shears and a new lead keep the used item.
@@ -156,6 +168,32 @@ impl Game<'_> {
     pub(super) fn forget_untied_knots(&mut self) {
         let fences = self.lead_fences();
         self.knot_ids.retain(|p, _| fences.contains(p));
+        self.resident_entities
+            .knots
+            .retain(|knot| fences.contains(&knot.fence));
+    }
+    /// `LeashFenceKnotEntity.notifyLeasheeRemoved`: only a knot losing a
+    /// holder asks whether it still has another one. The departing entity may
+    /// be ticked through a copy, so its old stored payload must not count.
+    pub(super) fn notify_knot_leashee_removed(&mut self, holder: Option<Holder>, departing: u32) {
+        let Some(Holder::Knot(fence)) = holder else {
+            return;
+        };
+        if self
+            .mobs
+            .iter()
+            .any(|m| m.id != departing && !m.removed && m.extra.leash == Some(Holder::Knot(fence)))
+            || self
+                .boats
+                .iter()
+                .any(|b| b.id != departing && b.leash == Some(Holder::Knot(fence)))
+        {
+            return;
+        }
+        self.knot_ids.remove(&fence);
+        self.resident_entities
+            .knots
+            .retain(|knot| knot.fence != fence);
     }
     /// `LeashFenceKnotEntity.getOrCreateKnot` → `createKnot`: the first lead
     /// tied to a fence makes its knot, a real entity with its own id (the
@@ -169,32 +207,34 @@ impl Game<'_> {
         self.next_entity += 1;
         let id = self.next_entity;
         self.knot_ids.insert(fence, id);
+        self.resident_entities.knots.push(Knot {
+            attachment_lifetime: Default::default(),
+            id,
+            join: Default::default(),
+            fence,
+        });
         self.uuid_for(id);
     }
-    /// The fence of the natural knot whose entity id is `id`, while a lead
-    /// still hangs on it.
+    /// The authoritative fence of an active natural knot, until a last-holder
+    /// notification or the tracking cleanup retires its physical owner.
     pub(super) fn natural_knot(&self, id: u32) -> Option<[i32; 3]> {
-        let (&fence, _) = self.knot_ids.iter().find(|&(_, &k)| k == id)?;
-        let mobs = self
-            .mobs
-            .iter()
-            .filter(|m| !m.removed)
-            .map(|m| m.extra.leash);
-        mobs.chain(self.boats.iter().map(|b| b.leash))
-            .any(|h| h == Some(Holder::Knot(fence)))
-            .then_some(fence)
+        use horizon_client::join_seq::residency::table::EntityLookup;
+        let EntityLookup::Found {
+            location,
+            value: Target::Knot(_),
+        } = self.server_resident_entity(id)
+        else {
+            return None;
+        };
+        if location.owner.dimension != self.dim.key() {
+            return None;
+        }
+        let index = self.resident_entities.knots.locate(location.join)?;
+        Some(self.resident_entities.knots[index].fence)
     }
-    /// Live natural knots without allocating; shared fences may repeat an id.
+    /// Actual natural knot owners, without allocating or inferring membership from leashes.
     pub(super) fn natural_knot_id_iter(&self) -> impl Iterator<Item = u32> + '_ {
-        self.mobs
-            .iter()
-            .filter(|mob| !mob.removed)
-            .map(|mob| mob.extra.leash)
-            .chain(self.boats.iter().map(|boat| boat.leash))
-            .filter_map(move |holder| match holder {
-                Some(Holder::Knot(fence)) => self.knot_ids.get(&fence).copied(),
-                _ => None,
-            })
+        self.resident_entities.knots.iter().map(|knot| knot.id)
     }
     /// The ids of the level's natural knots that a lead still holds, in the
     /// order they were made.
@@ -373,20 +413,28 @@ impl Game<'_> {
                 let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
                     return false;
                 };
+                let old = m.extra.leash;
                 m.extra.leash = Some(holder);
                 m.extra.leash_player = player;
                 m.extra.leash_pending = None;
+                if old != Some(holder) {
+                    self.notify_knot_leashee_removed(old, id);
+                }
                 true
             }
             Target::Boat(id) => {
                 let Some(i) = self.boats.iter().position(|b| b.id == id) else {
                     return false;
                 };
+                let old = self.boats[i].leash;
                 self.boats.update(i, |b| {
                     b.leash = Some(holder);
                     b.leash_player = player;
                     b.leash_pending = None;
                 });
+                if old != Some(holder) {
+                    self.notify_knot_leashee_removed(old, id);
+                }
                 true
             }
             _ => false,
@@ -423,15 +471,18 @@ impl Game<'_> {
     }
     fn drop_leash(&mut self, id: u32, drop: bool, sound: bool, used: bool) {
         let killer = self.lead_killers.remove(&id).map(|(killer, _)| killer);
-        let Some((at, kind)) = self.mobs.iter_mut().find(|m| m.id == id).and_then(|m| {
+        let Some((at, kind, holder)) = self.mobs.iter_mut().find(|m| m.id == id).and_then(|m| {
+            let holder = m.extra.leash;
             horizon_client::mobs::leash::remove(m)?;
             Some((
                 [m.position.x, m.position.y, m.position.z],
                 super::native_hooks::mob_kind(m),
+                holder,
             ))
         }) else {
             return;
         };
+        self.notify_knot_leashee_removed(holder, id);
         self.native_entity_unleash(id, &kind);
         if used
             && let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone())
@@ -759,6 +810,9 @@ impl Game<'_> {
             [white.u1, white.v0],
             [white.u0, white.v0],
         ];
+        // A Polytone pack's `entity/lead.png`: each of the 24 segments, from the leashed end,
+        // takes its row of the texture, unshaded (measured on the real mod).
+        let lead = atlas.sprites.get("entity/lead").copied();
         let lerp3 = |a: horizon_core::geometry::Vec3, b: horizon_core::geometry::Vec3| {
             glam::DVec3::new(
                 a.x + (b.x - a.x) * alpha,
@@ -901,9 +955,21 @@ impl Game<'_> {
                         };
                         let (a0, b0) = point(step, fudge);
                         let (a1, b1) = point(step + 1, fudge);
-                        let color = shade(step);
+                        let (color, rows) = match lead {
+                            Some(r) => {
+                                let v = |s: i32| r.v0 + (r.v1 - r.v0) * s as f32 / 24.0;
+                                let (top, bottom) = (v(step), v(step + 1));
+                                let near =
+                                    [[r.u0, top], [r.u1, top], [r.u1, bottom], [r.u0, bottom]];
+                                let far =
+                                    [[r.u0, bottom], [r.u1, bottom], [r.u1, top], [r.u0, top]];
+                                (0xFFFF_FFFF, [near, far])
+                            }
+                            None => (shade(step), [uv; 2]),
+                        };
                         // Both faces: the leash is not culled.
-                        for quad in [[a0, b0, b1, a1], [a1, b1, b0, a0]] {
+                        for (quad, uv) in [[a0, b0, b1, a1], [a1, b1, b0, a0]].into_iter().zip(rows)
+                        {
                             for (v, uv) in quad.iter().zip(uv) {
                                 out.push(Vertex {
                                     normal: [0; 4],

@@ -16,6 +16,7 @@ impl Game<'_> {
             if let Some(d) = self.dragon.extract() {
                 // remove, then gameEvent(ENTITY_DIE), before the fight hears of it.
                 self.dragon_died_event(d.id, d.position, d.alive());
+                self.dragon.retire_extracted(d.id, d.join);
             }
             if fight {
                 self.dragon_killed();

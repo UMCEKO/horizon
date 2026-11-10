@@ -4,7 +4,10 @@
 Big files slow incremental builds (game.rs, gfx.rs). Any file may grow up to the limit; a file over it may shrink or
 stay the same. A renamed file is compared with its old name, and a new file counts from zero. Files under
 third_party/ and files that say they are generated (`@generated` in their first lines) are not checked. There is no
-list of files: nothing to update when a file shrinks.
+general exemption list. The sync-only ratchet in tools/file_size_baseline.txt records
+restored upstream growth at its exact size. Its sync-baseline header declares the
+upstream SHA for a sync; only a changed header permits new or raised entries.
+Entries above the current size fail, forcing them down as code shrinks.
 
 Inline test modules don't count, on the base or now: a normal build doesn't compile them. A test module is a
 `#[cfg(test)]` line directly followed by `mod name {` (or `pub mod`, `pub(crate) mod`...) at the same indentation,
@@ -21,6 +24,8 @@ code too, so Rust source quoted in a string is no module.
 """
 
 import argparse
+import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -151,11 +156,76 @@ def changes(base):
     return merge_base, out
 
 
-def problems(entries, limit=LIMIT):
+def parse_baseline(text):
+    """Validate the committed boundary once; return its sync declaration and sizes."""
+    marker, sizes = None, {}
+    for line in text.splitlines():
+        if line.startswith("# sync-baseline:"):
+            value = line.removeprefix("# sync-baseline:").strip()
+            if marker is not None or not re.fullmatch(r"[0-9a-f]{40}", value):
+                raise ValueError("baseline needs one full upstream SHA in its sync-baseline header")
+            marker = value
+        elif line.strip() and not line.startswith("#"):
+            path, raw_size = line.split()
+            size = int(raw_size)
+            if path in sizes or not path.endswith(".rs") or size <= 0:
+                raise ValueError(f"invalid file-size baseline entry: {line}")
+            sizes[path] = size
+    return marker, sizes
+
+
+def baseline_problems(sizes, previous, counts, sync):
+    out = []
+    for path, size in sizes.items():
+        if size > previous.get(path, 0) and not sync:
+            out.append(f"{path}: baseline added or raised without a changed sync-baseline upstream SHA")
+        if path not in counts or size > counts[path]:
+            out.append(f"{path}: stale-high baseline {size}; lower it to the current size or remove it")
+    return out
+
+
+def sync_provenance(marker, base, head="HEAD"):
+    """Require a freshly verified upstream-main ancestor and its exact merge parent."""
+    shallow = git("rev-parse", "--is-shallow-repository").strip()
+    if shallow == "true":
+        return ["sync baseline provenance needs full history; fetch --unshallow before checking"]
+    if marker is None:
+        return ["sync baseline provenance needs a sync-baseline header"]
+    ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", marker, base], cwd=ROOT,
+                              capture_output=True)
+    if ancestor.returncode == 0:
+        return ["sync baseline SHA is already an ancestor of the base"]
+    upstream_url = os.environ.get("HORIZON_UPSTREAM_URL", "https://github.com/horizon-rust/horizon.git")
+    try:
+        fetched = subprocess.run(
+            ["git", "fetch", "--no-tags", "--filter=blob:none", upstream_url,
+             "+refs/heads/main:refs/sync/upstream-main"],
+            cwd=ROOT, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return ["cannot verify sync baseline: upstream main fetch timed out; network access is required"]
+    if fetched.returncode != 0:
+        return ["cannot verify sync baseline: upstream main fetch failed; network access is required: "
+                + fetched.stderr.strip()]
+    upstream_ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", marker, "refs/sync/upstream-main"],
+        cwd=ROOT, capture_output=True)
+    if upstream_ancestor.returncode != 0:
+        return ["sync baseline SHA is not an ancestor of upstream main"]
+    merges = git("rev-list", "--merges", "--parents", f"{base}..{head}")
+    if not any(marker in row.split()[1:] for row in merges.splitlines()):
+        return ["sync baseline SHA must be a parent of a merge commit in base..HEAD"]
+    return []
+
+
+def problems(entries, limit=LIMIT, baseline=None):
     """entries: (path, base line count, line count now, generated). The problem lines."""
     out = []
     for path, before, now, is_generated in entries:
         if path.startswith(EXEMPT_PREFIXES) or is_generated:
+            continue
+        if baseline is not None and path in baseline:
+            if now > baseline[path]:
+                out.append(f"{path}: {now} lines exceeds its sync baseline {baseline[path]}")
             continue
         if now > limit and now > before:
             was = f"{before} on the base" if before else "a new file"
@@ -166,6 +236,27 @@ def problems(entries, limit=LIMIT):
     return out
 
 
+def verified_sync_config(base, config_path):
+    """Read an upstream inventory only after verifying a changed sync declaration."""
+    baseline = ROOT / "tools/file_size_baseline.txt"
+    marker, _ = parse_baseline(baseline.read_text() if baseline.exists() else "")
+    previous = subprocess.run(["git", "show", f"{base}:tools/file_size_baseline.txt"],
+                              cwd=ROOT, capture_output=True, text=True)
+    old_marker, _ = parse_baseline(previous.stdout if previous.returncode == 0 else "")
+    if marker is None or marker == old_marker:
+        return None, []
+    merge_base = git("merge-base", base, "HEAD").strip()
+    errors = sync_provenance(marker, merge_base)
+    if errors:
+        return None, errors
+    source = subprocess.run(["git", "show", f"{marker}:{config_path}"], cwd=ROOT,
+                            capture_output=True, text=True)
+    if source.returncode != 0:
+        return None, [f"verified upstream commit has no {config_path} inventory"]
+    config = json.loads(source.stdout)
+    return config, []
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base", help="the git ref the branch starts from (CI: the pull request's base)")
@@ -173,6 +264,9 @@ def main(argv=None):
     if not args.base:
         print("File size: no base to compare with, nothing checked.")
         return 0
+    if git("rev-parse", "--is-shallow-repository").strip() == "true":
+        print("File size check failed: provenance needs full history; fetch --unshallow before checking.")
+        return 1
     merge_base, changed = changes(args.base)
     entries = []
     for path, old in changed:
@@ -182,14 +276,25 @@ def main(argv=None):
         text = file.read_text(encoding="utf-8", errors="replace")
         before = code_lines(git("show", f"{merge_base}:{old}")) if old else 0
         entries.append((path, before, code_lines(text), generated(text)))
-    found = problems(entries)
+    baseline_path = "tools/file_size_baseline.txt"
+    file = ROOT / baseline_path
+    marker, sizes = parse_baseline(file.read_text() if file.exists() else "")
+    old = subprocess.run(["git", "show", f"{merge_base}:{baseline_path}"], cwd=ROOT,
+                         capture_output=True, encoding="utf-8")
+    previous_marker, previous = parse_baseline(old.stdout if old.returncode == 0 else "")
+    counts = {path: code_lines((ROOT / path).read_text()) for path in sizes if (ROOT / path).is_file()}
+    declared_sync = marker is not None and marker != previous_marker
+    provenance = sync_provenance(marker, merge_base) if declared_sync else []
+    sync = declared_sync and not provenance
+    found = provenance + baseline_problems(sizes, previous, counts, sync)
+    found.extend(problems(entries, baseline=sizes))
     if found:
         print(f"File size check failed ({DOC}):")
         for problem in found:
             print(f"  {problem}")
         return 1
-    print(f"File size check passed: {len(entries)} changed Rust files, none over {LIMIT} lines grew "
-          f"(test modules not counted).")
+    print(f"File size check passed: {len(entries)} changed Rust files, {len(sizes)} sync baselines; none over {LIMIT} lines grew beyond their cap "
+          f"(inline test modules not counted).")
     return 0
 
 

@@ -36,7 +36,7 @@ struct Toolchain {
 
 /// `tool` (`cargo`, `rustc`) of the pinned toolchain: through rustup when there is one, else
 /// the one on `PATH`, which must then be that toolchain.
-fn pinned(tool: &str) -> Command {
+pub(crate) fn pinned(tool: &str) -> Command {
     let mut command = if rustup_found() {
         let mut c = Command::new("rustup");
         c.args(["run", TOOLCHAIN, tool]);

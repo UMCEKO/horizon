@@ -1,5 +1,9 @@
-//! Moving-structure carriers. Slice 5 of the moving structures design
-//! (`docs/modding/src/concepts/moving-structures.md`): the rigid contact
-//! kernel as a pure geometry harness. Nothing here is wired into gameplay.
+//! Moving-structure carriers. Slices of the moving structures design
+//! (`docs/modding/src/concepts/moving-structures.md`) landed so far as
+//! pure, disabled pieces with no gameplay wiring: the rigid contact
+//! kernel (slice 5) as a geometry harness, and the carrier data model
+//! with its bounded NBT codec (slice 1, board issue 1).
 
+pub mod codec;
 pub mod contact;
+pub mod model;

@@ -1,6 +1,12 @@
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
 import unittest
+from unittest import mock
 
-from tools import check_layers
+from tools import check_layers, check_file_size
 
 CONFIG = {
     "may_depend": {"engine": ["engine"], "platform": ["engine", "platform"], "horizon": ["platform", "horizon"]},
@@ -190,6 +196,70 @@ class CheckLayersTests(unittest.TestCase):
     def test_registry_dependencies_are_not_edges(self):
         pkg = {"name": "game", "dependencies": [{"name": "cosmetics", "kind": None, "path": None}]}
         self.assertEqual(check_layers.edges([pkg]), {"game": set()})
+
+
+class UpstreamLayerRestorationTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.git("init", "-q", "-b", "main")
+        self.git("config", "user.name", "Fixture")
+        self.git("config", "user.email", "fixture@example.invalid")
+        self.config = dict(CONFIG, crates=dict(CONFIG["crates"], cosmetic="horizon"))
+        self.base_config = dict(self.config, crates={k: v for k, v in self.config["crates"].items() if k != "cosmetics"})
+        (self.root / "tools").mkdir()
+        (self.root / "tools/layers.json").write_text(json.dumps(self.base_config))
+        (self.root / "tools/file_size_baseline.txt").write_text("")
+        self.git("add", "tools")
+        self.git("commit", "-q", "-m", "base")
+        self.base = self.git("rev-parse", "HEAD").strip()
+        self.git("checkout", "-q", "-b", "upstream")
+        upstream = dict(self.config, allowed=["game -> cosmetics"])
+        (self.root / "tools/layers.json").write_text(json.dumps(upstream))
+        self.git("commit", "-q", "-am", "upstream layers")
+        marker = self.git("rev-parse", "HEAD").strip()
+        remote = self.root / "remote.git"
+        self.git("init", "-q", "--bare", str(remote))
+        self.git("push", "-q", str(remote), "HEAD:refs/heads/main")
+        self.git("checkout", "-q", "-b", "work", self.base)
+        (self.root / "fork").write_text("fork")
+        self.git("add", "fork")
+        self.git("commit", "-q", "-m", "fork")
+        self.git("merge", "-q", "--no-edit", "upstream")
+        (self.root / "tools/file_size_baseline.txt").write_text(f"# sync-baseline: {marker}\n")
+        for patch in (mock.patch.object(check_file_size, "ROOT", self.root),
+                      mock.patch.dict(os.environ, {"HORIZON_UPSTREAM_URL": str(remote)})):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def git(self, *args):
+        return subprocess.run(["git", *args], cwd=self.root, check=True,
+                              capture_output=True, text=True).stdout
+
+    def problems(self, edge, layer="horizon"):
+        upstream, errors = check_file_size.verified_sync_config(self.base, "tools/layers.json")
+        self.assertEqual(errors, [])
+        config = dict(self.config, allowed=[edge], crates=dict(self.config["crates"], cosmetics=layer))
+        crate, dependency = edge.split(" -> ")
+        return check_layers.check(config, {crate: {dependency}, dependency: set()},
+                                  self.base_config, upstream=upstream)[0]
+
+    def test_verbatim_upstream_edge_and_assignment_pass(self):
+        self.assertEqual(self.problems("game -> cosmetics"), [])
+
+    def test_fork_only_edge_fails(self):
+        self.assertTrue(self.problems("game -> mod-api"))
+
+    def test_one_character_different_edge_fails(self):
+        self.assertTrue(self.problems("game -> cosmetic"))
+
+    def test_upstream_edge_without_sync_declaration_fails(self):
+        (self.root / "tools/file_size_baseline.txt").write_text("")
+        self.assertTrue(self.problems("game -> cosmetics"))
+
+    def test_altered_new_crate_assignment_fails(self):
+        self.assertTrue(self.problems("game -> cosmetics", "platform"))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 //! A journal-fed index. Every hit is checked against its named storage owner;
 //! there is no owner reconciliation scan or reference back to the game.
-use super::{Change, DimensionKey, Event, Identity, Journal, Owner};
+use super::{Change, DimensionKey, Event, Identity, IdentityDetails, Journal, Owner};
 use crate::join_seq::JoinSeq;
 use horizon_core::fast_hash::FxHashMap;
 use std::num::NonZeroU32;
@@ -10,6 +10,7 @@ use std::num::NonZeroU32;
 pub struct Location {
     pub owner: Owner,
     pub join: JoinSeq,
+    pub source: super::Source,
 }
 
 /// A candidate obtained by locating the join in exactly the named owner.
@@ -35,12 +36,18 @@ pub struct UnbalancedPass {
     pub lifts: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ResidentRow {
+    location: Location,
+    details: IdentityDetails,
+}
+
 /// One game's index, shared by active and parked dimensions through the journal.
 /// Runtime ids are allocated by the game's one counter, not per dimension.
 pub struct EntityTable {
     journal: Journal,
     pending: Vec<Event>,
-    rows: FxHashMap<NonZeroU32, Location>,
+    rows: FxHashMap<NonZeroU32, ResidentRow>,
     extracted: FxHashMap<NonZeroU32, Location>,
     lifted: FxHashMap<Owner, usize>,
 }
@@ -64,14 +71,31 @@ impl EntityTable {
         id: u32,
         locate: impl FnOnce(Location) -> Option<SourceEntity<T>>,
     ) -> EntityLookup<T> {
+        self.lookup(Some(dimension), id, locate)
+    }
+    /// Resolve an id across all loaded dimensions. The resolver still validates
+    /// exactly the named owner; it must not swap levels or search other owners.
+    pub fn server_entity_lookup<T>(
+        &mut self,
+        id: u32,
+        locate: impl FnOnce(Location) -> Option<SourceEntity<T>>,
+    ) -> EntityLookup<T> {
+        self.lookup(None, id, locate)
+    }
+    fn lookup<T>(
+        &mut self,
+        dimension: Option<&DimensionKey>,
+        id: u32,
+        locate: impl FnOnce(Location) -> Option<SourceEntity<T>>,
+    ) -> EntityLookup<T> {
         let Some(id) = NonZeroU32::new(id) else {
             return EntityLookup::Missing;
         };
         self.drain();
-        let Some(&location) = self.rows.get(&id) else {
+        let Some(&ResidentRow { location, .. }) = self.rows.get(&id) else {
             return EntityLookup::Missing;
         };
-        if location.owner.dimension != *dimension {
+        if dimension.is_some_and(|dimension| location.owner.dimension != *dimension) {
             return EntityLookup::Missing;
         }
         if let Some(source) = locate(location) {
@@ -87,7 +111,7 @@ impl EntityTable {
         {
             return EntityLookup::Taken;
         }
-        forget(&mut self.rows, id, location);
+        forget_row(&mut self.rows, id, location);
         forget(&mut self.extracted, id, location);
         EntityLookup::Missing
     }
@@ -98,23 +122,32 @@ impl EntityTable {
             let location = |identity: Identity| Location {
                 owner: event.owner,
                 join: identity.join,
+                source: identity.source,
             };
             match event.change {
                 Change::Install(identity) | Change::PutBack(identity) => {
                     let location = location(identity);
-                    if let Some(old) = self.rows.insert(identity.id, location) {
-                        debug_assert_eq!(old, location, "duplicate loaded entity id");
+                    let row = ResidentRow {
+                        location,
+                        details: identity.details,
+                    };
+                    if let Some(old) = self.rows.insert(identity.id, row) {
+                        debug_assert_eq!(old.location, location, "duplicate loaded entity id");
+                        debug_assert_eq!(
+                            old.details, identity.details,
+                            "immutable identity details changed without replacement"
+                        );
                     }
                     self.extracted.remove(&identity.id);
                 }
                 Change::Remove(identity) => {
                     let location = location(identity);
-                    forget(&mut self.rows, identity.id, location);
+                    forget_row(&mut self.rows, identity.id, location);
                     forget(&mut self.extracted, identity.id, location);
                 }
                 Change::Extract(identity) => {
                     let location = location(identity);
-                    if self.rows.get(&identity.id) == Some(&location) {
+                    if self.rows.get(&identity.id).map(|row| row.location) == Some(location) {
                         self.extracted.insert(identity.id, location);
                     }
                 }
@@ -152,6 +185,32 @@ impl EntityTable {
         }
         Ok(())
     }
+    /// Resolve once and return immutable metadata from that same primary row.
+    /// Real loans keep metadata even without an available physical payload.
+    pub fn server_admitted_identity<T>(
+        &mut self,
+        id: u32,
+        locate: impl FnOnce(Location) -> Option<SourceEntity<T>>,
+    ) -> Option<(Location, EntityLookup<T>, IdentityDetails)> {
+        let state = self.lookup(None, id, locate);
+        if matches!(state, EntityLookup::Missing) {
+            return None;
+        }
+        let row = self.rows.get(&NonZeroU32::new(id)?)?;
+        Some((row.location, state, row.details))
+    }
+
+    /// Candidate-only metadata, including Taken. Collect into a reusable buffer
+    /// and release this borrow before invoking any source or UUID resolver.
+    pub fn admitted_metadata(
+        &mut self,
+    ) -> impl Iterator<Item = (u32, Location, IdentityDetails)> + '_ {
+        self.drain();
+        self.rows
+            .iter()
+            .map(|(id, row)| (id.get(), row.location, row.details))
+    }
+
     /// Clone the current producer authority when binding storage.
     pub fn producer(&self) -> Journal {
         self.journal.clone()
@@ -165,6 +224,11 @@ impl EntityTable {
         self.lifted.clear();
     }
 }
+fn forget_row(map: &mut FxHashMap<NonZeroU32, ResidentRow>, id: NonZeroU32, location: Location) {
+    if map.get(&id).map(|row| row.location) == Some(location) {
+        map.remove(&id);
+    }
+}
 fn forget(map: &mut FxHashMap<NonZeroU32, Location>, id: NonZeroU32, location: Location) {
     if map.get(&id) == Some(&location) {
         map.remove(&id);
@@ -174,6 +238,9 @@ fn forget(map: &mut FxHashMap<NonZeroU32, Location>, id: NonZeroU32, location: L
 #[cfg(test)]
 #[path = "table/completion_tests.rs"]
 mod completion_tests;
+#[cfg(test)]
+#[path = "table/metadata_tests.rs"]
+mod metadata_tests;
 
 #[cfg(test)]
 mod tests {
@@ -205,6 +272,7 @@ mod tests {
             let location = Location {
                 owner,
                 join: JoinSeq::next(),
+                source: Default::default(),
             };
             self.source.insert(location, SourceEntity { id, value: 42 });
             self.emit(
@@ -224,6 +292,41 @@ mod tests {
                 self.source.get(&location).copied()
             })
         }
+    }
+
+    #[test]
+    fn server_lookup_follows_a_transfer_without_a_dimension_scan() {
+        let mut f = Fixture::new();
+        let old = f.admit(7, HOME);
+        let away = Owner {
+            dimension: DimensionKey::NETHER,
+            kind: Kind::Boat,
+        };
+        f.emit(old, Change::Remove(Identity::new(7, old.join).unwrap()));
+        f.source.remove(&old);
+        let arrived = f.admit(7, away);
+        assert_eq!(f.entity_lookup(7), EntityLookup::Missing);
+        assert_eq!(
+            f.table.server_entity_lookup(7, |at| {
+                assert_eq!(at, arrived);
+                f.source.get(&at).copied()
+            }),
+            EntityLookup::Found {
+                location: arrived,
+                value: 42
+            }
+        );
+        f.emit(arrived, Change::Lifted);
+        f.source.remove(&arrived);
+        assert_eq!(
+            f.table.server_entity_lookup::<()>(7, |_| None),
+            EntityLookup::Taken
+        );
+        assert_eq!(
+            f.table
+                .server_entity_lookup::<()>(0, |_| panic!("zero reached storage")),
+            EntityLookup::Missing
+        );
     }
 
     struct Stored(u32, JoinSeq);
@@ -251,6 +354,7 @@ mod tests {
         let first = Location {
             owner: HOME,
             join: list[0].1,
+            source: Default::default(),
         };
         let taken = list.lift();
         assert_eq!(
@@ -261,6 +365,7 @@ mod tests {
         let second = Location {
             owner: HOME,
             join: list[0].1,
+            source: Default::default(),
         };
         assert_eq!(
             table.entity_lookup(&HOME.dimension, 8, |at| locate(&list, at)),

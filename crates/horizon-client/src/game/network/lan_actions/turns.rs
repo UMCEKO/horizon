@@ -135,13 +135,6 @@ impl Game<'_> {
         let other_boxes =
             self.lan_building_boxes
                 .for_turn(conn, Some(outer), building_players(host));
-        self.lan_guest_swaps.push(conn);
-        // `ServerPlayer.permissions()`: the guest's own command level for its
-        // turn, so game-master checks see it (not the host's).
-        let permission = std::mem::replace(
-            &mut self.ui.registries.permission,
-            host.hub.guests[i].permission,
-        );
         let fresh = host.hub.guests[i].motion.is_none();
         if fresh {
             let p = Vec3::new(
@@ -150,8 +143,12 @@ impl Game<'_> {
                 host.hub.guests[i].position[2],
             );
             {
-                let value = PlayerMotion::new(self.motion, p).ok().map(Box::new);
-                host.hub.guests.update(i, |guest| guest.motion = value);
+                let value = PlayerMotion::new(self.motion, p)
+                    .map(Box::new)
+                    .map_err(|_| TurnRefused::Gone)?;
+                host.hub
+                    .guests
+                    .update(i, |guest| guest.motion = Some(value));
             }
             // The first body after joining burns, breathes and falls on as saved.
             host.hub.guests.update(i, |g| {
@@ -187,7 +184,20 @@ impl Game<'_> {
                 }
             });
         }
+        // Refusal must leave canonical records and loan state untouched.
+        let Some(mut motion) = host.hub.guests.update(i, |g| g.motion.take()) else {
+            return Err(TurnRefused::Gone);
+        };
+        host.hub.guests[i].residency.extract();
+        self.lan_guest_swaps.push(conn);
+        // `ServerPlayer.permissions()`: the guest's own command level for its
+        // turn, so game-master checks see it (not the host's).
+        let permission = std::mem::replace(
+            &mut self.ui.registries.permission,
+            host.hub.guests[i].permission,
+        );
         let mut play = host.play.remove(&conn).unwrap_or_default();
+        play.hook.begin_loan();
         if fresh {
             // A new body (joined, respawned, changed level): nothing on it yet,
             // its effects' modifiers and armor protection included.
@@ -197,12 +207,6 @@ impl Game<'_> {
             // A new ServerPlayer has everything to record again.
             play.score_recorded = Default::default();
         }
-        // The guest's body.
-        let Some(mut motion) = host.hub.guests.update(i, |g| g.motion.take()) else {
-            self.ui.registries.permission = permission;
-            host.play.insert(conn, play);
-            return Err(TurnRefused::Gone);
-        };
         let attachments = std::mem::replace(
             &mut self.player_attachments,
             std::mem::take(host.hub.guests.attachments_mut(conn).unwrap()),
@@ -240,6 +244,14 @@ impl Game<'_> {
         motion.health.food.food = g.food;
         motion.health.food.saturation = g.saturation;
         let mut player = Some(*motion);
+        match self.lan_acting {
+            Some(outer) => {
+                if let Some(guest) = host.hub.guest(outer) {
+                    guest.residency.extract();
+                }
+            }
+            None => self.resident_entities.local_player.extract(),
+        }
         std::mem::swap(&mut self.player, &mut player);
         let eye = (g.eye_height() as f32, self.eye);
         self.eye = eye.0;
@@ -378,6 +390,7 @@ impl Game<'_> {
         );
         let g = &host.hub.guests[i];
         std::mem::swap(&mut self.stats, &mut play.stats);
+        self.hook.begin_loan();
         std::mem::swap(&mut self.hook, &mut play.hook);
         let adv_loaded = std::mem::replace(&mut self.adv.loaded, true);
         let last_inventory = std::mem::replace(&mut self.adv.last_inventory, play.last_inventory);
@@ -395,6 +408,9 @@ impl Game<'_> {
             std::mem::replace(&mut self.lan_acting_spawn_protection, spawn_protection),
         );
         let acting_fake = std::mem::replace(&mut self.lan_acting_fake, !g.participates_online());
+        g.residency.put_back();
+        self.hook.finish_loan();
+        self.bind_current_hook_residency();
         let packets = std::mem::take(&mut self.guest_packets);
         let entity_events = std::mem::take(&mut self.guest_entity_events);
         let cooldown_events = std::mem::take(&mut self.guest_cooldowns);
@@ -737,6 +753,8 @@ impl Game<'_> {
                 );
             }
         }
+        host.hub.guests[i].residency.extract();
+        self.hook.begin_loan();
         (
             self.lan_acting,
             self.lan_acting_name,
@@ -990,6 +1008,18 @@ impl Game<'_> {
         host.play.insert(conn, play);
         let finished = self.lan_guest_swaps.pop();
         debug_assert_eq!(finished, Some(conn));
+        host.hub.guests[i].residency.put_back();
+        host.play[&conn].hook.finish_loan();
+        match self.lan_acting {
+            Some(outer) => {
+                if let Some(guest) = host.hub.guest(outer) {
+                    guest.residency.put_back();
+                }
+            }
+            None => self.resident_entities.local_player.put_back(),
+        }
+        self.hook.finish_loan();
+        self.bind_current_hook_residency();
         for event in turn_events {
             match event {
                 MotionEvent::Health(horizon_client::health::HealthEvent::DamageBroadcast {

@@ -2,6 +2,8 @@
 //! `Consumable`), throwing splash/lingering potions (`ThrownSplashPotion`),
 //! filling glass bottles (`BottleItem`), the per-tick effect application,
 //! effect attribute modifiers and the HUD effect icons (`Hud.extractEffects`).
+#[path = "potions/cloud_particle.rs"]
+mod cloud_particle;
 use super::{
     Game, Screen,
     dragon::{Breath, FightPlayer, FightWho},
@@ -160,6 +162,7 @@ pub(super) fn potion_cloud_from_nbt(tag: &Tag) -> Option<(Vec3, Breath)> {
     Some((
         at,
         Breath {
+            attachment_lifetime: Default::default(),
             join: Default::default(),
             id: 0,
             at: [at.x, at.y, at.z],
@@ -181,6 +184,7 @@ pub(super) fn potion_cloud_from_nbt(tag: &Tag) -> Option<(Vec3, Breath)> {
                 ambient,
                 radius_per_tick: real("RadiusPerTick", 0.0),
                 color,
+                custom_particle: tag.get("custom_particle").cloned(),
                 victims: Vec::new(),
                 source: Text::translate("entity.minecraft.area_effect_cloud", &[]),
                 owner: None,
@@ -239,6 +243,9 @@ pub(super) fn potion_cloud_to_nbt(c: &Breath, uuid: [i32; 4], raw: Option<&Tag>)
         "RadiusPerTick".into(),
         Tag::Float(potion.radius_per_tick.to_bits()),
     );
+    if let Some(particle) = &potion.custom_particle {
+        map.insert("custom_particle".into(), particle.clone());
+    }
     map.insert("WaitTime".into(), Tag::Int(potion.settings.wait_time));
     map.insert(
         "ReapplicationDelay".into(),
@@ -285,6 +292,8 @@ pub(super) struct PotionCloud {
     pub(super) radius_per_tick: f32,
     /// The potion's colour (`PotionContents.getColor`).
     color: u32,
+    /// `AreaEffectCloud.customParticle`: the `custom_particle` compound as saved.
+    custom_particle: Option<Tag>,
     /// Each victim and the tick it can be affected again.
     victims: Vec<(Victim, i32)>,
     /// Who its instant damage names (`indirectMagic(cloud, owner)`): the
@@ -297,10 +306,16 @@ pub(super) struct PotionCloud {
     guest: Option<u32>,
 }
 impl PotionCloud {
-    /// `AreaEffectCloud.updateParticle`: an entity effect in the potion's colour.
+    /// `AreaEffectCloud.updateParticle`: the custom particle when one is set,
+    /// else an entity effect in the potion's colour.
     pub(super) fn particle(&self) -> ParticleOptions {
-        let c = |shift: u32| (self.color >> shift & 255) as f32 / 255.0;
-        ParticleOptions::colored(ParticleType::EntityEffect, [c(16), c(8), c(0), 1.0])
+        self.custom_particle
+            .as_ref()
+            .and_then(cloud_particle::custom_particle_options)
+            .unwrap_or_else(|| {
+                let c = |shift: u32| (self.color >> shift & 255) as f32 / 255.0;
+                ParticleOptions::colored(ParticleType::EntityEffect, [c(16), c(8), c(0), 1.0])
+            })
     }
 }
 /// `Projectile.getOwner` of a thrown potion: what its `indirectMagic` damage
@@ -2015,6 +2030,7 @@ impl Game<'_> {
     ) {
         let id = self.take_entity_id();
         self.breath_clouds.push(Breath {
+            attachment_lifetime: Default::default(),
             join: Default::default(),
             id,
             at,
@@ -2030,6 +2046,7 @@ impl Game<'_> {
                 ambient,
                 radius_per_tick: -2.5 / 300.0,
                 color,
+                custom_particle: None,
                 victims: Vec::new(),
                 source: Text::translate("entity.minecraft.area_effect_cloud", &[]),
                 owner: None,
@@ -2427,6 +2444,7 @@ impl Game<'_> {
                 let at = mob.unwrap_or(at);
                 let id = self.take_entity_id();
                 self.breath_clouds.push(Breath {
+                    attachment_lifetime: Default::default(),
                     join: Default::default(),
                     id,
                     at: [at.x, at.y, at.z],
@@ -2442,6 +2460,7 @@ impl Game<'_> {
                         ambient: Vec::new(),
                         radius_per_tick: -3.0 / 600.0,
                         color,
+                        custom_particle: None,
                         victims: Vec::new(),
                         source: owner.name.clone().unwrap_or_else(|| {
                             Text::translate("entity.minecraft.area_effect_cloud", &[])
@@ -2759,7 +2778,9 @@ mod tests {
                 for &(id, at) in entries {
                     game.spawn_creeper_cloud(at, Vec::new(), Vec::new(), Vec::new(), 0);
                     let i = game.breath_clouds.len() - 1;
-                    game.breath_clouds.update(i, |c| c.id = id);
+                    let mut cloud = game.breath_clouds.remove(i);
+                    cloud.id = id;
+                    game.breath_clouds.push(cloud);
                 }
             },
             ids: |game| game.breath_clouds.iter().map(|c| c.id).collect(),
@@ -2837,6 +2858,7 @@ mod tests {
             let potion = game.load_potion_cloud(&tag).unwrap();
             for (age, duration) in [(20, 1), (0, 40)] {
                 game.breath_clouds.push(super::super::dragon::Breath {
+                    attachment_lifetime: Default::default(),
                     join: Default::default(),
                     id: 0,
                     at: [0.0, 80.0, 0.0],
@@ -3091,6 +3113,7 @@ mod tests {
     #[test]
     fn a_lingering_cloud_survives_a_save() {
         let cloud = Breath {
+            attachment_lifetime: Default::default(),
             join: Default::default(),
             id: 7,
             at: [1.5, 64.0, -2.5],
@@ -3112,6 +3135,7 @@ mod tests {
                 ambient: vec!["poison"],
                 radius_per_tick: -0.008_750,
                 color: 0x0033_FF44,
+                custom_particle: None,
                 victims: Vec::new(),
                 source: Text::translate("entity.minecraft.area_effect_cloud", &[]),
                 owner: None,
@@ -3290,6 +3314,7 @@ mod tests {
     fn glass_bottle_collects_dragon_breath_from_dragon_cloud() {
         let player_box = Aabb::new(Vec3::new(-0.3, 64.0, -0.3), Vec3::new(0.3, 65.8, 0.3));
         let mut clouds = [super::super::dragon::Breath {
+            attachment_lifetime: Default::default(),
             join: Default::default(),
             id: 1,
             at: [1.0, 64.0, 0.0],
@@ -3315,6 +3340,7 @@ mod tests {
         let player_box = Aabb::new(Vec3::new(-0.3, 64.0, -0.3), Vec3::new(0.3, 65.8, 0.3));
         // Non-dragon cloud (`from_dragon: false`).
         let mut non_dragon = [super::super::dragon::Breath {
+            attachment_lifetime: Default::default(),
             join: Default::default(),
             id: 1,
             at: [0.0, 64.0, 0.0],
@@ -3332,6 +3358,7 @@ mod tests {
 
         // Lingering potion cloud (`potion: Some(...)`).
         let mut lingering = [super::super::dragon::Breath {
+            attachment_lifetime: Default::default(),
             join: Default::default(),
             id: 2,
             at: [0.0, 64.0, 0.0],
@@ -3347,6 +3374,7 @@ mod tests {
                 ambient: Vec::new(),
                 radius_per_tick: -3.0 / 600.0,
                 color: 0,
+                custom_particle: None,
                 victims: Vec::new(),
                 source: Text::empty(),
                 owner: None,
@@ -3361,6 +3389,7 @@ mod tests {
         // Its last tick before the wait-shifted end still holds breath
         // (`tickCount - waitTime < duration`).
         let mut last = [super::super::dragon::Breath {
+            attachment_lifetime: Default::default(),
             join: Default::default(),
             id: 3,
             at: [0.0, 64.0, 0.0],
@@ -3378,6 +3407,7 @@ mod tests {
 
         // Expired cloud (`tickCount - waitTime >= duration`).
         let mut expired = [super::super::dragon::Breath {
+            attachment_lifetime: Default::default(),
             join: Default::default(),
             id: 3,
             at: [0.0, 64.0, 0.0],
@@ -3396,6 +3426,7 @@ mod tests {
         // Out of horizontal reach: cloud at 10 blocks away with radius 1:
         // cloud X range [9.0, 11.0], player inflated X range [-2.3, 2.3] -> no overlap.
         let mut far = [super::super::dragon::Breath {
+            attachment_lifetime: Default::default(),
             join: Default::default(),
             id: 4,
             at: [10.0, 64.0, 0.0],
@@ -3415,6 +3446,7 @@ mod tests {
         // player at Y=67.0 (inflated Y bounds [65.0, 70.8] does not reach 64.5).
         let high_player = Aabb::new(Vec3::new(-0.3, 67.0, -0.3), Vec3::new(0.3, 68.8, 0.3));
         let mut ground_cloud = [super::super::dragon::Breath {
+            attachment_lifetime: Default::default(),
             join: Default::default(),
             id: 5,
             at: [0.0, 64.0, 0.0],

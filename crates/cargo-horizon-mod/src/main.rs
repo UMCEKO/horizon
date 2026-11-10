@@ -26,6 +26,7 @@ mod inject;
 mod inject_sync;
 mod internals;
 mod jar;
+mod layouts;
 mod registry;
 mod wasm;
 
@@ -336,6 +337,9 @@ fn build_in(root: &Path) -> Result<PathBuf, String> {
 
 fn pack_into(root: &Path, dir: &Path) -> Result<PathBuf, String> {
     let package = Package::read(root)?;
+    if package.manifest.native.is_some() || package.manifest.wasm.is_some() {
+        layouts::build(root)?;
+    }
     let bytes = Package::pack_directory(root)?;
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let path = dir.join(format!("{}.hmod", package.manifest.id));

@@ -1202,7 +1202,7 @@ impl crate::wire::Wire for crate::ConnectionKind {
 
 #[allow(unreachable_patterns, unused_variables)]
 impl crate::wire::Wire for crate::AttachmentRowError {
-    layout_fields!("tag" => u32, "0:Value" => crate::AttachmentError, "1:StaleHolder" => ());
+    layout_fields!("tag" => u32, "0:Value" => crate::AttachmentError, "1:StaleHolder" => (), "2:HolderBusy" => (), "3:UnsupportedHolder" => &'static str);
     const LAYOUT_SEED: u64 = crate::wire::layout_name("AttachmentRowError");
     const MIN: usize = 4;
     fn put(&self, out: &mut crate::wire::Writer) {
@@ -1212,6 +1212,11 @@ impl crate::wire::Wire for crate::AttachmentRowError {
                 out.put(f0);
             }
             Self::StaleHolder => out.put(&1u32),
+            Self::HolderBusy => out.put(&2u32),
+            Self::UnsupportedHolder(kind) => {
+                out.put(&3u32);
+                out.put(kind);
+            }
             _ => {
                 out.fail(crate::wire::WireError::Invalid(
                     "unknown AttachmentRowError",
@@ -1226,6 +1231,11 @@ impl crate::wire::Wire for crate::AttachmentRowError {
                 out.put_owned(f0);
             }
             Self::StaleHolder => out.put_owned(1u32),
+            Self::HolderBusy => out.put_owned(2u32),
+            Self::UnsupportedHolder(kind) => {
+                out.put_owned(3u32);
+                out.put_owned(kind);
+            }
             _ => {
                 out.fail(crate::wire::WireError::Invalid(
                     "unknown AttachmentRowError",
@@ -1240,6 +1250,8 @@ impl crate::wire::Wire for crate::AttachmentRowError {
             Ok(match input.take::<u32>()? {
                 0 => Self::Value(input.take()?),
                 1 => Self::StaleHolder,
+                2 => Self::HolderBusy,
+                3 => Self::UnsupportedHolder(input.take()?),
                 tag => return Err(crate::wire::WireError::Tag(tag)),
             })
         })
@@ -1247,7 +1259,7 @@ impl crate::wire::Wire for crate::AttachmentRowError {
 }
 #[allow(unreachable_patterns, unused_variables)]
 impl crate::wire::Wire for crate::AttachmentError {
-    layout_fields!("tag" => u32, "0:MissingHolder" => (), "1:TypeMismatch" => (), "2:Decode" => (), "3:Encode" => (), "4:InvalidNamespace" => (), "5:InvalidCopyPolicy" => (), "6:InvalidSyncPolicy" => ());
+    layout_fields!("tag" => u32, "0:MissingHolder" => (), "1:TypeMismatch" => (), "2:Decode" => (), "3:Encode" => (), "4:InvalidNamespace" => (), "5:InvalidCopyPolicy" => (), "6:InvalidSyncPolicy" => (), "7:HolderBusy" => (), "8:UnsupportedHolder" => &'static str);
     const LAYOUT_SEED: u64 = crate::wire::layout_name("AttachmentError");
     const MIN: usize = 4;
     fn put(&self, out: &mut crate::wire::Writer) {
@@ -1259,6 +1271,12 @@ impl crate::wire::Wire for crate::AttachmentError {
             Self::InvalidNamespace => 4u32,
             Self::InvalidCopyPolicy => 5u32,
             Self::InvalidSyncPolicy => 6u32,
+            Self::HolderBusy => 7u32,
+            Self::UnsupportedHolder(kind) => {
+                out.put(&8u32);
+                out.put(kind);
+                return;
+            }
             _ => {
                 out.fail(crate::wire::WireError::Invalid("unknown AttachmentError"));
                 return;
@@ -1276,6 +1294,8 @@ impl crate::wire::Wire for crate::AttachmentError {
             4 => Self::InvalidNamespace,
             5 => Self::InvalidCopyPolicy,
             6 => Self::InvalidSyncPolicy,
+            7 => Self::HolderBusy,
+            8 => Self::UnsupportedHolder(input.take()?),
             tag => return Err(crate::wire::WireError::Tag(tag)),
         })
     }

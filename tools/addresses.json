@@ -48,6 +48,7 @@
     "crates/horizon-client-render/src/pack_browser.rs api.modrinth.com",
     "crates/horizon-client/src/mod_registry.rs horizon-rust.github.io",
     "crates/horizon-client/src/mod_registry.rs playhorizon.dev",
+    "crates/horizon-client/src/multiplayer.rs afri-network.co.za",
     "crates/horizon-client/src/no_resources.rs playhorizon.dev",
     "crates/horizon-mod-registry/src/github.rs api.github.com",
     "crates/horizon-mod-registry/src/github.rs github.com",
@@ -104,6 +105,7 @@
     "launcher/src/native_mods.rs github.com",
     "launcher/src/rust_toolchain.rs github.com",
     "launcher/src/rust_toolchain.rs static.rust-lang.org",
+    "launcher/src/shop.rs playhorizon.dev",
     "launcher/src/signed.rs github.com",
     "launcher/src/tailscale.rs api.tailscale.com",
     "launcher/src/tailscale.rs login.tailscale.com",
@@ -120,9 +122,10 @@
     "crates/horizon-port-pack/src/fetch.rs maven.neoforged.net",
     "crates/horizon-port-pack/src/fetch.rs objects.githubusercontent.com",
     "crates/horizon-port-pack/src/fetch.rs release-assets.githubusercontent.com",
-    "launcher/src/backend.rs arismoko.github.io",
     "launcher/src/native_mods/prebuilt.rs github.com",
-    "launcher/src/open_card.rs github.com"
+    "crates/horizon-telemetry-server/src/github.rs api.github.com",
+    "crates/horizon-telemetry-server/src/github.rs github.com",
+    "crates/horizon-telemetry-server/src/lib.rs playhorizon.dev"
   ],
   "_fork_baselines": {
     "crates/cargo-horizon-mod/src/internals.rs github.com": "Existing fork source URL; recorded baseline, no endpoint added by this sync.",

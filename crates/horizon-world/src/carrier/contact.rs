@@ -189,6 +189,30 @@ impl Rotation {
         [self.w, self.x, self.y, self.z]
     }
 
+    /// Rebuilds a rotation from components known canonical, without
+    /// renormalizing: renormalizing a quaternion this crate already
+    /// normalized can move its last bit, which would break the carrier
+    /// codec's bitwise round-trip contract. Refuses non-finite and
+    /// all-zero components; canonicality itself (sign rule, unit norm) is
+    /// the caller's policy, enforced by `carrier::model`. `+ 0.0`
+    /// canonicalizes negative zero to positive zero, matching the NBT
+    /// reader's load-time normalization; every other finite value keeps
+    /// its exact bits. Crate-local reuse for the carrier data model.
+    pub(crate) fn from_exact_components(w: f64, x: f64, y: f64, z: f64) -> Option<Self> {
+        if !w.is_finite() || !x.is_finite() || !y.is_finite() || !z.is_finite() {
+            return None;
+        }
+        if w == 0.0 && x == 0.0 && y == 0.0 && z == 0.0 {
+            return None;
+        }
+        Some(Self {
+            w: w + 0.0,
+            x: x + 0.0,
+            y: y + 0.0,
+            z: z + 0.0,
+        })
+    }
+
     /// Applies the rotation to a vector.
     pub fn rotate(self, p: Vec3) -> Vec3 {
         let qv = Vec3::new(self.x, self.y, self.z);

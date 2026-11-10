@@ -12,8 +12,54 @@ pub struct GuestList {
     simulation: Vec<usize>,
     connections: FxHashMap<u32, usize>,
     identities: FxHashMap<(u128, u32), usize>,
+    residency: Option<(
+        crate::join_seq::residency::Journal,
+        fn(&str) -> mod_api::DimensionKey,
+    )>,
 }
 impl GuestList {
+    /// Bind actual player records, including non-network fake actors. Readiness
+    /// and material simulation participation do not decide identity existence.
+    pub fn bind_residency(
+        &mut self,
+        journal: &crate::join_seq::residency::Journal,
+        dimension: fn(&str) -> mod_api::DimensionKey,
+    ) {
+        self.residency = Some((journal.clone(), dimension));
+        for index in 0..self.rows.len() {
+            self.bind_guest(index);
+        }
+    }
+    fn bind_guest(&mut self, index: usize) -> bool {
+        let Some((journal, dimension)) = &self.residency else {
+            return false;
+        };
+        let guest = &mut self.rows[index];
+        if guest.released {
+            guest.attachments.retire();
+            guest.residency.retire();
+            return false;
+        }
+        let uuid = crate::lan::playerdata::uuid_ints(guest.uuid);
+        let source = crate::join_seq::residency::Source::Guest(guest.conn);
+        if guest.residency.identity().is_some_and(|identity| {
+            identity.id.get() != guest.entity_id as u32
+                || identity.source != source
+                || identity.details.known_uuid != Some(uuid)
+        }) {
+            guest.attachments.retire();
+        }
+        guest.residency.bind(
+            journal,
+            crate::join_seq::residency::Owner {
+                dimension: dimension(&guest.dimension),
+                kind: crate::join_seq::residency::Kind::Player,
+            },
+            guest.entity_id as u32,
+            source,
+            Some(uuid),
+        )
+    }
     /// Edit one row without lending a mutable row or slice outside this call.
     /// Indexed-key changes are published before the caller can use the list
     /// again, including when the callback unwinds. Ordinary state writes do
@@ -21,11 +67,18 @@ impl GuestList {
     pub fn update<T>(&mut self, index: usize, update: impl FnOnce(&mut Guest) -> T) -> T {
         let before = index_fields(&self.rows[index]);
         let registration = self.rows[index].attachments.registration();
+        let dimension = self
+            .residency
+            .as_ref()
+            .map(|(_, key)| key(&self.rows[index].dimension));
+        let released = self.rows[index].released;
         let edit = Edit {
             list: self,
             index,
             before,
             registration,
+            dimension,
+            released,
         };
         update(&mut edit.list.rows[index])
     }
@@ -179,6 +232,9 @@ impl GuestList {
             self.simulation.push(index);
         }
         self.rows.push(guest);
+        if !self.bind_guest(index) {
+            self.rows[index].residency.put_back();
+        }
     }
     pub fn extend(&mut self, guests: impl IntoIterator<Item = Guest>) {
         for guest in guests {
@@ -188,6 +244,7 @@ impl GuestList {
     /// Move a still-resident record out while saving it; its binding travels with it.
     pub fn take_for_save(&mut self, index: usize) -> Guest {
         let guest = self.rows.remove(index);
+        guest.residency.extract();
         self.reindex();
         guest
     }
@@ -195,6 +252,7 @@ impl GuestList {
     pub fn remove(&mut self, index: usize) -> Guest {
         let mut guest = self.take_for_save(index);
         guest.attachments.retire();
+        guest.residency.retire();
         guest
     }
     pub fn retain(&mut self, keep: impl FnMut(&Guest) -> bool) {
@@ -205,10 +263,17 @@ impl GuestList {
     }
     pub fn insert(&mut self, index: usize, guest: Guest) {
         self.rows.insert(index, guest);
+        if !self.bind_guest(index) {
+            self.rows[index].residency.put_back();
+        }
         self.reindex();
     }
     pub fn replace(&mut self, index: usize, guest: Guest) -> Guest {
         let mut old = std::mem::replace(&mut self.rows[index], guest);
+        old.residency.retire();
+        if !self.bind_guest(index) {
+            self.rows[index].residency.put_back();
+        }
         self.reindex();
         old.attachments.retire();
         old
@@ -272,6 +337,8 @@ struct Edit<'a> {
     index: usize,
     before: (u32, u128, i32, bool),
     registration: Option<horizon_mod_runtime::attachments::AttachmentRegistration>,
+    dimension: Option<mod_api::DimensionKey>,
+    released: bool,
 }
 fn index_fields(guest: &Guest) -> (u32, u128, i32, bool) {
     (
@@ -291,7 +358,34 @@ impl Drop for Edit<'_> {
         {
             old.unregister();
         }
-        if index_fields(&self.list.rows[self.index]) != self.before {
+        let after = index_fields(&self.list.rows[self.index]);
+        let identity_changed =
+            (after.0, after.1, after.2) != (self.before.0, self.before.1, self.before.2);
+        if (after.0, after.1) != (self.before.0, self.before.1)
+            || (self.before.2 != 0 && after.2 != self.before.2)
+        {
+            if self.registration.as_ref().is_some_and(|old| {
+                self.list.rows[self.index]
+                    .attachments
+                    .registration()
+                    .is_some_and(|current| old.same_registration(&current))
+            }) {
+                self.list.rows[self.index].attachments.retire();
+            }
+            self.list.rows[self.index].residency.renew();
+        }
+        let dimension = self
+            .list
+            .residency
+            .as_ref()
+            .map(|(_, key)| key(&self.list.rows[self.index].dimension));
+        if identity_changed
+            || dimension != self.dimension
+            || self.list.rows[self.index].released != self.released
+        {
+            self.list.bind_guest(self.index);
+        }
+        if after != self.before {
             self.list.reindex();
         }
     }
@@ -387,6 +481,58 @@ mod tests {
             assert!(index.lock().unwrap().snapshot(&key).is_empty(), "{action}");
             assert_eq!(before[0].entry.read(&VALUE), Ok(&7));
             assert_eq!(VALUE.get_existing(&mut saved, Holder::Level), Ok(Some(7)));
+        }
+    }
+
+    #[test]
+    fn identity_edits_retire_only_the_retained_old_attachment_registration() {
+        use horizon_mod_runtime::attachments::{Holder, index::AttachmentIndex};
+        use std::sync::{Arc, Mutex};
+        for field in ["connection", "uuid", "entity"] {
+            for replace_registration in [false, true] {
+                let index = Arc::new(Mutex::new(AttachmentIndex::default()));
+                let key = ("guest_test".into(), "value".into());
+                let mut player = guest(1);
+                VALUE
+                    .set(&mut player.attachments, Holder::Level, 7)
+                    .unwrap();
+                let old = player.attachments.bind_index(&index, player.uuid);
+                let mut table =
+                    crate::join_seq::residency::table::EntityTable::new(Default::default());
+                let mut list = GuestList::default();
+                list.bind_residency(&table.producer(), |_| mod_api::DimensionKey::OVERWORLD);
+                list.push(player);
+                list.update(0, |g| {
+                    match field {
+                        "connection" => g.conn = 9,
+                        "uuid" => g.uuid = 909,
+                        _ => g.entity_id = 19,
+                    }
+                    if replace_registration {
+                        g.attachments = Default::default();
+                        VALUE.set(&mut g.attachments, Holder::Level, 9).unwrap();
+                        g.attachments.bind_index(&index, g.uuid);
+                    }
+                });
+                let entries = index.lock().unwrap().snapshot(&key);
+                assert!(
+                    !old.unregister(),
+                    "old binding already retired: {field}, replacement={replace_registration}"
+                );
+                if replace_registration {
+                    assert_eq!(entries.len(), 1);
+                    assert_eq!(entries[0].entry.read(&VALUE), Ok(&9));
+                } else {
+                    assert!(entries.is_empty(), "{field}");
+                }
+                assert!(
+                    table
+                        .server_admitted_identity(list[0].entity_id as u32, |at| resident(
+                            &list, at
+                        ))
+                        .is_some()
+                );
+            }
         }
     }
 
@@ -548,6 +694,117 @@ mod tests {
         assert!(list.is_empty());
         assert_eq!(list.connection_index(3), None);
         assert_eq!(list.identity_index(103, 13), None);
+    }
+
+    fn resident(
+        list: &GuestList,
+        at: crate::join_seq::residency::table::Location,
+    ) -> Option<crate::join_seq::residency::table::SourceEntity<u32>> {
+        use crate::join_seq::residency::{Source, table::SourceEntity};
+        let Source::Guest(conn) = at.source else {
+            return None;
+        };
+        let guest = &list[list.connection_index(conn)?];
+        (guest.residency.location() == Some(at)).then_some(SourceEntity {
+            id: guest.entity_id as u32,
+            value: conn,
+        })
+    }
+
+    #[test]
+    fn actual_guest_loans_keep_cold_profile_identity_and_retire_before_id_reuse() {
+        use crate::join_seq::residency::{
+            Journal,
+            table::{EntityLookup, EntityTable},
+        };
+        let mut list = GuestList::default();
+        let mut table = EntityTable::new(Journal::default());
+        list.bind_residency(&table.producer(), |_| mod_api::DimensionKey::OVERWORLD);
+        list.extend([guest(1), guest(2)]);
+        list.update(1, |g| g.kind = crate::lan::guest::GuestKind::Fake);
+        assert!(!list[0].placed);
+        let (original, state, details) = table
+            .server_admitted_identity(11, |at| resident(&list, at))
+            .unwrap();
+        assert!(matches!(state, EntityLookup::Found { value: 1, .. }));
+        assert_eq!(details.known_uuid, Some([0, 0, 0, 101]));
+        let held = list.take_for_save(0);
+        let (at, state, details) = table
+            .server_admitted_identity(11, |at| resident(&list, at))
+            .unwrap();
+        assert_eq!(at, original);
+        assert_eq!(state, EntityLookup::Taken);
+        assert_eq!(details.known_uuid, Some([0, 0, 0, 101]));
+        assert!(matches!(
+            table.server_entity_lookup(12, |at| resident(&list, at)),
+            EntityLookup::Found { value: 2, .. }
+        ));
+        list.insert(1, held);
+        assert!(
+            matches!(table.server_entity_lookup(11, |at| resident(&list, at)), EntityLookup::Found { location, value: 1 } if location == original)
+        );
+        drop(list.take_for_save(1));
+        assert_eq!(
+            table.server_entity_lookup::<()>(11, |_| panic!("retired guest must not resolve")),
+            EntityLookup::Missing
+        );
+        list.update(0, |g| {
+            g.entity_id = 11;
+            g.uuid = 909;
+        });
+        let (replacement, state, details) = table
+            .server_admitted_identity(11, |at| resident(&list, at))
+            .unwrap();
+        assert_ne!(replacement.join, original.join);
+        assert!(matches!(state, EntityLookup::Found { value: 2, .. }));
+        assert_eq!(details.known_uuid, Some([0, 0, 0, 909]));
+        assert_eq!(
+            table.server_entity_lookup::<()>(12, |_| panic!("old key must retire")),
+            EntityLookup::Missing
+        );
+        list.clear();
+        assert_eq!(
+            table.server_entity_lookup::<()>(11, |_| panic!("cleared guest must not resolve")),
+            EntityLookup::Missing
+        );
+        assert!(table.end_tick().is_ok());
+    }
+
+    #[test]
+    fn pending_guest_admits_once_and_a_real_saved_record_rebinds_after_epoch_reset() {
+        use crate::join_seq::residency::{
+            Journal,
+            table::{EntityLookup, EntityTable},
+        };
+        let mut list = GuestList::default();
+        let mut pending = guest(1);
+        pending.entity_id = 0;
+        let join = pending.residency.join();
+        let mut table = EntityTable::new(Journal::default());
+        list.bind_residency(&table.producer(), |_| mod_api::DimensionKey::OVERWORLD);
+        list.push(pending);
+        assert_eq!(
+            table.server_entity_lookup::<()>(0, |_| panic!("pending id is not admitted")),
+            EntityLookup::Missing
+        );
+        list.update(0, |g| g.entity_id = 31);
+        let (at, state, details) = table
+            .server_admitted_identity(31, |at| resident(&list, at))
+            .unwrap();
+        assert_eq!(at.join, join);
+        assert!(matches!(state, EntityLookup::Found { value: 1, .. }));
+        assert_eq!(details.known_uuid, Some([0, 0, 0, 101]));
+        let saved = list.take_for_save(0);
+        table.reset();
+        list.bind_residency(&table.producer(), |_| mod_api::DimensionKey::OVERWORLD);
+        list.push(saved);
+        let (at, state, details) = table
+            .server_admitted_identity(31, |at| resident(&list, at))
+            .unwrap();
+        assert_eq!(at.join, join);
+        assert!(matches!(state, EntityLookup::Found { value: 1, .. }));
+        assert_eq!(details.known_uuid, Some([0, 0, 0, 101]));
+        assert!(table.end_tick().is_ok());
     }
 
     #[test]

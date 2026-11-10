@@ -8,6 +8,8 @@
 //! exit portal, the egg and the next gateway; and its rendering and boss bar.
 #[path = "dragon/rays.rs"]
 mod rays;
+#[path = "dragon/residency.rs"]
+mod residency;
 #[path = "dragon/save_lending.rs"]
 mod save_lending;
 use super::api_values::TryIntoApi;
@@ -190,6 +192,8 @@ impl Respawn {
 }
 #[derive(Clone, Debug)]
 pub(super) struct Crystal {
+    /// Entity-owned registration metadata; content clones are detached.
+    pub(super) attachment_lifetime: horizon_mod_runtime::attachments::AttachmentLifetime,
     pub join: horizon_client::join_seq::JoinSeq,
     /// The entity id a server tracks it by (0 until it is tracked).
     pub id: u32,
@@ -202,6 +206,7 @@ pub(super) struct Crystal {
     pub invulnerable: bool,
 }
 horizon_client::impl_joined!(Crystal);
+horizon_mod_runtime::impl_attachment_lifetime!(Crystal);
 impl Crystal {
     /// The start of `time` (the spin and bob) for a crystal at `position`: the random draw
     /// vanilla makes, or under `HORIZON_STILL` one seeded from the position alone. Which crystal
@@ -386,6 +391,7 @@ impl Phase {
     }
 }
 pub(in crate::game) struct Dragon {
+    pub(super) residency: residency::DragonResidency,
     pub join: horizon_client::join_seq::JoinSeq,
     /// `Entity.id` once tracked to guests (0 before); its parts take the
     /// eight ids after it (`EnderDragon`'s constructor reserves them).
@@ -615,6 +621,7 @@ impl Dragon {
     /// spawn egg or a save without `DragonPhase` keeps hovering where it was put.
     pub(super) fn new(position: Vec3, yaw: f32, seed: i64) -> Self {
         Self {
+            residency: Default::default(),
             join: Default::default(),
             id: 0,
             position,
@@ -1406,12 +1413,11 @@ impl Game<'_> {
         {
             super::entity::assign_stored_id(&mut self.next_entity, &mut d.id, None);
             self.next_entity += 8;
+            self.dragon.id_assigned();
         }
         // The spikes' crystals too (EndCrystal's constructor): an id whether
         // or not a client has tracked them yet, to be aimed at by it.
-        for c in self.crystals.iter_mut().filter(|c| c.id == 0) {
-            super::entity::assign_stored_id(&mut self.next_entity, &mut c.id, None);
-        }
+        self.assign_resident_crystal_ids();
     }
     /// EndSpikeFeature's crystals (with fire under them on the bedrock).
     fn place_spike_crystals(&mut self) {
@@ -1433,6 +1439,7 @@ impl Game<'_> {
             // EndCrystal's constructor takes an id from the entity counter.
             self.next_entity += 1;
             self.crystals.push(Crystal {
+                attachment_lifetime: Default::default(),
                 join: Default::default(),
                 id: self.next_entity,
                 position: at,
@@ -1575,21 +1582,6 @@ impl Game<'_> {
         }
         out
     }
-    /// The box of the dragon part or end crystal guests know as entity `id`
-    /// (`EnderDragonPart`s follow the dragon's id).
-    pub(super) fn tracked_special_box(&self, id: i32) -> Option<Aabb> {
-        let id = u32::try_from(id).ok().filter(|&id| id != 0)?;
-        if let Some(d) = self.dragon.as_ref().filter(|d| d.alive() && d.id != 0)
-            && (d.id + 1..=d.id + 8).contains(&id)
-        {
-            return Some(d.part_box((id - d.id - 1) as usize));
-        }
-        let i = self.crystals.iter().position(|c| c.id == id)?;
-        self.special_targets()
-            .into_iter()
-            .find(|(s, _)| *s == CRYSTAL_IDS + i as u32)
-            .map(|(_, b)| b)
-    }
     /// `ServerLevel.dragonParts`: where the part with that entity id is
     /// and its box.
     pub(super) fn dragon_part(&self, id: u32) -> Option<(Vec3, Aabb)> {
@@ -1600,10 +1592,7 @@ impl Game<'_> {
     /// its part with that entity id, while the dragon is there, dying or
     /// not: a part is an entity for as long as its parent is.
     pub(super) fn resident_dragon_part(&self, id: u32) -> Option<(&Dragon, usize)> {
-        let d = self.dragon.as_ref().filter(|d| d.id != 0)?;
-        (d.id + 1..=d.id + 8)
-            .contains(&id)
-            .then(|| (d, (id - d.id - 1) as usize))
+        self.resident_dragon_part_source(id)
     }
     /// Damage to a special id (from projectiles and melee): what the
     /// dragon part or crystal made of it. `direct` is the projectile that hit.
@@ -2615,6 +2604,7 @@ impl Game<'_> {
                     }
                     let id = self.take_entity_id();
                     self.breath_clouds.push(Breath {
+                        attachment_lifetime: Default::default(),
                         join: Default::default(),
                         id,
                         at: [x, y.floor() + 1.0, z],
@@ -3291,6 +3281,7 @@ impl Game<'_> {
         let feet = [next.x, next.y - 0.5, next.z];
         let at = fireball_cloud_origin(feet, &snap_targets);
         self.breath_clouds.push(Breath {
+            attachment_lifetime: Default::default(),
             join: Default::default(),
             id,
             at,
@@ -3642,6 +3633,8 @@ fn breath_puffs(
     }
 }
 pub(super) struct Breath {
+    /// Entity-owned registration metadata; content clones are detached.
+    pub(super) attachment_lifetime: horizon_mod_runtime::attachments::AttachmentLifetime,
     pub(in crate::game) join: horizon_client::join_seq::JoinSeq,
     /// Its entity id once a server's players track it (0 until then).
     pub(super) id: u32,
@@ -3657,6 +3650,7 @@ pub(super) struct Breath {
 }
 
 horizon_client::impl_joined!(Breath, Dragon);
+horizon_mod_runtime::impl_attachment_lifetime!(Breath);
 
 impl Breath {
     /// `AreaEffectCloud.isWaiting`: before its wait time (20 ticks, 10 for a
@@ -4103,6 +4097,7 @@ impl Crystal {
     pub(super) fn from_nbt(tag: &Tag, time: i32) -> Option<Self> {
         let (position, _, _) = horizon_client::entity_nbt::boat_from_nbt(tag)?;
         Some(Self {
+            attachment_lifetime: Default::default(),
             join: Default::default(),
             id: 0,
             position,
@@ -4367,6 +4362,7 @@ impl Game<'_> {
         // the crystal is an entity a command can name (`@e[type=end_crystal]`).
         self.next_entity += 1;
         self.crystals.push(Crystal {
+            attachment_lifetime: Default::default(),
             join: Default::default(),
             id: self.next_entity,
             position: at,
@@ -4652,6 +4648,7 @@ impl Game<'_> {
         let drawn = self.world.random.next_int_bound(100_000).unwrap_or(0);
         let time = Crystal::start_time(at, drawn, self.clock.still());
         self.crystals.push(Crystal {
+            attachment_lifetime: Default::default(),
             join: Default::default(),
             id: 0,
             position: at,
@@ -5223,24 +5220,9 @@ impl Game<'_> {
     }
 }
 
-/// The dying model's colour, `ARGB.white(1 - deathTime / 200)`: `Mth.floor` of the alpha
-/// shifted as a Java int, so past 200 it wraps as vanilla's does.
-fn dissolve_color(death: f32) -> u32 {
-    let alpha = ((1.0 - death / 200.0) * 255.0).floor() as i32;
-    (alpha << 24) as u32 | 0x00FF_FFFF
-}
-/// `DissolveMaskSampler` at the vertex's `UV0`: the same place in the mask's sprite as in the
-/// skin's, as the dissolve overlay reads it from `glint_uv` (entity.wgsl).
-fn dissolve_mask(quads: &mut [Vertex], skin: [f32; 4], mask: [f32; 4]) {
-    for v in quads {
-        let u = (v.uv[0] - skin[0]) / (skin[2] - skin[0]);
-        let w = (v.uv[1] - skin[1]) / (skin[3] - skin[1]);
-        v.glint_uv = [
-            mask[0] + (mask[2] - mask[0]) * u,
-            mask[1] + (mask[3] - mask[1]) * w,
-        ];
-    }
-}
+#[path = "dragon/death_render.rs"]
+mod death_render;
+use death_render::{dissolve_color, dissolve_mask};
 
 #[cfg(test)]
 mod tests {
