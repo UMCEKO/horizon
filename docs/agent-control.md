@@ -371,7 +371,7 @@ A recording is one folder, a bundle is that folder plus the logs in one zip:
   stops it and writes the bundle (the chat shows the path); **F3+E** writes the bundle of the
   newest recording. The keys are off until **Recording shortcuts** is turned on (AI Agent page);
   the page also has the two buttons and a live recording/replay line.
-- `/profiler start` and `/profiler stop` in chat start and save a capture; add `client` or `server` for one side. `/profiler status` shows whether one is running.
+- `/profiler start` and `/profiler stop` in chat start and save a capture, then upload it in the background and show a clickable viewer link; add `client` or `server` for one side. `/profiler status` shows whether one is running. `/profiler share` retries sharing the latest completed capture in this session. The local `.hzperf` and private `.hzperf.share.json` owner receipt stay in reports/. Control-socket captures remain local until explicitly shared.
 - `record-replay NAME [--stop] [--in-place] [--keep-world] [--timeout S]` is the best effort
   replay: it copies the recording's world into `saves/`, opens it, restores the recorded player
   position, rotation and velocity, and feeds the recorded keys, mouse, wheel, look, pad events
