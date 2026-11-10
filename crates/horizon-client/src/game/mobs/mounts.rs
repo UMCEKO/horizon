@@ -944,20 +944,12 @@ impl Game<'_> {
     pub(super) fn mount_jumping(&self) -> bool {
         self.mount.jump_scale > 0.0 || self.mount.jump_ticks < 0
     }
-    /// `Hud.extractVehicleHealth` (a native mod's `minecraft:vehicle_health`
-    /// layer, only while riding a mount). Returns the mount's heart count
-    /// (`getVehicleMaxHearts`).
-    pub(super) fn draw_mount_hud(&mut self, batch: &mut HudBatch, w: i32, h: i32) -> i32 {
-        let Some(i) = self.mount_index() else {
-            return 0;
-        };
-        let m = &self.mobs[i];
+    /// The ridden mount's heart count (`getVehicleMaxHearts`) and health, for the
+    /// `minecraft:vehicle_health` layer.
+    pub(super) fn mount_hearts(&self) -> Option<(i32, f32)> {
+        let m = &self.mobs[self.mount_index()?];
         let hearts = horizon_client::hud_layout::vehicle_max_hearts(m.attrs.max_health);
-        let draws = horizon_client::hud_layout::vehicle_health(w, h, hearts, m.health);
-        self.gui_layer("minecraft:vehicle_health", batch, |g, batch| {
-            horizon_client::hud_layout::paint(batch, &g.gui.atlas, &draws);
-        });
-        hearts
+        Some((hearts, m.health))
     }
     /// The jump bar when it is the contextual bar.
     pub(super) fn draw_jump_bar(&self, batch: &mut HudBatch, w: i32, h: i32) {
