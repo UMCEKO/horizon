@@ -230,6 +230,10 @@ pub use prepared_model::{
 mod inter_stage_tests;
 #[cfg(test)]
 mod sprite_arrays_tests;
+mod sprite_upload;
+pub use sprite_upload::PreparedTextures;
+#[cfg(test)]
+use sprite_upload::mip_chain;
 mod terrain_model;
 #[cfg(test)]
 pub(crate) mod test_gpu;
@@ -1510,8 +1514,7 @@ pub struct Renderer {
     sprite_views: Vec<wgpu::TextureView>,
     /// Nearest, repeating, nearest mip level: for drawing a sprite's texels sharp elsewhere.
     sprite_nearest: wgpu::Sampler,
-    mip_levels: u32,
-    /// The mipmap levels sampled (the Mipmap Levels option), at most `mip_levels - 1`.
+    /// The first sprite array's mipmap levels sampled (the Mipmap Levels option).
     mipmaps: u32,
     terrain_layout: wgpu::BindGroupLayout,
     /// terrain.wgsl's `SPRITE_ARRAYS` and `SPRITE_SPLIT`, for a shader pack's terrain.
@@ -1538,7 +1541,12 @@ pub struct Renderer {
     shrink_gate: ShrinkGate,
     /// Whether `lightmap` holds `lightmap_pixels` yet.
     lightmap_uploaded: bool,
-    sprite_minimum_size: u32,
+    /// The block sprite arrays as `sprite_textures` holds them, cut by `sprite_split`.
+    sprite_layout: crate::sprites::SpriteLayout,
+    /// Each sprite array's layer side (`BlockSpriteArrays::sizes`).
+    sprite_sizes: Vec<u32>,
+    /// The mip levels each sprite array's view shows (the Mipmap Levels option's, per array).
+    sprite_view_levels: Vec<u32>,
     /// Each sprite layer's own side, before the arrays scaled it up (`mipmap::Settings::native_size`).
     sprite_native: Vec<u32>,
     /// The Mipmap Levels option (`set_mipmap_levels`), which sets a shader pack atlas's padding.
@@ -1784,8 +1792,6 @@ pub struct Renderer {
     /// Outcome of the last capture: its summary, or the error.
     pub capture_result: Option<std::result::Result<serde_json::Value, String>>,
 }
-/// Every layer's mip levels, layer major (`first` is the first layer's
-/// index into `settings`), made by `MipmapGenerator`.
 /// Block sprite layers per texture array at most: the
 /// `max_texture_array_layers` of most GPUs. Mods add sprites past it into more
 /// arrays (terrain.wgsl's `sprite`); a GPU with fewer layers per array gets a
@@ -1803,9 +1809,14 @@ fn adapter_requested_split(info: &wgpu::AdapterInfo, requested: Option<u32>) -> 
     // Metal can fail to sample large mipmapped array textures despite advertising the layer limit.
     requested.or_else(|| (info.backend == wgpu::Backend::Metal).then_some(512))
 }
-/// The split the CPU mip chains are cut by before the adapter is known.
-fn sprite_split() -> u32 {
-    requested_split().unwrap_or(SPRITE_SPLIT)
+/// The split resources load with (sprite ids, CPU mip chains), before the adapter is known.
+pub(crate) fn sprite_split() -> u32 {
+    // Apple's GPUs take Metal's split (`adapter_requested_split`), so arrays of their own sizes fit them.
+    requested_split().unwrap_or(if cfg!(target_vendor = "apple") {
+        512
+    } else {
+        SPRITE_SPLIT
+    })
 }
 /// The block sprite layers per texture array on an adapter that holds
 /// `max_layers` layers per array: [`SPRITE_SPLIT`], `requested`
@@ -1831,7 +1842,7 @@ fn layer_split(
     Ok(split)
 }
 /// Sprite arrays terrain.wgsl binds (`sprites`, `sprites_1`...).
-const SPRITE_ARRAYS: u32 = 8;
+pub(crate) const SPRITE_ARRAYS: u32 = 8;
 /// The layers to give a square texture of `count` layers viewed as a 2D
 /// array. wgpu's OpenGL backend picks a texture's target from its layer
 /// count when it is created: one layer makes a 2D texture and a multiple of
@@ -1849,13 +1860,13 @@ pub(crate) fn array_layers(count: u32, gl: bool) -> u32 {
 fn sprite_views(
     textures: &[wgpu::Texture],
     unused: &wgpu::TextureView,
-    mips: Option<u32>,
+    mips: Option<&[u32]>,
 ) -> Vec<wgpu::TextureView> {
     (0..SPRITE_ARRAYS as usize)
         .map(|i| match textures.get(i) {
             Some(t) => t.create_view(&wgpu::TextureViewDescriptor {
                 dimension: Some(wgpu::TextureViewDimension::D2Array),
-                mip_level_count: mips,
+                mip_level_count: mips.and_then(|m| m.get(i).copied()),
                 ..Default::default()
             }),
             None => unused.clone(),
@@ -1942,199 +1953,6 @@ fn terrain_group(
             view(12, emission_thresholds),
         ],
     })
-}
-/// CPU texture uploads prepared by the resource worker. Consumed by renderer
-/// construction so the temporary mip chains are released after GPU upload.
-pub struct PreparedTextures {
-    sprites: Vec<(Vec<u8>, u32)>,
-    /// The sprite layers per array `sprites` is cut by.
-    split: u32,
-    forcefield: (Vec<u8>, u32),
-    /// The LabPBR maps' mip chains (normals, specular), their levels, layers and size.
-    pbr: Option<(Vec<u8>, Vec<u8>, u32, u32, u32)>,
-}
-/// Every level of `layers` square RGBA layers of `size`, each the mean of four texels of the
-/// one above, layer major: the LabPBR maps' mips (their channels are data, not colour).
-fn box_mip_chain(pixels: &[u8], size: u32, layers: u32) -> Vec<u8> {
-    let layer_bytes = (size * size * 4) as usize;
-    let mut out = Vec::new();
-    for layer in pixels.chunks_exact(layer_bytes).take(layers as usize) {
-        let mut level = layer.to_vec();
-        let mut side = size as usize;
-        out.extend_from_slice(&level);
-        while side > 1 {
-            let half = side / 2;
-            let mut next = Vec::with_capacity(half * half * 4);
-            for y in 0..half {
-                for x in 0..half {
-                    for c in 0..4 {
-                        let at = |dx: usize, dy: usize| {
-                            u32::from(level[((2 * y + dy) * side + 2 * x + dx) * 4 + c])
-                        };
-                        next.push(((at(0, 0) + at(1, 0) + at(0, 1) + at(1, 1) + 2) / 4) as u8);
-                    }
-                }
-            }
-            out.extend_from_slice(&next);
-            level = next;
-            side = half;
-        }
-    }
-    out
-}
-impl PreparedTextures {
-    pub fn new(
-        pixels: &[u8],
-        size: u32,
-        layers: u32,
-        settings: &[crate::mipmap::Settings],
-        forcefield: (&[u8], u32),
-    ) -> Self {
-        Self::with_split(pixels, size, layers, settings, forcefield, sprite_split())
-    }
-
-    fn with_split(
-        pixels: &[u8],
-        size: u32,
-        layers: u32,
-        settings: &[crate::mipmap::Settings],
-        forcefield: (&[u8], u32),
-        split: u32,
-    ) -> Self {
-        let layer_bytes = (size * size * 4) as usize;
-        Self {
-            sprites: (0..layers.div_ceil(split).max(1))
-                .map(|array| {
-                    let first = array * split;
-                    let count = layers.saturating_sub(first).clamp(1, split);
-                    let start = (first as usize * layer_bytes).min(pixels.len());
-                    mip_chain(&pixels[start..], size, settings, first, count)
-                })
-                .collect(),
-            split,
-            forcefield: mip_chain(forcefield.0, forcefield.1, &[], 0, 1),
-            pbr: None,
-        }
-    }
-
-    /// With the resource packs' LabPBR `normals` and `specular` maps (`layers` layers of
-    /// `size`, as `RenderAssets` holds them; nothing when empty).
-    pub fn with_pbr(mut self, normals: &[u8], specular: &[u8], size: u32, layers: u32) -> Self {
-        if !normals.is_empty() {
-            self.pbr = Some((
-                box_mip_chain(normals, size, layers),
-                box_mip_chain(specular, size, layers),
-                size.trailing_zeros() + 1,
-                layers,
-                size,
-            ));
-        }
-        self
-    }
-
-    /// The same mip chains cut by `split` layers per array: chains made before
-    /// the adapter was known, for a GPU with fewer layers per array.
-    fn resplit(mut self, layers: u32, split: u32) -> Self {
-        if self.split == split || layers <= split.min(self.split) {
-            self.split = split;
-            return self;
-        }
-        let levels = self.sprites[0].1;
-        let all: Vec<u8> = self
-            .sprites
-            .drain(..)
-            .flat_map(|(bytes, _)| bytes)
-            .collect();
-        // Every layer's mip levels are contiguous (layer major).
-        let layer_bytes = all.len() / layers as usize;
-        self.sprites = all
-            .chunks(layer_bytes * split as usize)
-            .map(|chunk| (chunk.to_vec(), levels))
-            .collect();
-        self.split = split;
-        self
-    }
-}
-
-fn mip_chain(
-    pixels: &[u8],
-    size: u32,
-    settings: &[crate::mipmap::Settings],
-    first: u32,
-    layers: u32,
-) -> (Vec<u8>, u32) {
-    let levels = size.trailing_zeros() + 1;
-    let layer_bytes = (size * size * 4) as usize;
-    // Exactly the chain's size: cached animation frames count their capacity.
-    let chain_bytes: usize = (0..levels).map(|l| layer_bytes >> (2 * l)).sum();
-    let mut out = Vec::with_capacity(chain_bytes * layers as usize);
-    // Every layer makes its own mips from its own pixels, and a pack's array holds
-    // thousands of them: the layers run on every thread, in chunks so a worker
-    // allocates one chain per chunk rather than one per layer. The chunks are
-    // appended in order, so the chain stays layer major.
-    const LAYERS_PER_CHUNK: u32 = 16;
-    let chunks: Vec<(u32, u32)> = (0..layers)
-        .step_by(LAYERS_PER_CHUNK as usize)
-        .map(|start| (start, (layers - start).min(LAYERS_PER_CHUNK)))
-        .collect();
-    let parts = crate::par::par_map(&chunks, |&(start, count)| {
-        mip_chain_layers(
-            &pixels[start as usize * layer_bytes..],
-            size,
-            settings,
-            first + start,
-            count,
-            levels - 1,
-            layer_bytes,
-        )
-    });
-    for part in parts {
-        out.extend_from_slice(&part);
-    }
-    debug_assert_eq!(out.len(), chain_bytes * layers as usize);
-    (out, levels)
-}
-
-/// The mip chain of `layers` layers from `pixels` that start at layer `first`:
-/// `layers`' base levels followed by their reductions, layer major.
-fn mip_chain_layers(
-    pixels: &[u8],
-    size: u32,
-    settings: &[crate::mipmap::Settings],
-    first: u32,
-    layers: u32,
-    levels: u32,
-    layer_bytes: usize,
-) -> Vec<u8> {
-    let mut out = Vec::with_capacity(
-        (0..=levels).map(|l| layer_bytes >> (2 * l)).sum::<usize>() * layers as usize,
-    );
-    for layer in 0..layers as usize {
-        let base = crate::mipmap::Image {
-            width: size,
-            height: size,
-            pixels: pixels[layer * layer_bytes..(layer + 1) * layer_bytes]
-                .as_chunks::<4>()
-                .0
-                .to_vec(),
-        };
-        let s = settings
-            .get(first as usize + layer)
-            .copied()
-            .unwrap_or_default();
-        let has_transparent = s.has_transparent || base.pixels.iter().any(|p| p[3] == 0);
-        for image in crate::mipmap::generate(
-            base,
-            levels,
-            crate::mipmap::Settings {
-                has_transparent,
-                ..s
-            },
-        ) {
-            out.extend(image.pixels.iter().flatten());
-        }
-    }
-    out
 }
 /// The wgpu instance options, without wgpu's validation of indirect draws
 /// in release builds. That validation (meant for untrusted WebGPU content)
@@ -3031,9 +2849,7 @@ impl Renderer {
         window: Arc<Window>,
         offscreen: bool,
         sprite_pixels: &[u8],
-        sprite_size: u32,
-        sprite_minimum_size: u32,
-        layers: u32,
+        sprite_layout: &crate::sprites::SpriteLayout,
         sprite_mips: &[crate::mipmap::Settings],
         animations: &[SpriteAnimation],
         hud_atlas: (&[u8], u32, u32),
@@ -3052,6 +2868,7 @@ impl Renderer {
         request: output::FrameRequest,
         display: output::DisplayReading,
     ) -> Result<Self> {
+        let layers = sprite_layout.count();
         let Opened {
             instance,
             surface,
@@ -3096,9 +2913,21 @@ impl Renderer {
         };
         // Computed once: the sprite arrays, the shaders' constants and the
         // shader pack atlas all cut the sprites by it.
-        let split = check_layers(&adapter, layers)?;
+        let mut split = check_layers(&adapter, layers)?;
         if split < sprite_split() {
             log::info!("Horizon: {split} block textures per array (the GPU's limit)");
+        }
+        // Arrays of their own sizes keep the ids they loaded with: only a uniform layout is cut anew.
+        if !sprite_layout.is_uniform() {
+            if sprite_layout.split > split {
+                return Err(format!(
+                    "GPU holds {split} texture layers per array; the block textures were laid out \
+                     {} per array (HORIZON_SPRITE_SPLIT={split} lays them out for it)",
+                    sprite_layout.split
+                )
+                .into());
+            }
+            split = sprite_layout.split;
         }
         let info = adapter.get_info();
         crate::graphics::suggest_reduced_far_detail(crate::graphics::lod_capped(&info));
@@ -3735,96 +3564,24 @@ impl Renderer {
             mapped_at_creation: false,
         });
         let prepared = match prepared {
-            Some(prepared) => prepared.resplit(layers, split),
-            None => PreparedTextures::with_split(
-                sprite_pixels,
-                sprite_size,
-                layers,
-                sprite_mips,
-                forcefield,
-                split,
-            ),
+            Some(prepared) => prepared.resplit(split),
+            None => PreparedTextures::new(sprite_pixels, sprite_layout, sprite_mips, forcefield)
+                .resplit(split),
         };
-        let mut mip_levels = 1;
+        let sprite_layout = prepared.layout.clone();
         let gl = adapter.get_info().backend == wgpu::Backend::Gl;
         // Keep every colour layer's companion, split by the same device limit. Native
         // material stages read the first array; terrain packs stitch all of them.
         let pbr_maps = prepared
             .pbr
-            .map(|(normals, specular, levels, map_layers, size)| {
-                let layer_bytes = normals.len() / map_layers as usize;
-                (0..map_layers.div_ceil(split))
-                    .map(|array| {
-                        let first = array * split;
-                        let used = (map_layers - first).min(split);
-                        let count = array_layers(used, gl);
-                        [("LabPBR normals", &normals), ("LabPBR specular", &specular)].map(
-                            |(label, data)| {
-                                let start = first as usize * layer_bytes;
-                                let mut data =
-                                    data[start..start + used as usize * layer_bytes].to_vec();
-                                data.resize(layer_bytes * count as usize, 0);
-                                device.create_texture_with_data(
-                                    &queue,
-                                    &wgpu::TextureDescriptor {
-                                        label: Some(label),
-                                        size: wgpu::Extent3d {
-                                            width: size,
-                                            height: size,
-                                            depth_or_array_layers: count,
-                                        },
-                                        mip_level_count: levels,
-                                        sample_count: 1,
-                                        dimension: wgpu::TextureDimension::D2,
-                                        format: wgpu::TextureFormat::Rgba8Unorm,
-                                        usage: wgpu::TextureUsages::TEXTURE_BINDING
-                                            | wgpu::TextureUsages::COPY_SRC
-                                            | wgpu::TextureUsages::COPY_DST,
-                                        view_formats: &[],
-                                    },
-                                    wgpu::util::TextureDataOrder::LayerMajor,
-                                    &data,
-                                )
-                            },
-                        )
-                    })
-                    .collect()
-            });
-        let sprite_textures: Vec<wgpu::Texture> = prepared
-            .sprites
-            .into_iter()
-            .enumerate()
-            .map(|(array, (mut mips, levels))| {
-                let first = array as u32 * split;
-                let used = layers.saturating_sub(first).clamp(1, split);
-                let count = array_layers(used, gl);
-                // The extra layers are empty.
-                mips.resize(mips.len() / used as usize * count as usize, 0);
-                mip_levels = levels;
-                device.create_texture_with_data(
-                    &queue,
-                    &wgpu::TextureDescriptor {
-                        label: Some("Block sprites"),
-                        size: wgpu::Extent3d {
-                            width: sprite_size,
-                            height: sprite_size,
-                            depth_or_array_layers: count,
-                        },
-                        mip_level_count: levels,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        usage: wgpu::TextureUsages::TEXTURE_BINDING
-                            | wgpu::TextureUsages::COPY_DST
-                            // Shader packs' atlas copies them (pack_atlas.rs).
-                            | wgpu::TextureUsages::COPY_SRC
-                            | wgpu::TextureUsages::STORAGE_BINDING,
-                        view_formats: &[],
-                    },
-                    wgpu::util::TextureDataOrder::LayerMajor,
-                    &mips,
-                )
-            })
+            .map(|maps| sprite_upload::pbr_textures(&device, &queue, &sprite_layout, maps, gl));
+        let sprite_textures =
+            sprite_upload::sprite_textures(&device, &queue, prepared.sprites, &sprite_layout, gl);
+        let mip_levels = sprite_textures[0].mip_level_count();
+        let sprite_sizes = sprite_textures.iter().map(wgpu::Texture::width).collect();
+        let sprite_view_levels = sprite_textures
+            .iter()
+            .map(wgpu::Texture::mip_level_count)
             .collect();
         let material_animations = animations
             .iter()
@@ -3834,7 +3591,6 @@ impl Renderer {
         let animations = animate::SpriteAnimator::new(
             &device,
             animations,
-            sprite_size,
             sprite_mips,
             &sprite_textures,
             split,
@@ -5351,7 +5107,6 @@ impl Renderer {
             sprite_textures,
             sprite_unused,
             sprite_views,
-            mip_levels,
             mipmaps: mip_levels - 1,
             terrain_layout: bindings,
             terrain_sprites: sprite_constants.map(|(_, v)| v),
@@ -5371,7 +5126,9 @@ impl Renderer {
             section_copy_bytes: 0,
             shrink_gate: ShrinkGate::default(),
             lightmap_uploaded: false,
-            sprite_minimum_size,
+            sprite_layout,
+            sprite_sizes,
+            sprite_view_levels,
             sprite_native: sprite_mips.iter().map(|s| s.native_size).collect(),
             mipmap_option: 4,
             indices,
@@ -7713,12 +7470,6 @@ impl Renderer {
         }
         if self.pack_atlas.is_none() {
             let mut encoder = self.device.create_command_encoder(&Default::default());
-            let layers = self
-                .sprite_textures
-                .iter()
-                .map(|t| t.depth_or_array_layers())
-                .sum();
-            let sprite = self.sprite_textures[0].width();
             // Vanilla's padding counts the anisotropy bit only with anisotropic filtering.
             let anisotropy_bit = if self.texture_filtering == 2 {
                 u32::from(self.max_anisotropy).trailing_zeros()
@@ -7731,8 +7482,7 @@ impl Renderer {
                         &self.device,
                         &mut encoder,
                         &self.sprite_textures,
-                        self.sprite_split,
-                        sprite,
+                        &self.sprite_layout,
                         &self.sprite_native,
                         self.mipmap_option,
                         anisotropy_bit,
@@ -7750,8 +7500,6 @@ impl Renderer {
                     &mut encoder,
                     &self.sprite_textures,
                     self.sprite_split,
-                    layers,
-                    sprite,
                 )
             });
             if let Some(atlas) = &mut atlas {
@@ -7761,7 +7509,7 @@ impl Renderer {
                 let maps = self.pbr_maps.as_ref()?;
                 let make = |kind: usize, encoder: &mut wgpu::CommandEncoder| {
                     let arrays: Vec<_> = maps.iter().map(|pair| pair[kind].clone()).collect();
-                    colour.material_for(&self.device, encoder, &arrays, layers)
+                    colour.material_for(&self.device, encoder, &arrays)
                 };
                 Some([make(0, &mut encoder)?, make(1, &mut encoder)?])
             });
@@ -7869,7 +7617,7 @@ impl Renderer {
         self.sprite_views = sprite_views(
             &self.sprite_textures,
             &self.sprite_unused,
-            Some(self.mipmaps + 1),
+            Some(&self.sprite_view_levels),
         );
         self.group = terrain_group(
             &self.device,
@@ -7914,16 +7662,18 @@ impl Renderer {
     /// reduced copies (0: none).
     pub fn set_mipmap_levels(&mut self, levels: u32) {
         self.mipmap_option = levels;
-        let levels = crate::sprites::sprite_mipmap_limit(
-            levels,
-            self.sprite_textures[0].width(),
-            self.sprite_minimum_size,
-            self.mip_levels,
-        );
-        if levels == self.mipmaps {
+        let shown: Vec<u32> = (self.sprite_textures.iter().zip(&self.sprite_layout.arrays))
+            .map(|(t, a)| {
+                let available = t.mip_level_count();
+                crate::sprites::sprite_mipmap_limit(levels, t.width(), a.minimum_size, available)
+                    + 1
+            })
+            .collect();
+        if shown == self.sprite_view_levels {
             return;
         }
-        self.mipmaps = levels;
+        self.mipmaps = shown[0] - 1;
+        self.sprite_view_levels = shown;
         self.rebuild_terrain_group();
     }
     /// The views `render` draws `frame` from.
@@ -12022,6 +11772,7 @@ impl Renderer {
                             views: &self.sprite_views,
                             split: self.sprite_split,
                             size: self.sprite_textures[0].width(),
+                            sizes: &self.sprite_sizes,
                             nearest: &self.sprite_nearest,
                             filtered: &self.sprite_sampler,
                         },
@@ -15183,15 +14934,13 @@ mod sprite_upload_tests {
         let expected = mip_chain(&pixels, size, &settings, 0, layers);
         // A partial final array and an exact boundary exercise the global
         // layer offset used to select each sprite's mipmap settings.
+        let cut = |split: u32| {
+            let all = crate::sprites::SpriteLayout::uniform(size, layers);
+            let layout = all.resplit(split).unwrap();
+            PreparedTextures::new(&pixels, &layout, &settings, (&border, size))
+        };
         for split in [1, 2, 5, 8] {
-            let prepared = PreparedTextures::with_split(
-                &pixels,
-                size,
-                layers,
-                &settings,
-                (&border, size),
-                split,
-            );
+            let prepared = cut(split);
             assert_eq!(prepared.sprites.len(), layers.div_ceil(split) as usize);
             let actual: Vec<_> = prepared
                 .sprites
@@ -15205,24 +14954,9 @@ mod sprite_upload_tests {
             assert_eq!(prepared.forcefield, mip_chain(&border, size, &[], 0, 1));
             // Chains cut before the adapter was known, cut again for it.
             for to in [1, 2, 3, 5, 8] {
-                let direct = PreparedTextures::with_split(
-                    &pixels,
-                    size,
-                    layers,
-                    &settings,
-                    (&border, size),
-                    to,
-                );
-                let resplit = PreparedTextures::with_split(
-                    &pixels,
-                    size,
-                    layers,
-                    &settings,
-                    (&border, size),
-                    split,
-                )
-                .resplit(layers, to);
-                assert_eq!(resplit.split, to);
+                let direct = cut(to);
+                let resplit = cut(split).resplit(to);
+                assert_eq!(resplit.layout, direct.layout);
                 assert_eq!(resplit.sprites, direct.sprites, "{split} -> {to}");
             }
         }

@@ -27,7 +27,7 @@ fn mid_tex_coord_follows_each_quads_mapped_corners() {
         view_formats: &[],
     });
     let mut encoder = device.create_command_encoder(&Default::default());
-    let atlas = PackAtlas::new(&device, &mut encoder, &[texture], 5, 5, 16).unwrap();
+    let atlas = PackAtlas::new(&device, &mut encoder, &[texture], 5).unwrap();
     queue.submit([encoder.finish()]);
     // Each row uses a different atlas cell. Expected atlas coordinates are independent
     // numbers, including the existing clamp of a model UV beyond the sprite's edge.
@@ -135,8 +135,16 @@ fn flat_draws_map_uvs_onto_a_stitched_sprite() {
     let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
     let array = super::tests::upscaled_array(&device, &queue, &[2, 4, 1]);
     let mut encoder = device.create_command_encoder(&Default::default());
-    let atlas =
-        PackAtlas::stitched(&device, &mut encoder, &[array], 3, 4, &[2, 4, 1], 0, 0).unwrap();
+    let atlas = PackAtlas::stitched(
+        &device,
+        &mut encoder,
+        &[array],
+        &super::tests::layout(3, 4),
+        &[2, 4, 1],
+        0,
+        0,
+    )
+    .unwrap();
     queue.submit([encoder.finish()]);
     let whole = [[0., 0.], [1., 0.], [1., 1.], [0., 1.]];
     let positions = [[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.]];
@@ -198,7 +206,7 @@ fn terrain_vertices_go_down_to_the_32768th_below_them() {
         view_formats: &[],
     });
     let mut encoder = device.create_command_encoder(&Default::default());
-    let atlas = PackAtlas::new(&device, &mut encoder, &[texture], 1, 1, 16).unwrap();
+    let atlas = PackAtlas::new(&device, &mut encoder, &[texture], 1).unwrap();
     queue.submit([encoder.finish()]);
     let water = 8.0f32 / 9.0 - 0.001;
     let cases = [

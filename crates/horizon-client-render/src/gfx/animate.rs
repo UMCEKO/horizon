@@ -49,6 +49,8 @@ struct Group {
     /// Its sprite array and its frames, for the CPU.
     array: usize,
     buffer: usize,
+    /// Edge of its array's layers.
+    size: u32,
 }
 
 /// Where the jobs run.
@@ -68,8 +70,6 @@ pub(crate) struct SpriteAnimator {
     sprites: Vec<Sprite>,
     groups: Vec<Group>,
     writer: Writer,
-    /// Edge of the arrays' layers.
-    size: u32,
     /// The layers the last `animate` rewrote, counted over all arrays.
     changed: Vec<u32>,
     /// Whether each sprite layer has an animation.
@@ -153,13 +153,12 @@ impl SpriteAnimator {
             expression: &|_| None,
         }
     }
-    /// `textures` are the sprite arrays, `split` layers each, `size` pixels
-    /// wide; `animations` hold their frames at that size. `compute`: whether
+    /// `textures` are the sprite arrays, `split` layers each, each its own
+    /// size; `animations` hold their frames at their array's. `compute`: whether
     /// the device says it runs compute shaders writing storage textures.
     pub fn new(
         device: &wgpu::Device,
         animations: &[SpriteAnimation],
-        size: u32,
         settings: &[Settings],
         textures: &[wgpu::Texture],
         split: u32,
@@ -184,7 +183,10 @@ impl SpriteAnimator {
             let pixels: Vec<_> = (0..animation.frame_count())
                 .map(|frame| animation.pixels(frame))
                 .collect();
-            let (chains, edge) = source_chains(&pixels, size, settings, animation.layer);
+            let Some(texture) = textures.get((animation.layer / split) as usize) else {
+                continue;
+            };
+            let (chains, edge) = source_chains(&pixels, texture.width(), settings, animation.layer);
             let bytes: u64 = chains.iter().map(|chain| chain.len() as u64).sum();
             if bytes > limit {
                 log::warn!(
@@ -240,6 +242,7 @@ impl SpriteAnimator {
                     jobs: Vec::with_capacity(count * JOB_BYTES),
                     array: array as usize,
                     buffer,
+                    size: textures[array as usize].width(),
                 })
                 .collect();
             return Self {
@@ -249,7 +252,6 @@ impl SpriteAnimator {
                     frames,
                     textures: textures.to_vec(),
                 },
-                size,
                 changed: Vec::new(),
                 is_animated,
                 modes: AnimationModes::new(animations),
@@ -323,6 +325,7 @@ impl SpriteAnimator {
                     jobs: Vec::with_capacity(count * JOB_BYTES),
                     array: array as usize,
                     buffer,
+                    size: texture.width(),
                 }
             })
             .collect();
@@ -330,7 +333,6 @@ impl SpriteAnimator {
             sprites,
             groups,
             writer: Writer::Gpu { jobs, pipeline },
-            size,
             changed: Vec::new(),
             is_animated,
             modes: AnimationModes::new(animations),
@@ -414,7 +416,7 @@ impl SpriteAnimator {
                         let (words, _) = job.as_chunks::<4>();
                         let job: [u32; 5] = std::array::from_fn(|i| u32::from_le_bytes(words[i]));
                         for level in 0..texture.mip_level_count() {
-                            let width = self.size >> level;
+                            let width = group.size >> level;
                             uploads.texture(
                                 encoder,
                                 wgpu::TexelCopyTextureInfo {
@@ -452,7 +454,7 @@ impl SpriteAnimator {
                 continue;
             }
             for (level, bind) in group.levels.iter().enumerate() {
-                let groups = (self.size >> level).div_ceil(WORKGROUP);
+                let groups = (group.size >> level).div_ceil(WORKGROUP);
                 pass.set_bind_group(0, bind, &[]);
                 pass.dispatch_workgroups(groups, groups, count);
             }
@@ -960,7 +962,7 @@ mod tests {
             })
             .collect();
         let mut animator =
-            SpriteAnimator::new(&device, &animations, size, &mips, &textures, split, compute);
+            SpriteAnimator::new(&device, &animations, &mips, &textures, split, compute);
         let mut uploads = Uploads::new(&device);
         let mut writes = Vec::new();
         for tick in [0, 0, 1, 2, 3, 4, 7, 7, 12, 30] {
@@ -1026,8 +1028,25 @@ mod tests {
                 crate::sprites::test_frames(layer, frames, metadata)
             })
             .collect();
-        // Construct with CPU writer (empty textures is fine for collect testing)
-        let mut animator = SpriteAnimator::new(&device, &animations, size, &mips, &[], 2, false);
+        let textures: Vec<_> = (0..3)
+            .map(|_| {
+                device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d {
+                        width: size,
+                        height: size,
+                        depth_or_array_layers: 2,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                })
+            })
+            .collect();
+        let mut animator = SpriteAnimator::new(&device, &animations, &mips, &textures, 2, false);
         assert!(animator.is_animated(1));
         assert!(!animator.is_animated(2));
         assert!(animator.is_animated(3));

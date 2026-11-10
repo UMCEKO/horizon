@@ -42,6 +42,20 @@ fn texel(array: u32, at: vec2<i32>, layer: i32) -> vec4<f32> {
     }
 }
 
+// Each array keeps its own sprites' size (sprites.rs).
+fn dimensions(array: u32) -> vec2<i32> {
+    switch array {
+        case 0u: { return vec2<i32>(textureDimensions(sprites)); }
+        case 1u: { return vec2<i32>(textureDimensions(sprites_1)); }
+        case 2u: { return vec2<i32>(textureDimensions(sprites_2)); }
+        case 3u: { return vec2<i32>(textureDimensions(sprites_3)); }
+        case 4u: { return vec2<i32>(textureDimensions(sprites_4)); }
+        case 5u: { return vec2<i32>(textureDimensions(sprites_5)); }
+        case 6u: { return vec2<i32>(textureDimensions(sprites_6)); }
+        default: { return vec2<i32>(textureDimensions(sprites_7)); }
+    }
+}
+
 @vertex fn vs_stats(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
     return vec4(p * 2.0 - 1.0, 0.0, 1.0);
@@ -50,8 +64,7 @@ fn texel(array: u32, at: vec2<i32>, layer: i32) -> vec4<f32> {
 @fragment fn fs_stats(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let layer = i32(pos.x);
     let array = u32(pos.y);
-    // Every array holds sprites of the same size.
-    let size = vec2<i32>(textureDimensions(sprites));
+    let size = dimensions(array);
     var lo = 1.0;
     var hi = 0.0;
     var opaque = false;

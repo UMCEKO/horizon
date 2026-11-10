@@ -76,9 +76,11 @@ pub struct Assets {
 /// The block models and their baked sprites, read from the pack at `root` over
 /// an existing block registry: everything the mesher and renderer need.
 pub struct RenderAssets {
+    /// The largest sprite array's layer side.
     pub sprite_size: u32,
-    pub sprite_minimum_size: u32,
-    /// The block sprites' RGBA, layer by layer: as built until a renderer has
+    /// The block sprite arrays: each its own layer size, LabPBR map size and layers.
+    pub sprite_layout: crate::sprites::SpriteLayout,
+    /// The block sprites' RGBA, array after array: as built until a renderer has
     /// them, then kept compressed ([`SpritePixels`]).
     pub pixels: SpritePixels,
     pub texture_layers: u32,
@@ -94,11 +96,9 @@ pub struct RenderAssets {
     pub translucent_layers: Vec<bool>,
     /// Each layer's `MipmapGenerator` settings.
     pub sprite_mips: Vec<crate::mipmap::Settings>,
-    /// The resource packs' LabPBR maps (normals, specular), layer by layer at `pbr_size`:
-    /// empty when they ship none.
+    /// The packs' LabPBR maps (normals, specular) as `pixels`, at each array's `pbr_size`; or empty.
     pub pbr_normals: Vec<u8>,
     pub pbr_specular: Vec<u8>,
-    pub pbr_size: u32,
     /// OptiFine connected textures (empty without `optifine/ctm` files).
     pub connected: crate::connected::ConnectedTextures,
     /// Fusion connected textures (empty without Fusion's connecting textures and models).
@@ -471,7 +471,7 @@ impl RenderAssets {
         sprites.pixels.shrink_to_fit();
         Ok(Self {
             sprite_size: sprites.size,
-            sprite_minimum_size: sprites.minimum_size,
+            sprite_layout: std::mem::take(&mut sprites.layout),
             texture_layers: u32::try_from(sprites.count())?,
             pixels: SpritePixels::new(sprites.pixels),
             model_catalog: models.catalog,
@@ -485,7 +485,6 @@ impl RenderAssets {
             sprite_mips: sprites.mips,
             pbr_normals: sprites.normals,
             pbr_specular: sprites.specular,
-            pbr_size: sprites.pbr_size,
             connected,
             fusion,
             generation: GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
