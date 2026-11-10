@@ -20,6 +20,7 @@ use crate::{
     biome::{Biomes, GrassModifier},
     blocks::{BlockFacts, RenderShape},
     chunk::{Chunk, MIN_Y},
+    dynamic_models,
     graphics::LeafCullingMode,
     models::catalog::BakedFace,
 };
@@ -636,6 +637,8 @@ fn visibility_rows(open: &[u16; 256]) -> u64 {
     }
     result
 }
+#[cfg(test)]
+mod dynamic_tests;
 #[cfg(test)]
 mod mod_tint_tests;
 #[cfg(test)]
@@ -2174,22 +2177,32 @@ impl Mesher<'_> {
                             );
                         }
                     }
-                    if !state.model {
-                        continue;
-                    }
                     let world = BlockPos::new(center.x * 16 + x, base_y + y, center.z * 16 + z);
-                    if catalog
-                        .models_at(BlockStateId(id), world, &mut models)
-                        .is_err()
-                    {
-                        continue;
+                    // A mod's block entity baked this block's geometry (dynamic_models).
+                    let dynamic = if dynamic_models::is_dynamic(BlockStateId(id)) {
+                        dynamic_models::faces_at([world.x, world.y, world.z], self.render)
+                    } else {
+                        None
+                    };
+                    if dynamic.is_none() {
+                        if !state.model {
+                            continue;
+                        }
+                        if catalog
+                            .models_at(BlockStateId(id), world, &mut models)
+                            .is_err()
+                        {
+                            continue;
+                        }
                     }
                     // ModelBlockRenderer: the first part decides smooth lighting
                     // for all; light-emitting blocks are always lit flat.
-                    let Some(first) = models.first() else {
-                        continue;
+                    let smooth = match (&dynamic, models.first()) {
+                        (Some(_), _) => true,
+                        (None, Some(first)) => first.ambient_occlusion,
+                        (None, None) => continue,
                     };
-                    let ao = self.smooth_lighting && state.emission == 0 && first.ambient_occlusion;
+                    let ao = self.smooth_lighting && state.emission == 0 && smooth;
                     let origin = match offset(state, world.x, world.z) {
                         Some(o) => [
                             x as f32 + o[0] as f32,
@@ -2246,48 +2259,52 @@ impl Mesher<'_> {
                     }
                     let connected = &self.render.connected;
                     let start = [out.solid.len(), out.translucent.len()];
-                    for model in &models {
-                        for face in &model.faces {
-                            if face.quad.cull.is_some_and(|d| !visible[d as usize]) {
+                    let (dynamic_faces, drawn) = match &dynamic {
+                        Some(faces) => (&faces[..], &models[..0]),
+                        None => (&[][..], &models[..]),
+                    };
+                    let faces = dynamic_faces
+                        .iter()
+                        .chain(drawn.iter().flat_map(|model| model.faces.iter()));
+                    for face in faces {
+                        if face.quad.cull.is_some_and(|d| !visible[d as usize]) {
+                            continue;
+                        }
+                        // A pane's top and bottom strips between stacked panes, with
+                        // connected textures.
+                        if state.pane
+                            && !connected.is_empty()
+                            && let Some(dy) = match face.quad.facing {
+                                ModelDirection::Up => Some(1),
+                                ModelDirection::Down => Some(-1),
+                                _ => None,
+                            }
+                        {
+                            let p = &face.quad.positions;
+                            // Only on the block's top or bottom plane: a pack's own pane
+                            // model may have ledges between.
+                            let plane = if dy > 0 { 1.0 } else { 0.0 };
+                            let on_edge = p.iter().all(|v| (v[1] - plane).abs() < 1e-4);
+                            let centre = [0, 2].map(|k| p.iter().map(|v| v[k]).sum::<f32>() / 4.0);
+                            let other =
+                                pad.blocks[(cell as isize + step_index([0, dy, 0])) as usize];
+                            if on_edge && connected.stacked_pane_hides(id, other, centre) {
                                 continue;
                             }
-                            // A pane's top and bottom strips between stacked panes, with
-                            // connected textures.
-                            if state.pane
-                                && !connected.is_empty()
-                                && let Some(dy) = match face.quad.facing {
-                                    ModelDirection::Up => Some(1),
-                                    ModelDirection::Down => Some(-1),
-                                    _ => None,
-                                }
-                            {
-                                let p = &face.quad.positions;
-                                // Only on the block's top or bottom plane: a pack's own pane
-                                // model may have ledges between.
-                                let plane = if dy > 0 { 1.0 } else { 0.0 };
-                                let on_edge = p.iter().all(|v| (v[1] - plane).abs() < 1e-4);
-                                let centre =
-                                    [0, 2].map(|k| p.iter().map(|v| v[k]).sum::<f32>() / 4.0);
-                                let other =
-                                    pad.blocks[(cell as isize + step_index([0, dy, 0])) as usize];
-                                if on_edge && connected.stacked_pane_hides(id, other, centre) {
-                                    continue;
-                                }
-                            }
-                            self.face(
-                                pad,
-                                &mut tints,
-                                &mut out,
-                                [x, y, z],
-                                cell,
-                                origin,
-                                face,
-                                ao,
-                                (id, state),
-                                world,
-                                interior_leaf,
-                            );
                         }
+                        self.face(
+                            pad,
+                            &mut tints,
+                            &mut out,
+                            [x, y, z],
+                            cell,
+                            origin,
+                            face,
+                            ao,
+                            (id, state),
+                            world,
+                            interior_leaf,
+                        );
                     }
                     if self.shader_pack {
                         out.record_source(
@@ -2354,14 +2371,16 @@ impl Mesher<'_> {
             };
             ([lighting::gray(directional); 4], [coords; 4], [1.0f32; 4])
         };
-        let tint = self.tables.tint_at(
-            (id, state),
-            q.tint_index,
-            tints,
-            pos,
-            self.nether_shading,
-            false,
-        );
+        let tint = face.tint.or_else(|| {
+            self.tables.tint_at(
+                (id, state),
+                q.tint_index,
+                tints,
+                pos,
+                self.nether_shading,
+                false,
+            )
+        });
         let tint = match q.color {
             Some(c) => {
                 let t = tint.unwrap_or(0xFF_FFFF);
