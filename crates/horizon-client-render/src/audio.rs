@@ -8,7 +8,7 @@
 use crate::Result;
 use crate::sound_engine::{
     Attenuation, Backend, Bound, ChannelId, InstanceId, PlayResult, SoundEngine, SoundInstance,
-    Sounds, TickContext,
+    Sounds, TickContext, Ticking,
 };
 use crate::sound_events::{Sound, SoundRegistry};
 #[cfg(feature = "audio")]
@@ -2199,6 +2199,54 @@ impl Audio {
         let instance = SoundInstance::for_jukebox_song(&event, at, crate::random_source::create());
         self.play_instance(instance, true).0
     }
+    /// `SoundEngine.play` (or `playDelayed`) of another client in this
+    /// process; the instance is held until `stop_and_release`.
+    pub fn play_external(&mut self, sound: &ExternalSound) -> InstanceId {
+        let event = crate::sound_events::normalize(&sound.event);
+        let random = crate::random_source::create();
+        let attenuation = if sound.linear {
+            Attenuation::Linear
+        } else {
+            Attenuation::None
+        };
+        let mut instance = SoundInstance::new(
+            &event,
+            sound.source.min(SOUND_SOURCE_COUNT - 1),
+            sound.volume,
+            sound.pitch,
+            random,
+            sound.looping,
+            sound.delay,
+            attenuation,
+            sound.position,
+            sound.relative,
+        );
+        instance.can_start_silent = sound.can_start_silent;
+        if sound.tickable {
+            instance.ticking = Ticking::Native;
+        }
+        self.sync_volumes();
+        if sound.delay > 0 && !sound.looping {
+            let id = self.engine.add(instance, true);
+            self.engine.play_delayed(id, sound.delay);
+            id
+        } else {
+            self.play_instance(instance, true).0
+        }
+    }
+    /// A tickable external sound's new volume, pitch and position, which the
+    /// engine's next tick gives its channel.
+    pub fn update_external(&mut self, id: InstanceId, volume: f32, pitch: f32, at: [f64; 3]) {
+        if let Some(instance) = self.engine.instance_mut(id) {
+            instance.volume = volume;
+            instance.pitch = pitch;
+            instance.position = at;
+        }
+    }
+    /// Whether an external sound still plays or waits to.
+    pub fn external_playing(&self, id: InstanceId) -> bool {
+        self.engine.is_playing_or_queued(id)
+    }
     /// Stop and drop a held instance.
     pub fn stop_and_release(&mut self, id: InstanceId) {
         self.stop_instance(id);
@@ -2281,6 +2329,24 @@ impl Audio {
         self.backend.live = true;
     }
 }
+const SOUND_SOURCE_COUNT: usize = crate::settings::SOUND_SOURCES.len();
+
+/// What another client's `SoundEngine.play` hands Horizon's engine.
+#[derive(Clone, Debug)]
+pub struct ExternalSound {
+    pub event: String,
+    pub source: usize,
+    pub volume: f32,
+    pub pitch: f32,
+    pub position: [f64; 3],
+    pub looping: bool,
+    pub delay: i32,
+    pub linear: bool,
+    pub relative: bool,
+    pub can_start_silent: bool,
+    pub tickable: bool,
+}
+
 impl Sounds for Audio {
     fn engine(&mut self) -> &mut SoundEngine {
         &mut self.engine
@@ -2430,6 +2496,43 @@ mod tests {
             seed,
         );
         assert_eq!(audio.random.next_long(), expected.next_long());
+    }
+
+    #[test]
+    fn an_external_tickable_sound_takes_its_updates_and_stops_when_told() {
+        const BLOCKS: usize = 4;
+        let mut audio = Audio::silent(&ResourceSource::indexed(Default::default()));
+        audio.engine.registry.add_file(
+            "mekanism",
+            br#"{"tile.machine.metallurgic_infuser":{"sounds":["tile/machine/infuser"]}}"#,
+            &|_, _| true,
+        );
+        audio.engine.loaded = true;
+        audio.backend.live = true;
+        let id = audio.play_external(&ExternalSound {
+            event: "mekanism:tile.machine.metallurgic_infuser".into(),
+            source: BLOCKS,
+            volume: 0.5,
+            pitch: 1.0,
+            position: [1.5, 64.5, 2.5],
+            looping: true,
+            delay: 0,
+            linear: true,
+            relative: false,
+            can_start_silent: true,
+            tickable: true,
+        });
+        let instance = audio.engine.instance(id).expect("held until released");
+        assert_eq!(instance.ticking, Ticking::Native);
+        assert_eq!(instance.source, BLOCKS);
+        assert!(audio.external_playing(id));
+        audio.update_external(id, 0.25, 1.5, [3.0, 65.0, 4.0]);
+        let instance = audio.engine.instance(id).expect("still held");
+        assert_eq!((instance.volume, instance.pitch), (0.25, 1.5));
+        assert_eq!(instance.position, [3.0, 65.0, 4.0]);
+        audio.stop_and_release(id);
+        let mixer = audio.backend.mixer.lock().unwrap();
+        assert!(mixer.channels.values().all(|c| c.state == State::Stopped));
     }
 
     #[test]

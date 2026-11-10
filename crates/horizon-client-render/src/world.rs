@@ -137,6 +137,9 @@ pub struct World {
     /// The moving-piston block entities of the level, by position, copied
     /// from the block ticks after each tick: collision and rendering read them.
     pub moving_pistons: Vec<([i32; 3], horizon_world::piston_shape::MovingPistonState)>,
+    /// Mods' `getCollisionShape(level, pos)` answers that read the block entity, each for the state it was made for.
+    pub block_entity_shapes:
+        FxHashMap<[i32; 3], (BlockStateId, horizon_core::geometry::VoxelShape)>,
     /// The `ShulkerBoxBlockEntity` lid state of the level, by position, copied
     /// from the block entities after each tick: the collision queries read it
     /// (`ShulkerBoxBlockEntity.getBoundingBox`), as `moving_pistons` for pistons.
@@ -268,6 +271,7 @@ impl World {
             light_log: None,
             moving_piston_fallback: Vec::new(),
             moving_pistons: Vec::new(),
+            block_entity_shapes: FxHashMap::default(),
             shulkers: FxHashMap::default(),
             pois: Default::default(),
         }
@@ -358,6 +362,15 @@ impl World {
     /// Resident storage write; marks the touched sections (and neighbours on
     /// section borders) for remeshing and the surrounding chunks for relighting.
     /// Neighbour updates, drops and block entities belong to the gameplay layer.
+    /// Remeshes the section holding this block when its model changed without a block write.
+    pub fn mark_block_dirty(&mut self, x: i32, y: i32, z: i32) {
+        let Some(chunk) = self.chunks.get(&(x >> 4, z >> 4)) else {
+            return;
+        };
+        if let Some(sy) = chunk.section_index(y) {
+            self.dirty_sections.insert((x >> 4, sy as i32, z >> 4));
+        }
+    }
     pub fn set(&mut self, x: i32, y: i32, z: i32, state: BlockStateId) -> crate::Result<()> {
         self.set_with_notification(x, y, z, state, true)
     }

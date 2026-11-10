@@ -62,6 +62,21 @@ pub struct ChunkMap {
     /// included) are resident; absent when none is. `surrounded` asks one
     /// map instead of nine every tick, for every ticking chunk.
     near: FxHashMap<Key, u8>,
+    watch: Option<Watch>,
+}
+
+/// The keys written since a watcher last took them, or that everything was.
+#[derive(Default)]
+struct Watch {
+    touched: Vec<Key>,
+    all: bool,
+}
+
+/// What a watcher must re-read: everything of a map it has not seen, every column, or only these keys.
+pub enum Touched {
+    Fresh,
+    All,
+    Keys(Vec<Key>),
 }
 impl Default for ChunkMap {
     fn default() -> Self {
@@ -74,6 +89,7 @@ impl Default for ChunkMap {
             fresh: FxHashSet::default(),
             attachment_observer: None,
             near: FxHashMap::default(),
+            watch: None,
         }
     }
 }
@@ -123,6 +139,7 @@ impl ChunkMap {
 
     /// The live map, rebound after extras COW but never merely for lighting COW.
     pub fn attachments_mut(&mut self, key: &Key) -> Result<&mut Attachments, AttachmentError> {
+        self.touch(*key);
         let chunk = self
             .columns
             .get_mut(key)
@@ -137,6 +154,29 @@ impl ChunkMap {
         Ok(&mut saved.attachments)
     }
 
+    fn touch(&mut self, key: Key) {
+        if let Some(watch) = &mut self.watch
+            && !watch.all
+            && watch.touched.last() != Some(&key)
+        {
+            watch.touched.push(key);
+        }
+    }
+    /// Starts logging writes on the first call; later calls return what was written since.
+    pub fn take_touched(&mut self) -> Touched {
+        match &mut self.watch {
+            None => {
+                self.watch = Some(Watch::default());
+                Touched::Fresh
+            }
+            Some(watch) if watch.all => {
+                watch.all = false;
+                watch.touched.clear();
+                Touched::All
+            }
+            Some(watch) => Touched::Keys(std::mem::take(&mut watch.touched)),
+        }
+    }
     pub fn membership_revision(&self) -> u64 {
         self.revision
     }
@@ -219,6 +259,7 @@ impl ChunkMap {
             self.fresh.remove(&key);
         }
         let previous = self.columns.insert(key, chunk);
+        self.touch(key);
         if previous.is_none() {
             for z in key.1 - 1..=key.1 + 1 {
                 for x in key.0 - 1..=key.0 + 1 {
@@ -233,6 +274,7 @@ impl ChunkMap {
     pub fn remove(&mut self, key: &Key) -> Option<Arc<Chunk>> {
         self.fresh.remove(key);
         let previous = self.columns.remove(key);
+        self.touch(*key);
         if previous.is_some() {
             if let Some(observer) = &self.attachment_observer {
                 observer.unload(Holder::Chunk([key.0, key.1]));
@@ -253,6 +295,9 @@ impl ChunkMap {
         previous
     }
     pub fn clear(&mut self) {
+        if let Some(watch) = &mut self.watch {
+            watch.all = true;
+        }
         if !self.columns.is_empty() {
             self.unload_attachments();
             self.columns.clear();
@@ -291,9 +336,13 @@ impl ChunkMap {
         self.fresh.remove(key);
     }
     pub fn get_mut(&mut self, key: &Key) -> Option<&mut Arc<Chunk>> {
+        self.touch(*key);
         self.columns.get_mut(key)
     }
     pub fn values_mut(&mut self) -> ValuesMut<'_, Key, Arc<Chunk>> {
+        if let Some(watch) = &mut self.watch {
+            watch.all = true;
+        }
         self.columns.values_mut()
     }
 }
@@ -315,6 +364,7 @@ impl crate::light::LightWorld for ChunkMap {
         self.columns.section(cx, s, cz)
     }
     fn set_section_light(&mut self, cx: i32, s: usize, cz: i32, light: crate::chunk::Light) {
+        self.touch((cx, cz));
         self.columns.set_section_light(cx, s, cz, light);
     }
     fn layout(&self) -> crate::chunk::ColumnLayout {
@@ -558,6 +608,20 @@ mod tests {
         assert_eq!(*drops.lock().unwrap(), [true; 3]);
     }
 
+    #[test]
+    fn a_watcher_takes_only_the_columns_written_since_its_last_take() {
+        let mut map = ChunkMap::default();
+        map.insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        assert!(matches!(map.take_touched(), Touched::Fresh));
+        assert!(matches!(map.take_touched(), Touched::Keys(k) if k.is_empty()));
+        map.insert((1, 0), Arc::new(Chunk::empty(1, 0)));
+        Arc::make_mut(map.get_mut(&(0, 0)).unwrap()).lit = true;
+        map.remove(&(1, 0));
+        assert!(matches!(map.take_touched(), Touched::Keys(k) if k == [(1, 0), (0, 0), (1, 0)]));
+        map.clear();
+        assert!(matches!(map.take_touched(), Touched::All));
+        assert!(matches!(map.take_touched(), Touched::Keys(k) if k.is_empty()));
+    }
     #[test]
     fn membership_tokens_track_keys_and_map_replacement_only() {
         let mut map = ChunkMap::default();

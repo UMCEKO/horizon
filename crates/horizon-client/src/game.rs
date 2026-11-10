@@ -8930,16 +8930,13 @@ impl Game<'_> {
                 self.experience_recent(),
             );
             use horizon_client::locator_bar::ContextualBar;
-            // The mount's hearts.
-            let vehicle_hearts = if spectator {
-                0
-            } else {
-                self.draw_mount_hud(&mut batch, wi, hi)
-            };
+            let mount = (!spectator).then(|| self.mount_hearts()).flatten();
+            let vehicle_hearts = mount.map_or(0, |(hearts, _)| hearts);
             let (visual_ticks, visual_millis) = (self.visual_ticks(), self.visual_millis());
             let kind = (!self.creative && !spectator)
                 .then(|| self.player_heart_kind())
                 .flatten();
+            let mut health = None;
             if let Some(kind) = kind
                 && let Some(p) = &mut self.player
             {
@@ -8969,33 +8966,12 @@ impl Game<'_> {
                     under_water,
                     vehicle_hearts,
                 };
-                let at = [p.position.x, p.position.y, p.position.z];
-                // The native mods' health HUD (`native_health_hud`): a mod
-                // that answers draws every row instead.
+                // A native mod's `health_hud` answer draws every row instead.
                 let mut native_health_hud = None;
                 self.native_health_hud(&inputs, wi, hi, &mut native_health_hud);
-                let draws = match native_health_hud {
-                    Some(draws) => draws,
-                    None => self.health_hud.layout(&inputs, wi, hi),
-                };
-                // The rows draw in one pass here, so a mod's `player_health`
-                // layer stands for the armor, food and air rows too.
-                self.gui_layer("minecraft:player_health", &mut batch, |g, batch| {
-                    hud_layout::paint(batch, &g.gui.atlas, &draws);
-                });
-                // Hud.playAirBubblePoppedSound: Player.playSound (PLAYERS), heard
-                // by this client only.
-                if let Some((volume, pitch)) = self.health_hud.bubble_pop_sound.take() {
-                    let players = horizon_client::settings::SOUND_SOURCES
-                        .iter()
-                        .position(|s| *s == "player")
-                        .unwrap_or(0);
-                    let capture = self.audio.capture.take();
-                    self.audio
-                        .play_on(players, "ui.hud.bubble_pop", Some(at), volume, pitch);
-                    self.audio.capture = capture;
-                }
+                health = Some((inputs, native_health_hud));
             }
+            self.draw_player_bars(&mut batch, health, mount, (wi, hi));
             // After the health rows (Hud.extractHotbarAndDecorations): jump, locator or XP bar.
             self.gui_layer("minecraft:contextual_info_bar", &mut batch, |g, batch| {
                 if contextual == ContextualBar::JumpableVehicle {
