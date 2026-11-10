@@ -2129,7 +2129,8 @@ mod tests {
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
         let facts = BlockFacts::load(&root, assets.registry).unwrap();
-        let biomes = Biomes::load(&root).unwrap();
+        let biomes = Biomes::load(&crate::resource_source::ResourceRoot::directory(root.clone()))
+            .unwrap();
         let collision = crate::collisions::load(&root, assets.registry).unwrap();
         let tables = AnimateTables::load(&root, assets.registry, &biomes).unwrap();
         let torch = assets.registry.default_state("minecraft:torch").unwrap();
@@ -2194,8 +2195,10 @@ mod tests {
     }
     fn picks(tables: &AnimateTables, ctx: &AnimateContext) -> (Vec<(T, [f64; 3], [f64; 3])>, i32) {
         let mut engine = ParticleEngine::new(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../.local/horizon-client/26.3"),
+            &crate::resource_source::ResourceSource::directory(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client/26.3"),
+            ),
             &std::collections::HashMap::new(),
             &Default::default(),
         );
