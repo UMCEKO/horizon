@@ -939,6 +939,76 @@ Turn off a mod the browser installed; it stays installed (in a Java instance, as
 
 MCP: `mods_disable`.
 
+## `horizon-launcher java-mods status`
+
+The chosen mod folder, whether the install is ready, and whether Play uses it.
+
+    horizon-launcher java-mods status
+
+MCP: `java_mods_status`.
+
+## `horizon-launcher java-mods pack`
+
+Choose the folder of NeoForge 26.3 mod jars (and a JDK 25 home, instead of Temurin).
+
+    horizon-launcher java-mods pack <FOLDER>
+
+- `FOLDER`
+- `--java`: A JDK 25 home to run on; `default` goes back to downloading Temurin
+
+MCP: `java_mods_pack`.
+
+## `horizon-launcher java-mods install`
+
+Install or update: Java 25, NeoForge's libraries, the mod jars and the game's host jars (downloads are kept, a second run fetches nothing it has).
+
+    horizon-launcher java-mods install
+
+- `--pack`: The mod folder, chosen as `pack` would
+- `--java`: A JDK 25 home to run on, chosen as `pack --java` would
+
+MCP: `java_mods_install`.
+
+## `horizon-launcher java-mods server`
+
+Run a server hosted with `servers` (its name) with the installed mods, or not: `on` or `off`.
+
+    horizon-launcher java-mods server <SERVER> <STATE>
+
+- `SERVER`
+- `STATE` (on, off)
+
+MCP: `java_mods_server`.
+
+## `horizon-launcher java-mods enable`
+
+Make Play start the game with the installed mods.
+
+    horizon-launcher java-mods enable
+
+MCP: `java_mods_enable`.
+
+## `horizon-launcher java-mods disable`
+
+Make Play start the game without them again.
+
+    horizon-launcher java-mods disable
+
+MCP: `java_mods_disable`.
+
+## `horizon-launcher java-mods launch`
+
+Start the game with the mods in this terminal; `--dedicated` runs a server.
+
+    horizon-launcher java-mods launch
+
+- `--dedicated`: Run a dedicated server in `--dir` instead of the client
+- `--dir`: The server's folder (default: the launcher's server folder)
+- `--accept-eula`: Agree to the Minecraft EULA (https://aka.ms/MinecraftEULA) for the server
+- `--arg`: An extra argument for the game, passed through as-is (repeatable)
+
+MCP: none: the player's switch.
+
 ## `horizon-launcher rust status`
 
 Whether it is installed, its version and whether this computer can link with it.

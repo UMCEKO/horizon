@@ -1384,6 +1384,7 @@ impl Launcher {
                     self.native_step = Some(step);
                     self.native_progress = Some(progress);
                 }
+                Msg::JavaModsStep(..) | Msg::JavaModsDone(..) => {} // the Java mods page (LA-page) shows these
                 Msg::Native(result) => {
                     // The last step of a build that worked says how it went.
                     let last = self.native_step.take();

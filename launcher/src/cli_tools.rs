@@ -22,6 +22,7 @@ const NOT_TOOLS: &[&str] = &[
     "mods update-github",
     "play",
     "server",
+    "java-mods launch",
     "account sign-in",
     "account list",
     "account session",

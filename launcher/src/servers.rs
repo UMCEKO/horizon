@@ -355,6 +355,10 @@ pub fn command(dir: &Path, args: &[&str]) -> Result<Command, String> {
     )?;
     let mut cmd = crate::process::command(program);
     cmd.arg("--dir").arg(dir).args(args);
+    if crate::java_mods::server_enabled(dir) {
+        let tag = crate::backend::resolve_version(None)?;
+        cmd.envs(crate::java_mods::server_env(&tag, dir)?);
+    }
     Ok(cmd)
 }
 

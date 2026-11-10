@@ -54,6 +54,59 @@ enum JavaCmd {
     Install { java: String },
 }
 #[derive(Subcommand)]
+enum JavaModsCmd {
+    /// The chosen mod folder, whether the install is ready, and whether Play uses it
+    Status,
+    /// Choose the folder of NeoForge 26.3 mod jars (and a JDK 25 home, instead of Temurin)
+    Pack {
+        folder: PathBuf,
+        /// A JDK 25 home to run on; `default` goes back to downloading Temurin
+        #[arg(long)]
+        java: Option<String>,
+    },
+    /// Install or update: Java 25, NeoForge's libraries, the mod jars and the game's host jars
+    /// (downloads are kept, a second run fetches nothing it has)
+    Install {
+        /// The mod folder, chosen as `pack` would
+        #[arg(long)]
+        pack: Option<PathBuf>,
+        /// A JDK 25 home to run on, chosen as `pack --java` would
+        #[arg(long)]
+        java: Option<String>,
+        /// The installed game version whose host jars are used (default: the selected one)
+        #[arg(long)]
+        version: Option<String>,
+    },
+    /// Run a server hosted with `servers` (its name) with the installed mods, or not: `on` or `off`
+    Server {
+        server: String,
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
+    /// Make Play start the game with the installed mods
+    Enable,
+    /// Make Play start the game without them again
+    Disable,
+    /// Start the game with the mods in this terminal; `--dedicated` runs a server
+    Launch {
+        #[arg(long)]
+        version: Option<String>,
+        /// Run a dedicated server in `--dir` instead of the client
+        #[arg(long)]
+        dedicated: bool,
+        /// The server's folder (default: the launcher's server folder)
+        #[arg(long, requires = "dedicated")]
+        dir: Option<PathBuf>,
+        /// Agree to the Minecraft EULA (https://aka.ms/MinecraftEULA) for the server
+        #[arg(long, requires = "dedicated")]
+        accept_eula: bool,
+        /// An extra argument for the game, passed through as-is (repeatable)
+        #[arg(long = "arg", value_name = "ARG", allow_hyphen_values = true)]
+        arg: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum RustCmd {
     /// Whether it is installed, its version and whether this computer can link with it
     Status,
@@ -968,6 +1021,11 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<ModsCmd>,
     },
+    /// Java mods (docs/launcher-commands.md): play and host with a folder of NeoForge 26.3 mod jars
+    JavaMods {
+        #[command(subcommand)]
+        action: Option<JavaModsCmd>,
+    },
     /// The portable Rust toolchain native mods compile with (docs/modding/src/how-to/native-mods.md): the launcher's
     /// own, in its data folder, never installed on the system
     Rust {
@@ -1534,11 +1592,12 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
                 ),
                 None => None,
             };
-            let mut cmd = backend::client_as(
-                &instance.resolve_version(version.as_deref())?,
-                who.as_deref(),
-            )?;
+            let tag = instance.resolve_version(version.as_deref())?;
+            let mut cmd = backend::client_as(&tag, who.as_deref())?;
             instances::apply(&mut cmd, &instance)?;
+            if horizon_launcher::java_mods::Config::load().enabled {
+                horizon_launcher::java_mods::apply(&mut cmd, &tag, false, None)?;
+            }
             if let Some(code) = join {
                 backend::join_friend(&mut cmd, &code)?;
             }
@@ -1811,7 +1870,134 @@ fn execute(command: Cmd, as_json: bool) -> Result<i32, String> {
         Cmd::Servers { action } => servers(action.unwrap_or(ServersCmd::List), as_json)?,
         Cmd::Rust { action } => rust(action.unwrap_or(RustCmd::Status), as_json)?,
         Cmd::Java { action } => java(action.unwrap_or(JavaCmd::List), as_json)?,
+        Cmd::JavaMods { action } => {
+            return java_mods(action.unwrap_or(JavaModsCmd::Status), as_json);
+        }
         Cmd::Mcp => unreachable!(),
+    }
+    Ok(0)
+}
+
+/// The game version whose host jars an install uses: the one asked for, else the selected one.
+fn java_mods_version(requested: Option<&str>) -> Result<String, String> {
+    backend::resolve_version(requested)
+}
+
+fn java_mods(action: JavaModsCmd, as_json: bool) -> Result<i32, String> {
+    use horizon_launcher::java_mods::{self as mods, Config};
+    let choose = |config: &mut Config, pack: Option<PathBuf>, java: Option<String>| {
+        if let Some(pack) = pack {
+            if !pack.is_dir() {
+                return Err(trf(
+                    "{path} is not a folder.",
+                    &[("path", &pack.display().to_string())],
+                ));
+            }
+            config.pack = Some(std::fs::canonicalize(&pack).map_err(|e| e.to_string())?);
+        }
+        match java.as_deref() {
+            Some("default") => config.java = None,
+            Some(home) => config.java = Some(mods::jdk::given(Path::new(home))?),
+            None => {}
+        }
+        config.save()
+    };
+    let report = |as_json: bool| {
+        let status = mods::Status::now();
+        if as_json {
+            json(serde_json::to_value(&status).unwrap());
+        } else {
+            println!("{}", status.say());
+            if let Some(pack) = &status.pack {
+                println!(
+                    "{}",
+                    trf(
+                        "Mod folder: {path}",
+                        &[("path", &pack.display().to_string())]
+                    )
+                );
+            }
+            println!(
+                "{}",
+                trf(
+                    "Play uses it: {answer}",
+                    &[("answer", tr(if status.enabled { "yes" } else { "no" }))]
+                )
+            );
+        }
+    };
+    match action {
+        JavaModsCmd::Status => report(as_json),
+        JavaModsCmd::Pack { folder, java } => {
+            let mut config = Config::load();
+            choose(&mut config, Some(folder), java)?;
+            report(as_json);
+        }
+        JavaModsCmd::Install {
+            pack,
+            java,
+            version,
+        } => {
+            let mut config = Config::load();
+            choose(&mut config, pack, java)?;
+            let tag = java_mods_version(version.as_deref())?;
+            let last = std::cell::RefCell::new(String::new());
+            let say = |label: &str, fraction: Option<f32>| {
+                let mut last = last.borrow_mut();
+                if *last != label {
+                    eprintln!("{label}");
+                    *last = label.to_string();
+                }
+                let _ = fraction;
+            };
+            let status = mods::install(&tag, &say)?;
+            if as_json {
+                json(serde_json::to_value(&status).unwrap());
+            } else {
+                println!("{}", status.say());
+            }
+        }
+        JavaModsCmd::Server { server, state } => {
+            let entry = horizon_launcher::servers::list()
+                .into_iter()
+                .find(|e| e.name == server)
+                .ok_or_else(|| trf("No server named {server}.", &[("server", &server)]))?;
+            mods::set_server(&entry.dir, state == "on")?;
+            println!(
+                "{}",
+                trf(
+                    "{name}: Java mods {state}. Restart the server to apply.",
+                    &[("name", &entry.name), ("state", &state)]
+                )
+            );
+        }
+        JavaModsCmd::Enable | JavaModsCmd::Disable => {
+            let mut config = Config::load();
+            config.enabled = matches!(action, JavaModsCmd::Enable);
+            config.save()?;
+            report(as_json);
+        }
+        JavaModsCmd::Launch {
+            version,
+            dedicated,
+            dir,
+            accept_eula,
+            arg,
+        } => {
+            let tag = java_mods_version(version.as_deref())?;
+            let mut cmd = if dedicated {
+                let dir = backend::server_dir(dir);
+                let mut cmd = backend::server(&tag, &dir, accept_eula)?;
+                mods::apply(&mut cmd, &tag, true, Some(&dir))?;
+                cmd
+            } else {
+                let mut cmd = backend::client(&tag)?;
+                mods::apply(&mut cmd, &tag, false, None)?;
+                cmd
+            };
+            cmd.args(arg);
+            return attached(cmd);
+        }
     }
     Ok(0)
 }
