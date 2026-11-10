@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Dev only: compares the Rust mod analysis (crates/horizon-java-analysis) with the Python it ports, stage by stage.
 
-    python3 tools/java_analysis_compare.py classes --install DIR [--bin PATH]
+    python3 tools/java_analysis_compare.py classes|libraries|jars --install DIR [--bin PATH]
 
-Writes only into a temp folder. Prints `N classes, M differences` and the first 20 differences; exits 1 on any.
+Writes only into a temp folder. Prints `N <units>, M differences` and the first 20 differences; exits 1 on any.
 """
 import argparse
 import json
@@ -108,15 +108,60 @@ def compare_classes(install, binary):
     return classes, found
 
 
+def rust_json(binary, command, *args):
+    run = subprocess.run([str(binary), command, *map(str, args)], capture_output=True, text=True, check=True)
+    return json.loads(run.stdout)
+
+
+def compare_libraries(install, binary):
+    """The library jar list, the class index (and the cache both sides share) and the SPI names."""
+    libs = Path(install) / 'libraries'
+    jars = mr.library_jars(libs)
+    python = json.loads(json.dumps({'jars': [str(j) for j in jars], 'index': mr.build_library_index(jars), 'spi': sorted(mr.spi_names(jars))}))
+    found = []
+    with tempfile.TemporaryDirectory(prefix='java-analysis-compare-') as cache:
+        mr.load_library_index(jars, cache)
+        written = sorted(p.name for p in Path(cache).iterdir())
+        rust = rust_json(binary, 'dump-libraries', '--install', install, '--cache', cache)
+        if sorted(p.name for p in Path(cache).iterdir()) != written:
+            found.append(('cache file name', written, sorted(p.name for p in Path(cache).iterdir())))
+        fresh = rust_json(binary, 'dump-libraries', '--install', install)
+    for label, got in (('cached', rust), ('built', fresh)):
+        found += [(f'{label}: {p}', x, y) for p, x, y in differences('', python, got)]
+    return len(python['index']), found
+
+
+def compare_jars(install, binary):
+    """Per archive of install/mods: mod id, label and jar facts."""
+    jars = mr.library_jars(Path(install) / 'libraries')
+    spis = mr.spi_names(jars)
+    python = []
+    for jar in sorted((Path(install) / 'mods').glob('*.jar')):
+        for mod, label, archive, toml in mr.walk(zipfile.ZipFile(jar), None, jar.stem):
+            data, at_lines, opaque, plugins = mr.jar_facts(archive, toml, spis)
+            python.append({'mod': mod, 'label': label, 'facts': {'data': data, 'at_lines': at_lines, 'opaque': opaque, 'plugins': plugins}})
+    python = json.loads(json.dumps(python))
+    rust = rust_json(binary, 'dump-jars', '--install', install)
+    found = []
+    if len(python) != len(rust):
+        found.append(('archive count', len(python), len(rust)))
+    for i, (a, b) in enumerate(zip(python, rust)):
+        found += [(f'{a["label"]}: {p}', x, y) for p, x, y in differences('', a, b)]
+    return len(python), found
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest='stage', required=True)
-    classes = sub.add_parser('classes', help='the class-file reader')
-    classes.add_argument('--install', required=True)
-    classes.add_argument('--bin', help='the horizon-java-analysis binary (default: the fast profile)')
+    for name, text in (('classes', 'the class-file reader'), ('libraries', 'library jars, class index, SPI names'), ('jars', 'mod archives and their jar facts')):
+        stage = sub.add_parser(name, help=text)
+        stage.add_argument('--install', required=True)
+        stage.add_argument('--bin', help='the horizon-java-analysis binary (default: the fast profile)')
     args = parser.parse_args()
-    count, found = compare_classes(args.install, rust_binary(args.bin))
-    print(f'{count} classes, {len(found)} differences')
+    unit = {'classes': 'classes', 'libraries': 'library classes', 'jars': 'archives'}[args.stage]
+    compare = {'classes': compare_classes, 'libraries': compare_libraries, 'jars': compare_jars}[args.stage]
+    count, found = compare(args.install, rust_binary(args.bin))
+    print(f'{count} {unit}, {len(found)} differences')
     for where, python, rust in found[:SHOWN]:
         print(f'{where}: {str(python)[:200]} vs {str(rust)[:200]}')
     sys.exit(1 if found else 0)
