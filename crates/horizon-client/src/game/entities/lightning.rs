@@ -22,6 +22,10 @@ use horizon_core::{
 };
 
 pub(super) struct Bolt {
+    /// Entity-owned registration metadata; content clones are detached.
+    pub(super) attachment_lifetime: horizon_mod_runtime::attachments::AttachmentLifetime,
+    /// When it joined its list (`horizon_client::join_seq`); set by the list.
+    pub(super) join: horizon_client::join_seq::JoinSeq,
     /// The entity id a server's players know it by (0 until it has one).
     pub id: u32,
     pub at: [f64; 3],
@@ -47,6 +51,33 @@ pub(super) struct Bolt {
     /// the host, `Some(Some(conn))` for a guest.
     pub cause: Option<Option<u32>>,
 }
+impl Bolt {
+    /// A new bolt as `new LightningBolt` leaves it: its id from construction, its seed and flashes drawn.
+    pub(super) fn new(id: u32, at: [f64; 3], visual_only: bool) -> Self {
+        let mut random = random_source::entity();
+        let seed = random.next_long();
+        let flashes = random.next_int_bound(3).unwrap_or(0) + 1;
+        Self {
+            attachment_lifetime: Default::default(),
+            join: Default::default(),
+            id,
+            at,
+            life: 2,
+            flashes,
+            seed,
+            random,
+            visual_only,
+            converted: Vec::new(),
+            hit: Vec::new(),
+            hit_items: Vec::new(),
+            spared: Vec::new(),
+            fires: 0,
+            cause: None,
+        }
+    }
+}
+horizon_client::impl_joined!(Bolt);
+horizon_mod_runtime::impl_attachment_lifetime!(Bolt);
 /// The box `LightningBolt.tick` collects the `LightningStrikeTrigger` bystanders from: 15 blocks
 /// around the bolt, 15 down and `6 + 15` up.
 fn in_viewer_box(bolt: [f64; 3], p: [f64; 3]) -> bool {
@@ -239,32 +270,15 @@ impl Game<'_> {
         }
         Some([x, top.y, z])
     }
-    pub(super) fn spawn_bolt(&mut self, at: [f64; 3], visual_only: bool) {
+    pub(super) fn spawn_bolt(&mut self, at: [f64; 3], visual_only: bool) -> u32 {
         if !visual_only {
             let ctx = horizon_client::sculk::Context::default();
             self.post_game_event("minecraft:lightning_strike", at, ctx);
         }
-        // The LightningBolt constructor: `seed`, then `flashes`.
-        let mut random = random_source::entity();
-        let seed = random.next_long();
-        let flashes = random.next_int_bound(3).unwrap_or(0) + 1;
         self.lightning_seen[0] += 1;
         let id = self.take_entity_id();
-        self.bolts.push(Bolt {
-            id,
-            at,
-            life: 2,
-            flashes,
-            seed,
-            random,
-            visual_only,
-            converted: Vec::new(),
-            hit: Vec::new(),
-            hit_items: Vec::new(),
-            spared: Vec::new(),
-            fires: 0,
-            cause: None,
-        });
+        self.bolts.push(Bolt::new(id, at, visual_only));
+        id
     }
     pub(super) fn lightning_strike_allowed(
         &mut self,
@@ -280,26 +294,9 @@ impl Game<'_> {
     /// only flashes, sounds and draws (`LightningBolt.tick` off the server).
     pub(super) fn spawn_remote_bolt(&mut self, id: u32, at: [f64; 3]) {
         self.bolts.retain(|b| b.id != id);
-        // The client's own copy, constructed as on the server.
-        let mut random = random_source::entity();
-        let seed = random.next_long();
-        let flashes = random.next_int_bound(3).unwrap_or(0) + 1;
         self.lightning_seen[0] += 1;
-        self.bolts.push(Bolt {
-            id,
-            at,
-            life: 2,
-            flashes,
-            seed,
-            random,
-            visual_only: true,
-            converted: Vec::new(),
-            hit: Vec::new(),
-            hit_items: Vec::new(),
-            spared: Vec::new(),
-            fires: 0,
-            cause: None,
-        });
+        // The client's own copy, constructed as on the server.
+        self.bolts.push(Bolt::new(id, at, true));
     }
     /// `spawnFire`: fire at the strike point and `extra` random neighbours
     /// (from the bolt's own `random`), wherever `BaseFireBlock.getState` fire
@@ -349,7 +346,7 @@ impl Game<'_> {
     /// `LightningBolt.tick` for every bolt.
     pub(super) fn tick_bolts(&mut self) {
         let _save_lease = horizon_client::join_seq::visibility::PassLease::enter();
-        let mut bolts = std::mem::take(&mut self.bolts);
+        let mut bolts = self.bolts.lift();
         bolts.retain_mut(|b| {
             if b.life == 2 {
                 // A client's bolt draws the pitches from its own random. Here one
@@ -415,8 +412,8 @@ impl Game<'_> {
             }
             true
         });
-        bolts.append(&mut self.bolts);
-        self.bolts = bolts;
+        self.bolts
+            .restore(bolts, horizon_client::join_seq::RestoreOrder::SurvivorsFirst);
     }
     /// `LightningRodBlock.onLightningStrike`: powered for 8 ticks.
     fn strike_rod(&mut self, at: [f64; 3]) {
@@ -831,6 +828,31 @@ mod tests {
     use mod_api::{self, ServerHost};
     use std::sync::Arc;
 
+    #[test]
+    #[ignore = "needs prepared resources (HORIZON_TEST_RESOURCES)"]
+    fn a_bolt_leaves_when_its_flashes_end() {
+        use horizon_client::join_seq::residency::table::EntityLookup;
+        super::super::native_entity_refs::tests::with_game(|game| {
+            game.reset_entity_residency();
+            let id = game.spawn_bolt([2.5, 61.0, 2.5], true);
+            assert!(matches!(
+                game.server_resident_entity(id),
+                EntityLookup::Found { value: Target::Bolt(found), .. } if found == id
+            ));
+            for _ in 0..200 {
+                game.tick_bolts();
+                if game.bolts.is_empty() {
+                    break;
+                }
+            }
+            assert!(game.bolts.is_empty());
+            assert!(matches!(
+                game.server_resident_entity(id),
+                EntityLookup::Missing
+            ));
+        });
+    }
+
     /// `LightningBolt.spawnFire` places nothing, and draws no extra sources,
     /// unless `canSpreadFireAround` passes at the bolt (#11376).
     #[test]
@@ -1035,21 +1057,9 @@ mod tests {
                 0.0,
             ));
             game.ui.difficulty = 2;
-            let mut bolt = Bolt {
-                id: 0,
-                at: [0.0, 64.0, 0.0],
-                life: 0,
-                flashes: 0,
-                seed: 0,
-                random: LegacyRandom::new(0),
-                visual_only: false,
-                converted: Vec::new(),
-                hit: Vec::new(),
-                hit_items: Vec::new(),
-                spared: Vec::new(),
-                fires: 0,
-                cause: None,
-            };
+            let mut bolt = Bolt::new(0, [0.0, 64.0, 0.0], false);
+            bolt.life = 0;
+            bolt.flashes = 0;
             game.thunder_hit(&mut bolt);
             assert!(game.entity(pig_id).is_none());
             let mushroom_type = game
@@ -1255,21 +1265,9 @@ mod tests {
                     game.mobs
                         .push(Mob::new(id, pig.clone(), Vec3::new(x, 64.0, 0.0), 0.0));
                 }
-                let mut bolt = Bolt {
-                    id: 77,
-                    at: [0.5, 64.0, 0.5],
-                    life: 0,
-                    flashes: 0,
-                    seed: 0,
-                    random: LegacyRandom::new(0),
-                    visual_only: false,
-                    converted: Vec::new(),
-                    hit: Vec::new(),
-                    hit_items: Vec::new(),
-                    spared: Vec::new(),
-                    fires: 0,
-                    cause: None,
-                };
+                let mut bolt = Bolt::new(77, [0.5, 64.0, 0.5], false);
+                bolt.life = 0;
+                bolt.flashes = 0;
                 game.thunder_hit(&mut bolt);
                 let kind = |game: &Game<'_>, id| {
                     game.mobs

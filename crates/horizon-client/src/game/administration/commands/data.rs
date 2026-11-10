@@ -251,6 +251,18 @@ impl Game<'_> {
                 let i = self.tnts.iter().position(|t| t.id == id)?;
                 self.tnt_nbt(i)
             }
+            Target::Bolt(id) => {
+                let uuid = self.uuid_for(id);
+                let b = self.bolts.iter().find(|b| b.id == id)?;
+                Tag::compound([
+                    ("id", Tag::String("minecraft:lightning_bolt".into())),
+                    ("UUID", Tag::IntArray(uuid.to_vec())),
+                    (
+                        "Pos",
+                        Tag::List(b.at.iter().map(|v| Tag::Double(v.to_bits())).collect()),
+                    ),
+                ])
+            }
             Target::Cushion(id) => {
                 let uuid = self.uuid_for(id);
                 let c = self.cushions.iter().find(|c| c.id == id)?;

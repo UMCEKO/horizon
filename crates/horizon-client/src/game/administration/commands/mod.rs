@@ -74,6 +74,8 @@ pub(super) enum Target {
     DragonPart(u32),
     /// A primed TNT, by its entity id (`minecraft:tnt`).
     Tnt(u32),
+    /// A lightning bolt, by its entity id (`minecraft:lightning_bolt`).
+    Bolt(u32),
     /// A cushion, by its entity id (`minecraft:cushion`).
     Cushion(u32),
     /// A falling block, by its entity id (`minecraft:falling_block`).
@@ -233,6 +235,7 @@ fn non_player_entity_id(t: Target) -> Option<i32> {
     | Target::Dragon(id)
     | Target::DragonPart(id)
     | Target::Tnt(id)
+    | Target::Bolt(id)
     | Target::Cushion(id)
     | Target::Falling(id)
     | Target::Rocket(id)
@@ -663,6 +666,7 @@ impl Game<'_> {
                 .iter()
                 .find(|t| t.id == id)
                 .map(|t| [t.position.x, t.position.y, t.position.z]),
+            Target::Bolt(id) => self.bolts.iter().find(|b| b.id == id).map(|b| b.at),
             Target::Falling(id) => self
                 .falling
                 .iter()
@@ -741,6 +745,7 @@ impl Game<'_> {
             // `EnderDragonPart` takes its parent's type.
             Target::Dragon(_) | Target::DragonPart(_) => "minecraft:ender_dragon".into(),
             Target::Tnt(_) => "minecraft:tnt".into(),
+            Target::Bolt(_) => "minecraft:lightning_bolt".into(),
             Target::Cushion(_) => "minecraft:cushion".into(),
             Target::Falling(_) => "minecraft:falling_block".into(),
             Target::Rocket(_) => "minecraft:firework_rocket".into(),
@@ -1081,6 +1086,7 @@ impl Game<'_> {
         candidates.extend(self.item_frames.iter().map(|f| Target::Frame(f.id)));
         candidates.extend(self.paintings.iter().map(|p| Target::Painting(p.id)));
         candidates.extend(self.cushions.iter().map(|c| Target::Cushion(c.id)));
+        candidates.extend(self.bolts.iter().map(|b| Target::Bolt(b.id)));
         candidates.extend(self.others.iter().map(|o| Target::Other(o.id)));
         candidates.extend(self.fangs.list.iter().map(|f| Target::Fangs(f.id)));
         // The End crystals and the dragon (EndCrystal and EnderDragon
@@ -1943,6 +1949,11 @@ impl Game<'_> {
                     c.position = v;
                 }
             }
+            Target::Bolt(id) => {
+                if let Some(b) = self.bolts.iter_mut().find(|b| b.id == id) {
+                    b.at = [v.x, v.y, v.z];
+                }
+            }
             Target::Dragon(id) => {
                 if let Some(d) = self.dragon.as_mut().filter(|d| d.id == id) {
                     d.position = v;
@@ -2660,6 +2671,7 @@ impl Game<'_> {
             Target::Crystal(id) => self.kill_crystal(id),
             Target::Dragon(id) => self.kill_dragon(id),
             Target::Tnt(id) => self.tnts.retain(|t| t.id != id),
+            Target::Bolt(id) => self.bolts.retain(|b| b.id != id),
             Target::Cushion(id) => self.kill_cushion(id),
             Target::Falling(id) => self.falling.retain(|f| f.id != id),
             Target::Rocket(id) => self.rockets.retain(|r| r.id != id),

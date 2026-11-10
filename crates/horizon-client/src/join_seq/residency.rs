@@ -32,6 +32,7 @@ pub enum Kind {
     Crystal,
     Dragon,
     Tnt,
+    Bolt,
     Falling,
     Rocket,
     Trident,

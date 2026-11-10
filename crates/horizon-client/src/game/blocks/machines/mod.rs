@@ -2245,6 +2245,7 @@ mod item_column_tests {
     fn item(id: u32, x: f64, y: f64, z: f64) -> ItemEntity {
         let at = Vec3::new(x, y, z);
         ItemEntity {
+            invulnerable: false,
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
             random: horizon_core::random::LegacyRandom::new(0),

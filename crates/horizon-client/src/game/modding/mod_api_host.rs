@@ -187,6 +187,7 @@ impl Game<'_> {
                             Kind::Crystal => "crystal",
                             Kind::Dragon => "dragon",
                             Kind::Tnt => "tnt",
+                            Kind::Bolt => "bolt",
                             Kind::Falling => "falling",
                             Kind::Rocket => "rocket",
                             Kind::Trident => "trident",
