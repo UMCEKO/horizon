@@ -127,7 +127,7 @@ HappyGhast.createAttributes	skip:data		attributes come from entity-types.json
 HappyGhast.getAmbientSoundInterval	port	crates/horizon-client/src/mobs.rs::Mob::ambient_interval	six times as long while it carries a rider
 HappyGhast.canUseSlot	inline	crates/horizon-client/src/game/mobs/ghasts.rs::Game::interact_happy_ghast	a harness goes only on a living adult without one; shears take it off
 HappyGhast.addPassenger	inline	crates/horizon-client/src/game/mobs/ghasts.rs::Game::interact_happy_ghast	gap: minor: goggles-down sound for the first rider and the still timeout reset; only one rider fits (vanilla four) and the timeout is always 0
-HappyGhast.getControllingPassenger	port	crates/horizon-client/src/mobs/happy_ghast.rs::controlled	gap: minor: harnessed adult with a rider; the not-on-still-timeout test is missing
+HappyGhast.getControllingPassenger	port	crates/horizon-client/src/mobs/riders.rs::controlling_passenger	a player on a harnessed ghast that is not on its still timeout
 HappyGhast.tickRidden	port	crates/horizon-client/src/mobs/happy_ghast.rs::ridden	turns 8 percent toward the rider's yaw, pitch half of theirs, head and body follow
 HappyGhast.getHappyGhastRestrictionRadius	port	crates/horizon-client/src/mobs/happy_ghast.rs::restriction_radius	64 for a bare adult, 32 otherwise
 HappyGhast.checkRestriction	inline	crates/horizon-client/src/mobs/happy_ghast.rs::ai_step	home set to the block when unleashed and unridden and stale or the radius changed

@@ -41,6 +41,8 @@ impl Locate for Vec<ExperienceOrb> {
 }
 struct Dim;
 impl Dim { fn id(&self) -> &'static str { "minecraft:overworld" } }
+enum Kind { Orb }
+enum Removal { Discarded }
 struct Game { orbs: Vec<ExperienceOrb>, remote: Option<()>, dim: Dim, added: Vec<u32>,
               flip: bool, cancel: bool, asked: Vec<(u32, u32, i32, i32)>, merged: Vec<(u32, u32)> }
 impl Game {
@@ -55,6 +57,9 @@ impl Game {
         *canceled = self.cancel;
     }
     fn add_orb(&mut self, _: [f64; 3], value: u32) { self.added.push(value); }
+    fn level_remove_ids(&mut self, _: Kind, ids: &[u32], _: Removal) {
+        self.orbs.retain(|o| !ids.contains(&o.id));
+    }
     ORB_MERGES
     AWARD_ORB
     MERGE_NEW_ORB

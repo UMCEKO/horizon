@@ -409,6 +409,10 @@ def plan(args, base, changed, crates_of, libraries, dependencies):
                           ("launcher tests", "cargo test --locked --lib --bins $features")]:
         steps.append(Step(name, f"cd launcher && {LAUNCHER_FEATURES}\nin_shell {shlex.quote(command)}", skip=launcher_skip,
                           summary=tests_passed if name == "launcher tests" else None))
+    routed = (ROOT / ".local" / "port-ledger" / "ledger.json").exists() and any(
+        path.endswith(".rs") and (ROOT / path).is_file() and "route!(" in (ROOT / path).read_text(errors="replace") for path in changed)
+    steps.append(Step("route lint", "python3 tools/java_routing.py lint --ledger", where="here",
+                      skip=None if routed else "no route! file touched, or no port ledger"))
     harness = Step("Parity", summary=parity_summary)
     affected = affected_here(changed)
     local_data = (ROOT / ".local" / "minecraft").exists() and (ROOT / ".local" / "horizon-client").exists()

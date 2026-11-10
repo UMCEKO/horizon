@@ -1,0 +1,61 @@
+net/minecraft/world/item/ItemStack#isSameItemSameComponents	java-object	compares item holders and component maps; no world
+net/minecraft/world/item/ItemStack#isDamageableItem	java-object	component presence checks
+net/minecraft/world/item/ItemStackTemplate#fromNonEmptyStack	java-object	copies a stack's type, count and component patch
+net/minecraft/world/item/crafting/RecipeManager#getRecipeFor	java-object	looks up the Java recipe map; level is only passed to matches
+net/minecraft/world/inventory/AbstractContainerMenu#clicked	needs-server	drops call LivingEntity.drop (swing via the chunk source); broadcastChanges syncs slots to the client
+net/minecraft/world/inventory/AbstractContainerMenu#removed	needs-server	the drop branch calls LivingEntity.drop, which sends a swing through the chunk source
+net/minecraft/world/item/Item#useOn	needs-server	block transformers award ITEM_USED_ON_BLOCK advancements to a ServerPlayer
+net/minecraft/world/item/ItemStack#matches	java-object	count and isSameItemSameComponents
+net/minecraft/world/item/ItemStack#split	java-object	copies and shrinks the stack
+net/minecraft/world/item/ItemUtils#createFilledResult	needs-server	a full inventory drops the result through LivingEntity.drop (swing via the chunk source)
+net/minecraft/world/item/context/BlockPlaceContext#getNearestLookingDirections	java-body	reads the player's rotation getters only
+net/minecraft/world/item/crafting/CraftingInput#getItem	java-object	list access
+net/minecraft/world/item/crafting/Ingredient#of	java-object	builds HolderSets from registry holders
+net/minecraft/world/item/crafting/PlacementInfo#create	java-object	ingredient emptiness and index list
+net/minecraft/world/item/enchantment/ItemEnchantments$Mutable#set	java-object	edits the enchantment map
+net/minecraft/world/inventory/AbstractContainerMenu#broadcastChanges	needs-server	sends slot and data changes to the client through the synchronizer, set when a player has the menu open
+net/minecraft/world/inventory/AbstractContainerMenu#getRedstoneSignalFromContainer	java-object	container counts and Mth only
+net/minecraft/world/inventory/Slot#safeInsert	java-object	stack and slot operations; the container's own setItem is the caller's
+net/minecraft/world/item/ItemStack#transmuteCopy	java-object	copies the stack as another item
+net/minecraft/world/item/ItemStack#useOn	needs-server	BlockItem.place awards PLACED_BLOCK advancements to a ServerPlayer
+net/minecraft/world/item/alchemy/PotionContents#is	java-object	potion holder and tag checks
+net/minecraft/world/item/component/Consumable$Builder#build	java-object	plain constructor
+net/minecraft/world/item/component/ItemContainerContents#copyInto	java-object	copies stack templates into a list
+net/minecraft/world/item/component/ItemContainerContents#fromItems	java-object	builds templates from a list of stacks
+net/minecraft/world/item/component/Tool#isCorrectForDrops	java-object	block tag checks on BlockState
+net/minecraft/world/item/context/BlockPlaceContext#canPlace	java-body	level.getBlockState (bridged), then the block's canBeReplaced
+net/minecraft/world/item/crafting/CraftingInput#ofPositioned	java-object	trims a stack grid
+net/minecraft/world/inventory/AbstractContainerMenu#addSlot	java-object	menu lists; the sync slot is made only once a player has the menu open
+net/minecraft/world/inventory/AbstractContainerMenu#canItemQuickReplace	java-object	stack comparison
+net/minecraft/world/inventory/AbstractContainerMenu#moveItemStackTo	java-object	slot and stack moves
+net/minecraft/world/inventory/AbstractContainerMenu#sendAllDataToRemote	needs-server	sends the full menu to the client through the synchronizer
+net/minecraft/world/inventory/AbstractContainerMenu#stillValid	java-body	level.getBlockState (bridged) and the player's reach getter
+net/minecraft/world/inventory/LecternMenu#clickMenuButton	needs-server	a full inventory drops the taken book through LivingEntity.drop (swing via the chunk source)
+net/minecraft/world/inventory/MerchantContainer#setItem	java-body	updateSellItem calls the trader's notifyTradeUpdated, which only plays a sound
+net/minecraft/world/inventory/MerchantContainer#updateSellItem	java-body	trade offers are Java data; notifyTradeUpdated only plays a sound
+net/minecraft/world/inventory/Slot#safeTake	needs-server	ResultSlot.onTake awards crafting advancements
+net/minecraft/world/item/BoatItem#getBoat	needs-server	a stack with entity data reaches level.getServer() in updateCustomEntityTag
+net/minecraft/world/item/BowItem#releaseUsing	needs-server	the shot damages the bow through hurtAndBreak, which awards durability advancements to a ServerPlayer
+net/minecraft/world/item/Item#finishUsingItem	needs-server	consumables award CONSUME_ITEM advancements; player effects reach the connection
+net/minecraft/world/item/ItemStack#getCustomName	java-object	component lookups
+net/minecraft/world/item/ItemStack#getDisplayName	java-object	component and text building
+net/minecraft/world/item/ItemStack#getTooltipLines	java-body	tooltip text from components and the player's getters; no server reach found in vanilla item tooltips
+net/minecraft/world/item/ItemStack#isStackable	java-object	max stack size and damage checks
+net/minecraft/world/item/ItemStack#nextDamageWillBreak	java-object	damage component checks
+net/minecraft/world/item/ItemStackTemplate#apply	java-object	builds a stack and validates it
+net/minecraft/world/item/alchemy/PotionContents#createItemStack	java-object	sets the potion component on a new stack
+net/minecraft/world/item/alchemy/PotionContents#withEffectAdded	java-object	copies the effect list
+net/minecraft/world/item/component/CustomData#update	java-object	component edit on a copied tag
+net/minecraft/world/item/component/DyedItemColor#applyDyes	java-object	colour arithmetic and component set
+net/minecraft/world/item/component/Tool#getMiningSpeed	java-object	block tag checks on BlockState
+net/minecraft/world/item/component/TooltipDisplay#withHidden	java-object	copies the hidden-component set
+net/minecraft/world/item/context/BlockPlaceContext#at	java-body	copies context getters and a hit result; the level is passed on untouched
+net/minecraft/world/item/crafting/RecipeManager#listDisplaysForRecipe	java-object	reads the Java display map
+net/minecraft/world/item/crafting/RecipeMap#getRecipesFor	java-object	filters the Java recipe map; level is only passed to matches
+net/minecraft/world/item/crafting/ShapedRecipe#display	java-object	builds display objects from Java recipe data
+net/minecraft/world/item/crafting/ShapelessRecipe#display	java-object	builds display objects from Java recipe data
+net/minecraft/world/item/crafting/SmithingRecipe#matches	java-object	ingredient tests on the input
+net/minecraft/world/item/enchantment/Enchantment#getFullname	java-object	builds the enchantment's text
+net/minecraft/world/item/enchantment/EnchantmentHelper#getEnchantmentLevel	java-body	reads the entity's equipment getters; the entity is the acting player or a Java-built one
+net/minecraft/world/item/enchantment/EnchantmentHelper#updateEnchantments	java-object	edits the enchantment component
+net/minecraft/world/item/trading/ItemCost#test	java-object	item and component tests

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration version="2.0" label="Parity" description="Event constructions and mixin handler invocation counts">
+  <event name="jdk.MethodTrace">
+    <setting name="enabled">true</setting>
+    <setting name="filter">net.neoforged.bus.api.Event::&lt;init&gt;</setting>
+    <setting name="threshold">0 ms</setting>
+    <setting name="stackTrace">true</setting>
+  </event>
+  <event name="jdk.MethodTiming">
+    <setting name="enabled">true</setting>
+    <setting name="filter">@org.spongepowered.asm.mixin.transformer.meta.MixinMerged</setting>
+    <setting name="period">endChunk</setting>
+  </event>
+</configuration>

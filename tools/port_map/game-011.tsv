@@ -36,7 +36,7 @@ AbstractHorse.generateSpeed	port	crates/horizon-client/src/mobs/finalize.rs::Ctx
 AbstractHorse.getSlot	missing		minor: /item cannot reach the mount slots horse.0 to horse.14
 AbstractHorse.getControllingPassenger	port	crates/horizon-client/src/mobs/equine.rs::controlled	gap: player: a tamed skeleton horse obeys its rider without a saddle
 AbstractHorse.getDismountLocationInDirection	inline	crates/horizon-client/src/game/mobs/mounts.rs::Game::dismount_mount	gap: minor: no climb up to 0.75 above the mount and no pose boxes, only block checks beside the mount
-AbstractHorse.getDismountLocationForPassenger	port	crates/horizon-client/src/game/mobs/mounts.rs::Game::dismount_mount	gap: minor: tries both sides by the mount's yaw then on top, not by the rider's main arm
+AbstractHorse.getDismountLocationForPassenger	port	crates/horizon-client/src/game/entities/vehicle_rules.rs::horse_dismount_location	the rider's main arm picks the first side: a guest's ClientInformation, the window's option for the in-frame host, a mob's left-handedness
 AbstractHorse.getPassengerAttachmentPoint	inline	crates/horizon-client/src/game/mobs/mounts.rs::Game::position_rider	gap: player: the rider does not slide back and up when the horse rears; the seat is a fixed point per species
 Donkey.canMate	inline	crates/horizon-client/src/mobs/goals.rs::Breed::can_use	a mule never mates; horse, donkey and llama keep the tame, full health and not-ridden rules
 Donkey.getBreedOffspring	inline	crates/horizon-client/src/game/mobs/creatures/mod.rs::Game::breed	donkey with horse gives a mule, donkey with donkey a donkey; attributes from both parents

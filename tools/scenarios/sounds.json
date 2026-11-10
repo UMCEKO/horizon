@@ -1,0 +1,111 @@
+[
+  {
+    "name": "creative"
+  },
+  {
+    "command": "/gamemode creative"
+  },
+  {
+    "wait": 10
+  },
+  {
+    "name": "tp"
+  },
+  {
+    "tp": [
+      0.5,
+      100,
+      0.5
+    ]
+  },
+  {
+    "wait": 120
+  },
+  {
+    "name": "pool"
+  },
+  {
+    "command": "/fill -8 99 -8 8 99 8 minecraft:stone"
+  },
+  {
+    "command": "/fill -3 96 -3 3 98 3 minecraft:water"
+  },
+  {
+    "command": "/fill -8 100 -8 8 110 8 minecraft:air"
+  },
+  {
+    "command": "/weather rain"
+  },
+  {
+    "wait": 40
+  },
+  {
+    "name": "dive"
+  },
+  {
+    "tp": [
+      0.5,
+      97,
+      0.5
+    ]
+  },
+  {
+    "wait": 100
+  },
+  {
+    "name": "out"
+  },
+  {
+    "tp": [
+      6.5,
+      100,
+      6.5
+    ]
+  },
+  {
+    "wait": 40
+  },
+  {
+    "name": "bubbles"
+  },
+  {
+    "command": "/setblock 0 96 0 minecraft:soul_sand"
+  },
+  {
+    "command": "/setblock 0 97 0 minecraft:bubble_column[drag=false]"
+  },
+  {
+    "tp": [
+      0.5,
+      97,
+      0.5
+    ]
+  },
+  {
+    "wait": 60
+  },
+  {
+    "name": "owners"
+  },
+  {
+    "check": {
+      "log": "a mod listens to PlaySoundEvent",
+      "since": "start"
+    }
+  },
+  {
+    "check": {
+      "log": "UnderwaterAmbientSoundHandler.* is native's",
+      "since": "start"
+    }
+  },
+  {
+    "check": {
+      "no_exceptions": true,
+      "since": "start"
+    }
+  },
+  {
+    "quit": true
+  }
+]

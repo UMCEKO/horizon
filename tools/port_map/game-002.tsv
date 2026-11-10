@@ -47,7 +47,7 @@ ServerLevel.advanceWeatherCycle	port	crates/horizon-client-render/src/world.rs::
 ServerLevel.resetWeatherCycle	inline	crates/horizon-client/src/game.rs::Game::tick_sleep	the sleep-through-night reset; /weather sets the timers itself
 ServerLevel.tickFluid	port	crates/horizon-world/src/level/tick.rs::Behaviours::scheduled_step	
 ServerLevel.tickBlock	port	crates/horizon-world/src/level/tick.rs::Behaviours::scheduled_step	
-ServerLevel.tickPassenger	inline	crates/horizon-client/src/game/entities/passengers.rs::Game::sync_riders	a rider whose vehicle is gone or dead lets go; others are re-seated each tick
+ServerLevel.tickPassenger	inline	crates/horizon-client/src/game/entities/passengers.rs::Game::tick_passengers	riders are re-seated each tick; a removed vehicle lets them go in riding_removed
 ServerLevel.updateNeighboursOnBlockSet	inline	crates/horizon-world/src/level/update.rs::Sim::set_block_limit	neighbour and comparator updates inside setBlock
 ServerLevel.mayInteract	inline	crates/horizon-client/src/game/network/lan_actions/packets.rs::Game::under_spawn_protection	gap: minor: spawn protection only for guests on a dedicated server; the world border check is a stub that always allows (hand.rs within_border), so blocks can be built and broken outside the border
 ServerLevel.save	port	crates/horizon-client/src/game.rs::Game::save_level	
