@@ -1271,3 +1271,40 @@ fn eager_saves_wait_for_an_open_world_and_for_light() {
 
 #[path = "incoming_tests/knot_command_view.rs"]
 mod knot_command_view_tests;
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn only_a_real_mouse_press_claims_an_agent_window() {
+    use winit::event::DeviceId;
+    use winit::event_loop::ControlFlow;
+    struct TestLoop;
+    impl EventLoopCtl for TestLoop {
+        fn exit(&self) {}
+        fn set_control_flow(&self, _: ControlFlow) {}
+    }
+    super::native_entity_refs::tests::with_client_game(|game| {
+        game.options.headless = true;
+        game.focused = true;
+        game.unclaimed_window = true;
+        let event = |state| WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state,
+            button: MouseButton::Left,
+        };
+        for (origin, state) in [
+            (input_trace::InputOrigin::Agent, ElementState::Pressed),
+            (input_trace::InputOrigin::User, ElementState::Released),
+        ] {
+            game.handle_window_event_as(&TestLoop, WindowId::dummy(), event(state), origin);
+            assert!(game.internal_grab());
+        }
+        game.handle_window_event_as(
+            &TestLoop,
+            WindowId::dummy(),
+            event(ElementState::Pressed),
+            input_trace::InputOrigin::User,
+        );
+        assert!(!game.internal_grab());
+        assert!(!game.unclaimed_window);
+    });
+}

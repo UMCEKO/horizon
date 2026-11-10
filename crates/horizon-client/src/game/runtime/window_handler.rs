@@ -95,6 +95,22 @@ impl Game<'_> {
             self.focus_after_run = Some(focused);
             return;
         }
+        if self.unclaimed_window
+            && origin == input_trace::InputOrigin::User
+            && !self.pad.menu.synthetic
+            && matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                }
+            )
+        {
+            self.unclaimed_window = false;
+            let capture = self.captured;
+            self.captured = false;
+            self.capture(capture);
+        }
         follow_keymap(&mut event);
         // MacosUtil.setCtrlClickEmulatesRightClick: Control + left click is a right click.
         if let WindowEvent::MouseInput { state, button, .. } = &mut event
