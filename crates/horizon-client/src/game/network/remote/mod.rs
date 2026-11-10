@@ -6460,6 +6460,7 @@ impl Game<'_> {
         let mut random = horizon_client::mobs::entity_random(id as u32, at);
         let bob_offset = random.next_float() * std::f32::consts::PI * 2.0;
         self.dropped.push(ItemEntity {
+            invulnerable: false,
             random,
             ..ItemEntity::new(id as u32, stack, at, velocity, bob_offset)
         });

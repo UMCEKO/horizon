@@ -1517,6 +1517,22 @@ mod tests {
     }
 
     #[test]
+    fn primed_tnt_is_saved_and_loaded_with_its_fuse() {
+        use horizon_core::nbt::Tag;
+        let mut resources = None;
+        let Some(mut game) = server_game(&mut resources) else {
+            return;
+        };
+        game.add_primed_tnt(BlockPos::new(2, 61, 2), 0.0, 77, None, None);
+        let saved = game.tnt_nbt(game.tnts.len() - 1);
+        assert_eq!(saved.get("fuse"), Some(&Tag::Short(77)));
+        let before = game.tnts.len();
+        game.load_tnt(saved, None);
+        assert_eq!(game.tnts.len(), before + 1);
+        assert_eq!(game.tnts[before].fuse, 77);
+    }
+
+    #[test]
     fn loaded_tnt_fuse_uses_numeric_short_and_saves_without_raw() {
         use horizon_core::nbt::Tag;
         let mut resources = None;

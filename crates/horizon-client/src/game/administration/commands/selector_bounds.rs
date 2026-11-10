@@ -77,6 +77,7 @@ impl Game<'_> {
             Target::Other(_)
             | Target::Fangs(_)
             | Target::Dragon(_)
+            | Target::Bolt(_)
             | Target::Spawner(_)
             | Target::Cloud(_) => None,
             // LeashFenceKnotEntity.recalculateBoundingBox, at the knot's centre.

@@ -2665,6 +2665,9 @@ fn item_entity_to_nbt_saved(e: &ItemEntity, uuid: [i32; 4], raw: Option<&Tag>, i
     ] {
         put(&mut tag, key, value);
     }
+    if e.invulnerable {
+        put(&mut tag, "Invulnerable", Tag::Byte(1));
+    }
     if let Some(thrower) = e.thrower {
         put(&mut tag, "Thrower", Tag::IntArray(thrower.to_vec()));
     } else if let Tag::Compound(map) = &mut tag {
@@ -2800,6 +2803,7 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
     let stack = item_from_nbt(tag.get("Item")?)?;
     let position = position(tag)?;
     Some(ItemEntity {
+        invulnerable: flag(tag, "Invulnerable"),
         attachment_lifetime: Default::default(),
         rotation: rotation(tag),
         join: Default::default(),
@@ -5506,6 +5510,7 @@ mod tests {
     #[test]
     fn item_entities_round_trip() {
         let e = ItemEntity {
+            invulnerable: false,
             attachment_lifetime: Default::default(),
             fall_distance: 2.5,
             rotation: [0.0, 0.0],

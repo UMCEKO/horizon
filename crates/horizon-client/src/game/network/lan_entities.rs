@@ -696,9 +696,7 @@ impl Game<'_> {
         assign_resident_ids!(self.tridents, t, next, None);
         assign_resident_ids!(self.rockets, r, next, None);
         assign_resident_ids!(self.crystals, c, next, None);
-        self.bolts.iter_mut().for_each(|b| {
-            assign_entity_id(next, &mut b.id);
-        });
+        assign_resident_ids!(self.bolts, b, next, None);
         assign_resident_ids!(self.ominous_spawners, o, next, None);
         self.potions.thrown_ids().for_each(|id| {
             assign_entity_id(next, id);
@@ -735,6 +733,11 @@ impl Game<'_> {
             // while it touches a block.
             if t.fuse != 80 {
                 e.meta.push((8, serializer::INT, Value::Int(t.fuse)));
+            }
+            // PrimedTnt.DATA_BLOCK_STATE_ID, the TNT block by default.
+            if let Some(state) = t.block_state {
+                e.meta
+                    .push((9, serializer::BLOCK_STATE, Value::Id(state.0 as i32)));
             }
             e.precise = t.on_ground;
         }

@@ -57,6 +57,7 @@ pub fn main() -> horizon_client::Result<()> {
                 .ok_or("missing cauldron")?,
         )?;
         let mut item = ItemEntity {
+            invulnerable: false,
             attachment_lifetime: Default::default(),
             fall_distance: 0.0,
             random: horizon_core::random::LegacyRandom::new(0),

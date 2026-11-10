@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 fn item(id: u32, at: Vec3) -> ItemEntity {
     ItemEntity {
+        invulnerable: false,
         attachment_lifetime: Default::default(),
         fall_distance: 0.0,
         random: horizon_core::random::LegacyRandom::new(0),

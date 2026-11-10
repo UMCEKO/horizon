@@ -55,6 +55,7 @@ macro_rules! resident_owners {
             Fangs => Fangs: fangs.list,
             Crystal => Crystal: crystals,
             Tnt => Tnt: tnts,
+            Bolt => Bolt: bolts,
             Cushion => Cushion: cushions,
             Knot => Knot: $($knots).+,
             Falling => Falling: falling,
