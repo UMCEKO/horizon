@@ -243,21 +243,24 @@ fn builtin_registries(root: &Path) -> horizon_client::Result<horizon_protocol::r
     Ok(horizon_protocol::registry::Builtin::load(&path)?)
 }
 
-/// Freeze native component IDs before reading content or opening a connection.
-/// With no mod registering any, nothing is installed, which every reader
-/// treats as no custom components, and `registries.json` isn't read.
+/// Freeze component IDs (built-in registry with Java mods' types, then native names) before content or connections; none of either installs nothing.
 pub(super) fn register_components(root: &std::path::Path) -> horizon_client::Result<()> {
     let mut names = Vec::new();
     Game::native_component_types(&RegistrationContext::new(), &mut names);
-    if names.is_empty() {
-        return Ok(());
-    }
-    let builtin = builtin_registries(root)?;
+    let builtin = match builtin_registries(root) {
+        Ok(builtin) => builtin,
+        Err(_) if names.is_empty() => return Ok(()),
+        Err(error) => return Err(error),
+    };
     let types = builtin
         .get("minecraft:data_component_type")
         .ok_or("missing data component registry")?;
-    let first = i32::try_from(types.names.len())?;
-    horizon_protocol::item::custom::install(first, names)
+    let java_types =
+        types.names.len() > horizon_protocol::item::component::VANILLA_TYPES as usize;
+    if names.is_empty() && !java_types {
+        return Ok(());
+    }
+    horizon_protocol::item::custom::install(types.names.clone(), names)
         .map_err(|error| format!("invalid native component registration: {error}"))?;
     Ok(())
 }

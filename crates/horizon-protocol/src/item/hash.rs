@@ -431,6 +431,7 @@ impl Component {
                 raw::code(id, &writer.data, names)?
             }
             Self::Raw(bytes) => raw::code(id, bytes, names)?,
+            Self::Foreign { .. } => return None,
         })
     }
 

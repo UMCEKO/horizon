@@ -450,6 +450,12 @@ pub struct HealthHud {
     /// The `ui.hud.bubble_pop` volume and pitch `playAirBubblePoppedSound`
     /// asked for this frame; the caller plays it and clears it.
     pub bubble_pop_sound: Option<(f32, f32)>,
+    /// `Gui.leftHeight`: how far above the screen's bottom the next left bar draws.
+    pub left_height: i32,
+    /// `Gui.rightHeight`: the same for the food side.
+    pub right_height: i32,
+    /// `Hud.random`, seeded by the hearts each frame; kept when a mod hides them.
+    pub random: Option<LegacyRandom>,
 }
 
 /// `Hud.getVehicleMaxHearts` for a vehicle that shows its health.
@@ -457,12 +463,15 @@ pub fn vehicle_max_hearts(max_health: f32) -> i32 {
     (((max_health + 0.5) as i32) / 2).min(30)
 }
 
-/// `Hud.extractVehicleHealth`.
+/// `Hud.extractVehicleHealth` with nothing above the hotbar on its side.
 pub fn vehicle_health(w: i32, h: i32, hearts: i32, health: f32) -> Vec<GuiDraw> {
+    vehicle_rows(w / 2 + 91, h - 39, hearts, health)
+}
+
+fn vehicle_rows(x_right: i32, y: i32, hearts: i32, health: f32) -> Vec<GuiDraw> {
     let mut out = Vec::new();
     let current = f64::from(health).ceil() as i32;
-    let x_right = w / 2 + 91;
-    let mut yo = h - 39;
+    let mut yo = y;
     let mut hearts = hearts;
     let mut base = 0;
     while hearts > 0 {
@@ -558,8 +567,26 @@ fn heart(
 }
 
 impl HealthHud {
-    /// `Hud.extractPlayerHealth` for a screen of `w` x `h` GUI pixels.
+    /// `Hud.extractPlayerHealth` on a `w` x `h` screen: every bar but the mount's, which only adds height.
     pub fn layout(&mut self, i: &HealthInputs, w: i32, h: i32) -> Vec<GuiDraw> {
+        self.start_bars();
+        let health = self.health(i, w, h);
+        let mut out = self.armor(i, w, h);
+        out.extend(health);
+        out.extend(self.food(i, w, h));
+        self.right_height += 10 * ((i.vehicle_hearts.max(0) + 9) / 10);
+        out.extend(self.air(i, w, h));
+        out
+    }
+
+    /// `Gui.leftHeight` and `rightHeight` back at 39 (above the hotbar), as each frame starts.
+    pub fn start_bars(&mut self) {
+        self.left_height = 39;
+        self.right_height = 39;
+    }
+
+    /// The `minecraft:player_health` layer (`Hud.extractHealthLevel`), raising `leftHeight`.
+    pub fn health(&mut self, i: &HealthInputs, w: i32, h: i32) -> Vec<GuiDraw> {
         let mut out = Vec::new();
         let tick = i64::from(i.tick);
         let current = ceil(i.health);
@@ -577,34 +604,21 @@ impl HealthHud {
         }
         self.last_health = current;
         let old = self.display_health;
-        let mut random = LegacyRandom::new(i64::from(i.tick.wrapping_mul(312_871)));
+        let random = self
+            .random
+            .insert(LegacyRandom::new(i64::from(i.tick.wrapping_mul(312_871))));
         let mut next = |bound: i32| random.next_int_bound(bound).unwrap_or(0);
-        let (x_left, x_right, y_base) = (w / 2 - 91, w / 2 + 91, h - 39);
+        let (x_left, y_base) = (w / 2 - 91, h - self.left_height);
         let max_health = i.max_health.max(old.max(current) as f32);
         let absorption = ceil(i.absorption);
         let rows = ceil((max_health + absorption as f32) / 2.0 / 10.0);
         let row_height = (10 - (rows - 2)).max(3);
-        let mut y_air = y_base - 10;
+        self.left_height += (rows - 1) * row_height + 10;
         let offset_index = if i.regeneration {
             i.tick % ceil(max_health + 5.0)
         } else {
             -1
         };
-        if i.armor > 0 {
-            let y = y_base - (rows - 1) * row_height - 10;
-            for n in 0..10 {
-                let x = x_left + n * 8;
-                if n * 2 + 1 < i.armor {
-                    out.push(sprite("hud/armor_full", x, y, 9, 9));
-                }
-                if n * 2 + 1 == i.armor {
-                    out.push(sprite("hud/armor_half", x, y, 9, 9));
-                }
-                if n * 2 + 1 > i.armor {
-                    out.push(sprite("hud/armor_empty", x, y, 9, 9));
-                }
-            }
-        }
         let containers = f64::from(max_health / 2.0).ceil() as i32;
         let absorb_containers = (f64::from(absorption) / 2.0).ceil() as i32;
         for c in (0..containers + absorb_containers).rev() {
@@ -654,69 +668,115 @@ impl HealthHud {
                 out.push(sprite(name, x, y, 9, 9));
             }
         }
-        if i.vehicle_hearts == 0 {
-            let (empty, half, full) = if i.hunger {
-                (
-                    "hud/food_empty_hunger",
-                    "hud/food_half_hunger",
-                    "hud/food_full_hunger",
-                )
-            } else {
-                ("hud/food_empty", "hud/food_half", "hud/food_full")
-            };
-            for n in 0..10 {
-                let mut y = y_base;
-                if i.saturation <= 0.0 && i.tick % (i.food * 3 + 1) == 0 {
-                    y += next(3) - 1;
-                }
-                let x = x_right - n * 8 - 9;
-                out.push(sprite(empty, x, y, 9, 9));
-                if n * 2 + 1 < i.food {
-                    out.push(sprite(full, x, y, 9, 9));
-                }
-                if n * 2 + 1 == i.food {
-                    out.push(sprite(half, x, y, 9, 9));
-                }
-            }
-            y_air -= 10;
+        out
+    }
+
+    /// The `minecraft:armor_level` layer (`Hud.extractArmorLevel`): one row at `leftHeight`.
+    pub fn armor(&mut self, i: &HealthInputs, w: i32, h: i32) -> Vec<GuiDraw> {
+        let mut out = Vec::new();
+        if i.armor <= 0 {
+            return out;
         }
-        // Hud.extractAirBubbles.
+        let (x_left, y) = (w / 2 - 91, h - self.left_height);
+        for n in 0..10 {
+            let x = x_left + n * 8;
+            if n * 2 + 1 < i.armor {
+                out.push(sprite("hud/armor_full", x, y, 9, 9));
+            }
+            if n * 2 + 1 == i.armor {
+                out.push(sprite("hud/armor_half", x, y, 9, 9));
+            }
+            if n * 2 + 1 > i.armor {
+                out.push(sprite("hud/armor_empty", x, y, 9, 9));
+            }
+        }
+        self.left_height += 10;
+        out
+    }
+
+    /// The `minecraft:food_level` layer (`Hud.extractFoodLevel`), empty while a mount shows hearts.
+    pub fn food(&mut self, i: &HealthInputs, w: i32, h: i32) -> Vec<GuiDraw> {
+        let mut out = Vec::new();
+        if i.vehicle_hearts != 0 {
+            return out;
+        }
+        let (empty, half, full) = if i.hunger {
+            (
+                "hud/food_empty_hunger",
+                "hud/food_half_hunger",
+                "hud/food_full_hunger",
+            )
+        } else {
+            ("hud/food_empty", "hud/food_half", "hud/food_full")
+        };
+        let (x_right, y_base) = (w / 2 + 91, h - self.right_height);
+        let random = self.random.get_or_insert_with(|| LegacyRandom::new(0));
+        for n in 0..10 {
+            let mut y = y_base;
+            if i.saturation <= 0.0 && i.tick % (i.food * 3 + 1) == 0 {
+                y += random.next_int_bound(3).unwrap_or(0) - 1;
+            }
+            let x = x_right - n * 8 - 9;
+            out.push(sprite(empty, x, y, 9, 9));
+            if n * 2 + 1 < i.food {
+                out.push(sprite(full, x, y, 9, 9));
+            }
+            if n * 2 + 1 == i.food {
+                out.push(sprite(half, x, y, 9, 9));
+            }
+        }
+        self.right_height += 10;
+        out
+    }
+
+    /// The `minecraft:vehicle_health` layer (`Hud.extractVehicleHealth`) from `rightHeight` up.
+    pub fn vehicle(&mut self, w: i32, h: i32, hearts: i32, health: f32) -> Vec<GuiDraw> {
+        let out = vehicle_rows(w / 2 + 91, h - self.right_height, hearts, health);
+        self.right_height += 10 * ((hearts.max(0) + 9) / 10);
+        out
+    }
+
+    /// The `minecraft:air_level` layer (`Hud.extractAirLevel`) while under water or short of air.
+    pub fn air(&mut self, i: &HealthInputs, w: i32, h: i32) -> Vec<GuiDraw> {
+        let mut out = Vec::new();
         let max_air = i.max_air.max(1);
         let air = i.air.clamp(0, max_air);
-        if i.under_water || air < max_air {
-            let rows = (f64::from(i.vehicle_hearts) / 10.0).ceil() as i32;
-            let y = y_air - (rows - 1) * 10;
-            let bubble = |offset: i32| ceil(((air + offset) * 10) as f32 / max_air as f32);
-            let full = bubble(-2);
-            let popping = bubble(0);
-            let delay = i32::from(air != 0 && i.under_water);
-            let empty = 10 - bubble(delay);
-            if !i.under_water {
-                self.last_bubble_pop_sound = 0;
-            }
-            for b in 1..=10 {
-                let x = x_right - (b - 1) * 8 - 9;
-                if b <= full {
-                    out.push(sprite("hud/air", x, y, 9, 9));
-                } else if full != popping && b == popping && i.under_water {
-                    out.push(sprite("hud/air_bursting", x, y, 9, 9));
-                    // Hud.playAirBubblePoppedSound.
-                    if self.last_bubble_pop_sound != b {
-                        let volume = 0.5 + 0.1 * (empty - 3 + 1).max(0) as f32;
-                        let pitch = 1.0 + 0.1 * (empty - 5 + 1).max(0) as f32;
-                        self.bubble_pop_sound = Some((volume, pitch));
-                        self.last_bubble_pop_sound = b;
-                    }
-                } else if b > 10 - empty {
-                    let wobble = if empty == 10 && i.tick % 2 == 0 {
-                        next(2)
-                    } else {
-                        0
-                    };
-                    out.push(sprite("hud/air_empty", x, y + wobble, 9, 9));
+        if !(i.under_water || air < max_air) {
+            return out;
+        }
+        let (x_right, y) = (w / 2 + 91, h - self.right_height);
+        let bubble = |offset: i32| ceil(((air + offset) * 10) as f32 / max_air as f32);
+        let full = bubble(-2);
+        let popping = bubble(0);
+        let delay = i32::from(air != 0 && i.under_water);
+        let empty = 10 - bubble(delay);
+        if !i.under_water {
+            self.last_bubble_pop_sound = 0;
+        }
+        for b in 1..=10 {
+            let x = x_right - (b - 1) * 8 - 9;
+            if b <= full {
+                out.push(sprite("hud/air", x, y, 9, 9));
+            } else if full != popping && b == popping && i.under_water {
+                out.push(sprite("hud/air_bursting", x, y, 9, 9));
+                // Hud.playAirBubblePoppedSound.
+                if self.last_bubble_pop_sound != b {
+                    let volume = 0.5 + 0.1 * (empty - 3 + 1).max(0) as f32;
+                    let pitch = 1.0 + 0.1 * (empty - 5 + 1).max(0) as f32;
+                    self.bubble_pop_sound = Some((volume, pitch));
+                    self.last_bubble_pop_sound = b;
                 }
+            } else if b > 10 - empty {
+                let wobble = if empty == 10 && i.tick % 2 == 0 {
+                    let random = self.random.get_or_insert_with(|| LegacyRandom::new(0));
+                    random.next_int_bound(2).unwrap_or(0)
+                } else {
+                    0
+                };
+                out.push(sprite("hud/air_empty", x, y + wobble, 9, 9));
             }
         }
+        self.right_height += 10;
         out
     }
 }
@@ -889,5 +949,99 @@ fn opaque(color: u32) -> u32 {
         color | 0xFF00_0000
     } else {
         color
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const W: i32 = 320;
+    const H: i32 = 240;
+
+    fn inputs(vehicle_hearts: i32) -> HealthInputs {
+        HealthInputs {
+            tick: 1,
+            millis: 0,
+            health: 20.0,
+            max_health: 20.0,
+            absorption: 0.0,
+            armor: 6,
+            food: 20,
+            saturation: 5.0,
+            kind: HeartKind::Normal,
+            regeneration: false,
+            hunger: false,
+            hardcore: false,
+            damage_cooldown: false,
+            air: 150,
+            max_air: 300,
+            under_water: true,
+            vehicle_hearts,
+        }
+    }
+
+    fn rows(draws: &[GuiDraw]) -> Vec<i32> {
+        let mut ys: Vec<i32> = draws
+            .iter()
+            .map(|d| match d {
+                GuiDraw::Sprite { y, .. } => *y,
+                other => panic!("not a sprite: {other:?}"),
+            })
+            .collect();
+        ys.dedup();
+        ys
+    }
+
+    #[test]
+    fn the_bars_stack_above_the_hotbar_as_vanillas_layers_do() {
+        let i = inputs(0);
+        let mut hud = HealthHud::default();
+        hud.start_bars();
+        let health = hud.health(&i, W, H);
+        let armor = hud.armor(&i, W, H);
+        let food = hud.food(&i, W, H);
+        let air = hud.air(&i, W, H);
+        assert_eq!(rows(&health), [201]);
+        assert_eq!(rows(&armor), [191]);
+        assert_eq!(rows(&food), [201]);
+        assert_eq!(rows(&air), [191]);
+        assert_eq!((hud.left_height, hud.right_height), (59, 59));
+        let mut whole = HealthHud::default();
+        let all = whole.layout(&i, W, H);
+        let parts: Vec<GuiDraw> = [armor, health, food, air].concat();
+        assert_eq!(all, parts);
+    }
+
+    #[test]
+    fn a_hidden_food_layer_leaves_its_row_to_the_air() {
+        let i = inputs(0);
+        let mut hud = HealthHud::default();
+        hud.start_bars();
+        hud.health(&i, W, H);
+        hud.armor(&i, W, H);
+        assert_eq!(rows(&hud.air(&i, W, H)), [201]);
+        assert_eq!(hud.right_height, 49);
+    }
+
+    #[test]
+    fn a_hidden_health_layer_lowers_the_armor_row() {
+        let i = inputs(0);
+        let mut hud = HealthHud::default();
+        hud.start_bars();
+        assert_eq!(rows(&hud.armor(&i, W, H)), [201]);
+        assert_eq!(hud.left_height, 49);
+    }
+
+    #[test]
+    fn the_mounts_rows_raise_the_air_unless_hidden() {
+        let i = inputs(12);
+        let mut hud = HealthHud::default();
+        hud.start_bars();
+        assert!(hud.food(&i, W, H).is_empty());
+        assert_eq!(rows(&hud.vehicle(W, H, 12, 20.0)), [201, 191]);
+        assert_eq!(rows(&hud.air(&i, W, H)), [181]);
+        hud.start_bars();
+        assert_eq!(rows(&hud.air(&i, W, H)), [201]);
     }
 }
