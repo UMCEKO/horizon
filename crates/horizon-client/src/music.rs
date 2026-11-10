@@ -10,7 +10,6 @@ pub use mod_api::client::music::{Music, MusicLayer};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap},
-    fs,
     path::Path,
 };
 
@@ -188,16 +187,12 @@ pub struct MusicTables {
 impl MusicTables {
     pub fn load(root: &Path) -> Self {
         let read = |dir: &str| -> HashMap<String, Layer> {
-            let Ok(entries) = fs::read_dir(root.join("data/minecraft").join(dir)) else {
-                return HashMap::new();
-            };
-            entries
-                .flatten()
-                .filter_map(|e| {
-                    let path = e.path();
-                    let name = path.file_stem()?.to_str()?.to_owned();
-                    let json: Value = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
-                    Some((format!("minecraft:{name}"), Layer::parse(&json)))
+            let files = horizon_world::damage_source::resource_files(root, dir).unwrap_or_default();
+            files
+                .into_iter()
+                .filter_map(|(id, bytes)| {
+                    let json: Value = serde_json::from_slice(&bytes).ok()?;
+                    Some((id, Layer::parse(&json)))
                 })
                 .collect()
         };
@@ -1079,5 +1074,35 @@ mod tests {
             },
         ));
         assert!(m.current_instance().is_none());
+    }
+
+    #[test]
+    fn mod_namespace_biome_music_is_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |path: &str, body: &str| {
+            let file = dir.path().join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, body).unwrap();
+        };
+        write(
+            "data/minecraft/dimension_type/overworld.json",
+            r#"{"attributes": {"minecraft:audio/background_music": {"default": {"sound": "minecraft:music.game"}}}}"#,
+        );
+        write(
+            "data/modns/worldgen/biome/grove.json",
+            r#"{"attributes": {"minecraft:audio/background_music": {"default": {"sound": "modns:music.grove"}}}}"#,
+        );
+        let tables = MusicTables::load(dir.path());
+        let sound = |biome: &str| {
+            tables
+                .background("minecraft:overworld", biome)
+                .default
+                .map(|m| m.sound)
+        };
+        assert_eq!(sound("modns:grove").as_deref(), Some("modns:music.grove"));
+        assert_eq!(
+            sound("minecraft:plains").as_deref(),
+            Some("minecraft:music.game")
+        );
     }
 }
