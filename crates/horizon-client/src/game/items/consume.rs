@@ -42,7 +42,8 @@ impl Game<'_> {
     /// first, and completes the use itself (eating the food there too).
     pub(super) fn send_use_item_complete(&mut self) {
         if self.lan_acting.is_some() {
-            self.guest_entity_events.push(USE_ITEM_COMPLETE_EVENT);
+            self.guest_packets
+                .push(crate::game::lan_actions::Outgoing::EntityEvent(USE_ITEM_COMPLETE_EVENT));
         }
     }
     /// `Consumable.emitParticlesAndSounds(user.getRandom(), user, stack, count)`.

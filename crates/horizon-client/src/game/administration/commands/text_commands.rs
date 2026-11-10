@@ -340,7 +340,7 @@ impl Game<'_> {
         for &t in players {
             match t {
                 Target::Player if self.lan_acting.is_some() => {
-                    self.guest_packets.push(packet.clone());
+                    self.guest_packets.push(crate::game::lan_actions::Outgoing::Packet(packet.clone()));
                 }
                 Target::Player => {
                     if let Some(local) = local.take() {

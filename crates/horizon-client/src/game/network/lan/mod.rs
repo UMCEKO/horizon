@@ -3688,7 +3688,8 @@ impl Game<'_> {
         };
         let told = self.lan_acting.is_some();
         if told {
-            self.guest_equipment_breaks.push(event);
+            self.guest_packets
+                .push(crate::game::lan_actions::Outgoing::EquipmentBreak(event));
         }
         if told && !self.options.execution_role.is_client() {
             return;

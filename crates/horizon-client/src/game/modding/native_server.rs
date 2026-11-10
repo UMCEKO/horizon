@@ -1323,7 +1323,8 @@ impl Game<'_> {
     }
     fn native_send_all(&mut self, uuid: u128, packets: Vec<C>) -> bool {
         if self.lan_acting_uuid == Some(uuid) && !self.lan_acting_fake {
-            self.guest_packets.extend(packets);
+            self.guest_packets
+                .extend(packets.into_iter().map(super::lan_actions::Outgoing::Packet));
             return true;
         }
         let Some(host) = &self.lan else {

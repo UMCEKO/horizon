@@ -2638,8 +2638,9 @@ pub(super) mod tests {
                 })
                 .unwrap();
             }
-            game.guest_packets
-                .push(Clientbound::SetSimulationDistance(Distance { distance: 4 }));
+            game.guest_packets.push(crate::game::lan_actions::Outgoing::Packet(Clientbound::SetSimulationDistance(
+                Distance { distance: 4 },
+            )));
             game.as_guest(fake_id, |game| {
                 assert!(game.lan_acting_fake);
                 assert!(game.player.as_ref().is_some_and(|p| p.client_loaded));
@@ -2671,16 +2672,15 @@ pub(super) mod tests {
                     ..Default::default()
                 };
                 assert!(game.select(&uuid).is_empty());
+                game.guest_packets.push(crate::game::lan_actions::Outgoing::Packet(Clientbound::SetSimulationDistance(
+                    Distance { distance: 12 },
+                )));
+                game.guest_packets.push(crate::game::lan_actions::Outgoing::EntityEvent(3));
                 game.guest_packets
-                    .push(Clientbound::SetSimulationDistance(Distance {
-                        distance: 12,
-                    }));
-                game.guest_entity_events.push(3);
-                game.guest_cooldowns.push(("minecraft:test".into(), 20));
+                    .push(crate::game::lan_actions::Outgoing::Cooldown("minecraft:test".into(), 20));
             })
             .unwrap();
             assert_eq!(game.guest_packets.len(), 1);
-            assert!(game.guest_entity_events.is_empty() && game.guest_cooldowns.is_empty());
             assert_eq!(
                 game.lan.as_ref().unwrap().hub.guests[1]
                     .sender
@@ -2691,17 +2691,17 @@ pub(super) mod tests {
             assert!(rx.try_recv().is_err());
             let outer = game.enter_guest(real_id).unwrap();
             assert!(!game.lan_acting_fake);
-            game.guest_cooldowns.push(("minecraft:real".into(), 7));
+            game.guest_packets.push(crate::game::lan_actions::Outgoing::Cooldown("minecraft:real".into(), 7));
             game.guest_player_sounds
                 .push(("outer".into(), [0.0; 3], 1.0, 1.0));
             game.as_guest(fake_id, |game| {
                 assert!(game.lan_acting_fake);
-                game.guest_cooldowns.push(("minecraft:fake".into(), 20));
+                game.guest_packets.push(crate::game::lan_actions::Outgoing::Cooldown("minecraft:fake".into(), 20));
             })
             .unwrap();
             assert!(!game.lan_acting_fake);
-            assert_eq!(game.guest_cooldowns.len(), 1);
-            assert_eq!(&*game.guest_cooldowns[0].0, "minecraft:real");
+            assert_eq!(game.guest_packets.len(), 1);
+            assert_eq!(game.guest_packets[0].cooldown_group(), Some("minecraft:real"));
             assert_eq!(game.guest_player_sounds[0].0, "outer");
             game.guest_player_sounds.clear();
             game.leave_guest(outer);
@@ -2722,8 +2722,8 @@ pub(super) mod tests {
             // A real turn nested in a fake must not receive the fake's cooldown.
             let outer = game.enter_guest(fake_id).unwrap();
             assert!(game.lan_acting_fake);
-            game.guest_cooldowns
-                .push(("minecraft:fake_outer".into(), 8));
+            game.guest_packets
+                .push(crate::game::lan_actions::Outgoing::Cooldown("minecraft:fake_outer".into(), 8));
             game.guest_player_sounds
                 .push(("fake_outer".into(), [0.0; 3], 1.0, 1.0));
             game.as_guest(real_id, |game| {
@@ -2731,12 +2731,12 @@ pub(super) mod tests {
                 let before = game.stats.get("custom", "minecraft:jump");
                 game.award_stat("custom", "minecraft:jump", 1);
                 assert_eq!(game.stats.get("custom", "minecraft:jump"), before + 1);
-                game.guest_cooldowns
-                    .push(("minecraft:real_inner".into(), 9));
+                game.guest_packets
+                    .push(crate::game::lan_actions::Outgoing::Cooldown("minecraft:real_inner".into(), 9));
             })
             .unwrap();
             assert!(game.lan_acting_fake);
-            assert_eq!(&*game.guest_cooldowns[0].0, "minecraft:fake_outer");
+            assert_eq!(game.guest_packets[0].cooldown_group(), Some("minecraft:fake_outer"));
             assert_eq!(game.guest_player_sounds[0].0, "fake_outer");
             game.guest_player_sounds.clear();
             game.leave_guest(outer);
@@ -2776,8 +2776,8 @@ pub(super) mod tests {
             second.placed = true;
             game.lan.as_mut().unwrap().hub.guests.push(second);
             let outer = game.enter_guest(real_id).unwrap();
-            game.guest_cooldowns
-                .push(("minecraft:real_outer".into(), 10));
+            game.guest_packets
+                .push(crate::game::lan_actions::Outgoing::Cooldown("minecraft:real_outer".into(), 10));
             game.guest_player_sounds
                 .push(("real_outer".into(), [0.0; 3], 1.0, 1.0));
             game.as_guest(3, |game| {
@@ -2787,11 +2787,11 @@ pub(super) mod tests {
                         .is_none()
                 );
                 assert_eq!(game.lan_acting, Some(3));
-                game.guest_cooldowns
-                    .push(("minecraft:real_second".into(), 11))
+                game.guest_packets
+                    .push(crate::game::lan_actions::Outgoing::Cooldown("minecraft:real_second".into(), 11))
             })
             .unwrap();
-            assert_eq!(&*game.guest_cooldowns[0].0, "minecraft:real_outer");
+            assert_eq!(game.guest_packets[0].cooldown_group(), Some("minecraft:real_outer"));
             assert_eq!(game.guest_player_sounds[0].0, "real_outer");
             game.guest_player_sounds.clear();
             game.leave_guest(outer);

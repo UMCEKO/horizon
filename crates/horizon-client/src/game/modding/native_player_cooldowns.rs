@@ -89,7 +89,8 @@ impl Game<'_> {
         self.native_as_player_handle(player, |game| {
             game.cooldowns.remove(&group);
             if game.lan_acting.is_some() {
-                game.guest_cooldowns.push((group, 0));
+                game.guest_packets
+                    .push(super::lan_actions::Outgoing::Cooldown(group, 0));
             }
         })
     }

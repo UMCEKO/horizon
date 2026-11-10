@@ -115,9 +115,9 @@ impl Game<'_> {
         let count = removed.len() as i32;
         // A network player's client drops them from its book.
         if self.lan_acting.is_some() && !removed.is_empty() {
-            self.guest_packets.push(C::RecipeBookRemove(
+            self.guest_packets.push(crate::game::lan_actions::Outgoing::Packet(C::RecipeBookRemove(
                 horizon_protocol::packets::recipes::RecipeBookRemove { ids: removed },
-            ));
+            )));
         }
         count
     }
@@ -798,7 +798,7 @@ impl Game<'_> {
                     .hub
                     .sound_packet(sound, at, volume, pitch, source as i32, seed);
                 if t == Target::Player {
-                    self.guest_packets.push(packet);
+                    self.guest_packets.push(crate::game::lan_actions::Outgoing::Packet(packet));
                 } else {
                     host.hub.send_to(conn, &packet);
                 }
@@ -822,7 +822,7 @@ impl Game<'_> {
         for &t in targets {
             match t {
                 Target::Player if self.lan_acting.is_some() => {
-                    self.guest_packets.push(packet.clone());
+                    self.guest_packets.push(crate::game::lan_actions::Outgoing::Packet(packet.clone()));
                 }
                 Target::Player => self.audio.stop_sounds(sound, source),
                 Target::Guest(conn) => {
@@ -1057,7 +1057,7 @@ impl Game<'_> {
         for &t in &reached {
             match (t, &packet) {
                 (Target::Player, Some(p)) if self.lan_acting.is_some() => {
-                    self.guest_packets.push(p.clone());
+                    self.guest_packets.push(crate::game::lan_actions::Outgoing::Packet(p.clone()));
                 }
                 (Target::Player, _) => local = true,
                 (Target::Guest(conn), Some(p)) => {

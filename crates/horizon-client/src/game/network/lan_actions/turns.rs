@@ -412,11 +412,8 @@ impl Game<'_> {
         self.hook.finish_loan();
         self.bind_current_hook_residency();
         let packets = std::mem::take(&mut self.guest_packets);
-        let entity_events = std::mem::take(&mut self.guest_entity_events);
-        let cooldown_events = std::mem::take(&mut self.guest_cooldowns);
         let player_sounds = std::mem::take(&mut self.guest_player_sounds);
         let block_sounds = std::mem::take(&mut self.guest_block_sounds);
-        let equipment_breaks = std::mem::take(&mut self.guest_equipment_breaks);
         let swings = self.swings_started;
         let projectiles = self.creatures.projectiles.len();
         let modifiers = std::mem::replace(
@@ -507,12 +504,9 @@ impl Game<'_> {
             acting_fake,
             known_movement,
             packets,
-            entity_events,
-            equipment_breaks,
             swings,
             projectiles,
             modifiers,
-            cooldown_events,
             player_sounds,
             block_sounds,
             combat: host_combat,
@@ -639,12 +633,9 @@ impl Game<'_> {
             acting_fake,
             known_movement,
             packets,
-            entity_events,
-            equipment_breaks,
             swings,
             projectiles,
             modifiers,
-            cooldown_events,
             player_sounds,
             block_sounds,
         } = swap;
@@ -714,45 +705,21 @@ impl Game<'_> {
             self.send_level_sound(sound, Some(conn));
         }
         let outgoing = std::mem::replace(&mut self.guest_packets, packets);
+        let Some(host) = self.lan.as_ref() else {
+            unreachable!("LanHost dropped inside a guest turn; closes are deferred");
+        };
+        let online = host.hub.guests[i].participates_online();
+        let entity_id = host.hub.guests[i].entity_id;
+        drain_outbox(outgoing, entity_id, |delivery| match delivery {
+            Delivery::Guest(packet) if online => host.hub.send_to(conn, &packet),
+            Delivery::Guest(_) => {}
+            Delivery::TrackingAndSelf(packet) => {
+                host.hub.send_to_tracking_and_self(entity_id, &packet);
+            }
+        });
         let Some(host) = self.lan.as_mut() else {
             unreachable!("LanHost dropped inside a guest turn; closes are deferred");
         };
-        if host.hub.guests[i].participates_online() {
-            for packet in outgoing {
-                host.hub.send_to(conn, &packet);
-            }
-        }
-        // ServerPlayer.connection.send: the guest's own entity events.
-        let entity_id = host.hub.guests[i].entity_id;
-        let outgoing_events = std::mem::replace(&mut self.guest_entity_events, entity_events);
-        if host.hub.guests[i].participates_online() {
-            for event in outgoing_events {
-                host.hub.send_to(
-                    conn,
-                    &C::EntityEvent(play::EntityEvent {
-                        id: entity_id,
-                        event,
-                    }),
-                );
-            }
-        }
-        // LivingEntity.onEquippedItemBroken: `broadcastEntityEvent`, the guest too.
-        for event in std::mem::replace(&mut self.guest_equipment_breaks, equipment_breaks) {
-            host.hub.entity_event(entity_id, event);
-        }
-        // ServerItemCooldowns.onCooldownStarted: the guest's own cooldown.
-        let outgoing_cooldowns = std::mem::replace(&mut self.guest_cooldowns, cooldown_events);
-        if host.hub.guests[i].participates_online() {
-            for (group, duration) in outgoing_cooldowns {
-                host.hub.send_to(
-                    conn,
-                    &C::Cooldown(play::Cooldown {
-                        group: group.to_string(),
-                        duration,
-                    }),
-                );
-            }
-        }
         host.hub.guests[i].residency.extract();
         self.hook.begin_loan();
         (

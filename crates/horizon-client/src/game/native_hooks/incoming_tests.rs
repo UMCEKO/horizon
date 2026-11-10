@@ -52,7 +52,7 @@ fn held_durability_retains_the_stack_hand_and_explicit_break_slot() {
     game.offhand = Some(ItemStack::new("minecraft:flint_and_steel", 1));
     game.damage_held_in_slot(1, EquipmentSlot::OffHand);
     assert_eq!(game.offhand.as_ref().unwrap().damage, 1);
-    assert!(game.guest_equipment_breaks.is_empty());
+    assert!(crate::game::lan_actions::equipment_breaks(&game.guest_packets).is_empty());
     for (explicit, event) in [(true, 48), (false, 47)] {
         let mut tool = ItemStack::new("minecraft:flint_and_steel", 1);
         tool.damage = max - 1;
@@ -64,7 +64,7 @@ fn held_durability_retains_the_stack_hand_and_explicit_break_slot() {
         }
         assert!(game.offhand.is_none());
         assert_eq!(game.inventory[game.selected], Some(main.clone()));
-        assert_eq!(game.guest_equipment_breaks.last().unwrap(), &event);
+        assert_eq!(crate::game::lan_actions::equipment_breaks(&game.guest_packets).last().unwrap(), &event);
     }
     game.set_mode_id(1);
     game.offhand = Some(ItemStack::new("minecraft:flint_and_steel", 1));
