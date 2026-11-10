@@ -1,0 +1,16 @@
+[
+  {"name": "join"}, {"wait": 60},
+  {"name": "survival"}, {"command": "/gamemode survival"}, {"wait": 10},
+  {"name": "platform"}, {"command": "/fill ~-8 ~-1 ~-8 ~8 ~-1 ~8 minecraft:stone"}, {"wait": 20},
+  {"name": "walk"}, {"press": "key.forward"}, {"wait": 20}, {"release": "key.forward"}, {"wait": 10},
+  {"look": [180, 0]}, {"wait": 5},
+  {"name": "sprint"}, {"press": "key.sprint"}, {"press": "key.forward"}, {"wait": 20}, {"release": "key.forward"}, {"release": "key.sprint"}, {"wait": 10},
+  {"look": [-90, 0]}, {"wait": 5},
+  {"name": "step"}, {"command": "/setblock ^ ^ ^2 minecraft:stone"}, {"wait": 5}, {"press": "key.forward"}, {"wait": 20}, {"release": "key.forward"}, {"wait": 10},
+  {"name": "jump"}, {"key": "key.jump"}, {"wait": 10}, {"key": "key.jump"}, {"wait": 10}, {"key": "key.jump"}, {"wait": 10},
+  {"name": "swim"}, {"command": "/fill ~-1 ~ ~-1 ~1 ~2 ~1 minecraft:water"}, {"wait": 60}, {"command": "/fill ~-1 ~ ~-1 ~1 ~2 ~1 minecraft:air"}, {"wait": 20},
+  {"name": "fly"}, {"command": "/gamemode creative"}, {"wait": 10}, {"key": "key.jump"}, {"wait": 3}, {"key": "key.jump"}, {"wait": 10}, {"press": "key.forward"}, {"wait": 20}, {"release": "key.forward"}, {"wait": 10}, {"command": "/gamemode survival"}, {"wait": 10},
+  {"name": "third person"}, {"key": "key.togglePerspective"}, {"wait": 40}, {"key": "key.togglePerspective"}, {"key": "key.togglePerspective"}, {"wait": 10},
+  {"name": "fall"}, {"command": "/tp ~ ~8 ~"}, {"wait": 60},
+  {"name": "quit"}, {"quit": true}
+]

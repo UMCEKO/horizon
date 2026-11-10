@@ -33,6 +33,9 @@ TOLERANCE = 0.2
 SLACK = 2
 SIDES = ('client', 'server', 'other')
 ACCESS = ('accessor', 'invoker')
+_CLIENT_EVENT = 'net.neoforged.neoforge.client.event.'
+FRAME_EVENTS = frozenset([_CLIENT_EVENT + 'ViewportEvent$' + n for n in ('ComputeCameraAngles', 'ComputeFov', 'ComputeFogColor', 'RenderFog')]
+                         + [_CLIENT_EVENT + 'CalculatePlayerTurnEvent', _CLIENT_EVENT + 'CalculateDetachedCameraDistanceEvent'])
 
 
 # Part 1: the static mixin list
@@ -341,7 +344,17 @@ def mismatch(forge, horizon):
     return abs(horizon - forge) > TOLERANCE * forge + SLACK
 
 
-def compare_events(forge, horizon):
+def frame_listened_of(install):
+    """The frame events some mod listens to, from the install's replaces.json; all of them (strict) without that file."""
+    path = Path(install) / 'analysis' / 'replaces.json' if install else None
+    if not path or not path.is_file():
+        return set(FRAME_EVENTS)
+    events = json.loads(path.read_text()).get('events', {})
+    return {key.replace('/', '.') for key, value in events.items() if value.get('changes')} & FRAME_EVENTS
+
+
+def compare_events(forge, horizon, frame_listened=None):
+    frame_listened = set(FRAME_EVENTS if frame_listened is None else frame_listened)
     steps = forge['steps']
     totals = {side: [collections.Counter(), collections.Counter()] for side in SIDES}
     first_seen = {}
@@ -357,7 +370,7 @@ def compare_events(forge, horizon):
                 totals[side][1][cls] += n
             for cls in sorted(set(f['counts']) | set(h['counts'])):
                 a, b = f['counts'].get(cls, 0), h['counts'].get(cls, 0)
-                if mismatch(a, b):
+                if cls not in FRAME_EVENTS and mismatch(a, b):
                     counts.append({'step': name, 'side': side, 'event': cls, 'forge': a, 'horizon': b})
             common = [c for c in f['order'] if c in h['counts']]
             other = [c for c in h['order'] if c in f['counts']]
@@ -373,11 +386,15 @@ def compare_events(forge, horizon):
     first = {}
     for (side, cls), step in first_seen.items():
         first.setdefault(cls, step)
-    missing = [{'event': c, 'count': n, 'sides': sorted(sides[c]), 'first_step': first[c]} for c, n in forge_all.items() if c not in horizon_all]
+    missing = [{'event': c, 'count': n, 'sides': sorted(sides[c]), 'first_step': first[c]} for c, n in forge_all.items()
+               if c not in horizon_all and (c not in FRAME_EVENTS or c in frame_listened)]
+    frame_unlistened = [{'event': c, 'count': n} for c, n in sorted(forge_all.items()) if c in FRAME_EVENTS and c not in horizon_all and c not in frame_listened]
+    frame_present = sorted(c for c in FRAME_EVENTS if c in forge_all and c in horizon_all)
     extra = [{'event': c, 'count': n} for c, n in horizon_all.items() if c not in forge_all]
     missing.sort(key=lambda m: -m['count'])
     extra.sort(key=lambda m: -m['count'])
-    return {'missing': missing, 'extra': extra, 'count_mismatches': counts, 'order_differences': orders}
+    return {'missing': missing, 'extra': extra, 'count_mismatches': counts, 'order_differences': orders,
+            'frame_unlistened': frame_unlistened, 'frame_present': frame_present}
 
 
 def resolve_handler(known, mixin, name):
@@ -414,9 +431,9 @@ def compare_mixins(forge, horizon, mixins):
     return rows, other
 
 
-def compare(forge, horizon, mixins):
+def compare(forge, horizon, mixins, frame_listened=None):
     rows, other = compare_mixins(forge, horizon, mixins)
-    return {'events': compare_events(forge, horizon), 'mixins': rows, 'other_merged_calls': other, 'steps': forge['steps']}
+    return {'events': compare_events(forge, horizon, frame_listened), 'mixins': rows, 'other_merged_calls': other, 'steps': forge['steps']}
 
 
 def table(headers, rows):
@@ -435,6 +452,9 @@ def report_markdown(result, forge, horizon):
                                     ['mixin handlers: Horizon only', states['Horizon only']], ['mixin handlers: not exercised', states['not exercised']]]),
              '', f'Steps: {", ".join(result["steps"])}', '', '## Missing events (fired on the real client, never in Horizon)', '']
     lines += table(['event', 'side', 'count', 'first step'], [[m['event'], ','.join(m['sides']), m['count'], m['first_step']] for m in ev['missing']]) or ['none']
+    frame = [f'{c.rsplit(".", 1)[-1]} {"present" if c in ev["frame_present"] else "not fired (no listener)" if any(u["event"] == c for u in ev["frame_unlistened"]) else "missing (listened)"}'
+             for c in sorted(FRAME_EVENTS) if c in ev['frame_present'] or any(m['event'] == c for m in ev['missing']) or any(u['event'] == c for u in ev['frame_unlistened'])]
+    lines += ['', f'Frame events (by presence, HUD rule): {", ".join(frame) or "none in the run"}']
     lines += ['', '## Extra events (Horizon only)', ''] + table(['event', 'count'], [[m['event'], m['count']] for m in ev['extra']])
     lines += ['', '## Count mismatches', ''] + table(['step', 'side', 'event', 'forge', 'horizon'],
                                                      [[m['step'], m['side'], m['event'], m['forge'], m['horizon']] for m in ev['count_mismatches']])
@@ -479,7 +499,7 @@ def explain_run(out, install=None, cache=None):
 def compare_command(args):
     forge, horizon = load_run(args.forge, args.java), load_run(args.horizon, args.java)
     mixins = json.loads(Path(args.mixins).read_text())
-    write_report(compare(forge, horizon, mixins), forge, horizon, args.out)
+    write_report(compare(forge, horizon, mixins, frame_listened_of(getattr(args, 'install', None))), forge, horizon, args.out)
     print(Path(args.out) / 'report.md')
 
 
@@ -505,7 +525,7 @@ def flatten(scenario):
     return steps
 
 
-KEYS = {'key.inventory': 'e'}
+KEYS = {'key.inventory': 'e', 'key.jump': 'space', 'key.sprint': 'ctrl', 'key.forward': 'w', 'key.togglePerspective': 'f5'}
 
 
 def ctl_commands(kind, arg):
@@ -523,6 +543,8 @@ def ctl_commands(kind, arg):
         return [['mouse', button, 'down'], ['wait', str(arg)], ['mouse', button, 'up']]
     if kind == 'key':
         return [['key', KEYS[arg], 'tap']]
+    if kind in ('press', 'release'):
+        return [['key', KEYS[arg], 'down' if kind == 'press' else 'up']]
     if kind == 'close':
         return [['close']]
     raise ValueError(f'unknown step {kind}')
@@ -774,7 +796,7 @@ def run_command(args):
         print('horizon:', result)
     horizon = build_aggregate(out / 'horizon', java, out / 'horizon' / 'horizon.jfr') if (out / 'horizon' / 'horizon.jfr').is_file() else None
     if forge and horizon:
-        write_report(compare(forge, horizon, entries), forge, horizon, out)
+        write_report(compare(forge, horizon, entries, frame_listened_of(install)), forge, horizon, out)
         explain_run(out, install)
         print(out / 'report.md')
 
@@ -790,6 +812,7 @@ def main():
     c.add_argument('--horizon', required=True)
     c.add_argument('--mixins', required=True)
     c.add_argument('--out', required=True)
+    c.add_argument('--install', help='the install whose analysis/replaces.json says which frame events a mod listens to')
     c.add_argument('--java', default=os.environ.get('JAVA_HOME'))
     e = sub.add_parser('explain', help='regenerate the "Where to fix" section of a finished run')
     explain_module().add_arguments(e)
