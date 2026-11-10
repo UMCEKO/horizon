@@ -94,7 +94,7 @@ pub fn native_block_speed_factor(context: &LoopContext, state: BlockStateId, fac
 
 /// The factors the `block_jump_factor` and `block_speed_factor` parts give the blocks an entity
 /// reads, for the loop of the side that ticks it.
-pub(crate) struct ModBlockFactors<'a>(pub &'a LoopContext);
+pub struct ModBlockFactors<'a>(pub &'a LoopContext);
 impl BlockFactorEdits for ModBlockFactors<'_> {
     fn jump(&self, state: BlockStateId, mut factor: f32) -> f32 {
         native_block_jump_factor(self.0, state, &mut factor);

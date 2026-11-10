@@ -19,7 +19,7 @@ impl MovementEmission {
         self != Self::None
     }
 }
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MovementDistances {
     pub movement: f32,
     pub flight: f32,

@@ -758,102 +758,18 @@ impl ItemEntity {
             || horizontal > 1.0e-5
             || self.ticks.wrapping_add(self.id).is_multiple_of(4)
         {
-            let scene = SceneCollisions {
+            return self.move_step(
                 world,
-                binding: collision,
-                subject: None,
-            };
-            let from = self.position;
-            let mut wanted = self.velocity;
-            // Entity.move: a block the item sits in (cobweb, powder snow)
-            // scales this move once and stops it.
-            if self.stuck.length_squared() > 1.0e-7 {
-                wanted = wanted.multiply(self.stuck);
-                self.stuck = Vec3::ZERO;
-                self.velocity = Vec3::ZERO;
-            }
-            // Entity.move with noPhysics: straight through, the ground as it was.
-            let moved = if no_physics {
-                wanted
-            } else {
-                // `Entity.collide`: the entities that `canBeCollidedWith` the item stop it
-                // too (a boat, a shulker, a happy ghast held still; not a minecart), and
-                // so does the world border (`Entity.collectColliders`).
-                crate::collisions::EntityCollisions {
-                    blocks: scene,
-                    entities: entity_boxes,
-                    border: border.map(|b| (b, [self.position.x, self.position.z])),
-                }
-                .resolve_with_context(
-                    self.bounds(),
-                    wanted,
-                    0.0,
-                    self.on_ground,
-                    self.collision_context(),
-                )
-                .unwrap_or(Vec3::ZERO)
-            };
-            let applied = move_applies(wanted, moved);
-            if applied {
-                self.position = Vec3::new(
-                    self.position.x + moved.x,
-                    self.position.y + moved.y,
-                    self.position.z + moved.z,
-                );
-            }
-            let mut landed = None;
-            if !no_physics {
-                self.on_ground = wanted.y < 0.0 && moved.y != wanted.y;
-                // Entity.checkFallDamage: the move's drop counts out of water, and a landing
-                // hands the whole fall to the block below (`getOnPosLegacy`).
-                if water_height <= 0.0 && moved.y < 0.0 {
-                    self.fall_distance -= f64::from(moved.y as f32);
-                }
-                if self.on_ground {
-                    if self.fall_distance > 0.0 {
-                        let below = Vec3::new(0.0, -f64::from(0.2_f32), 0.0);
-                        let on = BlockPos::containing(self.position.add_vector(below));
-                        landed = Some((on, self.fall_distance));
-                    }
-                    self.fall_distance = 0.0;
-                }
-            }
-            // Entity.move: what the move was stopped on. They outlive the
-            // tick, as vanilla's fields do, for the tracker that sends the
-            // position at the type's update interval.
-            self.vertical_collision = moved.y != wanted.y;
-            // `Mth.equal` on x and z (1e-5 as a float), exact on y.
-            let differs = |a: f64, b: f64| (b - a).abs() >= 9.999_999_747_378_752e-6;
-            self.horizontal_collision = differs(moved.x, wanted.x) || differs(moved.z, wanted.z);
-            if moved.x != wanted.x {
-                self.velocity.x = 0.0;
-            }
-            if moved.z != wanted.z {
-                self.velocity.z = 0.0;
-            }
-            let vertical_contact = if self.vertical_collision && !no_physics {
-                let contact = self.vertical_contact(world, collision, blocks, moved);
-                let slime =
-                    self.on_ground && contact.is_some_and(|pos| slime_at(world, facts, pos));
-                self.velocity.y = vertical_collision_velocity(
-                    wanted.y,
-                    moved.y,
-                    ITEM_GRAVITY,
-                    self.on_ground,
-                    slime,
-                );
-                contact
-            } else {
-                None
-            };
-            return ItemStep {
-                old_velocity,
-                vertical_contact,
-                movement: Some(moved),
-                landed,
-                prior_fall,
-                fall_move: (!no_physics).then_some((from, moved, applied)),
-            };
+                facts,
+                collision,
+                self.velocity,
+                no_physics,
+                water_height > 0.0,
+                entity_boxes,
+                border,
+                blocks,
+                (old_velocity, prior_fall),
+            );
         }
         // applyEffectsFromBlocksForLastMovements: still lift/drag while idle.
         if !no_physics {
@@ -866,6 +782,139 @@ impl ItemEntity {
             movement: None,
             prior_fall,
             fall_move: None,
+        }
+    }
+
+    /// `Entity.move(delta)` of the item outside its tick: the move, its fall and stops, before the
+    /// owner's landing and [`ItemEntity::finish_move_block_effects`].
+    pub fn move_by(
+        &mut self,
+        world: &World,
+        facts: &BlockFacts,
+        collision: &BlockCollisionRegistry<'_>,
+        wanted: Vec3,
+        no_physics: bool,
+        entity_boxes: &[Aabb],
+        border: Option<&BorderGeometry>,
+        blocks: Option<&BoundMovementProperties>,
+    ) -> ItemStep {
+        let before = (self.velocity, self.fall_distance);
+        self.move_step(
+            world,
+            facts,
+            collision,
+            wanted,
+            no_physics,
+            self.was_touching_water,
+            entity_boxes,
+            border,
+            blocks,
+            before,
+        )
+    }
+
+    /// `Entity.move` of `wanted`; `before` is the motion and fall the step reports as its start.
+    fn move_step(
+        &mut self,
+        world: &World,
+        facts: &BlockFacts,
+        collision: &BlockCollisionRegistry<'_>,
+        mut wanted: Vec3,
+        no_physics: bool,
+        in_water: bool,
+        entity_boxes: &[Aabb],
+        border: Option<&BorderGeometry>,
+        blocks: Option<&BoundMovementProperties>,
+        (old_velocity, prior_fall): (Vec3, f64),
+    ) -> ItemStep {
+        let scene = SceneCollisions {
+            world,
+            binding: collision,
+            subject: None,
+        };
+        let from = self.position;
+        // Entity.move: a block the item sits in (cobweb, powder snow)
+        // scales this move once and stops it.
+        if self.stuck.length_squared() > 1.0e-7 {
+            wanted = wanted.multiply(self.stuck);
+            self.stuck = Vec3::ZERO;
+            self.velocity = Vec3::ZERO;
+        }
+        // Entity.move with noPhysics: straight through, the ground as it was.
+        let moved = if no_physics {
+            wanted
+        } else {
+            // `Entity.collide`: the entities that `canBeCollidedWith` the item stop it
+            // too (a boat, a shulker, a happy ghast held still; not a minecart), and
+            // so does the world border (`Entity.collectColliders`).
+            crate::collisions::EntityCollisions {
+                blocks: scene,
+                entities: entity_boxes,
+                border: border.map(|b| (b, [self.position.x, self.position.z])),
+            }
+            .resolve_with_context(
+                self.bounds(),
+                wanted,
+                0.0,
+                self.on_ground,
+                self.collision_context(),
+            )
+            .unwrap_or(Vec3::ZERO)
+        };
+        let applied = move_applies(wanted, moved);
+        if applied {
+            self.position = Vec3::new(
+                self.position.x + moved.x,
+                self.position.y + moved.y,
+                self.position.z + moved.z,
+            );
+        }
+        let mut landed = None;
+        if !no_physics {
+            self.on_ground = wanted.y < 0.0 && moved.y != wanted.y;
+            // Entity.checkFallDamage: the move's drop counts out of water, and a landing
+            // hands the whole fall to the block below (`getOnPosLegacy`).
+            if !in_water && moved.y < 0.0 {
+                self.fall_distance -= f64::from(moved.y as f32);
+            }
+            if self.on_ground {
+                if self.fall_distance > 0.0 {
+                    let below = Vec3::new(0.0, -f64::from(0.2_f32), 0.0);
+                    let on = BlockPos::containing(self.position.add_vector(below));
+                    landed = Some((on, self.fall_distance));
+                }
+                self.fall_distance = 0.0;
+            }
+        }
+        // Entity.move: what the move was stopped on. They outlive the
+        // tick, as vanilla's fields do, for the tracker that sends the
+        // position at the type's update interval.
+        self.vertical_collision = moved.y != wanted.y;
+        // `Mth.equal` on x and z (1e-5 as a float), exact on y.
+        let differs = |a: f64, b: f64| (b - a).abs() >= 9.999_999_747_378_752e-6;
+        self.horizontal_collision = differs(moved.x, wanted.x) || differs(moved.z, wanted.z);
+        if moved.x != wanted.x {
+            self.velocity.x = 0.0;
+        }
+        if moved.z != wanted.z {
+            self.velocity.z = 0.0;
+        }
+        let vertical_contact = if self.vertical_collision && !no_physics {
+            let contact = self.vertical_contact(world, collision, blocks, moved);
+            let slime = self.on_ground && contact.is_some_and(|pos| slime_at(world, facts, pos));
+            self.velocity.y =
+                vertical_collision_velocity(wanted.y, moved.y, ITEM_GRAVITY, self.on_ground, slime);
+            contact
+        } else {
+            None
+        };
+        ItemStep {
+            old_velocity,
+            vertical_contact,
+            movement: Some(moved),
+            landed,
+            prior_fall,
+            fall_move: (!no_physics).then_some((from, moved, applied)),
         }
     }
 

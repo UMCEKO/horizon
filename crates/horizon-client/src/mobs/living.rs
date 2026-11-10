@@ -742,7 +742,16 @@ impl Mob {
         level: &mut DamageLevel<'_>,
         events: &mut Vec<MobEvent>,
     ) {
-        let mut wanted = self.velocity;
+        self.do_move_by(w, level, self.velocity, events);
+    }
+    /// `Entity.move(delta)`: `do_move` of a movement other than the motion.
+    pub fn do_move_by(
+        &mut self,
+        w: &MobWorld,
+        level: &mut DamageLevel<'_>,
+        mut wanted: Vec3,
+        events: &mut Vec<MobEvent>,
+    ) {
         // Entity.move: a block the mob is stuck in (sweet berry bush) scales
         // this move once and stops it.
         if self.stuck_multiplier.length_squared() > 1.0e-7 {

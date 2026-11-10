@@ -1,5 +1,10 @@
 //! Entity.move ordering around collision, support, landing and movement effects.
-use crate::{movement_emission::MovementEmission, registry::BlockStateId};
+use crate::{
+    ground_support::GroundState,
+    movement_emission::{MovementDistances, MovementEmission},
+    piston_movement::PistonMovement,
+    registry::BlockStateId,
+};
 use horizon_core::{geometry::Vec3, position::BlockPos};
 use std::collections::VecDeque;
 
@@ -11,20 +16,20 @@ pub enum MoverType {
     ShulkerBox,
     Shulker,
 }
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct CollisionFlags {
     pub horizontal: bool,
     pub vertical: bool,
     pub below: bool,
     pub minor: bool,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MovementRecord {
     pub from: Vec3,
     pub to: Vec3,
     pub original: Option<Vec3>,
 }
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct MovementHistory {
     records: VecDeque<MovementRecord>,
 }
@@ -47,6 +52,17 @@ impl MovementHistory {
     pub fn clear(&mut self) {
         self.records.clear();
     }
+}
+/// What vanilla's `Entity` keeps for `move`, for the kinds that have no player-sized state of their own.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MoveState {
+    pub fall_distance: f64,
+    pub stuck: Vec3,
+    pub collision: CollisionFlags,
+    pub history: MovementHistory,
+    pub ground: GroundState,
+    pub steps: MovementDistances,
+    pub piston: PistonMovement,
 }
 /// The provider retains entity fields so callbacks can mutate them. Hooks below
 /// are native phase boundaries; bind collision, support, landing, restitution
