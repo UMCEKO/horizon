@@ -3,8 +3,8 @@ use super::*;
 
 /// `DataComponentPredicate.singleCodec`: a single predicate's type discriminator
 /// (`predicate`) and its wrapped codec's separate `value` field.
-pub(super) fn decode(m: &Map<String, Value>) -> Result<Value> {
-    let id = component_type(required(m, "predicate")?)?;
+pub(super) fn decode(m: &Map<String, Value>, types: &ComponentTypes) -> Result<Value> {
+    let id = component_type(required(m, "predicate")?, types)?;
     let mut value = required(m, "value")?.clone();
     if matches!(
         id.as_str(),
@@ -165,7 +165,7 @@ mod tests {
         let condition = json!({"predicate":"enchantments", "value":[
             {"enchantments":"#horizon:mace", "levels":{"min":3}}
         ]});
-        let predicate = decode(condition.as_object().unwrap()).unwrap();
+        let predicate = decode(condition.as_object().unwrap(), ComponentTypes::vanilla()).unwrap();
         let mut components = Components::from_iter([(
             "minecraft:enchantments".into(),
             json!({"minecraft:density":3}),

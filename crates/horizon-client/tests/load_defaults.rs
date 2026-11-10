@@ -85,7 +85,7 @@ fn default_components_reader_baseline() -> client::Result<()> {
         })
         .is_ok()
     );
-    horizon_protocol::item::custom::install(0, vec!["probe:marker".into()]).unwrap();
+    horizon_protocol::item::custom::install(Vec::new(), vec!["probe:marker".into()]).unwrap();
 
     let context = LoadContext::new(
         DataLoadOrigin::ClientPreload,
