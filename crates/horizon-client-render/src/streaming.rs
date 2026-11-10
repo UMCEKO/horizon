@@ -1813,7 +1813,7 @@ impl Streaming {
         self.scan_area = area;
         self.scan_age = if sweep { 0 } else { self.scan_age + 1 };
         self.requeue();
-        self.relight_edits(world);
+        crate::spans::time("st_relight_edits", || self.relight_edits(world));
         let deferred = std::mem::take(&mut self.deferred).into_iter();
         let received = self.shared.done.take();
         self.resume_plan_update(
@@ -1830,6 +1830,7 @@ impl Streaming {
 
     /// Resume processing the same batch after the caller saves a late column.
     pub fn resume_plan_update(&mut self, world: &mut World, mut resume: PlanResume) -> PlanStep {
+        let results_span = crate::spans::guard("st_results");
         while let Some(done) = resume
             .deferred
             .next()
@@ -1884,6 +1885,7 @@ impl Streaming {
                 }
             }
         }
+        drop(results_span);
         self.free(resume.stale);
         let far = if resume.sweep {
             plan_unloads(world, |x, z| {
@@ -1917,6 +1919,7 @@ impl Streaming {
         world: &mut World,
         plan: StreamingUpdate,
     ) -> (StreamingCommit, Vec<ProtoSave>) {
+        let _sweep = crate::spans::guard("st_sweep");
         let StreamingUpdate {
             uploads,
             sweep,
@@ -2017,6 +2020,7 @@ impl Streaming {
         if paused {
             return (uploads, removed);
         }
+        let mut laps = crate::spans::laps();
         let mut light = std::mem::take(&mut self.light_scratch);
         light.clear();
         let mut gone = std::mem::take(&mut self.gone_scratch);
@@ -2056,6 +2060,7 @@ impl Streaming {
                 self.submit(Some((x, z)), 0, Job::Finish(proto));
             }
         }
+        laps.lap("st_finalize");
         // Decorate chunks whose 3x3 proto neighbourhood is available, in
         // vanilla's order: decoration is order dependent where write regions
         // overlap (see `DecorationOrder`).
@@ -2179,7 +2184,9 @@ impl Streaming {
                 self.submit(Some((x, z)), 1, Job::Decorate(x, z, region, finals));
             }
         }
+        laps.lap("st_decorate");
         self.schedule_generation(world, workers);
+        laps.lap("st_generate");
         // Lighting once all neighbours exist, nearest first and only as
         // much of it as the workers can chew. Vanilla's light engine also
         // hands a bounded queue to its workers and reschedules what did
@@ -2215,6 +2222,7 @@ impl Streaming {
                 Job::Light(x, z, region, self.sequence, self.sky_light),
             );
         }
+        laps.lap("st_light");
         // A server draws nothing: its sections are never meshed.
         if !self.mesh {
             world.dirty_sections.clear();
@@ -2249,6 +2257,7 @@ impl Streaming {
                 !back
             });
         }
+        laps.lap("st_waiting");
         // Column by column: the checks below hold for all of a column's
         // sections, and columns waiting for light cost one look per frame.
         columns.extend(world.dirty_sections.columns());
@@ -2281,6 +2290,7 @@ impl Streaming {
             }
             candidates.push((self.distance(x, z), x, z, sections));
         }
+        laps.lap("st_candidates");
         // Nearest first, and only as many sections as the workers can chew.
         // Every ready column used to be submitted at once, so at a wide
         // render distance the queue — and `meshing`, and each job's 3x3

@@ -181,7 +181,7 @@ impl Game<'_> {
             horizon_client::command::MOD_COMMAND,
             &arguments,
         );
-        with_studio_commands(&with_native_commands(&tree_with_mods, &["studio"]))
+        with_studio_commands(&with_native_commands(&tree_with_mods, &["studio"])).with_profiler()
     }
 }
 
@@ -1362,6 +1362,13 @@ impl Game<'_> {
             return;
         }
         self.ui.chat.add_recent(&message);
+        if let Some(args) = message
+            .strip_prefix('/')
+            .and_then(super::profile_capture::profiler_args)
+        {
+            self.profiler_chat(args);
+            return;
+        }
         // On a server (single player's own included) the server runs it,
         // unless a client mod owns the command.
         if self.remote.is_some() {
@@ -1609,6 +1616,10 @@ impl Game<'_> {
     /// commands take it.
     pub(super) fn click_command(&mut self, command: &str) {
         let command = command.strip_prefix('/').unwrap_or(command);
+        if let Some(args) = super::profile_capture::profiler_args(command) {
+            self.profiler_chat(args);
+            return;
+        }
         if self.client_mod_command(command) {
             return;
         }

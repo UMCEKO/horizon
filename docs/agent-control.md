@@ -154,6 +154,7 @@ passes on without checking it).
 | Waits and events | (all) | yes | yes | `wait`, `wait-for`, `events` |
 | Effects, experience, enchantments, potions, fill | (cheats) | yes | yes | `effect`, `effects`, `xp`, `enchant`, `potion`, `fill` |
 | Benchmarks and frame stats | (all) | yes | yes | `bench`, `stats`, `fly` |
+| Performance captures | `/profiler` | yes | yes | `profile [client\|server] start\|stop\|status\|mark`, `trace`; read `.hzperf` with `horizon-perf` or the web viewer |
 
 ## No AI
 
@@ -370,6 +371,7 @@ A recording is one folder, a bundle is that folder plus the logs in one zip:
   stops it and writes the bundle (the chat shows the path); **F3+E** writes the bundle of the
   newest recording. The keys are off until **Recording shortcuts** is turned on (AI Agent page);
   the page also has the two buttons and a live recording/replay line.
+- `/profiler start` and `/profiler stop` in chat start and save a capture; add `client` or `server` for one side. `/profiler status` shows whether one is running.
 - `record-replay NAME [--stop] [--in-place] [--keep-world] [--timeout S]` is the best effort
   replay: it copies the recording's world into `saves/`, opens it, restores the recorded player
   position, rotation and velocity, and feeds the recorded keys, mouse, wheel, look, pad events
