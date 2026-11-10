@@ -820,6 +820,22 @@ impl Launcher {
                     cx.notify();
                 })),
             )
+            .child(
+                button(
+                    "instance-java-mods",
+                    if self.java_mods.is_some() {
+                        tr("Close Java mods")
+                    } else {
+                        tr("Java mods…")
+                    },
+                    Kind::Ghost,
+                    &t,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.toggle_java_mods();
+                    cx.notify();
+                })),
+            )
             .child(self.shortcut_button(&instance, cx))
             .child(
                 button("instance-folder", "Open folder", Kind::Ghost, &t).on_click(
