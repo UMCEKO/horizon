@@ -2,6 +2,7 @@
 //! contents as built by the game's own display generators
 //! (`creative-inventory.json`), a 9x5 scrolling grid and the search tab.
 use crate::{Result, enchant::Enchantments, items::ItemStack, lang, ui::EditBox};
+use horizon_core::nbt::Tag;
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -28,6 +29,28 @@ pub struct Tab {
     pub page: u32,
     /// A Polytone creative tab modifier's `name`: its text and colour, over the tab's own.
     pub name: Option<(String, Option<u32>)>,
+    /// What a Java client's tab sets itself; the export's leave it to vanilla's.
+    pub look: TabLook,
+}
+/// The parts of a tab a Java client's `CreativeModeTab` sets; None or false is vanilla's for its kind.
+#[derive(Clone, Debug, Default)]
+pub struct TabLook {
+    /// The icon stack, components included.
+    pub icon: Option<ItemStack>,
+    /// `getDisplayName`, read in the language in use.
+    pub title: Option<Tag>,
+    /// GUI atlas key of `getBackgroundTexture`.
+    pub background: Option<String>,
+    /// GUI atlas key of `getScrollerSprite`.
+    pub scroller: Option<String>,
+    /// `getLabelColor`, as ARGB.
+    pub label_color: Option<u32>,
+    pub hide_title: bool,
+    pub no_scroll_bar: bool,
+    /// `isAlignedRight`, when it is not the column's.
+    pub aligned_right: Option<bool>,
+    /// Shown on every page of tabs (a Java tab without a page).
+    pub every_page: bool,
 }
 impl Tab {
     /// The tab without its stacks.
@@ -44,6 +67,7 @@ impl Tab {
             hotbar: self.hotbar,
             page: self.page,
             name: self.name.clone(),
+            look: self.look.clone(),
         }
     }
 }
@@ -55,6 +79,136 @@ struct Exported {
     /// `CreativeModeTab.Type.CATEGORY`: shown only with a stack (`shouldDisplay`).
     category: bool,
     operator: Vec<bool>,
+}
+/// `CreativeModeTab.Type`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JavaTabKind {
+    Category,
+    Search,
+    Inventory,
+    Hotbar,
+}
+/// One distinct stack of the Java client's tabs.
+#[derive(Clone, Debug)]
+pub struct JavaTabStack {
+    pub stack: ItemStack,
+    /// `SessionSearchTrees.getTooltipLines`, not yet lower-cased.
+    pub lines: Vec<String>,
+    /// Its item tags, as `namespace:path`.
+    pub tags: Vec<String>,
+}
+/// A tab of the Java client; `items` index `JavaTabs::stacks`.
+#[derive(Clone, Debug)]
+pub struct JavaTab {
+    pub id: String,
+    pub title: Tag,
+    pub icon: ItemStack,
+    /// `namespace:textures/....png` of `getBackgroundTexture`.
+    pub background: String,
+    pub kind: JavaTabKind,
+    pub top: bool,
+    pub column: u32,
+    pub aligned_right: bool,
+    /// The page of tabs it is on; None on every page.
+    pub page: Option<u32>,
+    pub can_scroll: bool,
+    pub show_title: bool,
+    pub label_color: u32,
+    /// `namespace:path` sprite id of `getScrollerSprite`.
+    pub scroller: String,
+    pub items: Vec<usize>,
+}
+/// What the Java client built at its join: the tabs for both values of `hasPermissions`.
+#[derive(Clone, Debug)]
+pub struct JavaTabs {
+    pub stacks: Vec<Option<JavaTabStack>>,
+    pub without_permissions: Vec<JavaTab>,
+    pub with_permissions: Vec<JavaTab>,
+}
+/// `namespace:textures/path.png` as a key of the GUI atlas.
+fn texture_key(id: &str) -> Option<String> {
+    let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
+    let path = path.strip_prefix("textures/")?.strip_suffix(".png")?;
+    Some(atlas_key(namespace, path))
+}
+fn atlas_key(namespace: &str, path: &str) -> String {
+    if namespace == "minecraft" {
+        path.to_owned()
+    } else {
+        format!("{namespace}:{path}")
+    }
+}
+impl JavaTabs {
+    /// The tabs of the permitted build, each stack marked `operator` when the other build lacks it.
+    fn exported(&self) -> (Vec<Exported>, Vec<(ItemStack, SearchEntry, bool)>) {
+        let entry = |s: &JavaTabStack| {
+            let (namespace, path) = split_id(&java_lower(&s.stack.item));
+            SearchEntry {
+                namespace,
+                path,
+                lines: s.lines.iter().map(|l| java_lower(l)).collect(),
+                tags: s.tags.iter().map(|t| split_id(&java_lower(t))).collect(),
+            }
+        };
+        let mut search = Vec::new();
+        let exported = self
+            .with_permissions
+            .iter()
+            .map(|t| {
+                let plain = self
+                    .without_permissions
+                    .iter()
+                    .find(|o| o.id == t.id)
+                    .map(|o| &o.items);
+                let mut items = Vec::new();
+                let mut operator = Vec::new();
+                for &i in &t.items {
+                    let Some(Some(s)) = self.stacks.get(i) else {
+                        continue;
+                    };
+                    let only = plain.is_none_or(|p| !p.contains(&i));
+                    if t.kind == JavaTabKind::Search {
+                        search.push((s.stack.clone(), entry(s), only));
+                    }
+                    items.push(s.stack.clone());
+                    operator.push(only);
+                }
+                let tab = Tab {
+                    id: t.id.clone(),
+                    title: String::new(),
+                    icon: t.icon.item.to_string(),
+                    items,
+                    top: t.top,
+                    column: t.column,
+                    search: t.kind == JavaTabKind::Search,
+                    inventory: t.kind == JavaTabKind::Inventory,
+                    hotbar: t.kind == JavaTabKind::Hotbar,
+                    page: t.page.unwrap_or(0),
+                    name: None,
+                    look: TabLook {
+                        icon: Some(t.icon.clone()),
+                        title: Some(t.title.clone()),
+                        background: texture_key(&t.background),
+                        scroller: t
+                            .scroller
+                            .split_once(':')
+                            .map(|(n, p)| atlas_key(n, &format!("gui/sprites/{p}"))),
+                        label_color: Some(t.label_color),
+                        hide_title: !t.show_title,
+                        no_scroll_bar: !t.can_scroll,
+                        aligned_right: Some(t.aligned_right),
+                        every_page: t.page.is_none(),
+                    },
+                };
+                Exported {
+                    tab,
+                    category: t.kind == JavaTabKind::Category,
+                    operator,
+                }
+            })
+            .collect();
+        (exported, search)
+    }
 }
 /// What the client's creative search trees (SessionSearchTrees) index for one
 /// stack of the search tab: its creative tooltip lines and its item tags.
@@ -96,6 +250,8 @@ pub struct Creative {
     /// Whether the game built the tabs since they loaded (`build`), which
     /// asks the mods for their stacks: until then only the exported ones.
     built: bool,
+    /// The export's tabs, while a Java client's replace them (`set_java_tabs`).
+    set_aside: Option<(Vec<Exported>, Vec<(ItemStack, SearchEntry, bool)>)>,
     /// The stacks mods added to item tabs in the last build
     /// (`BuildCreativeModeTabContentsEvent`), by tab id, in the order asked.
     added: Vec<(String, Vec<ItemStack>)>,
@@ -339,6 +495,7 @@ impl Creative {
                     hotbar: kind == "HOTBAR",
                     page: t["page"].as_u64().unwrap_or(0) as u32,
                     name: None,
+                    look: TabLook::default(),
                 },
                 category: kind == "CATEGORY",
                 operator,
@@ -380,6 +537,7 @@ impl Creative {
                     hotbar: false,
                     page: 0,
                     name: None,
+                    look: TabLook::default(),
                 },
                 category: false,
             });
@@ -419,6 +577,7 @@ impl Creative {
             exported_search,
             permissions: false,
             built: false,
+            set_aside: None,
             added: Vec::new(),
             shown: Mutex::new(None),
             lines_cache: Mutex::new(None),
@@ -519,6 +678,7 @@ impl Creative {
                 .collect();
             if let Some(icon) = &m.icon {
                 tab.icon = icon.clone();
+                tab.look.icon = None;
             }
             if let Some(name) = &m.name {
                 tab.name = Some(component_text(name));
@@ -535,6 +695,10 @@ impl Creative {
     pub fn tabs_to_build(&self, permissions: bool) -> Option<Vec<String>> {
         if self.built && permissions == self.permissions {
             return None;
+        }
+        // The Java client built every tab's stacks itself.
+        if self.set_aside.is_some() {
+            return Some(Vec::new());
         }
         Some(
             self.exported
@@ -567,26 +731,7 @@ impl Creative {
         self.built = true;
         self.added = added;
         self.rebuild();
-        match self.tabs.iter().position(|t| t.id == selected) {
-            Some(tab) => {
-                self.selected = tab;
-                // ItemPickerMenu.getScrollForRowIndex.
-                let hidden = self.hidden_rows(names);
-                self.scroll = if hidden > 0 {
-                    (row as f32 / hidden as f32).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-            }
-            None => {
-                // CreativeModeTabs.getDefaultTab.
-                let default = self
-                    .tabs
-                    .iter()
-                    .position(|t| t.id == "minecraft:building_blocks");
-                self.select(default.unwrap_or(0));
-            }
-        }
+        self.reselect(&selected, row, names);
     }
     /// Where a stack comes in the creative tabs (the search tab lists them
     /// all, in tab order): the same stack's place, else its item's first.
@@ -597,6 +742,59 @@ impl Creative {
             .iter()
             .position(|s| s.same_item_same_components(stack))
             .or_else(|| items.iter().position(|s| s.item == stack.item))
+    }
+    /// A tab's title from the Java client, in the language in use; None for the export's.
+    pub fn java_title(tab: &Tab) -> Option<String> {
+        Some(crate::component::name_text(tab.look.title.as_ref()?).plain())
+    }
+    /// Puts the Java client's tabs in place of the export's for this session: both
+    /// `hasPermissions` builds, merged so a permission change needs no Java.
+    pub fn set_java_tabs(&mut self, tabs: &JavaTabs, names: &Names) {
+        let (exported, search) = tabs.exported();
+        let selected = self.tab().id.clone();
+        let row = self.first_row(names);
+        let old = (
+            std::mem::replace(&mut self.exported, exported),
+            std::mem::replace(&mut self.exported_search, search),
+        );
+        self.set_aside.get_or_insert(old);
+        self.added.clear();
+        self.rebuild();
+        self.reselect(&selected, row, names);
+    }
+    /// The Java client left: back to the export's tabs.
+    pub fn clear_java_tabs(&mut self, names: &Names) {
+        let Some((exported, search)) = self.set_aside.take() else {
+            return;
+        };
+        let selected = self.tab().id.clone();
+        let row = self.first_row(names);
+        self.exported = exported;
+        self.exported_search = search;
+        self.built = false;
+        self.rebuild();
+        self.reselect(&selected, row, names);
+    }
+    /// The selected tab again after the tabs changed, else the default tab.
+    fn reselect(&mut self, selected: &str, row: usize, names: &Names) {
+        match self.tabs.iter().position(|t| t.id == selected) {
+            Some(tab) => {
+                self.selected = tab;
+                let hidden = self.hidden_rows(names);
+                self.scroll = if hidden > 0 {
+                    (row as f32 / hidden as f32).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+            }
+            None => {
+                let default = self
+                    .tabs
+                    .iter()
+                    .position(|t| t.id == "minecraft:building_blocks");
+                self.select(default.unwrap_or(0));
+            }
+        }
     }
     /// The tabs without their stacks: what the screen draws of them each frame.
     pub fn tab_headers(&self) -> Vec<Tab> {
@@ -621,6 +819,7 @@ impl Creative {
                 hotbar: false,
                 page: 0,
                 name: None,
+                look: TabLook::default(),
             });
         }
         &self.tabs[self.selected.min(self.tabs.len() - 1)]
@@ -658,7 +857,7 @@ impl Creative {
     /// The tabs every page shows (NeoForge's): the right-hand ones, saved
     /// hotbars, search, operator blocks and the inventory.
     fn on_every_page(t: &Tab) -> bool {
-        t.column >= 5
+        t.column >= 5 || t.look.every_page
     }
     /// Whether tab `t` shows on the page shown.
     pub fn on_page(&self, t: &Tab) -> bool {
@@ -884,7 +1083,7 @@ impl Creative {
     }
     /// CreativeModeInventoryScreen.canScroll: more than five rows, on a tab with a scrollbar.
     pub fn can_scroll(&self, names: &Names) -> bool {
-        !self.tab().inventory && self.items(names).len() > 45
+        !self.tab().inventory && !self.tab().look.no_scroll_bar && self.items(names).len() > 45
     }
     /// insideScrollbar, for a point relative to the screen origin.
     pub fn inside_scrollbar(&self, x: f32, y: f32) -> bool {
@@ -979,9 +1178,9 @@ impl Creative {
     /// Tab button position relative to the screen origin (CreativeModeInventoryScreen.getTabX/Y).
     pub fn tab_position(tab: &Tab) -> (f32, f32) {
         let mut x = tab.column as f32 * 27.0;
-        if tab.column >= 5 {
+        if tab.look.aligned_right.unwrap_or(tab.column >= 5) {
             // Right-aligned tabs (search, operator, inventory).
-            x = Self::WIDTH - 27.0 * (7 - tab.column) as f32 + 1.0;
+            x = Self::WIDTH - 27.0 * 7u32.saturating_sub(tab.column) as f32 + 1.0;
         }
         let y = if tab.top {
             -Self::TAB_ROW_DEPTH
@@ -1977,6 +2176,118 @@ mod tests {
         assert_eq!(c.search.value, "world");
     }
 
+    fn java_tab(
+        id: &str,
+        kind: JavaTabKind,
+        page: Option<u32>,
+        column: u32,
+        items: Vec<usize>,
+    ) -> JavaTab {
+        JavaTab {
+            id: id.into(),
+            title: Tag::String("title".into()),
+            icon: ItemStack::new("minecraft:stone", 1),
+            background: "mymod:textures/gui/panel.png".into(),
+            kind,
+            top: true,
+            column,
+            aligned_right: column >= 5,
+            page,
+            can_scroll: true,
+            show_title: true,
+            label_color: 0xff40_4040,
+            scroller: "mymod:container/scroller".into(),
+            items,
+        }
+    }
+
+    fn java_tabs() -> JavaTabs {
+        let stack = |item: &str, line: &str| {
+            Some(JavaTabStack {
+                stack: ItemStack::new(item, 1),
+                lines: vec![line.into()],
+                tags: Vec::new(),
+            })
+        };
+        let set = |operator: bool| {
+            let mut tabs = vec![
+                java_tab(
+                    "minecraft:building_blocks",
+                    JavaTabKind::Category,
+                    Some(0),
+                    0,
+                    vec![0],
+                ),
+                java_tab("mymod:main", JavaTabKind::Category, Some(1), 0, vec![1]),
+                java_tab("minecraft:search", JavaTabKind::Search, None, 6, vec![0, 1]),
+            ];
+            if operator {
+                tabs.push(java_tab(
+                    "minecraft:op_blocks",
+                    JavaTabKind::Category,
+                    None,
+                    5,
+                    vec![2],
+                ));
+            }
+            tabs
+        };
+        JavaTabs {
+            stacks: vec![
+                stack("minecraft:stone", "Stone"),
+                stack("mymod:energy_cube", "Energy Cube"),
+                stack("minecraft:command_block", "Command Block"),
+            ],
+            without_permissions: set(false),
+            with_permissions: set(true),
+        }
+    }
+
+    fn ids(c: &Creative) -> Vec<&str> {
+        c.tabs.iter().map(|t| t.id.as_str()).collect()
+    }
+
+    #[test]
+    fn java_tabs_replace_the_export_until_the_client_leaves() {
+        let names = Names::default();
+        let mut c = tooltip_tabs();
+        let exported = ids(&c).join(" ");
+        c.set_java_tabs(&java_tabs(), &names);
+        assert_eq!(
+            ids(&c),
+            [
+                "minecraft:building_blocks",
+                "mymod:main",
+                "minecraft:search"
+            ]
+        );
+        assert_eq!(c.pages(), 2);
+        assert_eq!(c.search_results("energy cube", &names), [1]);
+        let main = &c.tabs[1];
+        assert_eq!(main.look.background.as_deref(), Some("mymod:gui/panel"));
+        assert_eq!(
+            main.look.scroller.as_deref(),
+            Some("mymod:gui/sprites/container/scroller")
+        );
+        assert!(c.tabs[2].look.every_page && c.on_page(&c.tabs[2]));
+        assert_eq!(c.tabs_to_build(false), Some(Vec::new()));
+        c.clear_java_tabs(&names);
+        assert_eq!(ids(&c).join(" "), exported);
+        assert_eq!(c.pages(), 1);
+    }
+
+    #[test]
+    fn java_tabs_show_the_operator_tab_only_with_permissions() {
+        let names = Names::default();
+        let mut c = tooltip_tabs();
+        c.set_java_tabs(&java_tabs(), &names);
+        assert!(!ids(&c).contains(&"minecraft:op_blocks"));
+        c.build(true, Vec::new(), &names);
+        assert!(ids(&c).contains(&"minecraft:op_blocks"));
+        c.build(false, Vec::new(), &names);
+        assert!(!ids(&c).contains(&"minecraft:op_blocks"));
+    }
+
     #[test]
     fn unselected_tabs_want_the_hand_strictly_inside() {
         let tab = |top, column| Tab {
@@ -1991,6 +2302,7 @@ mod tests {
             hotbar: false,
             page: 0,
             name: None,
+            look: TabLook::default(),
         };
         // Top row, second column: the button spans x 27..53, y -28..4.
         let t = tab(true, 1);
