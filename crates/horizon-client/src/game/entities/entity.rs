@@ -638,7 +638,40 @@ impl Game<'_> {
             Some(self.border.geometry()),
             Some(&self.res.motion().blocks),
         );
-        item.check_fall(&mut step, |fall, from, moved| {
+        if self.item_moved(item, &mut step, client) {
+            return (false, true);
+        }
+        item.finish_move_block_effects(
+            &self.world,
+            self.res.facts(),
+            no_physics,
+            Some(&self.res.motion().blocks),
+            step,
+            &self.loop_context,
+        );
+        item.push_by_bubble_column(
+            &self.world,
+            self.pack.assets.registry,
+            self.res.facts(),
+            self.collision,
+        );
+        let alive = item.tick_settle(&self.world, self.res.facts(), no_physics, step);
+        // ItemEntity.tick refreshes immersion and splashes on water entry.
+        let (water, _) =
+            item.push_by_fluid(&self.world, &self.res.motion().fluids, &self.loop_context);
+        item.water_entry(water > 0.0, false, splash);
+        (alive, false)
+    }
+
+    /// `Entity.move`'s fall, landing and vertical collision for an item that just moved, as its tick
+    /// and `Entity#move` both run them; true when a block's hook used the item up.
+    pub(super) fn item_moved(
+        &mut self,
+        item: &mut ItemEntity,
+        step: &mut horizon_client::entities::ItemStep,
+        client: bool,
+    ) -> bool {
+        item.check_fall(step, |fall, from, moved| {
             self.vehicle_fall_reset(fall, from, moved)
         });
         if !client && let Some((on, distance)) = step.landed() {
@@ -670,30 +703,9 @@ impl Game<'_> {
                     None => discarded = true,
                 }
             }
-            if discarded || item.stack.count == 0 {
-                return (false, true);
-            }
+            return discarded || item.stack.count == 0;
         }
-        item.finish_move_block_effects(
-            &self.world,
-            self.res.facts(),
-            no_physics,
-            Some(&self.res.motion().blocks),
-            step,
-            &self.loop_context,
-        );
-        item.push_by_bubble_column(
-            &self.world,
-            self.pack.assets.registry,
-            self.res.facts(),
-            self.collision,
-        );
-        let alive = item.tick_settle(&self.world, self.res.facts(), no_physics, step);
-        // ItemEntity.tick refreshes immersion and splashes on water entry.
-        let (water, _) =
-            item.push_by_fluid(&self.world, &self.res.motion().fluids, &self.loop_context);
-        item.water_entry(water > 0.0, false, splash);
-        (alive, false)
+        false
     }
 }
 
