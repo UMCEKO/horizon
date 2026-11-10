@@ -13,8 +13,17 @@ use std::{
 
 #[derive(Debug, Deserialize)]
 pub struct Facts {
+    /// The game version that exported them (`1.21.1` facts keep components in that version's form).
+    #[serde(default)]
+    pub minecraft: String,
+    /// What the mods registered; absent in facts from before it was exported.
+    #[serde(default)]
+    pub owned: Option<Owned>,
     pub blocks: BTreeMap<String, Block>,
     pub items: BTreeMap<String, Item>,
+    /// The mods' entries of `minecraft:data_component_type`; empty in facts from before they were exported.
+    #[serde(default)]
+    pub data_component_types: BTreeMap<String, DataComponentType>,
     #[serde(default)]
     pub tags: Tags,
     /// The mods' recipes NeoForge loaded: those whose `neoforge:conditions` passed.
@@ -23,6 +32,22 @@ pub struct Facts {
     /// The game's items' default components (`items.json`), so item ports leave out what their template has.
     #[serde(skip)]
     pub vanilla_items: BTreeMap<String, Value>,
+    /// The game's items with a class behaviour (`block-behaviours.json`'s `items`), never a template.
+    #[serde(skip)]
+    pub vanilla_item_classes: BTreeSet<String>,
+}
+
+/// The ids the mods registered, by registry.
+#[derive(Debug, Default, Deserialize)]
+pub struct Owned {
+    #[serde(default)]
+    pub block: BTreeSet<String>,
+    #[serde(default)]
+    pub item: BTreeSet<String>,
+    #[serde(default)]
+    pub block_entity_type: BTreeSet<String>,
+    #[serde(default)]
+    pub data_component_type: BTreeSet<String>,
 }
 
 /// A JSON object read with its keys in file order.
@@ -97,6 +122,11 @@ pub struct Block {
     #[serde(default)]
     pub wood_type: Option<String>,
     pub states: BTreeMap<String, State>,
+    /// Its loot table in 26.3's form, from the game's loaded data (boot facts only).
+    #[serde(default)]
+    pub loot_table: Option<Value>,
+    #[serde(default)]
+    pub loot_table_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,6 +141,19 @@ pub struct State {
     pub emission: u8,
     pub requires_tool: bool,
     pub map_color_id: u8,
+    #[serde(default)]
+    pub random_ticks: bool,
+    /// Light: absent in facts exported before these were.
+    #[serde(default)]
+    pub light_dampening: Option<u8>,
+    #[serde(default)]
+    pub skylight_down: Option<bool>,
+    #[serde(default)]
+    pub solid_render: Option<bool>,
+    #[serde(default)]
+    pub shape_occlusion: Option<bool>,
+    #[serde(default)]
+    pub occlusion: Option<Value>,
     pub sound: Value,
     pub outline: Value,
     pub collision: Value,
@@ -121,6 +164,89 @@ pub struct State {
     /// `shears`, `silk_touch_pickaxe`...): item id → count.
     #[serde(default)]
     pub drops: BTreeMap<String, BTreeMap<String, u32>>,
+}
+
+/// Reads one per-state value of a block file's field from the oracle's state.
+type ReadState = fn(&State) -> Option<Value>;
+
+/// The content format's per-state fields the oracle gives, by their block file key.
+const STATE_FIELDS: [(&str, ReadState); 8] = [
+    ("shapes", |s| Some(s.outline.clone())),
+    ("collision_shapes", |s| Some(s.collision.clone())),
+    ("occlusion", |s| s.occlusion.clone()),
+    ("light_dampening", |s| s.light_dampening.map(Value::from)),
+    ("skylight_down", |s| s.skylight_down.map(Value::from)),
+    ("solid_render", |s| s.solid_render.map(Value::from)),
+    ("can_occlude", |s| s.can_occlude.map(Value::from)),
+    ("shape_occlusion", |s| s.shape_occlusion.map(Value::from)),
+];
+
+/// The most boxes the content format takes in one state's shape.
+const MAX_SHAPE_BOXES: usize = 16;
+
+/// One field as the content format's state values: the commonest value as `default`, the rest keyed by their states' values of `names`.
+fn state_values(names: &[&String], rows: &[(BTreeSet<(String, String)>, Value)]) -> Value {
+    let mut counts: Vec<(&Value, usize)> = Vec::new();
+    for (_, v) in rows {
+        match counts.iter_mut().find(|(c, _)| same(c, v)) {
+            Some(c) => c.1 += 1,
+            None => counts.push((v, 1)),
+        }
+    }
+    let Some(default) = counts
+        .iter()
+        .fold(None, |best: Option<(&Value, usize)>, &(v, n)| {
+            if best.is_none_or(|(_, b)| n > b) {
+                Some((v, n))
+            } else {
+                best
+            }
+        })
+        .map(|(v, _)| v)
+    else {
+        return json!({});
+    };
+    let mut values = Map::new();
+    for (state, v) in rows.iter().filter(|(_, v)| !same(v, default)) {
+        let key: Vec<&str> = names
+            .iter()
+            .map(|n| {
+                state
+                    .iter()
+                    .find(|(k, _)| k == *n)
+                    .map_or("", |(_, v)| v.as_str())
+            })
+            .collect();
+        values.insert(key.join(","), v.clone());
+    }
+    if values.is_empty() {
+        json!({"default": default})
+    } else {
+        json!({"properties": names, "values": values, "default": default})
+    }
+}
+
+/// `RandomTicks` for a block whose states tick unevenly: the one own property whose values pick exactly the ticking states.
+fn ticking_property(
+    names: &[&String],
+    rows: &[(BTreeSet<(String, String)>, bool)],
+) -> Option<Value> {
+    names.iter().find_map(|name| {
+        let value = |state: &BTreeSet<(String, String)>| {
+            state
+                .iter()
+                .find(|(k, _)| k == *name)
+                .map(|(_, v)| v.clone())
+        };
+        let picked: BTreeSet<String> = rows
+            .iter()
+            .filter(|(_, ticks)| *ticks)
+            .filter_map(|(state, _)| value(state))
+            .collect();
+        rows.iter()
+            .all(|(state, ticks)| value(state).is_some_and(|v| picked.contains(&v) == *ticks))
+            .then(|| json!({"property": name, "values": picked}))
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,6 +269,38 @@ pub struct Item {
     pub repair_items: Option<Vec<String>>,
     #[serde(default)]
     pub armor: Option<Armor>,
+}
+
+/// An item's declaration in a content mod: its template and what it changes.
+#[derive(Debug, Default, PartialEq)]
+pub struct ItemDecl {
+    pub template: String,
+    pub max_stack_size: Option<u8>,
+    pub rarity: Option<String>,
+    /// The component patch over the template's.
+    pub components: Map<String, Value>,
+    /// What the declaration can't carry, for the report.
+    pub differences: Vec<String>,
+}
+
+impl ItemDecl {
+    /// A block file's `components`: the patch, with the stack size and rarity a block's item can only set there.
+    pub fn block_components(&self) -> Map<String, Value> {
+        let mut out = self.components.clone();
+        if let Some(n) = self.max_stack_size {
+            out.insert("minecraft:max_stack_size".into(), json!(n));
+        }
+        if let Some(r) = &self.rarity {
+            out.insert("minecraft:rarity".into(), json!(r));
+        }
+        out
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DataComponentType {
+    /// `!DataComponentType.isTransient()`: it has a codec, so stacks save it and commands name it.
+    pub persistent: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -208,8 +366,8 @@ impl Armor {
     }
 }
 
-/// The vanilla item standing in for an item of a vanilla class, for the behaviour the class gives.
-fn item_template(item: &Item) -> &'static str {
+/// The vanilla item standing in for an item of a vanilla class in 1.21 facts, for the behaviour the class gives.
+fn class_template(item: &Item) -> &'static str {
     let class = item.class.strip_prefix("net.minecraft.world.item.");
     match (class, item.armor.as_ref().map(|a| a.slot.as_str())) {
         (Some("SwordItem"), _) => "minecraft:iron_sword",
@@ -385,6 +543,12 @@ pub struct Choice {
     pub template: String,
     /// `data/<mod>/horizon/block/<name>.json`'s `properties`.
     pub properties: Map<String, Value>,
+    /// The block's own states, when no template has them: its `states`.
+    pub states: Option<BTreeMap<String, Vec<String>>>,
+    /// Its `default_state`.
+    pub default_state: Map<String, Value>,
+    /// Its per-state fields (`state_light`, `shapes`, `light_dampening`...): only what the rest of the block doesn't already give.
+    pub fields: Map<String, Value>,
     /// What the template does not reproduce, for the report.
     pub differences: Vec<String>,
 }
@@ -420,7 +584,7 @@ impl Facts {
         let ours = block.default_state()?;
         let mut best: Option<(i64, &str, &Block)> = None;
         for (name, v) in &self.blocks {
-            if !name.starts_with("minecraft:")
+            if self.owns_block(name)
                 || v.vanilla_class() != class
                 || v.custom_class()
                 || !block.same_states(v)
@@ -457,8 +621,55 @@ impl Facts {
                 best = Some((score, name, v));
             }
         }
-        let (_, template, t) = best?;
-        Some(self.choice(block, template, t, allowed))
+        if let Some((_, template, t)) = best {
+            return Some(self.choice(block, template, t, false, allowed));
+        }
+        self.own_states_template(block, ours, allowed)
+    }
+
+    /// No vanilla block has its states, so it declares them over the nearest vanilla block
+    /// up its class chain that has none it doesn't: `Block` always does.
+    fn own_states_template(
+        &self,
+        block: &Block,
+        ours: &State,
+        allowed: &dyn Fn(&str) -> bool,
+    ) -> Option<Choice> {
+        let chain = block
+            .class
+            .iter()
+            .filter(|c| c.starts_with(VANILLA_PACKAGE));
+        for class in chain {
+            let mut best: Option<(i64, &str, &Block)> = None;
+            for (name, v) in &self.blocks {
+                if self.owns_block(name)
+                    || v.class.first() != Some(class)
+                    || !v
+                        .properties
+                        .keys()
+                        .all(|k| block.properties.contains_key(k))
+                    || !allowed(name)
+                {
+                    continue;
+                }
+                let Some(td) = v.default_state() else {
+                    continue;
+                };
+                let score = (td.outline == ours.outline && td.collision == ours.collision) as i64
+                    * 1000
+                    + (td.can_occlude == ours.can_occlude) as i64 * 500
+                    + (td.sound == ours.sound) as i64 * 100
+                    + (td.hardness == ours.hardness) as i64 * 5
+                    + (td.map_color_id == ours.map_color_id) as i64;
+                if best.is_none_or(|(s, n, _)| score > s || (score == s && name.as_str() < n)) {
+                    best = Some((score, name, v));
+                }
+            }
+            if let Some((_, template, t)) = best {
+                return Some(self.choice(block, template, t, true, allowed));
+            }
+        }
+        None
     }
 
     fn choice(
@@ -466,6 +677,7 @@ impl Facts {
         block: &Block,
         template: &str,
         t: &Block,
+        own_states: bool,
         allowed: &dyn Fn(&str) -> bool,
     ) -> Choice {
         let (ours, theirs) = (block.default_state(), t.default_state());
@@ -506,24 +718,87 @@ impl Facts {
             ));
         }
         let theirs = t.by_key();
-        let mut shapes = 0;
+        let fallback = t.default_state();
+        let names: Vec<&String> = block.properties.keys().collect();
+        // A template with states of its own copies whichever agrees on what they share, so name them all.
+        let unsure = own_states && !t.properties.is_empty();
+        let rows: Vec<(BTreeSet<(String, String)>, &State, Option<&State>)> = block
+            .by_key()
+            .into_iter()
+            .map(|(k, s)| (pairs(&k), s, theirs.get(&k).copied().or(fallback)))
+            .collect();
+        let mut fields = Map::new();
         let mut varying = BTreeSet::new();
-        let first = ours.map(|s| (s.hardness, s.emission, s.requires_tool, s.map_color_id));
-        for (k, s) in block.by_key() {
-            let Some(v) = theirs.get(&k) else {
-                continue;
-            };
-            if v.outline != s.outline || v.collision != s.collision {
-                shapes += 1;
-            }
-            if Some((s.hardness, s.emission, s.requires_tool, s.map_color_id)) != first {
-                varying.insert("per-state hardness, light or map colour");
+        let first = ours.map(|s| (s.hardness, s.requires_tool, s.map_color_id));
+        for (_, s, _) in &rows {
+            if Some((s.hardness, s.requires_tool, s.map_color_id)) != first {
+                varying.insert("per-state hardness, tool or map colour");
             }
         }
-        if shapes > 0 {
+        if rows
+            .iter()
+            .any(|(_, s, _)| Some(s.emission) != ours.map(|o| o.emission))
+        {
+            let light: Vec<_> = rows
+                .iter()
+                .map(|(state, s, _)| (state.clone(), json!(s.emission)))
+                .collect();
+            fields.insert("state_light".into(), state_values(&names, &light));
+        }
+        for (key, read) in STATE_FIELDS {
+            let Some(values) = rows
+                .iter()
+                .map(|(state, s, _)| read(s).map(|v| (state.clone(), v)))
+                .collect::<Option<Vec<_>>>()
+            else {
+                continue;
+            };
+            let differs = unsure
+                || rows
+                    .iter()
+                    .zip(&values)
+                    .any(|((_, _, base), (_, v))| base.and_then(read).is_none_or(|b| !same(&b, v)));
+            if !differs {
+                continue;
+            }
+            let boxes = values
+                .iter()
+                .filter_map(|(_, v)| v.as_array().map(Vec::len))
+                .max()
+                .unwrap_or(0);
+            if matches!(key, "shapes" | "collision_shapes" | "occlusion") && boxes > MAX_SHAPE_BOXES
+            {
+                differences.push(format!(
+                    "{key}: {boxes} boxes in a state, more than the {MAX_SHAPE_BOXES} a block file holds: the template's"
+                ));
+                continue;
+            }
+            fields.insert(key.into(), state_values(&names, &values));
+        }
+        let ticks: Vec<_> = rows
+            .iter()
+            .map(|(state, s, _)| (state.clone(), s.random_ticks))
+            .collect();
+        if unsure
+            || rows
+                .iter()
+                .any(|(_, s, base)| base.is_none_or(|b| b.random_ticks != s.random_ticks))
+        {
+            let all = ticks.iter().all(|(_, t)| *t);
+            if all || ticks.iter().all(|(_, t)| !*t) {
+                properties.insert("random_ticks".into(), json!(all));
+            } else if let Some(by) = own_states
+                .then(|| ticking_property(&names, &ticks))
+                .flatten()
+            {
+                properties.insert("random_ticks".into(), by);
+            } else {
+                differences.push("random ticks in some of its states only".into());
+            }
+        }
+        if own_states {
             differences.push(format!(
-                "shapes differ from {template} in {shapes} of {} states",
-                block.states.len()
+                "its own states on {template}, whose behaviour knows none of them"
             ));
         }
         differences.extend(varying.into_iter().map(str::to_owned));
@@ -537,6 +812,12 @@ impl Facts {
         Choice {
             template: template.to_owned(),
             properties,
+            states: own_states.then(|| block.properties.clone()),
+            default_state: pairs(&block.default)
+                .into_iter()
+                .map(|(k, v)| (k, json!(v)))
+                .collect(),
+            fields,
             differences,
         }
     }
@@ -545,54 +826,141 @@ impl Facts {
     fn sound_block(&self, sound: &Value, allowed: &dyn Fn(&str) -> bool) -> Option<&str> {
         self.blocks
             .iter()
-            .filter(|(n, _)| n.starts_with("minecraft:") && allowed(n))
+            .filter(|(n, _)| !self.owns_block(n) && allowed(n))
             .find(|(_, b)| b.default_state().is_some_and(|s| &s.sound == sound))
             .map(|(n, _)| n.as_str())
     }
 
-    /// An item declaration for a mod item that is not a declared block's:
-    /// the vanilla item of its class with its stack size, rarity and numbers,
-    /// and what it does not reproduce.
+    /// Whether a mod registered the block; facts without `owned` know only vanilla's namespace.
+    pub fn owns_block(&self, id: &str) -> bool {
+        match &self.owned {
+            Some(o) => o.block.contains(id),
+            None => !id.starts_with("minecraft:"),
+        }
+    }
+
+    /// Whether a mod registered the item, as [`Facts::owns_block`].
+    pub fn owns_item(&self, id: &str) -> bool {
+        match &self.owned {
+            Some(o) => o.item.contains(id),
+            None => !id.starts_with("minecraft:"),
+        }
+    }
+
+    /// Facts exported by a 1.21 game, whose components aren't 26.3's; facts from before the version was exported were all 1.21.1's.
+    fn legacy(&self) -> bool {
+        self.minecraft.is_empty() || self.minecraft.starts_with("1.")
+    }
+
+    /// A mod item that isn't a declared block's: its template, and its components as a patch over it.
     pub fn item(&self, id: &str, owned: &[&str]) -> Result<(Value, Vec<String>), String> {
         let item = self.items.get(id).ok_or("not in the oracle")?;
-        let mut differences = Vec::new();
-        if !item.class.starts_with(VANILLA_PACKAGE) {
-            differences.push(format!("class {} (behaviour beyond Item)", item.class));
-        }
-        let template = item_template(item);
-        let mut decl = json!({"template": template});
-        // A block item whose block has another name (seeds): its `BlockItem.getBlock`.
+        let template = if self.legacy() {
+            class_template(item).to_owned()
+        } else {
+            self.item_template(&item.components)
+        };
+        let decl = self.item_decl(item, &template, owned);
+        let mut v = json!({"template": decl.template});
+        // A block item whose block has another name (seeds), or a block's item declared alone: its `BlockItem.getBlock`.
         if let Some(block) = &item.block {
-            decl["block"] = json!(block);
+            v["block"] = json!(block);
         }
-        if item.max_stack_size != 64 {
-            decl["max_stack_size"] = json!(item.max_stack_size);
+        if let Some(n) = decl.max_stack_size {
+            v["max_stack_size"] = json!(n);
         }
-        match item.rarity.as_str() {
-            "common" => {}
-            "uncommon" | "rare" | "epic" => decl["rarity"] = json!(item.rarity),
-            // NeoForge lets mods add rarities; the game refuses the whole mod for one.
-            other => differences.push(format!("rarity {other} (not vanilla's)")),
+        if let Some(r) = &decl.rarity {
+            v["rarity"] = json!(r);
+        }
+        if !decl.components.is_empty() {
+            v["components"] = Value::Object(decl.components);
+        }
+        Ok((v, decl.differences))
+    }
+
+    /// A declared block's item: the block template's item stands in, with the mod item's components.
+    pub fn block_item(&self, id: &str, template_item: &str, owned: &[&str]) -> Option<ItemDecl> {
+        let item = self.items.get(id)?;
+        Some(self.item_decl(item, template_item, owned))
+    }
+
+    /// The class-less vanilla item whose components are nearest: the same equipment slot, then the most types shared, the fewest extra.
+    pub fn item_template(&self, components: &Map<String, Value>) -> String {
+        let slot = |c: &Map<String, Value>| {
+            c.get("minecraft:equippable")
+                .and_then(|e| e.get("slot"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        };
+        let ours = slot(components);
+        let mut best: Option<(i64, &str)> = None;
+        for (name, theirs) in &self.vanilla_items {
+            let Some(theirs) = theirs.as_object() else {
+                continue;
+            };
+            // Air is the empty stack's item, never a stack's template.
+            if self.vanilla_item_classes.contains(name) || name == "minecraft:air" {
+                continue;
+            }
+            let shared = theirs
+                .keys()
+                .filter(|k| components.contains_key(*k))
+                .count() as i64;
+            let extra = theirs.len() as i64 - shared;
+            let score = (slot(theirs) == ours) as i64 * 1000 + shared * 2 - extra;
+            if best.is_none_or(|(s, n)| score > s || (score == s && name.as_str() < n)) {
+                best = Some((score, name));
+            }
+        }
+        best.map_or("minecraft:stick", |(_, n)| n).to_owned()
+    }
+
+    fn item_decl(&self, item: &Item, template: &str, owned: &[&str]) -> ItemDecl {
+        let mut decl = ItemDecl {
+            template: template.to_owned(),
+            ..Default::default()
+        };
+        if !item.class.starts_with(VANILLA_PACKAGE) {
+            decl.differences
+                .push(format!("class {} (its code runs in Java)", item.class));
         }
         if let Some(armor) = item.armor.as_ref().filter(|a| !a.material.is_empty())
             && !self.armor_asset_exists(armor, owned)
         {
-            differences.push(format!(
+            decl.differences.push(format!(
                 "armour material {} has no equipment asset: it draws the template's",
                 armor.material
             ));
         }
-        let mut components = self.item_components(item, template, owned);
-        if let Some(food) = item.components.get("minecraft:food").or(item.food.as_ref()) {
-            components.extend(food_26_3(food, &mut differences));
+        let base = self.vanilla_items.get(template).and_then(Value::as_object);
+        let had = |key: &str| base.and_then(|b| b.get(key));
+        // Without the game's tables the template is taken to have the defaults.
+        let stack = had("minecraft:max_stack_size").map_or(Some(64), Value::as_u64);
+        if stack != Some(item.max_stack_size.into()) {
+            decl.max_stack_size = Some(item.max_stack_size);
         }
-        if !components.is_empty() {
-            decl["components"] = Value::Object(components);
+        let rarity = had("minecraft:rarity").map_or(Some("common"), Value::as_str);
+        match item.rarity.as_str() {
+            r if rarity == Some(r) => {}
+            r @ ("common" | "uncommon" | "rare" | "epic") => decl.rarity = Some(r.to_owned()),
+            // A loader lets a mod extend `Rarity`; a Horizon item has vanilla's only.
+            other => decl
+                .differences
+                .push(format!("rarity {other} (not vanilla's)")),
         }
-        Ok((decl, differences))
+        decl.components = if self.legacy() {
+            let mut components = self.legacy_components(item, base, owned);
+            if let Some(food) = item.components.get("minecraft:food").or(item.food.as_ref()) {
+                components.extend(food_26_3(food, &mut decl.differences));
+            }
+            components
+        } else {
+            self.component_patch(item, base, &mut decl.differences)
+        };
+        decl
     }
 
-    /// The item's numbers as a 26.3 component patch over `template`'s, leaving out what already matches.
+    /// Whether the armour's material has an equipment asset: carried from the mod, or vanilla's.
     fn armor_asset_exists(&self, armor: &Armor, owned: &[&str]) -> bool {
         armor.asset_carried(owned)
             || self.vanilla_items.values().any(|i| {
@@ -600,11 +968,69 @@ impl Facts {
             })
     }
 
-    fn item_components(&self, item: &Item, template: &str, owned: &[&str]) -> Map<String, Value> {
+    /// Every default component as the patch over the template's that gives exactly them.
+    fn component_patch(
+        &self,
+        item: &Item,
+        base: Option<&Map<String, Value>>,
+        differences: &mut Vec<String>,
+    ) -> Map<String, Value> {
+        let known: BTreeSet<&str> = self
+            .vanilla_items
+            .values()
+            .filter_map(Value::as_object)
+            .flat_map(|c| c.keys().map(String::as_str))
+            .collect();
+        let own = |k: &str| {
+            self.data_component_types.contains_key(k)
+                || self
+                    .owned
+                    .as_ref()
+                    .is_some_and(|o| o.data_component_type.contains(k))
+        };
+        let mut patch = Map::new();
+        for (key, value) in &item.components {
+            if matches!(
+                key.as_str(),
+                "minecraft:max_stack_size" | "minecraft:rarity"
+            ) || own(key)
+            {
+                continue;
+            }
+            if !known.contains(key.as_str()) {
+                differences.push(format!("component {key}: no item of the game has it"));
+                continue;
+            }
+            if base
+                .and_then(|b| b.get(key))
+                .is_none_or(|h| !same(value, h))
+            {
+                patch.insert(key.clone(), value.clone());
+            }
+        }
+        for key in base.into_iter().flat_map(|b| b.keys()) {
+            if !item.components.contains_key(key)
+                && !matches!(
+                    key.as_str(),
+                    "minecraft:max_stack_size" | "minecraft:rarity"
+                )
+            {
+                patch.insert(format!("!{key}"), json!({}));
+            }
+        }
+        patch
+    }
+
+    /// 1.21.1's numbers as a 26.3 component patch over the template's, leaving out what already matches.
+    fn legacy_components(
+        &self,
+        item: &Item,
+        base: Option<&Map<String, Value>>,
+        owned: &[&str],
+    ) -> Map<String, Value> {
         if item.components.is_empty() {
             return Map::new();
         }
-        let base = self.vanilla_items.get(template);
         let mut want = Map::new();
         want.insert(
             "minecraft:max_damage".into(),
@@ -742,15 +1168,16 @@ mod tests {
             tile.differences,
             ["class m.Tile (behaviour beyond net.minecraft.world.level.block.Block)"]
         );
-        // A plain Block is never templated on a DirtPathBlock: shapes differ, and say so.
+        // A plain Block is never templated on a DirtPathBlock: it keeps its own shape on a stone.
         let path = facts.template("m:path", &any).unwrap();
         assert_eq!(path.template, "minecraft:stone");
-        assert!(
-            path.differences[0].starts_with("shapes differ"),
-            "{:?}",
-            path.differences
-        );
-        assert_eq!(facts.template("m:gadget", &any), None);
+        assert_eq!(path.fields["shapes"], json!({"default": low}));
+        // No vanilla Block has `mode`, so the block declares it over one that has no states.
+        let gadget = facts.template("m:gadget", &any).unwrap();
+        assert_eq!(gadget.template, "minecraft:stone");
+        assert_eq!(gadget.states.unwrap()["mode"], ["a", "b"]);
+        assert_eq!(gadget.default_state["mode"], json!("a"));
+        assert!(gadget.differences[0].starts_with("its own states"));
         let tile = facts
             .template("m:wood_tile", &|n: &str| n != "minecraft:oak_planks")
             .unwrap();
@@ -927,8 +1354,9 @@ mod tests {
     }
 
     #[test]
-    fn items_of_vanilla_classes_take_their_template_and_numbers() {
+    fn legacy_items_take_a_template_and_their_numbers() {
         let mut facts: Facts = serde_json::from_value(json!({
+            "minecraft": "1.21.1",
             "blocks": {},
             "items": {
                 "m:sword": {"class": "net.minecraft.world.item.SwordItem", "max_stack_size": 1, "rarity": "common",
@@ -950,7 +1378,9 @@ mod tests {
                 "minecraft:tool": {"can_destroy_blocks_in_creative": false, "damage_per_block": 2,
                     "rules": [{"blocks": "#minecraft:sword_efficient", "speed": 1.5}]}},
             "minecraft:iron_boots": {"minecraft:max_damage": 195, "minecraft:enchantable": {"value": 9},
-                "minecraft:repairable": {"items": "#minecraft:repairs_iron_armor"}},
+                "minecraft:repairable": {"items": "#minecraft:repairs_iron_armor"},
+                "minecraft:equippable": {"slot": "feet"}},
+            "minecraft:stick": {"minecraft:max_stack_size": 64, "minecraft:rarity": "common"},
         }))
         .unwrap();
         let (sword, _) = facts.item("m:sword", &["m"]).unwrap();
@@ -982,6 +1412,95 @@ mod tests {
         assert_eq!(gem, json!({"template": "minecraft:stick"}));
     }
 
+    fn current_facts() -> Facts {
+        let mut facts: Facts = serde_json::from_value(json!({
+            "minecraft": "26.3",
+            "owned": {"item": ["m:pie", "m:vest", "m:gadget"], "data_component_type": ["m:energy"]},
+            "blocks": {},
+            "items": {
+                "m:pie": {"class": "m.Pie", "max_stack_size": 64, "rarity": "common", "components": {
+                    "minecraft:max_stack_size": 64, "minecraft:rarity": "common",
+                    "minecraft:food": {"nutrition": 6, "saturation": 7.2}, "minecraft:consumable": {},
+                    "m:energy": 0}},
+                "m:vest": {"class": "m.Hazmat", "max_stack_size": 1, "rarity": "rare", "components": {
+                    "minecraft:max_stack_size": 1, "minecraft:rarity": "rare", "minecraft:max_damage": 500,
+                    "minecraft:equippable": {"slot": "chest", "asset_id": "m:hazmat"}}},
+                "m:gadget": {"class": "m.Gadget", "max_stack_size": 16, "rarity": "epic", "components": {
+                    "minecraft:max_stack_size": 16, "minecraft:rarity": "epic"}},
+                "m:block": {"class": "net.minecraft.world.item.BlockItem", "max_stack_size": 16, "rarity": "uncommon",
+                    "block": "m:block", "components": {"minecraft:max_stack_size": 16, "minecraft:rarity": "uncommon",
+                    "minecraft:lore": []}},
+            }
+        }))
+        .unwrap();
+        facts.vanilla_items = serde_json::from_value(json!({
+            "minecraft:air": {"minecraft:max_stack_size": 64, "minecraft:rarity": "common"},
+            "minecraft:stick": {"minecraft:max_stack_size": 64, "minecraft:rarity": "common",
+                "minecraft:cooking_fuel": {"burn_time": 100}},
+            "minecraft:apple": {"minecraft:max_stack_size": 64, "minecraft:rarity": "common",
+                "minecraft:food": {"nutrition": 4, "saturation": 2.4}, "minecraft:consumable": {}},
+            "minecraft:iron_chestplate": {"minecraft:max_stack_size": 1, "minecraft:rarity": "common",
+                "minecraft:max_damage": 240, "minecraft:equippable": {"slot": "chest", "asset_id": "minecraft:iron"}},
+            "minecraft:golden_carrot": {"minecraft:max_stack_size": 64, "minecraft:rarity": "common",
+                "minecraft:food": {"nutrition": 6, "saturation": 14.4}, "minecraft:consumable": {}},
+            "minecraft:stone": {"minecraft:max_stack_size": 64, "minecraft:rarity": "common", "minecraft:lore": []},
+        }))
+        .unwrap();
+        facts.vanilla_item_classes = [
+            "minecraft:golden_carrot".to_owned(),
+            "minecraft:stone".to_owned(),
+        ]
+        .into();
+        facts
+    }
+
+    #[test]
+    fn templates_follow_components_not_classes() {
+        let facts = current_facts();
+        let (pie, differences) = facts.item("m:pie", &["m"]).unwrap();
+        assert_eq!(
+            pie["template"], "minecraft:apple",
+            "food, and golden_carrot has a class"
+        );
+        assert_eq!(
+            pie["components"],
+            json!({"minecraft:food": {"nutrition": 6, "saturation": 7.2}}),
+            "the mod's own component stays in Java"
+        );
+        assert!(pie.get("max_stack_size").is_none() && pie.get("rarity").is_none());
+        assert_eq!(differences, ["class m.Pie (its code runs in Java)"]);
+        let (vest, _) = facts.item("m:vest", &["m"]).unwrap();
+        assert_eq!(vest["template"], "minecraft:iron_chestplate");
+        assert_eq!(vest["rarity"], "rare");
+        assert!(vest.get("max_stack_size").is_none());
+        assert_eq!(vest["components"]["minecraft:max_damage"], 500);
+        assert_eq!(
+            vest["components"]["minecraft:equippable"]["asset_id"],
+            "m:hazmat"
+        );
+        let (gadget, _) = facts.item("m:gadget", &["m"]).unwrap();
+        assert_eq!(gadget["template"], "minecraft:stick");
+        assert_eq!(gadget["max_stack_size"], 16);
+        assert_eq!(gadget["rarity"], "epic");
+        assert_eq!(gadget["components"], json!({"!minecraft:cooking_fuel": {}}));
+    }
+
+    #[test]
+    fn block_items_keep_their_numbers() {
+        let facts = current_facts();
+        let item = facts
+            .block_item("m:block", "minecraft:stone", &["m"])
+            .unwrap();
+        assert_eq!(item.max_stack_size, Some(16));
+        assert_eq!(item.rarity.as_deref(), Some("uncommon"));
+        assert!(item.components.is_empty(), "{:?}", item.components);
+        assert!(
+            facts.owns_item("m:pie")
+                && !facts.owns_item("m:block")
+                && !facts.owns_item("minecraft:stick")
+        );
+    }
+
     #[test]
     fn armour_materials_become_equipment_assets() {
         let armor: Armor = serde_json::from_value(json!({"slot": "legs", "material": "m:ruby",
@@ -1003,11 +1522,12 @@ mod tests {
                 "assets/m/textures/entity/equipment/humanoid_leggings/ruby.png".to_owned()
             )
         );
-        let mut facts: Facts =
-            serde_json::from_value(json!({"blocks": {}, "items": {"m:ruby_leggings": {
+        let mut facts: Facts = serde_json::from_value(
+            json!({"minecraft": "1.21.1", "blocks": {}, "items": {"m:ruby_leggings": {
             "class": "net.minecraft.world.item.ArmorItem", "max_stack_size": 1, "rarity": "common",
-            "components": {"minecraft:max_damage": 300}, "armor": armor_json()}}}))
-            .unwrap();
+            "components": {"minecraft:max_damage": 300}, "armor": armor_json()}}}),
+        )
+        .unwrap();
         facts.vanilla_items = serde_json::from_value(json!({"minecraft:iron_leggings": {
             "minecraft:equippable": {"asset_id": "minecraft:iron", "equip_sound": "minecraft:item.armor.equip_iron", "slot": "legs"}}}))
         .unwrap();
@@ -1033,13 +1553,14 @@ mod tests {
                     "equip_sound": "minecraft:item.armor.equip_diamond", "layers": layers}})
         };
         let odd = json!([{"texture": "m:textures/odd.png", "texture_legs": "m:textures/odd.png"}]);
-        let mut facts: Facts = serde_json::from_value(json!({"blocks": {}, "items": {
+        let mut facts: Facts =
+            serde_json::from_value(json!({"minecraft": "1.21.1", "blocks": {}, "items": {
             "m:ruby": leggings("m:ruby", json!([])),
             "m:odd": leggings("m:odd", odd),
             "m:other": leggings("other:steel", json!([])),
             "m:unknown": leggings("minecraft:steel", json!([])),
             "m:diamond": leggings("minecraft:diamond", json!([]))}}))
-        .unwrap();
+            .unwrap();
         facts.vanilla_items = serde_json::from_value(json!({
             "minecraft:iron_leggings": {"minecraft:equippable": {"asset_id": "minecraft:iron", "slot": "legs"}},
             "minecraft:diamond_leggings": {"minecraft:equippable": {"asset_id": "minecraft:diamond", "slot": "legs"}}}))
@@ -1051,6 +1572,7 @@ mod tests {
         };
         assert_eq!(asset("m:ruby"), (json!("m:ruby"), false));
         assert_eq!(asset("m:diamond"), (json!("minecraft:diamond"), false));
+        // 1.21 leggings stand on iron_leggings, which keep their own asset.
         for id in ["m:odd", "m:other", "m:unknown"] {
             assert_eq!(asset(id), (json!("minecraft:iron"), true), "{id}");
         }

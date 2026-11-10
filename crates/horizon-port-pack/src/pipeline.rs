@@ -102,6 +102,94 @@ fn minecraft(work: &Path) -> String {
         .map_or_else(|_| String::new(), |p| p.minecraft)
 }
 
+/// The game's items' components and which of them have a class behaviour, from a prepared resource root.
+fn vanilla_items(facts: &mut oracle::Facts, resources: &Path) -> Result<(), String> {
+    facts.vanilla_items = read_json(&resources.join("items.json"))?;
+    let behaviours: serde_json::Value = read_json(&resources.join("block-behaviours.json"))?;
+    facts.vanilla_item_classes = behaviours["items"]
+        .as_object()
+        .ok_or("block-behaviours.json: no items")?
+        .keys()
+        .cloned()
+        .collect();
+    Ok(())
+}
+
+/// The mods in `jars` carried into `<out>/<mod id>/carry/` with the facts a game's Java boot exported; returns those folders.
+pub fn carry_boot(
+    facts: &Path,
+    baked: Option<&Path>,
+    jars: &[std::path::PathBuf],
+    classpath: &[std::path::PathBuf],
+    resources: &Path,
+    out: &Path,
+    log: Log,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    let mut facts = oracle::Facts::read(facts)?;
+    vanilla_items(&mut facts, resources)?;
+    let baked = baked.map(oracle::BakedModels::read).transpose()?;
+    let vanilla = vanilla_blocks(resources)?;
+    let allowed = |b: &str| vanilla.contains(b);
+    let conventions = crate::worldgen::biome_tags_in(classpath.iter().cloned());
+    let mut mods: Vec<(&std::path::PathBuf, crate::jar::JarInfo)> = Vec::new();
+    for jar in jars {
+        match crate::jar::read(jar) {
+            Ok(info) if mods.iter().any(|(_, m)| m.mod_id == info.mod_id) => log(format!(
+                "{}: mod id {} is another jar's too: left out",
+                jar.display(),
+                info.mod_id
+            )),
+            Ok(info) => mods.push((jar, info)),
+            Err(e) => log(format!("{}: {e}", jar.display())),
+        }
+    }
+    let ids: BTreeSet<&str> = mods
+        .iter()
+        .map(|(_, m)| m.mod_id.as_str())
+        .chain(["minecraft"])
+        .collect();
+    let claims = mods.iter().filter_map(|(jar, info)| {
+        let owned = carry::namespaces_claimed(jar, &info.mod_id, &|m| ids.contains(m)).ok()?;
+        Some((info.mod_id.as_str(), owned))
+    });
+    let shared = shared_namespaces(claims, log);
+    let loaded = |m: &str| ids.contains(m);
+    let in_pack = |m: &str| ids.contains(m) || shared.contains(m);
+    let pack = carry::Pack {
+        loaded: &loaded,
+        mods: &in_pack,
+    };
+    let mut carried = Vec::new();
+    for (jar, info) in &mods {
+        let dir = out.join(&info.mod_id);
+        match carry::carry(
+            jar,
+            info,
+            &dir,
+            Some(&facts),
+            baked.as_ref(),
+            &allowed,
+            &pack,
+            &conventions,
+        ) {
+            Ok(report) => {
+                log(format!(
+                    "{}: {} files, {} blocks ({} left out), {} items ({} left out)",
+                    info.mod_id,
+                    report.copied,
+                    report.blocks.len(),
+                    report.blocks_unknown.len(),
+                    report.items,
+                    report.items_unknown.len()
+                ));
+                carried.push(dir.join("carry"));
+            }
+            Err(e) => log(format!("{}: {e}", info.mod_id)),
+        }
+    }
+    Ok(carried)
+}
+
 /// Step 4: the content mods with a jar (or the ones in `only`) carried over
 /// into `<work>/mods/<id>/carry/`. Returns how many were.
 pub fn carry(
@@ -114,10 +202,10 @@ pub fn carry(
     let facts_path = work.join("oracle/facts.json");
     let facts = if facts_path.exists() {
         let mut f = oracle::Facts::read(&facts_path)?;
-        if let Some(r) = resources {
-            f.vanilla_items = read_json(&r.join("items.json"))
-                .inspect_err(|e| log(format!("items patched without the game's tables: {e}")))
-                .unwrap_or_default();
+        if let Some(r) = resources
+            && let Err(e) = vanilla_items(&mut f, r)
+        {
+            log(format!("items patched without the game's tables: {e}"));
         }
         log(format!(
             "oracle facts: {} blocks, {} items",

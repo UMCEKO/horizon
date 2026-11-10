@@ -793,11 +793,18 @@ pub fn convention_tags(v: &Value, out: &mut BTreeSet<String>) {
 /// The loader's own convention biome tags (`data/c/tags/worldgen/biome/`),
 /// by path, read from the loader jar `fetch` keeps in `<work>/loader/`.
 pub fn loader_biome_tags(work: &Path) -> BTreeMap<String, Value> {
-    let mut out = BTreeMap::new();
     let Ok(dir) = std::fs::read_dir(work.join("loader")) else {
-        return out;
+        return BTreeMap::new();
     };
-    for jar in dir.flatten().map(|e| e.path()) {
+    biome_tags_in(dir.flatten().map(|e| e.path()))
+}
+
+/// The convention biome tags (`data/c/tags/worldgen/biome/`) these jars hold, by path.
+pub fn biome_tags_in(
+    jars: impl IntoIterator<Item = std::path::PathBuf>,
+) -> BTreeMap<String, Value> {
+    let mut out = BTreeMap::new();
+    for jar in jars {
         let Some(mut zip) = std::fs::File::open(&jar)
             .ok()
             .and_then(|f| zip::ZipArchive::new(f).ok())
