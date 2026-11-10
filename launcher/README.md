@@ -75,6 +75,13 @@ The opening, then Play ([clip](docs/opening.webm)):
   **Play** starts the game as the pack's own profile (`ports/<pack>/home/` in the game's home:
   its own saves and options) with those mods. Nothing is uploaded or shared: mod jars and ports
   stay on this computer.
+- **Java mods**: **Java mods…** on Home's Instance row chooses a folder of NeoForge 26.3 mod jars and
+  **Install** / **Update** builds what the game needs under `java-mods/` in the launcher's data folder:
+  Java 25 (Eclipse Temurin, sha256-checked, or a JDK you name), NeoForge's libraries from its own
+  installers (kept in a cache, so a second install fetches nothing), your jars, and the host jars of the
+  selected game version. **Play with these mods** makes Play start the game with them; the launcher
+  writes the JVM arguments again at every launch, so a moved install still works.
+  `horizon-launcher java-mods [status|pack|install|enable|disable|server|launch]`.
 - **Servers**: host a world for friends with buttons. **Create a server** asks for a name, a world
   (a new one, with an optional seed, or a copy of one of your single-player worlds), the game mode,
   difficulty, most players, who can join (friends only, the default, or anyone with the address)

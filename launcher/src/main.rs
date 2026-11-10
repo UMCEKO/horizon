@@ -42,6 +42,7 @@ mod instance_mods;
 mod instances_page;
 mod internet;
 mod jar_launch;
+mod java_mods_page;
 mod language_page;
 mod launch_page;
 mod line_edit;
@@ -128,7 +129,7 @@ impl Page {
     /// `HORIZON_LAUNCHER_PAGE=mods` (or `modpacks`, `resourcepacks`, `shaders`, `servers`, `versions`,
     /// `settings`) opens on that page, for screenshots; Home otherwise (`getting-ready`: Home
     /// preparing, `home::getting_ready_preview`; `sign-in`: the owner gate's sheet with a
-    /// made-up code, `owner_page::sign_in_preview`; `new-instance`: Home with the New instance
+    /// made-up code, `owner_page::sign_in_preview`; `java-mods`: Home with the Java mods panel open; `new-instance`: Home with the New instance
     /// dialog open on Modded; `edit-instance`: the selected one's Edit dialog; `worlds`, `packs`...: Home on that tab, `HomeTab::from_env`).
     fn from_env() -> Page {
         let page = match std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() {
@@ -489,6 +490,7 @@ struct Launcher {
     world_packs: datapacks_page::WorldPacks,
     export: Option<export_page::ExportPanel>,
     launch: Option<launch_page::LaunchPanel>,
+    java_mods: Option<java_mods_page::JavaModsPanel>,
     /// The memory row on Home.
     memory_slider: launch_page::MemorySlider,
     importing: import_page::Importing,
@@ -756,6 +758,7 @@ impl Launcher {
             world_packs: datapacks_page::WorldPacks::default(),
             export: None,
             launch: None,
+            java_mods: None,
             memory_slider: Default::default(),
             importing: Default::default(),
             console: Default::default(),
@@ -813,6 +816,9 @@ impl Launcher {
         }
         if std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() == Ok("edit-instance") {
             this.open_instance_dialog(this.selected_instance().cloned());
+        }
+        if std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() == Ok("java-mods") {
+            this.toggle_java_mods();
         }
         if cfg!(debug_assertions)
             && matches!(
@@ -1240,6 +1246,17 @@ impl Launcher {
                             account::discard_unread_sessions();
                             continue;
                         }
+                        if horizon_launcher::java_mods::Config::load().enabled {
+                            if let Err(e) =
+                                horizon_launcher::java_mods::apply(&mut cmd, &tag, false, None)
+                            {
+                                self.client_error = Some(e);
+                                self.joining = None;
+                                self.quick_play = None;
+                                account::discard_unread_sessions();
+                                continue;
+                            }
+                        }
                         if let Some(code) = self.joining.take() {
                             if let Err(e) = backend::join_friend(&mut cmd, &code) {
                                 self.client_error = Some(e);
@@ -1384,7 +1401,8 @@ impl Launcher {
                     self.native_step = Some(step);
                     self.native_progress = Some(progress);
                 }
-                Msg::JavaModsStep(..) | Msg::JavaModsDone(..) => {} // the Java mods page (LA-page) shows these
+                Msg::JavaModsStep(label, fraction) => self.java_mods_step(label, fraction),
+                Msg::JavaModsDone(result) => self.java_mods_done(result),
                 Msg::Native(result) => {
                     // The last step of a build that worked says how it went.
                     let last = self.native_step.take();
@@ -3472,6 +3490,7 @@ impl Launcher {
             .children((!t.glass).then(|| self.instance_row(1, cx)).flatten())
             .children(self.export_panel(cx))
             .children(self.launch_panel(cx))
+            .children(self.java_mods_panel(cx))
             // The glass look keeps Maximum memory in the instance's Edit dialog.
             .children((!t.glass).then(|| self.memory_row(cx)).flatten());
         rows = match &java {
