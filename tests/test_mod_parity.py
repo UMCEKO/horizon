@@ -128,6 +128,26 @@ class Comparison(unittest.TestCase):
         r = self.events({(1, 'client'): {'A': 100}, (2, 'client'): {'A': 100}}, {(1, 'client'): {'A': 122}, (2, 'client'): {'A': 123}})
         self.assertEqual([(m['step'], m['forge'], m['horizon']) for m in r['count_mismatches']], [('b', 100, 123)])
 
+    def test_frame_events_compare_by_presence(self):
+        fov = 'net.neoforged.neoforge.client.event.ViewportEvent$ComputeFov'
+        forge = {(1, 'client'): {fov: 600, 'A': 600}}
+        r = mp.compare_events(run_of(self.STEPS, forge), run_of(self.STEPS, {(1, 'client'): {fov: 40, 'A': 40}}), {fov})
+        self.assertEqual([m['event'] for m in r['count_mismatches']], ['A'])
+        self.assertEqual((r['missing'], r['frame_unlistened']), ([], []))
+        r = mp.compare_events(run_of(self.STEPS, forge), run_of(self.STEPS, {(1, 'client'): {'A': 600}}), {fov})
+        self.assertEqual([m['event'] for m in r['missing']], [fov])
+        r = mp.compare_events(run_of(self.STEPS, forge), run_of(self.STEPS, {(1, 'client'): {'A': 600}}), set())
+        self.assertEqual((r['missing'], [u['event'] for u in r['frame_unlistened']]), ([], [fov]))
+
+    def test_frame_listened_reads_replaces_json(self):
+        fov = 'net.neoforged.neoforge.client.event.ViewportEvent$ComputeFov'
+        self.assertEqual(mp.frame_listened_of(None), set(mp.FRAME_EVENTS))
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / 'analysis').mkdir()
+            (Path(d) / 'analysis' / 'replaces.json').write_text(json.dumps({'events': {fov.replace('.', '/'): {'changes': [{}]}, 'x/Other': {'changes': [{}]},
+                                                                                       'net/neoforged/neoforge/client/event/ViewportEvent$RenderFog': {'changes': []}}}))
+            self.assertEqual(mp.frame_listened_of(d), {fov})
+
     def test_a_class_in_another_step_is_a_count_mismatch_not_missing(self):
         r = self.events({(1, 'client'): {'A': 9}}, {(2, 'client'): {'A': 9}})
         self.assertEqual(r['missing'], [])
@@ -171,6 +191,15 @@ class Scenarios(unittest.TestCase):
         self.assertEqual(mp.ctl_commands('use', 3), [['mouse', 'right', 'down'], ['wait', '3'], ['mouse', 'right', 'up']])
         self.assertEqual(mp.ctl_commands('command', '/give @s x'), [['command', 'give @s x']])
         self.assertEqual(mp.ctl_commands('slot', 0), [['select', '1']])
+        self.assertEqual(mp.ctl_commands('press', 'key.sprint'), [['key', 'ctrl', 'down']])
+        self.assertEqual(mp.ctl_commands('release', 'key.forward'), [['key', 'w', 'up']])
+
+    def test_the_motion_scenario_drives_horizon(self):
+        _, scenario = mp.load_scenario('w4_motion')
+        steps = [(name, kind, arg) for name, kind, arg in mp.flatten(scenario) if kind != 'quit']
+        self.assertTrue({'walk', 'sprint', 'step', 'swim', 'fly', 'fall'} <= {name for name, _, _ in steps})
+        for _, kind, arg in steps:
+            mp.ctl_commands(kind, arg)
 
     def test_the_default_scenario_is_valid(self):
         _, scenario = mp.load_scenario('basic')
