@@ -903,6 +903,25 @@ pub(super) mod tests {
         Some(root)
     }
 
+    pub(in crate::game) fn prepare_entity_ticking_neighborhood(
+        game: &mut super::Game<'_>,
+        center: horizon_core::position::ChunkPos,
+    ) {
+        for z in center.z - 2..=center.z + 2 {
+            for x in center.x - 2..=center.x + 2 {
+                if !game.world.chunks.contains_key(&(x, z)) {
+                    game.world.chunks.insert(
+                        (x, z),
+                        std::sync::Arc::new(horizon_client::chunk::Chunk::empty(x, z)),
+                    );
+                    game.block_ticks
+                        .add_empty_chunk(horizon_core::position::ChunkPos::new(x, z))
+                        .unwrap();
+                }
+            }
+        }
+    }
+
     pub(in crate::game) fn with_game(test: impl FnOnce(&mut super::Game<'_>)) {
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
         with_game_at(root, test);

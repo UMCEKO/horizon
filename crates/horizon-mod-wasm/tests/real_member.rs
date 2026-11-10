@@ -102,6 +102,22 @@ fn real_member() {
                 .any(|kind| kind.id == "wasm_fixture:counter")
         );
         mod_api::__private::mark_game_thread();
+        // Exercise the same three subscriptions as the native residency regression.
+        // The guest only observes; terminal falling-block retirement belongs to
+        // the engine and does not depend on the listener's target.
+        let mut listened = false;
+        mod_api::dispatch_entity_tick_listened(&mut Quiet, &mut listened);
+        assert!(listened);
+        let mut canceled = false;
+        mod_api::dispatch_entity_tick_pre(
+            &mut Quiet,
+            "minecraft:overworld",
+            71,
+            "minecraft:item",
+            &mut canceled,
+        );
+        assert!(!canceled);
+        mod_api::dispatch_entity_tick_post(&mut Quiet, "minecraft:overworld", 71, "minecraft:item");
         let mut entity =
             mod_api::ModBlockEntity::new("wasm_fixture:counter".into(), Default::default());
         mod_api::dispatch_block_entity_tick(&mut Quiet, [0, 64, 0], &mut entity);

@@ -15,6 +15,29 @@ pub struct Mod;
 
 #[mod_api::horizon_mod]
 impl Hooks for Mod {
+    fn entity_tick_listened(
+        &self,
+        _: &mut dyn mod_api::ServerHost,
+        event: &mut mod_api::EntityTickListenedEvent,
+    ) {
+        event.listened = true;
+    }
+
+    fn entity_tick_pre(
+        &self,
+        _: &mut dyn mod_api::ServerHost,
+        _: &mut mod_api::EntityTickPreEvent<'_>,
+    ) -> mod_api::Flow {
+        mod_api::Flow::Continue
+    }
+
+    fn entity_tick_post(
+        &self,
+        _: &mut dyn mod_api::ServerHost,
+        _: &mut mod_api::EntityTickPostEvent<'_>,
+    ) {
+    }
+
     #[listener(priority = 37)]
     fn server_stopped(&self, _: &mut dyn mod_api::ServerHost, _: &mut mod_api::ServerStoppedEvent) {
     }
