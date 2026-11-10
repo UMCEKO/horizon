@@ -322,6 +322,19 @@ impl Assets {
         RenderAssets::load_with(root, self, false)
     }
 }
+/// Every whole file the block atlas lists, as vanilla stitches them, including ones only code-built models use.
+fn block_atlas_files(source: &crate::resource_source::ResourceSource) -> Vec<String> {
+    use crate::atlas_sources::{self, SpriteOrigin};
+    let Some(sources) = atlas_sources::atlases(source).remove("minecraft:blocks") else {
+        return Vec::new();
+    };
+    let textures = atlas_sources::list_textures(source);
+    atlas_sources::list(&sources, &textures, &mut atlas_sources::unasked)
+        .into_iter()
+        .filter(|(id, origin)| matches!(origin, SpriteOrigin::File(texture) if texture == id))
+        .map(|(id, _)| id)
+        .collect()
+}
 impl RenderAssets {
     pub fn load(root: &crate::resource_source::ResourceRoot, assets: &Assets) -> Result<Self> {
         Self::load_with(root, assets, true)
@@ -443,6 +456,11 @@ impl RenderAssets {
         if draws {
             emissive = crate::native_emissive::load_optifine(root.source(), &mut sprites);
         }
+        if draws {
+            for name in block_atlas_files(root.source()) {
+                sprites.insert(&name)?;
+            }
+        }
         sprites.save_disk_cache();
         if draws {
             sprites.finish();
@@ -479,6 +497,29 @@ impl RenderAssets {
 mod tests {
     use crate::items::ConsumeEffect;
     use horizon_world::loot::PackOverlay;
+
+    #[test]
+    fn the_block_atlas_lists_whole_files_of_every_source() {
+        let root = std::env::temp_dir().join(format!("horizon-block-atlas-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let write = |path: &str, text: &str| {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(
+            "assets/minecraft/atlases/blocks.json",
+            r#"{"sources":[{"type":"directory","source":"part","prefix":"part/"},
+                {"type":"single","resource":"demo:entity/ball","sprite":"demo:ball"}]}"#,
+        );
+        write("assets/demo/textures/part/cable/glass.png", "");
+        write("assets/demo/textures/entity/ball.png", "");
+        write("assets/demo/textures/other/skip.png", "");
+        let source = crate::resource_source::ResourceSource::directory(root.clone());
+        let files = super::block_atlas_files(&source);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(files, ["demo:part/cable/glass"]);
+    }
 
     #[test]
     #[ignore = "requires HORIZON_TEST_RESOURCES pointing to prepared vanilla resources"]
