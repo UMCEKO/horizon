@@ -559,6 +559,12 @@ impl SyncData {
         meta
     }
 
+    /// The registry id of the dimension type of the level `level`, 0 when the registry lacks it.
+    pub fn dimension_type_id(&self, levels: &LevelShapes, level: &str) -> i32 {
+        let name = levels.dimension_type(level);
+        self.id("minecraft:dimension_type", name).unwrap_or(0)
+    }
+
     /// The id of a name in a built-in or synchronized registry.
     pub fn id(&self, registry: &str, name: &str) -> Option<i32> {
         if registry == "minecraft:data_component_type"
@@ -856,16 +862,11 @@ impl SyncData {
 /// The vanilla dimension type `name` (its NBT `data`) with the shape the
 /// world gives the level of that name, if its data packs changed it.
 fn changed_dimension_type(name: &str, data: &Tag, levels: &LevelShapes) -> Option<Tag> {
-    if !matches!(
-        name,
-        "minecraft:overworld" | "minecraft:the_nether" | "minecraft:the_end"
-    ) {
-        return None;
-    }
-    let shape = levels.get(name);
-    if shape == LevelShapes::VANILLA.get(name) {
-        return None;
-    }
+    let vanilla = LevelShapes::vanilla();
+    let shape = levels
+        .keys()
+        .find(|&k| levels.dimension_type(k.id()) == name && levels.shape(k) != vanilla.shape(k))
+        .map(|k| levels.shape(k))?;
     let mut data = data.clone();
     let Tag::Compound(fields) = &mut data else {
         return None;
@@ -896,7 +897,7 @@ mod tests {
         ];
         let open = SyncData::load(&root, &PackOverlay { files: &files }).unwrap();
         let heat = open.id("minecraft:damage_type", "demo:heat").unwrap();
-        let packet = open.registry_packets(true, &LevelShapes::VANILLA);
+        let packet = open.registry_packets(true, &LevelShapes::vanilla());
         let packet = packet
             .iter()
             .find(|p| p.registry == "minecraft:damage_type")
@@ -1154,7 +1155,7 @@ mod tests {
             },
         ));
         let data = |known_pack| -> Vec<bool> {
-            sync.registry_packets(known_pack, &LevelShapes::VANILLA)[0]
+            sync.registry_packets(known_pack, &LevelShapes::vanilla())[0]
                 .entries
                 .iter()
                 .map(|e| e.data.is_some())
@@ -1176,7 +1177,7 @@ mod tests {
                 from_pack: vec![false],
             },
         ));
-        let packets = sync.registry_packets(false, &LevelShapes::VANILLA);
+        let packets = sync.registry_packets(false, &LevelShapes::vanilla());
         let data = packets[0].entries[0].data.as_ref().unwrap();
         let encoded =
             horizon_world::nbt::write_network(data, horizon_world::nbt::Limits::default()).unwrap();
@@ -1202,12 +1203,15 @@ mod tests {
             serde_json::from_str(r#"{"min_y":-64,"height":384,"logical_height":384,"has_skylight":true,"ultrawarm":false}"#)
                 .unwrap();
         let vanilla = json_to_nbt(&vanilla);
-        let mut levels = LevelShapes::VANILLA;
+        let mut levels = LevelShapes::vanilla();
         assert_eq!(
             changed_dimension_type("minecraft:overworld", &vanilla, &levels),
             None
         );
-        levels.overworld = crate::chunk::LevelShape::new(-64, 2096, 2096, true, true).unwrap();
+        levels.set_shape(
+            "minecraft:overworld",
+            crate::chunk::LevelShape::new(-64, 2096, 2096, true, true).unwrap(),
+        );
         let sent = changed_dimension_type("minecraft:overworld", &vanilla, &levels).unwrap();
         assert_eq!(
             (sent.get("min_y"), sent.get("height")),

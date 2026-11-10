@@ -670,6 +670,7 @@ pub(super) fn level_shapes(
     biomes: &horizon_client::biome::Biomes,
 ) -> horizon_client::chunk::LevelShapes {
     use horizon_client::chunk::{LevelShape, LevelShapes};
+    use horizon_core::LevelKey;
     let packs = horizon_client::datapack::discover(world_root);
     let enabled_features = horizon_client::save::Level::read(world_root)
         .map(|l| l.enabled_features)
@@ -679,18 +680,14 @@ pub(super) fn level_shapes(
         .iter()
         .filter_map(|id| packs.iter().find(|p| &p.id == id))
         .collect();
-    let mut shapes = LevelShapes::VANILLA;
+    let mut shapes = LevelShapes::vanilla();
     if enabled.is_empty() {
         return shapes;
     }
     // What the packs leave out is logged when the generator reads them.
     let (overrides, _) =
         horizon_client::datapack::worldgen_overrides(&enabled, |b| biomes.contains(b));
-    for level in [
-        "minecraft:overworld",
-        "minecraft:the_nether",
-        "minecraft:the_end",
-    ] {
+    for level in LevelShapes::vanilla().keys().map(LevelKey::id) {
         let shape = overrides.level_height(level).and_then(|h| {
             LevelShape::new(
                 h.min_y,
@@ -702,7 +699,7 @@ pub(super) fn level_shapes(
             .ok()
         });
         match shape {
-            Some(shape) => *shapes.get_mut(level) = shape,
+            Some(shape) => shapes.set_shape(level, shape),
             None => log::warn!(
                 "Horizon: data pack worldgen: the dimension type of {level} is not one the \
                  game accepts; the level keeps the vanilla build height"
