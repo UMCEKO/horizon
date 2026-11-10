@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 #[doc(hidden)]
 pub mod custom;
+pub mod foreign;
 mod hash;
 mod skip;
 mod trim;
@@ -58,6 +59,8 @@ impl Drop for Nested {
 
 /// minecraft:data_component_type registry ids (26.3).
 pub mod component {
+    /// How many types vanilla registers; mods' follow, so from here on an id is a mod's.
+    pub const VANILLA_TYPES: i32 = 122;
     pub const CUSTOM_DATA: i32 = 0;
     pub const MAX_STACK_SIZE: i32 = 1;
     pub const MAX_DAMAGE: i32 = 2;
@@ -234,6 +237,11 @@ pub enum Component {
     /// A component Horizon reads past without interpreting it: its encoded
     /// bytes, written back as they came.
     Raw(Vec<u8>),
+    /// A component whose stream codec is a mod's ([`foreign`]): its bytes as they came, and its saved form if it has one.
+    Foreign {
+        bytes: Vec<u8>,
+        value: Option<Tag>,
+    },
 }
 
 /// `FireworkExplosion.STREAM_CODEC`: shape id, colors, fade colors, trail
@@ -581,6 +589,7 @@ impl Component {
                     None => Self::Raw(bytes.to_vec()),
                 }
             }
+            other if foreign::owns(other) => foreign::read(other, r)?,
             other if custom::contains(other) => Self::Nbt(r.nbt()?),
             other => {
                 let start = r.position();
@@ -607,6 +616,7 @@ impl Component {
     }
     pub(crate) fn write(&self, kind: i32, w: &mut Writer) {
         match self {
+            Self::Foreign { bytes, .. } => w.bytes(bytes),
             Self::Raw(bytes) => {
                 let legacy = if kind == component::CONTAINER
                     && matches!(ids::active(),Some((ids,ids::Way::Down)) if ids.quirks.count_first_templates)

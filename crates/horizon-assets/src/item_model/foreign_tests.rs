@@ -194,3 +194,51 @@ fn fluid_container_draws_its_base_without_the_fluid() {
         ItemModelNode::Empty
     ));
 }
+
+#[test]
+fn a_mods_component_type_decodes_against_the_loaded_registry() {
+    let definition = r#"{"model":{"type":"minecraft:select","property":"minecraft:component",
+        "component":"gem:mode","fallback":{"type":"minecraft:model","model":"gem:item/tool"},
+        "cases":[{"when":"rotate","model":{"type":"minecraft:model","model":"gem:item/rotate"}}]}}"#;
+    assert!(ClientItem::from_json(definition).is_err());
+    let mut ids: Vec<String> = DATA_COMPONENT_TYPES.iter().map(|s| (*s).into()).collect();
+    ids.push("gem:mode".into());
+    let types = ComponentTypes::new(ids);
+    let condition = r#"{"model":{"type":"minecraft:condition","property":"minecraft:has_component",
+        "component":"gem:other","on_true":{"type":"minecraft:empty"},"on_false":{"type":"minecraft:empty"}}}"#;
+    assert!(ClientItem::from_json_in(condition, &types).is_err());
+    let mut models = ItemModels::default();
+    models.definitions.insert(
+        "gem:tool".into(),
+        ClientItem::from_json_in(definition, &types).unwrap(),
+    );
+    std::sync::Arc::make_mut(&mut models.prototypes).insert(
+        "gem:tool".into(),
+        [(
+            "minecraft:item_model".into(),
+            Value::String("gem:tool".into()),
+        )]
+        .into(),
+    );
+    let drawn = |mode: Option<&str>| {
+        let mut stack = StackView::new("gem:tool", 1);
+        if let Some(mode) = mode {
+            stack
+                .patch
+                .insert("gem:mode".into(), Some(Value::String(mode.into())));
+        }
+        let ctx = Context {
+            display: DisplayContext::Gui,
+            owner: None,
+            level: None,
+            seed: 0,
+        };
+        match &models.resolve(&stack, &ctx, &NoEnv).layers[0].content {
+            LayerContent::Model { model } => model.clone(),
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(drawn(None), "gem:item/tool");
+    assert_eq!(drawn(Some("rotate")), "gem:item/rotate");
+    assert_eq!(drawn(Some("configurate")), "gem:item/tool");
+}

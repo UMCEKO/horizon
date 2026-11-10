@@ -4730,7 +4730,11 @@ mod tests {
         }
         // Component registration is process-global. Exercise the identity path
         // deterministically, without depending on another test's registration.
-        horizon_protocol::item::custom::install(1000, vec!["lazy_damage:test".into()]).unwrap();
+        horizon_protocol::item::custom::install(
+            vec![String::new(); 1000],
+            vec!["lazy_damage:test".into()],
+        )
+        .unwrap();
         use super::{SyncCache, cached_sync_data, initialize_world_sync_data, prepare_sync_reload};
         use horizon_world::{damage_source::Catalog, loot::PackOverlay};
         use std::{path::Path, sync::Arc};
