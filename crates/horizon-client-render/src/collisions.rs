@@ -518,7 +518,11 @@ impl<'w> BlockCollisionWorld for SceneCollisions<'w, '_> {
         Ok(self.world.chunks.get(&(p.x, p.z)).map(|chunk| &**chunk))
     }
     fn collision_block(&mut self, chunk: Self::Chunk, p: BlockPos) -> io::Result<CollisionBlock> {
-        self.binding.collision_block(chunk.block(p.x, p.y, p.z))
+        let mut block = self.binding.collision_block(chunk.block(p.x, p.y, p.z))?;
+        if self.block_entity_shape(block.state, p).is_some() {
+            block.empty_shape = false;
+        }
+        Ok(block)
     }
     /// From the section's palette, without reading its blocks; a palette
     /// of the whole registry reads every cell.
@@ -548,9 +552,25 @@ impl<'w> BlockCollisionWorld for SceneCollisions<'w, '_> {
         p: BlockPos,
         context: &CollisionContext<'_>,
     ) -> io::Result<VoxelShape> {
+        if let Some(shape) = self.block_entity_shape(block.state, p) {
+            return Ok(shape.clone());
+        }
         self.binding
             .collision_shape_with_context(self, block.state, p, context)
             .map_err(io::Error::other)
+    }
+}
+impl<'w> SceneCollisions<'w, '_> {
+    /// The shape a mod's code gave this block from its block entity, while the block keeps that state.
+    fn block_entity_shape(&self, state: BlockStateId, p: BlockPos) -> Option<&'w VoxelShape> {
+        let shapes = &self.world.block_entity_shapes;
+        if shapes.is_empty() {
+            return None;
+        }
+        shapes
+            .get(&[p.x, p.y, p.z])
+            .filter(|(made_for, _)| *made_for == state)
+            .map(|(_, shape)| shape)
     }
 }
 impl EntityMovementWorld for SceneCollisions<'_, '_> {
@@ -807,6 +827,55 @@ mod piston_noclip_tests {
             );
         });
         assert_eq!(PISTON_NOCLIP.with(|value| value.get()), None);
+    }
+}
+
+#[cfg(test)]
+mod block_entity_shape_tests {
+    use super::*;
+    use crate::{assets::Assets, chunk::Chunk};
+
+    #[test]
+    fn a_block_entity_shape_collides_only_for_the_state_it_was_made_for() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/horizon-client/26.3");
+        if !root.join("cached-collision.nbt").exists() {
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let binding = load(&root, assets.registry).unwrap();
+        let air = assets.registry.default_state("minecraft:air").unwrap();
+        let grass = assets
+            .registry
+            .default_state("minecraft:short_grass")
+            .unwrap();
+        let stone = assets.registry.default_state("minecraft:stone").unwrap();
+        let mut world = World::new(air, 0);
+        let mut chunk = Chunk::empty(0, 0);
+        chunk.set(1, 64, 1, grass.0);
+        world.chunks.insert((0, 0), Arc::new(chunk));
+        let bounds = Aabb::new(Vec3::new(1.2, 65.0, 1.2), Vec3::new(1.8, 66.8, 1.8));
+        let fall = |world: &World| {
+            SceneCollisions {
+                world,
+                binding: &binding,
+                subject: None,
+            }
+            .resolve(bounds, Vec3::new(0.0, -2.0, 0.0), 0.0, false)
+            .unwrap()
+            .y
+        };
+        assert_eq!(fall(&world), -2.0);
+        let shape = VoxelShape::from_box(Aabb::new(
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.625, 1.0),
+        ))
+        .unwrap();
+        world
+            .block_entity_shapes
+            .insert([1, 64, 1], (grass, shape.clone()));
+        assert_eq!(fall(&world), -0.375);
+        world.block_entity_shapes.insert([1, 64, 1], (stone, shape));
+        assert_eq!(fall(&world), -2.0);
     }
 }
 
