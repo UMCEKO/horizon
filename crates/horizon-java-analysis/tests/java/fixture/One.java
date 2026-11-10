@@ -1,0 +1,1 @@
+package fixture; import net.minecraft.world.Thing; public class One extends Thing { @Override public void tick() {} public void tick(long x) {} public void must() {} @Override public int friction() { return 2; } public void own() {} }

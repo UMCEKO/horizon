@@ -29,6 +29,7 @@
     "horizon-command": "engine",
     "horizon-core": "engine",
     "horizon-items": "engine",
+    "horizon-java-analysis": "engine",
     "horizon-java-host": "engine",
     "horizon-narrator": "engine",
     "horizon-prepare": "engine",
