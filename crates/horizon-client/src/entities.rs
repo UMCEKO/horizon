@@ -901,15 +901,9 @@ impl ItemEntity {
         }
         let vertical_contact = if self.vertical_collision && !no_physics {
             let contact = self.vertical_contact(world, collision, blocks, moved);
-            let slime =
-                self.on_ground && contact.is_some_and(|pos| slime_at(world, facts, pos));
-            self.velocity.y = vertical_collision_velocity(
-                wanted.y,
-                moved.y,
-                ITEM_GRAVITY,
-                self.on_ground,
-                slime,
-            );
+            let slime = self.on_ground && contact.is_some_and(|pos| slime_at(world, facts, pos));
+            self.velocity.y =
+                vertical_collision_velocity(wanted.y, moved.y, ITEM_GRAVITY, self.on_ground, slime);
             contact
         } else {
             None
