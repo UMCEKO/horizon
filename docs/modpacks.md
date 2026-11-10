@@ -474,11 +474,23 @@ resistance, light, tool need, friction, map colour and sounds as overrides. `--r
 <prepared>` limits templates to blocks Horizon's tables have. `carry-report.json` lists, per
 block, what the template does not reproduce (other shapes, sounds no vanilla block has, a class
 of its own), and the blocks left out: those whose vanilla class has no vanilla block with the
-same states (Macaw's garage doors, multi-part gates). An item of a vanilla tool or armour class
-(`SwordItem`, `PickaxeItem`, `ArmorItem`, ...) gets the iron item of that class and slot as its
-template, and the oracle's durability, attribute modifiers, tool rules, enchantability and repair
+same states and no vanilla block up its class chain to declare them over (Macaw's garage doors,
+multi-part gates). A block whose states no vanilla block has declares them as `state_properties` with
+`replace_template_properties` over the nearest such block (`Block` always is one). Where its states differ from what
+the template's give, the block file names `state_light`, `shapes`, `collision_shapes`, `occlusion`, `light_dampening`,
+`skylight_down`, `solid_render`, `can_occlude` and `shape_occlusion` per state (the commonest value as `default`, the
+rest by the block's property values), and `random_ticks` when one of its own properties picks the ticking states. A
+shape of more than 16 boxes stays the template's, reported as a difference. Items from 1.21.1 facts: an item of a
+vanilla tool or armour class (`SwordItem`, `PickaxeItem`, `ArmorItem`, ...) gets the iron item of that class and slot as its
+template, and the oracle's durability, attribute modifiers, tool rules, enchantability, food and repair
 items as a component patch over it, minus what the template already has (`--resources` gives the
-template's components); other items keep `minecraft:stick`. Armour of the mod's own material gets a
+template's components); other items keep `minecraft:stick`. Items from 26.3 facts (the 26.3 oracle, or a game's Java
+boot) take their template from their components, never their class: the vanilla item with no class behaviour whose
+default components are nearest (the same equipment slot, then the most types shared and the fewest extra). Every
+vanilla component type the item has becomes a patch over the template's, the template's others removed; types a mod
+registers stay in Java and are declared as `data_component_type` files. A block's item gets that patch in the block
+file's `components`, its stack size and rarity as `minecraft:max_stack_size` and `minecraft:rarity`. The facts list
+what the mods registered under `owned`, and carry declares those. Armour of the mod's own material gets a
 26.3 equipment asset (`assets/<ns>/equipment/<material>.json`) made from its 1.21.1 layers, their
 `textures/models/armor/<name>_layer_1.png` and `_layer_2.png` copied to
 `textures/entity/equipment/humanoid/` and `humanoid_leggings/`, and its `equippable` names that
@@ -562,7 +574,8 @@ Mechanical, the same for every mod, and no agent:
 Two cases the oracle fills in:
 
 - **Loot registered in code.** Chipped ships 7 loot tables for about 7,000 blocks; the rest
-  drop themselves through Java code. When a declared block has no table in the jar and the
+  drop themselves through Java code. When a declared block has no table in the jar, facts from the game's own Java boot
+  hold its loaded table, which carry writes as it is. Otherwise, when the
   oracle shows vanilla's drop-self, carry writes that table in 26.3's shape. When only the
   states with one property value drop it (a door's lower half), the entry gets vanilla's
   `match_block` condition. Chipped: 6,843 tables added.

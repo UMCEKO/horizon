@@ -135,6 +135,8 @@ pub struct Report {
     pub equipment: usize,
     /// Items left out, and why (oracle only).
     pub items_unknown: BTreeMap<String, String>,
+    /// Declared data component types (oracle only).
+    pub data_component_types: usize,
     /// Convention (`c:`) tags the recipes use, filled in from the oracle.
     pub convention_tags: usize,
     /// Structure, placement and pool element types rewritten as vanilla's,
@@ -1338,6 +1340,9 @@ pub fn carry(
             let Some(b) = full.strip_prefix(&prefix) else {
                 break;
             };
+            if !facts.owns_block(full) {
+                continue;
+            }
             let Some(choice) = facts.template(full, allowed) else {
                 let props: Vec<&str> = block.properties.keys().map(String::as_str).collect();
                 let why = format!(
@@ -1349,6 +1354,16 @@ pub fn carry(
                 continue;
             };
             let mut v = json!({"template": choice.template, "properties": choice.properties});
+            if let Some(states) = &choice.states {
+                v["replace_template_properties"] = json!(true);
+                v["state_properties"] = state_properties(states);
+            }
+            if !choice.default_state.is_empty() {
+                v["default_state"] = json!(choice.default_state);
+            }
+            if let Some(o) = v.as_object_mut() {
+                o.extend(choice.fields.clone());
+            }
             if block.item == "minecraft:air" {
                 v["item"] = json!(false);
             } else if block.item != *full {
@@ -1358,12 +1373,42 @@ pub fn carry(
                     .entry(b.to_owned())
                     .or_default()
                     .push(format!("its item is {}", block.item));
+            } else if facts
+                .blocks
+                .get(&choice.template)
+                .is_some_and(|t| t.item == "minecraft:air")
+            {
+                // Its template has no item (a fluid): the block's item is declared as an item of its own.
+                v["item"] = json!(false);
             } else {
                 declared.insert(full.clone());
-                let drop = (!block_loot.contains(b))
+                let template_item = facts.blocks.get(&choice.template).map(|t| t.item.as_str());
+                if let Some(item) = template_item.and_then(|t| facts.block_item(full, t, &owned)) {
+                    let components = item.block_components();
+                    if !components.is_empty() {
+                        v["components"] = Value::Object(components);
+                    }
+                    if !item.differences.is_empty() {
+                        report
+                            .differences
+                            .entry(b.to_owned())
+                            .or_default()
+                            .extend(item.differences);
+                    }
+                }
+                let own_table = block.loot_table_id.as_deref() == Some(&format!("{id}:blocks/{b}"));
+                let code_table = block
+                    .loot_table
+                    .as_ref()
+                    .filter(|_| own_table && !block_loot.contains(b));
+                let drop = (!block_loot.contains(b) && code_table.is_none())
                     .then(|| block.drops_itself(full))
                     .flatten();
-                if let Some(drop) = drop {
+                if let Some(table) = code_table {
+                    let file = inside.join(format!("data/{id}/loot_table/blocks/{b}.json"));
+                    write(&file, &serde_json::to_vec_pretty(table).unwrap_or_default())?;
+                    report.loot_tables_added += 1;
+                } else if let Some(drop) = drop {
                     let mut entry = json!({"type": "minecraft:item", "name": full});
                     if let crate::oracle::SelfDrop::When(property, value) = drop {
                         entry["condition"] = json!({
@@ -1403,7 +1448,7 @@ pub fn carry(
             let Some(name) = full.strip_prefix(&prefix) else {
                 break;
             };
-            if declared.contains(full) {
+            if declared.contains(full) || !facts.owns_item(full) {
                 continue;
             }
             // The block it places must be carried: a vanilla one or one of this mod's declared ones.
@@ -1430,6 +1475,17 @@ pub fn carry(
                     report.items_unknown.insert(name.to_owned(), e);
                 }
             }
+        }
+        for (full, kind) in facts.data_component_types.range(prefix.clone()..) {
+            let Some(name) = full.strip_prefix(&prefix) else {
+                break;
+            };
+            write_decl(
+                "data_component_type",
+                name,
+                &json!({"persistent": kind.persistent}),
+            )?;
+            report.data_component_types += 1;
         }
         // 26.3 draws worn armour from an equipment asset per material, in the mod's own namespaces.
         let mut materials = BTreeSet::new();
@@ -1526,7 +1582,10 @@ pub fn carry(
         let list: Vec<String> = report.namespaces.iter().map(|n| q(n)).collect();
         manifest.push_str(&format!("namespaces = [{}]\n", list.join(", ")));
     }
-    write(&inside.join("horizon-mod.toml"), manifest.as_bytes())?;
+    write(
+        &inside.join(horizon_mod_package::manifest::MANIFEST),
+        manifest.as_bytes(),
+    )?;
     write(
         &out.join("carry-report.json"),
         &serde_json::to_vec_pretty(&report).unwrap_or_default(),
@@ -1569,6 +1628,20 @@ fn recipe_off(
         Some(f) => !f.recipes.contains_key(&format!("{prefix}{path}")),
         None => !crate::lithostitched::conditions_pass(&recipe, loaded),
     }
+}
+
+/// A block's own properties as a block file's `state_properties`, values in the oracle's order.
+fn state_properties(states: &BTreeMap<String, Vec<String>>) -> Value {
+    let mut out = serde_json::Map::new();
+    for (name, values) in states {
+        let property = if values == &["false", "true"] {
+            json!({"type": "boolean"})
+        } else {
+            json!({"type": "enum", "values": values})
+        };
+        out.insert(name.clone(), property);
+    }
+    Value::Object(out)
 }
 
 /// Writes the oracle's baked models of the blocks in `owned` namespaces as `horizon:baked` models,
@@ -3300,6 +3373,249 @@ mod tests {
         assert!(state.contains("gem:horizon_baked/pipe/1") && !state.contains("old"));
         let text = fs::read_to_string(out.join("carry-report.json")).unwrap();
         assert!(text.contains("\"baked_blocks\": 1"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn carry_declares_the_mods_data_component_types() {
+        let dir = std::env::temp_dir().join(format!("horizon-port-pack-dc-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let jar = dir.join("gem-1.0.jar");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&jar).unwrap());
+        zip.start_file(
+            "META-INF/neoforge.mods.toml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"license = \"MIT\"\n[[mods]]\nmodId = \"gem\"\nversion = \"1.0\"\n")
+            .unwrap();
+        zip.finish().unwrap();
+        let info = crate::jar::read(&jar).unwrap();
+        let facts: Facts = serde_json::from_value(json!({
+            "blocks": {},
+            "items": {},
+            "data_component_types": {
+                "gem:mode": {"persistent": true},
+                "gem:cache": {"persistent": false},
+                "gemstones:other": {"persistent": true}
+            }
+        }))
+        .unwrap();
+        let out = dir.join("work/mods/gem");
+        let pack = Pack {
+            loaded: &|_| true,
+            mods: &|_| false,
+        };
+        let report = carry(
+            &jar,
+            &info,
+            &out,
+            Some(&facts),
+            None,
+            &|_| true,
+            &pack,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(report.data_component_types, 2);
+        let decl = |name: &str| -> Value {
+            let path = format!("carry/data/gem/horizon/data_component_type/{name}.json");
+            serde_json::from_slice(&fs::read(out.join(path)).unwrap()).unwrap()
+        };
+        assert_eq!(decl("mode"), json!({"persistent": true}));
+        assert_eq!(decl("cache"), json!({"persistent": false}));
+        assert!(
+            !out.join("carry/data/gem/horizon/data_component_type/other.json")
+                .exists()
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn own_states_replace_the_templates_properties() {
+        let states: BTreeMap<String, Vec<String>> = [
+            (
+                "lit".to_owned(),
+                vec!["false".to_owned(), "true".to_owned()],
+            ),
+            (
+                "tier".to_owned(),
+                vec!["basic".to_owned(), "elite".to_owned()],
+            ),
+        ]
+        .into();
+        assert_eq!(
+            state_properties(&states),
+            json!({"lit": {"type": "boolean"},
+                "tier": {"type": "enum", "values": ["basic", "elite"]}})
+        );
+    }
+
+    #[test]
+    fn a_fluid_block_with_an_item_but_a_template_without_one_declares_the_item_alone() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-port-pack-fluid-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let jar = dir.join("gem-1.0.jar");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&jar).unwrap());
+        zip.start_file(
+            "META-INF/neoforge.mods.toml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"license = \"MIT\"\n[[mods]]\nmodId = \"gem\"\nversion = \"1.0\"\n")
+            .unwrap();
+        zip.finish().unwrap();
+        let info = crate::jar::read(&jar).unwrap();
+        let state = json!({"hardness": 100.0, "emission": 0, "requires_tool": false, "map_color_id": 4,
+            "sound": {"break": "empty"}, "outline": [], "collision": []});
+        let liquid = |class: &str, item: &str| {
+            json!({"class": [class, "net.minecraft.world.level.block.LiquidBlock", "net.minecraft.world.level.block.Block"],
+                "properties": {"level": ["0", "1"]}, "default": "level=0", "item": item,
+                "explosion_resistance": 100.0, "friction": 0.6, "speed_factor": 1.0, "jump_factor": 1.0,
+                "states": {"level=0": state.clone(), "level=1": state.clone()}})
+        };
+        let facts: Facts = serde_json::from_value(json!({
+            "blocks": {
+                "minecraft:lava": liquid("net.minecraft.world.level.block.LiquidBlock", "minecraft:air"),
+                "gem:blood": liquid("gem.BloodBlock", "gem:blood"),
+            },
+            "items": {
+                "gem:blood": {"class": "net.minecraft.world.item.BlockItem", "max_stack_size": 64,
+                    "rarity": "common", "block": "gem:blood"},
+            }
+        }))
+        .unwrap();
+        let out = dir.join("work/mods/gem");
+        let pack = Pack {
+            loaded: &|_| true,
+            mods: &|_| false,
+        };
+        let report = carry(
+            &jar,
+            &info,
+            &out,
+            Some(&facts),
+            None,
+            &|_| true,
+            &pack,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let decl = |kind: &str| -> Value {
+            let path = format!("carry/data/gem/horizon/{kind}/blood.json");
+            serde_json::from_slice(&fs::read(out.join(path)).unwrap()).unwrap()
+        };
+        assert_eq!(decl("block")["template"], "minecraft:lava");
+        assert_eq!(decl("block")["item"], json!(false));
+        assert!(decl("item")["template"].is_string());
+        assert_eq!(decl("item")["block"], "gem:blood");
+        assert_eq!(report.items, 1);
+        assert!(report.items_unknown.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A 26.3 boot's block with states of its own, light and shape per state, and a numbered item lands in the content format Horizon reads.
+    #[test]
+    fn boot_facts_carry_per_state_fields_and_item_numbers_in_the_content_format() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-port-pack-boot-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let jar = dir.join("gem-1.0.jar");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&jar).unwrap());
+        zip.start_file(
+            "META-INF/neoforge.mods.toml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"license = \"MIT\"\n[[mods]]\nmodId = \"gem\"\nversion = \"1.0\"\n")
+            .unwrap();
+        zip.finish().unwrap();
+        let info = crate::jar::read(&jar).unwrap();
+        let (cube, slab) = (json!([[0, 0, 0, 1, 1, 1]]), json!([[0, 0, 0, 1, 0.5, 1]]));
+        let state = |emission: u8, shape: &Value, ticks: bool| {
+            json!({"hardness": 1.5, "emission": emission, "requires_tool": false, "map_color_id": 11,
+                "sound": {"break": "stone"}, "outline": shape, "collision": shape,
+                "random_ticks": ticks, "light_dampening": 15, "can_occlude": true})
+        };
+        let block = "net.minecraft.world.level.block.Block";
+        let mut facts: Facts = serde_json::from_value(json!({
+            "minecraft": "26.3",
+            "owned": {"block": ["gem:lamp"], "item": ["gem:lamp"]},
+            "blocks": {
+                "minecraft:stone": {"class": [block], "properties": {}, "default": "", "item": "minecraft:stone",
+                    "explosion_resistance": 6.0, "friction": 0.6, "speed_factor": 1.0, "jump_factor": 1.0,
+                    "states": {"": state(0, &cube, false)}},
+                "gem:lamp": {"class": ["gem.Lamp", block],
+                    "properties": {"lit": ["false", "true"], "tier": ["basic", "elite"]},
+                    "default": "lit=false,tier=basic", "item": "gem:lamp",
+                    "explosion_resistance": 6.0, "friction": 0.6, "speed_factor": 1.0, "jump_factor": 1.0,
+                    "states": {
+                        "lit=false,tier=basic": state(0, &cube, false),
+                        "lit=false,tier=elite": state(0, &slab, false),
+                        "lit=true,tier=basic": state(15, &cube, true),
+                        "lit=true,tier=elite": state(15, &slab, true)}},
+            },
+            "items": {
+                "gem:lamp": {"class": "net.minecraft.world.item.BlockItem", "max_stack_size": 16,
+                    "rarity": "uncommon", "block": "gem:lamp", "components": {
+                    "minecraft:max_stack_size": 16, "minecraft:rarity": "uncommon"}},
+            }
+        }))
+        .unwrap();
+        facts.vanilla_items = serde_json::from_value(json!({
+            "minecraft:stone": {"minecraft:max_stack_size": 64, "minecraft:rarity": "common"}}))
+        .unwrap();
+        let out = dir.join("work/mods/gem");
+        let pack = Pack {
+            loaded: &|_| true,
+            mods: &|_| false,
+        };
+        carry(
+            &jar,
+            &info,
+            &out,
+            Some(&facts),
+            None,
+            &|_| true,
+            &pack,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let carried = out.join("carry");
+        let file: Value = serde_json::from_slice(
+            &fs::read(carried.join("data/gem/horizon/block/lamp.json")).unwrap(),
+        )
+        .unwrap();
+        let lit = json!({"true,basic": 15, "true,elite": 15});
+        assert_eq!(
+            file["state_light"],
+            json!({"properties": ["lit", "tier"], "values": lit, "default": 0})
+        );
+        let elite = json!({"false,elite": slab, "true,elite": slab});
+        let shapes = json!({"properties": ["lit", "tier"], "values": elite, "default": cube});
+        assert_eq!(
+            (&file["shapes"], &file["collision_shapes"]),
+            (&shapes, &shapes)
+        );
+        assert!(file.get("light_dampening").is_none(), "stone's already");
+        assert_eq!(
+            file["properties"]["random_ticks"],
+            json!({"property": "lit", "values": ["true"]})
+        );
+        assert_eq!(
+            file["components"],
+            json!({"minecraft:max_stack_size": 16, "minecraft:rarity": "uncommon"})
+        );
+        let package = horizon_mod_package::Package::read(&carried).unwrap();
+        let content = horizon_mod_package::Content::read(&carried, &package.manifest).unwrap();
+        let lamp = &content.blocks[0];
+        assert!(lamp.replace_template_properties);
+        assert_eq!(lamp.state_light.as_ref().unwrap().values["true,elite"], 15);
+        assert_eq!(lamp.components["minecraft:rarity"], "uncommon");
         fs::remove_dir_all(&dir).unwrap();
     }
 }
