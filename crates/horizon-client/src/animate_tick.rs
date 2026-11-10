@@ -466,6 +466,8 @@ pub struct AnimateContext<'a> {
     pub thundering: bool,
     /// The dimension has `water_evaporates` and drips lava from dripstone (the Nether).
     pub ultrawarm: bool,
+    /// Which parts of a picked state's `animateTick` Java runs (bit 1 the block's, bit 2 the fluid's); the position is reported.
+    pub java: Option<&'a dyn Fn(BlockStateId, [i32; 3]) -> u8>,
 }
 
 /// `ClientLevel.getMarkerParticleTarget`: only the selected main-hand item counts.
@@ -602,8 +604,9 @@ fn do_animate_tick(
         return;
     }
     let state = ctx.state(pos);
+    let routed = ctx.java.map_or(0, |java| java(state, pos));
     // A Polytone block modifier's `disable_particles` stops the block's own animate tick.
-    if !engine.polytone_disables_particles(state) {
+    if routed & 1 == 0 && !engine.polytone_disables_particles(state) {
         block_animate_tick(tables, engine, ctx, state, pos, center);
     }
     // Resource packs' Polytone block emitters (#11486): nothing without such a pack.
@@ -617,14 +620,16 @@ fn do_animate_tick(
     engine.polytone_animate(&level, pos);
     let facts = ctx.facts.get(state);
     if facts.fluid != Fluid::None {
-        fluid_animate_tick(
-            engine,
-            ctx,
-            pos,
-            facts.fluid,
-            facts.fluid_level,
-            facts.fluid_falling,
-        );
+        if routed & 2 == 0 {
+            fluid_animate_tick(
+                engine,
+                ctx,
+                pos,
+                facts.fluid,
+                facts.fluid_level,
+                facts.fluid_falling,
+            );
+        }
         if next_int(engine.random(), 10) == 0 {
             let drip = if facts.fluid == Fluid::Water {
                 T::DrippingWater
@@ -2115,5 +2120,127 @@ mod tests {
         let c = redstone_color(15);
         assert!((c[0] - 1.0).abs() < 1e-6);
         assert!((c[1] - (51.0 / 255.0)).abs() < 0.01);
+    }
+    fn with_torch_world(run: impl FnOnce(&AnimateTables, &AnimateContext, BlockStateId)) {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client/26.3");
+        if !root.exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let facts = BlockFacts::load(&root, assets.registry).unwrap();
+        let biomes = Biomes::load(&root).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let tables = AnimateTables::load(&root, assets.registry, &biomes).unwrap();
+        let torch = assets.registry.default_state("minecraft:torch").unwrap();
+        let mut world = World::new(facts.air, 0);
+        for cz in -2..2 {
+            for cx in -2..2 {
+                world.chunks.insert(
+                    (cx, cz),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(cx, cz)),
+                );
+                for y in 40..90 {
+                    for z in 0..16 {
+                        for x in 0..16 {
+                            world.set(cx * 16 + x, y, cz * 16 + z, torch).unwrap();
+                        }
+                    }
+                }
+            }
+        }
+        let ctx = AnimateContext {
+            world: &world,
+            facts: &facts,
+            collision: &collision,
+            biomes: &biomes,
+            registry: assets.registry,
+            raining_at: &|_| false,
+            height_no_leaves: &|_| 0,
+            firefly_bush_sounds: false,
+            creaking_active: false,
+            sky_darken: 0,
+            marker: None,
+            model_offset: &|_, _, _| None,
+            gateway_particles: &|_, _| 0,
+            thundering: false,
+            ultrawarm: false,
+            java: None,
+        };
+        run(&tables, &ctx, torch);
+    }
+    fn hooked<'a>(
+        ctx: &AnimateContext<'a>,
+        java: &'a dyn Fn(BlockStateId, [i32; 3]) -> u8,
+    ) -> AnimateContext<'a> {
+        AnimateContext {
+            java: Some(java),
+            world: ctx.world,
+            facts: ctx.facts,
+            collision: ctx.collision,
+            biomes: ctx.biomes,
+            registry: ctx.registry,
+            raining_at: ctx.raining_at,
+            height_no_leaves: ctx.height_no_leaves,
+            firefly_bush_sounds: false,
+            creaking_active: false,
+            sky_darken: 0,
+            marker: None,
+            model_offset: ctx.model_offset,
+            gateway_particles: ctx.gateway_particles,
+            thundering: false,
+            ultrawarm: false,
+        }
+    }
+    fn picks(tables: &AnimateTables, ctx: &AnimateContext) -> (Vec<(T, [f64; 3], [f64; 3])>, i32) {
+        let mut engine = ParticleEngine::new(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../.local/horizon-client/26.3"),
+            &std::collections::HashMap::new(),
+            &Default::default(),
+        );
+        engine.seed_randoms(1057, 0, 0);
+        engine.requested = Some(Vec::new());
+        animate_tick(tables, &mut engine, ctx, [0, 64, 0]);
+        let made = engine.requested.take().unwrap();
+        (
+            made.into_iter().map(|(o, p, v)| (o.ty, p, v)).collect(),
+            engine.random().next_int(),
+        )
+    }
+    #[test]
+    fn a_hook_that_routes_nothing_changes_nothing() {
+        with_torch_world(|tables, ctx, _| {
+            let plain = picks(tables, ctx);
+            let calls = std::cell::Cell::new(0);
+            let count = |_: BlockStateId, _: [i32; 3]| {
+                calls.set(calls.get() + 1);
+                0
+            };
+            let routed_ctx = hooked(ctx, &count);
+            let routed = picks(tables, &routed_ctx);
+            assert!(!plain.0.is_empty());
+            assert_eq!(plain.0, routed.0);
+            assert_eq!(plain.1, routed.1);
+            assert!(calls.get() > 0 && calls.get() <= 1334);
+        });
+    }
+    #[test]
+    fn a_routed_block_part_is_reported_and_not_made_natively() {
+        with_torch_world(|tables, ctx, torch| {
+            let reported = std::cell::RefCell::new(Vec::new());
+            let java = |state: BlockStateId, pos: [i32; 3]| {
+                if state == torch {
+                    reported.borrow_mut().push(pos);
+                    1
+                } else {
+                    0
+                }
+            };
+            let routed_ctx = hooked(ctx, &java);
+            let (particles, _) = picks(tables, &routed_ctx);
+            assert!(!reported.borrow().is_empty());
+            assert!(particles.iter().all(|(ty, _, _)| *ty != T::Flame));
+        });
     }
 }

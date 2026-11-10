@@ -715,6 +715,7 @@ impl Game<'_> {
             gateway_particles: &gateway_particles,
             thundering,
             ultrawarm: self.dim == Dim::Nether,
+            java: None,
         };
         if let Some(e) = eye {
             let block = [
