@@ -56,18 +56,31 @@ pub(crate) fn declarations(game: &Path) -> Result<String, String> {
                     file.display()
                 ));
             }
-            let cfg = if name == "friends" {
-                "#[cfg(feature = \"friends\")]\n"
+            let feature_cfg = source
+                .lines()
+                .find_map(|line| line.strip_prefix("// game-module-cfg: feature "))
+                .map(str::trim);
+            let cfg = if let Some(feature) = feature_cfg {
+                if feature.is_empty()
+                    || !feature
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                {
+                    return Err(format!("{}: invalid game module feature", file.display()));
+                }
+                format!("#[cfg(feature = {feature:?})]\n")
+            } else if name == "friends" {
+                "#[cfg(feature = \"friends\")]\n".to_owned()
             } else if name == "friends_off" {
-                "#[cfg(not(feature = \"friends\"))]\n"
+                "#[cfg(not(feature = \"friends\"))]\n".to_owned()
             } else if name.ends_with("_tests")
                 && !source
                     .lines()
                     .any(|line| line == "// game-module-cfg: always")
             {
-                "#[cfg(test)]\n"
+                "#[cfg(test)]\n".to_owned()
             } else {
-                ""
+                String::new()
             };
             let absolute = file.canonicalize().map_err(|e| e.to_string())?;
             let declaration_name = if name == "friends_off" {
@@ -378,6 +391,14 @@ mod tests {
         assert!(code.contains("pub(crate) mod service;"));
         fs::write(area.join("new_feature.rs"), "").unwrap();
         assert!(declarations(&game).unwrap().contains("mod new_feature;"));
+        fs::write(
+            area.join("java_boot.rs"),
+            "// game-module-cfg: feature java-mods\n",
+        )
+        .unwrap();
+        let code = declarations(&game).unwrap();
+        assert!(code.contains("#[cfg(feature = \"java-mods\")]\n#[path = "));
+        assert!(code.contains("mod java_boot;"));
         fs::write(game.join("loose.rs"), "").unwrap();
         assert!(declarations(&game).unwrap_err().contains("area folder"));
         fs::remove_file(game.join("loose.rs")).unwrap();

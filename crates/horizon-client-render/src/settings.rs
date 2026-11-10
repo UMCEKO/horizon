@@ -182,6 +182,8 @@ pub struct Settings {
     /// Enabled resource packs, bottom first (resourcePacks).
     pub resource_packs: Vec<String>,
     pub keys: KeyBinds,
+    /// The player's bindings of mappings registered at runtime (`mod_keys`), saved in `options.txt`.
+    pub mod_keys: crate::mod_keys::Bindings,
     /// Every option in its stored form (the typed fields above mirror it).
     pub file: OptionsFile,
     pub invert_x: bool,
@@ -282,6 +284,7 @@ impl Default for Settings {
             main_hand_left: false,
             resource_packs: Vec::new(),
             keys: KeyBinds::default(),
+            mod_keys: crate::mod_keys::Bindings::default(),
             file: OptionsFile::default(),
             invert_x: false,
             toggle_attack: false,
@@ -543,6 +546,7 @@ impl Settings {
             main_hand_left: f.name("mainHand") == "left",
             resource_packs: f.list("resourcePacks"),
             keys,
+            mod_keys: crate::mod_keys::Bindings::from_saved(&f.mod_keys),
             file: f,
         }
     }
@@ -668,6 +672,7 @@ impl Settings {
         for (name, key) in self.keys.saved() {
             put_s(&mut f, &format!("key_{name}"), &key);
         }
+        f.mod_keys = self.mod_keys.saved();
         f
     }
     /// These settings with one `options.txt` value changed (`horizon-ctl

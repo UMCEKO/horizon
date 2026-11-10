@@ -56,6 +56,7 @@ members = [
     "crates/horizon-mod-api-gen/dispatch-tests",
     "crates/cargo-horizon-mod",
     "crates/horizon-port-pack",
+    "crates/horizon-java-host",
     "crates/horizon-shaders",
     "crates/horizon-optifine",
     "crates/horizon-polytone",

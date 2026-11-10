@@ -1785,6 +1785,16 @@ const GENERATED_KEYS: [&str; 14] = [
     "entities",
     "CarvingMask",
 ];
+/// The root keys of a chunk tag that Horizon keeps as loaded and writes back.
+pub fn kept_root(tag: &Tag) -> Compound {
+    let Tag::Compound(map) = tag else {
+        return Compound::new();
+    };
+    map.iter()
+        .filter(|(k, _)| !GENERATED_KEYS.contains(&k.to_string_lossy().as_str()))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
 pub fn decode(root: &NamedTag, registry: &BlockRegistry, biomes: &Biomes) -> Option<Chunk> {
     decode_with(root, registry, biomes, None, ColumnLayout::VANILLA)
 }
@@ -1968,12 +1978,8 @@ fn decode_column(
             extras.attachments =
                 horizon_mod_runtime::attachments::Attachments::from_nbt(data.clone());
         }
-        extras.root = map
-            .iter()
-            .filter(|(k, _)| !GENERATED_KEYS.contains(&k.to_string_lossy().as_str()))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
     }
+    extras.root = kept_root(tag);
     if let Some(t) = tables {
         extras.block_ticks = read_ticks(tag.get("block_ticks"), (*x, *z), |n| {
             t.block_ids.get(n).map(|&i| u32::from(i))
@@ -5676,6 +5682,20 @@ fn effect_details(e: &crate::effects::SavedEffect) -> Vec<(&'static str, Tag)> {
 #[cfg(test)]
 mod tests {
     use crate::mobs::spawner::SpawnDataExt;
+
+    #[test]
+    fn kept_root_drops_the_regenerated_keys_only() {
+        use super::*;
+        let tag = Tag::compound([
+            ("xPos", Tag::Int(1)),
+            ("sections", Tag::List(Vec::new().into())),
+            ("forge:data", Tag::Int(7)),
+        ]);
+        let kept = kept_root(&tag);
+        assert_eq!(kept.len(), 1);
+        assert!(kept.get(&"forge:data".into()).is_some());
+        assert!(kept_root(&Tag::Int(0)).is_empty());
+    }
 
     #[test]
     fn saved_preset_editor_stems_supply_shapes_and_facts_below_pack_stems() {

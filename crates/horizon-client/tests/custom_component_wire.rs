@@ -13,7 +13,7 @@ const FIRST_CUSTOM_ID: i32 = 122;
 #[test]
 fn custom_components_survive_save_wire_and_nested_stacks() {
     custom::install(
-        FIRST_CUSTOM_ID,
+        vec![String::new(); FIRST_CUSTOM_ID as usize],
         vec!["sample:charge".into(), "sample:mode".into()],
     )
     .unwrap();

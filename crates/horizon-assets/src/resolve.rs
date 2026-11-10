@@ -40,6 +40,8 @@ pub enum ResolvedLoader {
         /// Objects the model chain's `visibility` hides.
         hidden: BTreeSet<String>,
     },
+    /// Finished quads from `horizon:baked`.
+    Baked(Arc<[BakedQuadData]>),
 }
 #[derive(Clone, Debug)]
 pub struct ResolvedCuboidModel {
@@ -54,6 +56,8 @@ pub struct ResolvedCuboidModel {
     geometry: Option<Arc<CuboidModel>>,
     generated: bool,
     loader: Option<ResolvedLoader>,
+    /// NeoForge's root `transform`, the closest in the parent chain.
+    pub root_transform: Option<crate::root_transform::RootTransform>,
 }
 impl ResolvedCuboidModel {
     /// Geometry from a custom loader, baked after the elements.
@@ -111,6 +115,7 @@ impl ModelLibrary {
             display: None,
             render_type: None,
             visibility: BTreeMap::new(),
+            root_transform: None,
         }
     }
     pub fn new(models: BTreeMap<String, CuboidModel>) -> Result<Self> {
@@ -254,6 +259,7 @@ impl ModelLibrary {
             .unwrap_or(GuiLight::Side);
         let render_type = chain.iter().find_map(|m| m.render_type.clone());
         let geometry = chain.iter().find(|m| m.elements.is_some()).map(Arc::clone);
+        let root_transform = chain.iter().find_map(|m| m.root_transform);
         let generated = chain
             .iter()
             .zip(&names)
@@ -332,6 +338,7 @@ impl ModelLibrary {
                         .collect(),
                 })
             }
+            Some(Loader::Baked { quads }) => Some(ResolvedLoader::Baked(quads.as_slice().into())),
             Some(Loader::Unknown(_)) | None => None,
         };
         let mut textures = BTreeMap::<String, Material>::new();
@@ -379,6 +386,7 @@ impl ModelLibrary {
             geometry,
             generated,
             loader,
+            root_transform,
         })
     }
     /// Parse an obj and its materials once; a failure warns once and yields no geometry.
@@ -481,6 +489,7 @@ pub fn missing_model() -> CuboidModel {
             ),
         ]),
         visibility: BTreeMap::new(),
+        root_transform: None,
     }
 }
 

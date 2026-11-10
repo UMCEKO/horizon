@@ -70,6 +70,13 @@ impl TryIntoEngine<()> for mod_api::Block {
     fn try_into_engine(&self, _: &()) -> Result<Self::Engine, Self::Error> {
         Ok(engine::Block {
             state_light: None,
+            light_dampening: None,
+            skylight_down: None,
+            solid_render: None,
+            can_occlude: None,
+            shape_occlusion: None,
+            occlusion: None,
+            replace_template_properties: false,
             id: self.id.clone(),
             template: self.template.clone(),
             pick_item: self.pick_item.clone(),

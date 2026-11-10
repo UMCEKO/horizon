@@ -263,3 +263,92 @@ pub const MOUSE: &[(i32, &str)] = &[
     (7, "key.mouse.7"),
     (8, "key.mouse.8"),
 ];
+
+/// SDL's scancode of a keyboard key by its vanilla name.
+pub fn scancode_of(name: &str) -> Option<i32> {
+    KEYBOARD.iter().find(|(_, n)| *n == name).map(|(c, _)| *c)
+}
+
+/// `SDL_GetKeyFromScancode`: the keycode `KeyEvent.keycode()` carries; a printable key takes the layout's unshifted character when winit knows it.
+pub fn sdl_keycode(scancode: i32, layout: Option<char>) -> i32 {
+    let printable = matches!(scancode, 4..=39 | 45..=56);
+    if printable && let Some(c) = layout.and_then(|c| c.to_lowercase().next()) {
+        return c as i32;
+    }
+    match scancode {
+        4..=29 => 'a' as i32 + scancode - 4,
+        30..=38 => '1' as i32 + scancode - 30,
+        39 => '0' as i32,
+        40 => 13,
+        41 => 27,
+        42 => 8,
+        43 => 9,
+        44 => 32,
+        45 => '-' as i32,
+        46 => '=' as i32,
+        47 => '[' as i32,
+        48 => ']' as i32,
+        49 => '\\' as i32,
+        50 => '#' as i32,
+        51 => ';' as i32,
+        52 => '\'' as i32,
+        53 => '`' as i32,
+        54 => ',' as i32,
+        55 => '.' as i32,
+        56 => '/' as i32,
+        76 => 127,
+        _ => scancode | 0x4000_0000,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(name: &str) -> i32 {
+        sdl_keycode(scancode_of(&format!("key.keyboard.{name}")).unwrap(), None)
+    }
+
+    #[test]
+    fn every_key_has_sdl_keycode() {
+        for &(sc, name) in KEYBOARD {
+            let code = sdl_keycode(sc, None);
+            if (4..=56).contains(&sc) {
+                assert!(sc == 45 || code != sc, "{name}");
+                assert!(
+                    (0x20..0x7f).contains(&code) || matches!(code, 8 | 9 | 13 | 27),
+                    "{name}"
+                );
+            } else if sc == 76 {
+                assert_eq!(code, 127);
+            } else {
+                assert_eq!(code, sc | 0x4000_0000, "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn spot_checks() {
+        for (name, code) in [
+            ("e", 101),
+            ("backspace", 8),
+            ("tab", 9),
+            ("enter", 13),
+            ("escape", 27),
+            ("space", 32),
+            ("delete", 127),
+            ("right", 0x4000_004F),
+            ("left", 0x4000_0050),
+            ("home", 0x4000_004A),
+            ("end", 0x4000_004D),
+            ("f1", 0x4000_003A),
+            ("keypad.9", 0x4000_0061),
+            ("left.shift", 0x4000_00E1),
+        ] {
+            assert_eq!(key(name), code, "{name}");
+        }
+        assert_eq!(sdl_keycode(8, Some('\u{e9}')), 233);
+        assert_eq!(sdl_keycode(8, Some('E')), 101);
+        assert_eq!(sdl_keycode(93, Some('5')), 93 | 0x4000_0000);
+    }
+}

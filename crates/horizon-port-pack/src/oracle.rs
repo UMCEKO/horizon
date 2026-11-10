@@ -25,6 +25,54 @@ pub struct Facts {
     pub vanilla_items: BTreeMap<String, Value>,
 }
 
+/// A JSON object read with its keys in file order.
+#[derive(Debug)]
+pub struct Ordered<T>(pub Vec<(String, T)>);
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Ordered<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Visit<T>(std::marker::PhantomData<T>);
+        impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for Visit<T> {
+            type Value = Ordered<T>;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an object")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut m: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut out = Vec::new();
+                while let Some(entry) = m.next_entry()? {
+                    out.push(entry);
+                }
+                Ok(Ordered(out))
+            }
+        }
+        d.deserialize_map(Visit(std::marker::PhantomData))
+    }
+}
+
+/// The oracle's baked block models (`<work>/oracle/baked-models.json`): for blocks whose
+/// geometry a mod's code builds, each state's quads as the game baked them.
+#[derive(Debug, Deserialize)]
+pub struct BakedModels {
+    pub blocks: Ordered<Ordered<BakedState>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BakedState {
+    #[serde(default)]
+    pub particle: String,
+    pub quads: Vec<Value>,
+}
+
+impl BakedModels {
+    pub fn read(path: &Path) -> Result<BakedModels, String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub struct Tags {
     #[serde(default)]
