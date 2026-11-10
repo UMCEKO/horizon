@@ -419,7 +419,7 @@ fn state_light_rejects_unknown_unreachable_and_uncovered_state_tuples() {
     {
         let declaration = format!(r#"{{"template":"minecraft:test","state_light":{spec}}}"#);
         let (base, mods) = block_base(&format!("state-light-selection-{i}"), &[&declaration]);
-        assert!(Plan::new(&base, &mods).is_err(), "{spec}");
+        assert!(refused(&base, &mods).is_some(), "{spec}");
         fs::remove_dir_all(base.parent().unwrap()).unwrap();
     }
     for (i, light) in ["", r#", "properties":{"light":4}"#].iter().enumerate() {
@@ -742,7 +742,9 @@ fn creative_tabs_keep_vanilla_items_missing_from_search() {
     };
     let plan = Plan {
         blocks: Vec::new(),
+        skipped: Vec::new(),
         items: Vec::new(),
+        component_types: Vec::new(),
         vanilla_items: tab.items.iter().cloned().collect(),
         effects: Vec::new(),
         fluids: Vec::new(),
@@ -924,6 +926,7 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
             "minecraft:iron_block":{"protocol_id":9}}},
             "minecraft:block":{"entries":{"minecraft:stone":{"protocol_id":7},
             "minecraft:iron_block":{"protocol_id":11}}},
+            "minecraft:data_component_type":{"entries":{"minecraft:damage":{"protocol_id":3}}},
             "minecraft:mob_effect":{"entries":{"minecraft:speed":{"protocol_id":0},
             "minecraft:luck":{"protocol_id":25}}},
             "minecraft:fluid":{"entries":{"minecraft:empty":{"protocol_id":0},
@@ -952,6 +955,10 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
                 r#"{"template":"minecraft:stone"}"#,
             ),
             (
+                "data/ruby/horizon/data_component_type/mode.json",
+                r#"{"persistent":true}"#,
+            ),
+            (
                 "data/ruby/horizon/mob_effect/glow.json",
                 r#"{"category":"beneficial","color":16711680}"#,
             ),
@@ -972,6 +979,10 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
             (
                 "data/alpha/horizon/item/aitem.json",
                 r#"{"template":"minecraft:stone"}"#,
+            ),
+            (
+                "data/alpha/horizon/data_component_type/cache.json",
+                r#"{"persistent":false}"#,
             ),
             (
                 "data/alpha/horizon/mob_effect/zap.json",
@@ -1026,6 +1037,7 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
                 "minecraft:iron_block":{"protocol_id":9}}},
                 "minecraft:block":{"entries":{"minecraft:stone":{"protocol_id":7},
                 "minecraft:iron_block":{"protocol_id":11}}},
+                "minecraft:data_component_type":{"entries":{"minecraft:damage":{"protocol_id":3}}},
                 "minecraft:mob_effect":{"entries":{"minecraft:speed":{"protocol_id":0},
                 "minecraft:luck":{"protocol_id":25}}},
                 "minecraft:fluid":{"entries":{"minecraft:empty":{"protocol_id":0},
@@ -1052,6 +1064,9 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
         assert_eq!(id("minecraft:block", "minecraft:iron_block"), 11);
         assert_eq!(id("minecraft:block", "alpha:zblock"), 12);
         assert_eq!(id("minecraft:block", "ruby:zblock"), 13);
+        assert_eq!(id("minecraft:data_component_type", "minecraft:damage"), 3);
+        assert_eq!(id("minecraft:data_component_type", "alpha:cache"), 4);
+        assert_eq!(id("minecraft:data_component_type", "ruby:mode"), 5);
         // Only declared block entity types get IDs, sorted independently of blocks.
         assert_eq!(id("minecraft:block_entity_type", "minecraft:chest"), 1);
         assert_eq!(id("minecraft:block_entity_type", "alpha:machine"), 2);
@@ -1073,13 +1088,24 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
         // `/effect` and the mob_effect arguments check ids against this table.
         let mut commands: J = serde_json::from_str(
             r#"{"blocks":[],"items":[],"effects":["minecraft:speed"],
+                "persistent_components":["minecraft:damage"],
                 "by_registry":{"minecraft:mob_effect":{"ids":["minecraft:speed"]},
+                "minecraft:data_component_type":{"ids":["minecraft:damage"]},
                 "minecraft:fluid":{"ids":["minecraft:water"]}}}"#,
         )
         .unwrap();
         plan.json("command-registries.json", &mut commands).unwrap();
         let commands: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&commands).unwrap()).unwrap();
+        // Commands name persistent component types only (`DataComponentType.PERSISTENT_CODEC`).
+        assert_eq!(
+            commands["persistent_components"],
+            serde_json::json!(["minecraft:damage", "ruby:mode"])
+        );
+        assert_eq!(
+            commands["by_registry"]["minecraft:data_component_type"]["ids"],
+            serde_json::json!(["minecraft:damage", "alpha:cache", "ruby:mode"])
+        );
         let want = ["minecraft:speed", "alpha:dull", "alpha:zap", "ruby:glow"];
         assert_eq!(commands["effects"], serde_json::json!(want));
         assert_eq!(
@@ -1676,14 +1702,17 @@ fn refuses_unknown_templates_and_vanilla_ids() {
     let _ = fs::remove_dir_all(&scratch);
     let mut m = ruby_mod(&scratch.join("ruby"));
     m.content.blocks[0].template = "minecraft:not_a_block".into();
-    let e = build_fixture(
+    let warnings = build_fixture(
         &base,
         Path::new(""),
         std::slice::from_ref(&m),
         &scratch.join("out"),
     )
-    .unwrap_err();
-    assert!(e.to_string().contains("is not a block"), "{e}");
+    .unwrap();
+    assert!(
+        warnings.iter().any(|w| w.contains("is not a block")),
+        "{warnings:?}"
+    );
     m.content.blocks[0].template = "minecraft:iron_block".into();
     let gem = m
         .content
@@ -2033,7 +2062,8 @@ fn content_root_is_reused_until_a_mod_changes() {
             .contains("Ruby Block")
     );
     assert!(!changed.join("assets/ruby/lang/en_us.json").exists());
-    m.content.blocks[0].template = "minecraft:missing_template".into();
+    // A bad template only leaves its block out; an unknown base block still refuses the build.
+    m.content.blocks[0].base_block = Some("minecraft:missing_base".into());
     assert!(resource_root_fixture(&base, Path::new(""), std::slice::from_ref(&m), &cache).is_err());
     assert!(
         changed.exists(),
@@ -3410,6 +3440,14 @@ fn content_block_default_state_is_validated_and_overlaid() {
             r#"{"template":"minecraft:piston","default_state":{"direction":"north"}}"#,
             None,
         ),
+        (
+            r#"{"template":"minecraft:piston","replace_template_properties":true,"state_properties":{"lit":{"type":"enum","values":["true","false"]}},"default_state":{"lit":"false"}}"#,
+            Some(4),
+        ),
+        (
+            r#"{"template":"minecraft:piston","replace_template_properties":true,"state_properties":{"lit":{"type":"enum","values":["true"]}},"state_light":{"property":"lit","values":{"false":1}}}"#,
+            None,
+        ),
     ] {
         let m = folder_mod(
             &scratch.join("mod"),
@@ -3428,7 +3466,14 @@ fn content_block_default_state_is_validated_and_overlaid() {
                     Some(&J::Num(id.into()))
                 );
             }
-            (Err(e), None) => assert!(e.to_string().contains("testmod:test"), "{e}"),
+            (Ok(plan), None) => {
+                assert!(plan.blocks.is_empty());
+                assert!(
+                    plan.skipped[0].contains("testmod:test"),
+                    "{:?}",
+                    plan.skipped
+                );
+            }
             _ => panic!("unexpected result for {declaration}"),
         }
     }
@@ -3448,10 +3493,7 @@ fn content_block_default_state_is_validated_and_overlaid() {
             ),
         ],
     );
-    let error = match Plan::new(&base, &[m]) {
-        Err(e) => e.to_string(),
-        Ok(_) => panic!("duplicate states accepted"),
-    };
+    let error = refused(&base, &[m]).expect("duplicate states accepted");
     assert!(error.contains("matches 2 states"), "{error}");
     fs::remove_dir_all(scratch).unwrap();
 }
@@ -3474,13 +3516,394 @@ fn shapes_reject_unknown_or_missing_template_values() {
                 ("data/shapetest/horizon/block/rod.json", declaration),
             ],
         );
-        let mods = [m];
-        let e = match Plan::new(&base, &mods) {
-            Ok(_) => panic!("accepted {declaration}"),
-            Err(e) => e.to_string(),
-        };
+        let e = refused(&base, &[m]).unwrap_or_else(|| panic!("accepted {declaration}"));
         assert!(e.contains("shapetest:rod"), "{e}");
     }
+    fs::remove_dir_all(scratch).unwrap();
+}
+
+/// A block whose template (lava) has no item, declared with one, is left out and reported; the rest is built.
+#[test]
+fn a_block_with_an_itemless_template_is_left_out_and_the_rest_built() {
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-fluid-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let base = scratch.join("base");
+    fs::create_dir_all(&base).unwrap();
+    fs::write(
+        base.join("facts.json"),
+        r#"{"states": [["minecraft:lava"], ["minecraft:stone"]],
+            "defaults": {"minecraft:lava": 0, "minecraft:stone": 1}}"#,
+    )
+    .unwrap();
+    fs::write(
+        base.join("gameplay-facts.json"),
+        r#"{"states": [{"item":"minecraft:air"}, {"item":"minecraft:stone"}]}"#,
+    )
+    .unwrap();
+    let blood = folder_mod(
+        &scratch.join("blood"),
+        &[
+            ("horizon-mod.toml", &manifest("blood", "")),
+            (
+                "data/blood/horizon/block/blood.json",
+                r#"{"template":"minecraft:lava"}"#,
+            ),
+        ],
+    );
+    let machine = folder_mod(
+        &scratch.join("m"),
+        &[
+            ("horizon-mod.toml", &manifest("m", "")),
+            (
+                "data/m/horizon/block/machine.json",
+                r#"{"template":"minecraft:stone"}"#,
+            ),
+        ],
+    );
+    let mods = vec![blood, machine];
+    let plan = Plan::new(&base, &mods).unwrap();
+    assert_eq!(plan.skipped.len(), 1, "{:?}", plan.skipped);
+    assert!(
+        plan.skipped[0].starts_with("blood:blood: template minecraft:lava has no item"),
+        "{:?}",
+        plan.skipped
+    );
+    let built: Vec<&str> = plan.blocks.iter().map(|b| b.decl.id.as_str()).collect();
+    assert_eq!(built, ["m:machine"]);
+    // The left-out block takes no states: the built one starts right after vanilla's.
+    assert_eq!(plan.blocks[0].rename.first, 2);
+    assert_eq!(plan.items.len(), 1);
+    fs::remove_dir_all(&scratch).unwrap();
+}
+
+/// Replacing, each combination copies the template state that agrees on the names they share, and
+/// every per-state value reads the block's own properties.
+#[test]
+fn blocks_may_replace_their_templates_properties() {
+    use serde_json::json;
+    let row = |facing: &str, lit: &str| {
+        format!(
+            r#"["minecraft:test",false,false,"",{{"id":"minecraft:test","properties":{{"facing":"{facing}","lit":"{lit}"}}}}]"#
+        )
+    };
+    let facts = format!(
+        r#"{{"states":[{},{},{},{}],"defaults":{{"minecraft:test":3}}}}"#,
+        row("north", "false"),
+        row("north", "true"),
+        row("south", "false"),
+        row("south", "true")
+    );
+    let declaration = r#"{"template":"minecraft:test","item":false,"replace_template_properties":true,
+      "state_properties":{"facing":{"type":"enum","values":["north","east","south","west"]},
+        "powered":{"type":"boolean"}},
+      "default_state":{"facing":"south"},
+      "shapes":{"properties":["facing"],"values":{"north":[[0,0,0,1,0.5,1]]},"default":[[0,0,0,1,1,1]]},
+      "state_light":{"properties":["facing","powered"],"values":{"east,true":13},"default":0},
+      "light_dampening":{"property":"powered","values":{"true":0},"default":15},
+      "skylight_down":{"property":"powered","values":{"true":true},"default":false},
+      "can_occlude":{"property":"facing","values":{"west":false},"default":true},
+      "occlusion":{"properties":["facing"],"values":{"south":[[0,0,0,1,0.25,1]]},"default":[[0,0,0,1,1,1]]}}"#;
+    let (base, mods) = block_base_of("replace-properties", &[declaration], &facts);
+    let plan = Plan::new(&base, &mods).unwrap();
+    assert!(plan.skipped.is_empty(), "{:?}", plan.skipped);
+    let block = &plan.blocks[0];
+    // North copies the template's north with the default's `lit`; east and west, which it lacks, the default.
+    assert_eq!(
+        block.order,
+        [
+            (1, 0),
+            (1, 1),
+            (3, 2),
+            (3, 3),
+            (3, 4),
+            (3, 5),
+            (3, 6),
+            (3, 7)
+        ]
+    );
+    assert!(
+        block.rename.states.is_empty(),
+        "no template state moves to it"
+    );
+    let mut doc: J = serde_json::from_str(&facts).unwrap();
+    plan.json("facts.json", &mut doc).unwrap();
+    let doc = serde_json::to_value(&doc).unwrap();
+    assert_eq!(doc["defaults"]["testmod:test"], 8);
+    assert_eq!(doc["states"].as_array().unwrap().len(), 12);
+    assert_eq!(
+        doc["states"][4][3],
+        "Block{testmod:test}[facing=north,powered=false]"
+    );
+    assert_eq!(
+        doc["states"][4][4]["properties"],
+        json!({"facing": "north", "powered": "false"})
+    );
+    assert_eq!(
+        doc["states"][11][4]["properties"],
+        json!({"facing": "west", "powered": "true"})
+    );
+    // Shapes, light and occlusion values read the block's own properties.
+    let mut gameplay: J = serde_json::from_str(r#"{"states":[{},{},{},{}]}"#).unwrap();
+    plan.json("gameplay-facts.json", &mut gameplay).unwrap();
+    let gameplay = serde_json::to_value(&gameplay).unwrap();
+    let rows = &gameplay["states"];
+    assert_eq!(rows[5]["outline"], json!([[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]]));
+    assert_eq!(rows[6]["outline"], json!([[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]));
+    assert_eq!(
+        (&rows[7]["emission"], &rows[6]["emission"]),
+        (&json!(13), &json!(0))
+    );
+    assert_eq!(
+        (&rows[5]["dampening"], &rows[4]["dampening"]),
+        (&json!(0), &json!(15))
+    );
+    assert_eq!(
+        (&rows[5]["skylight_down"], &rows[4]["skylight_down"]),
+        (&json!(true), &json!(false))
+    );
+    assert_eq!(
+        (&rows[10]["can_occlude"], &rows[8]["can_occlude"]),
+        (&json!(false), &json!(true))
+    );
+    // Rotation and mirror follow `facing`: north turns to east, south and west.
+    let mut turns: J = serde_json::from_str(
+        r#"{"rotate":[[0,0,0],[1,1,1],[2,2,2],[3,3,3]],"mirror":[[0,0],[1,1],[2,2],[3,3]],
+            "full_block":[false,false,false,false],"states":4}"#,
+    )
+    .unwrap();
+    plan.json("worldgen/blocks/structure-blocks.json", &mut turns)
+        .unwrap();
+    let turns = serde_json::to_value(&turns).unwrap();
+    assert_eq!(turns["rotate"][4], json!([6, 8, 10]));
+    assert_eq!(turns["mirror"][4], json!([8, 4]));
+    assert_eq!(turns["mirror"][6], json!([6, 10]));
+    assert_eq!(turns["states"], 12);
+    // Model states and the commands' schema are the block's own.
+    let mut models: J = serde_json::from_str(
+        r#"{"minecraft:test":{"schema":{"lit":{"named":["false","true"]}},"states":[]}}"#,
+    )
+    .unwrap();
+    plan.json("model-states.json", &mut models).unwrap();
+    let models = serde_json::to_value(&models).unwrap();
+    assert_eq!(
+        models["testmod:test"]["schema"],
+        json!({"facing": {"named": ["east", "north", "south", "west"]},
+            "powered": {"named": ["false", "true"]}})
+    );
+    assert_eq!(
+        models["testmod:test"]["states"][2],
+        json!({"facing": "east", "powered": "false"})
+    );
+    let mut commands: J = serde_json::from_str(
+        r#"{"blocks":{"minecraft:test":[["lit",["false","true"]]]},"items":[]}"#,
+    )
+    .unwrap();
+    plan.json("command-registries.json", &mut commands).unwrap();
+    let commands = serde_json::to_value(&commands).unwrap();
+    assert_eq!(
+        commands["blocks"]["testmod:test"],
+        json!([
+            ["facing", ["north", "east", "south", "west"]],
+            ["powered", ["false", "true"]]
+        ])
+    );
+    // NBT tables: each state its own properties, and its source's cached shape.
+    let state = |facing: &str| {
+        Tag::Compound(Compound::from([
+            (JavaString::from("id"), Tag::String("minecraft:test".into())),
+            (
+                JavaString::from("properties"),
+                Tag::Compound(Compound::from([
+                    (JavaString::from("facing"), Tag::String(facing.into())),
+                    (JavaString::from("lit"), Tag::String("false".into())),
+                ])),
+            ),
+        ]))
+    };
+    let mut tag = Tag::Compound(Compound::from([
+        (
+            JavaString::from("states"),
+            Tag::List(vec![
+                state("north"),
+                state("north"),
+                state("south"),
+                state("south"),
+            ]),
+        ),
+        (JavaString::from("shapes"), Tag::List(Vec::new())),
+        (
+            JavaString::from("cached_shapes"),
+            Tag::IntArray(vec![10, 11, 12, 13]),
+        ),
+    ]));
+    plan.nbt(&mut tag);
+    let Some(Tag::IntArray(cached)) = tag.get("cached_shapes") else {
+        panic!("cached_shapes")
+    };
+    assert_eq!(cached[4..], [11, 11, 13, 13, 13, 13, 13, 13]);
+    let Some(Tag::List(states)) = tag.get("states") else {
+        panic!("states")
+    };
+    let Some(Tag::Compound(properties)) = states[10].get("properties") else {
+        panic!("properties")
+    };
+    assert_eq!(properties.len(), 2);
+    assert_eq!(
+        properties.get(&JavaString::from("facing")),
+        Some(&Tag::String("west".into()))
+    );
+    // Occlusion: the declared shape, and none for a state that can't occlude.
+    plan.declared_shapes(&mut tag, false).unwrap();
+    let Some(Tag::IntArray(occlusion)) = tag.get("cached_shapes") else {
+        panic!("cached_shapes")
+    };
+    assert_eq!(occlusion[4..], [0, 0, 0, 0, 1, 1, 2, 2]);
+    let Some(Tag::List(shapes)) = tag.get("shapes") else {
+        panic!("shapes")
+    };
+    assert_eq!(shapes.len(), 3);
+    fs::remove_dir_all(base.parent().unwrap()).unwrap();
+    // Without the flag the same names would shadow the template's; replacing, an unknown default is refused.
+    for bad in [
+        r#"{"template":"minecraft:test","state_properties":{"facing":{"type":"boolean"}}}"#,
+        r#"{"template":"minecraft:test","replace_template_properties":true,
+          "state_properties":{"powered":{"type":"boolean"}},"default_state":{"lit":"true"}}"#,
+    ] {
+        let (base, mods) = block_base_of("replace-refused", &[bad], &facts);
+        let e = refused(&base, &mods).expect(bad);
+        assert!(e.contains("testmod:test"), "{e}");
+        fs::remove_dir_all(base.parent().unwrap()).unwrap();
+    }
+}
+
+/// The same through a full content root, as the light engine, face culling and structures read it.
+#[test]
+#[ignore = "full content root: needs prepared vanilla data"]
+fn a_block_declares_states_its_template_lacks() {
+    use horizon_core::geometry::Direction;
+    use horizon_world::{
+        collision::CachedCollisionRegistry,
+        registry::{BlockStateId, BlockTableFile},
+    };
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch =
+        std::env::temp_dir().join(format!("horizon-content-states-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let m = folder_mod(
+        &scratch.join("mod"),
+        &[
+            ("horizon-mod.toml", &manifest("machines", "")),
+            (
+                "data/machines/horizon/block/press.json",
+                r#"{"template":"minecraft:iron_block","replace_template_properties":true,
+                    "state_properties":{"facing":{"type":"enum","values":["north","south","west","east"]},"lit":{"type":"enum","values":["true","false"]}},
+                    "default_state":{"facing":"west","lit":"false"},
+                    "state_light":{"properties":["facing","lit"],"values":{"north,true":13},"default":0},
+                    "shapes":{"properties":["facing","lit"],"values":{"north,true":[[0,0,0,1,0.5,1]]},"default":[[0,0,0,1,1,1]]},
+                    "light_dampening":{"properties":["facing","lit"],"values":{"south,false":0},"default":15},
+                    "skylight_down":{"properties":["facing","lit"],"values":{"south,false":true},"default":false},
+                    "solid_render":{"properties":["facing","lit"],"values":{"south,false":false},"default":true},
+                    "occlusion":{"properties":["facing","lit"],"values":{"south,false":[[0,0,0,1,0.25,1]]},"default":[[0,0,0,1,1,1]]},
+                    "can_occlude":{"properties":["facing","lit"],"values":{"east,false":false},"default":true}}"#,
+            ),
+            (
+                "assets/machines/blockstates/press.json",
+                r#"{"variants":{"":{"model":"minecraft:block/iron_block"}}}"#,
+            ),
+        ],
+    );
+    let root = resource_root_fixture(&base, Path::new(""), &[m], &scratch.join("cache")).unwrap();
+    let assets = Assets::load(&root).unwrap();
+    let registry = assets.registry;
+    let facts = BlockFacts::load(&root, registry).unwrap();
+    let (named, _) = nbt::read_named(
+        &fs::read(root.join("cached-collision.nbt")).unwrap(),
+        nbt::Limits::tables(),
+    )
+    .unwrap();
+    let collision = CachedCollisionRegistry::from_nbt(&named.tag, registry).unwrap();
+    let state = |facing: &str, lit: &str| {
+        (0..registry.len())
+            .map(|i| BlockStateId(i as u32))
+            .find(|id| {
+                let s = registry.state(*id).unwrap();
+                s.name == "machines:press"
+                    && s.properties.get("facing").is_some_and(|v| v == facing)
+                    && s.properties.get("lit").is_some_and(|v| v == lit)
+            })
+            .unwrap()
+    };
+    assert_eq!(
+        registry.default_state("machines:press"),
+        Some(state("west", "false"))
+    );
+    assert_eq!(facts.get(state("north", "true")).emission, 13);
+    assert_eq!(facts.get(state("north", "false")).emission, 0);
+    assert_eq!(facts.get(state("north", "true")).outline[0][4], 0.5);
+    let shape = collision
+        .cached_shape(state("north", "true"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(shape.boxes().len(), 1);
+    let iron = registry.default_state("minecraft:iron_block").unwrap();
+    assert_eq!(
+        facts.get(state("south", "true")).outline,
+        facts.get(iron).outline
+    );
+    // A state's own light values, which the light engine reads instead of the template's.
+    let (glassy, solid) = (
+        facts.get(state("south", "false")),
+        facts.get(state("south", "true")),
+    );
+    assert_eq!(
+        (glassy.dampening, glassy.skylight_down, glassy.solid_render),
+        (0, true, false)
+    );
+    assert_eq!(
+        (solid.dampening, solid.skylight_down, solid.solid_render),
+        (facts.get(iron).dampening, false, true)
+    );
+    assert!(!facts.get(state("east", "false")).can_occlude);
+    let file = BlockTableFile::open(&root.join("occlusion.nbt"), registry).unwrap();
+    let occlusion = CachedCollisionRegistry::from_table(file.table("occlusion").unwrap()).unwrap();
+    let low = occlusion
+        .cached_shape(state("south", "false"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(low.boxes().len(), 1);
+    // Face culling: a full press hides its neighbour's face, one that can't occlude does not.
+    let stone = registry.default_state("minecraft:stone").unwrap();
+    let mut visibility = crate::models::load_visibility(&root, registry).unwrap();
+    assert!(
+        !visibility
+            .should_render_face(stone, state("west", "false"), Direction::East, false)
+            .unwrap()
+    );
+    assert!(
+        visibility
+            .should_render_face(stone, state("east", "false"), Direction::East, false)
+            .unwrap()
+    );
+    // Rotation and mirror follow `facing`, which the template row can't say.
+    let turned: serde_json::Value = serde_json::from_slice(
+        &fs::read(root.join("worldgen/blocks/structure-blocks.json")).unwrap(),
+    )
+    .unwrap();
+    let north = state("north", "false").0 as usize;
+    assert_eq!(
+        turned["rotate"][north],
+        serde_json::json!([
+            state("east", "false").0,
+            state("south", "false").0,
+            state("west", "false").0
+        ])
+    );
+    assert_eq!(
+        turned["mirror"][north],
+        serde_json::json!([state("south", "false").0, state("north", "false").0])
+    );
     fs::remove_dir_all(scratch).unwrap();
 }
 
@@ -4578,7 +5001,7 @@ fn collision_only_preserves_outline_and_shape_typos_are_errors() {
     {
         let declaration = format!(r#"{{"template":"minecraft:test","collision_shapes":{table}}}"#);
         let (base, mods) = block_base(&format!("collision-typo-{index}"), &[&declaration]);
-        assert!(Plan::new(&base, &mods).is_err(), "{table}");
+        assert!(refused(&base, &mods).is_some(), "{table}");
         fs::remove_dir_all(base.parent().unwrap()).unwrap();
     }
 }
@@ -4801,10 +5224,8 @@ fn content_block_state_properties_are_validated() {
         "block-shadow",
         &[r#"{"template":"minecraft:test","state_properties":{"axis":{"type":"boolean"}}}"#],
     );
-    let error = match Plan::new(&base, &mods) {
-        Err(e) => e.to_string(),
-        Ok(_) => panic!("a shadowed template property was accepted"),
-    };
+    let error = refused(&base, &mods)
+        .unwrap_or_else(|| panic!("a shadowed template property was accepted"));
     assert!(error.contains("axis is already on"), "{error}");
     fs::remove_dir_all(&base).unwrap();
     fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
@@ -4815,10 +5236,8 @@ fn content_block_state_properties_are_validated() {
         &[r#"{"template":"minecraft:test",
              "state_properties":{"lit":{"type":"boolean"}},"default_state":{"lit":"maybe"}}"#],
     );
-    let error = match Plan::new(&base, &mods) {
-        Err(e) => e.to_string(),
-        Ok(_) => panic!("a default outside a property's values was accepted"),
-    };
+    let error = refused(&base, &mods)
+        .unwrap_or_else(|| panic!("a default outside a property's values was accepted"));
     assert!(error.contains("is not one of its values"), "{error}");
     fs::remove_dir_all(&base).unwrap();
     fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
@@ -4833,10 +5252,8 @@ fn content_block_state_properties_are_validated() {
         declared.join(",")
     );
     let (base, mods) = block_base("block-too-many", &[&declaration]);
-    let error = match Plan::new(&base, &mods) {
-        Err(e) => e.to_string(),
-        Ok(_) => panic!("more states than a world holds were accepted"),
-    };
+    let error = refused(&base, &mods)
+        .unwrap_or_else(|| panic!("more states than a world holds were accepted"));
     assert!(
         error.contains("more than the") && error.contains("world can hold"),
         "{error}"
@@ -6890,6 +7307,13 @@ fn fixture_inventory(mods: &[ContentMod]) -> horizon_mod_package::enabled::Enabl
         mods.iter()
             .map(|package| (package.id.clone(), horizon_mod_package::Side::Both)),
     )
+}
+/// Why a plan refuses a declaration: its error, or the first block it left out.
+fn refused(base: &Path, mods: &[ContentMod]) -> Option<String> {
+    match Plan::new(base, mods) {
+        Err(e) => Some(e.to_string()),
+        Ok(plan) => plan.skipped.first().cloned(),
+    }
 }
 fn build_fixture(base: &Path, jars: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>> {
     super::build(base, jars, mods, out, &fixture_inventory(mods))
