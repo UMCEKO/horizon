@@ -128,6 +128,14 @@ pub fn carry(
     } else {
         None
     };
+    let baked_path = work.join("oracle/baked-models.json");
+    let baked = if baked_path.exists() {
+        let b = oracle::BakedModels::read(&baked_path)?;
+        log(format!("oracle baked models: {} blocks", b.blocks.0.len()));
+        Some(b)
+    } else {
+        None
+    };
     // Without the prepared tables, templates are not limited to what the game has.
     let vanilla = resources.and_then(|r| {
         vanilla_blocks(r)
@@ -213,6 +221,7 @@ pub fn carry(
             info,
             &work.join("mods").join(&r.key),
             facts.as_ref().filter(seen),
+            baked.as_ref(),
             &allowed,
             &pack,
             &conventions,
