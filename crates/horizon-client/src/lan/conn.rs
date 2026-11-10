@@ -971,6 +971,44 @@ struct Parts {
     properties: Vec<login::Property>,
     info: ClientInformation,
     brand: String,
+    java: bool,
+}
+
+/// Asks a Horizon client whether it has a Java client of its own; one that has gets the Java side's frames.
+fn java_probe(
+    c: &mut Connection,
+    frames: &super::JavaFrames,
+    info: &mut ClientInformation,
+) -> Result<bool, String> {
+    let e = |e: horizon_protocol::Error| e.to_string();
+    let payload = |data: Vec<u8>| {
+        cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+            channel: horizon_protocol::java::CHANNEL.into(),
+            data,
+        })
+        .encode()
+    };
+    c.send(&payload(Vec::new())).map_err(e)?;
+    c.send(&cfg::Clientbound::Ping(cfg::Ping { id: 1 }).encode())
+        .map_err(e)?;
+    let mut java = false;
+    loop {
+        let (id, body) = c.recv().map_err(e)?;
+        match decode_config(id, &body).map_err(e)? {
+            cfg::Serverbound::CustomPayload(p) if p.channel == horizon_protocol::java::CHANNEL => {
+                java = p.data.first() == Some(&1);
+            }
+            cfg::Serverbound::Pong(p) if p.id == 1 => break,
+            cfg::Serverbound::ClientInformation(i) => *info = i,
+            _ => {}
+        }
+    }
+    if java {
+        for frame in frames() {
+            c.send(&payload(frame)).map_err(e)?;
+        }
+    }
+    Ok(java)
 }
 
 fn login_and_configure(
@@ -1218,6 +1256,10 @@ fn login_and_configure(
             return Ok(None);
         }
     }
+    let java = match &shared.config.java_frames {
+        Some(frames) if brand == "horizon" && !c.is_memory() => java_probe(c, frames, &mut info)?,
+        _ => false,
+    };
     for packet in sync.registry_packets(known_pack, &shared.config.levels) {
         send(c, cfg::Clientbound::RegistryData(packet))?;
     }
@@ -1251,6 +1293,7 @@ fn login_and_configure(
         properties,
         info,
         brand,
+        java,
     }))
 }
 
@@ -1507,6 +1550,7 @@ fn play(
         properties: parts.properties,
         info: parts.info,
         brand: parts.brand,
+        java: parts.java,
         sender,
         latency,
         address,

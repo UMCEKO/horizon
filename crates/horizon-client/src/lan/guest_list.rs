@@ -404,6 +404,7 @@ mod tests {
                 properties: vec![],
                 info: horizon_protocol::packets::configuration::ClientInformation::new(8),
                 brand: "horizon".into(),
+                java: false,
                 sender: super::super::PlayerSender::new(tx, Default::default()),
                 latency: Default::default(),
                 address: "127.0.0.1:25565".parse().unwrap(),

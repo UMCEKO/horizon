@@ -74,6 +74,7 @@ fn scoped_host_resolves_other_real_players_from_the_game() {
                     properties: Vec::new(),
                     info: ClientInformation::new(8),
                     brand: String::new(),
+                    java: false,
                     sender: PlayerSender::new(tx, Arc::new(AtomicUsize::new(0))),
                     latency: Arc::new(AtomicI32::new(0)),
                     address: "127.0.0.1:1".parse().unwrap(),

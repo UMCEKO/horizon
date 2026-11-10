@@ -19,6 +19,7 @@ fn observer(conn: u32, position: [f64; 3], dimension: &str) -> (Guest, mpsc::Rec
             properties: Vec::new(),
             info: ClientInformation::new(2),
             brand: "test".into(),
+            java: false,
             sender: PlayerSender::new(tx, Arc::default()),
             latency: Arc::new(AtomicI32::new(0)),
             address: "127.0.0.1:25565".parse().unwrap(),

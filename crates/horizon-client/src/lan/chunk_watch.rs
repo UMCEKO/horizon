@@ -1,8 +1,9 @@
 //! The chunks each player watches, for the mods' `chunk_watch`, `chunk_sent`
 //! and `chunk_unwatch` (NeoForge's `ChunkWatchEvent`). The hub records them
-//! only while a mod listens; the game tells the mods after the hub's step.
+//! only while a mod or the Java side listens; the game tells the mods after the hub's step.
 
 use mod_api::HookId;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::guest::Guest;
 
@@ -73,9 +74,22 @@ impl ChunkWatchLog {
     }
 }
 
-/// Whether a mod listens to any of the three.
+/// The server's Java side is on: it keeps its own copy of the players' chunks.
+static JAVA_SIDE: AtomicBool = AtomicBool::new(false);
+
+/// The Java side starts or stops taking the players' chunks.
+pub fn set_java_side(on: bool) {
+    JAVA_SIDE.store(on, Ordering::Relaxed);
+}
+
+pub fn java_side() -> bool {
+    JAVA_SIDE.load(Ordering::Relaxed)
+}
+
+/// Whether a mod listens to any of the three, or the Java side takes them.
 pub fn listened() -> bool {
-    [HookId::ChunkWatch, HookId::ChunkSent, HookId::ChunkUnwatch]
+    java_side()
+        || [HookId::ChunkWatch, HookId::ChunkSent, HookId::ChunkUnwatch]
         .into_iter()
         .any(mod_api::__private::listened)
 }

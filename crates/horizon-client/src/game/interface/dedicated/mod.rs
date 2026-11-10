@@ -1200,6 +1200,7 @@ impl Game<'_> {
             },
             owner_profile: None,
             singleplayer_profile: None,
+            java_frames: None,
         };
         let config = HubConfig {
             allow_flight: props.allow_flight,

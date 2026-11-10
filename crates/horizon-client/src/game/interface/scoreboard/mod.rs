@@ -1098,6 +1098,7 @@ mod tab_list_tests {
                 properties: Vec::new(),
                 info: ClientInformation::new(8),
                 brand: "test".into(),
+                java: false,
                 sender: PlayerSender::new(tx, Arc::default()),
                 latency: Arc::new(AtomicI32::new(42)),
                 address: "127.0.0.1:25565".parse().unwrap(),
