@@ -491,6 +491,9 @@ block's name breaking ties (`_pane`, `_gate`, `_trapdoor`). Walls and vines have
 property names; sides tested as `true` / `false` make a vine (Chipped's 11 vines, which the game
 refused as walls: their blockstates did not load).
 
+The oracle can also export `<work>/oracle/baked-models.json` for blocks whose geometry a mod's code builds. Carry writes
+each as `horizon:baked` models (one file per distinct geometry) with a blockstate pointing at them, and counts them as `baked_blocks`.
+
 ### 1. Import
 
 | Format | Read | Jars come from |
