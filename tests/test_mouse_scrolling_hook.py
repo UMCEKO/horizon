@@ -51,6 +51,7 @@ impl Game {
     fn screen_over_playing(&self) -> bool { self.overlay }
     fn spectator(&self) -> bool { self.spectator }
     fn spectator_scroll(&mut self, steps: i32) { self.menu_scrolls.push(steps); }
+    fn java_world_scroll(&mut self, _: f64, _: f64) -> bool { false }
     fn native_mouse_scrolling(&mut self, scroll: [f64;2], accumulated: [i32;2], buttons: [bool;3],
         cursor: [f32;2], modifiers: u32, canceled: &mut bool) {
         self.calls.push((scroll, accumulated, buttons, cursor, modifiers)); *canceled = self.cancel;

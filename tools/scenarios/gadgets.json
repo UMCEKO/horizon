@@ -1,0 +1,303 @@
+{
+  "steps": [
+    {
+      "name": "setup"
+    },
+    {
+      "command": "/gamemode creative"
+    },
+    {
+      "command": "/forceload add 160 140 180 160"
+    },
+    {
+      "wait": 60
+    },
+    {
+      "command": "/fill 160 70 140 180 78 160 air"
+    },
+    {
+      "command": "/fill 160 69 140 180 69 160 stone"
+    },
+    {
+      "command": "/fill 165 70 156 175 74 156 stone"
+    },
+    {
+      "command": "/item replace entity @s hotbar.0 with buildinggadgets2:gadget_building"
+    },
+    {
+      "command": "/item replace entity @s hotbar.1 with buildinggadgets2:gadget_destruction[buildinggadgets2:left_value=1,buildinggadgets2:right_value=1,buildinggadgets2:up_value=1,buildinggadgets2:down_value=1,buildinggadgets2:depth_value=1]"
+    },
+    {
+      "tp": [
+        170.5,
+        70,
+        146.5
+      ]
+    },
+    {
+      "wait": 40
+    },
+    {
+      "check": {
+        "near": [
+          170.5,
+          70,
+          146.5
+        ],
+        "radius": 1
+      }
+    },
+    {
+      "name": "sneak-click stone picks stone"
+    },
+    {
+      "slot": 0
+    },
+    {
+      "lookat": [
+        170.5,
+        69.95,
+        150.5
+      ]
+    },
+    {
+      "check": {
+        "looking_at": "stone"
+      }
+    },
+    {
+      "press": "key.sneak"
+    },
+    {
+      "wait": 5
+    },
+    {
+      "use": 2
+    },
+    {
+      "release": "key.sneak"
+    },
+    {
+      "wait": 10
+    },
+    {
+      "command": "/data get entity @s SelectedItem.components"
+    },
+    {
+      "check": {
+        "output": "gadget_blockstate.*stone"
+      }
+    },
+    {
+      "name": "a click on a wall's face builds toward the player"
+    },
+    {
+      "tp": [
+        170.5,
+        70,
+        151.5
+      ]
+    },
+    {
+      "wait": 10
+    },
+    {
+      "lookat": [
+        170.5,
+        71.5,
+        156.0
+      ]
+    },
+    {
+      "check": {
+        "looking_at": "stone"
+      }
+    },
+    {
+      "use": 2
+    },
+    {
+      "wait": 60
+    },
+    {
+      "check": {
+        "block": [
+          170,
+          71,
+          155
+        ],
+        "is": "stone",
+        "within": 10
+      }
+    },
+    {
+      "check": {
+        "block": [
+          170,
+          71,
+          153
+        ],
+        "is": "stone",
+        "within": 10
+      }
+    },
+    {
+      "name": "a click on the floor from above builds up toward the player"
+    },
+    {
+      "command": "/setblock 170 71 148 stone"
+    },
+    {
+      "tp": [
+        170.5,
+        72,
+        148.5
+      ]
+    },
+    {
+      "wait": 20
+    },
+    {
+      "lookat": [
+        170.5,
+        69.95,
+        150.5
+      ]
+    },
+    {
+      "check": {
+        "looking_at": "stone"
+      }
+    },
+    {
+      "use": 2
+    },
+    {
+      "wait": 60
+    },
+    {
+      "check": {
+        "block": [
+          170,
+          70,
+          150
+        ],
+        "is": "stone",
+        "within": 10
+      }
+    },
+    {
+      "check": {
+        "block": [
+          170,
+          71,
+          150
+        ],
+        "is": "stone",
+        "within": 10
+      }
+    },
+    {
+      "name": "destruction clears a 3x3 of the wall in front"
+    },
+    {
+      "tp": [
+        167.5,
+        70,
+        151.5
+      ]
+    },
+    {
+      "wait": 10
+    },
+    {
+      "slot": 1
+    },
+    {
+      "wait": 5
+    },
+    {
+      "lookat": [
+        167.5,
+        72.5,
+        156.0
+      ]
+    },
+    {
+      "check": {
+        "looking_at": "stone"
+      }
+    },
+    {
+      "use": 2
+    },
+    {
+      "wait": 60
+    },
+    {
+      "check": {
+        "block": [
+          167,
+          72,
+          156
+        ],
+        "is": "air",
+        "within": 10
+      }
+    },
+    {
+      "check": {
+        "block": [
+          166,
+          71,
+          156
+        ],
+        "is": "air",
+        "within": 10
+      }
+    },
+    {
+      "check": {
+        "block": [
+          168,
+          73,
+          156
+        ],
+        "is": "air",
+        "within": 10
+      }
+    },
+    {
+      "check": {
+        "block": [
+          169,
+          72,
+          156
+        ],
+        "is": "stone"
+      }
+    },
+    {
+      "check": {
+        "block": [
+          165,
+          74,
+          156
+        ],
+        "is": "stone"
+      }
+    },
+    {
+      "name": "clean log"
+    },
+    {
+      "check": {
+        "no_exceptions": true,
+        "since": "start"
+      }
+    },
+    {
+      "quit": true
+    }
+  ]
+}

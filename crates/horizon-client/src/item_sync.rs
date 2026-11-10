@@ -390,6 +390,11 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
             }
             // Read past, not decoded: the item keeps its prototype's value.
             Component::Raw(_) => continue,
+            // A mod's type with no saved form has nothing to keep in the item's components.
+            Component::Foreign { value, .. } => match value {
+                Some(value) => value.clone(),
+                None => continue,
+            },
             // Trim materials and patterns are synced registries, as enchantments are.
             Component::Trim { material, pattern } => {
                 let (Some(material), Some(pattern)) = (

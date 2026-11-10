@@ -99,7 +99,7 @@ pub fn os_name() -> &'static str {
 
 /// Whether a rule list lets this system in: the last matching rule decides; no rules allow.
 /// The optional features (demo, custom resolution, quick play) are on only when named in `on`.
-fn allowed(rules: &Value, os: &str, on: &[&str]) -> bool {
+pub(crate) fn allowed(rules: &Value, os: &str, on: &[&str]) -> bool {
     let Some(rules) = rules.as_array() else {
         return true;
     };

@@ -1,9 +1,10 @@
-//! Internal wire IDs for native data components. Installed once before networking.
+//! Wire IDs for data components past vanilla's (Java mods' then native ones), installed once before networking.
 use super::{Component, Stack, Template, component};
 use crate::buf::{Codec, Reader};
 use std::sync::OnceLock;
 
 struct Types {
+    builtin: Vec<String>,
     first: i32,
     names: Vec<String>,
 }
@@ -30,31 +31,63 @@ impl std::fmt::Display for InstallError {
 }
 impl std::error::Error for InstallError {}
 
-/// Install sorted component names after the built-in component IDs.
-/// This is an internal transport seam, not a native-mod API.
-#[doc(hidden)]
-pub fn install(first: i32, mut names: Vec<String>) -> Result<(), InstallError> {
-    if first < 0
-        || i32::try_from(names.len())
+impl Types {
+    fn new(builtin: Vec<String>, mut names: Vec<String>) -> Result<Self, InstallError> {
+        let first = i32::try_from(builtin.len()).map_err(|_| InstallError::InvalidRange)?;
+        if i32::try_from(names.len())
             .ok()
             .and_then(|n| first.checked_add(n))
             .is_none()
-    {
-        return Err(InstallError::InvalidRange);
+        {
+            return Err(InstallError::InvalidRange);
+        }
+        if names.iter().any(|name| {
+            horizon_core::identifier::Identifier::parse_namespaced(name)
+                .is_none_or(|id| id.namespace() == "minecraft")
+        }) {
+            return Err(InstallError::InvalidName);
+        }
+        names.sort();
+        if names.windows(2).any(|pair| pair[0] == pair[1])
+            || names.iter().any(|name| builtin.contains(name))
+        {
+            return Err(InstallError::DuplicateName);
+        }
+        Ok(Self {
+            builtin,
+            first,
+            names,
+        })
     }
-    if names.iter().any(|name| {
-        horizon_core::identifier::Identifier::parse_namespaced(name)
-            .is_none_or(|id| id.namespace() == "minecraft")
-    }) {
-        return Err(InstallError::InvalidName);
+
+    fn name(&self, id: i32) -> Option<&str> {
+        let index = usize::try_from(id.checked_sub(self.first)?).ok()?;
+        self.names.get(index).map(String::as_str)
     }
-    names.sort();
-    if names.windows(2).any(|pair| pair[0] == pair[1]) {
-        return Err(InstallError::DuplicateName);
+
+    fn id(&self, name: &str) -> Option<i32> {
+        let index = self.names.binary_search_by(|n| n.as_str().cmp(name)).ok()?;
+        self.first.checked_add(i32::try_from(index).ok()?)
     }
+
+    fn builtin(&self, id: i32) -> Option<&str> {
+        self.builtin
+            .get(usize::try_from(id).ok()?)
+            .map(String::as_str)
+    }
+}
+
+/// Install the merged built-in registry (vanilla's types, then Java mods' in Java's order) and sorted native names after it.
+#[doc(hidden)]
+pub fn install(builtin: Vec<String>, names: Vec<String>) -> Result<(), InstallError> {
     TYPES
-        .set(Types { first, names })
+        .set(Types::new(builtin, names)?)
         .map_err(|_| InstallError::AlreadyInstalled)
+}
+
+/// A built-in type's name, vanilla's or a Java mod's; never a native one.
+pub(crate) fn builtin(id: i32) -> Option<&'static str> {
+    TYPES.get()?.builtin(id)
 }
 
 /// Validate an opaque value against the same limits used by the network reader.
@@ -152,19 +185,12 @@ pub fn permitted(stack: &Stack, negotiated: bool) -> crate::Result<bool> {
 
 #[doc(hidden)]
 pub fn name(id: i32) -> Option<&'static str> {
-    let types = TYPES.get()?;
-    let index = usize::try_from(id.checked_sub(types.first)?).ok()?;
-    types.names.get(index).map(String::as_str)
+    TYPES.get()?.name(id)
 }
 
 #[doc(hidden)]
 pub fn id(name: &str) -> Option<i32> {
-    let types = TYPES.get()?;
-    let index = types
-        .names
-        .binary_search_by(|n| n.as_str().cmp(name))
-        .ok()?;
-    types.first.checked_add(i32::try_from(index).ok()?)
+    TYPES.get()?.id(name)
 }
 
 #[doc(hidden)]
@@ -177,4 +203,44 @@ pub fn entries() -> impl Iterator<Item = (i32, &'static str)> {
             ))
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn builtin(java: &[&str]) -> Vec<String> {
+        let vanilla = (0..component::VANILLA_TYPES).map(|i| format!("minecraft:t{i}"));
+        vanilla
+            .chain(java.iter().map(|s| (*s).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn a_native_named_components_id_stays_stable_after_javas() {
+        let native = || vec!["sample:z".to_owned(), "sample:a".to_owned()];
+        let alone = Types::new(builtin(&[]), native()).unwrap();
+        assert_eq!(alone.id("sample:a"), Some(122));
+        assert_eq!(alone.id("sample:z"), Some(123));
+        let java = || builtin(&["gem:mode", "gem:other"]);
+        let with_java = Types::new(java(), native()).unwrap();
+        assert_eq!(with_java.builtin(122), Some("gem:mode"));
+        assert_eq!(with_java.builtin(123), Some("gem:other"));
+        assert_eq!(with_java.name(123), None);
+        assert_eq!(with_java.id("sample:a"), Some(124));
+        assert_eq!(with_java.id("sample:z"), Some(125));
+        assert_eq!(with_java.name(125), Some("sample:z"));
+        assert_eq!(with_java.builtin(124), None);
+        let reordered = vec!["sample:a".to_owned(), "sample:z".to_owned()];
+        let again = Types::new(java(), reordered).unwrap();
+        assert_eq!(again.id("sample:z"), Some(125));
+    }
+
+    #[test]
+    fn a_native_name_cannot_take_a_java_mods_type() {
+        assert_eq!(
+            Types::new(builtin(&["gem:mode"]), vec!["gem:mode".into()]).err(),
+            Some(InstallError::DuplicateName)
+        );
+    }
 }

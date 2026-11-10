@@ -1599,6 +1599,12 @@ impl SoundEngine {
             self.queued.push((id, at));
         }
     }
+    /// `isActive`, or still waiting for its delay or its first tick.
+    pub fn is_playing_or_queued(&self, id: InstanceId) -> bool {
+        self.is_active(id)
+            || self.queued.iter().any(|(i, _)| *i == id)
+            || self.queued_tickable.contains(&id)
+    }
     /// `isActive`.
     pub fn is_active(&self, id: InstanceId) -> bool {
         self.loaded && self.channel_of(id).is_some()

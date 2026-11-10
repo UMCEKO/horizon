@@ -1793,6 +1793,7 @@ fn network_stack(
                 horizon_protocol::item::Component::Stacks(contents),
             ));
         }
+        stack.added.extend(foreign_components(d, synced_id));
         // The books a lectern shows and a guest reads.
         if !d.writable_pages.is_empty() {
             stack.added.push((
@@ -1939,6 +1940,43 @@ fn network_stack(
         ));
     }
     Some(stack)
+}
+
+/// A Java mod's components by their own stream codecs, each behind its type's id in the registry the client shares.
+fn foreign_components(
+    d: &crate::item_data::StackData,
+    synced_id: &dyn Fn(&str, &str) -> Option<i32>,
+) -> Vec<(i32, horizon_protocol::item::Component)> {
+    use horizon_protocol::item::{Component, foreign};
+    let owned: Vec<(i32, &str, &horizon_core::nbt::Tag)> = d
+        .other
+        .iter()
+        .filter_map(|(name, value)| {
+            let kind = synced_id("minecraft:data_component_type", name)?;
+            foreign::owns(kind).then_some((kind, name.as_str(), value))
+        })
+        .collect();
+    if owned.is_empty() {
+        return Vec::new();
+    }
+    let values: Vec<_> = owned
+        .iter()
+        .map(|(_, name, value)| (*name, *value))
+        .collect();
+    let bytes = foreign::write(&values);
+    owned
+        .into_iter()
+        .zip(bytes)
+        .filter_map(|((kind, _, value), bytes)| {
+            Some((
+                kind,
+                Component::Foreign {
+                    bytes: bytes?.to_vec(),
+                    value: Some(value.clone()),
+                },
+            ))
+        })
+        .collect()
 }
 
 /// `CustomModelData.CODEC` read from its saved form, for its stream codec.
@@ -2160,6 +2198,58 @@ mod tests {
         assert_eq!(
             received.component(component::CUSTOM_NAME),
             Some(&Component::Text(name))
+        );
+    }
+
+    #[test]
+    fn a_mods_component_goes_by_its_codec_behind_its_id() {
+        use horizon_protocol::item::{custom, foreign};
+        struct Fake;
+        impl foreign::StreamCodecs for Fake {
+            fn read(&self, _: &str, _: &[u8]) -> Option<(usize, Option<Tag>)> {
+                None
+            }
+            fn write(&self, values: &[(&str, &Tag)]) -> Vec<Option<std::sync::Arc<[u8]>>> {
+                let answer =
+                    |(name, _): &(&str, &Tag)| (*name == "test:mode").then(|| [7u8].into());
+                values.iter().map(answer).collect()
+            }
+        }
+        foreign::install(Box::new(Fake));
+        let mut builtin = vec![String::new(); component::VANILLA_TYPES as usize];
+        builtin
+            .extend(["test:a", "test:b", "test:c", "test:mode", "test:refused"].map(String::from));
+        let _ = custom::install(builtin, Vec::new());
+        let kind = component::VANILLA_TYPES + 3;
+        let synced_id = |registry: &str, name: &str| match (registry, name) {
+            ("minecraft:data_component_type", "test:mode") => Some(kind),
+            ("minecraft:data_component_type", "test:refused") => Some(kind + 1),
+            ("minecraft:data_component_type", "minecraft:lore") => Some(component::LORE),
+            _ => None,
+        };
+        let mode = Tag::String("rotate".into());
+        let mut item = ItemStack::new("test:item", 1);
+        item.data_mut().other = vec![
+            ("test:mode".into(), mode.clone()),
+            ("test:refused".into(), Tag::Int(1)),
+            ("minecraft:lore".into(), Tag::List(Vec::new())),
+        ];
+        let stack = stack_to_network(|_| 7, synced_id, &Some(item)).unwrap();
+        // Vanilla's lore goes by its own codec, not as a mod's component.
+        let foreign: Vec<_> = stack
+            .added
+            .into_iter()
+            .filter(|(_, c)| matches!(c, Component::Foreign { .. }))
+            .collect();
+        assert_eq!(
+            foreign,
+            vec![(
+                kind,
+                Component::Foreign {
+                    bytes: vec![7],
+                    value: Some(mode)
+                }
+            )]
         );
     }
 

@@ -1,0 +1,123 @@
+[
+  {
+    "name": "creative"
+  },
+  {
+    "command": "/gamemode creative"
+  },
+  {
+    "wait": 10
+  },
+  {
+    "name": "platform"
+  },
+  {
+    "command": "/forceload add -16 -16 16 16"
+  },
+  {
+    "wait": 60
+  },
+  {
+    "command": "/fill -2 99 -2 2 99 2 minecraft:stone"
+  },
+  {
+    "wait": 20
+  },
+  {
+    "name": "tp"
+  },
+  {
+    "tp": [
+      0.5,
+      100,
+      0.5
+    ]
+  },
+  {
+    "wait": 20
+  },
+  {
+    "check": {
+      "near": [
+        0.5,
+        100,
+        0.5
+      ],
+      "radius": 2
+    }
+  },
+  {
+    "name": "place stone"
+  },
+  {
+    "command": "/setblock 0 101 2 minecraft:stone"
+  },
+  {
+    "wait": 10
+  },
+  {
+    "check": {
+      "block": [
+        0,
+        101,
+        2
+      ],
+      "is": "stone"
+    }
+  },
+  {
+    "name": "face stone"
+  },
+  {
+    "lookat": [
+      0.5,
+      101.5,
+      2.5
+    ]
+  },
+  {
+    "wait": 5
+  },
+  {
+    "check": {
+      "looking_at": "stone"
+    }
+  },
+  {
+    "name": "break stone"
+  },
+  {
+    "attack": 30
+  },
+  {
+    "wait": 10
+  },
+  {
+    "check": {
+      "block": [
+        0,
+        101,
+        2
+      ],
+      "is": "air"
+    }
+  },
+  {
+    "name": "shot"
+  },
+  {
+    "screenshot": "smoke"
+  },
+  {
+    "name": "clean log"
+  },
+  {
+    "check": {
+      "no_exceptions": true,
+      "since": "start"
+    }
+  },
+  {
+    "quit": true
+  }
+]

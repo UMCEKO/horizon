@@ -3,7 +3,10 @@
 //! upgraded from 1.21.1 to 26.3, item models get their `items/` client
 //! definitions, and each blockstate gets a vanilla template guessed from its
 //! properties until the oracle's facts replace the guess.
-use crate::{jar::JarInfo, oracle::Facts};
+use crate::{
+    jar::JarInfo,
+    oracle::{BakedModels, Facts},
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
@@ -119,6 +122,8 @@ pub struct Report {
     /// Templates and properties came from the NeoForge oracle's facts, not
     /// from guesses.
     pub oracle: bool,
+    /// Blocks whose geometry the oracle baked, written as `horizon:baked` models.
+    pub baked_blocks: usize,
     /// Declared blocks and their templates.
     pub blocks: BTreeMap<String, String>,
     /// What a declared block's template does not reproduce (oracle only).
@@ -972,12 +977,14 @@ fn variant_models(overrides: &BTreeMap<String, BTreeSet<String>>) -> BTreeSet<St
 /// Carries `jar` over into `out/carry/`. With the oracle's `facts`, blocks
 /// and items are the ones the mod registers, with the templates and numbers
 /// the facts give; `allowed` says which vanilla blocks the game has;
-/// `pack` which mods the pack holds and ports along.
+/// `pack` which mods the pack holds and ports along; `baked` the oracle's baked block models.
+#[allow(clippy::too_many_arguments)]
 pub fn carry(
     jar: &Path,
     info: &JarInfo,
     out: &Path,
     facts: Option<&Facts>,
+    baked: Option<&BakedModels>,
     allowed: &dyn Fn(&str) -> bool,
     pack: &Pack,
     conventions: &BTreeMap<String, Value>,
@@ -1495,6 +1502,9 @@ pub fn carry(
             report.items += 1;
         }
     }
+    if let Some(baked) = baked {
+        report.baked_blocks = write_baked(&inside, &owned, baked)?;
+    }
     let owned: Vec<String> = owned.iter().map(|n| n.to_string()).collect();
     let owned: Vec<&str> = owned.iter().map(String::as_str).collect();
     unregistered_recipes(&inside, &outside, id, &owned, &mut report)?;
@@ -1559,6 +1569,56 @@ fn recipe_off(
         Some(f) => !f.recipes.contains_key(&format!("{prefix}{path}")),
         None => !crate::lithostitched::conditions_pass(&recipe, loaded),
     }
+}
+
+/// Writes the oracle's baked models of the blocks in `owned` namespaces as `horizon:baked` models,
+/// one file per distinct geometry, and replaces each block's blockstate with variants naming them.
+/// Returns how many blocks it wrote.
+fn write_baked(inside: &Path, owned: &[&str], baked: &BakedModels) -> Result<usize, String> {
+    let mut written = 0;
+    for (full, states) in &baked.blocks.0 {
+        let Some((ns, path)) = full.split_once(':') else {
+            continue;
+        };
+        let safe = !path.is_empty()
+            && path.split('/').all(|p| !p.is_empty() && p != "..")
+            && !path.contains(['\\', ':']);
+        if !owned.contains(&ns) || !safe || states.0.is_empty() {
+            continue;
+        }
+        let mut files: Vec<String> = Vec::new();
+        let mut variants = serde_json::Map::new();
+        for (key, state) in &states.0 {
+            let textures = if state.particle.is_empty() {
+                json!({})
+            } else {
+                json!({"particle": state.particle})
+            };
+            let model =
+                json!({"loader": "horizon:baked", "textures": textures, "quads": state.quads});
+            let text = serde_json::to_string(&model).map_err(|e| e.to_string())?;
+            let n = files.iter().position(|f| *f == text).unwrap_or_else(|| {
+                files.push(text);
+                files.len() - 1
+            });
+            variants.insert(
+                key.clone(),
+                json!({"model": format!("{ns}:horizon_baked/{path}/{n}")}),
+            );
+        }
+        for (n, text) in files.iter().enumerate() {
+            let file = inside.join(format!("assets/{ns}/models/horizon_baked/{path}/{n}.json"));
+            write(&file, text.as_bytes())?;
+        }
+        let state =
+            serde_json::to_vec(&json!({"variants": variants})).map_err(|e| e.to_string())?;
+        write(
+            &inside.join(format!("assets/{ns}/blockstates/{path}.json")),
+            &state,
+        )?;
+        written += 1;
+    }
+    Ok(written)
 }
 
 /// The item a recipe makes: `result.id` (1.21 and later), `result.item` or a bare id.
@@ -1753,6 +1813,7 @@ mod tests {
                 &info,
                 &out,
                 None,
+                None,
                 &|_| true,
                 &Pack {
                     loaded: &|_| true,
@@ -1943,7 +2004,16 @@ mod tests {
             loaded: &|_| true,
             mods: &|_| false,
         };
-        carry(jar, &info, out, None, &|_| true, &pack, &BTreeMap::new())
+        carry(
+            jar,
+            &info,
+            out,
+            None,
+            None,
+            &|_| true,
+            &pack,
+            &BTreeMap::new(),
+        )
     }
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
@@ -2515,6 +2585,7 @@ mod tests {
             &info,
             &out,
             None,
+            None,
             &|_| true,
             &Pack {
                 loaded: &|_| true,
@@ -2704,7 +2775,17 @@ mod tests {
             loaded: &|_| true,
             mods: &|m| m == "cristel",
         };
-        let report = carry(&jar, &info, &out, None, &|_| true, &pack, &BTreeMap::new()).unwrap();
+        let report = carry(
+            &jar,
+            &info,
+            &out,
+            None,
+            None,
+            &|_| true,
+            &pack,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         assert_eq!(report.namespaces, ["kaisyn", "towers_wg"]);
         assert_eq!(report.worldgen, 2);
         assert_eq!(
@@ -2794,6 +2875,7 @@ mod tests {
             &info,
             &out,
             Some(&facts),
+            None,
             &|_| true,
             &pack,
             &BTreeMap::new(),
@@ -2812,7 +2894,17 @@ mod tests {
             assert!(defined(&out, m), "{m}");
         }
         let out = dir.join("no-facts");
-        carry(&jar, &info, &out, None, &|_| true, &pack, &BTreeMap::new()).unwrap();
+        carry(
+            &jar,
+            &info,
+            &out,
+            None,
+            None,
+            &|_| true,
+            &pack,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         assert!(!defined(&out, "look"));
         assert!(!defined(&out, "shard"));
         assert!(defined(&out, "left") && defined(&out, "right"));
@@ -2870,6 +2962,7 @@ mod tests {
             &info,
             &out,
             Some(&facts),
+            None,
             &|_| true,
             &pack,
             &BTreeMap::new(),
@@ -2887,7 +2980,17 @@ mod tests {
         assert!(!out.join("carry/data/gem/recipe/off.json").exists());
         // Without the oracle: NeoForge's own conditions are read, a mod's own can't be.
         let out = dir.join("no-facts");
-        let report = carry(&jar, &info, &out, None, &|_| true, &pack, &BTreeMap::new()).unwrap();
+        let report = carry(
+            &jar,
+            &info,
+            &out,
+            None,
+            None,
+            &|_| true,
+            &pack,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         assert_eq!(
             report.recipes_off,
             [
@@ -2947,6 +3050,7 @@ mod tests {
             &info,
             &out,
             Some(&facts),
+            None,
             &|_| true,
             &pack,
             &BTreeMap::new(),
@@ -2996,7 +3100,17 @@ mod tests {
             loaded: &|_| true,
             mods: &|_| false,
         };
-        let report = carry(&jar, &info, &out, None, &|_| true, &pack, &BTreeMap::new()).unwrap();
+        let report = carry(
+            &jar,
+            &info,
+            &out,
+            None,
+            None,
+            &|_| true,
+            &pack,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         assert_eq!(report.copied, 0);
         assert!(report.outside.is_empty());
         assert!(!dir.join("evil.json").exists());
@@ -3036,7 +3150,17 @@ mod tests {
             loaded: &|_| true,
             mods: &|_| false,
         };
-        carry(&jar, &info, &out, None, &|_| true, &pack, &BTreeMap::new()).unwrap();
+        carry(
+            &jar,
+            &info,
+            &out,
+            None,
+            None,
+            &|_| true,
+            &pack,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         let model: Value = serde_json::from_slice(
             &fs::read(out.join("carry/assets/pulley/models/block/pulley.json")).unwrap(),
         )
@@ -3079,5 +3203,103 @@ mod tests {
                 "dirt": "minecraft:block/gravel", "side": "minecraft:block/gravel",
                 "bottom": "minecraft:block/gravel", "top": "m:block/raked"}})
         );
+    }
+
+    fn quad(sprite: &str) -> Value {
+        json!({"v": [[0, 0, 0, 0, 0], [0, 1, 0, 0, 1], [1, 1, 0, 1, 1], [1, 0, 0, 1, 0]],
+            "sprite": sprite, "face": "north", "cull": "north", "tint": -1, "shade": true,
+            "emission": 0, "layer": "solid"})
+    }
+
+    fn baked_fixture() -> BakedModels {
+        let (a, b) = (quad("gem:block/a"), quad("gem:block/b"));
+        let state = |q: &Value| json!({"particle": "gem:block/a", "quads": [q]});
+        serde_json::from_value(json!({"version": 1, "blocks": {
+            "gem:pipe": {"axis=x": state(&a), "axis=y": state(&b), "axis=z": state(&a)},
+            "other:pipe": {"": state(&a)},
+        }}))
+        .unwrap()
+    }
+
+    /// States with the same quads share a model file; another mod's block is left alone.
+    #[test]
+    fn baked_models_become_files_and_a_blockstate() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-port-pack-baked-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let n = write_baked(&dir, &["gem"], &baked_fixture()).unwrap();
+        assert_eq!(n, 1);
+        let read = |rel: &str| -> Value {
+            serde_json::from_slice(&fs::read(dir.join(rel)).unwrap()).unwrap()
+        };
+        let models = "assets/gem/models/horizon_baked/pipe";
+        for (i, sprite) in [(0, "gem:block/a"), (1, "gem:block/b")] {
+            assert_eq!(
+                read(&format!("{models}/{i}.json")),
+                json!({"loader": "horizon:baked", "textures": {"particle": "gem:block/a"},
+                    "quads": [quad(sprite)]})
+            );
+        }
+        assert!(!dir.join(format!("{models}/2.json")).exists());
+        assert_eq!(
+            read("assets/gem/blockstates/pipe.json"),
+            json!({"variants": {
+                "axis=x": {"model": "gem:horizon_baked/pipe/0"},
+                "axis=y": {"model": "gem:horizon_baked/pipe/1"},
+                "axis=z": {"model": "gem:horizon_baked/pipe/0"},
+            }})
+        );
+        assert!(!dir.join("assets/other").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Carry replaces the jar's blockstate and reports the count.
+    #[test]
+    fn carry_writes_baked_blocks() {
+        let dir = std::env::temp_dir().join(format!("horizon-port-pack-bk-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let jar = dir.join("gem-1.0.jar");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&jar).unwrap());
+        for (name, text) in [
+            (
+                "META-INF/neoforge.mods.toml",
+                "license = \"MIT\"\n[[mods]]\nmodId = \"gem\"\nversion = \"1.0\"\n",
+            ),
+            (
+                "assets/gem/blockstates/pipe.json",
+                r#"{"variants": {"": {"model": "gem:block/old"}}}"#,
+            ),
+        ] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(text.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        let info = crate::jar::read(&jar).unwrap();
+        let out = dir.join("work/mods/gem");
+        let pack = Pack {
+            loaded: &|_| true,
+            mods: &|_| false,
+        };
+        let baked = baked_fixture();
+        let args = (&|_: &str| true, &pack, &BTreeMap::new());
+        let report = carry(
+            &jar,
+            &info,
+            &out,
+            None,
+            Some(&baked),
+            args.0,
+            args.1,
+            args.2,
+        )
+        .unwrap();
+        assert_eq!(report.baked_blocks, 1);
+        let state = fs::read_to_string(out.join("carry/assets/gem/blockstates/pipe.json")).unwrap();
+        assert!(state.contains("gem:horizon_baked/pipe/1") && !state.contains("old"));
+        let text = fs::read_to_string(out.join("carry-report.json")).unwrap();
+        assert!(text.contains("\"baked_blocks\": 1"));
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

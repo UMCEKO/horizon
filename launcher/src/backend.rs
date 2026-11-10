@@ -1935,7 +1935,7 @@ fn complete_assets_in(
 /// chosen in the launcher, the official launcher's (or HORIZON_MINECRAFT_DIR), the folder
 /// other launchers' files are linked into and Horizon's own download, then every launcher's
 /// default folder.
-fn minecraft_folders() -> Vec<PathBuf> {
+pub(crate) fn minecraft_folders() -> Vec<PathBuf> {
     let mut folders: Vec<PathBuf> = Settings::load().minecraft_dir.into_iter().collect();
     folders.extend([
         prepare::artifacts::minecraft_dir(None),
@@ -4178,6 +4178,10 @@ pub enum Msg {
     NativeProgress(String, crate::native_mods::Progress),
     /// The native-mods build ended: the version built, or why not.
     Native(Result<String, crate::native_mods::Failed>),
+    /// A step of the Java mods install, and how far it is when known (`java_mods::install`).
+    JavaModsStep(String, Option<f32>),
+    /// The Java mods install ended: what it says, or why not.
+    JavaModsDone(Result<String, String>),
     /// An imported game build is installed (`build_import::import`): its version, or why not.
     Imported(Result<String, String>),
     /// A Java instance's game is ready to start (`java_game`, wrapped): the instance's id and

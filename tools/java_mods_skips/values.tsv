@@ -1,0 +1,69 @@
+net/minecraft/core/BlockPos#asLong	slower	primitive; crossing is 3.1 ns (empty native) against Java's ~1 ns; BlockPos.relative measured 1.3 vs 13.8 ns
+net/minecraft/core/BlockPos#offset	slower	new BlockPos from a long; BlockPos.relative measured 1.3 vs 13.8 ns
+net/minecraft/core/BlockPos#relative	slower	measured 1.3 ns Java vs 13.8 ns Rust (long, int, int in; long out); also y outside 12 bits wraps in asLong
+net/minecraft/core/Direction#getClockWise	slower	enum table lookup; crossing is 3.1 ns (empty native) against Java's ~1 ns
+net/minecraft/util/Mth#clamp	slower	measured 0.6 ns Java vs 3.7 ns Rust (3 doubles in, double out)
+net/minecraft/util/RandomSource#nextInt	false-match	a Java RandomSource keeps its seed in Java; Rust's generator has its own state
+net/minecraft/world/level/block/Rotation#rotate	slower	enum arithmetic; crossing is 3.1 ns (empty native) against Java's ~1 ns
+net/minecraft/world/phys/shapes/Shapes#box	java-object	builds a new VoxelShape; rebuilding a Java shape from Rust measured no faster than Java (joinUnoptimized 5.6 vs 5.4 us)
+net/minecraft/core/Direction#getCounterClockWise	slower	enum table lookup; crossing is 3.1 ns (empty native) against Java's ~1 ns
+net/minecraft/world/phys/AABB#inflate	slower	returns a new AABB; AABB.move measured 1.1 ns Java vs 129 ns Rust
+net/minecraft/world/phys/AABB#move	slower	measured 1.1 ns Java vs 129 ns Rust (double[6] and double[3] in, double[6] out, new AABB)
+net/minecraft/world/phys/Vec3#add	slower	measured 0.5 ns Java vs 100 ns Rust (double[] in, double[] out, new Vec3)
+net/minecraft/world/phys/Vec3#normalize	slower	returns a new Vec3; Vec3.add measured 0.5 ns Java vs 100 ns Rust
+net/minecraft/world/phys/Vec3#subtract	slower	returns a new Vec3; Vec3.add measured 0.5 ns Java vs 100 ns Rust
+net/minecraft/world/phys/shapes/VoxelShape#move	java-object	returns a new VoxelShape; rebuilding one from Rust measured no faster than Java
+net/minecraft/core/BlockPos#betweenClosedStream	java-object	returns a Java Stream of BlockPos objects
+net/minecraft/core/BlockPos#containing	slower	3 doubles to a BlockPos; BlockPos.relative measured 1.3 vs 13.8 ns
+net/minecraft/util/ARGB#color	slower	int arithmetic; crossing is 3.1 ns (empty native) against Java's ~1 ns
+net/minecraft/util/LightCoordsUtil#getLightCoords	java-body	packs two light values the level's getBrightness and getRawBrightness already answer
+net/minecraft/util/Mth#atan2	slower	measured 3.5-6.9 ns Java vs 8.1-16.4 ns Rust over two runs (2 doubles in, double out)
+net/minecraft/util/Mth#lerp	slower	measured 0.5 ns Java vs 3.7 ns Rust (3 doubles in, double out)
+net/minecraft/world/phys/AABB#intersects	slower	measured 1.1 ns Java vs 20.3 ns Rust (12 doubles in, boolean out)
+net/minecraft/world/phys/Vec3#distanceToSqr	slower	measured 1.0 ns Java vs 14.0 ns Rust (6 doubles in, double out)
+net/minecraft/world/phys/Vec3#multiply	slower	returns a new Vec3; Vec3.add measured 0.5 ns Java vs 100 ns Rust
+net/minecraft/world/phys/shapes/Shapes#create	java-object	builds a new VoxelShape from an AABB; rebuilding one from Rust measured no faster than Java
+net/minecraft/core/SectionPos#asLong	slower	primitive; crossing is 3.1 ns (empty native) against Java's ~1 ns
+net/minecraft/core/SectionPos#of	java-object	builds a SectionPos
+net/minecraft/core/Vec3i#distToCenterSqr	slower	6 doubles in, double out; Vec3.distanceToSqr measured 1.0 vs 14.0 ns
+net/minecraft/world/level/ChunkPos#pack	slower	primitive; crossing is 3.1 ns (empty native) against Java's ~1 ns
+net/minecraft/world/phys/AABB#deflate	slower	returns a new AABB; AABB.move measured 1.1 ns Java vs 129 ns Rust
+net/minecraft/world/phys/AABB#encapsulatingFullBlocks	slower	returns a new AABB; AABB.move measured 1.1 ns Java vs 129 ns Rust
+net/minecraft/world/phys/AABB#expandTowards	slower	returns a new AABB; AABB.move measured 1.1 ns Java vs 129 ns Rust
+net/minecraft/world/phys/AABB#getCenter	slower	returns a new Vec3; Vec3.add measured 0.5 ns Java vs 100 ns Rust
+net/minecraft/world/phys/AABB#minmax	slower	returns a new AABB; AABB.move measured 1.1 ns Java vs 129 ns Rust
+net/minecraft/world/phys/AABB#ofSize	slower	returns a new AABB; AABB.move measured 1.1 ns Java vs 129 ns Rust
+net/minecraft/world/phys/Vec3#equals	slower	6 doubles in, boolean out; Vec3.distanceToSqr measured 1.0 vs 14.0 ns
+net/minecraft/world/phys/Vec3#length	slower	measured 1.6 ns Java vs 15.4 ns Rust (3 doubles in, double out)
+net/minecraft/world/phys/Vec3#lerp	slower	returns a new Vec3; Vec3.add measured 0.5 ns Java vs 100 ns Rust
+net/minecraft/world/phys/Vec3#relative	slower	returns a new Vec3; Vec3.add measured 0.5 ns Java vs 100 ns Rust
+net/minecraft/world/phys/shapes/Shapes#joinUnoptimized	slower	measured 5.4 us Java vs 4.7 us Rust with arrays back, 5.6 us rebuilt as a VoxelShape (0.96-1.15x)
+net/minecraft/world/phys/shapes/VoxelShape#bounds	slower	returns an AABB; Java reads six coordinates from its own lists, Rust adds a shape lookup (~15 ns) and an array
+net/minecraft/world/phys/shapes/VoxelShape#max	slower	a double from a shape; the handle lookup (~15 ns) and crossing (3.1 ns) cost more than Java's list reads
+net/minecraft/world/phys/shapes/VoxelShape#optimize	slower	measured 12.9 us Java vs 11.4 us Rust with the shape rebuilt (1.0-1.18x); the join work is no faster in Rust
+net/minecraft/world/phys/shapes/VoxelShape#toAabbs	java-object	returns a Java List of AABB objects
+net/minecraft/core/BlockMath#getFaceTransformation	false-match	the ledger's inverse_uv_rows is the baker's UV rows, not a Transformation
+net/minecraft/core/Direction#get	false-match	the ledger's largest_rectangle_around is portal geometry; this is a table lookup
+net/minecraft/core/Direction#getRotation	java-object	returns a Quaternionf
+net/minecraft/core/Vec3i#cross	false-match	the ledger's find_golem is not a cross product; the result is a new Vec3i
+net/minecraft/core/Vec3i#distManhattan	slower	int arithmetic; crossing is 3.1 ns (empty native) against Java's ~1 ns
+net/minecraft/util/ARGB#multiply	slower	int arithmetic; crossing is 3.1 ns (empty native) against Java's ~1 ns
+net/minecraft/util/ARGB#scaleRGB	slower	int arithmetic; crossing is 3.1 ns (empty native) against Java's ~1 ns
+net/minecraft/util/LightCoordsUtil#max	slower	int arithmetic; crossing is 3.1 ns (empty native) against Java's ~1 ns
+net/minecraft/util/Mth#getSeed	slower	int arithmetic; crossing is 3.1 ns (empty native) against Java's ~1 ns
+net/minecraft/util/Mth#lerpDiscrete	slower	arithmetic; Mth.lerp measured 0.5 vs 3.7 ns
+net/minecraft/util/Mth#nextInt	false-match	draws from a Java RandomSource whose seed lives in Java
+net/minecraft/util/Mth#wrapDegrees	slower	measured 3.2 ns Java vs 8.0 ns Rust (float in, float out)
+net/minecraft/world/level/CardinalLighting#byFace	slower	a switch over six floats the real object holds
+net/minecraft/world/level/ChunkPos#getChessboardDistance	slower	int arithmetic; crossing is 3.1 ns (empty native) against Java's ~1 ns
+net/minecraft/world/phys/AABB#clip	java-object	takes a Java Iterable of AABB objects; VoxelShape.clip is bound for the shape case
+net/minecraft/world/phys/AABB#contract	slower	returns a new AABB; AABB.move measured 1.1 ns Java vs 129 ns Rust
+net/minecraft/world/phys/AABB#intersect	slower	returns a new AABB; AABB.move measured 1.1 ns Java vs 129 ns Rust
+net/minecraft/world/phys/AABB#setMaxY	slower	returns a new AABB; AABB.move measured 1.1 ns Java vs 129 ns Rust
+net/minecraft/world/phys/Vec3#distanceTo	slower	6 doubles in, double out; Vec3.distanceToSqr measured 1.0 vs 14.0 ns
+net/minecraft/world/phys/Vec3#dot	slower	6 doubles in, double out; Vec3.distanceToSqr measured 1.0 vs 14.0 ns
+net/minecraft/world/phys/Vec3#yRot	slower	returns a new Vec3; Vec3.add measured 0.5 ns Java vs 100 ns Rust
+net/minecraft/world/phys/shapes/Shapes#joinIsNotEmpty	slower	1.2 us Java vs 0.29 us Rust (4.2x) only for shapes seen before; fresh shapes 2.2 us vs 0.6 us (0.27x), and a miss can't fall back to Java
+net/minecraft/world/phys/shapes/Shapes#mergedFaceOccludes	slower	joins two face shapes like joinIsNotEmpty: 4.2x on cached shapes, 0.3x on fresh ones, no fallback on a miss
+net/minecraft/world/phys/shapes/VoxelShape#forAllBoxes	java-object	calls a Java DoubleLineConsumer for each box
+net/minecraft/world/phys/shapes/VoxelShape#min	slower	a double from a shape; the handle lookup (~15 ns) and crossing (3.1 ns) cost more than Java's list reads

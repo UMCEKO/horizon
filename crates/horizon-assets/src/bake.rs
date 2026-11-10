@@ -236,6 +236,37 @@ fn bake_into(
     skip_flat: bool,
     output: &mut Vec<ModelQuad>,
 ) -> Result<()> {
+    let Some(root) = model.root_transform else {
+        return bake_geometry(model, transform, skip_flat, output);
+    };
+    // NeoForge's root transform moves the model's own geometry, before the blockstate turns it.
+    let mut local = Vec::new();
+    bake_geometry(
+        model,
+        BlockModelTransform::new([0; 3], false),
+        skip_flat,
+        &mut local,
+    )?;
+    let turn = |d: Direction| transform.direction(crate::root_transform::direction(&root, d));
+    output.extend(local.into_iter().map(|q| {
+        ModelQuad {
+            positions: q
+                .positions
+                .map(|p| transform.position(crate::root_transform::position(&root, p))),
+            facing: turn(q.facing),
+            cull: q.cull.map(turn),
+            shade_direction_override: q.shade_direction_override.map(turn),
+            ..q
+        }
+    }));
+    Ok(())
+}
+fn bake_geometry(
+    model: &ResolvedCuboidModel,
+    transform: BlockModelTransform,
+    skip_flat: bool,
+    output: &mut Vec<ModelQuad>,
+) -> Result<()> {
     let render_type = model
         .render_type
         .as_deref()
@@ -283,9 +314,39 @@ fn bake_into(
             shade,
             hidden,
         }) => bake_obj(model, obj, *flip_v, *shade, hidden, transform, output)?,
+        Some(ResolvedLoader::Baked(quads)) => {
+            output.extend(quads.iter().map(|quad| baked_quad(quad, transform)));
+        }
         Some(ResolvedLoader::Obj { model: None, .. }) | None => {}
     }
     Ok(())
+}
+/// A baked quad as the mesher draws it, with no blockstate transform.
+pub fn baked_model_quad(quad: &BakedQuadData) -> ModelQuad {
+    baked_quad(quad, BlockModelTransform::new([0; 3], false))
+}
+/// A `horizon:baked` quad is final geometry in block units; the blockstate transform moves it whole.
+fn baked_quad(quad: &BakedQuadData, transform: BlockModelTransform) -> ModelQuad {
+    ModelQuad {
+        positions: quad
+            .vertices
+            .map(|v| transform.position([v[0], v[1], v[2]])),
+        uv: quad.vertices.map(|v| [v[3], v[4]]),
+        facing: transform.direction(quad.face),
+        cull: quad.cull.map(|d| transform.direction(d)),
+        material: Material {
+            sprite: quad.sprite.clone(),
+            force_translucent: matches!(quad.layer, BakedLayer::Translucent | BakedLayer::Tripwire),
+        },
+        tint_index: quad.tint,
+        shade_direction_override: None,
+        light_emission: quad.emission,
+        light: [quad.emission; 2],
+        color: None,
+        ambient_occlusion: None,
+        render_type: None,
+        shade: quad.shade,
+    }
 }
 /// Obj faces are unculled quads in block units; the blockstate transform moves them whole.
 fn bake_obj(
@@ -644,6 +705,90 @@ mod loader_tests {
             &[("t:models/x.obj", "v 0 0 0\nf 1 2 3\n")],
         );
         assert!(bake(&broken, "t:o").is_empty());
+    }
+    const BAKED: &str = r#"{"loader":"horizon:baked","textures":{"particle":"t:block/p"},"quads":[
+        {"v":[[0,0,0,0,0],[0,1,0,0,1],[1,1,0,1,1],[1,0,0,1,0]],"sprite":"t:block/a","face":"north"},
+        {"v":[[0,0,1,0.25,0],[1,0,1,0.5,0],[1,1,1,0.5,1],[0,1,1,0.25,1]],"sprite":"t:block/b",
+         "face":"south","cull":"south","tint":2,"shade":false,"emission":7,"layer":"translucent"}]}"#;
+
+    #[test]
+    fn baked_quads_decode_with_defaults_and_explicit_values() {
+        let Some(Loader::Baked { quads }) = CuboidModel::from_json(BAKED).unwrap().loader else {
+            panic!("not a baked loader");
+        };
+        assert_eq!(quads.len(), 2);
+        assert_eq!(quads[0].vertices[2], [1.0, 1.0, 0.0, 1.0, 1.0]);
+        assert_eq!(quads[0].sprite, "t:block/a");
+        assert_eq!(quads[0].face, Direction::North);
+        assert_eq!(quads[0].cull, None);
+        assert_eq!(quads[0].tint, -1);
+        assert!(quads[0].shade);
+        assert_eq!(quads[0].emission, 0);
+        assert_eq!(quads[0].layer, BakedLayer::Solid);
+        assert_eq!(quads[1].cull, Some(Direction::South));
+        assert_eq!(quads[1].tint, 2);
+        assert!(!quads[1].shade);
+        assert_eq!(quads[1].emission, 7);
+        assert_eq!(quads[1].layer, BakedLayer::Translucent);
+    }
+    #[test]
+    fn baked_quads_reject_bad_vertices_faces_cull_and_layers() {
+        let quad = |patch: &str| {
+            format!(
+                r#"{{"loader":"horizon:baked","quads":[{{"v":[[0,0,0,0,0],[0,1,0,0,1],[1,1,0,1,1],[1,0,0,1,0]],
+                "sprite":"t:a","face":"north"{patch}}}]}}"#
+            )
+        };
+        assert!(CuboidModel::from_json(&quad("")).is_ok());
+        let three = quad("").replace("[1,0,0,1,0]", "").replace(",]", "]");
+        assert!(CuboidModel::from_json(&three).is_err());
+        let short = quad("").replace("[1,0,0,1,0]", "[1,0,0,1]");
+        assert!(CuboidModel::from_json(&short).is_err());
+        assert!(CuboidModel::from_json(&quad("").replace(r#""north""#, r#""sideways""#)).is_err());
+        assert!(CuboidModel::from_json(&quad(r#","cull":"sideways""#)).is_err());
+        assert!(CuboidModel::from_json(&quad(r#","layer":"glassy""#)).is_err());
+        assert!(CuboidModel::from_json(&quad(r#","emission":16"#)).is_err());
+    }
+    #[test]
+    fn baked_model_bakes_its_quads() {
+        let library = library(&[("t:b", BAKED)], &[]);
+        let quads = bake(&library, "t:b");
+        assert_eq!(quads.len(), 2);
+        assert_eq!(quads[0].positions[2], [1.0, 1.0, 0.0]);
+        assert_eq!(quads[0].uv[1], [0.0, 1.0]);
+        assert_eq!(quads[0].facing, Direction::North);
+        assert_eq!(quads[0].material.sprite, "t:block/a");
+        assert!(!quads[0].material.force_translucent);
+        assert_eq!(
+            (quads[0].cull, quads[0].tint_index, quads[0].shade),
+            (None, -1, true)
+        );
+        assert_eq!(quads[1].uv[0], [0.25, 0.0]);
+        assert_eq!(quads[1].facing, Direction::South);
+        assert_eq!(quads[1].cull, Some(Direction::South));
+        assert!(quads[1].material.force_translucent);
+        assert_eq!(
+            (quads[1].tint_index, quads[1].shade, quads[1].light_emission),
+            (2, false, 7)
+        );
+    }
+    #[test]
+    fn baked_quads_follow_the_blockstate_rotation() {
+        let north = r#"{"loader":"horizon:baked","quads":[{"v":[[0,0,0,0,0],[0,1,0,0,1],[1,1,0,1,1],[1,0,0,1,0]],
+            "sprite":"t:a","face":"north","cull":"north"}]}"#;
+        let library = library(&[("t:n", north)], &[]);
+        let model = library.resolve("t:n").unwrap();
+        let quads = bake_block_model(&model, BlockModelTransform::new([0, 1, 0], false)).unwrap();
+        assert_eq!(quads[0].facing, Direction::East);
+        assert_eq!(quads[0].cull, Some(Direction::East));
+        assert_eq!(quads[0].positions[2], [1.0, 1.0, 1.0]);
+        assert_eq!(quads[0].uv[2], [1.0, 1.0]);
+    }
+    #[test]
+    fn baked_loader_is_inherited_by_parent() {
+        let child = r#"{"parent":"t:b"}"#;
+        let library = library(&[("t:b", BAKED), ("t:c", child)], &[]);
+        assert_eq!(bake(&library, "t:c").len(), 2);
     }
     #[test]
     fn obj_visibility_skips_the_objects_a_model_hides() {

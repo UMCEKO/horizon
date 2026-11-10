@@ -489,6 +489,8 @@ pub struct OptionsFile {
     values: Vec<V>,
     /// `fullscreenResolution`, kept verbatim.
     pub fullscreen_resolution: Option<String>,
+    /// The `key_<name>` lines no vanilla mapping owns, the mods' as NeoForge saves them: `key` or `key:MODIFIER`.
+    pub mod_keys: Vec<(String, String)>,
 }
 
 impl Default for OptionsFile {
@@ -496,6 +498,7 @@ impl Default for OptionsFile {
         Self {
             values: TABLE.iter().map(|d| d.default.clone()).collect(),
             fullscreen_resolution: None,
+            mod_keys: Vec::new(),
         }
     }
 }
@@ -603,8 +606,32 @@ impl OptionsFile {
         // A fixer failure abandons the whole file, leaving the defaults.
         if crate::options_fixes::update(&mut raw, version).is_ok() {
             file.apply(&raw);
+            file.mod_keys = Self::read_mod_keys(&raw);
         }
         file
+    }
+
+    /// The mods' bindings in `raw`, by mapping name; a key `InputConstants.getKey` rejects is unbound, as `Options.load` unbinds it.
+    fn read_mod_keys(raw: &std::collections::HashMap<String, String>) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = raw
+            .iter()
+            .filter_map(|(k, v)| {
+                let name = k.strip_prefix("key_")?;
+                if TABLE.iter().any(|d| d.key == *k) {
+                    return None;
+                }
+                let (key, modifier) = v.split_once(':').unwrap_or((v, ""));
+                let key = canonical_key(key).unwrap_or_else(|_| "key.keyboard.unknown".into());
+                let text = if modifier.is_empty() {
+                    key
+                } else {
+                    format!("{key}:{modifier}")
+                };
+                Some((name.to_owned(), text))
+            })
+            .collect();
+        out.sort();
+        out
     }
 
     fn apply(&mut self, raw: &std::collections::HashMap<String, String>) {
@@ -686,6 +713,11 @@ impl OptionsFile {
             out.push(':');
             out.push_str(&rendered);
             out.push('\n');
+        }
+        for (name, binding) in &self.mod_keys {
+            if crate::mod_keys::saves_mod_key(name) {
+                out.push_str(&format!("key_{name}:{binding}\n"));
+            }
         }
         if let Some(r) = &self.fullscreen_resolution {
             out.push_str("fullscreenResolution:");
@@ -796,11 +828,32 @@ impl OptionsFile {
         Some(out)
     }
 
+    /// A mod's key binding from `key` or `key:MODIFIER`.
+    fn set_mod_key(&mut self, name: &str, text: &str) -> Result<(), String> {
+        let (raw, modifiers) = crate::mod_keys::parse_binding(text);
+        let key = canonical_key(&raw).map_err(|_| format!("{name} refuses {text:?}"))?;
+        if key == "key.keyboard.unknown" && raw != key {
+            return Err(format!("{name} refuses {text:?}"));
+        }
+        let value = crate::mod_keys::binding_text(&key, modifiers);
+        match self.mod_keys.iter_mut().find(|(n, _)| n == name) {
+            Some(entry) => entry.1 = value,
+            None => self.mod_keys.push((name.to_owned(), value)),
+        }
+        Ok(())
+    }
+
     /// Set an option from text, as the control socket's `options-set` does:
     /// enums by name, key bindings by key name (`key.keyboard.w`), lists as
     /// JSON. Unlike loading `options.txt`, a value the option refuses is an
     /// error naming what it accepts, and the option keeps its value.
     pub fn set_text(&mut self, key: &str, text: &str) -> Result<(), String> {
+        if let Some(name) = key.strip_prefix("key_")
+            && Self::index(key).is_none()
+            && crate::mod_keys::is_mod_key(name)
+        {
+            return self.set_mod_key(name, text);
+        }
         let i = Self::index(key).ok_or_else(|| format!("unknown option {key}"))?;
         let d = &TABLE[i];
         let refused = || format!("{key} refuses {text:?}; it accepts {}", accepts(d.kind));
@@ -884,5 +937,36 @@ mod control_tests {
                 .unwrap_err()
                 .contains("unknown option")
         );
+    }
+
+    #[test]
+    fn mods_keys_load_and_save_with_their_modifier() {
+        let f = OptionsFile::parse(&format!(
+            "version:{}\nkey_key.jump:key.keyboard.j\nkey_key.test_mod.mode:key.keyboard.k:SHIFT\nkey_key.test_mod.head:key.keyboard.h\nkey_key.test_mod.bad:key.keyboard.nonsense\n",
+            horizon_world::DATA_VERSION
+        ));
+        assert_eq!(f.key_binding("key.jump"), "key.keyboard.j");
+        assert_eq!(
+            f.mod_keys,
+            [
+                (
+                    "key.test_mod.bad".to_owned(),
+                    "key.keyboard.unknown".to_owned()
+                ),
+                ("key.test_mod.head".to_owned(), "key.keyboard.h".to_owned()),
+                (
+                    "key.test_mod.mode".to_owned(),
+                    "key.keyboard.k:SHIFT".to_owned()
+                ),
+            ]
+        );
+        let registered = crate::mod_keys::ModKeys::parse_export(
+            "key.test_mod.bad\t0\tkey.categories.misc\tkey.keyboard.b\tNONE\tIN_GAME\nkey.test_mod.head\t0\tkey.categories.misc\tkey.keyboard.h\tNONE\tIN_GAME\nkey.test_mod.mode\t0\tkey.categories.misc\tkey.keyboard.m\tNONE\tIN_GAME\n",
+        )
+        .unwrap();
+        let saved = crate::mod_keys::with_thread_mod_keys(registered, || f.serialize());
+        assert!(saved.contains("key_key.test_mod.mode:key.keyboard.k:SHIFT\n"));
+        assert_eq!(OptionsFile::parse(&saved).mod_keys, f.mod_keys);
+        assert!(OptionsFile::parse(&f.serialize()).mod_keys.is_empty());
     }
 }

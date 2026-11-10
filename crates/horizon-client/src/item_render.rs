@@ -58,6 +58,8 @@ pub struct ItemQuad {
     pub light_emission: u8,
     /// The render type culls back faces (`entitySolid`): world drawing discards them.
     pub cull_back: bool,
+    /// Drawn from both sides in a GUI too: the render type doesn't cull (a mod's own render type; vanilla's items all cull there).
+    pub two_sided: bool,
     /// The quad's sprite has translucent pixels (`MaterialInfo.itemRenderType`
     /// is a translucent sheet): drawn with the translucent entities.
     pub translucent: bool,
@@ -178,6 +180,18 @@ impl SpecialHost for NoHost {
     }
 }
 
+/// A quad a mod's item model drew in Java, in its piece's frame: its texture, corners (position and UV within the texture), ARGB colour, normal, blending and culling.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecordedQuad {
+    pub texture: String,
+    pub corners: [[f32; 5]; 4],
+    pub color: u32,
+    /// The vertex normal the renderer gave; zero when its pipeline has no `minecraft_mix_light`.
+    pub normal: [f32; 3],
+    pub translucent: bool,
+    /// The render type's pipeline culls back faces.
+    pub cull: bool,
+}
 /// The geometry of one layer.
 #[derive(Clone, Debug)]
 pub enum LayerGeometry {
@@ -186,6 +200,8 @@ pub enum LayerGeometry {
         model: SpecialModel,
         argument: Value,
     },
+    /// What a mod's own item model code drew, for a type only it knows.
+    Recorded(Arc<[RecordedQuad]>),
 }
 /// `ItemStackRenderState.LayerRenderState`.
 #[derive(Clone, Debug)]
@@ -278,6 +294,7 @@ impl ItemRenderState {
                 LayerGeometry::Quads(baked) => {
                     submit_quads(renderer, baked, layer, self.display, m, sprites, sink);
                 }
+                LayerGeometry::Recorded(quads) => submit_recorded(quads, layer, m, sprites, sink),
                 LayerGeometry::Special { model, argument } => special::submit(
                     renderer,
                     model,
@@ -434,6 +451,54 @@ pub fn argb(color: i32) -> u32 {
     color as u32
 }
 
+/// A sprite's place in the atlas; one the atlas lacks draws as the missing texture, as a stitched atlas gives it.
+fn atlas_sprite(sprites: &HashMap<String, Rect>, sprite: &str) -> Option<Rect> {
+    sprites
+        .get(sprite_name(sprite))
+        .or_else(|| sprites.get("missingno"))
+        .or_else(|| sprites.get("misc/missingno"))
+        .or_else(|| sprites.get("horizon/missingno"))
+        .copied()
+}
+
+fn submit_recorded(
+    quads: &[RecordedQuad],
+    layer: &LayerRender,
+    m: Mat4,
+    sprites: &HashMap<String, Rect>,
+    sink: &mut dyn ItemSink,
+) {
+    let foil = match layer.foil {
+        FoilType::None => Foil::None,
+        FoilType::Standard => Foil::Standard,
+        FoilType::Special => Foil::Special,
+    };
+    for q in quads {
+        let Some(r) = atlas_sprite(sprites, &q.texture) else {
+            continue;
+        };
+        let pos = q
+            .corners
+            .map(|c| m.transform_point3(Vec3::new(c[0], c[1], c[2])));
+        let normal = transform_normal(m, Vec3::from(q.normal));
+        let local = q.corners.map(|c| [c[3], c[4]]);
+        sink.quad(ItemQuad {
+            pos,
+            uv: local.map(|[u, v]| [r.u0 + (r.u1 - r.u0) * u, r.v0 + (r.v1 - r.v0) * v]),
+            foil_uv: local,
+            gui_glint_uv: None,
+            normal,
+            color: q.color,
+            foil,
+            light_emission: 0,
+            cull_back: q.cull,
+            two_sided: !q.cull,
+            translucent: q.translucent,
+            oit: false,
+        });
+    }
+}
+
 /// `ItemFeatureRenderer.prepareMainSubmit` for one cuboid layer.
 fn submit_quads(
     renderer: &ItemRenderer,
@@ -465,11 +530,7 @@ fn submit_quads(
         let rect = match last_rect {
             Some((sprite, rect)) if sprite == q.material.sprite => rect,
             _ => {
-                let rect = sprites
-                    .get(sprite_name(&q.material.sprite))
-                    .or_else(|| sprites.get("misc/missingno"))
-                    .or_else(|| sprites.get("horizon/missingno"))
-                    .copied();
+                let rect = atlas_sprite(sprites, &q.material.sprite);
                 last_rect = Some((&q.material.sprite, rect));
                 rect
             }
@@ -531,6 +592,7 @@ fn submit_quads(
             foil,
             light_emission: q.light_emission,
             cull_back: true,
+            two_sided: false,
             translucent,
             oit: false,
         });
@@ -1146,7 +1208,10 @@ pub struct WorldSink<'a> {
 /// The vertex colour [`WorldSink`] gives a quad of `color` (ARGB) facing `normal`:
 /// shaded by `lights` (`None`: unshaded), as ABGR bytes.
 fn shaded(color: u32, normal: Vec3, lights: Option<(Vec3, Vec3)>) -> u32 {
-    let brightness = lights.map_or(1.0, |l| diffuse(normal, l));
+    // A recorded quad from a pipeline without lighting has no normal: unshaded.
+    let brightness = lights
+        .filter(|_| normal != Vec3::ZERO)
+        .map_or(1.0, |l| diffuse(normal, l));
     let [a, r, g, b] = color.to_be_bytes();
     let c = |v: u8| (f32::from(v) * brightness) as u32;
     u32::from(a) << 24 | c(b) << 16 | c(g) << 8 | c(r)
@@ -1979,5 +2044,25 @@ mod tests {
             }
             assert_eq!(got, transform_normal(m, direction_vector(d)), "{d:?}");
         }
+    }
+    #[test]
+    fn a_sprite_the_atlas_lacks_draws_the_missing_texture() {
+        let rect = |u0: f32| Rect {
+            u0,
+            v0: 0.0,
+            u1: u0 + 0.1,
+            v1: 0.1,
+            w: 16,
+            h: 16,
+        };
+        let sprites: HashMap<String, Rect> = [
+            ("item/apple".to_owned(), rect(0.0)),
+            ("missingno".to_owned(), rect(0.5)),
+        ]
+        .into();
+        let u0 = |sprite| atlas_sprite(&sprites, sprite).map(|r| r.u0);
+        assert_eq!(u0("minecraft:item/apple"), Some(0.0));
+        assert_eq!(u0("mod:part/gone"), Some(0.5));
+        assert_eq!(u0("minecraft:missingno"), Some(0.5));
     }
 }

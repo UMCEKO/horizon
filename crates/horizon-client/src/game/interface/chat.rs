@@ -2358,7 +2358,11 @@ mod tests {
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn native_persistent_components_are_available_to_give() {
-        horizon_protocol::item::custom::install(1000, vec!["example:marker".into()]).unwrap();
+        horizon_protocol::item::custom::install(
+            vec![String::new(); 1000],
+            vec!["example:marker".into()],
+        )
+        .unwrap();
         super::super::native_entity_refs::tests::with_game(|game| {
             game.player = Some(
                 horizon_client::motion::PlayerMotion::new(
