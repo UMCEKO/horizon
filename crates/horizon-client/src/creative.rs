@@ -2243,7 +2243,7 @@ mod tests {
         }
     }
 
-    fn ids(c: &Creative) -> Vec<&str> {
+    fn java_ids(c: &Creative) -> Vec<&str> {
         c.tabs.iter().map(|t| t.id.as_str()).collect()
     }
 
@@ -2251,10 +2251,10 @@ mod tests {
     fn java_tabs_replace_the_export_until_the_client_leaves() {
         let names = Names::default();
         let mut c = tooltip_tabs();
-        let exported = ids(&c).join(" ");
+        let exported = java_ids(&c).join(" ");
         c.set_java_tabs(&java_tabs(), &names);
         assert_eq!(
-            ids(&c),
+            java_ids(&c),
             [
                 "minecraft:building_blocks",
                 "mymod:main",
@@ -2272,7 +2272,7 @@ mod tests {
         assert!(c.tabs[2].look.every_page && c.on_page(&c.tabs[2]));
         assert_eq!(c.tabs_to_build(false), Some(Vec::new()));
         c.clear_java_tabs(&names);
-        assert_eq!(ids(&c).join(" "), exported);
+        assert_eq!(java_ids(&c).join(" "), exported);
         assert_eq!(c.pages(), 1);
     }
 
@@ -2281,11 +2281,11 @@ mod tests {
         let names = Names::default();
         let mut c = tooltip_tabs();
         c.set_java_tabs(&java_tabs(), &names);
-        assert!(!ids(&c).contains(&"minecraft:op_blocks"));
+        assert!(!java_ids(&c).contains(&"minecraft:op_blocks"));
         c.build(true, Vec::new(), &names);
-        assert!(ids(&c).contains(&"minecraft:op_blocks"));
+        assert!(java_ids(&c).contains(&"minecraft:op_blocks"));
         c.build(false, Vec::new(), &names);
-        assert!(!ids(&c).contains(&"minecraft:op_blocks"));
+        assert!(!java_ids(&c).contains(&"minecraft:op_blocks"));
     }
 
     #[test]
