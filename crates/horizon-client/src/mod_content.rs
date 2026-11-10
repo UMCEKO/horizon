@@ -746,14 +746,18 @@ struct NewBlock<'a> {
     custom_dampening: bool,
     context_shapes: BTreeMap<String, Vec<VoxelShape>>,
     state_light: Option<Vec<u8>>,
+    lighting: StateLighting,
+    /// The default state's id once added.
     default: u32,
-    /// The declared state properties' combinations, every property at its
-    /// default first (one empty combination when the block declares none):
-    /// the block's states are its template's states times these.
+    /// The template's states, which `order` counts from.
+    template: Range<u32>,
+    /// Declared combinations: template states times these (defaults first), or replacing them, each state's own.
     combos: Vec<Vec<(String, String)>>,
     /// Each state's template state offset and combination index, in registry order
     /// (`state_order`).
     order: Vec<(u32, u32)>,
+    /// Each state's own properties when they replace the template's; else empty.
+    declared: Vec<BTreeMap<String, String>>,
     /// The sign whose item places this block on a wall, which makes that item
     /// this block's too (`StandingAndWallBlockItem.registerBlocks`).
     wall_of: Option<String>,
@@ -772,11 +776,178 @@ impl NewBlock<'_> {
 
     /// Template states and declared combinations in registry order.
     fn state_combinations(&self) -> impl Iterator<Item = (u32, &[(String, String)])> {
-        let start = self.rename.states.start;
+        let start = self.template.start;
         self.order
             .iter()
             .map(move |&(state, combo)| (start + state, self.combos[combo as usize].as_slice()))
     }
+
+    /// A `facts.json` row with this state's own properties.
+    fn declare_row(&self, row: &mut J, own: &BTreeMap<String, String>) {
+        let J::Arr(cells) = row else {
+            return;
+        };
+        if cells.len() < 5 {
+            return;
+        }
+        let pairs: Vec<String> = own.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        cells[3] = J::Str(format!("Block{{{}}}[{}]", self.decl.id, pairs.join(",")));
+        let map = own
+            .iter()
+            .map(|(k, v)| (k.clone(), J::Str(v.clone())))
+            .collect();
+        cells[4].set("properties", J::Obj(map));
+    }
+
+    /// The state this one becomes once `turn` changes its properties.
+    fn turned(&self, state: usize, turn: impl Fn(&str, &str) -> Option<String>) -> u32 {
+        let mut wanted = self.declared[state].clone();
+        for (key, value) in &mut wanted {
+            if let Some(new) = turn(key, value) {
+                *value = new;
+            }
+        }
+        let found = self.declared.iter().position(|p| *p == wanted);
+        self.rename.first + found.unwrap_or(state) as u32
+    }
+}
+
+/// A block's declared per-state light and occlusion values, one per state.
+#[derive(Default)]
+struct StateLighting {
+    dampening: Option<Vec<u8>>,
+    skylight_down: Option<Vec<bool>>,
+    solid_render: Option<Vec<bool>>,
+    can_occlude: Option<Vec<bool>>,
+    shape_occlusion: Option<Vec<bool>>,
+    occlusion: Option<Vec<VoxelShape>>,
+}
+impl StateLighting {
+    /// Sets the declared values on state `i`'s gameplay row, over what its template or shape gave.
+    fn apply(&self, i: usize, row: &mut J) {
+        if let Some(values) = &self.dampening {
+            row.set("dampening", J::Num(values[i].into()));
+        }
+        for (key, values) in [
+            ("skylight_down", &self.skylight_down),
+            ("solid_render", &self.solid_render),
+            ("can_occlude", &self.can_occlude),
+            ("shape_occlusion", &self.shape_occlusion),
+        ] {
+            if let Some(values) = values {
+                row.set(key, J::Bool(values[i]));
+            }
+        }
+    }
+
+    /// State `i`'s declared occlusion shape: `BlockState.initCache` keeps none for a state that can't occlude.
+    fn occlusion_shape(&self, i: usize) -> Option<VoxelShape> {
+        if self.can_occlude.as_ref().is_some_and(|c| !c[i]) {
+            return Some(VoxelShape::empty());
+        }
+        self.occlusion.as_ref().map(|shapes| shapes[i].clone())
+    }
+}
+
+/// The direction `turns` quarter turns clockwise round Y from `value`, as `Rotation` turns it.
+fn rotated(key: &str, value: &str, turns: usize) -> Option<String> {
+    const SIDES: [&str; 4] = ["north", "east", "south", "west"];
+    match key {
+        "facing" | "horizontal_facing" => {
+            let at = SIDES.iter().position(|s| *s == value)?;
+            Some(SIDES[(at + turns) % 4].to_owned())
+        }
+        "axis" if turns % 2 == 1 => match value {
+            "x" => Some("z".to_owned()),
+            "z" => Some("x".to_owned()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The direction in `Mirror.LEFT_RIGHT` (swaps north and south) or `FRONT_BACK` (swaps east and west).
+fn mirrored(key: &str, value: &str, left_right: bool) -> Option<String> {
+    if key != "facing" && key != "horizontal_facing" {
+        return None;
+    }
+    match (value, left_right) {
+        ("north", true) => Some("south".to_owned()),
+        ("south", true) => Some("north".to_owned()),
+        ("east", false) => Some("west".to_owned()),
+        ("west", false) => Some("east".to_owned()),
+        _ => None,
+    }
+}
+
+/// A gameplay row's outline and its edges.
+fn set_outline(row: &mut J, shape: &VoxelShape) {
+    let boxes = shape
+        .boxes()
+        .iter()
+        .map(|b| {
+            J::Arr(
+                [
+                    b.min(Axis::X),
+                    b.min(Axis::Y),
+                    b.min(Axis::Z),
+                    b.max(Axis::X),
+                    b.max(Axis::Y),
+                    b.max(Axis::Z),
+                ]
+                .into_iter()
+                .map(J::f64)
+                .collect(),
+            )
+        })
+        .collect();
+    row.set("outline", J::Arr(boxes));
+    row.set("outline_edges", J::Arr(shape_edges(shape)));
+}
+
+/// A block's `model-states.json` entry from its own properties.
+fn model_states(b: &NewBlock) -> J {
+    let schema = b
+        .decl
+        .state_properties
+        .iter()
+        .map(|(name, property)| {
+            let values: Vec<String> = property.values().into_iter().map(str::to_owned).collect();
+            let numbers: Option<Vec<i64>> = values.iter().map(|v| v.parse().ok()).collect();
+            let kind = match numbers.as_deref() {
+                Some(n) if n.iter().enumerate().all(|(i, v)| *v == n[0] + i as i64) => {
+                    J::Obj(vec![(
+                        "integer".to_owned(),
+                        J::Arr(vec![J::Num(n[0].into()), J::Num(n[n.len() - 1].into())]),
+                    )])
+                }
+                _ => {
+                    let mut sorted = values.clone();
+                    sorted.sort();
+                    J::Obj(vec![(
+                        "named".to_owned(),
+                        J::Arr(sorted.into_iter().map(J::Str).collect()),
+                    )])
+                }
+            };
+            (name.clone(), kind)
+        })
+        .collect();
+    let states = b
+        .declared
+        .iter()
+        .map(|own| {
+            J::Obj(
+                own.iter()
+                    .map(|(k, v)| (k.clone(), J::Str(v.clone())))
+                    .collect(),
+            )
+        })
+        .collect();
+    J::Obj(vec![
+        ("schema".to_owned(), J::Obj(schema)),
+        ("states".to_owned(), J::Arr(states)),
+    ])
 }
 /// An item being added (declared, or a block's).
 struct NewItem {
@@ -793,7 +964,11 @@ struct NewItem {
 
 struct Plan<'a> {
     blocks: Vec<NewBlock<'a>>,
+    /// Declarations left out, each with why.
+    skipped: Vec<String>,
     items: Vec<NewItem>,
+    /// The mods' data component types, sorted by id.
+    component_types: Vec<&'a horizon_mod_package::content::DataComponentType>,
     /// Every vanilla item id, including items omitted from the search tab.
     vanilla_items: BTreeSet<String>,
     effects: Vec<&'a MobEffect>,
@@ -1211,7 +1386,13 @@ impl<'a> Plan<'a> {
                 }
             }
         }
+        let gameplay = read_json(&base.join("gameplay-facts.json"))?;
+        let gameplay_rows = match gameplay.get("states") {
+            Some(J::Arr(rows)) if rows.len() == names.len() => rows,
+            _ => return Err("gameplay-facts.json does not match facts.json".into()),
+        };
         let mut blocks = Vec::new();
+        let mut skipped = Vec::new();
         let mut next = names.len() as u32;
         let mut sorted: Vec<&ContentMod> = mods.iter().collect();
         sorted.sort_by(|a, b| a.id.cmp(&b.id));
@@ -1233,208 +1414,332 @@ impl<'a> Plan<'a> {
                     }
                     None => None,
                 };
-                if defaults.contains_key(&decl.id) {
-                    return Err(format!("{}: {} is already a block", m.id, decl.id).into());
-                }
-                let states = range(&decl.template).ok_or_else(|| {
-                    format!("{}: template {} is not a block", decl.id, decl.template)
-                })?;
-                let pipe_shapes = if let Some(size) = decl.thickness {
+                // One bad declaration is reported and left out; it never fails the others.
+                let built = (|| -> Result<NewBlock<'a>> {
+                    if defaults.contains_key(&decl.id) {
+                        return Err(format!("{}: {} is already a block", m.id, decl.id).into());
+                    }
+                    let states = range(&decl.template).ok_or_else(|| {
+                        format!("{}: template {} is not a block", decl.id, decl.template)
+                    })?;
                     let Some(J::Arr(rows)) = facts.get("states") else {
                         unreachable!()
                     };
-                    let shapes = states.clone().map(|id| {
-                        let props = match &rows[id as usize] {
-                            J::Arr(row) => row.get(4).and_then(|p| p.get("properties")),
-                            _ => None,
-                        };
-                        let sides = ["down", "up", "north", "south", "west", "east"]
-                            .map(|k| matches!(props.and_then(|p| p.get(k)), Some(J::Str(v)) if v == "true"));
-                        horizon_world::collision::pipe_shape(size.into(), sides)
-                    });
-                    Some(shapes.collect::<std::io::Result<_>>()?)
-                } else {
-                    None
-                };
-                let mut default = *defaults.get(&decl.template).ok_or_else(|| {
-                    format!(
-                        "{}: template {} has no default state",
-                        decl.id, decl.template
-                    )
-                })?;
-                let Some(J::Arr(rows)) = facts.get("states") else {
-                    unreachable!()
-                };
-                let properties = |id: u32| -> Option<&J> {
-                    let J::Arr(row) = rows.get(id as usize)? else {
-                        return None;
+                    let pipe_shapes = if let Some(size) = decl.thickness {
+                        let shapes = states.clone().map(|id| {
+                            let props = match &rows[id as usize] {
+                                J::Arr(row) => row.get(4).and_then(|p| p.get("properties")),
+                                _ => None,
+                            };
+                            let sides = ["down", "up", "north", "south", "west", "east"]
+                                .map(|k| matches!(props.and_then(|p| p.get(k)), Some(J::Str(v)) if v == "true"));
+                            horizon_world::collision::pipe_shape(size.into(), sides)
+                        });
+                        Some(shapes.collect::<std::io::Result<_>>()?)
+                    } else {
+                        None
                     };
-                    row.get(4)?.get("properties")
-                };
-                for key in decl.state_properties.keys() {
-                    if properties(default).is_some_and(|p| p.get(key).is_some()) {
-                        return Err(format!(
-                            "{}: state property {key} is already on {}",
+                    let template_default = *defaults.get(&decl.template).ok_or_else(|| {
+                        format!(
+                            "{}: template {} has no default state",
                             decl.id, decl.template
                         )
-                        .into());
-                    }
-                }
-                let combos = combinations(&decl.state_properties, &decl.default_state)
-                    .map_err(|e| format!("{}: {e}", decl.id))?;
-                // A `default_state` key the block itself declares is its own,
-                // and `combinations` already checks that value against the
-                // property. Only a key the template already has narrows which
-                // of the template's states is the default, and only that needs
-                // the template's own properties: a template with none (`stone`
-                // has a single state) can still be given a property and have
-                // it defaulted.
-                let on_template = decl
-                    .default_state
-                    .keys()
-                    .any(|key| !decl.state_properties.contains_key(key));
-                if on_template {
-                    let mut wanted = properties(default).cloned().ok_or_else(|| {
-                        format!("{}: template default has no state properties", decl.id)
                     })?;
-                    for (key, value) in &decl.default_state {
-                        if decl.state_properties.contains_key(key) {
-                            continue;
+                    let properties = |id: u32| -> Option<&J> {
+                        let J::Arr(row) = rows.get(id as usize)? else {
+                            return None;
+                        };
+                        row.get(4)?.get("properties")
+                    };
+                    let row_properties = |id: u32| -> BTreeMap<String, String> {
+                        match properties(id) {
+                            Some(J::Obj(pairs)) => pairs
+                                .iter()
+                                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
+                                .collect(),
+                            _ => BTreeMap::new(),
                         }
-                        if wanted.get(key).is_none() {
+                    };
+                    let replace = decl.replace_template_properties;
+                    if !replace {
+                        for key in decl.state_properties.keys() {
+                            if properties(template_default).is_some_and(|p| p.get(key).is_some()) {
+                                return Err(format!(
+                                    "{}: state property {key} is already on {}",
+                                    decl.id, decl.template
+                                )
+                                .into());
+                            }
+                        }
+                    }
+                    // Replacing, the values keep their declared order, as the property's own.
+                    let no_defaults = BTreeMap::new();
+                    let combos = combinations(
+                        &decl.state_properties,
+                        if replace {
+                            &no_defaults
+                        } else {
+                            &decl.default_state
+                        },
+                    )
+                    .map_err(|e| format!("{}: {e}", decl.id))?;
+                    let declared: Vec<BTreeMap<String, String>> = if replace {
+                        combos.iter().map(|c| c.iter().cloned().collect()).collect()
+                    } else {
+                        Vec::new()
+                    };
+                    let order = if replace {
+                        // Each state copies the template state agreeing with it on what they share.
+                        let base = row_properties(template_default);
+                        declared
+                            .iter()
+                            .enumerate()
+                            .map(|(combo, own)| {
+                                let mut wanted = base.clone();
+                                for (key, value) in &mut wanted {
+                                    if let Some(v) = own.get(key) {
+                                        value.clone_from(v);
+                                    }
+                                }
+                                let source = states
+                                    .clone()
+                                    .find(|id| row_properties(*id) == wanted)
+                                    .unwrap_or(template_default);
+                                (source - states.start, combo as u32)
+                            })
+                            .collect()
+                    } else {
+                        // The game reads a state table as vanilla's `StateDefinition` does: every
+                        // property, the template's and the declared ones, sorted by name, the first
+                        // name slowest. A declared name that sorts before the template's has to
+                        // interleave with them, so the states are laid out in that order.
+                        let sizes: Vec<(String, u32)> = decl
+                            .state_properties
+                            .iter()
+                            .map(|(name, property)| (name.clone(), property.values().len() as u32))
+                            .collect();
+                        block_order(&states, properties, &sizes, combos.len() as u32)
+                    };
+                    let default_index = if replace {
+                        let mut wanted = declared[0].clone();
+                        for (key, value) in &decl.default_state {
+                            if !wanted.contains_key(key) {
+                                return Err(format!(
+                                    "{}: default_state {key} is not one of its state_properties",
+                                    decl.id
+                                )
+                                .into());
+                            }
+                            wanted.insert(key.clone(), value.clone());
+                        }
+                        let found: Vec<usize> = (0..declared.len())
+                            .filter(|i| declared[*i] == wanted)
+                            .collect();
+                        let [index] = found[..] else {
                             return Err(format!(
-                                "{}: unknown state property {key} on {}",
-                                decl.id, decl.template
+                                "{}: default_state {:?} matches {} states",
+                                decl.id,
+                                decl.default_state,
+                                found.len()
                             )
                             .into());
+                        };
+                        index
+                    } else {
+                        // A `default_state` key the block itself declares is its own,
+                        // and `combinations` already checks that value against the
+                        // property. Only a key the template already has narrows which
+                        // of the template's states is the default, and only that needs
+                        // the template's own properties: a template with none (`stone`
+                        // has a single state) can still be given a property and have
+                        // it defaulted.
+                        let mut default = template_default;
+                        let on_template = decl
+                            .default_state
+                            .keys()
+                            .any(|key| !decl.state_properties.contains_key(key));
+                        if on_template {
+                            let mut wanted = properties(default).cloned().ok_or_else(|| {
+                                format!("{}: template default has no state properties", decl.id)
+                            })?;
+                            for (key, value) in &decl.default_state {
+                                if decl.state_properties.contains_key(key) {
+                                    continue;
+                                }
+                                if wanted.get(key).is_none() {
+                                    return Err(format!(
+                                        "{}: unknown state property {key} on {}",
+                                        decl.id, decl.template
+                                    )
+                                    .into());
+                                }
+                                wanted.set(key, J::Str(value.clone()));
+                            }
+                            let matches: Vec<u32> = states
+                                .clone()
+                                .filter(|id| {
+                                    properties(*id).is_some_and(|p| {
+                                        let (J::Obj(a), J::Obj(b)) = (p, &wanted) else {
+                                            return false;
+                                        };
+                                        a.len() == b.len()
+                                            && b.iter().all(|(k, v)| p.get(k) == Some(v))
+                                    })
+                                })
+                                .collect();
+                            if matches.len() != 1 {
+                                return Err(format!(
+                                    "{}: default_state {:?} matches {} states of {}",
+                                    decl.id,
+                                    decl.default_state,
+                                    matches.len(),
+                                    decl.template
+                                )
+                                .into());
+                            }
+                            default = matches[0];
                         }
-                        wanted.set(key, J::Str(value.clone()));
-                    }
-                    let matches: Vec<u32> = states
-                        .clone()
-                        .filter(|id| {
-                            properties(*id).is_some_and(|p| {
-                                let (J::Obj(a), J::Obj(b)) = (p, &wanted) else {
-                                    return false;
-                                };
-                                a.len() == b.len() && b.iter().all(|(k, v)| p.get(k) == Some(v))
-                            })
-                        })
-                        .collect();
-                    if matches.len() != 1 {
-                        return Err(format!(
-                            "{}: default_state {:?} matches {} states of {}",
-                            decl.id,
-                            decl.default_state,
-                            matches.len(),
-                            decl.template
-                        )
-                        .into());
-                    }
-                    default = matches[0];
-                }
-                // The game reads a state table as vanilla's `StateDefinition` does: every
-                // property, the template's and the declared ones, sorted by name, the first
-                // name slowest. A declared name that sorts before the template's has to
-                // interleave with them, so the states are laid out in that order.
-                let declared: Vec<(String, u32)> = decl
-                    .state_properties
-                    .iter()
-                    .map(|(name, property)| (name.clone(), property.values().len() as u32))
-                    .collect();
-                let order = block_order(&states, properties, &declared, combos.len() as u32);
-                let resolve = |spec: &BlockShapes| {
-                    resolve_shapes(spec, &decl.id, &states, &order, &combos, properties)
-                };
-                let shapes = if let Some(spec) = &decl.shapes {
-                    Some(resolve(spec)?)
-                } else {
-                    pipe_shapes.map(|shapes: Vec<VoxelShape>| {
+                        // A template state's combination with every declared property at its default.
                         order
                             .iter()
-                            .map(|&(state, _)| shapes[state as usize].clone())
-                            .collect()
-                    })
-                };
-                let collision_shapes = decl.collision_shapes.as_ref().map(resolve).transpose()?;
-                let mut has_fluid = Vec::new();
-                if shapes.is_some() {
-                    for &(state, combo) in &order {
-                        let J::Arr(row) = &rows[(states.start + state) as usize] else {
-                            unreachable!()
-                        };
-                        // facts.json exports !BlockState.getFluidState().isEmpty(),
-                        // including water in bubble columns and aquatic plants.
-                        let Some(J::Bool(fluid)) = row.get(2) else {
-                            return Err("facts.json: a state without a fluid flag".into());
-                        };
-                        has_fluid.push(
-                            *fluid
-                                || combos[combo as usize]
-                                    .iter()
-                                    .any(|(name, value)| name == "waterlogged" && value == "true"),
-                        );
+                            .position(|&(state, combo)| {
+                                state == default - states.start && combo == 0
+                            })
+                            .ok_or_else(|| format!("{}: a default outside its block", decl.id))?
+                    };
+                    // Replacing, a state value reads only the block's own properties.
+                    let props = |id: u32| if replace { None } else { properties(id) };
+                    let resolve = |spec: &BlockShapes| {
+                        resolve_shapes(spec, &decl.id, &states, &order, &combos, props)
+                    };
+                    let shapes = if let Some(spec) = &decl.shapes {
+                        Some(resolve(spec)?)
+                    } else {
+                        pipe_shapes.map(|shapes: Vec<VoxelShape>| {
+                            order
+                                .iter()
+                                .map(|&(state, _)| shapes[state as usize].clone())
+                                .collect()
+                        })
+                    };
+                    let collision_shapes =
+                        decl.collision_shapes.as_ref().map(resolve).transpose()?;
+                    let mut has_fluid = Vec::new();
+                    if shapes.is_some() {
+                        for &(state, combo) in &order {
+                            let J::Arr(row) = &rows[(states.start + state) as usize] else {
+                                unreachable!()
+                            };
+                            // facts.json exports !BlockState.getFluidState().isEmpty(),
+                            // including water in bubble columns and aquatic plants.
+                            let Some(J::Bool(fluid)) = row.get(2) else {
+                                return Err("facts.json: a state without a fluid flag".into());
+                            };
+                            has_fluid.push(
+                                *fluid
+                                    || combos[combo as usize].iter().any(|(name, value)| {
+                                        name == "waterlogged" && value == "true"
+                                    }),
+                            );
+                        }
                     }
-                }
-                let mut context_shapes = BTreeMap::new();
-                for (channel, specs) in [
-                    ("outline", &decl.outline_context_shapes),
-                    ("collision", &decl.collision_context_shapes),
-                ] {
-                    for (kind, spec) in specs {
-                        context_shapes.insert(format!("{channel}_{}", kind.name()), resolve(spec)?);
+                    let mut context_shapes = BTreeMap::new();
+                    for (channel, specs) in [
+                        ("outline", &decl.outline_context_shapes),
+                        ("collision", &decl.collision_context_shapes),
+                    ] {
+                        for (kind, spec) in specs {
+                            context_shapes
+                                .insert(format!("{channel}_{}", kind.name()), resolve(spec)?);
+                        }
                     }
-                }
-                if let Some(spec) = &decl.interaction_shapes {
-                    context_shapes.insert("interaction".into(), resolve(spec)?);
-                }
-                let state_light = decl
-                    .state_light
-                    .as_ref()
-                    .map(|spec| {
-                        resolve_state_values(spec, &decl.id, &states, &order, &combos, properties)
-                            .map(|values| values.into_iter().copied().collect())
-                    })
-                    .transpose()?;
-                // The lookup from (template state, combination) to the state's row.
-                let mut rows = vec![0; order.len()];
-                for (position, &(state, combo)) in order.iter().enumerate() {
-                    rows[state as usize * combos.len() + combo as usize] = position as u32;
-                }
-                let mut rename = Rename::new(&decl.template, &decl.id);
-                rename.first = next;
-                rename.fanout = combos.len() as u32;
-                rename.rows = rows;
-                let count =
-                    u32::try_from(states.len() as u64 * combos.len() as u64).unwrap_or(u32::MAX);
-                next = next.saturating_add(count);
-                rename.states = states;
-                if let Some(s) = &decl.properties.sounds {
-                    if !defaults.contains_key(s) {
+                    if let Some(spec) = &decl.interaction_shapes {
+                        context_shapes.insert("interaction".into(), resolve(spec)?);
+                    }
+                    let levels = |spec: Option<&StateValues<u8>>| -> Result<Option<Vec<u8>>> {
+                        spec.map(|spec| {
+                            resolve_state_values(spec, &decl.id, &states, &order, &combos, props)
+                                .map(|v| v.into_iter().copied().collect())
+                        })
+                        .transpose()
+                    };
+                    let flags = |spec: Option<&StateValues<bool>>| -> Result<Option<Vec<bool>>> {
+                        spec.map(|spec| {
+                            resolve_state_values(spec, &decl.id, &states, &order, &combos, props)
+                                .map(|v| v.into_iter().copied().collect())
+                        })
+                        .transpose()
+                    };
+                    let state_light = levels(decl.state_light.as_ref())?;
+                    let lighting = StateLighting {
+                        dampening: levels(decl.light_dampening.as_ref())?,
+                        skylight_down: flags(decl.skylight_down.as_ref())?,
+                        solid_render: flags(decl.solid_render.as_ref())?,
+                        can_occlude: flags(decl.can_occlude.as_ref())?,
+                        shape_occlusion: flags(decl.shape_occlusion.as_ref())?,
+                        occlusion: decl.occlusion.as_ref().map(resolve).transpose()?,
+                    };
+                    let mut rename = Rename::new(&decl.template, &decl.id);
+                    rename.first = next;
+                    // Replacing, no template state is one of the block's, so none moves to it.
+                    if !replace {
+                        // The lookup from (template state, combination) to the state's row.
+                        let mut rows = vec![0; order.len()];
+                        for (position, &(state, combo)) in order.iter().enumerate() {
+                            rows[state as usize * combos.len() + combo as usize] = position as u32;
+                        }
+                        rename.fanout = combos.len() as u32;
+                        rename.rows = rows;
+                        rename.states = states.clone();
+                    }
+                    if let Some(s) = &decl.properties.sounds
+                        && !defaults.contains_key(s)
+                    {
                         return Err(format!("{}: sounds {s} is not a block", decl.id).into());
                     }
-                    wanted_sounds.push(s.clone());
+                    // Block items copy the template block's item.
+                    let item = match gameplay_rows[states.start as usize].get("item") {
+                        Some(J::Str(i)) if i != "minecraft:air" => Some(i.clone()),
+                        _ => None,
+                    };
+                    if decl.item && item.is_none() {
+                        return Err(
+                            format!("{}: template {} has no item", decl.id, decl.template).into(),
+                        );
+                    }
+                    if let Some(s) = &decl.properties.sounds {
+                        wanted_sounds.push(s.clone());
+                    }
+                    let default = next + default_index as u32;
+                    next = next.saturating_add(u32::try_from(order.len()).unwrap_or(u32::MAX));
+                    Ok(NewBlock {
+                        decl,
+                        base_block,
+                        rename,
+                        item,
+                        shapes,
+                        collision_shapes,
+                        has_fluid,
+                        skylight: skylight_rules
+                            .get(&decl.template)
+                            .copied()
+                            .unwrap_or(SkylightRule::Shape),
+                        custom_dampening: custom_dampening.contains(&decl.template),
+                        context_shapes,
+                        state_light,
+                        lighting,
+                        default,
+                        template: states,
+                        combos,
+                        order,
+                        declared,
+                        wall_of: None,
+                    })
+                })();
+                match built {
+                    Ok(b) => blocks.push(b),
+                    Err(e) => skipped.push(e.to_string()),
                 }
-                blocks.push(NewBlock {
-                    decl,
-                    base_block,
-                    rename,
-                    item: None,
-                    shapes,
-                    collision_shapes,
-                    has_fluid,
-                    skylight: skylight_rules
-                        .get(&decl.template)
-                        .copied()
-                        .unwrap_or(SkylightRule::Shape),
-                    custom_dampening: custom_dampening.contains(&decl.template),
-                    context_shapes,
-                    state_light,
-                    default,
-                    combos,
-                    order,
-                    wall_of: None,
-                });
             }
         }
         // A sign's wall form, which `Content` checked against its mod's blocks.
@@ -1452,7 +1757,7 @@ impl<'a> Plan<'a> {
             for b in &blocks {
                 *by_mod
                     .entry(&b.decl.id[..b.decl.id.find(':').unwrap_or(0)])
-                    .or_default() += (b.rename.states.len() as u32).saturating_mul(b.rename.fanout);
+                    .or_default() += b.order.len() as u32;
             }
             let list: Vec<String> = by_mod.iter().map(|(m, n)| format!("{m} {n}")).collect();
             return Err(format!(
@@ -1463,28 +1768,18 @@ impl<'a> Plan<'a> {
             )
             .into());
         }
-        // Block items copy the template block's item.
-        let gameplay = read_json(&base.join("gameplay-facts.json"))?;
-        let rows = match gameplay.get("states") {
-            Some(J::Arr(rows)) if rows.len() == names.len() => rows,
-            _ => return Err("gameplay-facts.json does not match facts.json".into()),
-        };
         let mut sounds = BTreeMap::new();
         for s in wanted_sounds {
-            let row = &rows[defaults[&s] as usize];
+            let row = &gameplay_rows[defaults[&s] as usize];
             sounds.insert(s, row.get("sound").cloned().unwrap_or(J::Null));
         }
         let mut items = Vec::new();
-        for b in &mut blocks {
-            let row = &rows[b.rename.states.start as usize];
-            b.item = match row.get("item") {
-                Some(J::Str(i)) if i != "minecraft:air" => Some(i.clone()),
-                _ => None,
-            };
+        for b in &blocks {
             if b.decl.item {
-                let item = b.item.as_deref().ok_or_else(|| {
-                    format!("{}: template {} has no item", b.decl.id, b.decl.template)
-                })?;
+                let item = b
+                    .item
+                    .as_deref()
+                    .expect("checked when the block was planned");
                 items.push(NewItem {
                     rename: Rename::new(item, &b.decl.id),
                     max_stack_size: None,
@@ -1520,6 +1815,11 @@ impl<'a> Plan<'a> {
         // Block items and standalone items share the same registry. Sort
         // them together by mod ID and entry name before assigning IDs.
         items.sort_by(|a, b| a.rename.to.cmp(&b.rename.to));
+        let mut component_types: Vec<_> = mods
+            .iter()
+            .flat_map(|m| &m.content.data_component_types)
+            .collect();
+        component_types.sort_by(|a, b| a.id.cmp(&b.id));
         let mut tabs = Vec::new();
         let mut lang = BTreeMap::new();
         for m in &sorted {
@@ -1535,7 +1835,9 @@ impl<'a> Plan<'a> {
         }
         Ok(Plan {
             blocks,
+            skipped,
             items,
+            component_types,
             vanilla_items,
             effects: mob_effects(mods),
             fluids: fluids(mods),
@@ -1571,7 +1873,7 @@ impl<'a> Plan<'a> {
 
     /// Appends each new block's copies of the template's states to `list`;
     /// `gameplay` rows get their index and the declared overrides.
-    fn states(&self, list: &mut Vec<J>, ids: bool, gameplay: bool) -> Result<()> {
+    fn states(&self, list: &mut Vec<J>, ids: bool, gameplay: bool, facts: bool) -> Result<()> {
         if list.len() != self.states {
             return Err(format!("{} states, not {}", list.len(), self.states).into());
         }
@@ -1585,7 +1887,9 @@ impl<'a> Plan<'a> {
                 for r in &renames {
                     row.rename(r, ids);
                 }
-                if !combo.is_empty() {
+                if let (true, Some(own)) = (facts, b.declared.get(state_index)) {
+                    b.declare_row(&mut row, own);
+                } else if b.declared.is_empty() && !combo.is_empty() {
                     set_state_properties(&mut row, combo);
                 }
                 if gameplay {
@@ -1597,27 +1901,10 @@ impl<'a> Plan<'a> {
                         row.set("pick_item", J::Str(item.clone()));
                     }
                     self.override_gameplay(b, state_index, combo, &mut row);
+                    // Declared values feed what a shape derives, then win over it.
+                    b.lighting.apply(state_index, &mut row);
                     if let Some(shapes) = &b.shapes {
                         let shape = &shapes[state_index];
-                        let boxes = shape
-                            .boxes()
-                            .iter()
-                            .map(|b| {
-                                J::Arr(
-                                    [
-                                        b.min(Axis::X),
-                                        b.min(Axis::Y),
-                                        b.min(Axis::Z),
-                                        b.max(Axis::X),
-                                        b.max(Axis::Y),
-                                        b.max(Axis::Z),
-                                    ]
-                                    .into_iter()
-                                    .map(J::f64)
-                                    .collect(),
-                                )
-                            })
-                            .collect();
                         // BlockState.initCache and BlockBehaviour.getLightDampening:
                         // the declared outline is the block's occlusion shape.
                         let full = !shape.join_is_not_empty(&VoxelShape::block(), ShapeOp::XOR)?;
@@ -1653,8 +1940,7 @@ impl<'a> Plan<'a> {
                                 ),
                             );
                         }
-                        row.set("outline", J::Arr(boxes));
-                        row.set("outline_edges", J::Arr(shape_edges(shape)));
+                        set_outline(&mut row, shape);
                     }
                     if let Some(shapes) = b.collision_shapes.as_ref().or(b.shapes.as_ref()) {
                         let shape = &shapes[state_index];
@@ -1663,6 +1949,7 @@ impl<'a> Plan<'a> {
                             J::Bool(!shape.join_is_not_empty(&VoxelShape::block(), ShapeOp::XOR)?),
                         );
                     }
+                    b.lighting.apply(state_index, &mut row);
                 }
                 list.push(row);
             }
@@ -1737,6 +2024,13 @@ impl<'a> Plan<'a> {
                 let mut v = v.clone();
                 for r in &self.renames(b) {
                     v.rename(r, ids);
+                }
+                if !b.declared.is_empty() && ids {
+                    let all = (0..b.order.len() as u32)
+                        .map(|i| J::Num((b.rename.first + i).into()))
+                        .collect();
+                    v.set("states", J::Arr(all));
+                    v.set("default", J::Num(b.default.into()));
                 }
                 map.set(&b.decl.id, v);
             }
@@ -1828,7 +2122,7 @@ impl<'a> Plan<'a> {
     fn json(&self, name: &str, doc: &mut J) -> Result<()> {
         let states = |doc: &mut J, path: &str, ids: bool, gameplay: bool| -> Result<()> {
             match doc.at(path) {
-                Some(J::Arr(a)) => self.states(a, ids, gameplay),
+                Some(J::Arr(a)) => self.states(a, ids, gameplay, name == "facts.json"),
                 _ => Err(format!("no list at /{path}").into()),
             }
         };
@@ -1837,9 +2131,7 @@ impl<'a> Plan<'a> {
                 states(doc, "states", false, false)?;
                 let defaults = doc.at("defaults").ok_or("no defaults")?;
                 for b in &self.blocks {
-                    let default = b.default;
-                    let id = b.rename.id(default).ok_or("a default outside its block")?;
-                    defaults.set(&b.decl.id, J::Num(id.into()));
+                    defaults.set(&b.decl.id, J::Num(b.default.into()));
                 }
             }
             "gameplay-facts.json" => states(doc, "states", false, true)?,
@@ -1923,6 +2215,11 @@ impl<'a> Plan<'a> {
                 let model = name == "model-states.json";
                 self.names(doc, !model);
                 for b in &self.blocks {
+                    // Replacing, the block's properties are its own: none of the template's entry.
+                    if model && !b.declared.is_empty() {
+                        doc.set(&b.decl.id, model_states(b));
+                        continue;
+                    }
                     let Some(entry) = doc.get_mut(&b.decl.id) else {
                         continue;
                     };
@@ -1953,7 +2250,7 @@ impl<'a> Plan<'a> {
                         for (index, (id, combo)) in b.state_combinations().enumerate() {
                             if model {
                                 let mut state = template
-                                    .get((id - b.rename.states.start) as usize)
+                                    .get((id - b.template.start) as usize)
                                     .ok_or("model states do not match the template")?
                                     .clone();
                                 for (name, value) in combo {
@@ -2001,6 +2298,10 @@ impl<'a> Plan<'a> {
                     let new_types = self.block_entity_types.iter().map(|t| t.id.clone());
                     registries.push(("minecraft:block_entity_type", new_types.collect()));
                 }
+                if !self.component_types.is_empty() {
+                    let new_components = self.component_types.iter().map(|c| c.id.clone());
+                    registries.push(("minecraft:data_component_type", new_components.collect()));
+                }
                 if !self.effects.is_empty() {
                     let new_effects = self.effects.iter().map(|e| e.id.clone());
                     registries.push(("minecraft:mob_effect", new_effects.collect()));
@@ -2047,6 +2348,20 @@ impl<'a> Plan<'a> {
             }
             "command-registries.json" => {
                 self.names(doc.at("blocks").ok_or("no blocks")?, false);
+                for b in self.blocks.iter().filter(|b| !b.declared.is_empty()) {
+                    let schema = b
+                        .decl
+                        .state_properties
+                        .iter()
+                        .map(|(name, property)| {
+                            let values = property.values().into_iter().map(|v| J::Str(v.into()));
+                            J::Arr(vec![J::Str(name.clone()), J::Arr(values.collect())])
+                        })
+                        .collect();
+                    doc.at("blocks")
+                        .ok_or("no blocks")?
+                        .set(&b.decl.id, J::Arr(schema));
+                }
                 let new_items = || self.items.iter().map(|i| J::Str(i.rename.to.clone()));
                 let new_blocks = || self.blocks.iter().map(|b| J::Str(b.decl.id.clone()));
                 let Some(J::Arr(items)) = doc.at("items") else {
@@ -2059,6 +2374,15 @@ impl<'a> Plan<'a> {
                 }
                 if let Some(J::Arr(ids)) = doc.at("by_registry/minecraft:block/ids") {
                     ids.extend(new_blocks());
+                }
+                let components = || self.component_types.iter();
+                if let Some(J::Arr(ids)) = doc.at("by_registry/minecraft:data_component_type/ids") {
+                    ids.extend(components().map(|c| J::Str(c.id.clone())));
+                }
+                // Commands name persistent component types only (`DataComponentType.PERSISTENT_CODEC`).
+                if let Some(J::Arr(ids)) = doc.at("persistent_components") {
+                    let persistent = components().filter(|c| c.persistent);
+                    ids.extend(persistent.map(|c| J::Str(c.id.clone())));
                 }
                 // `/effect` and the mob_effect resource arguments.
                 let new_effects = || self.effects.iter().map(|e| J::Str(e.id.clone()));
@@ -2091,14 +2415,39 @@ impl<'a> Plan<'a> {
                 for key in ["rotate", "mirror", "full_block"] {
                     states(doc, key, true, false)?;
                 }
-                let added: usize = self
-                    .blocks
-                    .iter()
-                    .map(|b| b.rename.states.len() * b.combos.len())
-                    .sum();
+                self.turns(doc)?;
+                let added: usize = self.blocks.iter().map(|b| b.order.len()).sum();
                 doc.set("states", J::Num(((self.states + added) as u64).into()));
             }
             _ => return Err("no rule for this table".into()),
+        }
+        Ok(())
+    }
+
+    /// Declared states' rotations and mirrors, which no template row can give.
+    fn turns(&self, doc: &mut J) -> Result<()> {
+        let mut turned = Vec::new();
+        for b in self.blocks.iter().filter(|b| !b.declared.is_empty()) {
+            for i in 0..b.order.len() {
+                let quarter = |t| J::Num(b.turned(i, |k, v| rotated(k, v, t)).into());
+                let side = |lr| J::Num(b.turned(i, |k, v| mirrored(k, v, lr)).into());
+                turned.push((
+                    b.rename.first as usize + i,
+                    J::Arr(vec![quarter(1), quarter(2), quarter(3)]),
+                    J::Arr(vec![side(true), side(false)]),
+                ));
+            }
+        }
+        for key in ["rotate", "mirror"] {
+            let Some(J::Arr(table)) = doc.at(key) else {
+                return Err(format!("no {key} table").into());
+            };
+            for (state, rotate, mirror) in &turned {
+                let slot = table
+                    .get_mut(*state)
+                    .ok_or_else(|| format!("{key} table has no state {state}"))?;
+                *slot = if key == "rotate" { rotate } else { mirror }.clone();
+            }
         }
         Ok(())
     }
@@ -2117,9 +2466,18 @@ impl<'a> Plan<'a> {
             } else {
                 block.shapes.as_ref()
             };
-            if let Some(shapes) = shapes {
-                let mut encoded = BTreeMap::new();
-                for (offset, shape) in shapes.iter().enumerate() {
+            // Occlusion: a state's declared shape, else its outline, else its template's copy.
+            let per_state: Vec<Option<VoxelShape>> = (0..block.order.len())
+                .map(|i| {
+                    (!collision)
+                        .then(|| block.lighting.occlusion_shape(i))
+                        .flatten()
+                        .or_else(|| shapes.map(|s| s[i].clone()))
+                })
+                .collect();
+            let mut encoded = BTreeMap::new();
+            for (offset, shape) in per_state.iter().enumerate() {
+                if let Some(shape) = shape {
                     let key: Vec<_> = shape
                         .boxes()
                         .iter()
@@ -2275,27 +2633,36 @@ impl<'a> Plan<'a> {
                         // order `states` numbers them in (`Rename::id`): a
                         // template state's combinations are one run, and the
                         // first of the run is where the template state maps.
-                        for (id, combo) in b.state_combinations() {
+                        for (i, (id, combo)) in b.state_combinations().enumerate() {
                             let mut state = list[id as usize].clone();
                             if let Some(slot) = state.get_mut("id") {
                                 *slot = Tag::String(b.decl.id.as_str().into());
                             }
-                            set_nbt_properties(&mut state, combo);
+                            if let Some(own) = b.declared.get(i) {
+                                if let Tag::Compound(c) = &mut state {
+                                    let mut properties = Compound::new();
+                                    for (k, v) in own {
+                                        properties.insert(
+                                            k.as_str().into(),
+                                            Tag::String(v.as_str().into()),
+                                        );
+                                    }
+                                    c.insert("properties".into(), Tag::Compound(properties));
+                                }
+                            } else {
+                                set_nbt_properties(&mut state, combo);
+                            }
                             list.push(state);
                         }
                     }
                 }
                 ("cached_shapes", Tag::IntArray(a)) if a.len() == self.states => {
                     for b in &self.blocks {
-                        // Parallel to `states`: every combination of a template
-                        // state keeps that state's shape.
-                        let mut copy = vec![0; b.order.len()];
-                        for (at, id) in b.rename.states.clone().enumerate() {
-                            for combination in 0..b.rename.fanout {
-                                copy[b.rename.row(at as u32, combination) as usize] =
-                                    a[id as usize];
-                            }
-                        }
+                        // Parallel to `states`: each state keeps its template state's shape.
+                        let copy: Vec<i32> = b
+                            .state_combinations()
+                            .map(|(id, _)| a[id as usize])
+                            .collect();
                         a.extend(copy);
                     }
                 }
@@ -3228,7 +3595,11 @@ pub fn build(
     tables(base, &plan, &overlay, &jobs)?;
     // Mod files, and every tag addition gathered per tag file.
     let mut tags: BTreeMap<String, TagMerge> = BTreeMap::new();
-    let mut warnings = Vec::new();
+    let mut warnings: Vec<String> = plan
+        .skipped
+        .iter()
+        .map(|e| format!("block left out: {e}"))
+        .collect();
     let mut worldgen: BTreeMap<&str, Vec<(String, String)>> = BTreeMap::new();
     let mut additions: BTreeMap<&str, Vec<Addition>> = BTreeMap::new();
     let mut modifiers = Vec::new();
@@ -3460,8 +3831,14 @@ pub fn build(
     }
     // A block without its own blockstate looks like its template, so every
     // state still has a model.
+    let built: BTreeSet<&str> = plan.blocks.iter().map(|b| b.decl.id.as_str()).collect();
     for m in mods {
-        for block in &m.content.blocks {
+        for block in m
+            .content
+            .blocks
+            .iter()
+            .filter(|b| built.contains(b.id.as_str()))
+        {
             let (ns, path) = block.id.split_once(':').unwrap_or((&m.id, &block.id));
             let own = format!("assets/{ns}/blockstates/{path}.json");
             if m.content.files.contains(&own) {
@@ -3469,7 +3846,12 @@ pub fn build(
             }
             let template = block.template.trim_start_matches("minecraft:");
             let vanilla = base.join(format!("assets/minecraft/blockstates/{template}.json"));
-            overlay.write(&own, &fs::read(&vanilla)?)?;
+            match fs::read(&vanilla) {
+                Ok(bytes) => overlay.write(&own, &bytes)?,
+                Err(e) => {
+                    warnings.push(format!("{}: no blockstate from {template}: {e}", block.id))
+                }
+            }
         }
     }
     overlay.write(MARKER, &serde_json::to_vec(&namespaces)?)?;
