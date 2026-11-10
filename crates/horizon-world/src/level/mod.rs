@@ -563,8 +563,15 @@ pub trait LevelAccess {
         _destroy: &[BlockPos],
     ) {
     }
-    /// Observe a committed `Level.setBlock` state change, before its side effects.
-    fn observe_block_changed(&self, _pos: BlockPos, _old: BlockStateId, _new: BlockStateId) {}
+    /// Observe a committed `Level.setBlock` state change with its update flags, before its side effects.
+    fn observe_block_changed(
+        &self,
+        _pos: BlockPos,
+        _old: BlockStateId,
+        _new: BlockStateId,
+        _flags: i32,
+    ) {
+    }
     /// NeoForge's `NeighborNotifyEvent`: the block at `pos` is about to tell
     /// its neighbours it changed (`ServerLevel.updateNeighborsAt`, or
     /// `updateNeighborsAtExceptFromFacing` with the side it skips). True
@@ -1600,6 +1607,15 @@ impl Behaviours {
         pos: BlockPos,
     ) -> bool {
         self.sim(level, ticks).has_neighbor_signal(pos)
+    }
+    pub fn signal<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        direction: Direction,
+    ) -> i32 {
+        self.sim(level, ticks).signal(pos, direction)
     }
     pub fn best_neighbor_signal<L: LevelAccess + ?Sized>(
         &self,

@@ -1042,7 +1042,7 @@ impl LevelAccess for GameLevel<'_> {
             self.world.block_entities.insert(key, entity);
         }
     }
-    fn observe_block_changed(&self, pos: BlockPos, old: BlockStateId, new: BlockStateId) {
+    fn observe_block_changed(&self, pos: BlockPos, old: BlockStateId, new: BlockStateId, _: i32) {
         if self.native_authoritative {
             self.native_block_changed(self.dimension, pos, old, new);
         }
