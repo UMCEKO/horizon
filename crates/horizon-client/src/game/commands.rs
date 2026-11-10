@@ -536,7 +536,7 @@ impl Game<'_> {
             _ => None,
         };
         conn.and_then(|c| self.command_guest(c))
-            .map_or(self.dim, |g| Dim::from_id(&g.dimension))
+            .map_or(self.dim, |g| Dim::builtin_or_overworld(&g.dimension))
     }
     pub(super) fn target_position(&self, t: Target) -> Option<[f64; 3]> {
         match t {
@@ -2122,7 +2122,7 @@ impl Game<'_> {
         // into another level), after the command.
         let source_level = match self.command_source.and_then(|s| s.level) {
             Some(level) => level,
-            None if self.source_entity().is_none() => super::Dim::Overworld,
+            None if self.source_entity().is_none() => super::Dim::OVERWORLD,
             None => self.dim,
         };
         let target_name = (targets.len() == 1).then(|| {

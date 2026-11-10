@@ -398,7 +398,7 @@ impl Game<'_> {
                 .guests
                 .iter()
                 .find(|g| g.placed && !g.dead && g.uuid == uuid)
-                .map(|g| (g.conn, Dim::from_id(&g.dimension)))
+                .map(|g| (g.conn, Dim::builtin_or_overworld(&g.dimension)))
         }) else {
             return false;
         };

@@ -269,7 +269,7 @@ impl WorldRequest {
             &level.enabled_features,
         );
         overrides.validate_fill_layers(pack.assets.registry)?;
-        let dim = Dim::from_id(&level.dimension);
+        let dim = Dim::builtin_or_overworld(&level.dimension);
         let shapes = level_shapes(&save_root, res.biomes());
         let shape = shapes.get(dim.id());
         let streaming_step = startup::step("world.make_streaming");
@@ -289,10 +289,8 @@ impl WorldRequest {
         let mut world = World::new(res.facts().air, level.seed);
         world.attachments = save.load_attachments();
         world.shape = shape;
-        world.fast_lava = horizon_world::dimension_type::DimensionFacts::of_builtin_level(
-            horizon_core::LevelKey::builtin_or_overworld(dim.id()),
-        )
-        .fast_lava;
+        world.fast_lava =
+            horizon_world::dimension_type::DimensionFacts::of_builtin_level(dim).fast_lava;
         world.game_time = level.time;
         world.day_time = options.time.unwrap_or(level.day_time);
         world.end_clock = level.end_clock.unwrap_or(level.time);
@@ -725,7 +723,7 @@ pub(super) fn make_streaming(
         horizon_client::save::dimension_dir(world_root, dim.id()),
         shape,
     ));
-    if dim == Dim::End {
+    if dim == Dim::END {
         // Migrate before any chunk reader can cache the old block entities. A side file it
         // can't read stays where it is and costs only its old exits: the End still opens.
         if let Err(e) = save.migrate_end_gateway_exits() {
@@ -741,7 +739,7 @@ pub(super) fn make_streaming(
         enabled_features,
     );
     let mut locator = None;
-    let flat = (dim == Dim::Overworld)
+    let flat = (dim == Dim::OVERWORLD)
         .then(|| horizon_client::save::world_gen_settings(world_root))
         .flatten()
         .and_then(|s| {
@@ -753,7 +751,7 @@ pub(super) fn make_streaming(
             )
         });
     // `DebugLevelSource`: the overworld of the Debug preset.
-    let debug = (dim == Dim::Overworld)
+    let debug = (dim == Dim::OVERWORLD)
         .then(|| horizon_client::save::world_gen_settings(world_root))
         .flatten()
         .and_then(|s| {
@@ -769,7 +767,7 @@ pub(super) fn make_streaming(
     // even when automatic structure starts are disabled.
     let automatic_structures =
         horizon_client::save::WorldGen::read(world_root).is_none_or(|w| w.structures);
-    let flat_settings = (dim == Dim::Overworld)
+    let flat_settings = (dim == Dim::OVERWORLD)
         .then(|| horizon_client::save::world_gen_settings(world_root))
         .flatten()
         .and_then(|s| horizon_client::flatgen::FlatTerrain::pipeline_settings(&s));
@@ -856,7 +854,7 @@ pub(super) fn make_streaming(
             pack.context_with(biomes.clone()),
             res.threads(),
         )
-    } else if options.test_terrain && dim == Dim::Overworld {
+    } else if options.test_terrain && dim == Dim::OVERWORLD {
         let inner = Arc::new(TestTerrain::new(pack.assets.registry, res.biomes())?);
         Streaming::new(
             Arc::new(Persistent {
@@ -889,14 +887,14 @@ pub(super) fn make_streaming(
         let inner = Arc::new(inner);
         // The first mob a fresh chunk generates needs the mob data: read it now,
         // off the server's tick (#13857). The End's chunks generate none.
-        if dim != Dim::End {
+        if dim != Dim::END {
             inner.load_structure_mobs_behind();
         }
-        if dim == Dim::Overworld && structures {
+        if dim == Dim::OVERWORLD && structures {
             inner.search_rings_behind();
         }
         // Chunks an older version saved: the new chunks around them blend in.
-        if dim == Dim::Overworld {
+        if dim == Dim::OVERWORLD {
             let old = Arc::new(horizon_client::old_world::SavedOldWorld::new(
                 save.clone(),
                 pack.assets.clone(),
@@ -943,9 +941,7 @@ pub(super) fn make_streaming(
         .horizon
         .leaf_culling_effective(&settings.resource_packs);
     streaming.biome_zoom = BiomeZoom::new(obfuscate_seed(seed));
-    let facts = horizon_world::dimension_type::DimensionFacts::of_builtin_level(
-        horizon_core::LevelKey::builtin_or_overworld(dim.id()),
-    );
+    let facts = horizon_world::dimension_type::DimensionFacts::of_builtin_level(dim);
     streaming.sky_light = facts.height.has_skylight;
     streaming.nether_shading =
         facts.cardinal_light == horizon_world::dimension_type::CardinalLight::Nether;

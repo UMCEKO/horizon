@@ -543,6 +543,7 @@ use horizon_client::{
     vanillagen::VanillaTerrain,
     world::World,
 };
+use horizon_core::level_key::LevelKey as Dim;
 use horizon_core::{
     biome::{BiomeZoom, obfuscate_seed},
     geometry::{Aabb, Direction},
@@ -3156,37 +3157,6 @@ struct Game<'a> {
     /// The local player as a model (third person, the inventory).
     player_model: Option<Mob>,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum Dim {
-    Overworld,
-    Nether,
-    End,
-}
-impl Dim {
-    fn id(self) -> &'static str {
-        match self {
-            Self::Overworld => "minecraft:overworld",
-            Self::Nether => "minecraft:the_nether",
-            Self::End => "minecraft:the_end",
-        }
-    }
-    fn from_id(id: &str) -> Self {
-        match id {
-            "minecraft:the_nether" => Self::Nether,
-            "minecraft:the_end" => Self::End,
-            _ => Self::Overworld,
-        }
-    }
-    /// The level's shape in a world of vanilla's dimension types.
-    fn shape(self) -> horizon_client::save::LevelShape {
-        use horizon_client::save::LevelShape;
-        match self {
-            Self::Overworld => LevelShape::OVERWORLD,
-            Self::Nether => LevelShape::NETHER,
-            Self::End => LevelShape::END,
-        }
-    }
-}
 fn death_drops(
     inventory: &mut [Option<ItemStack>],
     offhand: &mut Option<ItemStack>,
@@ -3326,22 +3296,18 @@ fn camera_rotation(camera_type: perspective::CameraType, yaw: f32, pitch: f32) -
     )
 }
 impl Game<'_> {
-    /// `Level.canHaveWeather`, from the level's dimension type (sky light, no
-    /// ceiling) and the End, which vanilla names by id. Every rain, thunder
-    /// and lightning rule asks this, never the dimension's id.
-    fn level_key(&self) -> horizon_core::LevelKey {
-        horizon_core::LevelKey::builtin_or_overworld(self.dim.id())
+    /// The level in place, as a key.
+    fn level_key(&self) -> Dim {
+        self.dim
     }
     fn dimension_type(&self) -> &'static horizon_world::dimension_type::DimensionFacts {
-        horizon_world::dimension_type::DimensionFacts::of_builtin_level(self.level_key())
+        horizon_world::dimension_type::DimensionFacts::of_builtin_level(self.dim)
     }
     fn dimension_type_of(
         &self,
         dim: Dim,
     ) -> &'static horizon_world::dimension_type::DimensionFacts {
-        horizon_world::dimension_type::DimensionFacts::of_builtin_level(
-            horizon_core::LevelKey::builtin_or_overworld(dim.id()),
-        )
+        horizon_world::dimension_type::DimensionFacts::of_builtin_level(dim)
     }
     fn eye_position(&self) -> Option<[f64; 3]> {
         let p = self.player.as_ref()?;
@@ -3660,7 +3626,7 @@ impl Game<'_> {
         let (rain, thunder) = self.world.weather.levels(1.0);
         // Level.canHaveWeather: sky light, no ceiling and not the End.
         let weather =
-            self.world.shape.sky_light && !self.world.shape.has_ceiling && self.dim != Dim::End;
+            self.world.shape.sky_light && !self.world.shape.has_ceiling && self.dim != Dim::END;
         horizon_world::loot::NativeLootPlace {
             origin: Some(origin),
             block_entity,
@@ -3835,11 +3801,7 @@ impl Game<'_> {
             .lan_acting
             .is_some()
             .then(|| self.lan_building_boxes.boxes(self.dim));
-        let dimension = match self.dim {
-            Dim::Overworld => LevelDimension::Overworld,
-            Dim::Nether => LevelDimension::Nether,
-            Dim::End => LevelDimension::End,
-        };
+        let dimension = LevelDimension::of_level(self.dim);
         let rules = self.level_rules();
         let fire_players: Vec<[f64; 3]> = self
             .player
@@ -5315,7 +5277,7 @@ impl Game<'_> {
     }
     /// A column whose surface is a full solid, non-fluid, non-leaf block open to the sky.
     fn land_column(&self, x: i32, z: i32) -> Option<i32> {
-        if self.dim == Dim::Nether {
+        if self.dim == Dim::NETHER {
             // Below the bedrock ceiling: a solid floor with two air blocks above.
             for y in (32..120).rev() {
                 let floor = self.res.facts().get(self.world.block(x, y - 1, z));
@@ -7404,7 +7366,7 @@ impl Game<'_> {
             locator,
             owner_migration,
         } = prepared;
-        let dim = Dim::from_id(&level.dimension);
+        let dim = Dim::builtin_or_overworld(&level.dimension);
         self.level_shapes = shapes;
         self.world_root = save_root.clone();
         self.owner_migration = owner_migration;
@@ -9226,12 +9188,7 @@ impl Game<'_> {
                     horizon_world::dimension_type::Skybox::End => 2,
                     horizon_world::dimension_type::Skybox::None => 0,
                 },
-                dimension: match self.dim {
-                    Dim::Overworld => "minecraft:overworld",
-                    Dim::Nether => "minecraft:the_nether",
-                    Dim::End => "minecraft:the_end",
-                }
-                .to_owned(),
+                dimension: self.dim.id().to_owned(),
                 player: self.player.as_ref().map_or(camera.to_array(), |p| {
                     [p.position.x, p.position.y, p.position.z]
                 }),
@@ -9695,7 +9652,7 @@ impl Game<'_> {
                 .get("environment/end_sky")
                 .map(|r| [r.u0, r.v0, r.u1, r.v1]),
             boss_world_fog: self.boss_overlay.should_create_world_fog(),
-            environment_fog: (self.dim == Dim::Nether).then_some((sky.fog_start, sky.fog_end)),
+            environment_fog: (self.dim == Dim::NETHER).then_some((sky.fog_start, sky.fog_end)),
             cave_culling,
             water_fog,
             fog: Some(self.frame_fog(camera, &sky, biome, water_fog)),
@@ -11698,7 +11655,7 @@ impl<'a> Game<'a> {
             sleep_timer: 0,
             player_beds: Vec::new(),
             sleep_seen: (0, 0),
-            dim: Dim::Overworld,
+            dim: Dim::OVERWORLD,
             world_root: PathBuf::new(),
             owner_migration: None,
             world_flat: false,

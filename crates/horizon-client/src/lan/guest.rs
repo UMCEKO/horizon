@@ -456,6 +456,10 @@ pub struct Guest {
 }
 
 impl Guest {
+    /// The level the player is in, as a key.
+    pub fn level(&self) -> horizon_core::LevelKey {
+        horizon_core::LevelKey::builtin_or_overworld(&self.dimension)
+    }
     pub fn new(j: Joined, entity_id: i32, position: [f64; 3], view_distance: i32) -> Self {
         Self {
             conn: j.conn,

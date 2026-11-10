@@ -2471,7 +2471,7 @@ fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
 /// the overworld (`MinecraftServer.createCommandSourceStack` uses
 /// `overworld()`), so None when it already is.
 fn console_level(active: super::Dim) -> Option<super::Dim> {
-    (active != super::Dim::Overworld).then_some(super::Dim::Overworld)
+    (active != super::Dim::OVERWORLD).then_some(super::Dim::OVERWORLD)
 }
 
 #[cfg(test)]
@@ -2490,9 +2490,9 @@ mod tests {
     #[test]
     fn console_commands_run_in_the_overworld() {
         use super::super::Dim;
-        assert_eq!(super::console_level(Dim::Nether), Some(Dim::Overworld));
-        assert_eq!(super::console_level(Dim::End), Some(Dim::Overworld));
-        assert_eq!(super::console_level(Dim::Overworld), None);
+        assert_eq!(super::console_level(Dim::NETHER), Some(Dim::OVERWORLD));
+        assert_eq!(super::console_level(Dim::END), Some(Dim::OVERWORLD));
+        assert_eq!(super::console_level(Dim::OVERWORLD), None);
     }
 
     /// `BanIpCommands.banIp`: the info line names the affected players, one or several, and is
