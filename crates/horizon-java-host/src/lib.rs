@@ -19,7 +19,7 @@ use jni::sys::{jint, jvalue};
 use jni::{InitArgsBuilder, JNIEnv, JNIVersion, JavaVM, NativeMethod};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::ffi::{CString, c_void};
+use std::ffi::{CString, OsStr, c_void};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, OnceLock};
@@ -132,11 +132,11 @@ fn libjvm(home: &Path) -> PathBuf {
 }
 
 /// Starts the JVM `horizon-java.args` in `run_dir` names, opening that JDK's `libjvm` by path.
-pub fn create_vm(run_dir: &str) -> Result<(JavaVM, RunArgs), String> {
-    let file = format!("{run_dir}/horizon-java.args");
-    let text = std::fs::read_to_string(&file).map_err(|e| format!("{file}: {e}"))?;
+pub fn create_vm(run_dir: &Path) -> Result<(JavaVM, RunArgs), String> {
+    let file = run_dir.join("horizon-java.args");
+    let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
     let host = std::env::var("HORIZON_JAVA_HOST_JAR").ok();
-    let run = RunArgs::parse(Path::new(run_dir), &text, host.as_deref())?;
+    let run = RunArgs::parse(run_dir, &text, host.as_deref())?;
     let home = &run.java;
     let major = java_major(home)?;
     if major < 25 {
@@ -400,10 +400,10 @@ static FACTS: OnceLock<PathBuf> = OnceLock::new();
 static WINDOW: OnceLock<bool> = OnceLock::new();
 
 static RUNNING: LazyLock<Boot> = LazyLock::new(|| {
-    let Ok(run_dir) = std::env::var("HORIZON_JAVA_RUN") else {
+    let Some(run_dir) = run_dir() else {
         return Boot::Off;
     };
-    let booted = std::panic::catch_unwind(|| boot(&run_dir)).unwrap_or_else(|panic| {
+    let booted = std::panic::catch_unwind(|| boot(run_dir)).unwrap_or_else(|panic| {
         let text = panic
             .downcast_ref::<String>()
             .cloned()
@@ -419,7 +419,7 @@ static RUNNING: LazyLock<Boot> = LazyLock::new(|| {
     }
 });
 
-fn boot(run_dir: &str) -> Result<Host, String> {
+fn boot(run_dir: &Path) -> Result<Host, String> {
     let began = std::time::Instant::now();
     let (vm, run) = create_vm(run_dir)?;
     let (server_group, entry) = {
@@ -511,9 +511,45 @@ pub fn start(bridges: Vec<bridge::Bridge>, facts: PathBuf, window: bool) {
     }
 }
 
-/// Whether this run has Java mods (`HORIZON_JAVA_RUN`), booted or not.
+static RUN: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+/// Jars every run folder's `mods/` holds that are Horizon's own, not a mod.
+const OWN_JARS: [&str; 2] = ["horizon-java-boot.jar", "horizon-java-plugin.jar"];
+
+/// The launcher finds this in a game build that supports Java mods.
+#[used]
+pub static SUPPORT_MARK: [u8; 25] = *b"horizon-java-mods-support";
+
+/// The run folder this process's Java mods start from; set once, at startup, before `start`.
+pub fn set_run(dir: Option<PathBuf>) {
+    let _ = RUN.set(dir);
+}
+
+/// The Java mods' run folder, when this process has Java mods.
+pub fn run_dir() -> Option<&'static Path> {
+    RUN.get().and_then(|run| run.as_deref())
+}
+
+/// Whether this process has Java mods, booted or not.
 pub fn configured() -> bool {
-    std::env::var_os("HORIZON_JAVA_RUN").is_some()
+    run_dir().is_some()
+}
+
+/// Whether `run`'s `mods/` holds a jar that isn't Horizon's own.
+pub fn has_mods(run: &Path) -> bool {
+    std::fs::read_dir(run.join("mods")).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.ends_with(".jar") && !OWN_JARS.contains(&name.as_ref())
+        })
+    })
+}
+
+/// The run folder of a launch: `--java-mods` wins over `HORIZON_JAVA_RUN`; a relative path is taken from `cwd`.
+pub fn resolve_run(flag: Option<&Path>, env: Option<&OsStr>, cwd: &Path) -> Option<PathBuf> {
+    flag.or_else(|| env.filter(|v| !v.is_empty()).map(Path::new))
+        .map(|run| cwd.join(run))
 }
 
 /// The running host, once the mods have loaded (this waits for them); None when this run has no Java mods or their boot failed.
@@ -962,6 +998,42 @@ impl Drop for Nesting {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run_with_mods(jars: &[&str]) -> PathBuf {
+        let run = std::env::temp_dir().join(format!(
+            "horizon-java-run-{}-{}",
+            std::process::id(),
+            jars.join("+")
+        ));
+        let _ = std::fs::remove_dir_all(&run);
+        std::fs::create_dir_all(run.join("mods")).unwrap();
+        for jar in jars {
+            std::fs::write(run.join("mods").join(jar), b"").unwrap();
+        }
+        run
+    }
+
+    #[test]
+    fn only_a_jar_that_is_not_horizons_own_is_a_mod() {
+        let none =
+            std::env::temp_dir().join(format!("horizon-java-run-{}-empty", std::process::id()));
+        assert!(!has_mods(&none));
+        let own = ["horizon-java-boot.jar", "horizon-java-plugin.jar"];
+        assert!(!has_mods(&run_with_mods(&own)));
+        assert!(has_mods(&run_with_mods(&[own[0], own[1], "jei.jar"])));
+        assert!(!has_mods(&run_with_mods(&[own[0], own[1], "notes.txt"])));
+    }
+
+    #[test]
+    fn the_flag_wins_and_a_relative_run_is_taken_from_the_working_folder() {
+        let (a, b, w) = (Path::new("/a"), OsStr::new("/b"), Path::new("/w"));
+        assert_eq!(resolve_run(Some(a), Some(b), w), Some(PathBuf::from("/a")));
+        assert_eq!(
+            resolve_run(None, Some(OsStr::new("b")), w),
+            Some(PathBuf::from("/w/b"))
+        );
+        assert_eq!(resolve_run(None, None, w), None);
+    }
 
     const ARGS: &str =
         "java /j\nhost /h.jar\ndist client\ncp /a.jar:/b.jar\njvm -Dx=1\nprog --fml.x\nprog 1\n";

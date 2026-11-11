@@ -775,6 +775,11 @@ pub fn on_java_link(hook: fn(JavaLink<'_>)) {
     let _ = JAVA_LINK.set(hook);
 }
 
+/// Whether this process installed its Java client's link.
+pub fn java_link_installed() -> bool {
+    JAVA_LINK.get().is_some()
+}
+
 /// Who a connection logged in as, for the Java client that joins with it.
 struct Who<'a> {
     profile: u128,

@@ -70,11 +70,17 @@ fn call(env: &mut JNIEnv, op: &str, arg: &str) -> String {
 
 fn main() {
     let t0 = Instant::now();
-    let run_dir = std::env::var("HORIZON_JAVA_RUN").unwrap();
+    let cwd = std::env::current_dir().unwrap();
+    horizon_java_host::set_run(horizon_java_host::resolve_run(
+        None,
+        std::env::var_os("HORIZON_JAVA_RUN").as_deref(),
+        &cwd,
+    ));
+    let run_dir = horizon_java_host::run_dir().expect("HORIZON_JAVA_RUN names the run folder");
     let ops: Vec<String> = std::env::args().skip(1).collect();
     let rss_before = status("VmRSS");
     let t = Instant::now();
-    let (vm, run) = create_vm(&run_dir).unwrap_or_else(|e| {
+    let (vm, run) = create_vm(run_dir).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(1)
     });

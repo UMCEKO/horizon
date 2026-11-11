@@ -46,6 +46,7 @@ pub struct Profiles {
 
 /// The lines of `horizon-java.args` for the client (`dedicated` false) or the server, led by the JDK home and the host jar.
 /// `assets` is the asset folder and its index id, used by the client only.
+#[allow(clippy::too_many_arguments)]
 pub fn args_lines(
     os: Os,
     dedicated: bool,
@@ -153,12 +154,8 @@ pub fn library_path_var(os: Os) -> &'static str {
     }
 }
 
-/// The environment the game needs for the Java mods of an install: the GL driver folder in front of `current`'s library path, and the run folder.
-pub fn launch_env(
-    os: Os,
-    run: &Path,
-    current: &dyn Fn(&str) -> Option<String>,
-) -> BTreeMap<String, String> {
+/// The environment the game needs for the Java mods of an install: the GL driver folder in front of `current`'s library path.
+pub fn launch_env(os: Os, current: &dyn Fn(&str) -> Option<String>) -> BTreeMap<String, String> {
     let var = library_path_var(os);
     let mut dirs: Vec<String> = Vec::new();
     if os == Os::Linux && Path::new("/run/opengl-driver/lib").is_dir() {
@@ -167,7 +164,6 @@ pub fn launch_env(
     dirs.extend(current(var).filter(|v| !v.is_empty()));
     let mut env = BTreeMap::new();
     env.insert(var.to_string(), joined(os, dirs));
-    env.insert("HORIZON_JAVA_RUN".into(), text(run));
     env
 }
 

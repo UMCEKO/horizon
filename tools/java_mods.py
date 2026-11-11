@@ -1190,16 +1190,17 @@ def launch_env(install, record, dedicated, base):
     env[library_path] = ':'.join(p for p in (drivers, base.get(library_path, '')) if p)
     for name in ('JAVA_HOME', 'HORIZON_JAVA_HOST_JAR'):
         env.pop(name, None)
-    env.update(HORIZON_NEOFORGE=record['neoforge'], HORIZON_JAVA_RUN=str(install / run_name(dedicated)))
+    env.pop('HORIZON_JAVA_RUN', None)
+    env.update(HORIZON_NEOFORGE=record['neoforge'])
     for name, folder in (('HORIZON_HOME', 'horizon'), ('HORIZON_LAUNCHER_HOME', 'launcher'), ('XDG_DATA_HOME', 'xdg-data'), ('XDG_CONFIG_HOME', 'xdg-config')):
         if not env.get(name):
             env[name] = str(install / 'home' / folder)
     return env
 
 
-def launch_command(game, record, game_args):
-    """The game's command line: the install's prepared resources unless the caller names theirs."""
-    command = [str(game)]
+def launch_command(game, record, run, game_args):
+    """The game's command line: the run folder first (the server's parser takes what follows `--dedicated`), and the install's prepared resources unless the caller names theirs."""
+    command = [str(game), '--java-mods', str(run)]
     if '--resources' not in game_args:
         command += ['--resources', record['resources']]
     return command + game_args
@@ -1221,7 +1222,7 @@ def launch(args, game_args):
     for name in ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME'):
         Path(env[name]).mkdir(parents=True, exist_ok=True)
     os.chdir(cwd)
-    os.execve(game, launch_command(game, record, game_args), env)
+    os.execve(game, launch_command(game, record, install / run_name(dedicated), game_args), env)
 
 
 def main():

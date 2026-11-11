@@ -2853,13 +2853,12 @@ fn client_program(tag: &str) -> PathBuf {
     dir.join(CLIENT)
 }
 
-pub fn server_command(tag: &str, folder: &Path) -> Command {
+fn game_command(tag: &str, folder: &Path) -> Command {
     let mut cmd = Command::new(version_dir(tag).join(CLIENT));
     crate::run_leases::mark(&mut cmd, &version_dir(tag));
     cmd.current_dir(folder)
         .arg("--resources")
-        .arg(resources(tag))
-        .args(["--dedicated", "--nogui"]);
+        .arg(resources(tag));
     cmd
 }
 
@@ -3148,6 +3147,17 @@ pub fn join_friend(cmd: &mut Command, code: &str) -> Result<(), String> {
 
 /// The dedicated server's command in `folder`, once prepared and the EULA is agreed to.
 pub fn server(tag: &str, folder: &Path, accept_eula: bool) -> Result<Command, String> {
+    let mut cmd = server_before_dedicated(tag, folder, accept_eula)?;
+    cmd.args(["--dedicated", "--nogui"]);
+    Ok(cmd)
+}
+
+/// `server`'s command before `--dedicated --nogui`, for arguments the game itself must read.
+pub fn server_before_dedicated(
+    tag: &str,
+    folder: &Path,
+    accept_eula: bool,
+) -> Result<Command, String> {
     if let Some(error) = game_architecture_launch_error(tag) {
         return Err(error);
     }
@@ -3159,7 +3169,7 @@ pub fn server(tag: &str, folder: &Path, accept_eula: bool) -> Result<Command, St
         return Err("Running a server needs your agreement to the Minecraft EULA (https://aka.ms/MinecraftEULA). Accept it to continue.".into());
     }
     fs::create_dir_all(folder).map_err(|e| e.to_string())?;
-    Ok(server_command(tag, folder))
+    Ok(game_command(tag, folder))
 }
 
 /// One release's notes: the tag given, or the newest.

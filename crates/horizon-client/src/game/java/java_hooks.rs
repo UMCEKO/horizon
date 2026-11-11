@@ -488,14 +488,33 @@ pub(super) fn java_hook_ready() -> Result<(), &'static str> {
 }
 
 /// The game's start: the JVM boots with the bridge table, and the protocol learns the mods' components; `window` when this process draws.
-pub(super) fn java_hook_start(window: bool) {
+pub(super) fn java_hook_start(java_mods: Option<&Path>, window: bool) -> std::io::Result<()> {
     #[cfg(feature = "java-mods")]
     {
-        super::java_content::start(super::java_bridges::bridges(), window);
-        super::java_components::install();
+        let run = horizon_java_host::resolve_run(
+            java_mods,
+            std::env::var_os("HORIZON_JAVA_RUN").as_deref(),
+            &std::env::current_dir()?,
+        )
+        .filter(|run| {
+            let has = horizon_java_host::has_mods(run);
+            if !has {
+                log::info!(
+                    "Horizon: no Java mods in {}: starting without Java",
+                    run.join("mods").display()
+                );
+            }
+            has
+        });
+        horizon_java_host::set_run(run);
+        if horizon_java_host::configured() {
+            super::java_content::start(super::java_bridges::bridges(), window);
+            super::java_components::install();
+        }
     }
     #[cfg(not(feature = "java-mods"))]
-    let _ = window;
+    let _ = (java_mods, window);
+    Ok(())
 }
 
 /// The loading screen's line while the Java mods boot.
