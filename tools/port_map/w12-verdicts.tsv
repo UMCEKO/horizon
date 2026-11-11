@@ -1,0 +1,22 @@
+DedicatedServerSettings.<init>	inline	crates/horizon-client/src/game/interface/dedicated/mod.rs::Game::store_property	w12-coverage: SPEC-20; server.properties read and stored
+DimensionStorageFileFix.makeFixer	skip:other		w12-coverage: upgrading pre-26.3 worlds
+GameTestServer.initServer	skip:debug		w12-coverage: gametest or datagen
+GuiGraphicsExtractor$ScissorStack.peek	inline	crates/horizon-client-render/src/screen_draw.rs::paint	w12-coverage: W5
+NetherFossilPieces$NetherFossilPiece.makeSettings	inline	crates/horizon-world/src/worldgen/structure/nether_fossil.rs::piece	w12-coverage: W10
+PoiType.is	inline	crates/horizon-client/src/mobs/villager_brain.rs::poi_at	w12-coverage: SPEC-14
+TagsProvider.run	skip:debug		w12-coverage: gametest or datagen
+TestCommand.verifyStructureExists	skip:debug		w12-coverage: gametest or datagen
+WoodlandMansionPieces$FirstFloorRoomCollection.get1x1	inline	crates/horizon-world/src/worldgen/structure/mansion.rs::room_name	w12-coverage: W10
+WoodlandMansionPieces$FirstFloorRoomCollection.get1x1Secret	inline	crates/horizon-world/src/worldgen/structure/mansion.rs::room_name	w12-coverage: W10
+WoodlandMansionPieces$FirstFloorRoomCollection.get1x2FrontEntrance	inline	crates/horizon-world/src/worldgen/structure/mansion.rs::room_name	w12-coverage: W10
+WoodlandMansionPieces$FirstFloorRoomCollection.get1x2Secret	inline	crates/horizon-world/src/worldgen/structure/mansion.rs::room_name	w12-coverage: W10
+WoodlandMansionPieces$FirstFloorRoomCollection.get1x2SideEntrance	inline	crates/horizon-world/src/worldgen/structure/mansion.rs::room_name	w12-coverage: W10
+WoodlandMansionPieces$FirstFloorRoomCollection.get2x2	inline	crates/horizon-world/src/worldgen/structure/mansion.rs::room_name	w12-coverage: W10
+WoodlandMansionPieces$FirstFloorRoomCollection.get2x2Secret	inline	crates/horizon-world/src/worldgen/structure/mansion.rs::room_name	w12-coverage: W10
+WoodlandMansionPieces$MansionPiecePlacer.createMansion	inline	crates/horizon-world/src/worldgen/structure/mansion.rs::Placer::create	w12-coverage: W10
+WoodlandMansionPieces$SecondFloorRoomCollection.get1x1	inline	crates/horizon-world/src/worldgen/structure/mansion.rs::room_name	w12-coverage: W10
+WoodlandMansionPieces$SecondFloorRoomCollection.get1x1Secret	inline	crates/horizon-world/src/worldgen/structure/mansion.rs::room_name	w12-coverage: W10
+WoodlandMansionPieces$SecondFloorRoomCollection.get1x2Secret	inline	crates/horizon-world/src/worldgen/structure/mansion.rs::room_name	w12-coverage: W10
+WoodlandMansionPieces$SecondFloorRoomCollection.get2x2	inline	crates/horizon-world/src/worldgen/structure/mansion.rs::room_name	w12-coverage: W10
+WoodlandMansionPieces$SecondFloorRoomCollection.get2x2Secret	inline	crates/horizon-world/src/worldgen/structure/mansion.rs::room_name	w12-coverage: W10
+WoodlandMansionPieces$WoodlandMansionPiece.makeLocation	inline	crates/horizon-world/src/worldgen/structure/mansion.rs::Placer::add	w12-coverage: W10

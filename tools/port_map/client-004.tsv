@@ -153,3 +153,8 @@ TropicalFishRenderer.setupRotations	inline	crates/horizon-client/src/mobs/aquati
 TurtleRenderer.getShadowRadius	inline	crates/horizon-client/src/shadows.rs::mob_shadow_radius	the same path, with the turtle's 0.3 age factor and its 0.83 renderer factor
 TurtleRenderer.extractRenderState	port	crates/horizon-client/src/mobs/body_anim.rs::turtle	on-land, laying and egg states
 VexRenderer.extractRenderState	port	crates/horizon-client/src/mobs/vex.rs::anim	charging pose; held item in mobs/render.rs::hand_base
+Entity.isInvulnerable	inline	crates/horizon-client/src/mobs.rs::Mob::is_invulnerable	w12-coverage: SPEC-9
+Entity.onBelowWorld	inline	crates/horizon-client/src/mobs/ai.rs::Mob::base_tick	w12-coverage: SPEC-9; checkBelowWorld's hurt
+Entity.onPassengerTurned	inline	crates/horizon-client/src/game/interface/perspective.rs::Game::turn_player	w12-coverage: SPEC-11; the boat's clampRotation
+Entity.syncData	skip:java		w12-coverage: java-already
+Entity.tick	inline	crates/horizon-client/src/game/entities/entity.rs::Game::tick_item_with_block_contacts	w12-coverage: SPEC-9

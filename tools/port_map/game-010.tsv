@@ -131,3 +131,4 @@ AbstractChestedHorse.readAdditionalSaveData	port	crates/horizon-client/src/entit
 AbstractChestedHorse.getSlot	missing		slot 499 (horse.chest) is not mapped for mobs, so /item replace entity ... horse.chest does nothing; the mob slot names Horizon resolves are the eight of loot::EQUIPMENT_SLOTS
 AbstractChestedHorse.equipChest	port	crates/horizon-client/src/game/mobs/mounts.rs::Game::interact_mount	tamed donkey or mule takes a held chest with the sound; llamas do it in game/mobs/llamas.rs interact_llama
 AbstractChestedHorse.playChestEquipsSound	inline	crates/horizon-client/src/game/mobs/mounts.rs::Game::interact_mount	entity.donkey.chest with the random pitch; llamas play entity.llama.chest in llama_sound
+PoiTypes.hasPoi	inline	crates/horizon-client/src/mobs/villager_brain.rs::poi_at	w12-coverage: SPEC-14

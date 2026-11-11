@@ -147,3 +147,4 @@ CreativeModeInventoryScreen.ItemPickerMenu.scrollTo	inline	crates/horizon-client
 CyclingSlotBackground	home	crates/horizon-client/src/game/blocks/stations.rs	CyclingSlot: an empty slot's icons advance every 30 ticks with a 4-tick fade
 DispenserScreen.init	inline	crates/horizon-client/src/game/blocks/machines/mod.rs::Game::draw_machine_screen	title centred
 DispenserScreen.extractBackground	port	crates/horizon-client/src/game/blocks/machines/mod.rs::Game::draw_machine_screen	
+AbstractContainerScreen.extractSlot	inline	crates/horizon-client/src/game/interface/inventory_slots.rs::Game::draw_slot_item	w12-coverage: W5

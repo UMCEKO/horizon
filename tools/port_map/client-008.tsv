@@ -113,3 +113,4 @@ VaultRenderer.extractRenderState	inline	crates/horizon-client/src/game/blocks/va
 VaultRenderer.submit	port	crates/horizon-client/src/game/blocks/vault.rs::Game::vault_geometry	item cluster at the vault centre with spin
 BlockEntityRenderState.extractBase	skip:java		copies position, state, light and crack progress; Horizon passes these as arguments
 BlockEntityRenderState.fillCrashReportCategory	skip:debug		crash report detail
+ChestRenderer.submit*	inline	crates/horizon-client-render/src/block_entity_render.rs::draw_part	w12-coverage: W1

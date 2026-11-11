@@ -148,3 +148,5 @@ StateHolder.setValueInternal	port	crates/horizon-world/src/registry.rs::BlockReg
 StateHolder.initializeNeighbors	skip:java		neighbour table built once in Java; Horizon resolves states by key (registry.rs state_key)
 StateHolder.getValues	skip:java		stream over the state's property values; Horizon iterates the name-keyed map
 StateHolder.codec	port	crates/horizon-client/src/game/world/persist.rs::Game::state_from_nbt	gap: minor: decodes Name and Properties; the write side is in the NBT writers
+TestInstanceBlockEntity.getStructureTemplate	skip:debug		w12-coverage: gametest or datagen
+TestInstanceBlockEntity.placeStructure	skip:debug		w12-coverage: gametest or datagen

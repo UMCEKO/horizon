@@ -147,3 +147,4 @@ EquipmentClientInfo.Builder.addMainHumanoidLayer	skip:java		builder
 EquipmentClientInfo.Builder.addLayers	skip:java		builder
 EquipmentClientInfo.Builder.replaceTrimPalette	skip:java		builder
 EquipmentClientInfo.Builder.build	skip:java		builder
+BlockStateDefinitions.<clinit>	skip:java		w12-coverage: java-client

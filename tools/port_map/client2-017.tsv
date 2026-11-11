@@ -137,3 +137,4 @@ TransferableSelectionList.PackEntry.shouldTakeFocusAfterInteraction	skip:ui		foc
 CraftingRecipeBookComponent.isCraftingSlot	missing		minor: unsure: no crafting-slot check found in the recipe book code
 CraftingRecipeBookComponent.fillGhostRecipe	port	crates/horizon-client/src/recipe_book.rs::Book::ghost	crafting branch: shaped recipes placed by place_cells, shapeless in order; result set first
 FurnaceRecipeBookComponent.fillGhostRecipe	port	crates/horizon-client/src/recipe_book.rs::Book::ghost	furnace branch: ingredient, and the fuel only when the fuel slot is empty (fuel_empty)
+KeyBindsList.<init>	inline	crates/horizon-client-render/src/options_ui.rs::key_pages	w12-coverage: W5

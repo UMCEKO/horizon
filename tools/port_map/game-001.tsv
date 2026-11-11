@@ -142,3 +142,4 @@ PlayerSpawnFinder.scheduleCandidate	port	crates/horizon-client/src/game/world/in
 SectionTracker.checkNeighborsAfterUpdate	inline	crates/horizon-client/src/game/mobs/raids/mod.rs::sections_to_village	its only subclass is the POI village distance: Chebyshev distance in sections, 7 when farther than 6
 SectionTracker.getComputedLevel	inline	crates/horizon-client/src/game/mobs/raids/mod.rs::sections_to_village	
 SectionTracker.computeLevelFromNeighbor	inline	crates/horizon-client/src/game/mobs/raids/mod.rs::sections_to_village	
+ChunkMap.anyPlayerCloseEnoughForSpawning	inline	crates/horizon-client/src/game/mobs/natural_spawning.rs::close_enough_for_spawning	w12-coverage: SPEC-14; also Game::portal_spawn

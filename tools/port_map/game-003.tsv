@@ -144,3 +144,4 @@ CombatTracker.getCombatDuration	skip:other		only feeds ClientboundPlayerCombatEn
 DamageSource.getLocalizedDeathMessage	port	crates/horizon-client/src/game/items/combat.rs::Game::combat_death_message_for	gap: minor: no .item variant when the killer holds a custom-named item
 DamageSource.isCreativePlayer	port	crates/horizon-world/src/damage_source.rs::DamageSource::creative_player	
 DamageSource.is	port	crates/horizon-world/src/damage_source.rs::DamageSource::in_tag	tag form; the key form is is_type
+SimpleContainer.setChanged	inline	crates/horizon-world/src/simple_container.rs::ContainerHooks::changed	w12-coverage: SPEC-17 unless SPEC-4 proves it inert

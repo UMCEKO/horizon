@@ -151,3 +151,8 @@ AbstractWidget.nextFocusPath	port	crates/horizon-client/src/game/interface/key_f
 AbstractWidget.isMouseOver	port	crates/horizon-client-render/src/screen_draw.rs::inside	gap: minor: isActive is checked by the caller
 AbstractWidget.narrationPriority	skip:other		narration only
 AbstractWidget.defaultButtonNarrationText	skip:other		narration only
+GuiGraphicsExtractor.<init>	inline	crates/horizon-client-render/src/screen_draw.rs::paint	w12-coverage: W5
+GuiGraphicsExtractor.containsPointInScissor	inline	crates/horizon-client-render/src/screen_draw.rs::paint	w12-coverage: W5
+Hud.extractAirBubbles	inline	crates/horizon-client-render/src/hud_layout.rs::HealthHud::air	w12-coverage: W5
+Hud.extractFoodLevel	inline	crates/horizon-client-render/src/hud_layout.rs::HealthHud::food	w12-coverage: W5
+Hud.extractRenderState	inline	crates/horizon-client/src/game.rs::Game::hud_layers	w12-coverage: W5

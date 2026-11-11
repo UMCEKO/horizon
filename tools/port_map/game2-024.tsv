@@ -146,3 +146,6 @@ WaypointTransmitter.EntityBlockConnection.isBroken	port	crates/horizon-client/sr
 WaypointTransmitter.EntityChunkConnection.connect	port	crates/horizon-client/src/lan/waypoints.rs::Tick::connect	-
 WaypointTransmitter.EntityChunkConnection.update	port	crates/horizon-client/src/lan/waypoints.rs::Tick::update	-
 WaypointTransmitter.EntityChunkConnection.isBroken	port	crates/horizon-client/src/lan/waypoints.rs::Tick::broken	-
+Scoreboard.onTeamAdded	inline	crates/horizon-client-core/src/scoreboard.rs::Scoreboard::add_team	w12-coverage: SPEC-6
+Scoreboard.onTeamRemoved	inline	crates/horizon-client-core/src/scoreboard.rs::Scoreboard::remove_team	w12-coverage: SPEC-6
+Scoreboard.removePlayerFromTeam	inline	crates/horizon-client-core/src/scoreboard.rs::Scoreboard::remove_from_team	w12-coverage: SPEC-6

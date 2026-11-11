@@ -143,3 +143,4 @@ EyeOfEnder.setItem	skip:ui		the item sprite a flying eye shows; Horizon draws th
 EyeOfEnder.shouldRenderAtSqrDistance	skip:ui		render distance culling only
 EyeOfEnder.spawnParticles	port	crates/horizon-client/src/game/world/end.rs::Game::eye_break_particles	the portal crumbs drawn in toward the eye
 EyeOfEnder.readAdditionalSaveData	missing		a flying eye of ender is not saved: `entity_nbt.rs` has no writer for it (nor `saved_with_chunk` a kind for it), so a save mid-flight loses it
+Player.getFlyingSpeed	inline	crates/horizon-world/src/player_travel.rs::flying_speed	w12-coverage: W4
