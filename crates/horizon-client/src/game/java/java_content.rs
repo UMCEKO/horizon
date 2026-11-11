@@ -13,7 +13,7 @@ use std::{
 };
 
 /// Bumped when carry writes something else from the same facts.
-const GENERATION: u32 = 3;
+const GENERATION: u32 = 4;
 const DONE: &str = "done";
 const FACTS_HASH: &str = "facts.sha256";
 const KEYS: &str = "keys.tsv";
@@ -170,6 +170,11 @@ fn generate(
         .or_else(|_| fs::copy(facts, &kept).map(drop))
         .map_err(|e| format!("{}: {e}", facts.display()))?;
     let kept_baked = partial.join("baked-models.json");
+    let textures = baked.with_extension("textures");
+    let kept_textures = kept_baked.with_extension("textures");
+    if textures.exists() {
+        copy_textures(&textures, &kept_textures)?;
+    }
     if baked.exists() {
         fs::rename(baked, &kept_baked)
             .or_else(|_| fs::copy(baked, &kept_baked).map(drop))
@@ -208,6 +213,12 @@ fn generate(
         &partial.join("mods"),
         &log,
     )?;
+    if kept_textures.exists() {
+        copy_textures(
+            &kept_textures,
+            &partial.join("mods/horizon_java_textures/carry"),
+        )?;
+    }
     fs::write(partial.join(DONE), "").map_err(|e| e.to_string())?;
     let _ = fs::remove_dir_all(dest);
     fs::rename(&partial, dest).map_err(|e| format!("{}: {e}", dest.display()))?;
@@ -302,12 +313,40 @@ fn classpath(run: &Path) -> Vec<PathBuf> {
 
 /// What the content is built from: the facts, and the baked models when the boot has them.
 fn boot_hash(facts: &Path, baked: &Path) -> Result<String, String> {
+    let mut textures = Vec::new();
+    let root = baked.with_extension("textures");
+    files_under(&root, &mut textures);
+    textures.sort();
+    let mut texture_hash = Sha256::new();
+    for path in textures {
+        texture_hash.update(
+            path.strip_prefix(&root)
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .as_bytes(),
+        );
+        texture_hash.update(file_hash(&path)?.as_bytes());
+    }
+    let texture_hash = format!("{:x}", texture_hash.finalize());
     let baked = if baked.exists() {
         file_hash(baked)?
     } else {
         "none".to_owned()
     };
-    Ok(format!("{} {baked}", file_hash(facts)?))
+    Ok(format!("{} {baked} {texture_hash}", file_hash(facts)?))
+}
+
+fn copy_textures(source: &Path, target: &Path) -> Result<(), String> {
+    let mut files = Vec::new();
+    files_under(source, &mut files);
+    for file in files {
+        let relative = file.strip_prefix(source).map_err(|e| e.to_string())?;
+        let dest = target.join(relative);
+        fs::create_dir_all(dest.parent().ok_or("texture export has no parent")?)
+            .map_err(|e| e.to_string())?;
+        fs::copy(&file, &dest).map_err(|e| format!("{}: {e}", file.display()))?;
+    }
+    Ok(())
 }
 
 fn file_hash(path: &Path) -> Result<String, String> {
@@ -427,6 +466,30 @@ mod tests {
         fs::create_dir_all(dir.join("res")).unwrap();
         fs::write(dir.join("res/items.json"), "{}").unwrap();
         dir
+    }
+
+    #[test]
+    fn captured_texture_pixels_survive_carry_and_invalidate_boot_cache() {
+        let dir = scratch("textures");
+        let facts = dir.join("facts.json");
+        let baked = dir.join("facts.baked.json");
+        fs::write(&facts, "{}").unwrap();
+        let absent = boot_hash(&facts, &baked).unwrap();
+        let source = baked.with_extension("textures");
+        let image = source.join("assets/horizon_java_textures/textures/gui/probe.png");
+        fs::create_dir_all(image.parent().unwrap()).unwrap();
+        fs::write(&image, [1, 2, 3, 4]).unwrap();
+        let present = boot_hash(&facts, &baked).unwrap();
+        assert_ne!(absent, present);
+        let target = dir.join("mods/horizon_java_textures/carry");
+        copy_textures(&source, &target).unwrap();
+        assert_eq!(
+            fs::read(target.join(image.strip_prefix(&source).unwrap())).unwrap(),
+            [1, 2, 3, 4]
+        );
+        fs::write(&image, [4, 3, 2, 1]).unwrap();
+        assert_ne!(present, boot_hash(&facts, &baked).unwrap());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

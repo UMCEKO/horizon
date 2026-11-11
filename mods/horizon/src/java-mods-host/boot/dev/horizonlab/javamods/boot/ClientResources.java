@@ -37,13 +37,14 @@ public final class ClientResources {
 
     /** Streams the code-built block states' baked quads to `out` as `BakedWriter` writes them, for the game's generated content; the set is dropped after. */
     static byte[] baked(Path out) throws IOException {
+        ResourceTextures.export(out.resolveSibling(out.getFileName().toString().replaceFirst("\\.[^.]+$", ".textures")));
         var states = bakeStates;
         bakeStates = java.util.Set.of();
-        if (states.isEmpty()) return new byte[0];
+        if (states.isEmpty()) return new byte[] {1};
         var models = Minecraft.getInstance().getModelManager().getBlockStateModelSet();
         var n = dev.horizonlab.facts.BakedWriter.write(out, models::get, states::contains);
         System.err.println("Horizon: baked " + n[0] + " blocks, " + n[1] + " states, " + n[2] + " quads for the content");
-        return new byte[0];
+        return new byte[] {1};
     }
 
     /** Writes the export, then frees the stitched pixels nothing reads again. */
