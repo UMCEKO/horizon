@@ -103,6 +103,8 @@ def report(folder, top=15, jfr=True):
         merge(calls, parse_rows(j.get("calls", "-")))
         merge(locks, parse_rows(j.get("lock", "-")))
         merge(events, parse_rows(j.get("ev", "-")))
+    dims = int(sum(num(j, "dims") for j in java))
+    out.append(f"dimension names sent to Java: {dims}")
     for s in server:
         merge(spans, parse_rows(s.get("spans", "-")))
     out += table("Java block entity types (ticker time)", STAT_HEADER, stat_lines(be, top))

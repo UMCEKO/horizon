@@ -3,7 +3,10 @@ use std::{
     cell::Cell,
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -46,6 +49,18 @@ pub fn jfr_options(dir: &Path) -> Vec<String> {
 }
 
 static CALLS: Mutex<Vec<(String, Stat)>> = Mutex::new(Vec::new());
+
+static DIMENSION_NAMES: AtomicU64 = AtomicU64::new(0);
+
+/// A dimension's name crossed to Java: once per level when it is created, never per call.
+pub fn record_dimension_name() {
+    DIMENSION_NAMES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The dimension names sent since the last take.
+pub fn take_dimension_names() -> u64 {
+    DIMENSION_NAMES.swap(0, Ordering::Relaxed)
+}
 
 thread_local! {
     static THREAD_NS: Cell<u64> = const { Cell::new(0) };
@@ -120,9 +135,12 @@ pub fn parse_stats(text: &str) -> HashMap<String, Stat> {
         .collect()
 }
 
-/// One line of `java-ticks.log`; `java` is the JVM's `be=... lock=...` text.
-pub fn java_line(unix_ms: u128, calls: Vec<(String, Stat)>, java: &str) -> String {
-    format!("t={unix_ms} calls={} {java}", format_stats(calls))
+/// One line of `java-ticks.log`; `java` is the JVM's `be=... lock=...` text, `dims` the dimension names sent.
+pub fn java_line(unix_ms: u128, calls: Vec<(String, Stat)>, dims: u64, java: &str) -> String {
+    format!(
+        "t={unix_ms} calls={} dims={dims} {java}",
+        format_stats(calls)
+    )
 }
 
 /// Appends a line to a log in the profile folder.
@@ -182,7 +200,7 @@ mod tests {
 
     #[test]
     fn a_java_line_has_the_call_rows_then_the_jvms() {
-        let line = java_line(5, vec![("x".into(), stat(2, 3, 2))], "be=- lock=-");
-        assert_eq!(line, "t=5 calls=x|2|3|2 be=- lock=-");
+        let line = java_line(5, vec![("x".into(), stat(2, 3, 2))], 0, "be=- lock=-");
+        assert_eq!(line, "t=5 calls=x|2|3|2 dims=0 be=- lock=-");
     }
 }

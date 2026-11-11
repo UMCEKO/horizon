@@ -55,8 +55,9 @@ impl Game<'_> {
         body: impl FnOnce(&mut Out),
         read: impl FnOnce(&mut In) -> Option<T>,
     ) -> Option<T> {
+        let key = self.java_level_key();
         let mut out = Out::default();
-        out.text(self.dim.id());
+        out.int(key as i32);
         out.long(self.world.game_time);
         out.int(kind);
         body(&mut out);
