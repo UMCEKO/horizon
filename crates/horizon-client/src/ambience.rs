@@ -529,7 +529,10 @@ mod tests {
         .unwrap();
         let tables = AmbientTables::load(dir.path());
         assert_eq!(
-            tables.get("minecraft:overworld", "modns:b").r#loop.as_deref(),
+            tables
+                .get("minecraft:overworld", "modns:b")
+                .r#loop
+                .as_deref(),
             Some("minecraft:ambient.crimson_forest.loop")
         );
     }

@@ -768,6 +768,8 @@ public final class ClientBridge {
                 case CAMERA -> {
                     var cam = new WorldFrame.Cam(in.readDouble(), in.readDouble(), in.readDouble(), in.readFloat(), in.readFloat(), in.readFloat(), in.readFloat());
                     WorldFrame.camera(cam);
+                    int type = Math.max(0, Math.min(2, in.readByte()));
+                    if (type != minecraft.options.getCameraType().ordinal()) minecraft.options.setCameraType(net.minecraft.client.CameraType.values()[type]);
                     var block = BlockPos.containing(cam.x(), cam.y(), cam.z());
                     if (!block.equals(cameraBlock)) {
                         cameraBlock = block;

@@ -2129,8 +2129,10 @@ mod tests {
         }
         let assets = crate::assets::Assets::load(&root).unwrap();
         let facts = BlockFacts::load(&root, assets.registry).unwrap();
-        let biomes = Biomes::load(&crate::resource_source::ResourceRoot::directory(root.clone()))
-            .unwrap();
+        let biomes = Biomes::load(&crate::resource_source::ResourceRoot::directory(
+            root.clone(),
+        ))
+        .unwrap();
         let collision = crate::collisions::load(&root, assets.registry).unwrap();
         let tables = AnimateTables::load(&root, assets.registry, &biomes).unwrap();
         let torch = assets.registry.default_state("minecraft:torch").unwrap();

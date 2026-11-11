@@ -13,7 +13,12 @@ use std::{
 fn digest(render: &RenderAssets) -> u64 {
     let mut h = DefaultHasher::new();
     render.pixels.get().hash(&mut h);
-    (render.sprite_size, &render.sprite_layout, render.texture_layers).hash(&mut h);
+    (
+        render.sprite_size,
+        &render.sprite_layout,
+        render.texture_layers,
+    )
+        .hash(&mut h);
     render.sprite_layers.hash(&mut h);
     render.translucent_layers.hash(&mut h);
     format!("{:?}", render.sprite_mips).hash(&mut h);
