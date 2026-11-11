@@ -112,6 +112,8 @@ pub struct EntityMemory {
     /// lookup from the call on, taken out of their lists at the next sweep of
     /// departed entities. Mobs go at once and never wait here.
     pub(super) removals: Vec<super::commands::Target>,
+    /// Why announced entities about to go leave, stamped where it is known (`stamp_leave`).
+    pub(super) leaving: Vec<(u32, super::native_entities::Removal)>,
 }
 
 impl EntityMemory {
@@ -2137,7 +2139,7 @@ impl Game<'_> {
             });
             self.orbs.retain(|o| !gone(o.position));
             // Unloaded with their chunk: PersistentEntitySectionManager.stopTracking.
-            self.native_leaves_flush();
+            self.native_leaves_flush_as(super::native_entities::Removal::UnloadedToChunk);
             // the ones saved with the chunk go with it (a trident too, unsaved).
             self.creatures.projectiles.retain(|p| {
                 let leaves = entity_nbt::saved_with_chunk(p) || p.arrow.is_some();
@@ -2147,6 +2149,7 @@ impl Game<'_> {
             self.rockets.retain(|r| !gone(r.position));
             self.tridents.retain(|t| !gone(t.position));
             self.tnts.retain(|t| !gone(t.position));
+            self.native_leaves_flush_as(super::native_entities::Removal::UnloadedToChunk);
             self.persist
                 .anon
                 .retain(|_, (at, _)| !keys.contains(&chunk_of(*at)));

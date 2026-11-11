@@ -877,6 +877,10 @@ impl Game<'_> {
         self.java_apply_effects(&mut reply);
         self.java_drain_block_events();
         self.java_chunks_full(&joined);
+        // A level's entities load after the server's start: the ones native loaded earlier join now.
+        if behind {
+            self.java_entities_catch_up();
+        }
     }
 
     /// `MinecraftServer.stopServer`'s first step: `ServerStopping`, before the players leave.
@@ -1236,6 +1240,11 @@ struct JavaServer {
     levels: std::collections::HashSet<u32>,
     /// The keys of the levels Java holds a `ServerLevel` for.
     known: std::collections::HashSet<u32>,
+}
+
+/// Whether Java's server has started on this thread.
+pub(super) fn java_server_started() -> bool {
+    JAVA_SERVER.with_borrow(|s| s.started)
 }
 
 thread_local! {

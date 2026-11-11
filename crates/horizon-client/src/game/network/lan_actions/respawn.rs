@@ -15,6 +15,7 @@ impl Game<'_> {
             return;
         }
         let uuid = host.hub.guests[i].uuid;
+        let dead_in = host.hub.guests[i].dimension.clone();
         // PlayerList.respawn replaces the player, retaining only opted-in data.
         if let Some(attachments) = self
             .lan
@@ -25,6 +26,9 @@ impl Game<'_> {
             attachments.replace_contents(copy);
         }
         self.reinitialize_server_player(uuid, conn);
+        // `removePlayerImmediately(DISCARDED)`: the dead player leaves its level.
+        let discarded = crate::game::native_entities::Removal::Discarded;
+        self.java_hook_player_level(uuid, &dead_in, false, discarded);
         // PlayerList.respawn removes the dead player (Player.remove).
         self.guest_drop_carried(i);
         // AbstractContainerScreen.tick / ServerPlayer.closeContainer: the dead
@@ -280,6 +284,9 @@ impl Game<'_> {
             return;
         };
         let (respawned, name) = (host.hub.guests[i].uuid, host.hub.guests[i].name.clone());
+        // `addRespawnedPlayer`, before PlayerRespawnEvent.
+        let added = crate::game::native_entities::Removal::Discarded;
+        self.java_hook_player_level(respawned, level.id(), true, added);
         self.as_guest(conn, |g| g.native_player_respawned(respawned, &name));
         // The player left another level for the respawn point's: placed for
         // good they tell the mods now, else the trip that is still carrying

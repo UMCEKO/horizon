@@ -377,12 +377,17 @@ impl Game<'_> {
     /// Whether entity `id` may take `plan`'s portal: the rule on entering its
     /// dimension, then the mods (`entity_travel_to_dimension`).
     fn may_travel_through(&mut self, id: u32, plan: &Plan) -> bool {
-        self.may_enter(plan.dim)
+        let may = self.may_enter(plan.dim)
             && self.entity_may_travel(
                 id,
                 plan.dim,
                 super::server_travel::TravelCause::of_plan(plan),
-            )
+            );
+        // Every caller takes the entity out of the level when it may go.
+        if may && plan.dim != self.dim {
+            self.stamp_leave(id, super::native_entities::Removal::ChangedDimension);
+        }
+        may
     }
     /// The plan of an item or mob going through the portal block at `entry`:
     /// an End portal's fixed destination, else the Nether portal's.
