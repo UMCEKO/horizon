@@ -81,6 +81,10 @@
       "horizon-protocol",
       "horizon-world"
     ],
+    "pending": {
+      "_doc": "Engine crates that still take a non-portable crate, until the types they need move down. Entries only go away.",
+      "horizon-gameplay": ["horizon-client-lib"]
+    },
     "forbidden": ["arboard", "cpal", "gilrs", "ureq", "wgpu", "winit"]
   },
   "allowed": [
