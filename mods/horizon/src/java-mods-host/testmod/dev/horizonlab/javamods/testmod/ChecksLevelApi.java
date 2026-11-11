@@ -5,6 +5,7 @@ import net.minecraft.core.SectionPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.material.Fluids;
@@ -94,6 +95,13 @@ final class ChecksLevelApi {
         Checks.check("globalLevelEvent", () -> {
             level.globalLevelEvent(9999, area, 0);
             return true;
+        });
+        // The harness put a lodestone there in the Nether; the Overworld stays in place.
+        Checks.check("otherLevelGetBlockState", () -> {
+            ServerLevel nether = level.getServer().getLevel(Level.NETHER);
+            BlockPos mark = new BlockPos(0, 64, 0);
+            return nether != null && nether.getBlockState(mark).is(Blocks.LODESTONE) && !level.getBlockState(mark).is(Blocks.LODESTONE)
+                && level.getBlockState(area.above(2)).is(Blocks.STONE);
         });
     }
 }
