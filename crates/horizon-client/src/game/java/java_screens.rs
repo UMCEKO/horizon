@@ -954,6 +954,13 @@ pub(in crate::game) mod live {
                 .map(<[u8]>::to_vec);
             let world_animating = reply.bool()?;
             let (tabs_ready, shell, segments, shell_animating) = read_shell_tail(reply)?;
+            let lockstep = reply.bool()?;
+            if lockstep != super::super::java_lockstep::lockstep_next()
+                && std::env::var_os("HORIZON_JAVA_DEBUG").is_some()
+            {
+                log::info!("Horizon: client tick status lockstep {lockstep}");
+            }
+            super::super::java_lockstep::set_lockstep_next(lockstep);
             super::super::java_world_renders::java_world_status(world.as_deref(), world_animating);
             let refused = CLIENT.with_borrow_mut(|c| {
                 c.hud_animating = animating;
@@ -1366,13 +1373,33 @@ pub(in crate::game) mod live {
         }
 
         /// The start of the window's tick: the Java client's last tick results are applied, before the window's tick reads what they changed.
-        pub(in crate::game) fn java_client_tick_begin(&mut self) {
-            if self.remote_profile().is_none() || horizon_java_host::get().is_none() {
-                return;
-            }
+        pub(in crate::game) fn java_client_tick_begin(
+            &mut self,
+        ) -> Option<super::super::java_lockstep::LockstepTick> {
+            use super::super::java_lockstep as lockstep;
+            self.remote_profile()?;
+            let host = horizon_java_host::get()?;
             let open = CLIENT.with_borrow(|c| c.open);
             // A screen ticks in step with the window, so its tick waits for any background one first.
             self.java_client_collect(open);
+            if !lockstep::lockstep_next() || !CLIENT.with_borrow(|c| c.joined) {
+                return None;
+            }
+            // The previous job must have ended before this one is handed over.
+            self.java_client_collect(true);
+            if !lockstep::lockstep_next() {
+                return None;
+            }
+            CLIENT.with_borrow_mut(|c| c.owed = 1);
+            let guard = lockstep::start();
+            if host.request("client_lockstep_announce", &[]).is_none() {
+                drop(guard);
+                lockstep::finish();
+                return None;
+            }
+            let (job, _) = self.java_client_batch(true);
+            WORKER.with_borrow_mut(|w| w.get_or_insert_with(Worker::start).send(job));
+            Some(guard)
         }
 
         /// The picks of this tick's `animateTick`, which the tick's end sends.
@@ -1387,7 +1414,9 @@ pub(in crate::game) mod live {
                     log::info!("Horizon: animateTick of {} runs in Java", state.name);
                 }
             }
-            CLIENT.with_borrow_mut(|c| c.picked = picked);
+            if let Some(picked) = super::super::java_lockstep::keep_picks(picked) {
+                CLIENT.with_borrow_mut(|c| c.picked = picked);
+            }
         }
 
         /// `Minecraft.runTick` for the Java client, once the window's tick has run: what the server sent it and the tick's picks, then the real `Minecraft.tick`.
@@ -1398,6 +1427,19 @@ pub(in crate::game) mod live {
             let Some(host) = horizon_java_host::get() else {
                 return;
             };
+            if super::super::java_lockstep::in_lockstep() {
+                // The job went out at the tick's start; the picks its player step never took wait for the next batch.
+                let unsent = super::super::java_lockstep::finish();
+                if !unsent.is_empty() {
+                    CLIENT.with_borrow_mut(|c| c.animate.push_back(unsent));
+                }
+                let open = CLIENT.with_borrow(|c| c.open)
+                    || (!self.java_world_has_input() && self.screen != Screen::Java);
+                if open {
+                    self.java_client_collect(true);
+                }
+                return;
+            }
             // `Timer.advanceTime`: a tick the last one's length delayed still runs, up to its limit of 10.
             CLIENT.with_borrow_mut(|c| {
                 c.owed = (c.owed + 1).min(10);
@@ -1410,10 +1452,23 @@ pub(in crate::game) mod live {
             if java_client_busy() {
                 return;
             }
+            let (job, open) = self.java_client_batch(false);
+            if open {
+                self.java_client_collect(true);
+                let done = job.run(host);
+                self.java_client_apply(done);
+            } else {
+                WORKER.with_borrow_mut(|w| w.get_or_insert_with(Worker::start).send(job));
+            }
+        }
+
+        /// One client tick's request, `ClientBridge.tick`'s input; with whether a native screen is over the world, when the tick runs in step with the window.
+        fn java_client_batch(&mut self, lockstep: bool) -> (Job, bool) {
             self.java_client_collisions();
             let mut out = Out::default();
             out.int(CLIENT.with_borrow_mut(|c| std::mem::take(&mut c.owed)));
             out.float(self.clock.fraction() as f32);
+            out.bool(lockstep);
             let window = self.java_client_window();
             if CLIENT.with_borrow_mut(|c| changed(&mut out, &mut c.sent.size, window)) {
                 for value in window {
@@ -1512,13 +1567,7 @@ pub(in crate::game) mod live {
                 remote: CLIENT.with_borrow(|c| c.remote),
                 tick: out.0,
             };
-            if open {
-                self.java_client_collect(true);
-                let done = job.run(host);
-                self.java_client_apply(done);
-            } else {
-                WORKER.with_borrow_mut(|w| w.get_or_insert_with(Worker::start).send(job));
-            }
+            (job, open)
         }
 
         /// `MouseHandler.onScroll` in the world, run by the Java client: true when a mod's `MouseScrollingEvent` listener canceled it.

@@ -332,6 +332,11 @@ def bridges(args):
     def drive(send):
         x, y, z = json.loads(send('state'))['player']['block_pos']
         base = (x + 3, y, z)
+        # A walk, for the test mod's lockstep checks: its `PlayerTickEvent.Post` sees where this tick's step went.
+        send('key w down')
+        send('wait 20')
+        send('key w up')
+        send(f'command tp @s {x + 0.5} {y} {z + 0.5}')
         send(f'command fill {x + 1} {y - 1} {z - 2} {x + 5} {y + 12} {z + 2} air')
         # Each family's checks build in their own stretch, on the same flat ground in any world.
         for at in range(x + 6, x + 52, 15):
@@ -501,7 +506,7 @@ def bridges(args):
     session(args, drive)
     checks = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     shutil.copy(Path(args.scratch) / 'ctl.log', Path(args.scratch) / 'first-session.log')
-    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java') if (name, 'ok') not in checks)
+    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'lockstep_order', 'lockstep_post_sees_this_tick') if (name, 'ok') not in checks)
     session(args, again)
     second = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks += [(name + ' (second session)', result) for name, result in second]

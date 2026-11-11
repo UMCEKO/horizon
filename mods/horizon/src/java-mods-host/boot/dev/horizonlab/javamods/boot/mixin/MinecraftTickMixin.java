@@ -1,6 +1,7 @@
 package dev.horizonlab.javamods.boot.mixin;
 
 import dev.horizonlab.javamods.boot.ClientBridge;
+import dev.horizonlab.javamods.boot.Lockstep;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import org.spongepowered.asm.mixin.Mixin;
@@ -10,9 +11,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(Minecraft.class)
 abstract class MinecraftTickMixin {
-    /** Horizon's window handles the keys and acts on the world for now. */
+    /** Horizon's window handles the keys and acts on the world; in a lockstep tick it does so here, while this tick waits. */
     @Inject(method = "handleKeybinds", at = @At("HEAD"), cancellable = true)
     private void horizon$keybinds(CallbackInfo info) {
+        if (Lockstep.active()) Lockstep.park(Lockstep.Point.K, new byte[0]);
         info.cancel();
     }
 

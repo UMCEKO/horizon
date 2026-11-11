@@ -10,6 +10,12 @@ use horizon_world::registry::BlockStateId;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(feature = "java-mods")]
+pub(super) type LockstepTick = super::java_lockstep::LockstepTick;
+/// No Java client, no lockstep tick.
+#[cfg(not(feature = "java-mods"))]
+pub(super) enum LockstepTick {}
+
 /// A mod item's name (`getHoverName`) and tooltip lines (`getTooltipLines`) as its code computes them.
 pub(super) struct JavaItemText {
     pub name: horizon_client::text::Text,
@@ -90,6 +96,40 @@ impl Game<'_> {
             );
         }
         let _ = (pos, tag);
+    }
+
+    /// The window's tick starts; in lockstep the guard settles the Java tick's parks on every exit.
+    pub(super) fn java_hook_tick_begin(&mut self) -> Option<LockstepTick> {
+        #[cfg(feature = "java-mods")]
+        return self.java_client_tick_begin();
+        #[cfg(not(feature = "java-mods"))]
+        None
+    }
+
+    /// `handleKeybinds`' moment: in lockstep the Java tick waits there while the window serves its clicks.
+    pub(super) fn java_hook_keys_begin(&mut self) {
+        #[cfg(feature = "java-mods")]
+        self.java_lockstep_keys_begin();
+    }
+
+    pub(super) fn java_hook_keys_end(&mut self) {
+        #[cfg(feature = "java-mods")]
+        self.java_lockstep_keys_end();
+    }
+
+    /// `LocalPlayer.aiStep`'s moment: in lockstep the Java tick waits there for the window's player step; its record.
+    pub(super) fn java_hook_player_begin(&mut self) -> Option<Vec<u8>> {
+        #[cfg(feature = "java-mods")]
+        return self.java_lockstep_player_begin();
+        #[cfg(not(feature = "java-mods"))]
+        None
+    }
+
+    /// The window's player step ran, with the tick's `Input` bits: the Java tick goes on from `aiStep` with its result.
+    pub(super) fn java_hook_player_end(&mut self, moved: bool, keys: u8) {
+        #[cfg(feature = "java-mods")]
+        self.java_lockstep_player_end(moved, keys);
+        let _ = (moved, keys);
     }
 
     #[cfg(feature = "java-mods")]

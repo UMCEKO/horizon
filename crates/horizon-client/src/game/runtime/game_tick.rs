@@ -25,7 +25,7 @@ impl Game<'_> {
                 self.set_screen(Screen::Inventory);
             }
         }
-        self.java_client_tick_begin();
+        let _lockstep = self.java_hook_tick_begin();
         #[cfg(feature = "java-mods")]
         self.java_creative_tabs_take();
         if self.remote.is_some() {

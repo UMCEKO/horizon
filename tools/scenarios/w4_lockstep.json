@@ -1,0 +1,21 @@
+[
+  {"name": "floor"},
+  {"command": "/gamemode creative"},
+  {"command": "/forceload add -8 -8 8 8"},
+  {"wait": 20},
+  {"command": "/fill -6 99 -6 6 110 6 minecraft:air"},
+  {"command": "/fill -6 99 -6 6 99 6 minecraft:stone"},
+  {"wait": 20},
+  {"tp": [0.5, 100, 0.5, 0, 0]},
+  {"wait": 20},
+  {"command": "/gamemode survival"},
+  {"wait": 10},
+  {"name": "walk"},
+  {"press": "w"},
+  {"wait": 40},
+  {"release": "w"},
+  {"wait": 20},
+  {"name": "checks"},
+  {"check": {"no_exceptions": true, "since": "start"}},
+  {"check": {"log": "Horizon: lockstep M", "since": "start"}}
+]
