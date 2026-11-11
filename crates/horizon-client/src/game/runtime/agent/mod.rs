@@ -1569,6 +1569,7 @@ impl Game<'_> {
                     Ok(_) => return Err("hotbar slots are 1..9".into()),
                     Err(_) => self.select_item(&namespaced(what))?,
                 }
+                self.java_key_action(super::java_hooks_client::JavaKeyAction::Hotbar(self.selected));
                 ok(
                     json!({ "ok": true, "selected": self.selected + 1, "held": self.held().map(|s| self.stack_value(s)) }),
                 )

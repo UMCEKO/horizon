@@ -392,6 +392,13 @@ impl Game<'_> {
         {
             return;
         }
+        self.java_window_input(&event);
+        if let WindowEvent::KeyboardInput { event, .. } = &event
+            && self.java_shell_accepts()
+            && !self.java_shell_key(event)
+        {
+            return;
+        }
         if self.pending_save.is_some() {
             match event {
                 WindowEvent::CloseRequested => {
@@ -663,6 +670,9 @@ impl Game<'_> {
                         if self.screen == Screen::BlockEditor {
                             self.block_editor_drag();
                         }
+                        if self.screen == Screen::Java {
+                            self.java_screen_moved();
+                        }
                         if self.screen == Screen::Advancements {
                             self.advancements_drag();
                         }
@@ -744,6 +754,12 @@ impl Game<'_> {
                             scaled(raw_y),
                         ]));
                     }
+                    if self.java_shell_accepts()
+                        && d != 0.0
+                        && !self.java_shell_wheel(scaled(raw_x), scaled(raw_y))
+                    {
+                        return Ok(());
+                    }
                     // A prompt is vanilla's `Minecraft.screen`, the only one MouseHandler.onScroll
                     // tells: the top one hears the wheel, as the click arms below pick it, and
                     // nothing behind it does.
@@ -758,7 +774,9 @@ impl Game<'_> {
                     }
                     let stick_scroll = self.pad_stick_scroll();
                     let step_scroll = self.pad_step_scroll();
-                    if self.title_input_active()
+                    if self.screen == Screen::Java {
+                        self.java_screen_scroll(scaled(raw_x), scaled(raw_y));
+                    } else if self.title_input_active()
                         && self.screen != Screen::Win
                         && let Some(title) = &mut self.title
                     {
@@ -784,6 +802,9 @@ impl Game<'_> {
                     // menu) takes the wheel only when no screen is open; a
                     // book, lectern, sign or prompt drawn over gameplay is one.
                     if self.hotbar_takes_wheel() {
+                        if self.java_world_scroll(scaled(raw_x), scaled(raw_y)) {
+                            return Ok(());
+                        }
                         let scroll =
                             self.mouse
                                 .on_scroll(raw_x, raw_y, discrete, wheel_sensitivity);
@@ -884,6 +905,9 @@ impl Game<'_> {
                     }
                 }
                 WindowEvent::MouseInput { .. } if self.screen == Screen::Win => {}
+                WindowEvent::MouseInput { state, button, .. } if self.screen == Screen::Java => {
+                    self.java_screen_click(button, state == ElementState::Pressed)
+                }
                 WindowEvent::MouseInput { state, button, .. } if self.screen == Screen::Options => {
                     if self.options_waiting_for_key() && state == ElementState::Pressed {
                         self.options_bind_mouse(button)?;
@@ -973,6 +997,9 @@ impl Game<'_> {
                 WindowEvent::MouseInput { state, button, .. } => {
                     let pressed = state == ElementState::Pressed;
                     if self.studio_mouse_input(pressed, button) {
+                        return Ok(());
+                    }
+                    if self.java_shell_accepts() && !self.java_shell_mouse(button, pressed) {
                         return Ok(());
                     }
                     if matches!(self.screen, Screen::Inventory | Screen::Creative)
@@ -1266,6 +1293,9 @@ impl Game<'_> {
                         self.station_text(event.text.as_deref(), backspace);
                     }
                 }
+                WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::Java => {
+                    self.java_screen_key(&event)
+                }
                 WindowEvent::KeyboardInput { event, .. }
                     if self.screen == Screen::WorldOptions
                         && !matches!(event.physical_key, PhysicalKey::Code(KeyCode::Escape)) =>
@@ -1533,6 +1563,7 @@ impl Game<'_> {
                     self.input_look(elapsed.as_secs_f32());
                     self.advance_flight();
                     self.tick_world_icon();
+                    self.java_client_frame();
                     let ticked = Instant::now();
                     let rendered = self.render_and_flip(elapsed)?;
                     horizon_client::spans::time("pr_cursor", || self.apply_cursor_icon());
