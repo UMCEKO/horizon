@@ -17593,6 +17593,7 @@ pub(crate) fn run_with(
 ) -> Result<()> {
     let mut options = Options::read(options)?;
     options.mods.native = Arc::new(native);
+    java_hooks::java_hook_start();
     if options.execution_role == execution_role::ExecutionRole::DedicatedServer
         && !dedicated::preflight(&mut options)?
     {
@@ -17603,10 +17604,9 @@ pub(crate) fn run_with(
     // and the render thread.
     horizon_threads::put_helpers_behind();
     if options.execution_role.is_client() {
-        // The render thread, like the server thread, ahead of the workers on
-        // macOS and Windows. While terrain loads, the workers
-        // (horizon_threads::jobs) and other programs outnumber the cores, and a frame that gave its core up (in a GPU submit) waited
-        // 10 to 200 ms to get one back.
+        // The render thread, like the server thread, ahead of the workers on macOS and Windows. While terrain loads, the
+        // workers (horizon_threads::jobs) and other programs outnumber the cores, and a frame that gave its core up (in a
+        // GPU submit) waited 10 to 200 ms to get one back.
         horizon_threads::favour_current();
     }
     // A dedicated server too: vanilla's "Server Shutdown Thread" (`DedicatedServer.initServer`'s

@@ -825,6 +825,8 @@ impl Game<'_> {
         let saved = Box::new(self.level.clone());
         // IntegratedServer runs the server mods; the window the client mods.
         startup::time("server.start_mods", || self.start_mods());
+        // A world opens with its Java mods loaded, so a tick never waits for them.
+        self.java_hook_bind_states();
         self.refresh_loop_context()?;
         // Math.max(2, options.renderDistance): past vanilla's 32 when the
         // window's render distance is (Horizon's options go to 64).
@@ -872,6 +874,7 @@ impl Game<'_> {
             // `IntegratedServer.getSingleplayerProfile`: the window's own player logs in
             // through memory as the account's profile, whatever the hello says.
             singleplayer_profile: Some((launch.player.clone(), owner)),
+            java_frames: super::java_hooks::java_frames(),
             // IntegratedServer.initServer: the MOTD names the owner and the world.
             ..NetConfig::lan(
                 0,

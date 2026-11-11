@@ -607,17 +607,6 @@ impl Game<'_> {
     pub(in crate::game) fn native_emissive(&self, layers: &mut Vec<(&'static str, &'static str)>) {
         self.fire_emissive(layers);
     }
-    /// The world's phases, read-only; `error_text` carries the engine's
-    /// own open-failure text, empty otherwise. Server-side. A server loop or final
-    /// save failure fires `WorldCloseFailed` with the error text.
-    pub(in crate::game) fn native_world_lifecycle(
-        &mut self,
-        context: &LifecycleContext,
-        phase: WorldPhase,
-        error_text: &str,
-    ) {
-        self.fire_world_lifecycle(context, phase, error_text);
-    }
     /// The server is about to send its data to the players (NeoForge's
     /// `OnDatapackSyncEvent`, its `sendRecipes`): push the recipe types
     /// (`minecraft:smelting`, `mymod:crusher`) whose recipes your client half
@@ -700,42 +689,6 @@ impl Game<'_> {
     /// Server teardown has finished, including the final save if possible.
     pub(in crate::game) fn native_server_stopped(&mut self, dedicated: bool) {
         self.fire_server_stopped(dedicated);
-    }
-    /// The server opened its worlds and is about to tick (NeoForge's
-    /// `ServerStartedEvent`): every level loaded, no player joined. Where
-    /// `WorldOpenReady` fired: the end of the open, before the tick loop.
-    pub(in crate::game) fn native_server_started(&mut self, dedicated: bool) {
-        self.fire_server_started(dedicated);
-    }
-    /// The server begins teardown (NeoForge's `ServerStoppingEvent`):
-    /// the start of vanilla's `MinecraftServer.stopServer`, with the worlds
-    /// still loaded and the players still connected and not yet saved, so a
-    /// mod can save its own data or tell them. `native_world_lifecycle`'s
-    /// `WorldCloseFinal` follows once the worlds are saved. A server whose loop
-    /// fails still fires this before the final save attempt and `native_server_stopped`.
-    pub(in crate::game) fn native_server_stopping(&mut self, dedicated: bool) {
-        self.fire_server_stopping(dedicated);
-    }
-    /// The authoritative server tick's phases: `ServerTickStart` before any
-    /// level is ticked (NeoForge's `ServerTickEvent.Pre`), `ServerTickEnd`
-    /// after the last (`.Post`). Read blocks with `native_server_block`, by
-    /// dimension: which level `self.world` holds here is not defined. A paused
-    /// pass fires nothing; a frozen world carries `world_running` false except
-    /// during a requested step.
-    pub(in crate::game) fn native_server_tick(
-        &mut self,
-        context: &LifecycleContext,
-        phase: ServerTickPhase,
-    ) {
-        self.fire_server_tick(context, phase);
-    }
-    /// Before an authoritative server level's tick pass. `dimension` is its ID.
-    pub(in crate::game) fn native_level_tick_pre(&mut self, dimension: &str) {
-        self.fire_level_tick_pre(dimension);
-    }
-    /// After a successful authoritative server level tick pass.
-    pub(in crate::game) fn native_level_tick_post(&mut self, dimension: &str) {
-        self.fire_level_tick_post(dimension);
     }
     /// Before one of vanilla's HUD layers is drawn (`RenderGuiLayerEvent.Pre`):
     /// draw here to put something below the layer, or set `canceled` to hide
@@ -1091,13 +1044,6 @@ impl Game<'_> {
     pub(in crate::game) fn native_panel_event(&mut self, mod_id: &str, event: &PanelEvent) {
         self.fire_panel_event(mod_id, event);
     }
-    /// Whether block `block`'s block entity ticks (`EntityBlock.getTicker`):
-    /// set `ticks` when it is yours. Asked for each of the block's states
-    /// when a world opens.
-    /// Set `ticks` to true to make it tick, and never clear a value an earlier mod or mixin set.
-    pub(in crate::game) fn native_block_entity_ticks(&self, block: &str, ticks: &mut bool) {
-        self.fire_block_entity_ticks(block, ticks);
-    }
     /// A `minecraft:post_attack` effect of a mod's own kind, on a mob a
     /// player's weapon hit: the entry says `enchanted` attacker and `affected`
     /// victim, its `requirements` passed, and its `effect` names a `type` in a
@@ -1163,23 +1109,6 @@ impl Game<'_> {
         energy: &mut Option<ModEnergyBuffer>,
     ) {
         self.fire_block_entity_energy(block, energy);
-    }
-    /// A server tick of the block entity at `pos`, in vanilla's order among
-    /// the others (`Level.tickBlockEntities`), when its `id` is yours: read
-    /// and change its saved compound `nbt`, its item slots `items` (keep
-    /// their count: as many as its container has, none without one) and the
-    /// data slots its menu shows (`data`). It is out of the world during the
-    /// call (the block entity at `pos` reads as a `Mod` with an empty id, and
-    /// a save leaves it out); if the call removes or replaces it, `entity` is
-    /// dropped. Clients, the window's own in single player included, get
-    /// what `native_block_entity_update_tag` gives when its chunk is sent or
-    /// its block changes.
-    pub(in crate::game) fn native_block_entity_tick(
-        &mut self,
-        pos: [i32; 3],
-        entity: &mut ModBlockEntity,
-    ) {
-        self.fire_block_entity_tick(pos, entity);
     }
     /// A consumable's effect of a mod's own kind: the item's `on_consume_effects`
     /// entry is of a type in a namespace of its own, and the loader kept it
@@ -3690,21 +3619,6 @@ impl Game<'_> {
     ) {
         self.fire_release_using(stack, entity, time_left, used);
     }
-    /// A player breaks the block `state` at `pos`, once the game allowed it
-    /// (the held item can break blocks, the debug stick didn't take the
-    /// click): where `ServerPlayerGameMode.destroyBlock` starts. Set
-    /// `canceled` to keep the block: nothing is destroyed or dropped, and a
-    /// guest sees it back. Server-side, for every player of the world (the
-    /// helpers read the acting one).
-    pub(in crate::game) fn native_break_block(
-        &mut self,
-        pos: [i32; 3],
-        state: BlockStateId,
-        canceled: &mut bool,
-        exp_to_drop: &mut Option<u32>,
-    ) {
-        self.fire_break_block(pos, state, canceled, exp_to_drop);
-    }
     /// A player right clicks a block (NeoForge's
     /// `PlayerInteractEvent.RightClickBlock`): once per hand, where
     /// `useItemOn` starts, on the clicking client and on the server (`click`
@@ -3753,24 +3667,6 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         self.fire_fill_bucket(stack, pos, canceled);
-    }
-    /// A player attacks the entity `entity` (`Entity.getId`) of type `kind`
-    /// (`minecraft:item_frame`, `minecraft:cow`, `minecraft:player`) standing
-    /// at `pos`: `ServerGamePacketListenerImpl.handleInteract`'s attack, once
-    /// in reach, where `Player.attack` starts. The swing has not begun, so the
-    /// attacking player's attack strength is still the charge the blow uses
-    /// (vanilla reads it at the start of `Player.attack`; the swing resets it
-    /// afterwards). Set `canceled` and the blow does nothing (no damage, no
-    /// knockback, the frame keeps its item). Server-side, for every player of
-    /// the world (`native_acting_player` says who).
-    pub(in crate::game) fn native_attack_entity(
-        &mut self,
-        entity: i32,
-        kind: &str,
-        pos: [f64; 3],
-        canceled: &mut bool,
-    ) {
-        self.fire_attack_entity(entity, kind, pos, canceled);
     }
     /// A message from `player`'s client on `channel` (`mod_id:name`), within
     /// the caps (`native_net.rs`): check `channel`, and treat `data` as the

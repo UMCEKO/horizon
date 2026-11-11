@@ -39,6 +39,9 @@ impl Progress {
         self.value.load(Ordering::Relaxed) as f32 / (self.lines.len() - 1) as f32
     }
     pub(super) fn line(&self) -> &'static str {
+        if let Some(note) = java_hooks::java_hook_loading_note() {
+            return note;
+        }
         self.lines[(self.value.load(Ordering::Relaxed) as usize).min(self.lines.len() - 1)]
     }
 }

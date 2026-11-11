@@ -23,6 +23,7 @@ impl Game<'_> {
         self.load_entity_types();
         self.ensure_stateful_entity_table();
         if !self.world.block_entities.has_states() {
+            self.java_hook_bind_states();
             let states = self.ticking_states();
             self.world.block_entities.set_states(states);
             let containers = self.native_containers();

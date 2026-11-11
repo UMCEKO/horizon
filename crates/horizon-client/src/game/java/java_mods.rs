@@ -637,11 +637,7 @@ impl Game<'_> {
     }
 
     /// `BlockEntityTicker.tick` of a block entity Java holds, which it took when its chunk loaded.
-    pub(super) fn java_block_entity_tick(
-        &mut self,
-        pos: [i32; 3],
-        _entity: &horizon_client::containers::ModBlockEntity,
-    ) {
+    pub(super) fn java_block_entity_tick(&mut self, pos: [i32; 3]) {
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         if !self.java_tick_once(at) {
             thread_local! {
