@@ -5,4 +5,5 @@ extern crate horizon_client_lib as horizon_client;
 pub mod dedicated;
 pub mod interaction_shapes;
 pub mod lan;
+pub mod tick_profile;
 pub mod wandering_trader;
