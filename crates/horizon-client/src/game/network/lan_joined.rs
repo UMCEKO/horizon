@@ -39,6 +39,8 @@ impl Game<'_> {
         }) else {
             return;
         };
+        let java_client = host.hub.java_guests().any(|u| u == uuid);
+        self.java_hook_remote_join(uuid, java_client);
         self.initialize_server_player(uuid, conn);
         self.native_player_load_from_file(uuid, &name, &playerdata::directory(&root));
         let Some(host) = self.lan.as_mut() else {

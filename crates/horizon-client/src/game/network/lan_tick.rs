@@ -30,6 +30,7 @@ impl Game<'_> {
                 return host;
             }
             self.lan = Some(host);
+            self.java_hook_tracking();
             self.run_native_tracking();
             host = self
                 .lan
@@ -315,6 +316,7 @@ impl Game<'_> {
         {
             self.run_native_menu_events();
         }
+        self.java_hook_tracking();
         if self
             .lan
             .as_ref()

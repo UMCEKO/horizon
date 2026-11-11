@@ -296,6 +296,7 @@ impl Game<'_> {
                         }
                     }
                     self.lan_crafting_left(&mut guest);
+                    self.java_hook_player_left(guest.uuid);
                     if guest.placed {
                         self.award_leave_game(guest.conn, guest.uuid, &guest.name);
                     }

@@ -67,6 +67,7 @@ impl Game<'_> {
             // commandSuggestionsProvider.tick: one answer a tick, to the latest request.
             play.suggestion_budget = true;
             self.guest_try_suggestions(conn);
+            self.java_hook_player_tick(gi, conn);
             self.guest_player_tick(gi, conn, mod_api::HookId::PlayerTickPre, |game, player| {
                 game.native_player_tick_pre(mod_api::__private::PlayerTickPreCall { player })
             });
