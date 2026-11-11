@@ -172,9 +172,31 @@ public final class BootFacts {
                     }
                 }
 
+                void recipes() throws IOException {
+                    var holders = new java.util.ArrayList<net.minecraft.world.item.crafting.RecipeHolder<?>>(GameBridge.server().getRecipeManager().getRecipes());
+                    holders.removeIf(h -> h.id().identifier().getNamespace().equals("minecraft"));
+                    holders.sort(java.util.Comparator.comparing((net.minecraft.world.item.crafting.RecipeHolder<?> h) -> h.id().identifier().toString()));
+                    json.name("recipes").beginObject();
+                    for (var holder : holders) {
+                        var recipe = holder.value();
+                        json.name(holder.id().identifier().toString()).beginObject();
+                        json.name("type").value(BuiltInRegistries.RECIPE_TYPE.getKey(recipe.getType()).toString());
+                        json.name("serializer").value(BuiltInRegistries.RECIPE_SERIALIZER.getKey(recipe.getSerializer()).toString());
+                        var encoded = net.minecraft.world.item.crafting.Recipe.DIRECT_CODEC.encodeStart(ops, (net.minecraft.world.item.crafting.Recipe<?>) recipe);
+                        if (encoded.result().isPresent()) {
+                            json.name("json");
+                            json.jsonValue(encoded.result().get().toString());
+                        } else {
+                            json.name("error").value(encoded.error().map(e -> e.message()).orElse(""));
+                        }
+                        json.endObject();
+                    }
+                    json.endObject();
+                }
+
                 void run() throws IOException {
                     json.beginObject();
-                    json.name("schema").value(4);
+                    json.name("schema").value(5);
                     json.name("minecraft").value(net.minecraft.SharedConstants.getCurrentVersion().name());
                     owned();
                     blocks();
@@ -183,6 +205,7 @@ public final class BootFacts {
                     items();
                     dataComponentTypes();
                     tags();
+                    recipes();
                     json.endObject();
                 }
             }.run();

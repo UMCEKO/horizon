@@ -34,7 +34,10 @@ pub struct Facts {
     pub fluids: BTreeMap<String, Fluid>,
     /// The mods' recipes NeoForge loaded: those whose `neoforge:conditions` passed.
     #[serde(default)]
-    pub recipes: BTreeMap<String, serde::de::IgnoredAny>,
+    pub recipes: BTreeMap<String, FactRecipe>,
+    /// The facts format: 1 from the oracle, 5 and later from the boot, which writes each recipe's codec form.
+    #[serde(default)]
+    pub schema: u32,
     /// The game's items' default components (`items.json`), so item ports leave out what their template has.
     #[serde(skip)]
     pub vanilla_items: BTreeMap<String, Value>,
@@ -56,6 +59,19 @@ pub struct Owned {
     pub data_component_type: BTreeSet<String>,
     #[serde(default)]
     pub fluid: BTreeSet<String>,
+}
+
+/// A recipe Java's data load kept; the boot's carry its codec form in `json`.
+#[derive(Debug, Default, Deserialize)]
+pub struct FactRecipe {
+    #[serde(rename = "type", default)]
+    pub kind: String,
+    #[serde(default)]
+    pub serializer: String,
+    #[serde(default)]
+    pub json: Option<Value>,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// A fluid as the game's registry holds it (facts of schema 4 and later).
@@ -684,6 +700,11 @@ fn same(a: &Value, b: &Value) -> bool {
 }
 
 impl Facts {
+    /// Whether `recipes` is the boot's full list of the mods' loaded recipes in codec form.
+    pub fn recipes_from_boot(&self) -> bool {
+        self.schema >= 5
+    }
+
     pub fn read(path: &Path) -> Result<Facts, String> {
         let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))

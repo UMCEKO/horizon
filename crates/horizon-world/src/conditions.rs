@@ -66,6 +66,7 @@ pub fn conditions_hold(v: &Value, loaded: &ModLoaded) -> bool {
         match c["type"].as_str() {
             Some("neoforge:mod_loaded") => c["modid"].as_str().is_some_and(loaded),
             Some("neoforge:true") => true,
+            Some("neoforge:false") => false,
             // An unknown child fails the file: `not` of it is not a pass.
             Some("neoforge:not") => known(&c["value"]) && !hold(&c["value"], loaded),
             Some("neoforge:and") => all("values"),
@@ -91,6 +92,7 @@ fn known(c: &Value) -> bool {
         c["type"].as_str(),
         Some("neoforge:mod_loaded")
             | Some("neoforge:true")
+            | Some("neoforge:false")
             | Some("neoforge:not")
             | Some("neoforge:and")
             | Some("neoforge:or")
@@ -228,6 +230,15 @@ mod tests {
             ]
         });
         assert!(!conditions_hold(&nested_or, &loaded));
+    }
+
+    #[test]
+    fn neoforge_false_fails_a_file_and_not_of_it_passes() {
+        let file = |c: Value| json!({"neoforge:conditions": [c]});
+        let off = json!({"type": "neoforge:false"});
+        assert!(!conditions_hold(&file(off.clone()), &loaded));
+        let not = json!({"type": "neoforge:not", "value": off});
+        assert!(conditions_hold(&file(not), &loaded));
     }
 
     #[test]

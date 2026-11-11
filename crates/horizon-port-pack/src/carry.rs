@@ -118,6 +118,12 @@ pub struct Report {
     pub recipes_unregistered: Vec<String>,
     /// Recipes whose NeoForge conditions don't pass (the oracle didn't load them), in `outside/`.
     pub recipes_off: Vec<String>,
+    /// Recipes written in the form Java's codec gave them, instead of the jar's file.
+    pub recipes_from_java: usize,
+    /// Jar recipes Java's data load dropped (`recipe/` paths), in `outside/`.
+    pub recipes_unloaded: Vec<String>,
+    /// Recipes Java kept but couldn't encode: the jar's file is carried as it is.
+    pub recipes_java_errors: BTreeMap<String, String>,
     pub item_definitions_added: usize,
     /// Templates and properties came from the NeoForge oracle's facts, not
     /// from guesses.
@@ -1043,6 +1049,8 @@ pub fn carry(
     let owned: Vec<&str> = std::iter::once(id.as_str())
         .chain(report.namespaces.iter().map(String::as_str))
         .collect();
+    let java = facts.filter(|f| f.recipes_from_boot()).map(|f| &f.recipes);
+    let mut jar_recipes = BTreeSet::new();
     let mut budget = crate::entry::Budget::archive();
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
@@ -1069,11 +1077,20 @@ pub fn carry(
         } else {
             None
         };
-        let off = keep && recipe_off(&name, &bytes, facts, loaded);
+        let rid = java.and(recipe_id(&name, &owned));
+        let by_java = rid.as_ref().and_then(|r| java.and_then(|j| j.get(r)));
+        if let Some(r) = &rid {
+            jar_recipes.insert(r.clone());
+        }
+        let unloaded = keep && rid.is_some() && by_java.is_none();
+        if unloaded && let Some((_, file)) = name.split_once("/recipe/") {
+            report.recipes_unloaded.push(file.to_owned());
+        }
+        let off = keep && !unloaded && recipe_off(&name, &bytes, facts, loaded);
         if off {
             report.recipes_off.push(name.clone());
         }
-        let keep = keep && unreadable.is_none() && !off;
+        let keep = keep && unreadable.is_none() && !off && !unloaded;
         if let Some(why) = unreadable {
             report.unreadable.insert(name.clone(), why);
         }
@@ -1109,28 +1126,42 @@ pub fn carry(
                 .strip_prefix("recipe/")
                 .filter(|_| name.starts_with("data/"))
             {
+                let from_java = by_java.and_then(|r| r.json.as_ref());
+                if let (Some(rid), Some(e)) = (&rid, by_java.and_then(|r| r.error.as_ref())) {
+                    report.recipes_java_errors.insert(rid.clone(), e.clone());
+                }
+                if let Some(j) = from_java {
+                    bytes = serde_json::to_vec_pretty(j).unwrap_or(bytes);
+                    report.recipes_from_java += 1;
+                }
                 if let Ok(mut recipe) = serde_json::from_slice::<Value>(&bytes) {
                     tags_used(&recipe, &mut convention);
                     let renamed = renamed_ids(&mut recipe);
-                    // Kept, so its conditions passed (`recipe_off`): 26.3 has no use for them.
-                    if recipe["type"]
-                        .as_str()
-                        .is_some_and(|t| t.starts_with("minecraft:"))
-                    {
-                        recipe
-                            .as_object_mut()
-                            .map(|o| o.remove("neoforge:conditions"));
-                    }
-                    let old_result = result_before_1_20_5(&recipe);
-                    let upgraded = !old_result && upgrade_recipe(&mut recipe);
-                    if upgraded {
-                        report.recipes_upgraded += 1;
+                    if from_java.is_some() {
+                        if renamed {
+                            bytes = serde_json::to_vec_pretty(&recipe).unwrap_or(bytes);
+                        }
                     } else {
-                        report.recipes_old_result += usize::from(old_result);
-                        report.recipes_kept.push(file.to_owned());
-                    }
-                    if upgraded || renamed {
-                        bytes = serde_json::to_vec_pretty(&recipe).unwrap_or(bytes);
+                        // Kept, so its conditions passed (`recipe_off`): 26.3 has no use for them.
+                        if recipe["type"]
+                            .as_str()
+                            .is_some_and(|t| t.starts_with("minecraft:"))
+                        {
+                            recipe
+                                .as_object_mut()
+                                .map(|o| o.remove("neoforge:conditions"));
+                        }
+                        let old_result = result_before_1_20_5(&recipe);
+                        let upgraded = !old_result && upgrade_recipe(&mut recipe);
+                        if upgraded {
+                            report.recipes_upgraded += 1;
+                        } else {
+                            report.recipes_old_result += usize::from(old_result);
+                            report.recipes_kept.push(file.to_owned());
+                        }
+                        if upgraded || renamed {
+                            bytes = serde_json::to_vec_pretty(&recipe).unwrap_or(bytes);
+                        }
                     }
                 }
             } else if let Some(kind) = rel
@@ -1272,6 +1303,25 @@ pub fn carry(
             }
         }
         write(&dest, &bytes)?;
+    }
+    // Recipes a mod's code provides: no jar file names them.
+    for (rid, r) in java.into_iter().flatten() {
+        let Some((ns, path)) = rid.split_once(':') else {
+            continue;
+        };
+        let Some(json) = r
+            .json
+            .as_ref()
+            .filter(|_| owned.contains(&ns) && !jar_recipes.contains(rid))
+        else {
+            continue;
+        };
+        let mut recipe = json.clone();
+        tags_used(&recipe, &mut convention);
+        renamed_ids(&mut recipe);
+        let to = inside.join(format!("data/{ns}/recipe/{path}.json"));
+        write(&to, &serde_json::to_vec_pretty(&recipe).unwrap_or_default())?;
+        report.recipes_from_java += 1;
     }
     // Entries the mod adds to other structure sets in Java code, for the
     // structures it has.
@@ -1591,6 +1641,15 @@ pub fn carry(
         &serde_json::to_vec_pretty(&report).unwrap_or_default(),
     )?;
     Ok(report)
+}
+
+/// `ns:path` of a file `data/<ns>/recipe/<path>.json` of an owned namespace.
+fn recipe_id(name: &str, owned: &[&str]) -> Option<String> {
+    let Some(("data", ns, rest)) = split(name) else {
+        return None;
+    };
+    let path = rest.strip_prefix("recipe/")?.strip_suffix(".json")?;
+    owned.contains(&ns).then(|| format!("{ns}:{path}"))
 }
 
 /// A recipe of the mod's whose `neoforge:conditions` fail, so NeoForge never loads it: with the
@@ -2087,6 +2146,82 @@ mod tests {
             &pack,
             &BTreeMap::new(),
         )
+    }
+
+    fn mymod_jar(dir: &Path) -> std::path::PathBuf {
+        let jar = dir.join("mymod.jar");
+        let shapeless = r#"{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:stick"],"result":{"id":"minecraft:stone"}}"#;
+        let a = r#"{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:stick"],"result":{"id":"minecraft:stone"},"neoforge:conditions":[{"type":"mymod:flag"}]}"#;
+        write_jar(
+            &jar,
+            &[
+                ("data/mymod/recipe/a.json", a.as_bytes()),
+                ("data/mymod/recipe/b.json", shapeless.as_bytes()),
+            ],
+        );
+        jar
+    }
+
+    fn carry_mymod(jar: &Path, out: &Path, facts: Option<&Facts>) -> Report {
+        let info = crate::jar::JarInfo {
+            mod_id: "mymod".into(),
+            ..Default::default()
+        };
+        let pack = Pack {
+            loaded: &|_| true,
+            mods: &|_| false,
+        };
+        carry(
+            jar,
+            &info,
+            out,
+            facts,
+            None,
+            &|_| true,
+            &pack,
+            &BTreeMap::new(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn java_recipes_replace_the_jars() {
+        let dir = temp_dir("java-recipes");
+        let jar = mymod_jar(&dir);
+        let a = json!({"type":"minecraft:crafting_shapeless","category":"misc",
+            "ingredients":["minecraft:stick"],"result":{"id":"minecraft:stone","count":1}});
+        let c = json!({"type":"minecraft:crafting_shaped","pattern":["#"],
+            "key":{"#":"minecraft:stick"},"result":{"id":"minecraft:stone","count":2}});
+        let facts: Facts = serde_json::from_value(json!({"schema": 5, "blocks": {}, "items": {},
+            "recipes": {
+                "mymod:a": {"type":"minecraft:crafting_shapeless","serializer":"minecraft:crafting_shapeless","json": a},
+                "mymod:c": {"type":"minecraft:crafting_shaped","serializer":"minecraft:crafting_shaped","json": c},
+            }}))
+        .unwrap();
+        let out = dir.join("work/mods/mymod");
+        let report = carry_mymod(&jar, &out, Some(&facts));
+        let read =
+            |p: &str| -> Value { serde_json::from_slice(&fs::read(out.join(p)).unwrap()).unwrap() };
+        assert_eq!(read("carry/data/mymod/recipe/a.json"), a);
+        assert_eq!(read("carry/data/mymod/recipe/c.json"), c);
+        assert!(!out.join("carry/data/mymod/recipe/b.json").exists());
+        assert!(out.join("outside/data/mymod/recipe/b.json").exists());
+        assert_eq!(report.recipes_from_java, 2);
+        assert_eq!(report.recipes_unloaded, ["b.json"]);
+    }
+
+    #[test]
+    fn without_java_recipes_the_jars_are_carried_as_before() {
+        let dir = temp_dir("no-java-recipes");
+        let jar = mymod_jar(&dir);
+        let out = dir.join("work/mods/mymod");
+        let report = carry_mymod(&jar, &out, None);
+        assert!(out.join("carry/data/mymod/recipe/b.json").exists());
+        assert_eq!(report.recipes_off, ["data/mymod/recipe/a.json"]);
+        assert_eq!(
+            (report.recipes_from_java, report.recipes_unloaded.len()),
+            (0, 0)
+        );
     }
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
