@@ -104,11 +104,13 @@ pub struct BlockEntities {
     /// The containers of mod blocks' block entities, by block state id;
     /// built with `states`.
     mod_containers: FxHashMap<u32, Arc<ModContainer>>,
-    /// Positions whose block entity Java holds as a live object.
-    java_held: FxHashSet<Pos>,
+    /// Positions whose block entity Java holds as a live object, with the generation it bound.
+    java_held: FxHashMap<Pos, u64>,
     /// Held positions changed natively since Java last heard of them, each once, in order.
     java_stale: Vec<Pos>,
     java_stale_set: FxHashSet<Pos>,
+    /// Held positions whose whole record a native write replaced since Java last heard of them.
+    java_rewritten: FxHashSet<Pos>,
     /// The fluid tanks of mod blocks' block entities, by block state id;
     /// built with `states`, like the containers.
     mod_fluids: FxHashMap<u32, Arc<ModFluidTanks>>,
@@ -367,17 +369,22 @@ impl BlockEntities {
 
     /// Logs a native change at a position Java holds.
     fn stale(&mut self, pos: Pos) {
-        if self.java_held.contains(&pos) && self.java_stale_set.insert(pos) {
+        if self.java_held.contains_key(&pos) && self.java_stale_set.insert(pos) {
             self.java_stale.push(pos);
         }
     }
-    /// Java made a live object for the block entity at `pos`: native changes there are logged from now on.
-    pub fn hold_for_java(&mut self, pos: Pos) {
-        self.java_held.insert(pos);
+    /// Java made a live object for the block entity of `generation` at `pos`: native changes there are logged from now on.
+    pub fn hold_for_java(&mut self, pos: Pos, generation: u64) {
+        self.java_held.insert(pos, generation);
+    }
+    /// The generation of the block entity Java holds at `pos`, if it holds one.
+    pub fn java_held_generation(&self, pos: &Pos) -> Option<u64> {
+        self.java_held.get(pos).copied()
     }
     /// Java lets go of `pos`: its changes and any logged ones no longer matter.
     pub fn release_for_java(&mut self, pos: &Pos) {
         self.java_held.remove(pos);
+        self.java_rewritten.remove(pos);
         if self.java_stale_set.remove(pos) {
             self.java_stale.retain(|p| p != pos);
         }
@@ -386,7 +393,7 @@ impl BlockEntities {
     pub fn release_columns_for_java(&mut self, gone: &FxHashSet<(i32, i32)>) {
         let here: Vec<Pos> = self
             .java_held
-            .iter()
+            .keys()
             .filter(|p| gone.contains(&(p.0 >> 4, p.2 >> 4)))
             .copied()
             .collect();
@@ -394,19 +401,31 @@ impl BlockEntities {
             self.release_for_java(&pos);
         }
     }
-    /// The positions changed natively since the last call, each once.
-    pub fn take_java_stale(&mut self) -> Vec<Pos> {
+    /// The positions changed natively since the last call, each once, with whether a native write replaced the whole record.
+    pub fn take_java_stale(&mut self) -> Vec<(Pos, bool)> {
         self.java_stale_set.clear();
+        let rewritten = std::mem::take(&mut self.java_rewritten);
         std::mem::take(&mut self.java_stale)
+            .into_iter()
+            .map(|p| (p, rewritten.contains(&p)))
+            .collect()
     }
-    /// A block entity Java wrote through: it replaces the record without a log entry, and Java holds it.
-    pub fn insert_from_java(&mut self, pos: Pos, entity: BlockEntity) -> Option<BlockEntity> {
+    /// A block entity Java wrote through: it replaces the record without a log entry, and Java holds it at the generation returned.
+    pub fn insert_from_java(
+        &mut self,
+        pos: Pos,
+        entity: BlockEntity,
+    ) -> (Option<BlockEntity>, u64) {
         let old = self.map.insert(pos, entity);
         if old.is_none() {
+            if !self.generations.contains_key(&pos) {
+                self.new_generation(pos);
+            }
             self.add(pos);
         }
-        self.java_held.insert(pos);
-        old
+        let generation = self.generations[&pos];
+        self.java_held.insert(pos, generation);
+        (old, generation)
     }
     /// Attachment map for a live block entity.
     pub fn attachments_mut(
@@ -518,7 +537,7 @@ impl BlockEntities {
     }
     /// Every held position is logged: any of them may change.
     fn all_held_stale(&mut self) {
-        for pos in self.java_held.iter().copied().collect::<Vec<_>>() {
+        for pos in self.java_held.keys().copied().collect::<Vec<_>>() {
             self.stale(pos);
         }
     }
@@ -552,6 +571,9 @@ impl BlockEntities {
     /// attachments stay; any other replacement starts them over.
     pub fn insert(&mut self, pos: Pos, entity: BlockEntity) -> Option<BlockEntity> {
         self.stale(pos);
+        if self.java_held.contains_key(&pos) {
+            self.java_rewritten.insert(pos);
+        }
         let new_is_mod = matches!(entity, BlockEntity::Mod(_));
         let same_type = |old: &BlockEntity| match (old, &entity) {
             (BlockEntity::Mod(old), BlockEntity::Mod(new)) => old.id() == new.id(),
@@ -735,7 +757,7 @@ impl BlockEntities {
                 generations.remove(p);
                 *freed |= live.remove(p).is_some();
                 pending.remove(p);
-                if held.contains(p) && stale_set.insert(*p) {
+                if held.contains_key(p) && stale_set.insert(*p) {
                     stale.push(*p);
                 }
                 forget_mod(mods, *p);
@@ -1182,56 +1204,93 @@ mod tests {
         assert_eq!(order(&mut b, &s), [q, p]);
     }
 
+    fn hold(b: &mut BlockEntities, pos: Pos) -> u64 {
+        let generation = b.generation(&pos).unwrap();
+        b.hold_for_java(pos, generation);
+        generation
+    }
+
     #[test]
     fn natively_changed_positions_of_java_are_logged_once() {
         let (held, other) = ((0, 0, 0), (1, 0, 0));
         let mut b = level();
         b.insert(held, hopper());
         b.insert(other, hopper());
-        b.hold_for_java(held);
+        hold(&mut b, held);
         assert!(b.take_java_stale().is_empty());
         b.get_mut(&held);
         b.get_mut(&held);
         b.get_mut(&other);
         b.insert(other, hopper());
-        assert_eq!(b.take_java_stale(), [held]);
+        assert_eq!(b.take_java_stale(), [(held, false)]);
         assert!(b.take_java_stale().is_empty());
         b.get_mut(&held);
-        assert_eq!(b.take_java_stale(), [held]);
+        assert_eq!(b.take_java_stale(), [(held, false)]);
     }
 
     #[test]
-    fn insert_from_java_is_not_logged() {
+    fn insert_from_java_is_not_logged_and_records_the_generation() {
         let mut b = level();
-        b.hold_for_java((0, 0, 0));
-        b.insert_from_java((0, 0, 0), hopper());
-        b.insert_from_java((0, 0, 0), BlockEntity::Chest(vec![None; 27]));
+        let (_, generation) = b.insert_from_java((0, 0, 0), hopper());
+        assert_eq!(b.generation(&(0, 0, 0)), Some(generation));
+        let (old, again) = b.insert_from_java((0, 0, 0), BlockEntity::Chest(vec![None; 27]));
+        assert!(old.is_some());
+        assert_eq!(again, generation);
+        assert_eq!(b.java_held_generation(&(0, 0, 0)), Some(generation));
         assert!(b.take_java_stale().is_empty());
         assert!(matches!(b.get(&(0, 0, 0)), Some(BlockEntity::Chest(items)) if items.len() == 27));
         b.get_mut(&(0, 0, 0));
-        assert_eq!(b.take_java_stale(), [(0, 0, 0)]);
+        assert_eq!(b.take_java_stale(), [((0, 0, 0), false)]);
+    }
+
+    #[test]
+    fn holding_records_the_generation_and_a_replacement_changes_it() {
+        let p = (0, 0, 0);
+        let mut b = level();
+        b.insert(p, hopper());
+        let held = hold(&mut b, p);
+        assert_eq!(b.java_held_generation(&p), Some(held));
+        b.remove(&p);
+        b.insert(p, hopper());
+        assert_eq!(b.java_held_generation(&p), Some(held));
+        assert_ne!(b.generation(&p), Some(held));
+        assert_eq!(b.take_java_stale(), [(p, true)]);
+    }
+
+    #[test]
+    fn a_data_write_keeps_the_generation_and_is_marked_a_rewrite() {
+        let p = (0, 0, 0);
+        let mut b = level();
+        b.insert(p, hopper());
+        let held = hold(&mut b, p);
+        b.insert(p, hopper());
+        assert_eq!(b.generation(&p), Some(held));
+        assert_eq!(b.take_java_stale(), [(p, true)]);
+        b.get_mut(&p);
+        assert_eq!(b.take_java_stale(), [(p, false)]);
     }
 
     #[test]
     fn removing_a_held_position_is_logged() {
         let mut b = level();
         b.insert((0, 0, 0), hopper());
-        b.hold_for_java((0, 0, 0));
+        hold(&mut b, (0, 0, 0));
         b.remove(&(0, 0, 0));
-        assert_eq!(b.take_java_stale(), [(0, 0, 0)]);
+        assert_eq!(b.take_java_stale(), [((0, 0, 0), false)]);
         b.insert((1, 0, 0), hopper());
-        b.hold_for_java((1, 0, 0));
+        hold(&mut b, (1, 0, 0));
         b.retain(|_, _| false);
-        assert_eq!(b.take_java_stale(), [(1, 0, 0)]);
+        assert_eq!(b.take_java_stale(), [((1, 0, 0), false)]);
     }
 
     #[test]
-    fn releasing_a_position_stops_its_log() {
+    fn releasing_a_position_forgets_its_generation_and_stops_its_log() {
         let mut b = level();
         b.insert((0, 0, 0), hopper());
-        b.hold_for_java((0, 0, 0));
+        hold(&mut b, (0, 0, 0));
         b.get_mut(&(0, 0, 0));
         b.release_for_java(&(0, 0, 0));
+        assert_eq!(b.java_held_generation(&(0, 0, 0)), None);
         assert!(b.take_java_stale().is_empty());
         b.get_mut(&(0, 0, 0));
         b.remove(&(0, 0, 0));
