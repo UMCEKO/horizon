@@ -2,7 +2,11 @@
 //! Mods in the game (`docs/modding/src/how-to/content-mods.md`): content mods' blocks, items, data and
 //! assets (`content_root`), and the Mods page's rows. Code mods are native (`native_hooks.rs`)
 //! or wasm (`horizon-mod-wasm`, loaded at startup); any other executable file is refused.
-use super::{Game, execution_role::ExecutionRole};
+use super::{
+    Game,
+    execution_role::ExecutionRole,
+    owner_link::{ModsReload, OwnerRequest},
+};
 mod menu_books;
 use horizon_client::{
     lang,
@@ -1550,42 +1554,45 @@ impl Game<'_> {
         if !applied {
             return;
         }
-        let root = self.options.resources.clone();
-        let data_source = self.pack.data_source.clone();
-        let data_changes = self.pack.data_changes.clone();
-        let additional_data = self.pack.additional_data.clone();
-        let enabled = self.applied_mods();
-        let selected = self.mods.selected.clone();
-        let refused = self.mods.refused.clone();
-        let reload = move |g: &mut Game<'_>| {
-            let at = std::time::Instant::now();
-            g.options.resources = root;
-            g.pack.data_source = data_source;
-            g.pack.data_changes = data_changes;
-            g.pack.additional_data = additional_data;
-            g.settings.mods.enabled = enabled.clone();
-            g.mods.applied = Some(enabled);
-            g.mods.selected = selected;
-            g.mods.refused = refused;
-            g.mods.data_switched = true;
-            if g.world_root.as_os_str().is_empty() {
-                return;
-            }
-            if let Err(error) = g.reload_datapacks(true, &g.level.enabled_features.clone()) {
-                log::warn!("Horizon: content mods data reload failed: {error}");
-                return;
-            }
-            log::info!(
-                "Horizon: content mods switched live: server data reloaded in {} ms",
-                at.elapsed().as_millis()
-            );
+        let reload = ModsReload {
+            root: self.options.resources.clone(),
+            data_source: self.pack.data_source.clone(),
+            data_changes: self.pack.data_changes.clone(),
+            additional_data: self.pack.additional_data.clone(),
+            enabled: self.applied_mods(),
+            selected: self.mods.selected.clone(),
+            refused: self.mods.refused.clone(),
         };
         log::info!("Horizon: content mods switched live: resources reloaded in {resources_ms} ms");
         if let Some(server) = &self.integrated {
-            server.post(reload);
+            server.tell(OwnerRequest::ReloadMods(Box::new(reload)));
         } else if self.remote.is_none() {
-            reload(self);
+            self.apply_mods_reload(reload);
         }
+    }
+    /// A live switch on the server: its data packs reload from the new root.
+    pub(super) fn apply_mods_reload(&mut self, reload: ModsReload) {
+        let at = std::time::Instant::now();
+        self.options.resources = reload.root;
+        self.pack.data_source = reload.data_source;
+        self.pack.data_changes = reload.data_changes;
+        self.pack.additional_data = reload.additional_data;
+        self.settings.mods.enabled = reload.enabled.clone();
+        self.mods.applied = Some(reload.enabled);
+        self.mods.selected = reload.selected;
+        self.mods.refused = reload.refused;
+        self.mods.data_switched = true;
+        if self.world_root.as_os_str().is_empty() {
+            return;
+        }
+        if let Err(error) = self.reload_datapacks(true, &self.level.enabled_features.clone()) {
+            log::warn!("Horizon: content mods data reload failed: {error}");
+            return;
+        }
+        log::info!(
+            "Horizon: content mods switched live: server data reloaded in {} ms",
+            at.elapsed().as_millis()
+        );
     }
     /// Apply the player's switches at the canonical native and wasm dispatch boundary.
     pub(super) fn sync_native_switches(&self) {

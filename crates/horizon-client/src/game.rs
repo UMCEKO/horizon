@@ -110,6 +110,7 @@ use horizon_client::random_source;
 use loading_window::{
     build_renderer, loading_frame, loading_renderer, prepare_renderer_textures, start_game,
 };
+use owner_link::OwnerRequest;
 // `Action` here is the title screen's buttons (`title::Action`).
 use self::api_values::TryIntoApi;
 pub(crate) use api_values::{block_jump_factor, block_speed_factor, is_ladder};
@@ -15622,7 +15623,9 @@ impl Game<'_> {
         self.lod_level = None;
         let dim = self.dim;
         let source = match (&self.integrated, self.server_far_terrain(), &self.remote) {
-            (Some(server), ..) => server.call(move |game| game.lod_source_in(dim)).flatten(),
+            (Some(server), ..) => server
+                .ask(|reply| OwnerRequest::LodSource(dim, reply))
+                .flatten(),
             (None, Some(offer), Some(remote)) => {
                 let states = self.res.facts().states.len() as u32;
                 let biomes = self.res.biomes().index.clone();

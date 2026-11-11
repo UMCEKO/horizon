@@ -11,6 +11,7 @@ mod residency;
 use super::{
     Game,
     native_living_effects::{active_effect, mob_effect},
+    owner_link::OwnerRequest,
     shield::OFFHAND_SLOT,
 };
 use crate::game::api_values::{TryIntoApi, TryIntoEngine};
@@ -1491,7 +1492,7 @@ impl Game<'_> {
         {
             // The hub is the server thread's.
             let status = server
-                .call(|g| g.lan_status())
+                .ask(OwnerRequest::LanStatus)
                 .ok_or(super::integrated::NO_ANSWER)?;
             return Ok(Some(status));
         }
@@ -1522,7 +1523,7 @@ impl Game<'_> {
     }
 
     /// `horizon-ctl lan status`.
-    fn lan_status(&self) -> serde_json::Value {
+    pub(super) fn lan_status(&self) -> serde_json::Value {
         use serde_json::json;
         match &self.lan {
             Some(h) if !self.serving() || self.published_port().is_some() => json!({
@@ -1573,7 +1574,7 @@ impl Game<'_> {
         let port = if let Some(server) = &self.integrated {
             // ShareToLanScreen: IntegratedServer.publishServer.
             server
-                .call(move |g| g.publish(settings))
+                .ask(|reply| OwnerRequest::Publish(settings, reply))
                 .ok_or(super::integrated::NO_ANSWER)??
         } else if self.serving() {
             return self.publish(settings).map(drop).map_err(Into::into);
@@ -1703,7 +1704,7 @@ impl Game<'_> {
     pub(super) fn lan_close(&mut self, announce: bool) {
         if self.integrated.is_some() || self.serving() {
             let closed = match &self.integrated {
-                Some(server) => server.call(|g| g.unpublish()).unwrap_or(false),
+                Some(server) => server.ask(OwnerRequest::Unpublish).unwrap_or(false),
                 None => self.unpublish(),
             };
             if closed {
@@ -2169,7 +2170,11 @@ impl Game<'_> {
     /// New command access and game mode forcing settings of the open world.
     pub(super) fn lan_apply_settings(&mut self, guest_commands: bool, force: bool) {
         if let Some(server) = &self.integrated {
-            server.call(move |g| g.lan_apply_settings(guest_commands, force));
+            server.ask(|done| OwnerRequest::LanApplySettings {
+                guest_commands,
+                force,
+                done,
+            });
             return;
         }
         // An integrated server gives guests commands only where the world
