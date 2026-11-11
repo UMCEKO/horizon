@@ -1609,6 +1609,8 @@ impl Game<'_> {
         // 🤖 Agent: the split follows the poof, as `LivingEntity.tickDeath`
         // broadcasts event 60 before it calls `remove`.
         for (id, at, width, height, split) in gone {
+            // `LivingEntity.tickDeath` removes the body with KILLED.
+            self.stamp_leave(id, super::native_entities::Removal::Killed);
             let at = [at.x, at.y, at.z];
             self.lan_entity_event(id as i32, 60, at);
             self.death_poof(at, width, height);

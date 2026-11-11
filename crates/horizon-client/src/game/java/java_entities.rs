@@ -31,28 +31,10 @@ const SLOTS: [&str; 8] = [
     "mainhand", "offhand", "feet", "legs", "chest", "head", "body", "saddle",
 ];
 
-/// `Entity.RemovalReason`, in its declaration order: the byte Java's view is told.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub(in crate::game) enum Removal {
-    Killed,
-    Discarded,
-    UnloadedToChunk,
-    UnloadedWithPlayer,
-    ChangedDimension,
-}
+pub(in crate::game) use super::native_entities::Removal;
 
-impl Removal {
-    pub(in crate::game) fn of_ordinal(ordinal: i32) -> Self {
-        match ordinal {
-            0 => Self::Killed,
-            1 => Self::Discarded,
-            2 => Self::UnloadedToChunk,
-            3 => Self::UnloadedWithPlayer,
-            _ => Self::ChangedDimension,
-        }
-    }
-}
+const JOIN_EVENT: &str = "net/neoforged/neoforge/event/entity/EntityJoinLevelEvent";
+const LEAVE_EVENT: &str = "net/neoforged/neoforge/event/entity/EntityLeaveLevelEvent";
 
 /// A UUID as Horizon's four ints, as one number.
 pub(in crate::game) fn uuid_bits(uuid: [i32; 4]) -> u128 {
@@ -62,6 +44,8 @@ pub(in crate::game) fn uuid_bits(uuid: [i32; 4]) -> u128 {
 
 thread_local! {
     static VIEWED: std::cell::RefCell<std::collections::HashSet<(String, u32)>> = Default::default();
+    // The entity whose join is being posted: not in the level yet for any query.
+    static JOINING: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 pub(in crate::game) fn reset_views() {
@@ -560,7 +544,7 @@ impl Game<'_> {
     }
 
     fn java_view_reply(&mut self, t: Target, out: &mut Out) -> bool {
-        let Some(id) = viewed_id(t) else {
+        let Some(id) = viewed_id(t).filter(|id| *id != JOINING.get()) else {
             return false;
         };
         let type_id = self.target_type(t);
@@ -638,12 +622,16 @@ impl Game<'_> {
             return true;
         };
         let (mask, _) = Self::java_shape(&type_id, Some(t));
+        let posted = Self::java_event_admits(JOIN_EVENT, &type_id);
+        let outer = JOINING.replace(id);
         let reply = self.java_entity_request("entity_view", |out| {
             out.int(id as i32);
             out.bool(loaded_from_disk);
             out.bytes(&bytes);
             out.int(mask as i32);
+            out.bool(posted);
         });
+        JOINING.set(outer);
         let Some(reply) = reply else {
             return true;
         };
@@ -656,17 +644,89 @@ impl Game<'_> {
         joined
     }
 
-    /// The leave hook: Java drops the view and sets its removal reason.
-    pub(in crate::game) fn java_entity_left(&mut self, id: u32, why: Removal) {
+    /// Whether the analysis says a listener of `event` hears entities of this type on the server; without facts, every one.
+    fn java_event_admits(event: &str, type_id: &str) -> bool {
+        Self::java_facts().is_none_or(|f| f.event(event).is_some_and(|e| f.admits(e, type_id, false)))
+    }
+
+    /// `Entity.onAddedToLevel` of a joined view, at `startTracking`'s moment.
+    pub(in crate::game) fn java_entity_added(&mut self, id: u32) {
+        if !VIEWED.with_borrow(|v| v.contains(&(self.dim.id().to_owned(), id))) {
+            return;
+        }
+        if let Some(reply) = self.java_entity_request("entity_added", |out| out.int(id as i32)) {
+            self.java_apply_effects(&mut In(&reply));
+        }
+    }
+
+    /// The leave hook: Java sets the view's removal reason, runs `onRemovedFromLevel`, posts the leave and drops the view.
+    pub(in crate::game) fn java_entity_left(&mut self, id: u32, type_id: &str, why: Removal) {
         let dim = self.dim.id().to_owned();
         if !VIEWED.with_borrow_mut(|v| v.remove(&(dim, id))) {
             return;
         }
+        let posted = Self::java_event_admits(LEAVE_EVENT, type_id);
         if let Some(reply) = self.java_entity_request("entity_left", |out| {
             out.int(id as i32);
             out.0.push(why as u8);
+            out.bool(posted);
         }) {
             self.java_apply_effects(&mut In(&reply));
+        }
+    }
+
+    /// A player's view joins or leaves `dimension`'s level; a refused player join is only logged, as `addPlayer`'s result is ignored.
+    pub(in crate::game) fn java_player_level(
+        &mut self,
+        uuid: u128,
+        dimension: &str,
+        join: bool,
+        why: Removal,
+    ) {
+        if self.remote.is_some() || !super::java_mods::java_server_started() {
+            return;
+        }
+        let mut out = Out::default();
+        out.long((uuid >> 64) as i64);
+        out.long(uuid as i64);
+        out.text(dimension);
+        out.0.push(u8::from(!join));
+        out.0.push(why as u8);
+        let Some(reply) = self.java_request("player_level", &out.0) else {
+            return;
+        };
+        let mut reply = In(&reply);
+        if join && !reply.bool().unwrap_or(true) {
+            log::warn!("Horizon: a Java mod canceled player {uuid:032x} joining {dimension}; it joins anyway, as vanilla ignores it");
+        } else if !join {
+            reply.bool();
+        }
+        self.java_apply_effects(&mut reply);
+    }
+
+    /// The level just started running in Java: its entities loaded before then join now, from disk, in the order the level holds them.
+    pub(in crate::game) fn java_entities_catch_up(&mut self) {
+        self.native_joins_flush(true, 0);
+        let dim = self.dim.id().to_owned();
+        let behind: Vec<u32> = self
+            .level_candidates()
+            .into_iter()
+            .filter_map(viewed_id)
+            .filter(|id| {
+                self.persist.live.binary_search_by_key(id, |l| l.0).is_ok()
+                    && !VIEWED.with_borrow(|v| v.contains(&(dim.clone(), *id)))
+            })
+            .collect();
+        for id in behind {
+            if self.java_entity_joining(id, true) {
+                self.java_entity_added(id);
+                continue;
+            }
+            // Refused: out of the level with no leave, as a canceled join has none.
+            self.native_leave_skip(id);
+            if let Some(entity) = self.entity(id) {
+                self.entity_remove(entity, mod_api::RemovalReason::Discarded);
+            }
         }
     }
 

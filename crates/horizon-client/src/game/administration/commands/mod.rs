@@ -2556,6 +2556,10 @@ impl Game<'_> {
         let _ = self.in_target_level(t, |g| g.kill_target_in_level(t));
     }
     pub(super) fn kill_target_in_level(&mut self, t: Target) {
+        // `Entity.kill` removes with KILLED; a mob's body goes at the end of its death.
+        if let Some(id) = super::native_entity_remove::killed_id(t) {
+            self.stamp_leave(id, super::native_entities::Removal::Killed);
+        }
         // Entity.kill (BlockAttachedEntity.kill; ArmorStand's generic_kill hit,
         // which bypasses its invulnerability; a vehicle is no LivingEntity):
         // removed, then ENTITY_DIE by the entity itself. Mobs post theirs as

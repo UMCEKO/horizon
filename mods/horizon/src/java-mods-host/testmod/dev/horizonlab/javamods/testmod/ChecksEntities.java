@@ -24,6 +24,7 @@ final class ChecksEntities {
     private static ItemEntity doomed;
     private static PrimedTnt fused;
     private static Chicken bystander;
+    private static ItemEntity diamond;
 
     static void run(UseOnContext context, BlockPos area) {
         Level level = context.getLevel();
@@ -39,6 +40,7 @@ final class ChecksEntities {
         Checks.check("server_entity_lookup", () -> ((net.minecraft.server.level.ServerLevel) level).getEntity(player.getUUID()) == player);
         var drop = new ItemEntity(level, area.getX() + 0.5, area.getY() + 1, area.getZ() + 0.5, new ItemStack(Items.DIAMOND, 2));
         Checks.check("spawn_item", () -> level.addFreshEntity(drop));
+        diamond = drop;
         Checks.check("spawn_is_native_at_once", () -> drop.getId() > 0 && ((net.minecraft.server.level.ServerLevel) level).getEntity(drop.getId()) == drop);
         doomed = new ItemEntity(level, area.getX() + 0.5, area.getY() + 1, area.getZ() - 1.5, new ItemStack(Items.EMERALD, 1));
         Checks.check("spawn_item_to_discard", () -> level.addFreshEntity(doomed));
@@ -125,7 +127,16 @@ final class ChecksEntities {
         if (chickens.isEmpty()) return;
         Chicken chicken = chickens.get(0);
         Checks.check("mob_saved_form_read", () -> chicken.getHealth() > 0 && chicken.isAlive());
-        if (spawned != null) Checks.check("spawned_mob_is_the_live_view", () -> chicken == spawned);
+        if (spawned != null) {
+            Checks.check("spawned_mob_is_the_live_view", () -> chicken == spawned);
+            var join = EntityLife.JOINS.get(spawned.getId());
+            Checks.check("join_fired_once_fresh", () -> join != null && join.count() == 1 && !join.fromDisk());
+            Checks.check("join_before_level", () -> join != null && !join.visibleWhileJoining());
+        }
+        // The harness kills the diamond with `/kill` (`Entity.kill`); the emerald below is discarded.
+        if (diamond != null) Checks.check("leave_with_reason_killed", () -> "KILLED".equals(EntityLife.LEAVES.get(diamond.getId())));
+        Checks.check("refused_bat_absent", () -> !EntityLife.REFUSED.isEmpty() && EntityLife.BAT_LEAVES.isEmpty()
+                && level.getEntitiesOfClass(net.minecraft.world.entity.ambient.Bat.class, box).isEmpty());
         chicken.setHealth(1.5F);
         Checks.check("set_health_writes_through", () -> ((net.minecraft.server.level.ServerLevel) level).getEntity(chicken.getId()) == chicken && chicken.getHealth() == 1.5F);
         chicken.setPathfindingMalus(net.minecraft.world.level.pathfinder.PathType.WATER, 0F);
@@ -158,6 +169,7 @@ final class ChecksEntities {
             int id = doomed.getId();
             doomed.discard();
             Checks.check("discard_writes_through", () -> ((net.minecraft.server.level.ServerLevel) level).getEntity(id) == null && doomed.isRemoved());
+            Checks.check("leave_with_reason_discarded", () -> "DISCARDED".equals(EntityLife.LEAVES.get(id)));
         }
     }
 
@@ -177,6 +189,10 @@ final class ChecksEntities {
         Checks.check("mob_change_written_back", () -> chickens.stream().anyMatch(c -> c.getHealth() == 1.5F));
         Checks.check("mob_name_written_back", () -> chickens.stream().anyMatch(c -> c.hasCustomName() && "java".equals(c.getCustomName().getString())));
         Checks.check("persistent_data_saved", () -> chickens.stream().anyMatch(c -> c.getPersistentData().getIntOr("horizon_java_test", 0) == 7));
+        Checks.check("join_from_disk", () -> chickens.stream().anyMatch(c -> {
+            var join = EntityLife.JOINS.get(c.getId());
+            return c.hasCustomName() && join != null && join.count() == 1 && join.fromDisk();
+        }));
         var arrows = level.getEntitiesOfClass(net.minecraft.world.entity.projectile.arrow.AbstractArrow.class, new AABB(area).inflate(6));
         Checks.check("projectile_owner_survives_reload", () -> arrows.stream().anyMatch(a -> a.getOwner() == context.getPlayer()));
     }

@@ -85,6 +85,8 @@ public final class GameBridge {
     private static final int SLOTS = 41;
     private static final Map<String, ServerLevel> LEVELS = new HashMap<>();
     private static final Map<UUID, ServerPlayer> PLAYERS = new HashMap<>();
+    // The level each player's view last joined, so a join or leave a second site tells is not posted twice.
+    private static final Map<UUID, ServerLevel> JOINED = new HashMap<>();
     private static final List<Sound> SOUNDS = new ArrayList<>();
     // Volatile: the Java client reads both from its own thread, as the integrated server's registries and server.
     private static volatile RegistryAccess.Frozen registries;
@@ -123,7 +125,9 @@ public final class GameBridge {
         Crossing.game("block_entity_load", GameBridge::blockEntityLoad);
         Crossing.game("block_entity_drop", GameBridge::blockEntityDrop);
         Crossing.game("entity_view", GameBridge::entityView);
+        Crossing.game("entity_added", GameBridge::entityAdded);
         Crossing.game("entity_left", GameBridge::entityLeft);
+        Crossing.game("player_level", GameBridge::playerLevel);
         Crossing.game("entity_refresh", GameBridge::entityRefresh);
         Crossing.game("entities_save", GameBridge::entitiesSave);
         Crossing.game("block_entities_save", GameBridge::blockEntitiesSave);
@@ -432,6 +436,8 @@ public final class GameBridge {
         // `PlayerList.placeNewPlayer`: a connected client gets its login once the player is in place.
         if (Clients.joining(player.getUUID())) safely("the client's login", () -> Menus.login(player));
         if (joined) {
+            // `placeNewPlayer` adds the player to its level (`addNewPlayer`) before PlayerLoggedIn.
+            if (!playerJoins(player, level)) System.err.println("Horizon: a Java mod canceled player " + name + " joining " + level.dimension() + "; it joins anyway, as vanilla ignores it");
             safely("PlayerLoggedIn", () -> EventHooks.firePlayerLoggedIn(player));
             safely("chunks sent before the player's view", () -> Tracking.joined(player, level));
         }
@@ -612,7 +618,7 @@ public final class GameBridge {
         return player.gameMode.getGameModeForPlayer();
     }
 
-    private static void safely(String what, Runnable step) {
+    static void safely(String what, Runnable step) {
         long start = Profile.ON ? System.nanoTime() : 0;
         try {
             step.run();
@@ -681,6 +687,7 @@ public final class GameBridge {
     private static void closeWorld() {
         LEVELS.clear();
         PLAYERS.clear();
+        JOINED.clear();
         SOUNDS.clear();
         nextEntityId = -1;
         ServerView.closeWorld(server);
@@ -758,6 +765,8 @@ public final class GameBridge {
         if (player != null) {
             safely("closing the open menu", () -> Menus.close(player));
             safely("PlayerLoggedOut", () -> EventHooks.firePlayerLoggedOut(player));
+            var in = JOINED.remove(left);
+            if (in != null) playerLeaves(player, in, Entity.RemovalReason.UNLOADED_WITH_PLAYER);
             ServerView.detach(server, player);
         }
         if (Clients.remote(left)) Clients.leave(left);
@@ -889,23 +898,77 @@ public final class GameBridge {
         var in = new DataInputStream(new ByteArrayInputStream(input));
         var level = levelOf(in);
         int id = in.readInt();
-        in.readBoolean();
+        boolean fromDisk = in.readBoolean();
         byte[] tag = in.readNBytes(in.readInt());
-        EntityViews.join(level, id, tag);
+        in.readInt();
+        boolean joined = EntityViews.join(level, id, tag, fromDisk, in.readBoolean());
         var bytes = new ByteArrayOutputStream();
         var out = new DataOutputStream(bytes);
-        out.writeBoolean(true);
+        out.writeBoolean(joined);
         writeEffects(out);
         return bytes.toByteArray();
     }
 
-    /** A native entity left, for the reason (`Entity.RemovalReason` ordinal). */
+    /** A joined native entity is in its level for good: `onAddedToLevel`. */
+    private static byte[] entityAdded(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        var level = levelOf(in);
+        EntityViews.added(level, in.readInt());
+        return effects();
+    }
+
+    /** A native entity left, for the reason (`Entity.RemovalReason` ordinal); the leave is posted when a listener hears its type. */
     private static byte[] entityLeft(byte[] input) throws Exception {
         var in = new DataInputStream(new ByteArrayInputStream(input));
         var level = levelOf(in);
         int id = in.readInt();
-        EntityViews.left(level, id, in.readByte());
+        int reason = in.readByte();
+        EntityViews.left(level, id, reason, in.readBoolean());
         return effects();
+    }
+
+    /** A player's view joins (`addPlayer`) or leaves (`removePlayerImmediately`) a level; the reply is the join's result, then the call's effects. */
+    private static byte[] playerLevel(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        var player = PLAYERS.get(new UUID(in.readLong(), in.readLong()));
+        var level = level(text(in));
+        boolean leave = in.readByte() != 0;
+        var reason = Entity.RemovalReason.values()[in.readByte()];
+        boolean joined = true;
+        if (player != null && leave) {
+            if (JOINED.get(player.getUUID()) == level) {
+                playerLeaves(player, level, reason);
+                JOINED.remove(player.getUUID());
+            }
+        } else if (player != null && JOINED.get(player.getUUID()) != level) {
+            if (player.level() != level) ServerView.moved(player, level);
+            joined = playerJoins(player, level);
+        }
+        var bytes = new ByteArrayOutputStream();
+        var out = new DataOutputStream(bytes);
+        out.writeBoolean(joined);
+        writeEffects(out);
+        return bytes.toByteArray();
+    }
+
+    /** `ServerLevel.addPlayer`'s join, then `onAddedToLevel`; the event's result, which vanilla ignores. */
+    private static boolean playerJoins(ServerPlayer player, ServerLevel level) {
+        var event = new net.neoforged.neoforge.event.entity.EntityJoinLevelEvent(player, level, false);
+        safely("EntityJoinLevelEvent", () -> NeoForge.EVENT_BUS.post(event));
+        JOINED.put(player.getUUID(), level);
+        safely("onAddedToLevel", player::onAddedToLevel);
+        EntityViews.debug(player, event.isCanceled() ? "refused" : "joined");
+        return !event.isCanceled();
+    }
+
+    /** `removePlayerImmediately`: the reason set raw, `onRemovedFromLevel`, then the leave. */
+    private static void playerLeaves(ServerPlayer player, ServerLevel level, Entity.RemovalReason reason) {
+        ((dev.horizonlab.javamods.boot.mixin.EntityAccess) player).horizon$removal(reason);
+        safely("onRemovedFromLevel", player::onRemovedFromLevel);
+        safely("EntityLeaveLevelEvent", () -> NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent(player, level)));
+        EntityViews.debug(player, "left " + reason);
+        // A player view lives on through a change of level or a respawn; only a logout ends it.
+        if (reason != Entity.RemovalReason.UNLOADED_WITH_PLAYER) ((dev.horizonlab.javamods.boot.mixin.EntityAccess) player).horizon$removal(null);
     }
 
     /** A bridge changed a native entity: the group bytes of what it wrote reach its view. */

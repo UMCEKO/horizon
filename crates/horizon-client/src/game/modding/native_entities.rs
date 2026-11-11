@@ -143,6 +143,32 @@ impl Game<'_> {
     }
 }
 
+/// `Entity.RemovalReason`, in its declaration order: why an entity left, as the few sites that know it stamp it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(in crate::game) enum Removal {
+    Killed,
+    Discarded,
+    UnloadedToChunk,
+    // Only a Java mod's `remove` names it; Java's own logout sets it there.
+    #[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+    UnloadedWithPlayer,
+    ChangedDimension,
+}
+
+#[cfg(feature = "java-mods")]
+impl Removal {
+    pub(in crate::game) fn of_ordinal(ordinal: i32) -> Self {
+        match ordinal {
+            0 => Self::Killed,
+            1 => Self::Discarded,
+            2 => Self::UnloadedToChunk,
+            3 => Self::UnloadedWithPlayer,
+            _ => Self::ChangedDimension,
+        }
+    }
+}
+
 /// The entities the walk does not hold: Horizon keeps these in lists of their own.
 #[derive(Clone, Copy)]
 enum Apart {
@@ -224,6 +250,8 @@ impl Game<'_> {
                 kept &= id != watch;
             } else {
                 self.remember_join(id, kind.into_owned());
+                // `onAddedToLevel`, as the entity starts being tracked.
+                self.java_hook_entity_added(id);
             }
         }
         self.persist.joined_seq = self.persist.joined_seq.max(observed);
@@ -362,6 +390,22 @@ impl Game<'_> {
             self.persist.live.remove(i);
         }
     }
+    /// Why announced entity `id`, about to go, leaves: read by its leave, else it leaves `DISCARDED`.
+    pub(super) fn stamp_leave(&mut self, id: u32, why: Removal) {
+        if self.persist.live.binary_search_by_key(&id, |l| l.0).is_err() {
+            return;
+        }
+        match self.persist.leaving.iter_mut().find(|(at, _)| *at == id) {
+            Some(stamp) => stamp.1 = why,
+            None => self.persist.leaving.push((id, why)),
+        }
+    }
+    fn leave_reason(&mut self, id: u32, fallback: Removal) -> Removal {
+        match self.persist.leaving.iter().position(|(at, _)| *at == id) {
+            Some(i) => self.persist.leaving.swap_remove(i).1,
+            None => fallback,
+        }
+    }
     /// Entity `id` has left the level: told once, if mods were told it joined.
     pub(super) fn native_entity_left(&mut self, id: u32) {
         if self.remote.is_some() {
@@ -369,9 +413,10 @@ impl Game<'_> {
         }
         if let Ok(i) = self.persist.live.binary_search_by_key(&id, |l| l.0) {
             let (id, kind, _) = self.persist.live.remove(i);
+            let why = self.leave_reason(id, Removal::Discarded);
             let dimension = self.dim.id();
             self.native_entity_leave_level(dimension, id, &kind);
-            self.java_hook_entity_left(id);
+            self.java_hook_entity_left(id, &kind, why);
         }
     }
     /// Tells `native_entity_leave_level` for every announced entity that is
@@ -380,9 +425,14 @@ impl Game<'_> {
     /// there in the registry and tells the rest: no allocation, and nothing
     /// runs when no mod is loaded or none was announced.
     pub(super) fn native_leaves_flush(&mut self) {
+        self.native_leaves_flush_as(Removal::Discarded);
+    }
+    /// `native_leaves_flush`, where the departures no site stamped leave for `fallback` (a chunk's unload).
+    pub(super) fn native_leaves_flush_as(&mut self, fallback: Removal) {
         use super::entity::Entity;
         self.native_removals_flush();
         if self.persist.live.is_empty() || self.remote.is_some() {
+            self.persist.leaving.clear();
             return;
         }
         for l in &mut self.persist.live {
@@ -406,10 +456,16 @@ impl Game<'_> {
         }
         while let Some(i) = self.persist.live.iter().position(|l| !l.2) {
             let (id, kind, _) = self.persist.live.remove(i);
+            let why = self.leave_reason(id, fallback);
             let dimension = self.dim.id();
             self.native_entity_leave_level(dimension, id, &kind);
-            self.java_hook_entity_left(id);
+            self.java_hook_entity_left(id, &kind, why);
         }
+        // A stamp left over names an entity on its way out, still in its list.
+        let live = &self.persist.live;
+        self.persist
+            .leaving
+            .retain(|(id, _)| live.binary_search_by_key(id, |l| l.0).is_ok());
     }
 }
 

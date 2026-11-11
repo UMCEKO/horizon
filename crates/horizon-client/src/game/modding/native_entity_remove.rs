@@ -36,6 +36,9 @@ impl Game<'_> {
                 true
             }
             Some(t) => {
+                if killed {
+                    self.stamp_leave(entity.id(), super::native_entities::Removal::Killed);
+                }
                 // Read before the entity counts as removed: its handle stops resolving.
                 let passengers = self.entity_passengers(entity).unwrap_or_default();
                 // `Entity.setRemoved`: the reason first, so the hooks below see
@@ -94,6 +97,9 @@ impl Game<'_> {
     }
     /// A mob leaves the level: its effects act first when it was killed.
     fn remove_mob_now(&mut self, id: u32, killed: bool) {
+        if killed {
+            self.stamp_leave(id, super::native_entities::Removal::Killed);
+        }
         let Some(i) = self.mobs.iter().position(|m| m.id == id && !m.removed) else {
             return;
         };
@@ -176,6 +182,35 @@ impl Game<'_> {
                 }
             }
         }
+    }
+}
+
+/// The id `/kill` removes at once with `KILLED`: not a player's, a mob's (its body waits for its death) or a dragon part's.
+pub(super) fn killed_id(t: Target) -> Option<u32> {
+    match t {
+        Target::Player | Target::Guest(_) | Target::Mob(_) | Target::DragonPart(_) => None,
+        Target::Item(id)
+        | Target::Orb(id)
+        | Target::Projectile(id)
+        | Target::Stand(id)
+        | Target::Frame(id)
+        | Target::Painting(id)
+        | Target::Boat(id)
+        | Target::Cart(id)
+        | Target::Other(id)
+        | Target::Crystal(id)
+        | Target::Dragon(id)
+        | Target::Fangs(id)
+        | Target::Tnt(id)
+        | Target::Bolt(id)
+        | Target::Falling(id)
+        | Target::Rocket(id)
+        | Target::Trident(id)
+        | Target::Spawner(id)
+        | Target::Cloud(id)
+        | Target::Cushion(id)
+        | Target::Hook(id)
+        | Target::Knot(id) => Some(id),
     }
 }
 

@@ -402,6 +402,10 @@ def bridges(args):
         send(f'command setblock {machine} {y + 8} {z} minecraft:chest')
         send(f'command setblock {machine} {y + 10} {z} minecraft:air')
         send(f'command tp @s {x} {y} {z}')
+        # The test mod refuses every bat's join, and the wand's diamond leaves KILLED.
+        send(f'command summon minecraft:bat {base[0] + 28} {y + 1} {base[2]}')
+        send('command kill @e[type=item,nbt={Item:{id:"minecraft:diamond"}}]')
+        send('wait 5')
         send('give horizon_java_test:probe')
         send('wait 40')
         send('select horizon_java_test:probe')
