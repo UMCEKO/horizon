@@ -19,7 +19,8 @@ The bots can run on another machine, so they don't take the server's CPU: `--bot
 `--bots-bin` naming horizon-bots there and `--connect` the address it reaches this machine at. `--nice 19`
 runs every server at the lowest priority (a shared machine). The explore bots fly as fast as each server
 sends them chunks, so a faster server gets more terrain to generate; `--explore-speed` slows them to a rate
-both servers keep up with, for equal work. After the runs, the work table compares the servers at each bot
+both servers keep up with, for equal work (`--spread` does not set it: its explorers also fly as fast as chunks
+come). After the runs, the work table compares the servers at each bot
 count: chunks sent and new chunks generated a second, against the busiest server's. A run whose work is more
 than 10 % apart isn't a fair comparison of its tick times.
 
@@ -444,13 +445,15 @@ def run_once(kind, bots, behaviour, args, out):
         total = bots * args.join_every + args.warmup + args.seconds
         # The summary comes back on stdout after the per-second lines, so it works over ssh too.
         # No bots: the idle server, measured the same way.
+        # A pipe nobody reads fills up at ~1 000 chunks a second and blocks every bot at once.
+        bots_err = open(out / f'{name}-bots.err', 'w')
         bot_process = subprocess.Popen(['true'] if bots == 0 else [
              *bots_command(args), '--server', f'{args.connect}:{port}', '--bots', str(bots),
              '--behaviour', behaviour, '--join-every', str(args.join_every), '--seconds', str(int(total)),
              '--seed', str(args.seed), '--report', '-',
              *(['--explore-speed', str(args.explore_speed)] if args.explore_speed else []),
              *(['--height', '0', '--ground'] if args.ground else [])],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdout=subprocess.PIPE, stderr=bots_err, text=True)
         bot_lines = []
         threading.Thread(target=lambda: bot_lines.extend(bot_process.stdout), daemon=True).start()
         if args.spread and bots:
@@ -474,6 +477,7 @@ def run_once(kind, bots, behaviour, args, out):
                     ticks.append(t)
                 next_query = now + 5
         bot_process.wait(timeout=total + 120)
+        bots_err.close()
         time.sleep(0.5)
         measured, rest = [], []
         for line in list(bot_lines):
@@ -602,7 +606,9 @@ def main():
     parser.add_argument('--connect', default='127.0.0.1', help='the address the bots reach the server at')
     parser.add_argument('--pumpkin', type=Path, default=None, help='the Pumpkin binary (--servers pumpkin)')
     parser.add_argument('--spread', type=int, default=0,
-                        help='teleport every bot to a random spot in an N x N square (blocks) after it joins; 0: off')
+                        help='teleport every bot to a random spot in an N x N square (blocks) after it joins; 0: off. '
+                             'The explore bots keep their default speed (as fast as chunks come): the work grows '
+                             'with the server\'s chunk rate, so pass --explore-speed for a fixed workload')
     parser.add_argument('--repeat', type=int, default=1,
                         help='rounds: every server and bot count once per round, the servers alternated')
     args = parser.parse_args()
