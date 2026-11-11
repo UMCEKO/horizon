@@ -3255,7 +3255,7 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::{EventTimings, OFFHAND_SLOT, equipment_slot_name, living_flags, mob_freeze_meta};
 
     #[test]
@@ -4056,7 +4056,7 @@ mod tests {
     }
 
     /// A hub with no players and empty registries, for `mob_meta`.
-    pub(super) fn meta_hub(name: &str) -> horizon_client::lan::hub::Hub {
+    pub(in crate::game) fn meta_hub(name: &str) -> horizon_client::lan::hub::Hub {
         use horizon_client::lan::{Lan, NetConfig, chunks::ChunkEncoder, data, hub};
         let mut sync = data::SyncData::empty();
         for (registry, id) in [

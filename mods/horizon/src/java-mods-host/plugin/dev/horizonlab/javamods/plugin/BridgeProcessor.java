@@ -31,6 +31,8 @@ import org.objectweb.asm.tree.VarInsnNode;
 /** Gives each method in Rust's table a first step that jumps to its native; runs before Mixin, so mods' HEAD and RETURN injections still apply. */
 final class BridgeProcessor implements ClassProcessor {
     private static final String FLAT = "dev/horizonlab/javamods/boot/Flat";
+    /** A backed view's bridge settles the groups its native wrote here, after the native returns. */
+    private static final String VIEWS = "dev/horizonlab/javamods/boot/EntityViews";
 
     private static final String ROUTING = "dev/horizonlab/javamods/boot/Routing";
     /** W5's class; the unit check points it at a stand-in. */
@@ -196,6 +198,7 @@ final class BridgeProcessor implements ClassProcessor {
             local += param.getSize();
         }
         head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, entry.holder(), entry.nativeName, entry.rawDesc(), false));
+        if (entry.guard.equals("@" + VIEWS + ".backed")) head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, VIEWS, "settle", "()V", false));
         if (result.getSort() >= Type.ARRAY && !entry.ret.equals(result.getDescriptor())) {
             String simple = result.getClassName().substring(Math.max(result.getClassName().lastIndexOf('.'), result.getClassName().lastIndexOf('$')) + 1);
             head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, FLAT, "to" + simple, "(" + entry.ret + ")" + result.getDescriptor(), false));

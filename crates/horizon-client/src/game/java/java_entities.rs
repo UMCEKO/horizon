@@ -62,11 +62,59 @@ pub(in crate::game) fn uuid_bits(uuid: [i32; 4]) -> u128 {
 
 thread_local! {
     static VIEWED: std::cell::RefCell<std::collections::HashSet<(String, u32)>> = Default::default();
+    static NBT_COUNTS: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+    static SETTLE: std::cell::RefCell<(i32, Out)> = std::cell::RefCell::new((0, Out::default()));
 }
 
 pub(in crate::game) fn reset_views() {
     VIEWED.with_borrow_mut(|v| v.clear());
+    SETTLE.take();
 }
+
+/// Entity saved forms this thread built and loaded back for Java since the last take, for the profile line.
+pub(in crate::game) fn take_nbt_counts() -> (u64, u64) {
+    NBT_COUNTS.take()
+}
+
+fn count_nbt(builds: u64, loads: u64) {
+    let (b, l) = NBT_COUNTS.get();
+    NBT_COUNTS.set((b + builds, l + loads));
+}
+
+/// `EntityViews.settled`: what bridges wrote since the last settle, as count then level, id, mask and group bytes.
+pub(in crate::game) fn take_settled() -> Vec<u8> {
+    let (count, entries) = SETTLE.take();
+    if count == 0 {
+        return Vec::new();
+    }
+    let mut out = Out::default();
+    out.int(count);
+    out.0.extend(entries.0);
+    out.0
+}
+
+/// How a bridge writes a field it once patched into the entity's saved form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::game) enum Via {
+    /// Ari's setter by `EntityRef`, named.
+    Setter(&'static str),
+    /// The saved form, loaded back as `/data merge entity` does; the reason ari's setter can't.
+    Nbt(&'static str),
+}
+
+/// Every saved key a bridge wrote through NBT, and how it writes it now.
+pub(in crate::game) const FIELD_WRITES: [(&str, Via); 4] = [
+    ("CustomName", Via::Setter("entity_set_custom_name")),
+    ("PickupDelay", Via::Setter("item_entity_set_never_pickup")),
+    ("Age", Via::Nbt("ari reads item_entity_age but has no setter")),
+    ("Color", Via::Nbt("ari has no sheep colour setter")),
+];
+
+/// The groups in the order `write_groups` writes them.
+const GROUPS: [u32; 14] = [
+    POSITION, MOTION, HEALTH, EFFECTS, EQUIPMENT, FIRE, AIR, FLAGS, NAME, ITEM, RIDING, REMOVAL,
+    SPECIES, AI,
+];
 
 /// The species group of a view whose Java class keeps state the saved form lacks.
 #[derive(Default)]
@@ -547,6 +595,7 @@ impl Game<'_> {
     /// The group bytes of the entity `t` for `mask`, and its saved form beside them.
     fn java_groups(&mut self, t: Target, mask: u32) -> Option<(Vec<u8>, Tag)> {
         let type_id = self.target_type(t);
+        count_nbt(1, 0);
         let tag = self.command_target_nbt(t)?;
         let over = self.java_overlay(t);
         let (_, shape) = Self::java_shape(&type_id, Some(t));
@@ -559,21 +608,156 @@ impl Game<'_> {
         Some((out.0, tag))
     }
 
+    /// One group of `t` read from native through ari's getters, as `write_groups` would write it; false when it has none.
+    fn java_typed_group(
+        &self,
+        t: Target,
+        over: &Overlay,
+        shape: Shape,
+        group: u32,
+        out: &mut Out,
+    ) -> bool {
+        let entity = viewed_id(t).and_then(|id| self.entity(id));
+        let mob = match t {
+            Target::Mob(id) => self.mobs.iter().find(|m| m.id == id),
+            _ => None,
+        };
+        match group {
+            POSITION => {
+                // Ari's rotation is 0 for an item, whose saved yaw is its own.
+                let rotation = |e| match t {
+                    Target::Mob(_) => self.entity_rotation(e),
+                    Target::Item(id) => Some(self.dropped.iter().find(|i| i.id == id)?.rotation),
+                    _ => None,
+                };
+                let Some((pos, [yaw, pitch])) =
+                    entity.and_then(|e| Some((self.entity_position(e)?, rotation(e)?)))
+                else {
+                    return false;
+                };
+                for v in pos {
+                    out.double(v);
+                }
+                out.float(yaw);
+                out.float(pitch);
+                out.float(over.head.unwrap_or(yaw));
+                out.float(over.body.unwrap_or(yaw));
+            }
+            MOTION => {
+                let Some((velocity, on_ground)) = entity
+                    .and_then(|e| Some((self.entity_velocity(e)?, self.entity_on_ground(e)?)))
+                else {
+                    return false;
+                };
+                for v in velocity {
+                    out.double(v);
+                }
+                out.bool(on_ground);
+            }
+            HEALTH if !shape.living => out.bool(false),
+            HEALTH => {
+                let (Some(m), Some(health)) = (
+                    mob,
+                    entity
+                        .and_then(|e| self.living(e))
+                        .and_then(|l| self.living_health(l)),
+                ) else {
+                    return false;
+                };
+                out.bool(true);
+                out.float(health);
+                out.float(m.absorption);
+                out.0.extend((over.hurt.unwrap_or(0) as i16).to_be_bytes());
+                out.0.extend((over.death.unwrap_or(0) as i16).to_be_bytes());
+            }
+            EFFECTS | EQUIPMENT if !shape.living => out.int(0),
+            FIRE => {
+                let Some(fire) = entity.and_then(|e| self.entity_fire_ticks(e)) else {
+                    return false;
+                };
+                out.int(fire);
+            }
+            AIR => {
+                let Some(air) = entity.and_then(|e| self.entity_air_supply(e)) else {
+                    return false;
+                };
+                out.int(air);
+            }
+            FLAGS => {
+                let (Some(m), Some(e)) = (mob, entity) else {
+                    return false;
+                };
+                let Some(on_ground) = self.entity_on_ground(e) else {
+                    return false;
+                };
+                let mut bits = 0_i32;
+                for (on, bit) in [
+                    (on_ground, 1),
+                    (over.crouching, 2),
+                    (over.sprinting, 4),
+                    (m.silent, 16),
+                    (m.glowing, 32),
+                    (m.invisible, 64),
+                    (m.no_gravity, 128),
+                ] {
+                    if on {
+                        bits |= bit;
+                    }
+                }
+                // Only a sheep and a shulker save `Color`.
+                if matches!(
+                    m.species(),
+                    horizon_client::mobs::Species::Sheep | horizon_client::mobs::Species::Shulker
+                ) {
+                    bits |= (i32::from(m.extra.color as i8) & 15) << 16;
+                }
+                out.int(bits);
+            }
+            ITEM if !shape.item => out.bool(false),
+            RIDING | REMOVAL | SPECIES | AI => {
+                write_groups(out, &Tag::Compound(Compound::new()), over, shape, group);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// The group bytes of `t` for `mask`: each group through ari's getters, the saved form built once for those with none.
+    fn java_group_bytes(&mut self, t: Target, mask: u32) -> Option<Vec<u8>> {
+        let type_id = self.target_type(t);
+        let (_, shape) = Self::java_shape(&type_id, Some(t));
+        let over = self.java_overlay(t);
+        let mut out = Out::default();
+        let mut saved: Option<Tag> = None;
+        for group in GROUPS.into_iter().filter(|g| mask & g != 0) {
+            let mut typed = Out::default();
+            if self.java_typed_group(t, &over, shape, group, &mut typed) {
+                out.0.extend(typed.0);
+                continue;
+            }
+            if saved.is_none() {
+                count_nbt(1, 0);
+                saved = Some(self.command_target_nbt(t)?);
+            }
+            write_groups(&mut out, saved.as_ref()?, &over, shape, group);
+        }
+        Some(out.0)
+    }
+
     fn java_view_reply(&mut self, t: Target, out: &mut Out) -> bool {
         let Some(id) = viewed_id(t) else {
             return false;
         };
         let type_id = self.target_type(t);
         let (mask, _) = Self::java_shape(&type_id, Some(t));
-        let Some((groups, tag)) = self.java_groups(t, mask) else {
-            return false;
-        };
         let known = VIEWED.with_borrow(|v| v.contains(&(self.dim.id().to_owned(), id)));
-        let Some(saved) = (if known {
-            Some(Vec::new())
+        let reply = if known {
+            self.java_group_bytes(t, mask).map(|g| (g, Vec::new()))
         } else {
-            write_tag(tag)
-        }) else {
+            self.java_groups(t, mask)
+                .and_then(|(g, tag)| Some((g, write_tag(tag)?)))
+        };
+        let Some((groups, saved)) = reply else {
             return false;
         };
         out.int(id as i32);
@@ -721,21 +905,22 @@ impl Game<'_> {
         }
     }
 
-    /// Sends the groups of `mask` of the entity `id` to its view, after a bridge changed them.
+    /// The groups of `mask` of the entity `id`, read from native after a bridge wrote them, for the bridge's stub to settle on its view.
     pub(in crate::game) fn java_refresh_entity(&mut self, id: u32, mask: u32) {
         let Some(t) = self.java_target(id) else {
             return;
         };
-        let Some((groups, _)) = self.java_groups(t, mask) else {
+        let Some(groups) = self.java_group_bytes(t, mask) else {
             return;
         };
-        if let Some(reply) = self.java_entity_request("entity_refresh", |out| {
+        let dim = self.dim.id();
+        SETTLE.with_borrow_mut(|(count, out)| {
+            *count += 1;
+            out.text(dim);
             out.int(id as i32);
             out.int(mask as i32);
-            out.0.extend(groups);
-        }) {
-            self.java_apply_effects(&mut In(&reply));
-        }
+            out.bytes(&groups);
+        });
     }
 
     /// `EntityViews.spawn`: a mod's new entity into the level the way `/summon` adds one; its id, 0 when refused.
@@ -766,6 +951,7 @@ impl Game<'_> {
         let Some(t) = self.java_target(id) else {
             return false;
         };
+        count_nbt(1, 1);
         let Some(Tag::Compound(mut map)) = self.command_target_nbt(t) else {
             return false;
         };
@@ -1381,6 +1567,53 @@ mod tests {
         assert_eq!((r.float(), r.bool()), (Some(2.0), Some(true)));
         assert_eq!((r.int(), r.int(), r.long()), (Some(1), Some(3), Some(-7)));
         assert!(r.0.is_empty());
+    }
+
+    /// Every group read through ari's getters is the byte the saved form gives, for a mob, a sheep and an item.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn java_entity_setters_typed_groups_match_the_saved_form() {
+        use horizon_client::mobs::Mob;
+        crate::game::native_entity_refs::tests::with_game(|game| {
+            game.options.dedicated = Some(Vec::new());
+            for (id, kind) in [(20, "minecraft:zombie"), (21, "minecraft:sheep")] {
+                let kind = game.res.mob_types().get(kind).unwrap().clone();
+                let mut m = Mob::new(id, kind, Vec3::new(1.25, 70.5, -3.75), 33.0);
+                m.head_pitch = -12.5;
+                m.velocity = Vec3::new(0.1, -0.2, 0.3);
+                m.on_ground = true;
+                m.health = 7.5;
+                m.absorption = 2.0;
+                m.fire_ticks = 40;
+                m.air = 123;
+                m.silent = true;
+                m.glowing = true;
+                m.no_gravity = true;
+                m.extra.color = 11;
+                game.mobs.push(m);
+            }
+            let stack = horizon_client::items::ItemStack::new("minecraft:stone", 3);
+            game.spawn_item(stack, [0.5, 71.0, 0.5], [0.0, 0.2, 0.0], 0);
+            let item = game.dropped[0].id;
+            game.dropped[0].fire_ticks = 5;
+            let all = GROUPS.iter().fold(0, |m, g| m | g);
+            for id in [20, 21, item] {
+                let t = game.java_target(id).unwrap();
+                let typed = game.java_group_bytes(t, all).unwrap();
+                let (saved, _) = game.java_groups(t, all).unwrap();
+                for group in GROUPS {
+                    let typed = game.java_group_bytes(t, group).unwrap();
+                    let (saved, _) = game.java_groups(t, group).unwrap();
+                    assert_eq!(typed, saved, "entity {id}, group {group}");
+                }
+                assert_eq!(typed, saved, "entity {id}");
+            }
+            take_nbt_counts();
+            let t = game.java_target(20).unwrap();
+            game.java_group_bytes(t, POSITION | MOTION | HEALTH | FIRE | AIR | FLAGS | RIDING)
+                .unwrap();
+            assert_eq!(take_nbt_counts(), (0, 0));
+        });
     }
 
     #[test]

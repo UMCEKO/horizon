@@ -124,7 +124,6 @@ public final class GameBridge {
         Crossing.game("block_entity_drop", GameBridge::blockEntityDrop);
         Crossing.game("entity_view", GameBridge::entityView);
         Crossing.game("entity_left", GameBridge::entityLeft);
-        Crossing.game("entity_refresh", GameBridge::entityRefresh);
         Crossing.game("entities_save", GameBridge::entitiesSave);
         Crossing.game("block_entities_save", GameBridge::blockEntitiesSave);
         Crossing.game("chunks_changed", GameBridge::chunksChanged);
@@ -905,15 +904,6 @@ public final class GameBridge {
         var level = levelOf(in);
         int id = in.readInt();
         EntityViews.left(level, id, in.readByte());
-        return effects();
-    }
-
-    /** A bridge changed a native entity: the group bytes of what it wrote reach its view. */
-    private static byte[] entityRefresh(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
-        var level = levelOf(in);
-        int id = in.readInt();
-        EntityViews.refresh(level, id, in.readInt(), in);
         return effects();
     }
 

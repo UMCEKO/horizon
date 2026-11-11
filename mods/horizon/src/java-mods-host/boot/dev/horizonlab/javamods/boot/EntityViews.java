@@ -146,10 +146,27 @@ public final class EntityViews implements LevelEntityGetter<Entity> {
         if (view != null) ((EntityAccess) view).horizon$removal(Entity.RemovalReason.values()[reason]);
     }
 
-    /** `entity_refresh`: the groups native sends for a view a bridge just changed. */
-    static void refresh(ServerLevel level, int id, int mask, DataInputStream in) throws IOException {
-        Entity view = live(level).get(id);
-        if (view != null) apply(view, mask, in);
+    /** Bridged: the groups bridges wrote since the last settle, as count then level, id, mask and group bytes; empty for none. */
+    private static byte[] settled() {
+        throw new IllegalStateException("not bridged");
+    }
+
+    /** Every backed view's bridge ends here: what native wrote reaches the views raw, with no request back to native. */
+    public static void settle() {
+        byte[] pending = settled();
+        if (pending.length == 0) return;
+        try {
+            var in = new DataInputStream(new ByteArrayInputStream(pending));
+            for (int n = in.readInt(); n > 0; n--) {
+                ServerLevel level = GameBridge.level(text(in));
+                int id = in.readInt(), mask = in.readInt();
+                byte[] groups = in.readNBytes(in.readInt());
+                Entity view = live(level).get(id);
+                if (view != null) apply(view, mask, new DataInputStream(new ByteArrayInputStream(groups)));
+            }
+        } catch (IOException | ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     /** `Entity.save` of a view the spawning mod built, for native to take as a new entity. */
