@@ -27,6 +27,16 @@ fn change_mode(game: &mut Game<'static>, id: i32) -> bool {
     changed
 }
 
+/// Logs an attribute the player lacks once.
+fn warn_unknown_attribute(id: &str) {
+    static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !seen.iter().any(|s| s == id) {
+        seen.push(id.to_owned());
+        log::warn!("Horizon: a mod changed unknown attribute {id}");
+    }
+}
+
 fn parse_effect(text: &str) -> Option<EffectInstance> {
     let mut fields = text.split('\t');
     let definition = horizon_client::brewing::effect(fields.next()?)?;
@@ -230,6 +240,35 @@ horizon_java_host::java_bridges! { table for Game<'static> {
         if let Some(definition) = horizon_client::brewing::effect(&effect.0) {
             game.potions.effects.list.retain(|e| e.id != definition.id);
             game.apply_effect_status();
+        }
+    }
+
+    "dev/horizonlab/javamods/boot/PlayerSync".abilities
+    "(ZZZZZFF)V" =>
+    fn player_abilities(game, invulnerable: bool, flying: bool, may_fly: bool, instabuild: bool, may_build: bool, flying_speed: f32, walking_speed: f32) -> () {
+        let stored = horizon_client::lan::abilities::PlayerAbilities {
+            invulnerable,
+            flying,
+            may_fly,
+            instabuild,
+            may_build,
+            flying_speed,
+            walking_speed,
+        };
+        if !game.store_acting_abilities(stored) {
+            log::warn!("Horizon: a mod changed the abilities of a player outside a server turn");
+        }
+    }
+
+    "dev/horizonlab/javamods/boot/PlayerSync".modifier
+    "(Ljava/lang/String;ILjava/lang/String;DIZ)V" =>
+    fn player_modifier(game, attribute: Text, kind: i32, id: Text, amount: f64, operation: i32, permanent: bool) -> () {
+        if let Some(player) = game.player.as_mut() {
+            match player.write_attribute(&attribute.0, kind, &id.0, amount, operation, permanent) {
+                Ok(true) => {}
+                Ok(false) => warn_unknown_attribute(&attribute.0),
+                Err(error) => log::warn!("Horizon: a mod's change to {} was refused: {error}", attribute.0),
+            }
         }
     }
 }}

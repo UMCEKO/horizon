@@ -21,6 +21,9 @@ import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.EntityFluidInteraction;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+import net.minecraft.world.entity.ai.attributes.AttributeMap;
+import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.food.FoodData;
 
@@ -31,6 +34,9 @@ public final class PlayerSync {
     /** The player whose call this is, once its view is filled; changes to any other view stay in Java. */
     private static ServerPlayer acting;
 
+    /** The acting player's attribute map: an instance is its own when the map holds that very object. */
+    private static AttributeMap actingAttributes;
+
     static void food(int food, float saturation, float exhaustion) {}
 
     static void health(float health) {}
@@ -40,6 +46,54 @@ public final class PlayerSync {
     static void effect(MobEffectInstance effect) {}
 
     static void effectRemoved(Holder<MobEffect> effect) {}
+
+    static void abilities(boolean invulnerable, boolean flying, boolean mayfly, boolean instabuild, boolean mayBuild, float flyingSpeed, float walkingSpeed) {}
+
+    /** `kind` 0 adds or replaces a modifier, 1 removes it, 2 sets the base value to `amount`. */
+    static void modifier(String attribute, int kind, String id, double amount, int operation, boolean permanent) {}
+
+    private static final String[] SKIPPED = {"net.minecraft.world.entity.", "net.minecraft.server.level.", "dev.horizonlab.javamods.boot.PlayerSync"};
+
+    public static void abilities(Object entity) {
+        if (!acting(entity) || !Callers.byMod(SKIPPED)) return;
+        var a = ((Player) entity).getAbilities();
+        abilities(a.invulnerable, a.flying, a.mayfly, a.instabuild, a.mayBuild, a.getFlyingSpeed(), a.getWalkingSpeed());
+    }
+
+    public static void modifier(AttributeInstance instance, AttributeModifier modifier, boolean permanent) {
+        if (ours(instance) && Callers.byMod(SKIPPED)) {
+            modifier(instance.getAttribute().getRegisteredName(), 0, modifier.id().toString(), modifier.amount(), modifier.operation().id(), permanent);
+        }
+    }
+
+    public static void removed(AttributeInstance instance, Identifier id) {
+        if (ours(instance) && Callers.byMod(SKIPPED)) modifier(instance.getAttribute().getRegisteredName(), 1, id.toString(), 0, 0, false);
+    }
+
+    public static void base(AttributeInstance instance, double value) {
+        if (ours(instance) && Callers.byMod(SKIPPED)) modifier(instance.getAttribute().getRegisteredName(), 2, "", value, 0, false);
+    }
+
+    private static boolean ours(AttributeInstance instance) {
+        var map = actingAttributes;
+        return map != null && map.getInstance(instance.getAttribute()) == instance;
+    }
+
+    /** Horizon's abilities into the view as they are, setting fields so nothing writes back. */
+    static void fillAbilities(ServerPlayer player, Crossing.In in) throws IOException {
+        boolean held = in.readBoolean();
+        boolean invulnerable = in.readBoolean(), flying = in.readBoolean(), mayfly = in.readBoolean(), instabuild = in.readBoolean(), mayBuild = in.readBoolean();
+        float flyingSpeed = in.readFloat(), walkingSpeed = in.readFloat();
+        if (!held) return;
+        var a = player.getAbilities();
+        a.invulnerable = invulnerable;
+        a.flying = flying;
+        a.mayfly = mayfly;
+        a.instabuild = instabuild;
+        a.mayBuild = mayBuild;
+        a.setFlyingSpeed(flyingSpeed);
+        a.setWalkingSpeed(walkingSpeed);
+    }
 
     public static void health(Object entity) {
         if (acting(entity)) health(((LivingEntity) entity).getHealth());
@@ -63,6 +117,7 @@ public final class PlayerSync {
 
     static void acting(ServerPlayer player) {
         acting = player;
+        actingAttributes = player == null ? null : player.getAttributes();
     }
 
     private static boolean acting(Object entity) {

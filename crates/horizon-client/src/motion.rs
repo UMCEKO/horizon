@@ -849,6 +849,29 @@ impl PlayerMotion {
         }
         Ok(())
     }
+    /// A mod's write to one of the player's attribute instances: `kind` 0 puts the modifier
+    /// (`permanent` ones save with the player), 1 removes it, 2 sets the base value to `amount`.
+    /// False for an attribute the player lacks.
+    pub fn write_attribute(
+        &mut self,
+        attribute: &str,
+        kind: i32,
+        id: &str,
+        amount: f64,
+        operation: i32,
+        permanent: bool,
+    ) -> Result<bool> {
+        use crate::living_attributes as live;
+        let found = match kind {
+            0 => live::put_modifier(&mut self.attributes, attribute, id, amount, operation, permanent)?,
+            1 => live::take_modifier(&mut self.attributes, attribute, id)?,
+            _ => live::put_base(&mut self.attributes, attribute, amount)?,
+        };
+        if found && attribute == "minecraft:max_health" {
+            self.clamp_health_to_max()?;
+        }
+        Ok(found)
+    }
     /// `set_modifier` without the max_health clamp, for a remove-all/re-add
     /// batch that ends with one `clamp_health_to_max` (vanilla only removes
     /// the modifiers that really went away, so the hearts must survive it).
@@ -3519,6 +3542,41 @@ mod tests {
             .unwrap();
         p.clamp_health_to_max().unwrap();
         assert_eq!(p.health.health(), 24.0);
+    }
+
+    #[test]
+    fn attribute_a_mod_writes_changes_the_value_and_ends_at_the_base() {
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client")
+                    .join(horizon_core::VANILLA_VERSION)
+            });
+        if !root.join("movement-properties.nbt").exists() {
+            eprintln!("skipped mod attribute writes: prepared resources unavailable");
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let mut p = PlayerMotion::new(&resources, Vec3::ZERO).unwrap();
+        let step = "minecraft:step_height";
+        let base = p.attribute(step).unwrap();
+        assert!(p.write_attribute(step, 0, "test:stilts", 0.5, 0, false).unwrap());
+        // Adding again replaces, as the nested calls of one mod write do.
+        assert!(p.write_attribute(step, 0, "test:stilts", 0.5, 0, false).unwrap());
+        assert!((p.attribute(step).unwrap() - (base + 0.5)).abs() < 1e-9);
+        assert!(p.write_attribute(step, 1, "test:stilts", 0.0, 0, false).unwrap());
+        assert_eq!(p.attribute(step).unwrap(), base);
+        assert!(p.write_attribute(step, 2, "", 2.0, 0, false).unwrap());
+        assert_eq!(p.attribute(step).unwrap(), 2.0);
+        assert!(!p.write_attribute("test:unknown", 0, "test:a", 1.0, 0, false).unwrap());
+        // A permanent modifier saves with the player; a transient one does not.
+        p.write_attribute(step, 0, "test:kept", 1.0, 0, true).unwrap();
+        p.write_attribute(step, 0, "test:lost", 1.0, 0, false).unwrap();
+        let saved = format!("{:?}", p.saved_attributes());
+        let bytes = |text: &str| format!("{:?}", text.as_bytes());
+        assert!(saved.contains(&bytes("test:kept")) && !saved.contains(&bytes("test:lost")));
     }
 
     #[test]
