@@ -2066,6 +2066,7 @@ fn portal_ticket_can_expire(
     world.chunks.get(&(x, z)).is_some_and(|c| c.lit)
         && (-r..=r).all(|dz| (-r..=r).all(|dx| world.chunks.contains_key(&(x + dx, z + dz))))
 }
+/// Key events carry the scancode's US-layout code, which ignores XKB options like
 /// `caps:swapescape`. For the keys whose meaning the keymap may remap, take the code
 /// from the keysym the keymap resolved instead. This includes function keys on
 /// remapped media rows; ordinary character bindings still use their physical key.

@@ -80,9 +80,7 @@ impl ChunkMap {
     pub fn membership_revision(&self) -> u64 {
         self.revision
     }
-    /// Together with `membership_revision`, names the keys and which of them
-    /// are lit: the writers of `Chunk::lit` on a resident chunk call
-    /// `note_lit_changed`, and `insert` notes a replacement that differs.
+    /// With `membership_revision`, names the keys and which are lit; writers of `Chunk::lit` call `note_lit_changed`.
     pub fn lit_revision(&self) -> u64 {
         self.lit_revision
     }

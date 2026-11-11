@@ -12,12 +12,10 @@ pub fn ticking_chunk(world: &World, x: i32, z: i32) -> bool {
     center.lit && world.chunks.surrounded((x, z))
 }
 
-/// What the list was built from: the resident keys, which of them are lit,
-/// and the tickets.
+/// What the list was built from: map keys, lit flags, tickets.
 type Stamp = (u64, u64, u64);
 
-/// The random-ticking chunks in chunk position order, rebuilt only when one of
-/// the three things they depend on changes.
+/// The random-ticking chunks in position order, rebuilt only when their stamp changes.
 #[derive(Default)]
 pub struct RandomTickingChunks {
     stamp: Option<Stamp>,
@@ -41,8 +39,7 @@ impl RandomTickingChunks {
     }
 }
 
-/// Every chunk of the map that random ticks, by position (empty chunks too:
-/// `tick_chunk_random` still draws for precipitation in those).
+/// Every chunk that random ticks, by position, empty ones too (they still draw for precipitation).
 fn walk(world: &World, levels: &Levels) -> Vec<Key> {
     let bounds = levels.random_tick_bounds();
     let mut list: Vec<Key> = (world.chunks.keys().copied())
@@ -69,7 +66,7 @@ mod tests {
     use horizon_world::registry::BlockStateId;
     use std::sync::Arc;
 
-    /// The walk `tick_blocks` made every tick before the list was kept, sorted by position.
+    /// The full walk `random_tick_chunks` made before the list was kept, sorted by position.
     fn fresh_walk(world: &World, tickets: &ChunkTickets) -> Vec<Key> {
         let levels = tickets.levels();
         let bounds = levels.random_tick_bounds();
