@@ -24,15 +24,9 @@ final class NativeSounds {
     /** Whether a loaded mod listens; decided once when the mods have loaded. */
     static volatile boolean listened;
 
-    /** Whether the bus has a listener of the event. */
+    /** Whether the bus has a listener of `PlaySoundEvent`. */
     static boolean listened(net.neoforged.bus.api.IEventBus bus) {
-        try {
-            var list = net.neoforged.bus.EventBus.class.getDeclaredMethod("getListenerList", Class.class);
-            list.setAccessible(true);
-            return ((net.neoforged.bus.ListenerList) list.invoke(bus, PlaySoundEvent.class)).getListeners().length > 0;
-        } catch (ReflectiveOperationException e) {
-            throw new IllegalStateException(e);
-        }
+        return Listeners.listened(bus, PlaySoundEvent.class);
     }
 
     static void decide() {

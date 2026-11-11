@@ -27,7 +27,8 @@ import net.minecraft.world.level.storage.loot.LootTable;
 public final class BootFacts {
     private BootFacts() {}
 
-    private static final List<Registry<?>> REGISTRIES = List.of(BuiltInRegistries.BLOCK, BuiltInRegistries.ITEM, BuiltInRegistries.BLOCK_ENTITY_TYPE, BuiltInRegistries.DATA_COMPONENT_TYPE, BuiltInRegistries.FLUID, BuiltInRegistries.PARTICLE_TYPE);
+    private static final List<Registry<?>> REGISTRIES = List.of(BuiltInRegistries.BLOCK, BuiltInRegistries.ITEM, BuiltInRegistries.BLOCK_ENTITY_TYPE, BuiltInRegistries.DATA_COMPONENT_TYPE, BuiltInRegistries.FLUID, BuiltInRegistries.PARTICLE_TYPE,
+            BuiltInRegistries.RECIPE_SERIALIZER, BuiltInRegistries.LOOT_FUNCTION_TYPE, BuiltInRegistries.LOOT_CONDITION_TYPE);
     private static final String[] CLIENT_MAPPERS = {
         "net.minecraft.client.renderer.item.ItemModels",
         "net.minecraft.client.renderer.special.SpecialModelRenderers",

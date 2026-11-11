@@ -1,0 +1,11 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "ingredients": [
+    "minecraft:gold_nugget",
+    "minecraft:string"
+  ],
+  "result": {
+    "count": 1,
+    "id": "horizon_java_test:charm"
+  }
+}

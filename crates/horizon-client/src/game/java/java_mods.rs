@@ -991,6 +991,7 @@ impl Game<'_> {
         // Building every entity type reads the level through bridged natives (`getDifficulty`), so the game must be active.
         if open {
             horizon_java_host::bridge::with_active(self, super::java_content::entity_types);
+            horizon_java_host::bridge::with_active(self, super::java_crafting::load);
         }
     }
 

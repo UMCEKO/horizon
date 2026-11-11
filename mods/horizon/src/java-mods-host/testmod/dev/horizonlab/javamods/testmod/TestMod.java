@@ -45,6 +45,7 @@ public final class TestMod {
         Battery.register(bus, ITEMS);
         Goo.register(bus, ITEMS);
         Breakables.register(bus, ITEMS);
+        Crafting.register(bus, ITEMS);
         ChunkData.register(bus);
         PARTICLE_TYPES.register(bus);
         if (net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) {

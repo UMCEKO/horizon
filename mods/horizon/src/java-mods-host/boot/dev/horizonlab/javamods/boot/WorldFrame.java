@@ -512,17 +512,7 @@ public final class WorldFrame {
 
     /** Whether the bus has a listener for any of the frame's events. */
     static boolean listened(net.neoforged.bus.api.IEventBus bus) {
-        try {
-            var list = net.neoforged.bus.EventBus.class.getDeclaredMethod("getListenerList", Class.class);
-            list.setAccessible(true);
-            for (var event : EVENTS) {
-                var listeners = (net.neoforged.bus.ListenerList) list.invoke(bus, event);
-                if (listeners.getListeners().length > 0) return true;
-            }
-            return false;
-        } catch (ReflectiveOperationException e) {
-            throw new IllegalStateException(e);
-        }
+        return EVENTS.stream().anyMatch(event -> Listeners.listened(bus, event));
     }
 
     /** Called once the mods have loaded. */
