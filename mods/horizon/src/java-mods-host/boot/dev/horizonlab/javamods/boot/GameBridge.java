@@ -263,9 +263,10 @@ public final class GameBridge {
     private static byte[] states() throws IOException {
         var bytes = new ByteArrayOutputStream();
         var out = new DataOutputStream(bytes);
+        var client = net.neoforged.fml.loading.FMLEnvironment.getDist().isClient();
         out.writeInt(Block.BLOCK_STATE_REGISTRY.size());
         out.writeInt(Block.BLOCK_STATE_REGISTRY.getId(Blocks.AIR.defaultBlockState()));
-        out.writeBoolean(Animate.wholeLoop());
+        out.writeBoolean(client && Animate.wholeLoop());
         for (BlockState state : Block.BLOCK_STATE_REGISTRY) {
             out.writeInt(Block.BLOCK_STATE_REGISTRY.getId(state));
             text(out, BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString());
@@ -277,7 +278,7 @@ public final class GameBridge {
             }
             out.writeBoolean(state.hasBlockEntity());
             out.writeBoolean(BootFacts.ownsBlock(state.getBlock()));
-            out.writeByte(Animate.route(state));
+            out.writeByte(client ? Animate.route(state) : 0);
         }
         return bytes.toByteArray();
     }
