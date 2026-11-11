@@ -3,7 +3,6 @@
 use super::Game;
 use super::native_lifecycle::{ServerTickPhase, WorldPhase};
 use horizon_client::chunk::Chunk;
-use horizon_client::containers::ModBlockEntity;
 use horizon_client::items::ItemStack;
 use horizon_client::lan::chunk_watch::LevelWatches;
 use horizon_client::lan::hub::{Hub, Tracking};
@@ -63,10 +62,10 @@ impl Game<'_> {
         let _ = (block, ticks);
     }
 
-    pub(super) fn java_hook_block_entity_tick(&mut self, pos: [i32; 3], entity: &ModBlockEntity) {
+    pub(super) fn java_hook_block_entity_tick(&mut self, pos: [i32; 3]) {
         #[cfg(feature = "java-mods")]
-        self.java_block_entity_tick(pos, entity);
-        let _ = (pos, entity);
+        self.java_block_entity_tick(pos);
+        let _ = pos;
     }
 
     /// Before a command reads a block entity: a mod's live form, from Java.
@@ -356,7 +355,7 @@ impl Game<'_> {
     /// The server closing: its players leave Java's server, then every level's columns unload from it.
     pub(super) fn java_hook_close_levels(&mut self) -> horizon_client::Result<()> {
         #[cfg(feature = "java-mods")]
-        {
+        if horizon_java_host::get().is_some() {
             self.java_players_removed();
             self.java_level_closing();
             let back = self.dim;

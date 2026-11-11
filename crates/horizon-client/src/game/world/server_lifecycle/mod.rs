@@ -133,7 +133,8 @@ impl Game<'_> {
             if crashed {
                 Ok(())
             } else {
-                self.free_player_beds()
+                let beds = self.free_player_beds();
+                beds.and(self.java_hook_close_levels())
             }
         })) {
             Ok(result) => result,

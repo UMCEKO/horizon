@@ -989,6 +989,7 @@ impl Game<'_> {
         // stay in the tick's list, but only the tick's own count as recorded in it.
         let between = horizon_client::spans::take_raw();
         let (started, cpu) = (Instant::now(), horizon_client::spans::thread_cpu());
+        super::java_hooks::java_hook_profile_begin();
         let result = self.tick_server(paused);
         let wall = started.elapsed().as_secs_f32() * 1000.0;
         let cpu = horizon_client::spans::thread_cpu()
@@ -1014,6 +1015,7 @@ impl Game<'_> {
                 slowest_steps(&notes)
             );
         }
+        self.java_hook_profile_tick(wall, &spans);
         record(wall, cpu, spans, in_tick);
         result
     }
@@ -1148,6 +1150,8 @@ impl Game<'_> {
         let back = self.dim;
         for dim in closing {
             self.enter_level(dim)?;
+            // Java's columns unload first: what they hadn't saved joins this last save.
+            self.java_hook_level_closing();
             // Vanilla saves the level's chunks before their unload hooks.
             self.native_chunks_loaded();
             self.save_level(true)?;

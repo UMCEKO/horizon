@@ -542,6 +542,7 @@
   "horizon.mods.empty": "No mods: put .hmod files in the horizon-mods folder",
   "horizon.mods.extra": "These mods are not on this server:\n%s",
   "horizon.mods.in_world": " (leave the world to change)",
+  "horizon.mods.java_failed": "Java mods failed to start, so no world opens without them.",
   "horizon.mods.mismatch": "Your mods don't match this server's.",
   "horizon.mods.missing": "Install these mods to join:\n%s",
   "horizon.mods.not_built": " (Not built)",

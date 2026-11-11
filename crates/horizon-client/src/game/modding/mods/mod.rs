@@ -3,6 +3,7 @@
 //! assets (`content_root`), and the Mods page's rows. Code mods are native (`native_hooks.rs`)
 //! or wasm (`horizon-mod-wasm`, loaded at startup); any other executable file is refused.
 use super::{Game, execution_role::ExecutionRole};
+use horizon_mod_package::selection::SelectedPackage;
 use horizon_client::{
     lang,
     mod_list::{self, Installed},
@@ -82,6 +83,8 @@ pub(super) struct ModsState {
     pub(super) dev: Vec<PathBuf>,
     pub(super) native: std::sync::Arc<horizon_mod_package::runtime::Runtime>,
     pub(super) selected: std::sync::Arc<[horizon_mod_package::selection::SelectedPackage]>,
+    /// The Java mods' carried content packages, read once, first among the content mods.
+    pub(super) carried: Arc<std::sync::OnceLock<Vec<SelectedPackage>>>,
     /// The content mods the loaded resources were built with: a switch the
     /// game can apply live moves it to the player's choice (`switch_mods`).
     pub(super) applied: Option<std::collections::BTreeSet<String>>,
@@ -131,7 +134,7 @@ impl ModsState {
             .packages()
             .iter()
             .map(|package| (&package.manifest, true));
-        let selected = self.selected.iter().map(|selected| {
+        let selected = self.carried().iter().chain(self.selected.iter()).map(|selected| {
             (
                 &selected.package.manifest,
                 selected.package.manifest.wasm.is_some(),
@@ -153,6 +156,11 @@ impl ModsState {
                 enabled.then(|| (manifest.id.clone(), manifest.side))
             },
         ))
+    }
+
+    /// The carried packages read so far: none until the first content overlay reads them.
+    fn carried(&self) -> &[SelectedPackage] {
+        self.carried.get().map_or(&[], Vec::as_slice)
     }
 
     pub(super) fn select(
@@ -604,6 +612,23 @@ pub(super) fn content_overlay(
         manifest: &'a horizon_mod_package::Manifest,
         content_only: bool,
     }
+    let carried = sources.carried.get_or_init(|| {
+        super::java_hooks::java_hook_carried_content(root)
+            .into_iter()
+            .filter_map(|path| match horizon_mod_package::Package::read(&path) {
+                Ok(package) => Some(SelectedPackage { path, package }),
+                Err(e) => {
+                    log::warn!("Horizon: Java mods' content {} not loaded: {e}", path.display());
+                    None
+                }
+            })
+            .collect()
+    });
+    let java = carried.iter().map(|p| PackageSource {
+        path: &p.path,
+        manifest: &p.package.manifest,
+        content_only: true,
+    });
     let native = sources.native.packages().iter().map(|p| PackageSource {
         path: &p.path,
         manifest: &p.manifest,
@@ -615,7 +640,8 @@ pub(super) fn content_overlay(
         content_only: true,
     });
     let mut seen = std::collections::HashSet::new();
-    let packages: Vec<_> = native
+    let packages: Vec<_> = java
+        .chain(native)
         .chain(content)
         .filter(|source| {
             !refused

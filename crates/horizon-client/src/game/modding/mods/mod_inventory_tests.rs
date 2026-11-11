@@ -133,6 +133,32 @@ fn admission_uses_active_native_and_wasm_entries_and_accepted_content_not_startu
     );
 }
 
+#[test]
+fn carried_java_content_loads_and_joins_the_inventory_with_no_selected_mod() {
+    const MODE: &str = "HORIZON_CARRIED_CONTENT_TEST";
+    if std::env::var_os(MODE).is_none() {
+        run_in_child(
+            "game::mods::tests::inventory::carried_java_content_loads_and_joins_the_inventory_with_no_selected_mod",
+            MODE,
+        );
+        return;
+    }
+    let fixture = Fixture::new("carried-content");
+    let sources = ModsState::default();
+    let carried = vec![selected(&fixture, "carried_mod", false, "both")];
+    assert!(sources.carried.set(carried).is_ok());
+    let base = fixture.0.join("vanilla");
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::write(base.join("horizon-resources.json"), "{}").unwrap();
+    let overlay = content_overlay(&base, &sources, &fixture.0.join("jars")).unwrap();
+    let ids: Vec<_> = overlay.mods.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["carried_mod"]);
+    let inventory = EnabledMods::read(overlay.root.prepared()).unwrap();
+    assert_eq!(inventory.server_ids().collect::<Vec<_>>(), ["carried_mod"]);
+    let next = sources.enabled_inventory(|id| inventory.client_ids().any(|loaded| loaded == id));
+    assert_eq!(next, inventory, "a reload stages no new inventory for carried content");
+}
+
 struct Guard(Arc<AtomicBool>);
 impl mod_api::ServerReloadListener for Guard {
     fn prepare(

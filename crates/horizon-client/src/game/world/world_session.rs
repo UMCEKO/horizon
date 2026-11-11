@@ -90,6 +90,9 @@ impl Game<'_> {
         creative: bool,
         create: Option<&horizon_client::title::WorldOptions>,
     ) -> Result<()> {
+        if let Err(reason) = java_hooks::java_hook_ready() {
+            return self.java_mods_refused(reason);
+        }
         // openWorldLoadLevelData: an existing world whose level data does not read opens
         // RecoverWorldDataScreen instead.
         if create.is_none()
@@ -161,9 +164,35 @@ impl Game<'_> {
         self.open_integrated(folder, name, seed, creative, create)
     }
 
+    /// The Java mods failed to start: the title says why, and no world opens.
+    fn java_mods_refused(&mut self, reason: &str) -> Result<()> {
+        log::error!("Horizon: Java mods failed to start, so no world opens without them: {reason}");
+        let lines: Vec<&str> = reason
+            .lines()
+            .take_while(|l| !l.trim_start().starts_with("at "))
+            .take(6)
+            .collect();
+        let failed = horizon_client::lang::get("horizon.mods.java_failed");
+        let reason = format!("{failed}\n{}", lines.join("\n"));
+        let Some(title) = self.title.as_mut() else {
+            return Err(reason.into());
+        };
+        title.mode = horizon_client::title::Mode::Multiplayer(
+            horizon_client::multiplayer::Screen::Disconnected {
+                reason,
+                retry: None,
+                lines: std::cell::Cell::new(1),
+            },
+        );
+        Ok(())
+    }
+
     /// Load authoritative world state synchronously, without client entry or
     /// integrated-server selection. Server startup must use this entry point.
     pub(super) fn load_world(&mut self, request: world_loading::WorldRequest) -> Result<()> {
+        java_hooks::java_hook_ready().map_err(|e| {
+            format!("{} {e}", horizon_client::lang::get("horizon.mods.java_failed"))
+        })?;
         self.join_world_rest()?;
         self.perf.world_opening();
         let prepared = request.prepare(
