@@ -167,9 +167,9 @@ def read_packs(directory=PACKS):
 
 
 def routing_packs(routing):
-    """{key: {kind, family, tail, returns, mods}} of an install's routing.json, as read_packs gives a reference pack's."""
+    """{key: {kind, family, tail, returns, mods}} of an install's routing.json, as read_packs gives a reference pack's; a route inert by its guards needs no gate."""
     return {key: {'kind': r['kind'], 'family': r['family'], 'tail': bool(r['tail']), 'returns': int(r['returns']),
-                  'mods': {c['mod'] for c in r['changes']}} for key, r in routing['routes'].items()}
+                  'mods': {c['mod'] for c in r['changes']}} for key, r in routing['routes'].items() if not r.get('inert')}
 
 
 def merge_packs(packs, more):
@@ -304,7 +304,9 @@ def ledger_lint(gates, packs, deferred, ledger, routing=None):
     return errors, notes
 
 
-def status_of(key, gated, deferred_by_key):
+def status_of(key, gated, deferred_by_key, inert=False):
+    if inert:
+        return 'inert (guard)'
     if key in gated:
         return 'gated'
     if key in deferred_by_key:
@@ -324,11 +326,25 @@ def report_table(routing, gates=None, deferred=None):
     for key, r in sorted(routing['routes'].items()):
         mods = ', '.join(sorted({c['mod'] for c in r['changes']}))
         need = ', '.join(n.split('#')[-1] for n in r['closure']['needs_bridge'])
-        rows.append((key.replace('net/minecraft/', ''), r['kind'], r['family'], mods, status_of(key, gated, by_key), need))
-    lines = ['| key | kind | family | mods | status | needs_bridge |', '|---|---|---|---|---|---|']
+        rows.append((key.replace('net/minecraft/', ''), r['kind'], r['family'], mods, status_of(key, gated, by_key, r.get('inert', False)), guards_text(r.get('guards')), need))
+    lines = ['| key | kind | family | mods | status | guards | needs_bridge |', '|---|---|---|---|---|---|---|']
     lines += ['| ' + ' | '.join(f'`{c}`' if i == 0 else c for i, c in enumerate(row)) + ' |' for row in rows]
     counts = collections.Counter(row[4].split(' ')[0] for row in rows)
-    return [f'{len(rows)} routes: ' + ', '.join(f'{n} {k}' for k, n in sorted(counts.items())), ''] + lines
+    covered = sum(n for k, n in counts.items() if k != 'UNGATED')
+    return [f'{len(rows)} routes, {covered} covered: ' + ', '.join(f'{n} {k}' for k, n in sorted(counts.items())), ''] + lines
+
+
+def guards_text(guards):
+    """A route's guards for the report: `all`, or each narrowed field and its classes' simple names."""
+    if not guards:
+        return 'all'
+    parts = []
+    for field, value in guards.items():
+        if isinstance(value, dict):
+            parts += [f'{field}[{i}]: {", ".join(c.rsplit("/", 1)[-1] for c in classes)}' for i, classes in value.items()]
+        elif value:
+            parts.append(f'{field}: {", ".join(c.rsplit("/", 1)[-1] for c in value)}')
+    return '; '.join(parts)
 
 
 def gather(root=ROOT):

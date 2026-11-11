@@ -10,10 +10,17 @@ pub(in crate::game) enum Recv {
 
 #[cfg(feature = "java-mods")]
 macro_rules! route_gate {
-    ($game:expr, $key:literal, $recv:expr, ($($arg:expr),* $(,)?)) => {
+    ($game:expr, $key:literal, $recv:expr, ($($arg:expr),* $(,)?) $(, item = $item:expr)? $(, block = $block:expr)? $(,)?) => {
         {
             static GATE: $crate::game::java_routing::Gate = $crate::game::java_routing::Gate::new($key);
-            if let Some(id) = GATE.admitted(&$recv) {
+            if let Some(id) = GATE.admitted(&$recv)
+                && GATE.narrowed(
+                    id,
+                    None::<&str> $(.or(Some($item)))?,
+                    None::<horizon_world::registry::BlockStateId> $(.or(Some($block)))?,
+                    concat!(file!(), ":", line!()),
+                )
+            {
                 // Written before the call, so an argument may read the game.
                 #[allow(unused_mut)]
                 let mut args = horizon_java_host::wire::Out::default();
@@ -57,7 +64,8 @@ mod gate {
     use super::Recv;
     use crate::game::Game;
     use horizon_core::position::BlockPos;
-    use horizon_java_host::routes::{self, Admitted, RouteId, Routes};
+    use horizon_java_host::routes::{self, Admitted, Route, RouteId, Routes};
+    use horizon_world::registry::BlockStateId;
     use horizon_java_host::wire::{In, Out};
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -86,11 +94,55 @@ mod gate {
             }
         }
 
-        /// Looks the key up and caches the answer; a family whose receivers aren't added yet never crosses.
+        /// Whether the call's stack item and block state pass the route's guard lists; a route with a list its site doesn't feed is a seam bug.
+        pub fn narrowed(
+            &self,
+            id: RouteId,
+            item: Option<&str>,
+            block: Option<BlockStateId>,
+            site: &str,
+        ) -> bool {
+            routes::get().is_none_or(|routes| self.narrowed_by(routes.get(id), item, block, site))
+        }
+
+        pub(super) fn narrowed_by(
+            &self,
+            route: &Route,
+            item: Option<&str>,
+            block: Option<BlockStateId>,
+            site: &str,
+        ) -> bool {
+            if let Some(items) = &route.items {
+                let Some(item) = item else {
+                    panic!("Horizon: route {} admits by item but its gate at {site} passes none", self.key)
+                };
+                if !items.contains(item) {
+                    return false;
+                }
+            }
+            if let Some(blocks) = &route.blocks {
+                let Some(block) = block else {
+                    panic!("Horizon: route {} admits by block but its gate at {site} passes none", self.key)
+                };
+                let java = horizon_java_host::bridge::STATES
+                    .get()
+                    .and_then(|m| m.to_java.get(block.0 as usize).copied())
+                    .unwrap_or(horizon_java_host::bridge::UNMAPPED);
+                if !blocks.contains(java) {
+                    return false;
+                }
+            }
+            true
+        }
+
+        /// Looks the key up and caches the answer; a family whose receivers aren't added yet, or that no receiver can reach, never crosses.
         pub(super) fn resolve_with(&self, routes: &Routes) -> Option<RouteId> {
-            let found = routes
-                .id(self.key)
-                .filter(|id| !matches!(routes.get(*id).admitted, Admitted::Pending));
+            let found = routes.id(self.key).filter(|id| {
+                !matches!(
+                    routes.get(*id).admitted,
+                    Admitted::Pending | Admitted::None
+                )
+            });
             self.state
                 .store(found.map_or(1, |id| id.0 + 2), Ordering::Relaxed);
             found
@@ -263,8 +315,12 @@ mod gate {
         use super::*;
 
         fn routes(on: bool, admitted: i32) -> Routes {
+            routes_with(on, admitted, None)
+        }
+
+        fn routes_with(on: bool, admitted: i32, items: Option<&[&str]>) -> Routes {
             let mut out = Out::default();
-            out.int(1);
+            out.int(2);
             out.int(1);
             out.text("a/B#m(I)V");
             out.0.push(0);
@@ -272,7 +328,41 @@ mod gate {
             out.bool(on);
             out.bool(false);
             out.int(admitted);
+            match items {
+                None => out.int(-1),
+                Some(ids) => {
+                    out.int(ids.len() as i32);
+                    ids.iter().for_each(|id| out.text(id));
+                }
+            }
+            out.int(-1);
             Routes::read(&out.0).unwrap()
+        }
+
+        #[test]
+        fn none_admission_never_crosses() {
+            let gate = Gate::new("a/B#m(I)V");
+            assert_eq!(gate.resolve_with(&routes(true, -3)), None);
+            assert_eq!(gate.state.load(Ordering::Relaxed), 1);
+            assert_eq!(gate.admitted(&Recv::Static), None);
+        }
+
+        #[test]
+        fn an_item_list_admits_only_its_items() {
+            let routes = routes_with(true, -1, Some(&["minecraft:bucket", "minecraft:water_bucket"]));
+            let gate = Gate::new("a/B#m(I)V");
+            let route = routes.get(gate.resolve_with(&routes).unwrap());
+            assert!(gate.narrowed_by(route, Some("minecraft:water_bucket"), None, "here"));
+            assert!(!gate.narrowed_by(route, Some("minecraft:stone"), None, "here"));
+            let open = routes_with(true, -1, None);
+            assert!(gate.narrowed_by(open.get(RouteId(0)), None, None, "here"));
+        }
+
+        #[test]
+        #[should_panic(expected = "route a/B#m(I)V admits by item but its gate at f.rs:3 passes none")]
+        fn an_item_list_reached_without_an_item_is_a_seam_bug() {
+            let routes = routes_with(true, -1, Some(&["minecraft:bucket"]));
+            Gate::new("a/B#m(I)V").narrowed_by(routes.get(RouteId(0)), None, None, "f.rs:3");
         }
 
         #[test]

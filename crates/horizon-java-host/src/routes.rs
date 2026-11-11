@@ -3,7 +3,7 @@ use crate::wire::In;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RouteId(pub u32);
@@ -21,6 +21,35 @@ pub enum Admitted {
     /// The spec that adds this family's receivers decides.
     Pending,
     Only(HashSet<Box<str>>),
+    /// The mods' guards prove no receiver native passes reaches a handler.
+    None,
+}
+
+/// Java's ids of the block states a route admits.
+#[derive(Debug, PartialEq, Eq)]
+pub struct JavaStates(Box<[u64]>);
+
+impl JavaStates {
+    pub fn from_ids(ids: &[i32]) -> Self {
+        let words = ids
+            .iter()
+            .map(|&id| id.max(0) as usize / 64 + 1)
+            .max()
+            .unwrap_or(0);
+        let mut bits = vec![0u64; words];
+        for &id in ids.iter().filter(|&&id| id >= 0) {
+            bits[id as usize / 64] |= 1 << (id % 64);
+        }
+        JavaStates(bits.into())
+    }
+
+    pub fn contains(&self, java: i32) -> bool {
+        java >= 0
+            && self
+                .0
+                .get(java as usize / 64)
+                .is_some_and(|word| word & (1 << (java % 64)) != 0)
+    }
 }
 
 #[derive(Debug)]
@@ -31,6 +60,10 @@ pub struct Route {
     pub on: bool,
     pub hot: bool,
     pub admitted: Admitted,
+    /// The item ids a guard admits (the call's stack's item); `None` admits any.
+    pub items: Option<HashSet<Box<str>>>,
+    /// The block states a guard admits (the call's argument state, or the state at its position); `None` admits any.
+    pub blocks: Option<JavaStates>,
 }
 
 #[derive(Debug)]
@@ -63,6 +96,7 @@ impl Routes {
             let admitted = match r.int().ok_or(ENDED)? {
                 -1 => Admitted::All,
                 -2 => Admitted::Pending,
+                -3 => Admitted::None,
                 count if count >= 0 => {
                     let mut names = HashSet::new();
                     for _ in 0..count {
@@ -71,6 +105,27 @@ impl Routes {
                     Admitted::Only(names)
                 }
                 other => return Err(format!("route {key}: admitted {other}")),
+            };
+            let items = match r.int().ok_or(ENDED)? {
+                -1 => None,
+                count if count >= 0 => {
+                    let mut ids = HashSet::new();
+                    for _ in 0..count {
+                        ids.insert(Box::from(r.text().ok_or(ENDED)?));
+                    }
+                    Some(ids)
+                }
+                other => return Err(format!("route {key}: items {other}")),
+            };
+            let blocks = match r.int().ok_or(ENDED)? {
+                -1 => None,
+                count if count >= 0 => {
+                    let ids = (0..count)
+                        .map(|_| r.int().ok_or(ENDED))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Some(JavaStates::from_ids(&ids))
+                }
+                other => return Err(format!("route {key}: blocks {other}")),
             };
             if on {
                 ids.insert(key.clone(), RouteId(i as u32));
@@ -82,6 +137,8 @@ impl Routes {
                 on,
                 hot,
                 admitted,
+                items,
+                blocks,
             });
         }
         Ok(Routes { routes, ids })
@@ -121,6 +178,18 @@ mod tests {
     use crate::wire::Out;
 
     fn route(out: &mut Out, key: &str, kind: u8, on: bool, admitted: Option<&[&str]>) {
+        route_v2(out, key, kind, on, admitted, None, None);
+    }
+
+    fn route_v2(
+        out: &mut Out,
+        key: &str,
+        kind: u8,
+        on: bool,
+        admitted: Option<&[&str]>,
+        items: Option<&[&str]>,
+        blocks: Option<&[i32]>,
+    ) {
         out.text(key);
         out.0.push(kind);
         out.text("block");
@@ -133,11 +202,25 @@ mod tests {
                 names.iter().for_each(|n| out.text(n));
             }
         }
+        match items {
+            None => out.int(-1),
+            Some(ids) => {
+                out.int(ids.len() as i32);
+                ids.iter().for_each(|n| out.text(n));
+            }
+        }
+        match blocks {
+            None => out.int(-1),
+            Some(ids) => {
+                out.int(ids.len() as i32);
+                ids.iter().for_each(|&id| out.int(id));
+            }
+        }
     }
 
     fn file() -> Vec<u8> {
         let mut out = Out::default();
-        out.int(1);
+        out.int(2);
         out.int(3);
         route(&mut out, "a#m()V", 0, true, None);
         route(&mut out, "b#n()V", 1, false, None);
@@ -177,6 +260,54 @@ mod tests {
             panic!("not a list")
         };
         assert!(names.contains("minecraft:chest") && names.contains("x:y") && names.len() == 2);
+    }
+
+    #[test]
+    fn a_route_reads_its_item_and_block_lists() {
+        let mut out = Out::default();
+        out.int(2);
+        out.int(2);
+        route_v2(
+            &mut out,
+            "a#m()V",
+            0,
+            true,
+            None,
+            Some(&["minecraft:bucket"]),
+            Some(&[3, 70]),
+        );
+        out.text("b#n()V");
+        out.0.push(0);
+        out.text("value");
+        out.bool(true);
+        out.bool(false);
+        out.int(-3);
+        out.int(-1);
+        out.int(-1);
+        let routes = Routes::read(&out.0).unwrap();
+        let a = routes.get(routes.id("a#m()V").unwrap());
+        let items = a.items.as_ref().unwrap();
+        assert!(items.contains("minecraft:bucket") && items.len() == 1);
+        let blocks = a.blocks.as_ref().unwrap();
+        assert!(blocks.contains(3) && blocks.contains(70));
+        assert!(
+            !blocks.contains(4)
+                && !blocks.contains(64)
+                && !blocks.contains(1000)
+                && !blocks.contains(-1)
+        );
+        let b = routes.get(routes.id("b#n()V").unwrap());
+        assert_eq!(
+            (&b.admitted, &b.items, &b.blocks),
+            (&Admitted::None, &None, &None)
+        );
+    }
+
+    #[test]
+    fn a_version_1_file_is_refused() {
+        let mut bytes = file();
+        bytes[3] = 1;
+        assert_eq!(Routes::read(&bytes).unwrap_err(), "version 1, expected 2");
     }
 
     #[test]
