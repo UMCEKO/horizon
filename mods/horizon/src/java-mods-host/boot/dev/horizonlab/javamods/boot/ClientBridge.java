@@ -96,6 +96,7 @@ public final class ClientBridge {
             return renderThread;
         });
         GameBridge.client = ClientBridge::call;
+        Lockstep.ops = ClientBridge::run;
         for (String name : OPS.keySet()) Crossing.client(name);
         WorldFrame.decide();
         Shells.install();
@@ -143,9 +144,15 @@ public final class ClientBridge {
         set(Minecraft.class, minecraft, "userPropertiesFuture", java.util.concurrent.CompletableFuture.completedFuture(com.mojang.authlib.minecraft.UserApiService.OFFLINE_PROPERTIES));
     }
 
+    /** The lockstep's own ops run on the window's thread: the render thread is the one they wait for. */
+    private static final Set<String> ON_CALLER = Set.of("client_lockstep_announce", "client_lockstep_wait", "client_lockstep_call", "client_lockstep_release");
+
     private static byte[] call(String op, byte[] input) {
-        if (Thread.currentThread() == renderThread) return run(op, input);
+        if (Thread.currentThread() == renderThread || ON_CALLER.contains(op)) return run(op, input);
         try {
+            var parked = new java.util.concurrent.CompletableFuture<byte[]>();
+            // The tick job itself goes to the executor; the window's other calls wait for its next park.
+            if (!op.equals("client_tick") && Lockstep.intercept(op, input, parked)) return parked.get();
             return render.submit(() -> run(op, input)).get();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -196,6 +203,34 @@ public final class ClientBridge {
         OPS.put("client_post_event", in -> EventPosts.client(in));
         OPS.put("client_shell_frame", in -> shellFrame(in));
         OPS.put("client_shell_input", in -> shellInput(in));
+        OPS.put("client_lockstep_announce", in -> {
+            Lockstep.announce();
+            return new byte[] {1};
+        });
+        OPS.put("client_lockstep_wait", in -> Lockstep.waitFor(point(in.readInt())));
+        OPS.put("client_lockstep_call", in -> lockstepCall(in));
+        OPS.put("client_lockstep_release", in -> {
+            Lockstep.Point point = point(in.readInt());
+            Lockstep.release(point, in.readNBytes(in.readInt()));
+            return new byte[] {1};
+        });
+    }
+
+    private static Lockstep.Point point(int ordinal) {
+        var points = Lockstep.Point.values();
+        if (ordinal < 0 || ordinal >= points.length) throw new IllegalArgumentException("lockstep point " + ordinal);
+        return points[ordinal];
+    }
+
+    /** `bool served`, then the reply of a request run on the parked thread. */
+    private static byte[] lockstepCall(DataInputStream in) throws Exception {
+        byte kind = in.readByte();
+        byte[] reply = Lockstep.call(kind, in.readNBytes(in.readInt()));
+        if (reply == null) return new byte[] {0};
+        byte[] out = new byte[reply.length + 1];
+        out[0] = 1;
+        System.arraycopy(reply, 0, out, 1, reply.length);
+        return out;
     }
 
     private static byte[] run(String op, byte[] input) {
@@ -490,32 +525,45 @@ public final class ClientBridge {
     private static byte[] tick(DataInputStream in) throws Exception {
         int ticks = in.readInt();
         float partial = in.readFloat();
-        if (in.readBoolean()) size(in);
-        Minecraft minecraft = Minecraft.getInstance();
-        events(in);
-        if (in.readBoolean()) moved = new Motion(in.readDouble(), in.readDouble(), in.readDouble(), in.readFloat(), in.readFloat(), in.readDouble(), in.readDouble(), in.readDouble(), in.readBoolean());
-        ClientSounds.finished(in);
-        if (player == null) return new byte[0];
-        turnPlayer(minecraft);
-        receive();
-        chunkEvents();
-        cameraAndPick(minecraft);
-        // `runTick`: the game time advances, then the window's own count of ticks and its progress into the next replace the timer's.
-        advance(minecraft, partial);
-        for (int n = 0; n < ticks; n++) {
-            Animate.next();
-            minecraft.tick();
+        boolean lockstep = in.readBoolean();
+        if (lockstep && ticks != 1) {
+            System.err.println("Horizon: a lockstep tick owes " + ticks + " ticks; it runs as before");
+            lockstep = false;
+            Lockstep.end();
         }
-        windowTicks++;
-        if (HUD_DEBUG && minecraft.particleEngine != null) ClientParticles.debug(minecraft);
-        timer(minecraft).updatePauseState(minecraft.isPaused());
-        timer(minecraft).updateFrozenState(!((dev.horizonlab.javamods.boot.mixin.MinecraftActions) minecraft).horizon$runningNormally());
-        if (minecraft.level != null) BlockRenders.probe(minecraft.level, BLOCK_ENTITIES.values());
-        cameraAndPick(minecraft);
-        byte[] hud = hud();
-        Toasts.applyPending(minecraft, timer(minecraft).getRealtimeDeltaTicks());
-        byte[] world = WorldFrame.take(WorldFrame.camera(), partial, timer(minecraft), windowWidth, windowHeight, false);
-        recordShell(minecraft, minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(false));
+        if (lockstep) Lockstep.begin();
+        byte[] hud;
+        byte[] world;
+        try {
+            if (in.readBoolean()) size(in);
+            Minecraft minecraft = Minecraft.getInstance();
+            events(in);
+            if (in.readBoolean()) moved = new Motion(in.readDouble(), in.readDouble(), in.readDouble(), in.readFloat(), in.readFloat(), in.readDouble(), in.readDouble(), in.readDouble(), in.readBoolean());
+            ClientSounds.finished(in);
+            if (player == null) return new byte[0];
+            turnPlayer(minecraft);
+            receive();
+            chunkEvents();
+            cameraAndPick(minecraft);
+            // `runTick`: the game time advances, then the window's own count of ticks and its progress into the next replace the timer's.
+            advance(minecraft, partial);
+            for (int n = 0; n < ticks; n++) {
+                Animate.next();
+                minecraft.tick();
+            }
+            windowTicks++;
+            if (HUD_DEBUG && minecraft.particleEngine != null) ClientParticles.debug(minecraft);
+            timer(minecraft).updatePauseState(minecraft.isPaused());
+            timer(minecraft).updateFrozenState(!((dev.horizonlab.javamods.boot.mixin.MinecraftActions) minecraft).horizon$runningNormally());
+            if (minecraft.level != null) BlockRenders.probe(minecraft.level, BLOCK_ENTITIES.values());
+            cameraAndPick(minecraft);
+            hud = hud();
+            Toasts.applyPending(minecraft, timer(minecraft).getRealtimeDeltaTicks());
+            world = WorldFrame.take(WorldFrame.camera(), partial, timer(minecraft), windowWidth, windowHeight, false);
+            recordShell(minecraft, minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(false));
+        } finally {
+            if (lockstep) Lockstep.end();
+        }
         return status(hud, world);
     }
 
@@ -700,6 +748,45 @@ public final class ClientBridge {
         local.setPos(motion.x, motion.y, motion.z);
         local.setDeltaMovement(motion.dx, motion.dy, motion.dz);
         local.setOnGround(motion.ground);
+    }
+
+    /** The window's player step at `aiStep`, in a lockstep tick: what it left, set as vanilla's `aiStep` would, then this tick's `animateTick` picks. */
+    public static void fill(LocalPlayer local, byte[] payload) {
+        try {
+            var in = new DataInputStream(new ByteArrayInputStream(payload));
+            if (in.readBoolean()) {
+                local.setPos(in.readDouble(), in.readDouble(), in.readDouble());
+                local.setDeltaMovement(in.readDouble(), in.readDouble(), in.readDouble());
+                local.setYRot(in.readFloat());
+                local.setXRot(in.readFloat());
+                local.setOnGround(in.readBoolean());
+                local.horizontalCollision = in.readBoolean();
+                local.verticalCollision = in.readBoolean();
+                local.fallDistance = in.readDouble();
+                local.setSprinting(in.readBoolean());
+                local.setShiftKeyDown(in.readBoolean());
+                local.setSwimming(in.readBoolean());
+                boolean gliding = in.readBoolean();
+                if (gliding && !local.isFallFlying()) local.startFallFlying();
+                else if (!gliding && local.isFallFlying()) local.stopFallFlying();
+                local.getAbilities().flying = in.readBoolean();
+                int pose = in.readUnsignedByte();
+                var poses = net.minecraft.world.entity.Pose.values();
+                if (pose < poses.length) local.setPose(poses[pose]);
+                local.xxa = in.readFloat();
+                local.zza = in.readFloat();
+                local.setJumping(in.readBoolean());
+                int keys = in.readUnsignedByte();
+                local.input.keyPresses = new net.minecraft.world.entity.player.Input((keys & 1) != 0, (keys & 2) != 0, (keys & 4) != 0, (keys & 8) != 0,
+                        (keys & 16) != 0, (keys & 32) != 0, (keys & 64) != 0);
+                ((dev.horizonlab.javamods.boot.mixin.ClientInputAccess) local.input).horizon$moveVector(new net.minecraft.world.phys.Vec2(in.readFloat(), in.readFloat()));
+                moved = null;
+            }
+            Animate.current(in);
+        } catch (IOException e) {
+            System.err.println("Horizon: the window's player step did not read");
+            e.printStackTrace();
+        }
     }
 
     private static final byte KEY = 0;
@@ -1014,6 +1101,7 @@ public final class ClientBridge {
         out.writeBoolean(Shells.animating);
         Toasts.writeStatus(out);
         out.writeInt(Environments.bits);
+        out.writeBoolean(Lockstep.wanted());
         shellSegments = null;
         shellChanged = false;
         return bytes.toByteArray();

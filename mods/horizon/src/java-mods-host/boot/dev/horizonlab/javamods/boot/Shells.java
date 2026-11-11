@@ -66,34 +66,9 @@ public final class Shells {
         return !(name.startsWith("java.") || name.startsWith("jdk.") || name.startsWith("net.neoforged.") || name.startsWith("net.minecraft.") || name.startsWith("dev.horizonlab.javamods."));
     }
 
-    private static Class<?> ownerOf(net.neoforged.bus.api.EventListener listener) throws ReflectiveOperationException {
-        if (listener instanceof net.neoforged.bus.IWrapperListener wrapper) listener = wrapper.getWithoutCheck();
-        if (listener instanceof net.neoforged.bus.ConsumerEventHandler) {
-            var consumer = net.neoforged.bus.ConsumerEventHandler.class.getDeclaredField("consumer");
-            consumer.setAccessible(true);
-            return consumer.get(listener).getClass();
-        }
-        return listener.getClass();
-    }
-
     /** Whether a mod listens to a screen event on the bus, read as the moment vanilla would post `Opening`: JEI's listeners exist only once its runtime started. */
     static boolean wanted(net.neoforged.bus.api.IEventBus bus) {
-        try {
-            var list = net.neoforged.bus.EventBus.class.getDeclaredMethod("getListenerList", Class.class);
-            list.setAccessible(true);
-            boolean found = false;
-            for (var event : EVENTS) {
-                for (var listener : ((net.neoforged.bus.ListenerList) list.invoke(bus, event)).getListeners()) {
-                    Class<?> owner = ownerOf(listener);
-                    if (!isMods(owner)) continue;
-                    found = true;
-                    if (HEARD.add(owner.getName())) System.err.println("Horizon: screen events heard by " + owner.getName());
-                }
-            }
-            return found;
-        } catch (ReflectiveOperationException e) {
-            throw new IllegalStateException(e);
-        }
+        return Listeners.modListens(bus, EVENTS, HEARD, "screen events");
     }
 
     // --- Opening and closing

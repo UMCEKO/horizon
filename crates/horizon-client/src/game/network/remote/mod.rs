@@ -6783,7 +6783,9 @@ impl Game<'_> {
         // Minecraft.handleKeybinds precedes entity ticking and sendChanges.
         // Window callbacks only queue clicks, so an interaction cannot leak
         // between CLIENT_TICK_END and a later pong.
+        self.java_hook_keys_begin();
         self.remote_handle_input();
+        self.java_hook_keys_end();
         self.tick_remote_player(running, hold)
     }
 
@@ -6851,6 +6853,8 @@ impl Game<'_> {
         }
         self.tick_subtitles();
         self.tick_client_load();
+        // `LocalPlayer.aiStep`'s moment; Java parks there or not on its own state, and early returns leave it to the tick's guard.
+        let _java_step = self.java_hook_player_begin();
         let entity_collisions = self.player_entity_collisions();
         // Those added before it tick before it: their pushes reach this move.
         let pushed = pushed_after.add_vector(self.remote_pushes(true));
@@ -7231,6 +7235,8 @@ impl Game<'_> {
         // LocalPlayer.sendChanges sends `input.keyPresses`, which an auto-jump's `makeJump` set to
         // jump for this tick: the server's prediction plays the jump from it. Sent as held, the jump
         // was the client's alone, and the server saw a jump its keys didn't allow.
+        // Vanilla's `PlayerTickEvent.Post` precedes `LocalPlayer.sendPosition`.
+        self.java_hook_player_end(true, input);
         let auto_jumped = self.player.as_ref().is_some_and(|p| p.was_auto_jump);
         self.remote_send_state(input | u8::from(auto_jumped) << 4);
         Ok(())
