@@ -1016,6 +1016,7 @@ public final class ClientBridge {
         Shells.write(out, shellSegments, shellChanged, true);
         out.writeBoolean(Shells.animating);
         Toasts.writeStatus(out);
+        out.writeInt(Environments.bits);
         shellSegments = null;
         shellChanged = false;
         return bytes.toByteArray();

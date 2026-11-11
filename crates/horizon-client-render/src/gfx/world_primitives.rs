@@ -35,6 +35,8 @@ pub struct Batch<'a> {
     pub recorded: &'a [Vertex],
     /// Recorded quads at the same stage whose pipeline writes depth, drawn after `recorded`.
     pub recorded_depth: &'a [Vertex],
+    /// Camera-relative quads of a mod's custom sky, clouds and weather (`Environment`), drawn by `draw_environment`.
+    pub environment: [&'a [Vertex]; 3],
 }
 
 impl Batch<'_> {
@@ -45,6 +47,7 @@ impl Batch<'_> {
             && self.lines_through.is_empty()
             && self.recorded.is_empty()
             && self.recorded_depth.is_empty()
+            && self.environment.iter().all(|q| q.is_empty())
     }
 }
 
@@ -82,6 +85,8 @@ pub struct WorldPrimitives {
     stage_ends: [[u32; 4]; STAGES - 1],
     /// Recorded quads blended, then writing depth, uploaded after the other quads.
     recorded: [u32; 2],
+    /// Custom sky, clouds and weather quads, uploaded after the recorded ones.
+    environment: [u32; 3],
 }
 
 struct AtlasGroup {
@@ -331,6 +336,7 @@ impl WorldPrimitives {
             counts: [0; 4],
             stage_ends: [[0; 4]; STAGES - 1],
             recorded: [0; 2],
+            environment: [0; 3],
         }
     }
 
@@ -410,10 +416,15 @@ impl WorldPrimitives {
         self.counts = [quads[0], quads[1], lines[0], lines[1]];
         self.stage_ends = clamped_ends(batch.stage_ends, self.counts);
         self.recorded = [batch.recorded, batch.recorded_depth].map(|q| (q.len() / 4) as u32);
+        self.environment = batch.environment.map(|q| (q.len() / 4) as u32);
         if batch.is_empty() {
             return false;
         }
-        let total_quads = quads[0] + quads[1] + self.recorded[0] + self.recorded[1];
+        let total_quads = quads[0]
+            + quads[1]
+            + self.recorded[0]
+            + self.recorded[1]
+            + self.environment.iter().sum::<u32>();
         self.reserve(device, upload, total_quads, lines[0] + lines[1]);
         if total_quads > 0 {
             self.quad_vertices.clear();
@@ -422,6 +433,9 @@ impl WorldPrimitives {
                 batch.quads_through,
                 batch.recorded,
                 batch.recorded_depth,
+                batch.environment[0],
+                batch.environment[1],
+                batch.environment[2],
             ] {
                 self.quad_vertices.extend_from_slice(&q[..q.len() / 4 * 4]);
             }
@@ -524,6 +538,30 @@ impl WorldPrimitives {
                 }
             }
         }
+    }
+}
+
+impl WorldPrimitives {
+    /// Draws a custom environment renderer's quads (0 sky, 1 clouds, 2 weather): blended, depth tested, writing no depth.
+    /// Leaves the pass with its own pipeline, bind groups and buffers.
+    pub fn draw_environment(&self, pass: &mut wgpu::RenderPass<'_>, which: usize) {
+        let (Some(AtlasGroup { group, .. }), Some(lightmap)) = (&self.group, &self.lightmap) else {
+            return;
+        };
+        let count = self.environment[which];
+        if count == 0 {
+            return;
+        }
+        let start = self.counts[0]
+            + self.counts[1]
+            + self.recorded.iter().sum::<u32>()
+            + self.environment[..which].iter().sum::<u32>();
+        pass.set_bind_group(0, group, &[]);
+        pass.set_bind_group(1, lightmap, &[]);
+        pass.set_pipeline(&self.lit_pipelines[0]);
+        pass.set_vertex_buffer(0, self.quads.slice(..));
+        pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(start * 6..(start + count) * 6, 0, 0..1);
     }
 }
 

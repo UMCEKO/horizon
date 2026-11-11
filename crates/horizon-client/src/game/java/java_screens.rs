@@ -985,7 +985,12 @@ pub(in crate::game) mod live {
             if super::super::java_toasts::java_toasts_status(reply).is_none() {
                 log::warn!("Horizon: a status's toasts ended in pieces");
             }
-            super::super::java_world_renders::java_world_status(world.as_deref(), world_animating);
+            let environment = reply.int()?;
+            super::super::java_world_renders::java_world_status(
+                world.as_deref(),
+                world_animating,
+                environment,
+            );
             let refused = CLIENT.with_borrow_mut(|c| {
                 c.hud_animating = animating;
                 c.recorded = true;

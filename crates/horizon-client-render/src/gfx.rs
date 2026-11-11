@@ -10507,6 +10507,13 @@ impl Renderer {
             });
             pass.set_bind_group(0, &self.group, &[]);
             pack_frame(&mut pass);
+            // A mod's custom skybox goes first, under native's sky when that is drawn too.
+            if world_primitives && !pack_draws_sky {
+                self.world_primitives.draw_environment(&mut pass, 0);
+                pass.set_bind_group(0, &self.group, &[]);
+                pack_frame(&mut pass);
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+            }
             if frame.title || (sky_visible && (frame.skybox || frame.end_sky)) {
                 if !frame.title && frame.skybox && !pack_draws_sky && !native_sky_pass {
                     match self
@@ -11483,6 +11490,12 @@ impl Renderer {
                     0..1,
                 );
             }
+            if world_primitives && !pack_draws_clouds && !oit_on {
+                self.world_primitives.draw_environment(&mut pass, 1);
+                pass.set_bind_group(0, &self.group, &[]);
+                pack_frame(&mut pass);
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+            }
             if cloud_quads > 0 && !pack_draws_clouds && !oit_on {
                 pass.set_pipeline(&self.cloud_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
@@ -11503,6 +11516,12 @@ impl Renderer {
                 self.weather
                     .draw(&mut pass, &self.entity_group, native_weather);
                 pass.set_bind_group(0, &self.group, &[]);
+                if world_primitives {
+                    self.world_primitives.draw_environment(&mut pass, 2);
+                    pass.set_bind_group(0, &self.group, &[]);
+                    pack_frame(&mut pass);
+                    pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                }
             }
             // RenderLevelStageEvent.AfterWeather: after the rain and snow this pass drew.
             if world_primitives && !pack_draws_weather && !oit_on {

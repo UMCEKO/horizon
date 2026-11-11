@@ -623,6 +623,7 @@ impl Game<'_> {
         if title {
             world.clear();
         }
+        let replaced = horizon_client::world_renders::environment();
         additive.append(&mut world.additive);
         let (recorded_lines, recorded_on_top) =
             recorded_world_geometry::recorded_world_lines(&mut world, at, view);
@@ -637,7 +638,7 @@ impl Game<'_> {
             entities.extend(dragon);
         }
         pr.lap("pr_dragon_bolts");
-        let (celestial, stars) = if title {
+        let (celestial, stars) = if title || replaced.sky {
             (Vec::new(), None)
         } else if self.dim == Dim::Overworld
             && self.potions.effects.get("darkness").is_none()
@@ -687,7 +688,11 @@ impl Game<'_> {
         }
         self.outline_fill(&outline, camera, &mut entities);
         pr.lap("pr_screen_end");
-        let weather = if !title && self.can_have_weather() && self.settings.horizon.weather {
+        let weather = if !title
+            && !replaced.weather
+            && self.can_have_weather()
+            && self.settings.horizon.weather
+        {
             horizon_client::spans::time("weather", || self.weather_geometry(camera, alpha))
         } else {
             Vec::new()
@@ -781,8 +786,8 @@ impl Game<'_> {
                     || self.potions.effects.get("darkness").is_some(),
                 self.boss_overlay.should_create_world_fog(),
             ),
-            skybox: self.dim == Dim::Overworld && self.settings.horizon.sky,
-            end_sky: self.dim == Dim::End && self.settings.horizon.sky,
+            skybox: self.dim == Dim::Overworld && self.settings.horizon.sky && !replaced.sky,
+            end_sky: self.dim == Dim::End && self.settings.horizon.sky && !replaced.sky,
             end_sky_sprite: self
                 .gui
                 .atlas
@@ -794,7 +799,7 @@ impl Game<'_> {
             cave_culling,
             water_fog,
             fog: Some(fog),
-            dark_disc: self.dark_disc(camera),
+            dark_disc: !replaced.sky && self.dark_disc(camera),
             outline,
             outline_after_terrain,
             outline_high_contrast: self.settings.file.bool("highContrastBlockOutline"),
@@ -806,6 +811,7 @@ impl Game<'_> {
             glint_alpha: self.glint_frame.alpha,
             glint_ticks: self.glint_frame.scroll_ticks(),
             clouds: (!title
+                && !replaced.clouds
                 && self.dim == Dim::Overworld
                 && horizon_client::clouds::visible(&self.settings.clouds, sky.cloud_color[3]))
             .then(|| self.gui.atlas.sprites.get("horizon/white"))
@@ -841,6 +847,7 @@ impl Game<'_> {
             world_primitives: horizon_client::gfx::world_primitives::Batch {
                 recorded: &world.after_translucent,
                 recorded_depth: &world.after_translucent_depth,
+                environment: [&world.sky, &world.clouds, &world.weather],
                 ..world_geometry.batch()
             },
             shadow_only: &shadow_only,
