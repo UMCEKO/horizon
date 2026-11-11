@@ -24,7 +24,23 @@ public final class Sprites {
     private Sprites() {}
 
     /** The id of a texture stands for its pixels, which Rust has; `repeat` is its sampler's address mode (atlases clamp). */
-    public record View(Identifier id, int width, int height, boolean repeat) implements GpuTextureView, GpuTexture {
+    public static class View implements GpuTextureView, GpuTexture {
+        private final Identifier id;
+        private final int width;
+        private final int height;
+        private final boolean repeat;
+
+        public View(Identifier id, int width, int height, boolean repeat) {
+            this.id = id;
+            this.width = width;
+            this.height = height;
+            this.repeat = repeat;
+        }
+
+        public Identifier id() { return id; }
+        public int width() { return width; }
+        public int height() { return height; }
+        public boolean repeat() { return repeat; }
         @Override
         public boolean isClosed() {
             return false;

@@ -29,6 +29,7 @@ public final class MixinScanner {
     public static void main(String[] args) throws IOException {
         var out = new StringBuilder();
         for (String line : Files.readAllLines(Path.of(args[0]))) {
+            if (line.isBlank()) continue;
             String[] f = line.split("\t", -1);
             out.append(scan(f[0], f[1], f[2], Files.readAllBytes(Path.of(f[4]))));
         }

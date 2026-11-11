@@ -354,7 +354,10 @@ fn boot(run_dir: &str) -> Result<Host, String> {
     host.items = Items::read(&list).ok_or("the mods' item list ended early")?;
     host.client_resources = host.request("client_resources", &[]).unwrap_or_default();
     let baked = host.baked();
-    host.request("client_baked", baked.to_string_lossy().as_bytes());
+    let baked_export = host.request("client_baked", baked.to_string_lossy().as_bytes());
+    if !host.client_resources.is_empty() && baked_export.as_deref() != Some(&[1]) {
+        return Err("the Java client could not export its baked models and texture pixels".into());
+    }
     let keys = host.request("client_keys", &[]).unwrap_or_default();
     if !keys.is_empty() {
         std::fs::write(host.keys(), keys).map_err(|e| format!("{}: {e}", host.keys().display()))?;

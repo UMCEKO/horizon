@@ -45,6 +45,7 @@ public final class TestMod {
         ChunkData.register(bus);
         if (net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) {
             ClientKeys.register(bus);
+            ClientTextures.register(bus);
             ClientWorldBox.register();
             ClientProfiles.register();
         }
