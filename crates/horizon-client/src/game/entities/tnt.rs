@@ -205,7 +205,53 @@ impl PrimedTnt {
     ) -> Result<Vec<BlockPos>> {
         self.previous = self.position;
         self.velocity.y -= self.get_gravity();
-        let mut wanted = self.velocity;
+        let (from, recorded) = self.move_by(
+            world,
+            collision,
+            facts,
+            context,
+            border,
+            blocks,
+            entities,
+            self.velocity,
+        );
+        let tops =
+            self.apply_effects_from_blocks(world, assets, facts, collision, from, recorded);
+        // Entity.scale(getAirDrag()): 0.98F, widened before it scales motion.
+        self.velocity = horizon_client::entity_rules::scale_air_drag(self.velocity);
+        if self.on_ground {
+            self.velocity = Vec3::new(
+                self.velocity.x * 0.7,
+                self.velocity.y * -0.5,
+                self.velocity.z * 0.7,
+            );
+        }
+        self.fuse -= 1;
+        if self.fuse > 0 {
+            // PrimedTnt updates immersion after moving and decrementing its
+            // fuse; water forgets the fall.
+            let (water, _) = self.push_by_fluid(world, fluids, context);
+            self.in_water = water > 0.0;
+            if self.in_water {
+                self.fall_distance = 0.0;
+            }
+        }
+        Ok(tops)
+    }
+    /// `Entity.move` by `delta`: where it started, and the step `applyEffectsFromBlocks` walks when the move was recorded.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn move_by(
+        &mut self,
+        world: &horizon_client::world::World,
+        collision: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
+        facts: &horizon_client::blocks::BlockFacts,
+        context: &horizon_world::native_load_context::LoopContext,
+        border: Option<&horizon_core::geometry::border::BorderGeometry>,
+        blocks: Option<&horizon_world::movement_properties::BoundMovementProperties>,
+        entities: &[Aabb],
+        delta: Vec3,
+    ) -> (Vec3, Option<Vec3>) {
+        let mut wanted = delta;
         if let Some(multiplier) = self.take_stuck() {
             wanted = wanted.multiply(multiplier);
         }
@@ -275,34 +321,7 @@ impl PrimedTnt {
             );
             self.velocity = horizon_world::entity_move::scale_by_block_speed(self.velocity, factor);
         }
-        let tops = self.apply_effects_from_blocks(
-            world,
-            assets,
-            facts,
-            collision,
-            from,
-            recorded.then_some(wanted),
-        );
-        // Entity.scale(getAirDrag()): 0.98F, widened before it scales motion.
-        self.velocity = horizon_client::entity_rules::scale_air_drag(self.velocity);
-        if self.on_ground {
-            self.velocity = Vec3::new(
-                self.velocity.x * 0.7,
-                self.velocity.y * -0.5,
-                self.velocity.z * 0.7,
-            );
-        }
-        self.fuse -= 1;
-        if self.fuse > 0 {
-            // PrimedTnt updates immersion after moving and decrementing its
-            // fuse; water forgets the fall.
-            let (water, _) = self.push_by_fluid(world, fluids, context);
-            self.in_water = water > 0.0;
-            if self.in_water {
-                self.fall_distance = 0.0;
-            }
-        }
-        Ok(tops)
+        (from, recorded.then_some(wanted))
     }
 }
 

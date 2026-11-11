@@ -327,7 +327,7 @@ mod tests {
                         velocity: Vec3::ZERO,
                         value,
                         age: 0,
-                        on_ground: true,
+                        moving: horizon_world::entity_move::MoveState { ground: horizon_world::ground_support::GroundState { on_ground: true, ..Default::default() }, ..Default::default() },
                         count: 1,
                         ticks,
                         health: 5,

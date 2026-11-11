@@ -444,7 +444,7 @@ impl Game<'_> {
                 position: [b.position.x, b.position.y, b.position.z],
                 yaw: b.yaw,
                 pitch: 0.0,
-                on_ground: b.on_ground,
+                on_ground: b.moving.ground.on_ground,
             }),
             S::PaddleBoat(play::PaddleBoat {
                 left: b.paddling[0],

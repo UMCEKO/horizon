@@ -672,7 +672,7 @@ impl Game<'_> {
                 if let Some(s) = self.armor_stands.iter_mut().find(|s| s.id == id) {
                     s.velocity = Vec3::new(
                         s.velocity.x / 2.0 - kx / len * knock.strength,
-                        if s.on_ground {
+                        if s.moving.ground.on_ground {
                             (s.velocity.y / 2.0 + knock.strength).min(0.4)
                         } else {
                             s.velocity.y

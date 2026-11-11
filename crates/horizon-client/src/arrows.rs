@@ -191,7 +191,6 @@ pub struct ArrowState {
     pub fire_ticks: i32,
     /// The server's shared fire flag, independent of the client-local fire timer.
     pub synced_fire: bool,
-    pub fall_distance: f64,
     pub fluids: EntityFluidInteraction,
     pub was_touching_water: bool,
     pub was_eye_in_water: bool,
@@ -258,7 +257,6 @@ impl ArrowState {
             pierced: Vec::new(),
             fire_ticks: 0,
             synced_fire: false,
-            fall_distance: 0.0,
             fluids: EntityFluidInteraction::new([WATER, LAVA]),
             was_touching_water: false,
             was_eye_in_water: false,
@@ -617,6 +615,23 @@ fn tick_with(
     p.arrow = Some(st);
     (keep, hit)
 }
+/// `AbstractArrow.move` after `Entity.move` by anything but itself: an arrow pushed out of its block falls.
+pub fn after_move(p: &mut Projectile, scene: &ArrowScene) {
+    let Some(mut st) = p.arrow.take() else {
+        return;
+    };
+    let mut ticker = Ticker {
+        p,
+        st: &mut st,
+        scene,
+        client: false,
+    };
+    if ticker.should_fall() {
+        ticker.start_falling();
+    }
+    p.stuck = st.in_ground;
+    p.arrow = Some(st);
+}
 /// What became of the entity an arrow hit (`AbstractArrow.onHitEntity`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntityHit {
@@ -872,7 +887,7 @@ impl Ticker<'_, '_, '_, '_> {
             self.st.fire_ticks -= 1;
         }
         if !self.st.first_tick && self.st.fluids.is_in_fluid(&Tags, LAVA) {
-            self.st.fall_distance *= 0.5;
+            self.p.moving.fall_distance *= 0.5;
         }
         if self.position().y < f64::from(self.scene.world.bottom_y() - 64) {
             self.st.removed = true;
@@ -1190,7 +1205,7 @@ impl Ticker<'_, '_, '_, '_> {
                 .push(ArrowEvent::BubbleColumnParticles { pos: p });
         } else {
             self.add_velocity(if drag { -0.03 } else { 0.06 });
-            self.st.fall_distance = 0.0;
+            self.p.moving.fall_distance = 0.0;
         }
     }
 }
@@ -1521,7 +1536,7 @@ impl EntityFluidTickWorld for Ticker<'_, '_, '_, '_> {
         Ok(!self.st.in_ground)
     }
     fn reset_fall_distance(&mut self) -> Result<(), Error> {
-        self.st.fall_distance = 0.0;
+        self.p.moving.fall_distance = 0.0;
         Ok(())
     }
     fn was_touching_water(&self) -> bool {

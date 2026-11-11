@@ -936,11 +936,11 @@ impl Game<'_> {
             let (wood, chest) = super::boats::any_boat_wood(k).unwrap_or(("oak", false));
             let mut b = super::boats::Boat::new(id, std::sync::Arc::from(wood), position, yaw);
             b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
-            b.on_ground = entity_nbt::flag(&tag, "OnGround");
+            b.moving.ground.on_ground = entity_nbt::flag(&tag, "OnGround");
             b.fire_ticks = super::boats::saved_fire(&tag);
             b.pitch = entity_nbt::rotation(&tag)[1];
             // Entity.load: OnGround and fall_distance, as saved.
-            (b.on_ground, b.fall_distance) = entity_nbt::ground_from_nbt(&tag);
+            (b.moving.ground.on_ground, b.moving.fall_distance) = entity_nbt::ground_from_nbt(&tag);
             if chest {
                 b = b.with_chest();
                 b.items =

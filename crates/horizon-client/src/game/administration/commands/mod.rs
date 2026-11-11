@@ -2793,7 +2793,7 @@ impl Game<'_> {
                         velocity: Vec3::new(0.0, 0.0, 0.0),
                         value: 0,
                         age: 0,
-                        on_ground: false,
+                        moving: Default::default(),
                         count: 1,
                         ticks: 0,
                         health: 5,

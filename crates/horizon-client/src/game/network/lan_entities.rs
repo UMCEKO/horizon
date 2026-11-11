@@ -214,7 +214,7 @@ impl Game<'_> {
                 &b.entity_type(),
                 [p.x, p.y, p.z],
                 b.yaw,
-                b.on_ground,
+                b.moving.ground.on_ground,
             );
             // Leashable.setLeashedTo / dropLeash: who holds the boat's lead.
             e.leash = leash;
@@ -318,7 +318,7 @@ impl Game<'_> {
                 "minecraft:armor_stand",
                 [p.x, p.y, p.z],
                 a.yaw,
-                a.on_ground,
+                a.moving.ground.on_ground,
             );
             e.head_yaw = a.yaw;
             e.velocity = [a.velocity.x, a.velocity.y, a.velocity.z];
@@ -769,7 +769,7 @@ impl Game<'_> {
                 Some(g) => g.entity_id,
                 None => owner(p.who()),
             };
-            let e = add_state(out, p.id, kind, at(p.position), p.yaw, p.on_ground);
+            let e = add_state(out, p.id, kind, at(p.position), p.yaw, p.moving.ground.on_ground);
             e.pitch = p.pitch;
             e.velocity = at(p.velocity);
             e.needs_sync = p.needs_sync;

@@ -2433,7 +2433,7 @@ mod pickup_xp_tests {
                 velocity: Vec3::ZERO,
                 value: 7,
                 age: 0,
-                on_ground: true,
+                moving: horizon_world::entity_move::MoveState { ground: horizon_world::ground_support::GroundState { on_ground: true, ..Default::default() }, ..Default::default() },
                 count: 1,
                 ticks: 0,
                 health: 5,

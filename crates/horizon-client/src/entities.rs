@@ -1505,7 +1505,7 @@ pub struct ExperienceOrb {
     /// 0 or below, which a pickup turns into no experience.
     pub value: i32,
     pub age: u32,
-    pub on_ground: bool,
+    pub moving: horizon_world::entity_move::MoveState,
     /// `ExperienceOrb.count`: orbs merged into this one; each pickup gives
     /// `value` once and takes one off.
     pub count: u32,
@@ -1810,14 +1810,21 @@ impl ExperienceOrb {
         // `canBeCollidedWith` it (a boat, a shulker) stop the orb too.
         let border = border.map(|b| (b, [self.position.x, self.position.z]));
         let moved = scene
-            .resolve_in_border_with(bounds, wanted, 0.0, self.on_ground, border, entities)
+            .resolve_in_border_with(
+                bounds,
+                wanted,
+                0.0,
+                self.moving.ground.on_ground,
+                border,
+                entities,
+            )
             .unwrap_or(Vec3::ZERO);
         self.position = Vec3::new(
             self.position.x + moved.x,
             self.position.y + moved.y,
             self.position.z + moved.z,
         );
-        self.on_ground = wanted.y < 0.0 && moved.y != wanted.y;
+        self.moving.ground.on_ground = wanted.y < 0.0 && moved.y != wanted.y;
         // Entity.move's restituteMovementAfterCollisions, an orb's bounciness
         // 0: each collided axis's velocity is zeroed — x and z by Mth.equal's
         // 1.0E-5, y exactly.
@@ -1843,7 +1850,7 @@ impl ExperienceOrb {
         // `float friction = getAirDrag()` (0.98F), the ground's block
         // friction multiplied in as a float, widened once for the scale.
         let mut friction = 0.98_f32;
-        if self.on_ground {
+        if self.moving.ground.on_ground {
             let below = world.block(
                 self.position.x.floor() as i32,
                 (self.position.y - 0.999_999).floor() as i32,
@@ -1862,7 +1869,7 @@ impl ExperienceOrb {
         // `if (verticalCollisionBelow && fallSpeed < -getGravity())`: the
         // landing bounce is 0.4 of the pre-move speed, not a fixed
         // restitution.
-        if self.on_ground && wanted.y < -0.03 {
+        if self.moving.ground.on_ground && wanted.y < -0.03 {
             self.velocity.y = -wanted.y * 0.4;
         }
         self.age += 1;
@@ -2315,7 +2322,8 @@ pub struct ArmorStand {
     /// the renderer blends toward `position` by the partial tick.
     pub previous: Vec3,
     pub velocity: Vec3,
-    pub on_ground: bool,
+    /// `Entity.move`'s fields: `onGround`, `mainSupportingBlockPos` and `fallDistance` among them.
+    pub moving: horizon_world::entity_move::MoveState,
     /// `yRot`, which the body follows (`ArmorStand.tickHeadTurn`: `yBodyRot`).
     pub yaw: f32,
     /// `yBodyRotO`: the body's yaw at the start of the tick.
@@ -2351,9 +2359,6 @@ pub struct ArmorStand {
     pub disabled_slots: i32,
     /// Server-only `LivingEntity.lastPos` for location-based enchantments.
     pub enchantment_block: Option<BlockPos>,
-    /// `Entity.fallDistance`, also used by `LivingEntity.checkFallDamage`'s landing callback.
-    /// Each downward movement is narrowed to float before adding to this double.
-    pub enchantment_fall_distance: f64,
     /// Last equipment seen by `collectEquipmentChanges`; not saved to NBT.
     pub enchantment_equipment: horizon_items::equipment::Equipment,
     /// The live attribute map (`AttributeMap`), built when an item with
@@ -2361,8 +2366,6 @@ pub struct ArmorStand {
     pub live: crate::living_attributes::LivingAttributes,
     /// `Entity.firstTick`: true until its first tick has run.
     pub first_tick: bool,
-    /// `Entity.mainSupportingBlockPos` after the last move.
-    pub support: horizon_world::ground_support::GroundState,
     /// Its `AttributeMap` holds a `movement_speed` instance, which
     /// `AttributeMap.pack` saves. `LivingEntity.aiStep`'s `removeFrost` makes it
     /// (`getAttribute`) on the stand's first server tick, and a save that lists
@@ -2600,7 +2603,7 @@ impl ArmorStand {
             position,
             previous: position,
             velocity: Vec3::ZERO,
-            on_ground: false,
+            moving: Default::default(),
             yaw,
             previous_yaw: yaw,
             equipment: Default::default(),
@@ -2617,11 +2620,9 @@ impl ArmorStand {
             vehicle: None,
             disabled_slots: 0,
             enchantment_block: None,
-            enchantment_fall_distance: 0.0,
             enchantment_equipment: Default::default(),
             live: Default::default(),
             first_tick: true,
-            support: Default::default(),
             speed_instance: false,
         }
     }
@@ -2630,7 +2631,7 @@ impl ArmorStand {
     /// says it is a fence, wall or fence gate, else the cell 0.2 below.
     pub fn on_pos_legacy(&self, tall: impl Fn(BlockPos) -> bool) -> BlockPos {
         let y = (self.position.y - f64::from(0.2_f32)).floor() as i32;
-        match self.support.supporting_block {
+        match self.moving.ground.supporting_block {
             Some(p) if tall(p) => p,
             Some(p) => BlockPos::new(p.x, y, p.z),
             None => BlockPos::new(
@@ -2807,7 +2808,7 @@ impl ArmorStand {
         // `travelInFluid` reads `isFalling` before the move and any push;
         // `travelInAir` reads ground friction before the move.
         let falling = wanted.y <= 0.0;
-        let friction = if !in_water && self.on_ground {
+        let friction = if !in_water && self.moving.ground.on_ground {
             let below = scene.world.block(
                 self.position.x.floor() as i32,
                 (self.position.y - 0.500_001).floor() as i32,
@@ -2828,7 +2829,7 @@ impl ArmorStand {
             .unwrap_or(false)
         };
         if !in_water && on_climbable(self.position) {
-            self.enchantment_fall_distance = 0.0;
+            self.moving.fall_distance = 0.0;
             // LivingEntity.handleOnClimbable; suppressing slide is Player-only.
             let limit = f64::from(0.15f32);
             wanted.x = wanted.x.clamp(-limit, limit);
@@ -2850,7 +2851,7 @@ impl ArmorStand {
             self.bounds(),
             wanted,
             0.0,
-            self.on_ground,
+            self.moving.ground.on_ground,
             border.map(|b| (b, [self.position.x, self.position.z])),
             entities,
         );
@@ -2860,7 +2861,7 @@ impl ArmorStand {
                 self.position.y + moved.y,
                 self.position.z + moved.z,
             );
-            self.on_ground = wanted.y < 0.0 && moved.y > wanted.y;
+            self.moving.ground.on_ground = wanted.y < 0.0 && moved.y > wanted.y;
             // Entity.setOnGroundWithMovement: the block under the feet.
             self.ground_support(scene, wanted);
             if (wanted.x - moved.x).abs() >= f64::from(1.0e-5_f32) {
@@ -2934,7 +2935,7 @@ impl ArmorStand {
             self.bounds(),
             delta,
             0.0,
-            self.on_ground,
+            self.moving.ground.on_ground,
             border.map(|b| (b, [self.position.x, self.position.z])),
             entities,
         ) else {
@@ -2954,7 +2955,7 @@ impl ArmorStand {
         let vertical = moved.y != delta.y;
         if travels_after {
             if vertical {
-                self.on_ground = false;
+                self.moving.ground.on_ground = false;
                 if delta.y > 0.0 {
                     self.velocity.y = -self.velocity.y * 0.0;
                 }
@@ -2964,7 +2965,7 @@ impl ArmorStand {
             if vertical && delta.y != 0.0 {
                 self.velocity.y = -self.velocity.y * 0.0;
             }
-            self.on_ground = vertical && delta.y < 0.0;
+            self.moving.ground.on_ground = vertical && delta.y < 0.0;
             self.ground_support(&mut scene, moved);
         }
     }
@@ -2982,20 +2983,26 @@ impl ArmorStand {
             false,
         );
         let (position, bounds) = (self.position, self.bounds());
-        let _ = self
-            .support
-            .check_support(self.on_ground, bounds, Some(movement), |area| {
+        let _ = self.moving.ground.check_support(
+            self.moving.ground.on_ground,
+            bounds,
+            Some(movement),
+            |area| {
                 horizon_world::ground_support::find_supporting_block(
                     scene, context, position, area, 1_000_000,
                 )
-            });
+            },
+        );
     }
     /// `HoneyBlock.entityInside`: side-slide movement after the stand's travel.
     /// `ArmorStand.hasPhysics` / `Entity.isAffectedByBlocks` exclude markers
     /// and NoGravity stands. Slide effects are separate from this movement.
     pub fn apply_honey_slide(&mut self, world: &World, facts: &BlockFacts) {
         let old_delta_y = |dy: f64| dy / f64::from(0.98_f32) + 0.08;
-        if self.marker || self.no_gravity || self.on_ground || old_delta_y(self.velocity.y) >= -0.08
+        if self.marker
+            || self.no_gravity
+            || self.moving.ground.on_ground
+            || old_delta_y(self.velocity.y) >= -0.08
         {
             return;
         }
@@ -3026,7 +3033,7 @@ impl ArmorStand {
                         self.velocity.z *= factor;
                     }
                     self.velocity.y = (-0.05 - 0.08) * f64::from(0.98_f32);
-                    self.enchantment_fall_distance = 0.0;
+                    self.moving.fall_distance = 0.0;
                     // The new oldDeltaY is -0.05, so another honey cell cannot slide again.
                     return;
                 }
@@ -3889,7 +3896,13 @@ mod world_border_tests {
                 velocity: Vec3::new(1.5, 0.0, 0.0),
                 value: 1,
                 age: 0,
-                on_ground: true,
+                moving: horizon_world::entity_move::MoveState {
+                    ground: horizon_world::ground_support::GroundState {
+                        on_ground: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
                 count: 1,
                 ticks: 0,
                 health: 5,
@@ -4737,7 +4750,7 @@ mod armor_stand_motion_tests {
         ] {
             let mut stand = ArmorStand::new(1, Vec3::new(5.78, 118.0, z), 0.0);
             // Match the freshly summoned entity rather than the placement constructor.
-            stand.on_ground = false;
+            stand.moving.ground.on_ground = false;
             stand.no_gravity = no_gravity;
             stand.marker = marker;
             let mut scene = SceneCollisions {
@@ -4754,7 +4767,7 @@ mod armor_stand_motion_tests {
                 "NoGravity={no_gravity}, Marker={marker}"
             );
             assert_eq!(stand.velocity, Vec3::new(0.0, vy, 0.0));
-            assert_eq!(stand.on_ground, grounded);
+            assert_eq!(stand.moving.ground.on_ground, grounded);
         }
     }
 
@@ -4930,7 +4943,7 @@ mod armor_stand_motion_tests {
         let border = BorderGeometry::new([20.0, 20.0], 10.0, 29_999_984).unwrap();
         for bordered in [false, true] {
             let mut stand = ArmorStand::new(1, Vec3::new(24.0, 4.0, 20.5), 0.0);
-            stand.on_ground = true;
+            stand.moving.ground.on_ground = true;
             stand.velocity = Vec3::new(1.5, 0.0, 0.0);
             let mut scene = SceneCollisions {
                 world: &world,
@@ -5015,11 +5028,11 @@ mod armor_stand_motion_tests {
             run(&mut stand, boxes, 20);
             let y = stand.position.y;
             assert!((y - floor).abs() < 1.0e-9, "rests at {floor}, got {y}");
-            assert!(stand.on_ground, "on the ground at {floor}");
+            assert!(stand.moving.ground.on_ground, "on the ground at {floor}");
         }
         for (boxes, blocked) in [(&[shulker][..], true), (&[][..], false)] {
             let mut stand = ArmorStand::new(1, Vec3::new(18.0, 4.0, 20.5), 0.0);
-            stand.on_ground = true;
+            stand.moving.ground.on_ground = true;
             stand.velocity = Vec3::new(2.0, 0.0, 0.0);
             run(&mut stand, boxes, 1);
             let east = stand.bounds().max_position().x;
@@ -5095,7 +5108,7 @@ mod armor_stand_motion_tests {
         let world = World::test_scene(&assets, &render, 3).unwrap();
         let start = Vec3::new(20.5, 20.0, 20.5);
         let mut stand = ArmorStand::new(1, start, 0.0);
-        stand.on_ground = false;
+        stand.moving.ground.on_ground = false;
         // A summoned stand has no motion yet: the first tick only builds it
         // (vanilla moves by the velocity, then applies gravity), so it falls
         // from the second tick on (measured on the real server: drop 0, 0, 0.0784 blocks).
@@ -5135,7 +5148,7 @@ mod armor_stand_motion_tests {
         let world = World::test_scene(&assets, &render, 3).unwrap();
         let start = Vec3::new(20.5, 20.0, 20.5);
         let mut stand = ArmorStand::new(1, start, 0.0);
-        stand.on_ground = false;
+        stand.moving.ground.on_ground = false;
         stand.no_gravity = true;
         // ArmorStand.travel does nothing without physics: measured on the real
         // server, Pos and Motion stay exactly as summoned for every tick.
@@ -5178,7 +5191,7 @@ mod armor_stand_motion_tests {
         }
         let start = Vec3::new(20.5, 11.0, 20.5);
         let mut bare = ArmorStand::new(1, start, 0.0);
-        bare.on_ground = true;
+        bare.moving.ground.on_ground = true;
         for _ in 0..8 {
             tick_stand(&mut bare, &world, &facts, &collision);
         }
@@ -5189,7 +5202,7 @@ mod armor_stand_motion_tests {
         );
 
         let mut booted = ArmorStand::new(2, start, 0.0);
-        booted.on_ground = true;
+        booted.moving.ground.on_ground = true;
         booted.equipment[2] = Some(ItemStack::new("minecraft:leather_boots", 1));
         for _ in 0..8 {
             tick_stand(&mut booted, &world, &facts, &collision);
@@ -5376,7 +5389,7 @@ mod orb_underwater_tests {
                     velocity: Vec3::new(v[0], v[1], v[2]),
                     value: 1,
                     age: 0,
-                    on_ground: false,
+                    moving: Default::default(),
                     count: 1,
                     ticks: 0,
                     health: 5,
@@ -5411,7 +5424,7 @@ mod render_light_tests {
             velocity: Vec3::new(0.0, 0.0, 0.0),
             value: 3,
             age: 0,
-            on_ground: false,
+            moving: Default::default(),
             count: 1,
             ticks: 0,
             health: 5,
@@ -5641,7 +5654,7 @@ mod orb_lava_tests {
             velocity: Vec3::ZERO,
             value: 1,
             age: 0,
-            on_ground: false,
+            moving: Default::default(),
             count: 1,
             ticks: 0,
             health,

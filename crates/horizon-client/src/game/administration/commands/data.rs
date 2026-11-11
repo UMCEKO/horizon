@@ -601,7 +601,7 @@ impl Game<'_> {
                     b.previous_yaw = yaw;
                     b.pitch = entity_nbt::rotation(&tag)[1];
                     b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
-                    b.on_ground = entity_nbt::flag(&tag, "OnGround");
+                    b.moving.ground.on_ground = entity_nbt::flag(&tag, "OnGround");
                     b.fire_ticks = crate::game::boats::saved_fire(&tag);
                     if b.chest {
                         b.items =
@@ -695,7 +695,7 @@ impl Game<'_> {
                 orb.velocity = new.velocity;
                 orb.value = new.value;
                 orb.age = new.age;
-                orb.on_ground = new.on_ground;
+                orb.moving.ground.on_ground = new.moving.ground.on_ground;
                 orb.count = new.count;
                 orb.health = new.health;
                 orb.no_gravity = new.no_gravity;
@@ -769,7 +769,7 @@ impl Game<'_> {
                     p.yaw = yaw;
                     p.pitch = pitch;
                     p.no_gravity = entity_nbt::flag(&tag, "NoGravity");
-                    p.on_ground = entity_nbt::flag(&tag, "OnGround");
+                    p.moving.ground.on_ground = entity_nbt::flag(&tag, "OnGround");
                 });
                 set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
             }

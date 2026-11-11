@@ -5519,7 +5519,7 @@ pub(super) mod particle_count_tests {
             velocity: Vec3::ZERO,
             value: 1,
             age: 0,
-            on_ground: false,
+            moving: Default::default(),
             count: 1,
             ticks: 0,
             health: 5,

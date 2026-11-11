@@ -342,7 +342,7 @@ pub fn main() -> Result<()> {
                 a.fluids.fluid_height(&Tags, LAVA).to_bits(),
                 a.removed,
                 arrow.critical(),
-                a.fall_distance.to_bits(),
+                arrow.moving.fall_distance.to_bits(),
                 bits(arrow.previous)
             )?;
             writeln!(out, "events {}", events.join(" | "))?;

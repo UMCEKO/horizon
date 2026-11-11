@@ -163,7 +163,7 @@ impl Game<'_> {
         if let Some(stuck) = stuck {
             self.creatures
                 .projectiles
-                .update(i, |p| p.stuck_speed = stuck);
+                .update(i, |p| p.moving.stuck = stuck);
         }
         // The bubble columns it went through push it too
         // (`Projectile.onInsideBubbleColumn` / `onAboveBubbleColumn`), the
@@ -701,8 +701,8 @@ impl Game<'_> {
         let projectile_from = match target {
             Target::Entity(EntityHandle::Projectile(i)) => {
                 self.creatures.projectiles.update(i, |p| {
-                    if p.stuck_speed.length_squared() > 1.0e-7 {
-                        p.stuck_speed = Vec3::ZERO;
+                    if p.moving.stuck.length_squared() > 1.0e-7 {
+                        p.moving.stuck = Vec3::ZERO;
                         p.velocity = Vec3::ZERO;
                     }
                     Some((i, p.position))

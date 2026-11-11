@@ -1303,7 +1303,7 @@ impl Game<'_> {
         let disks = location_disks(
             &self.stations().enchantments,
             equipment,
-            stand.on_ground,
+            stand.moving.ground.on_ground,
             stand.vehicle.is_some(),
         );
         for (effect, level) in disks {

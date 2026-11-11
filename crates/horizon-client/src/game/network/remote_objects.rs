@@ -349,7 +349,7 @@ impl Game<'_> {
                 // the target of the three-tick lerp (`tick_remote_objects`), not
                 // the boat's yaw at once.
                 let _ = yaw;
-                b.on_ground = on_ground;
+                b.moving.ground.on_ground = on_ground;
             });
         } else if let Some(i) = self.carts.iter().position(|c| c.id == id)
             && let Some(yaw) = yaw
