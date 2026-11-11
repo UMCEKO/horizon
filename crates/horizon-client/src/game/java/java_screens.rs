@@ -661,6 +661,7 @@ pub(in crate::game) mod live {
     const TEXT: u8 = 1;
     const ITEM: u8 = 2;
     const BLUR: u8 = 3;
+    const GLYPHS: u8 = 5;
 
     type Corner = ([f32; 2], [f32; 2], u32);
 
@@ -838,6 +839,8 @@ pub(in crate::game) mod live {
             let rgb = reply.int()?;
             let flags = reply.byte()?;
             let font = reply.text()?;
+            let has_shadow = reply.bool()?;
+            let shadow_color = reply.int()? as u32;
             let on = |bit: u8| (flags & bit != 0).then_some(true);
             let style = Style {
                 color: (rgb >= 0).then_some(rgb as u32),
@@ -847,6 +850,7 @@ pub(in crate::game) mod live {
                 strikethrough: on(8),
                 obfuscated: on(16),
                 font: (!font.is_empty() && font != "minecraft:default").then(|| font.to_owned()),
+                shadow_color: has_shadow.then_some(shadow_color),
                 ..Style::default()
             };
             text = text.append(Text::styled(run, style));
@@ -873,6 +877,151 @@ pub(in crate::game) mod live {
         Some(())
     }
 
+    /// One recorded glyph: its code point's quad in `font` at `(x, y)` in text space, with the pose's origin and scale.
+    fn glyph_quads(
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        pose: [f32; 4],
+        glyph: &RecordedGlyph,
+        at: [f32; 2],
+        color: u32,
+    ) {
+        let [ox, oy, sx, sy] = pose;
+        let (px, py) = (ox + sx * at[0], oy + sy * at[1]);
+        let g = atlas.font.glyph_in(&glyph.font, glyph.character);
+        let start = batch.vertices.len();
+        let white = atlas.font.white();
+        batch.glyph_quad(white, &g, px, py, 0.0, glyph.italic, glyph.bold, color);
+        if glyph.bold {
+            batch.glyph_quad(white, &g, px, py, glyph.bold_offset, glyph.italic, glyph.bold, color);
+        }
+        for v in &mut batch.vertices[start..] {
+            v.text = 1;
+        }
+        if sx != 1.0 || sy != 1.0 {
+            batch.scale_since(start, px, py, sx, sy);
+        }
+    }
+
+    /// One recorded effect rectangle (underline, strikethrough, background) in text space.
+    fn effect_rect(batch: &mut HudBatch, atlas: &HudAtlas, pose: [f32; 4], rect: [f32; 4], color: u32) {
+        let [ox, oy, sx, sy] = pose;
+        let start = batch.vertices.len();
+        let (x0, y0) = (ox + sx * rect[0], oy + sy * rect[1]);
+        let (x1, y1) = (ox + sx * rect[2], oy + sy * rect[3]);
+        batch.rect_uv(x0, y0, x1 - x0, y1 - y0, atlas.font.white(), color);
+        for v in &mut batch.vertices[start..] {
+            v.text = 1;
+        }
+    }
+
+    struct RecordedGlyph {
+        character: char,
+        font: String,
+        x: f32,
+        y: f32,
+        color: u32,
+        shadow: u32,
+        bold: bool,
+        italic: bool,
+        bold_offset: f32,
+        shadow_offset: f32,
+    }
+
+    struct RecordedEffect {
+        behind: bool,
+        rect: [f32; 4],
+        color: u32,
+        shadow: u32,
+        shadow_offset: f32,
+    }
+
+    /// A `GLYPHS` entry: text as a patched `PreparedTextBuilder` laid it out, drawn glyph by glyph.
+    fn glyphs(batch: &mut HudBatch, atlas: &HudAtlas, reply: &mut In) -> Option<()> {
+        crate::game::java_routing::gui_route!("net/minecraft/client/gui/Font$PreparedTextBuilder#accept(ILnet/minecraft/network/chat/Style;Lnet/minecraft/client/gui/font/glyphs/BakedGlyph;)Z");
+        crate::game::java_routing::gui_route!("net/minecraft/client/gui/Font$PreparedTextBuilder#getShadowColor(Lnet/minecraft/network/chat/Style;I)I");
+        let pose = [
+            reply.float()?,
+            reply.float()?,
+            reply.float()?,
+            reply.float()?,
+        ];
+        let mut glyphs = Vec::new();
+        for _ in 0..reply.int()? {
+            let code = reply.int()? as u32;
+            let font = reply.text()?.to_owned();
+            let (x, y) = (reply.float()?, reply.float()?);
+            let color = reply.int()? as u32;
+            let shadow = reply.int()? as u32;
+            let flags = reply.byte()?;
+            glyphs.push(RecordedGlyph {
+                character: char::from_u32(code).unwrap_or('\u{fffd}'),
+                font: if font.is_empty() {
+                    "minecraft:default".to_owned()
+                } else {
+                    font
+                },
+                x,
+                y,
+                color,
+                shadow,
+                bold: flags & 1 != 0,
+                italic: flags & 2 != 0,
+                bold_offset: reply.float()?,
+                shadow_offset: reply.float()?,
+            });
+        }
+        let mut effects = Vec::new();
+        for _ in 0..reply.int()? {
+            effects.push(RecordedEffect {
+                behind: reply.bool()?,
+                rect: [reply.float()?, reply.float()?, reply.float()?, reply.float()?],
+                color: reply.int()? as u32,
+                shadow: reply.int()? as u32,
+                shadow_offset: reply.float()?,
+            });
+        }
+        let clip = scissor(reply)?;
+        let start = batch.vertices.len();
+        let abgr = horizon_client::hud_layout::abgr;
+        let visible = |argb: u32| argb >> 24 != 0;
+        let rect = |batch: &mut HudBatch, e: &RecordedEffect, shadow: bool| {
+            let (color, d) = if shadow {
+                (e.shadow, e.shadow_offset)
+            } else {
+                (e.color, 0.0)
+            };
+            if visible(color) {
+                let [x0, y0, x1, y1] = e.rect;
+                effect_rect(batch, atlas, pose, [x0 + d, y0 + d, x1 + d, y1 + d], abgr(color));
+            }
+        };
+        for e in effects.iter().filter(|e| e.behind) {
+            rect(batch, e, true);
+            rect(batch, e, false);
+        }
+        for g in &glyphs {
+            if visible(g.shadow) {
+                let d = g.shadow_offset;
+                glyph_quads(batch, atlas, pose, g, [g.x + d, g.y + d], abgr(g.shadow));
+            }
+        }
+        for e in effects.iter().filter(|e| !e.behind) {
+            rect(batch, e, true);
+        }
+        for g in glyphs.iter().filter(|g| visible(g.color)) {
+            glyph_quads(batch, atlas, pose, g, [g.x, g.y], abgr(g.color));
+        }
+        for e in effects.iter().filter(|e| !e.behind) {
+            rect(batch, e, false);
+        }
+        batch.patches.extend(atlas.font.take_patches());
+        if let Some([x0, y0, x1, y1]) = clip {
+            batch.clip_since(start, x0, y0, x1, y1);
+        }
+        Some(())
+    }
+
     /// A recorded frame's pieces in call order; `item` paints an item entry. None when it ended in pieces.
     fn paint_frame(
         batch: &mut HudBatch,
@@ -892,6 +1041,7 @@ pub(in crate::game) mod live {
                     Some(())
                 }
                 Some(TEXT) => text(batch, atlas, &mut reply),
+                Some(GLYPHS) => glyphs(batch, atlas, &mut reply),
                 Some(ITEM) => item(batch, &mut reply),
                 _ => None,
             };
@@ -1707,6 +1857,7 @@ pub(in crate::game) mod live {
                 let ok = match reply.byte() {
                     Some(QUAD) => quad(batch, &self.gui.atlas, &mut reply),
                     Some(TEXT) => text(batch, &self.gui.atlas, &mut reply),
+                    Some(GLYPHS) => glyphs(batch, &self.gui.atlas, &mut reply),
                     Some(ITEM) => self.java_screen_item(batch, &mut reply),
                     _ => None,
                 };
@@ -2546,6 +2697,93 @@ pub(in crate::game) mod live {
                 out.int(0x80ff_ffffu32 as i32);
             }
             out.bool(false);
+        }
+
+        fn glyph_entry(glyphs: &[(u32, i32, u8)], effects: &[(bool, i32)]) -> Vec<u8> {
+            let mut out = Out::default();
+            out.int(1);
+            out.0.push(GLYPHS);
+            for f in [0.0, 0.0, 1.0, 1.0] {
+                out.float(f);
+            }
+            out.int(glyphs.len() as i32);
+            for (n, &(code, shadow, flags)) in glyphs.iter().enumerate() {
+                out.int(code as i32);
+                out.text("minecraft:default");
+                out.float(6.0 * n as f32);
+                out.float(2.0);
+                out.int(0xffff_0000u32 as i32);
+                out.int(shadow);
+                out.0.push(flags);
+                out.float(1.0);
+                out.float(1.0);
+            }
+            out.int(effects.len() as i32);
+            for &(behind, color) in effects {
+                out.bool(behind);
+                for f in [0.0, 8.0, 6.0, 9.0] {
+                    out.float(f);
+                }
+                out.int(color);
+                out.int(0);
+                out.float(0.0);
+            }
+            out.bool(false);
+            out.0
+        }
+
+        fn glyph_vertices(glyphs: &[(u32, i32, u8)], effects: &[(bool, i32)]) -> usize {
+            painted(&glyph_entry(glyphs, effects)).0.len()
+        }
+
+        #[test]
+        fn a_glyph_entry_draws_its_shadow_and_bold_copies() {
+            let plain = glyph_vertices(&[(0x41, 0, 0)], &[]);
+            assert!(plain > 0);
+            assert_eq!(glyph_vertices(&[(0x41, 0, 1)], &[]), plain * 2);
+            let shadowed = glyph_vertices(&[(0x41, 0xff3f_0000u32 as i32, 0)], &[]);
+            assert_eq!(shadowed, plain * 2);
+            assert_eq!(
+                glyph_vertices(&[(0x41, 0xff3f_0000u32 as i32, 1)], &[]),
+                plain * 4
+            );
+        }
+
+        #[test]
+        fn a_glyph_entry_draws_each_effect_once_and_a_clear_shadow_not_at_all() {
+            let none = glyph_vertices(&[], &[]);
+            assert_eq!(none, 0);
+            let one = glyph_vertices(&[], &[(false, 0xffff_0000u32 as i32)]);
+            assert!(one > 0);
+            assert_eq!(
+                glyph_vertices(&[], &[(false, 0xffff_0000u32 as i32), (true, 0x8000_0000u32 as i32)]),
+                one * 2
+            );
+            assert_eq!(glyph_vertices(&[], &[(false, 0)]), 0);
+        }
+
+        #[test]
+        fn a_text_run_with_its_own_shadow_colour_draws_that_shadow() {
+            let mut out = Out::default();
+            out.int(1);
+            out.0.push(TEXT);
+            for f in [0.0, 0.0, 1.0, 1.0] {
+                out.float(f);
+            }
+            out.int(0xffff_ffffu32 as i32);
+            out.bool(false);
+            out.int(0);
+            out.int(1);
+            out.text("A");
+            out.int(-1);
+            out.0.push(0);
+            out.text("");
+            out.bool(true);
+            out.int(0xff00_ff00u32 as i32);
+            out.bool(false);
+            let (vertices, _) = painted(&out.0);
+            let green = horizon_client::hud_layout::abgr(0xff00_ff00);
+            assert!(vertices.iter().any(|v| v.color == green));
         }
 
         #[test]

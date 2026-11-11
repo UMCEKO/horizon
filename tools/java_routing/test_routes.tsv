@@ -1,3 +1,4 @@
 # routes the test mod patches that no reference pack lists
 net/minecraft/world/entity/player/Inventory#setSelectedSlot(I)V
 net/minecraft/world/entity/player/Inventory#getFreeSlot()I
+net/minecraft/client/gui/Font$PreparedTextBuilder#getShadowColor(Lnet/minecraft/network/chat/Style;I)I

@@ -69,12 +69,14 @@ final class ClientLoader {
 
     /** One font's advances by code point, and the glyphs measuring with them; past the table's end a glyph advances `missing`. */
     private static final class Table implements GlyphSource {
+        private final Identifier id;
         private final float[] advances;
         private final float missing;
         private final java.util.Map<Integer, BakedGlyph> glyphs = new java.util.concurrent.ConcurrentHashMap<>();
         private volatile java.util.Map<Integer, int[]> byWidth;
 
-        Table(float[] advances, float missing) {
+        Table(Identifier id, float[] advances, float missing) {
+            this.id = id;
             this.advances = advances;
             this.missing = missing;
         }
@@ -91,7 +93,8 @@ final class ClientLoader {
 
                     @Override
                     public TextRenderable.Styled createGlyph(float x, float y, int color, int shadow, Style style, float bold, float offset) {
-                        return null;
+                        // A sprite font has no id to draw a code point by.
+                        return id == null ? null : new Glyphs.Glyph(c, id, x, y, color, shadow, style, bold, offset, GlyphInfo.simple(advance).getAdvance(bold != 0.0F));
                     }
                 };
             });
@@ -115,16 +118,23 @@ final class ClientLoader {
     }
 
     /** Vanilla's `GlyphInfo.simple(8.0F)` for every sprite glyph. */
-    private static final Table SPRITES = new Table(new float[0], 8.0F);
+    private static final Table SPRITES = new Table(null, new float[0], 8.0F);
 
     private static volatile java.util.Map<Identifier, Table> fonts = java.util.Map.of();
-    private static volatile Table missing = new Table(new float[0], 6.0F);
+    private static final Identifier DEFAULT = Identifier.withDefaultNamespace("default");
+    private static volatile float missingAdvance = 6.0F;
+    private static final java.util.Map<Identifier, Table> UNKNOWN = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static Table unknown(Identifier id) {
+        return UNKNOWN.computeIfAbsent(id, i -> new Table(i, new float[0], missingAdvance));
+    }
 
     /** Every font's advances by id, so text measures in Java as Horizon draws it in the font its style names. */
     static void fonts(float missingAdvance, java.util.Map<Identifier, float[]> tables) {
         var built = new java.util.HashMap<Identifier, Table>();
-        tables.forEach((id, advances) -> built.put(id, new Table(advances, missingAdvance)));
-        missing = new Table(new float[0], missingAdvance);
+        tables.forEach((id, advances) -> built.put(id, new Table(id, advances, missingAdvance)));
+        ClientLoader.missingAdvance = missingAdvance;
+        UNKNOWN.clear();
         fonts = built;
     }
 
@@ -135,17 +145,17 @@ final class ClientLoader {
             public GlyphSource glyphs(FontDescription description) {
                 if (description instanceof FontDescription.Resource resource) {
                     var table = fonts.get(resource.id());
-                    return table != null ? table : missing;
+                    return table != null ? table : unknown(resource.id());
                 }
                 if (description instanceof FontDescription.AtlasSprite || description instanceof FontDescription.PlayerSprite) {
                     return SPRITES;
                 }
-                return missing;
+                return unknown(DEFAULT);
             }
 
             @Override
             public EffectGlyph effect() {
-                return null;
+                return Glyphs.EFFECTS;
             }
         });
     }
