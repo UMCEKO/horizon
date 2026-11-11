@@ -1502,8 +1502,11 @@ dependencies = [
 name = "horizon-client-gameplay"
 version = "0.1.0"
 dependencies = [
+ "glam",
  "horizon-client-lib",
+ "horizon-core",
  "horizon-world",
+ "serde_json",
 ]
 
 [[package]]
