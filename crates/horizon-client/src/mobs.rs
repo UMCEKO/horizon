@@ -13,6 +13,7 @@ pub mod animal_brain;
 pub mod aquatic;
 pub mod armadillo;
 pub mod armor;
+pub mod attachments;
 pub mod axolotl;
 pub mod bat;
 pub mod bee;
@@ -506,7 +507,8 @@ pub struct MobType {
     pub food: Arc<[String]>,
     /// TemptGoal items when they differ from the food.
     pub tempt: Arc<[String]>,
-    pub passenger_attachments: Vec<[f32; 3]>,
+    /// The passenger and vehicle attachment points (`EntityAttachments`) of the type's boxes.
+    pub attachments: attachments::TypeAttachments,
 }
 impl MobType {
     pub fn inventory_stack_limit(&self, stack: &crate::items::ItemStack) -> u32 {
@@ -787,8 +789,7 @@ impl MobTypes {
             }
             let category = t["category"].as_str().unwrap_or("creature").to_owned();
             let flags = def.flags(t["fire_immune"].as_bool().unwrap_or(false));
-            let passenger_attachments =
-                riders::parse_passenger_attachments(&t["passenger_attachments"]);
+            let attachments = attachments::TypeAttachments::parse(&id, t, def.baby)?;
             out.insert(
                 id.clone(),
                 MobType {
@@ -844,7 +845,7 @@ impl MobTypes {
                         .tempt_tag()
                         .or(def.food_tag())
                         .map_or_else(|| Arc::from(Vec::new()), tag),
-                    passenger_attachments,
+                    attachments,
                     category,
                     id,
                 },
@@ -5985,7 +5986,7 @@ pub(crate) mod sensor_scan_tests {
             step_sound: None,
             food: Arc::default(),
             tempt: Arc::default(),
-            passenger_attachments: Vec::new(),
+            attachments: Default::default(),
         })
     }
     #[test]

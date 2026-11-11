@@ -2019,7 +2019,7 @@ mod tests {
             step_sound: None,
             food: Default::default(),
             tempt: Default::default(),
-            passenger_attachments: Vec::new(),
+            attachments: Default::default(),
         })
     }
 

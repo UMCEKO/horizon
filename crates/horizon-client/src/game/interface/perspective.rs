@@ -163,7 +163,7 @@ pub(super) fn player_type(root: &Path) -> Option<Arc<MobType>> {
         return kind.clone();
     }
     let models = horizon_client::mobs::EntityModelDocument::load(root).ok();
-    let kind = models.as_ref().and_then(load_player_type);
+    let kind = models.as_ref().and_then(|m| load_player_type(root, m));
     cache.push((root.to_owned(), kind.clone()));
     kind
 }
@@ -177,12 +177,23 @@ pub(super) fn player_type_with_document(
     if let Some((_, kind)) = cache.iter().find(|(cached, _)| cached == root) {
         return kind.clone();
     }
-    let kind = load_player_type(models);
+    let kind = load_player_type(root, models);
     cache.push((root.to_owned(), kind.clone()));
     kind
 }
 /// `player_type` from the document: the model and its layers from one parse.
-fn load_player_type(models: &horizon_client::mobs::EntityModelDocument) -> Option<Arc<MobType>> {
+fn load_player_type(
+    root: &Path,
+    models: &horizon_client::mobs::EntityModelDocument,
+) -> Option<Arc<MobType>> {
+    let types: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("entity-types.json")).ok()?).ok()?;
+    let attachments = horizon_client::mobs::attachments::TypeAttachments::parse(
+        "minecraft:player",
+        &types["minecraft:player"],
+        horizon_client::mobs::species::Baby::None,
+    )
+    .ok()?;
     models.model("minecraft:player#main").map(|model| {
         Arc::new(MobType {
             id: "minecraft:player".into(),
@@ -237,7 +248,7 @@ fn load_player_type(models: &horizon_client::mobs::EntityModelDocument) -> Optio
             step_sound: None,
             food: Arc::from([]),
             tempt: Arc::from([]),
-            passenger_attachments: Vec::new(),
+            attachments,
         })
     })
 }

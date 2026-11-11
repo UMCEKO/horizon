@@ -1237,8 +1237,17 @@ fn mod_entity_row(
         );
     }
     if !t.passenger_attachments.is_empty() {
-        let raw = to_raw_value(&t.passenger_attachments).map_err(fail)?;
-        fields.insert("passenger_attachments".into(), raw);
+        // The mod's seats replace the template's passenger points; its vehicle point stays.
+        let mut points: Raw = fields.get("attachments").map_or(Ok(Raw::new()), |a| {
+            serde_json::from_str(a.get()).map_err(fail)
+        })?;
+        let seats: Vec<[f64; 3]> = t
+            .passenger_attachments
+            .iter()
+            .map(|p| p.map(f64::from))
+            .collect();
+        points.insert("passenger".into(), to_raw_value(&seats).map_err(fail)?);
+        fields.insert("attachments".into(), to_raw_value(&points).map_err(fail)?);
     }
     fields.insert("template".into(), to_raw_value(&t.template).map_err(fail)?);
     serde_json::to_vec(&fields).map_err(fail)
