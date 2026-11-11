@@ -130,7 +130,7 @@ pub(super) struct Creatures {
     /// When each player last put a parrot on a shoulder (`timeEntitySatOnShoulder`).
     pub shoulder_time: std::collections::HashMap<[i32; 4], i64>,
     /// The cat spawner's countdown (`CatSpawner.nextTick`).
-    pub cat_tick: i32,
+    pub cat: super::cat_spawner::CatSpawner,
     /// Native sounds waiting for the server host to be available.
     pub lan_sounds: Vec<NativeSound>,
     /// Particles from a guest's turn, waiting for it to end.
