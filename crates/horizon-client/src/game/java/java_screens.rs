@@ -120,6 +120,10 @@ pub(in crate::game) mod live {
         Particles(i32),
         /// `leftPos`, `topPos`, `imageWidth`, `imageHeight` and the hovered menu slot (-1 none) of the screen native shows.
         ShellLayout([i32; 5]),
+        /// Each shown mod toast's `(id, finished, fully visible for)`.
+        Toasts(&'a [(i32, bool, i64)]),
+        /// The window's Notification Time option.
+        NotificationTime(f64),
     }
 
     impl Input<'_> {
@@ -142,6 +146,8 @@ pub(in crate::game) mod live {
                 Input::Animate(_) => 14,
                 Input::Particles(_) => 15,
                 Input::ShellLayout(_) => 16,
+                Input::Toasts(_) => 26,
+                Input::NotificationTime(_) => 27,
             };
             out.0.push(kind);
             match *self {
@@ -190,6 +196,15 @@ pub(in crate::game) mod live {
                 }
                 Input::Particles(level) => out.int(level),
                 Input::ShellLayout(layout) => layout.iter().for_each(|v| out.int(*v)),
+                Input::Toasts(turns) => {
+                    out.int(turns.len() as i32);
+                    for (id, finished, fully_for) in turns {
+                        out.int(*id);
+                        out.bool(*finished);
+                        out.long(*fully_for);
+                    }
+                }
+                Input::NotificationTime(time) => out.double(time),
             }
         }
     }
@@ -227,6 +242,7 @@ pub(in crate::game) mod live {
         cursor: Option<(f64, f64)>,
         motion: Option<Motion>,
         particles: Option<i32>,
+        notification_time: Option<f64>,
     }
 
     #[derive(Clone, Copy, PartialEq)]
@@ -443,6 +459,7 @@ pub(in crate::game) mod live {
     struct FrameJob {
         hud: Option<Vec<u8>>,
         world: Option<Vec<u8>>,
+        toasts: Option<Vec<u8>>,
     }
 
     /// A frame request's replies, each with what the request took.
@@ -450,6 +467,7 @@ pub(in crate::game) mod live {
     struct FrameDone {
         hud: Option<(Vec<u8>, u128)>,
         world: Option<(Vec<u8>, u128)>,
+        toasts: Option<(Vec<u8>, u128)>,
     }
 
     impl FrameJob {
@@ -463,6 +481,7 @@ pub(in crate::game) mod live {
             FrameDone {
                 hud: record("client_hud_frame", self.hud),
                 world: record("client_world_frame", self.world),
+                toasts: record("client_toast_frame", self.toasts),
             }
         }
     }
@@ -858,11 +877,13 @@ pub(in crate::game) mod live {
         batch: &mut HudBatch,
         atlas: &HudAtlas,
         frame: &[u8],
+        origin: [f32; 2],
         item: impl Fn(&mut HudBatch, &mut In) -> Option<()>,
     ) -> Option<Painted> {
         let mut reply = In(frame);
         let mut painted = Painted { blur: false };
         for _ in 0..reply.int().unwrap_or(0) {
+            let start = batch.vertices.len();
             let ok = match reply.byte() {
                 Some(QUAD) => quad(batch, atlas, &mut reply),
                 Some(BLUR) => {
@@ -876,6 +897,12 @@ pub(in crate::game) mod live {
             if ok.is_none() {
                 log::warn!("Horizon: a Java frame ended in pieces");
                 return None;
+            }
+            if origin != [0.0, 0.0] {
+                for vertex in &mut batch.vertices[start..] {
+                    vertex.pos[0] += origin[0];
+                    vertex.pos[1] += origin[1];
+                }
             }
         }
         Some(painted)
@@ -954,6 +981,9 @@ pub(in crate::game) mod live {
                 .map(<[u8]>::to_vec);
             let world_animating = reply.bool()?;
             let (tabs_ready, shell, segments, shell_animating) = read_shell_tail(reply)?;
+            if super::super::java_toasts::java_toasts_status(reply).is_none() {
+                log::warn!("Horizon: a status's toasts ended in pieces");
+            }
             super::super::java_world_renders::java_world_status(world.as_deref(), world_animating);
             let refused = CLIENT.with_borrow_mut(|c| {
                 c.hud_animating = animating;
@@ -1342,6 +1372,7 @@ pub(in crate::game) mod live {
             horizon_client::dynamic_models::clear();
             horizon_client::dynamic_renders::clear();
             super::super::java_world_renders::java_world_left();
+            super::super::java_toasts::java_toasts_left();
             CLIENT.with_borrow_mut(|c| {
                 c.joined = false;
                 c.remote = false;
@@ -1480,6 +1511,17 @@ pub(in crate::game) mod live {
                     Input::Animate(&group).write(&mut events);
                     count += 1;
                 }
+                let notification_time = f64::from(self.settings.notification_display_time);
+                if c.sent.notification_time != Some(notification_time) {
+                    c.sent.notification_time = Some(notification_time);
+                    Input::NotificationTime(notification_time).write(&mut events);
+                    count += 1;
+                }
+                let toasts = super::super::java_toasts::java_toasts_turns();
+                if !toasts.is_empty() {
+                    Input::Toasts(&toasts).write(&mut events);
+                    count += 1;
+                }
                 out.int(count);
                 out.0.extend_from_slice(&events.0);
             });
@@ -1551,6 +1593,9 @@ pub(in crate::game) mod live {
                 }
                 if let Some((reply, spent)) = frame.world {
                     super::super::java_world_renders::java_world_frame_apply(&reply, spent);
+                }
+                if let Some((reply, _)) = frame.toasts {
+                    super::super::java_toasts::java_toasts_frame_apply(&reply);
                 }
             }
         }
@@ -1664,10 +1709,13 @@ pub(in crate::game) mod live {
             let hud =
                 hud_frame_wanted(animating, recorded, busy).then(|| self.java_hud_frame_request());
             let world = self.java_world_frame_request(busy);
-            if (hud.is_some() || world.is_some()) && horizon_java_host::get().is_some() {
+            let toasts = self.java_toasts_frame_request(busy);
+            if (hud.is_some() || world.is_some() || toasts.is_some())
+                && horizon_java_host::get().is_some()
+            {
                 WORKER.with_borrow_mut(|w| {
                     w.get_or_insert_with(Worker::start)
-                        .send_frame(FrameJob { hud, world });
+                        .send_frame(FrameJob { hud, world, toasts });
                 });
             }
         }
@@ -1691,7 +1739,7 @@ pub(in crate::game) mod live {
         fn paint_hud_segment(&mut self, batch: &mut HudBatch, index: usize) {
             let frame = CLIENT.with_borrow(|c| c.hud.segments[index].clone());
             if frame.len() > 4 {
-                paint_frame(batch, &self.gui.atlas, &frame, |batch, reply| {
+                paint_frame(batch, &self.gui.atlas, &frame, [0.0, 0.0], |batch, reply| {
                     self.java_screen_item(batch, reply)
                 });
             }
@@ -1743,10 +1791,22 @@ pub(in crate::game) mod live {
             let Some(reply) = host.request("client_frame", &out.0) else {
                 return;
             };
-            let painted = paint_frame(batch, &self.gui.atlas, &reply, |batch, reply| {
+            let painted = paint_frame(batch, &self.gui.atlas, &reply, [0.0, 0.0], |batch, reply| {
                 self.java_screen_item(batch, reply)
             });
             CLIENT.with_borrow_mut(|c| c.blurred = painted.is_some_and(|p| p.blur));
+        }
+
+        /// A frame the Java client recorded at the origin, painted with its origin at `origin`.
+        pub(in crate::game) fn paint_java_frame(
+            &self,
+            batch: &mut HudBatch,
+            frame: &[u8],
+            origin: [f32; 2],
+        ) {
+            paint_frame(batch, &self.gui.atlas, frame, origin, |batch, reply| {
+                self.java_screen_item(batch, reply)
+            });
         }
 
         fn java_screen_item(&self, batch: &mut HudBatch, reply: &mut In) -> Option<()> {
@@ -1867,7 +1927,7 @@ pub(in crate::game) mod live {
         fn paint_shell_segment(&mut self, batch: &mut HudBatch, index: usize) {
             let frame = CLIENT.with_borrow(|c| c.shell.segments[index].clone());
             if frame.len() > 4 {
-                paint_frame(batch, &self.gui.atlas, &frame, |batch, reply| {
+                paint_frame(batch, &self.gui.atlas, &frame, [0.0, 0.0], |batch, reply| {
                     self.java_screen_item(batch, reply)
                 });
             }
@@ -2409,7 +2469,7 @@ pub(in crate::game) mod live {
         fn painted(frame: &[u8]) -> (Vec<HudVertex>, HudAtlas) {
             let atlas = atlas();
             let mut batch = HudBatch::scratch([854, 480]);
-            assert!(paint_frame(&mut batch, &atlas, frame, |_, _| Some(())).is_some());
+            assert!(paint_frame(&mut batch, &atlas, frame, [0.0, 0.0], |_, _| Some(())).is_some());
             (batch.vertices, atlas)
         }
 
@@ -2480,7 +2540,7 @@ pub(in crate::game) mod live {
             white_quad(&mut out, 10.0, 20.0, 4.0);
             white_quad(&mut out, 30.0, 40.0, 8.0);
             let mut batch = HudBatch::scratch([854, 480]);
-            assert!(paint_frame(&mut batch, &atlas, &out.0, |_, _| Some(())).is_some());
+            assert!(paint_frame(&mut batch, &atlas, &out.0, [0.0, 0.0], |_, _| Some(())).is_some());
             assert_eq!(batch.vertices.len(), 12);
             assert_eq!(batch.vertices[0].pos, [10.0, 20.0]);
             assert_eq!(batch.vertices[6].pos, [30.0, 40.0]);
@@ -2491,11 +2551,11 @@ pub(in crate::game) mod live {
             white_quad(&mut cut, 1.0, 2.0, 3.0);
             cut.0.push(QUAD);
             let mut batch = HudBatch::scratch([854, 480]);
-            assert!(paint_frame(&mut batch, &atlas, &cut.0, |_, _| Some(())).is_none());
+            assert!(paint_frame(&mut batch, &atlas, &cut.0, [0.0, 0.0], |_, _| Some(())).is_none());
             assert_eq!(batch.vertices.len(), 6);
 
             let mut batch = HudBatch::scratch([854, 480]);
-            assert!(paint_frame(&mut batch, &atlas, &Out::default().0, |_, _| None).is_some());
+            assert!(paint_frame(&mut batch, &atlas, &Out::default().0, [0.0, 0.0], |_, _| None).is_some());
             assert!(batch.vertices.is_empty());
         }
 
@@ -2590,10 +2650,10 @@ pub(in crate::game) mod live {
             blurred.int(1);
             blurred.0.push(BLUR);
             let mut batch = HudBatch::scratch([854, 480]);
-            let painted = paint_frame(&mut batch, &atlas, &blurred.0, |_, _| Some(()));
+            let painted = paint_frame(&mut batch, &atlas, &blurred.0, [0.0, 0.0], |_, _| Some(()));
             assert!(painted.is_some_and(|p| p.blur));
             let plain = Out::default();
-            let painted = paint_frame(&mut batch, &atlas, &plain.0, |_, _| Some(()));
+            let painted = paint_frame(&mut batch, &atlas, &plain.0, [0.0, 0.0], |_, _| Some(()));
             assert!(painted.is_some_and(|p| !p.blur));
         }
     }
