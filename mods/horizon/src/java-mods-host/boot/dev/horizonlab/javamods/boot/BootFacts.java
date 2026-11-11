@@ -105,6 +105,11 @@ public final class BootFacts {
         return OWNED.contains(block);
     }
 
+    static boolean ownsFluid(net.minecraft.world.level.material.Fluid fluid) {
+        check();
+        return OWNED.contains(fluid);
+    }
+
     static boolean ownsItem(Item item) {
         check();
         return OWNED.contains(item);

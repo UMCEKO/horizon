@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import net.minecraft.client.model.geom.builders.UVPair;
+import net.minecraft.client.renderer.block.FluidStateModelSet;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModelPart;
 import net.minecraft.client.resources.model.geometry.BakedQuad;
@@ -20,6 +21,7 @@ import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
+import net.minecraft.world.level.material.Fluid;
 
 /** Every state of each block with a code-built model, baked once into the quads `carry` writes as `horizon:baked` models; shared by the client oracle and the game's Java boot. */
 public final class BakedWriter {
@@ -81,23 +83,25 @@ public final class BakedWriter {
                 quad.materialInfo().layer().name().toLowerCase());
     }
 
-    /** Writes `out` through a temporary file, one block state at a time; returns how many blocks, states and quads. */
-    public static int[] write(Path out, Function<BlockState, BlockStateModel> models, Predicate<BlockState> codeBuilt) throws IOException {
+    /** Writes `out` through a temporary file, one block state at a time; returns how many blocks, states, quads and fluids. */
+    public static int[] write(Path out, Function<BlockState, BlockStateModel> models, Predicate<BlockState> codeBuilt,
+            FluidStateModelSet fluids, Predicate<Fluid> ownedFluids, Predicate<Block> ownedBlocks) throws IOException {
         Path partial = out.resolveSibling(out.getFileName() + ".partial");
         int[] counts;
         try (var file = Files.newBufferedWriter(partial)) {
-            counts = write(file, models, codeBuilt);
+            counts = write(file, models, codeBuilt, fluids, ownedFluids, ownedBlocks);
         }
         Files.move(partial, out, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         return counts;
     }
 
-    public static int[] write(Writer file, Function<BlockState, BlockStateModel> models, Predicate<BlockState> codeBuilt) throws IOException {
+    public static int[] write(Writer file, Function<BlockState, BlockStateModel> models, Predicate<BlockState> codeBuilt,
+            FluidStateModelSet fluids, Predicate<Fluid> ownedFluids, Predicate<Block> ownedBlocks) throws IOException {
         var random = RandomSource.create(0);
         var w = writer(file);
         int blocks = 0, states = 0, quads = 0;
         w.beginObject();
-        w.name("version").value(1);
+        w.name("version").value(2);
         w.name("blocks").beginObject();
         for (Block block : BuiltInRegistries.BLOCK) {
             var possible = block.getStateDefinition().getPossibleStates();
@@ -123,8 +127,10 @@ public final class BakedWriter {
             blocks++;
         }
         w.endObject();
+        int written = FluidModelWriter.write(w, fluids, ownedFluids);
+        FluidModelWriter.writeOverlayStates(w, ownedBlocks);
         w.endObject();
         w.flush();
-        return new int[] {blocks, states, quads};
+        return new int[] {blocks, states, quads, written};
     }
 }

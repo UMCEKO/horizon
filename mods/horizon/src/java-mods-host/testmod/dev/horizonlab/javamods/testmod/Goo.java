@@ -55,6 +55,28 @@ public final class Goo {
         BLOCKS.register(bus);
     }
 
+    /** Client only: the model and extensions every mod fluid has, with numbers no vanilla fluid has. */
+    static void registerClient(IEventBus bus) {
+        bus.addListener((net.neoforged.neoforge.client.event.RegisterFluidModelsEvent event) -> {
+            var model = new net.minecraft.client.renderer.block.FluidModel.Unbaked(
+                new net.minecraft.client.resources.model.sprite.Material(net.minecraft.resources.Identifier.withDefaultNamespace("block/water_still")),
+                new net.minecraft.client.resources.model.sprite.Material(net.minecraft.resources.Identifier.withDefaultNamespace("block/water_flow")),
+                null, net.neoforged.neoforge.client.fluid.FluidTintSources.constant(0xFF80FF00));
+            event.register(model, SOURCE.get(), FLOWING.get());
+        });
+        bus.addListener((net.neoforged.neoforge.client.extensions.common.RegisterClientExtensionsEvent event) -> event.registerFluidType(new net.neoforged.neoforge.client.extensions.common.IClientFluidTypeExtensions() {
+            @Override
+            public net.minecraft.resources.Identifier getRenderOverlayTexture(net.minecraft.client.Minecraft minecraft) {
+                return net.minecraft.resources.Identifier.withDefaultNamespace("textures/block/slime_block.png");
+            }
+
+            @Override
+            public void modifyFogColor(net.minecraft.client.Camera camera, float partialTick, net.minecraft.client.multiplayer.ClientLevel level, int renderDistance, float darkenWorldAmount, org.joml.Vector4f fogColor) {
+                fogColor.set(0.5F, 1.0F, 0.0F, 1.0F);
+            }
+        }, TYPE.get()));
+    }
+
     private static final class GooBlock extends LiquidBlock {
         GooBlock(FlowingFluid fluid, BlockBehaviour.Properties properties) {
             super(fluid, properties);

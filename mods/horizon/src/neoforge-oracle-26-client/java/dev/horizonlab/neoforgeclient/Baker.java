@@ -5,6 +5,7 @@ import java.nio.file.Path;
 import java.util.Set;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
+import net.minecraft.core.registries.BuiltInRegistries;
 
 /** Every block state whose model a mod's code builds, baked once into the quads `carry` writes as `horizon:baked` models. */
 final class Baker {
@@ -18,7 +19,8 @@ final class Baker {
 
     static void run(Path out) throws Exception {
         var models = Minecraft.getInstance().getModelManager().getBlockStateModelSet();
-        int[] n = BakedWriter.write(out, models::get, state -> codeBuilt(models.get(state)));
-        System.err.println("horizon oracle: baked " + n[0] + " blocks, " + n[1] + " states, " + n[2] + " quads");
+        int[] n = BakedWriter.write(out, models::get, state -> codeBuilt(models.get(state)), Minecraft.getInstance().getModelManager().getFluidStateModelSet(),
+            fluid -> !BuiltInRegistries.FLUID.getKey(fluid).getNamespace().equals("minecraft"), block -> !BuiltInRegistries.BLOCK.getKey(block).getNamespace().equals("minecraft"));
+        System.err.println("horizon oracle: baked " + n[0] + " blocks, " + n[1] + " states, " + n[2] + " quads, " + n[3] + " fluids");
     }
 }
