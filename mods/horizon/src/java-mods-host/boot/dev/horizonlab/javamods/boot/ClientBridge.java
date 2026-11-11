@@ -94,6 +94,7 @@ public final class ClientBridge {
         render = java.util.concurrent.Executors.newSingleThreadExecutor(task -> {
             renderThread = new Thread(group, task, "Render thread");
             renderThread.setDaemon(true);
+            ServerSide.client = renderThread;
             return renderThread;
         });
         GameBridge.client = ClientBridge::call;

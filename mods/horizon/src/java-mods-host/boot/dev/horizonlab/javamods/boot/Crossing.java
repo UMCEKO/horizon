@@ -19,7 +19,7 @@ public final class Crossing {
     static final int OVERFLOW = -2;
     private static final byte[] NONE = new byte[0];
 
-    /** FREE runs without `GameBridge`'s lock, CLIENT under it as the window's calls, GAME as a server call. */
+    /** FREE runs on the calling thread, CLIENT on the Java client's render thread, GAME on the server side's turn (`ServerSide`). */
     enum Kind { FREE, CLIENT, GAME }
 
     interface Raw {
@@ -105,8 +105,10 @@ public final class Crossing {
             frame.in.set(arena, length);
             frame.out.reset();
             try {
-                if (handler.kind == Kind.FREE) run(handler, frame);
-                else GameBridge.locked(handler, frame);
+                switch (handler.kind) {
+                    case FREE, CLIENT -> run(handler, frame);
+                    case GAME -> ServerSide.serve(handler, frame);
+                }
             } catch (Throwable t) {
                 t.printStackTrace();
                 return FAILED;

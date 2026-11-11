@@ -86,13 +86,14 @@ public final class GameBridge {
     private static final Map<String, ServerLevel> LEVELS = new HashMap<>();
     private static final Map<UUID, ServerPlayer> PLAYERS = new HashMap<>();
     private static final List<Sound> SOUNDS = new ArrayList<>();
-    private static RegistryAccess.Frozen registries;
+    // Volatile: the Java client reads both from its own thread, as the integrated server's registries and server.
+    private static volatile RegistryAccess.Frozen registries;
 
     static RegistryAccess.Frozen registries() {
         return registries;
     }
 
-    private static MinecraftServer server;
+    private static volatile MinecraftServer server;
 
     static MinecraftServer server() {
         return server;
@@ -103,17 +104,6 @@ public final class GameBridge {
 
     /** The client side's own calls, from the window's thread: set where the client classes exist. */
     static volatile java.util.function.BiFunction<String, byte[], byte[]> client;
-    private static final Object LOCK = new Object();
-
-    /** One call at a time, as the window's thread and the server's both call in; the views between them are shared. */
-    static void locked(Crossing.Handler handler, Crossing.Frame frame) throws Throwable {
-        long queued = Profile.ON ? System.nanoTime() : 0;
-        synchronized (LOCK) {
-            if (Profile.ON) Profile.wait(handler.name(), System.nanoTime() - queued);
-            if (handler.kind() == Crossing.Kind.CLIENT) Crossing.run(handler, frame);
-            else game(handler, frame);
-        }
-    }
 
     /** Every op Rust may ask, in the order it reads them. */
     static void register() {
@@ -193,7 +183,7 @@ public final class GameBridge {
         }
     }
 
-    private static void game(Crossing.Handler handler, Crossing.Frame frame) {
+    static void game(Crossing.Handler handler, Crossing.Frame frame) {
         depth++;
         try {
             Crossing.run(handler, frame);

@@ -108,8 +108,8 @@ def report(folder, top=15, jfr=True):
     out += table("Java block entity types (ticker time)", STAT_HEADER, stat_lines(be, top))
     out += table("Java events sent to mods (listener time: server/level ticks, player ticks...)", STAT_HEADER, stat_lines(events, top))
     out += table("Native spans (server tick)", STAT_HEADER, stat_lines(spans, top))
-    out += table("Java calls from Rust, by kind (includes lock wait)", STAT_HEADER, stat_lines(calls, top))
-    out += table("GameBridge lock wait, by call kind", STAT_HEADER, stat_lines(locks, top))
+    out += table("Java calls from Rust, by kind (includes turn wait)", STAT_HEADER, stat_lines(calls, top))
+    out += table("Server-side turn wait (another server-side caller, never the window), by call kind", STAT_HEADER, stat_lines(locks, top))
     worst = sorted(server, key=lambda s: -num(s, "max_ms"))[:top]
     lines = []
     for s in worst:
