@@ -36,6 +36,7 @@ use horizon_protocol::{
     text::literal,
 };
 use horizon_world::entity_move::EntityMoveWorld;
+use std::rc::Rc;
 use winit::keyboard::KeyCode;
 
 mod horizon_channels;
@@ -407,6 +408,14 @@ fn refresh_building_player(host: &LanHost, _conn: u32) {
 }
 
 impl Game<'_> {
+    /// The hub's bodies for a lazy list, as `enter_guest` would have listed them.
+    pub(super) fn turn_hub_players(&self) -> HubBodies {
+        self.lan_hub_view.with(|hub| {
+            debug_assert!(hub.is_some(), "a lazy building list outlived its turn");
+            hub.map(building_players).unwrap_or_default()
+        })
+    }
+
     /// Run `f` as the guest `conn`: the host's player state is swapped for theirs.
     pub(super) fn as_guest<R>(
         &mut self,
@@ -424,13 +433,17 @@ impl Game<'_> {
         conn: u32,
         f: impl FnOnce(&mut Self, &LanHost) -> R,
     ) -> Option<R> {
-        let swap = self.enter_guest(host, conn, self.dim)?;
+        let swap = self.enter_guest_with(host, conn, self.dim, true)?;
         super::dedicated::crash_fixture("guest", || {
             host.hub.guests.iter().any(|g| g.conn == conn && g.placed)
         });
         let dimension =
             (self.serving.is_some() || self.options.dedicated.is_some()).then_some(self.dim.id());
-        let result = horizon_client::block_contact::in_level(dimension, || f(self, host));
+        let view = Rc::clone(&self.lan_hub_view);
+        let shared: &LanHost = host;
+        let result = view.scope(shared, || {
+            horizon_client::block_contact::in_level(dimension, || f(self, shared))
+        });
         self.leave_guest(host, swap);
         Some(result)
     }
@@ -475,6 +488,17 @@ impl Game<'_> {
         conn: u32,
         outer_dimension: Dim,
     ) -> Option<GuestSwap> {
+        self.enter_guest_with(host, conn, outer_dimension, false)
+    }
+
+    /// `enter_guest`; `lazy` defers listing the other players' bodies until the turn asks for them.
+    fn enter_guest_with(
+        &mut self,
+        host: &mut LanHost,
+        conn: u32,
+        outer_dimension: Dim,
+        lazy: bool,
+    ) -> Option<GuestSwap> {
         // The guest whose turn it is is in place already (their record holds
         // the game's state until their turn ends).
         if self.lan_acting == Some(conn) {
@@ -495,9 +519,14 @@ impl Game<'_> {
                 .map(PlayerMotion::bounds),
             borrowed: true,
         };
-        let other_boxes =
+        let other_boxes = if lazy {
+            let hub = &host.hub;
             self.lan_building_boxes
-                .for_turn(conn, Some(outer), building_players(host));
+                .lazy_turn(conn, Some(outer), |c| hub.guest(c).is_some())
+        } else {
+            self.lan_building_boxes
+                .for_turn(conn, Some(outer), building_players(host))
+        };
         // `ServerPlayer.permissions()`: the guest's own command level for its
         // turn, so game-master checks see it (not the host's).
         let permission = std::mem::replace(
@@ -816,39 +845,45 @@ impl Game<'_> {
     /// The second half of `as_guest`: the guest's state back into their
     /// record, the game's back in place, and what the turn changed sent.
     pub(super) fn leave_guest(&mut self, host: &mut LanHost, swap: GuestSwap) {
-        let turn_events = self
-            .player
-            .as_mut()
-            .map(|p| std::mem::take(&mut p.events))
-            .unwrap_or_default();
-        if !turn_events.is_empty() {
-            self.record_combat(&turn_events);
-            self.wear_armor(&turn_events);
-        }
-        // A totem that saved the guest this turn (its hurt set it off).
-        let totem = self.apply_totem();
-        // The mods hear the food level the turn changed (eating, hunger,
-        // starving...), once for the change it made as a whole, with the
-        // guest's state still swapped in; they may change or undo it before it
-        // reaches the guest.
-        if let Some(now) = self.player.as_ref().map(|p| p.health.food.food)
-            && let Some(g) = host.hub.guests.get(swap.i)
-            && g.food != now
-        {
-            let (uuid, name, from, saturation) = (g.uuid, g.name.clone(), g.food, g.saturation);
-            let (mut to, mut cancel) = (now, false);
-            self.native_food_level_changed(uuid, &name, from, &mut to, &mut cancel);
-            if let Some(p) = self.player.as_mut() {
-                if cancel {
-                    p.health.food.food = from;
-                    p.health.food.saturation = saturation;
-                } else if to != now {
-                    p.health.food.food = to.clamp(0, 20);
-                    p.health.food.saturation =
-                        p.health.food.saturation.min(p.health.food.food as f32);
+        // Hooks here may still ask for the other players' bodies; the hub is as the turn found it.
+        let view = Rc::clone(&self.lan_hub_view);
+        let shared: &LanHost = host;
+        let (totem, turn_events) = view.scope(shared, || {
+            let turn_events = self
+                .player
+                .as_mut()
+                .map(|p| std::mem::take(&mut p.events))
+                .unwrap_or_default();
+            if !turn_events.is_empty() {
+                self.record_combat(&turn_events);
+                self.wear_armor(&turn_events);
+            }
+            // A totem that saved the guest this turn (its hurt set it off).
+            let totem = self.apply_totem();
+            // The mods hear the food level the turn changed (eating, hunger,
+            // starving...), once for the change it made as a whole, with the
+            // guest's state still swapped in; they may change or undo it before it
+            // reaches the guest.
+            if let Some(now) = self.player.as_ref().map(|p| p.health.food.food)
+                && let Some(g) = shared.hub.guests.get(swap.i)
+                && g.food != now
+            {
+                let (uuid, name, from, saturation) = (g.uuid, g.name.clone(), g.food, g.saturation);
+                let (mut to, mut cancel) = (now, false);
+                self.native_food_level_changed(uuid, &name, from, &mut to, &mut cancel);
+                if let Some(p) = self.player.as_mut() {
+                    if cancel {
+                        p.health.food.food = from;
+                        p.health.food.saturation = saturation;
+                    } else if to != now {
+                        p.health.food.food = to.clamp(0, 20);
+                        p.health.food.saturation =
+                            p.health.food.saturation.min(p.health.food.food as f32);
+                    }
                 }
             }
-        }
+            (totem, turn_events)
+        });
         let GuestSwap {
             conn,
             i,
@@ -928,32 +963,34 @@ impl Game<'_> {
         }
         let guest = &host.hub.guests[i];
         let listening = !horizon_client::mod_api::mods().is_empty();
-        for projectile in projectiles..self.creatures.projectiles.len() {
-            if !listening {
-                break;
+        view.scope(&*host, || {
+            for projectile in projectiles..self.creatures.projectiles.len() {
+                if !listening {
+                    break;
+                }
+                let item = match &self.creatures.projectiles[projectile].kind {
+                    horizon_client::projectiles::ProjectileKind::Snowball => {
+                        Some("minecraft:snowball".to_owned())
+                    }
+                    horizon_client::projectiles::ProjectileKind::Egg => {
+                        Some("minecraft:egg".to_owned())
+                    }
+                    horizon_client::projectiles::ProjectileKind::EnderPearl => {
+                        Some("minecraft:ender_pearl".to_owned())
+                    }
+                    horizon_client::projectiles::ProjectileKind::Trident => {
+                        Some("minecraft:trident".to_owned())
+                    }
+                    horizon_client::projectiles::ProjectileKind::Potion(stack, _) => {
+                        Some(stack.item.to_string())
+                    }
+                    _ => None,
+                };
+                if let Some(item) = item {
+                    self.native_player_launch_projectile(guest.uuid, &guest.name, &item);
+                }
             }
-            let item = match &self.creatures.projectiles[projectile].kind {
-                horizon_client::projectiles::ProjectileKind::Snowball => {
-                    Some("minecraft:snowball".to_owned())
-                }
-                horizon_client::projectiles::ProjectileKind::Egg => {
-                    Some("minecraft:egg".to_owned())
-                }
-                horizon_client::projectiles::ProjectileKind::EnderPearl => {
-                    Some("minecraft:ender_pearl".to_owned())
-                }
-                horizon_client::projectiles::ProjectileKind::Trident => {
-                    Some("minecraft:trident".to_owned())
-                }
-                horizon_client::projectiles::ProjectileKind::Potion(stack, _) => {
-                    Some(stack.item.to_string())
-                }
-                _ => None,
-            };
-            if let Some(item) = item {
-                self.native_player_launch_projectile(guest.uuid, &guest.name, &item);
-            }
-        }
+        });
         // The guest's swings are theirs: the host's own count stays the host's.
         play.swings += self.swings_started.wrapping_sub(swings);
         self.swings_started = swings;

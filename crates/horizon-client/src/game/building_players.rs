@@ -2,7 +2,7 @@
 //! game body. Identity keeps borrowed ancestor bodies distinct from hub copies.
 use super::Dim;
 use horizon_core::geometry::Aabb;
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 use std::rc::Rc;
 
 #[derive(Clone, Copy)]
@@ -23,15 +23,49 @@ pub(super) fn shared(players: impl IntoIterator<Item = BuildingPlayer>) -> HubBo
 }
 
 /// The players' boxes a guest's turn sees: the borrowed ancestor bodies, and
-/// the hub's bodies but for the actor.
-#[derive(Default)]
+/// the hub's bodies but for the actor, which a lazy turn lists at its first `boxes_with`.
 pub(super) struct BuildingPlayers {
     ancestors: Vec<BuildingPlayer>,
     actor: Option<u32>,
-    hub: HubBodies,
+    hub: OnceCell<HubBodies>,
+}
+
+impl Default for BuildingPlayers {
+    fn default() -> Self {
+        Self {
+            ancestors: Vec::new(),
+            actor: None,
+            hub: OnceCell::from(HubBodies::default()),
+        }
+    }
 }
 
 impl BuildingPlayers {
+    /// The live ancestor bodies plus the outer body; `present` says whether the hub still has the conn.
+    fn ancestors(
+        &self,
+        actor: u32,
+        outer: Option<BuildingPlayer>,
+        present: impl Fn(u32) -> bool,
+    ) -> Vec<BuildingPlayer> {
+        let alive = |conn: Option<u32>| conn.is_none_or(&present);
+        // The borrowed ancestors are the few nested turns (usually none or
+        // one): only they are copied, the hub's bodies are shared.
+        let mut ancestors: Vec<_> = self
+            .ancestors
+            .iter()
+            .copied()
+            .filter(|p| p.borrowed && p.conn != Some(actor) && alive(p.conn))
+            .collect();
+        if let Some(outer) = outer {
+            ancestors.retain(|p| p.conn != outer.conn);
+            if outer.conn != Some(actor) && alive(outer.conn) {
+                ancestors.push(outer);
+            }
+        }
+        ancestors
+    }
+
     /// Refresh hub-owned bodies, preserve live ancestor bodies held outside
     /// the hub, and omit the actor (GameLevel.player_box supplies that body).
     pub(super) fn for_turn(
@@ -40,37 +74,39 @@ impl BuildingPlayers {
         outer: Option<BuildingPlayer>,
         current: HubBodies,
     ) -> Self {
-        // The borrowed ancestors are the few nested turns (usually none or
-        // one): only they are copied, the hub's bodies are shared.
-        let mut ancestors: Vec<_> = self
-            .ancestors
-            .iter()
-            .copied()
-            .filter(|p| {
-                p.borrowed
-                    && p.conn != Some(actor)
-                    && (p.conn.is_none() || current.iter().any(|g| g.get().conn == p.conn))
-            })
-            .collect();
-        if let Some(outer) = outer {
-            ancestors.retain(|p| p.conn != outer.conn);
-            if outer.conn != Some(actor)
-                && (outer.conn.is_none() || current.iter().any(|g| g.get().conn == outer.conn))
-            {
-                ancestors.push(outer);
-            }
-        }
+        let ancestors = self.ancestors(actor, outer, |conn| {
+            current.iter().any(|g| g.get().conn == Some(conn))
+        });
         Self {
             ancestors,
             actor: Some(actor),
-            hub: current,
+            hub: OnceCell::from(current),
         }
     }
 
-    pub(super) fn boxes(&self, dimension: Dim) -> Vec<([f64; 3], [f64; 3])> {
+    /// `for_turn` whose hub part is listed by the first `boxes_with`.
+    pub(super) fn lazy_turn(
+        &self,
+        actor: u32,
+        outer: Option<BuildingPlayer>,
+        present: impl Fn(u32) -> bool,
+    ) -> Self {
+        Self {
+            ancestors: self.ancestors(actor, outer, present),
+            actor: Some(actor),
+            hub: OnceCell::new(),
+        }
+    }
+
+    /// The boxes in `dimension`; `hub` lists the hub's bodies if this turn still has to.
+    pub(super) fn boxes_with(
+        &self,
+        dimension: Dim,
+        hub: impl FnOnce() -> HubBodies,
+    ) -> Vec<([f64; 3], [f64; 3])> {
         // Hub conns are unique, so only the ancestors can already hold one.
         let hub =
-            self.hub.iter().map(Cell::get).filter(|p| {
+            self.hub.get_or_init(hub).iter().map(Cell::get).filter(|p| {
                 p.conn != self.actor && !self.ancestors.iter().any(|a| a.conn == p.conn)
             });
         self.ancestors
@@ -86,6 +122,11 @@ impl BuildingPlayers {
                 )
             })
             .collect()
+    }
+
+    #[cfg(test)]
+    pub(super) fn boxes(&self, dimension: Dim) -> Vec<([f64; 3], [f64; 3])> {
+        self.boxes_with(dimension, || unreachable!("a list that was not eager"))
     }
 }
 
@@ -107,6 +148,65 @@ mod tests {
     }
     fn xs(players: &BuildingPlayers, dim: Dim) -> Vec<f64> {
         players.boxes(dim).iter().map(|(lo, _)| lo[0]).collect()
+    }
+
+    fn hub() -> Vec<BuildingPlayer> {
+        vec![
+            player(Some(1), 10.0, Dim::Overworld, false),
+            player(Some(2), 20.0, Dim::Overworld, false),
+            player(Some(3), 30.0, Dim::Nether, false),
+        ]
+    }
+    fn lazy_xs(players: &BuildingPlayers, dim: Dim) -> Vec<f64> {
+        let boxes = players.boxes_with(dim, || shared(hub()));
+        boxes.iter().map(|(lo, _)| lo[0]).collect()
+    }
+    fn in_hub(conn: u32) -> bool {
+        hub().iter().any(|p| p.conn == Some(conn))
+    }
+
+    #[test]
+    fn a_lazy_turn_lists_the_hub_when_asked_and_only_once() {
+        let builds = Cell::new(0);
+        let host = player(None, 0.0, Dim::Overworld, true);
+        let turn = BuildingPlayers::default().lazy_turn(1, Some(host), in_hub);
+        let counted = || {
+            builds.set(builds.get() + 1);
+            shared(hub())
+        };
+        assert_eq!(builds.get(), 0);
+        let first = turn.boxes_with(Dim::Overworld, counted);
+        let second = turn.boxes_with(Dim::Nether, counted);
+        assert_eq!(builds.get(), 1);
+        // Player 1 is the actor, so the overworld holds the host and player 2.
+        let lows = |b: &[([f64; 3], [f64; 3])]| b.iter().map(|(lo, _)| lo[0]).collect::<Vec<_>>();
+        assert_eq!(lows(&first), [0.0, 20.0]);
+        assert_eq!(lows(&second), [30.0]);
+    }
+
+    #[test]
+    fn a_lazy_list_equals_the_eager_one_through_nested_turns() {
+        let host = player(None, 0.0, Dim::Overworld, true);
+        let eager1 = BuildingPlayers::default().for_turn(1, Some(host), shared(hub()));
+        let lazy1 = BuildingPlayers::default().lazy_turn(1, Some(host), in_hub);
+        for dim in [Dim::Overworld, Dim::Nether] {
+            assert_eq!(lazy_xs(&lazy1, dim), xs(&eager1, dim));
+        }
+        // A turn nested in the first, from the eager list and from the lazy one.
+        let outer = player(Some(1), 11.0, Dim::Overworld, true);
+        let eager2 = eager1.for_turn(2, Some(outer), shared(hub()));
+        let lazy2 = lazy1.lazy_turn(2, Some(outer), in_hub);
+        assert_eq!(lazy_xs(&lazy2, Dim::Overworld), [0.0, 11.0]);
+        assert_eq!(lazy_xs(&lazy2, Dim::Nether), [30.0]);
+        for dim in [Dim::Overworld, Dim::Nether] {
+            assert_eq!(lazy_xs(&lazy2, dim), xs(&eager2, dim));
+        }
+        // An ancestor whose player left the hub does not linger in either.
+        let gone = player(Some(9), 5.0, Dim::Overworld, true);
+        let eager3 = eager2.for_turn(3, Some(gone), shared(hub()));
+        let lazy3 = lazy2.lazy_turn(3, Some(gone), in_hub);
+        assert_eq!(lazy_xs(&lazy3, Dim::Overworld), [0.0, 11.0, 20.0]);
+        assert_eq!(lazy_xs(&lazy3, Dim::Overworld), xs(&eager3, Dim::Overworld));
     }
 
     #[test]
