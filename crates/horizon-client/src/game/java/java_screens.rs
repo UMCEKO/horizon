@@ -59,6 +59,8 @@ pub(in crate::game) mod live {
         animate: std::collections::VecDeque<Vec<[i32; 3]>>,
         /// This tick's picks, which the tick's end turns into a group.
         picked: Vec<[i32; 3]>,
+        /// Destroy and hit particles native handed over: kind, position, Java state, face.
+        block_effects: Vec<(u8, [i32; 3], i32, u8)>,
         /// The open screen's frame blurs what is behind it (`blurBeforeThisStratum`).
         blurred: bool,
         shell: Shell,
@@ -119,6 +121,8 @@ pub(in crate::game) mod live {
         Animate(&'a [[i32; 3]]),
         /// The window's Particles option.
         Particles(i32),
+        /// `addDestroyBlockEffect` (0) or `addBreakingBlockEffects` (1) at a position, for a Java state and a face.
+        BlockEffect(u8, [i32; 3], i32, u8),
         /// `leftPos`, `topPos`, `imageWidth`, `imageHeight` and the hovered menu slot (-1 none) of the screen native shows.
         ShellLayout([i32; 5]),
         /// Each shown mod toast's `(id, finished, fully visible for)`.
@@ -146,6 +150,7 @@ pub(in crate::game) mod live {
                 Input::Camera(..) => 13,
                 Input::Animate(_) => 14,
                 Input::Particles(_) => 15,
+                Input::BlockEffect(..) => 30,
                 Input::ShellLayout(_) => 16,
                 Input::Toasts(_) => 26,
                 Input::NotificationTime(_) => 27,
@@ -196,6 +201,12 @@ pub(in crate::game) mod live {
                     group.iter().flatten().for_each(|v| out.int(*v));
                 }
                 Input::Particles(level) => out.int(level),
+                Input::BlockEffect(kind, at, state, face) => {
+                    out.0.push(kind);
+                    at.iter().for_each(|v| out.int(*v));
+                    out.int(state);
+                    out.0.push(face);
+                }
                 Input::ShellLayout(layout) => layout.iter().for_each(|v| out.int(*v)),
                 Input::Toasts(turns) => {
                     out.int(turns.len() as i32);
@@ -1271,6 +1282,34 @@ pub(in crate::game) mod live {
                 .and_then(|reply| In(&reply).float())
         }
 
+        /// Queues a block's destroy (0) or hit (1) particles for the Java client when its mod's extension makes them.
+        pub(in crate::game) fn java_block_effect(
+            &mut self,
+            kind: u8,
+            pos: [i32; 3],
+            state: BlockStateId,
+            face: [i32; 3],
+        ) -> bool {
+            if !CLIENT.with_borrow(|c| c.joined)
+                || super::java_particles::java_block_effects(state) & (1 << kind) == 0
+            {
+                return false;
+            }
+            let Some(map) = horizon_java_host::bridge::STATES.get() else {
+                return false;
+            };
+            let Some(&java) = map.to_java.get(state.0 as usize) else {
+                return false;
+            };
+            let face = if kind == 0 {
+                0
+            } else {
+                super::java_particles::direction(face)
+            };
+            CLIENT.with_borrow_mut(|c| c.block_effects.push((kind, pos, java, face)));
+            true
+        }
+
         /// The Java client's own `useItemOn` result for the click just run, when the block at `pos` is a mod's: it decides whether the click ends there, as the block's code does in vanilla.
         pub(in crate::game) fn java_block_prediction(
             &mut self,
@@ -1541,6 +1580,10 @@ pub(in crate::game) mod live {
                 if c.sent.particles != Some(particles) {
                     c.sent.particles = Some(particles);
                     Input::Particles(particles).write(&mut events);
+                    count += 1;
+                }
+                for (kind, at, state, face) in std::mem::take(&mut c.block_effects) {
+                    Input::BlockEffect(kind, at, state, face).write(&mut events);
                     count += 1;
                 }
                 let block = camera.map(|(p, _)| p.map(|v| v.floor() as i32));

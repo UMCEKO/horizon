@@ -2,6 +2,8 @@
 //! The Java registry's particle types: names by id, and the ones mods registered.
 
 use horizon_java_host::wire::In;
+use horizon_world::registry::BlockStateId;
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 pub(super) struct ParticleFacts {
@@ -67,6 +69,43 @@ pub(super) fn java_particle_name(id: i32) -> Option<&'static str> {
     java_particle_facts()?.name(id)
 }
 
+/// By Horizon's state id: 1 when the state's mod makes its destroy particles in Java, 2 its hit particles.
+pub(super) fn java_block_effects(state: BlockStateId) -> u8 {
+    static BY_STATE: OnceLock<HashMap<BlockStateId, u8>> = OnceLock::new();
+    let table = BY_STATE.get_or_init(|| {
+        let Some(map) = horizon_java_host::bridge::STATES.get() else {
+            return HashMap::new();
+        };
+        effects_by_state(super::java_models::client_block_effects(), &map.to_horizon)
+    });
+    table.get(&state).copied().unwrap_or(0)
+}
+
+fn effects_by_state(
+    effects: &[(i32, u8)],
+    to_horizon: &[Option<BlockStateId>],
+) -> HashMap<BlockStateId, u8> {
+    effects
+        .iter()
+        .filter_map(|&(java, bits)| {
+            let state = (*to_horizon.get(usize::try_from(java).ok()?)?)?;
+            Some((state, bits))
+        })
+        .collect()
+}
+
+/// Vanilla's 3D data value of a face normal: down, up, north, south, west, east.
+pub(super) fn direction(face: [i32; 3]) -> u8 {
+    match face {
+        [0, -1, 0] => 0,
+        [0, 1, 0] => 1,
+        [0, 0, -1] => 2,
+        [0, 0, 1] => 3,
+        [-1, 0, 0] => 4,
+        _ => 5,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,5 +142,20 @@ mod tests {
     fn a_reply_cut_before_a_flag_is_refused() {
         let bytes = reply(&[("minecraft:flame", false), ("mekanism:laser", true)]);
         assert!(parse(&bytes[..bytes.len() - 1]).is_none());
+    }
+
+    #[test]
+    fn faces_map_to_vanillas_data_values() {
+        let faces = [[0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1], [-1, 0, 0], [1, 0, 0]];
+        assert_eq!(faces.map(direction), [0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn effects_map_java_ids_through_the_state_table() {
+        let to_horizon = [None, Some(BlockStateId(40)), Some(BlockStateId(41))];
+        let table = effects_by_state(&[(1, 1), (2, 3), (9, 2), (-1, 1), (0, 2)], &to_horizon);
+        assert_eq!(table.len(), 2);
+        assert_eq!(table[&BlockStateId(40)], 1);
+        assert_eq!(table[&BlockStateId(41)], 3);
     }
 }

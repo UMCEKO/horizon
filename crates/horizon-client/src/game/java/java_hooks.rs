@@ -177,6 +177,23 @@ impl Game<'_> {
         }
     }
 
+    /// Hands a block's destroy (0) or hit (1) particles to the Java client when its mod makes them; true when it took them.
+    pub(super) fn java_hook_block_effect(
+        &mut self,
+        kind: u8,
+        pos: [i32; 3],
+        state: BlockStateId,
+        face: [i32; 3],
+    ) -> bool {
+        #[cfg(feature = "java-mods")]
+        return self.java_block_effect(kind, pos, state, face);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (kind, pos, state, face);
+            false
+        }
+    }
+
     /// The held item's own `mineBlock`; false leaves the wear to Horizon.
     pub(super) fn java_hook_mine_block(
         &mut self,

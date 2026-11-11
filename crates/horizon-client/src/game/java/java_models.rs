@@ -69,6 +69,8 @@ struct ClientResources {
     external: std::collections::HashSet<String>,
     decorated: std::collections::HashSet<String>,
     atlases: Vec<JavaAtlas>,
+    /// Java state ids and the bits of what their client extension makes itself (1 destroy, 2 hit particles).
+    effects: Vec<(i32, u8)>,
 }
 
 fn parse_resources(reply: &[u8]) -> Option<ClientResources> {
@@ -92,12 +94,22 @@ fn parse_resources(reply: &[u8]) -> Option<ClientResources> {
             sprites,
         });
     }
+    let count = input.int()?;
+    let effects = (0..count)
+        .map(|_| Some((input.int()?, input.byte()?)))
+        .collect::<Option<_>>()?;
     Some(ClientResources {
         states,
         external,
         decorated,
         atlases,
+        effects,
     })
+}
+
+/// The block states whose mod's client extension makes its own destroy or hit particles, by Java state id; empty without a client.
+pub(super) fn client_block_effects() -> &'static [(i32, u8)] {
+    client_resources().map_or(&[], |resources| &resources.effects)
 }
 
 /// The boot's export, parsed once; None without a Java client.
@@ -836,7 +848,9 @@ mod tests {
         out.int(2);
         out.text("mekanism:entity/robit/robit");
         out.text("minecraft:block/stone");
+        out.int(0);
         let parsed = parse_resources(&out.0).unwrap();
+        assert!(parsed.effects.is_empty());
         assert_eq!(parsed.states, vec![7, 8]);
         assert!(parsed.external.contains("mekanism:robit"));
         assert!(parsed.decorated.contains("mekanism:energy_cube"));
@@ -855,5 +869,20 @@ mod tests {
             vec!["mekanism:entity/robit/robit".to_owned()]
         );
         assert!(parse_resources(&out.0[..out.0.len() - 3]).is_none());
+    }
+
+    #[test]
+    fn the_boot_export_reads_the_block_effects_and_refuses_a_cut_entry() {
+        let mut out = Out::default();
+        for _ in 0..4 {
+            out.int(0);
+        }
+        out.int(2);
+        out.int(30);
+        out.0.push(1);
+        out.int(31);
+        out.0.push(3);
+        assert_eq!(parse_resources(&out.0).unwrap().effects, vec![(30, 1), (31, 3)]);
+        assert!(parse_resources(&out.0[..out.0.len() - 1]).is_none());
     }
 }

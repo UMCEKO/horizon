@@ -719,6 +719,7 @@ public final class ClientBridge {
     private static final byte ANIMATE = 14;
     private static final byte PARTICLES = 15;
     private static final byte SHELL_LAYOUT = 16;
+    private static final byte BLOCK_EFFECT = 30;
     private static final byte TOASTS = 26;
     private static final byte NOTIFICATION_TIME = 27;
 
@@ -764,6 +765,7 @@ public final class ClientBridge {
                 case SCREEN -> nativeScreen(in.readBoolean(), in.readBoolean(), in.readByte());
                 case TOASTS -> Toasts.input(in);
                 case NOTIFICATION_TIME -> minecraft.options.notificationDisplayTime().set(in.readDouble());
+                case BLOCK_EFFECT -> BlockEffects.run(in);
                 case SHELL_LAYOUT -> Shells.layout(new int[] {in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readInt()});
                 case FOCUS -> set(Window.class, minecraft.getWindow(), "focused", in.readBoolean());
                 case DROP -> {
