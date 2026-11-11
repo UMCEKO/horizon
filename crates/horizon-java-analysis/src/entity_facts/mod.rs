@@ -1,6 +1,7 @@
-//! Entity facts from the jars of an install: bytecode helpers, entity type ids, listener guards and state groups.
+//! Entity facts from the jars of an install: bytecode helpers, entity type ids, listener guards, state groups and `entity-facts.json`.
 
 pub mod bytecode;
+pub mod facts;
 pub mod groups;
 pub mod guards;
 

@@ -1,0 +1,1 @@
+package net.minecraft.world.entity.item; public class ItemEntity extends net.minecraft.world.entity.Entity { public void tick() {} public boolean hurt(float a) { return false; } public boolean tryPick(int a) { return false; } }

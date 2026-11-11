@@ -1,0 +1,1 @@
+package net.minecraft.world.entity; public class EntityTypes { public static final EntityType ZOMBIE = register(EntityTypeIds.ZOMBIE); public static final EntityType COW = register(EntityTypeIds.COW); static EntityType register(Object k) { return null; } }

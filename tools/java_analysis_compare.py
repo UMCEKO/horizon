@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Dev only: compares the Rust mod analysis (crates/horizon-java-analysis) with the Python it ports, stage by stage.
 
-    python3 tools/java_analysis_compare.py classes|libraries|jars|mixins|knowledge|replaces|entity-guards --install DIR [--bin PATH]
+    python3 tools/java_analysis_compare.py classes|libraries|jars|mixins|knowledge|replaces|entity-guards|entity-facts|all --install DIR [--bin PATH]
 
-Writes only into a temp folder. Prints `N <units>, M differences` and the first 20 differences; exits 1 on any.
+Writes only into a temp folder. Prints `N <units>, M differences` and the first 20 differences (one line per stage for `all`); exits 1 on any.
 """
 import argparse
 import json
@@ -213,18 +213,30 @@ def compare_knowledge(install, binary):
         return len(keys) + len(folds), found
 
 
+UNCLASSIFIED = 'entity methods without a state group'
+
+
+def run_both(install, binary, scratch):
+    """mod_replaces.run and the Rust `replaces` command, each into its own folder under scratch; both may stop on unclassified entity methods."""
+    python_out, rust_out, cache = Path(scratch) / 'python', Path(scratch) / 'rust', Path(scratch) / 'cache'
+    args = argparse.Namespace(install=str(install), out=str(python_out), ledger=str(mr.LEDGER_JSON), cache=str(cache), mixins=None, routes_out=None)
+    try:
+        mr.run(args)
+    except SystemExit as e:
+        if not str(e.code).startswith(UNCLASSIFIED):
+            raise
+    run = subprocess.run([str(binary), 'replaces', '--install', str(install), '--boot-jar', str(knowledge_jar(scratch)), '--out', str(rust_out), '--cache', str(cache)],
+                         capture_output=True, text=True)
+    if run.returncode and UNCLASSIFIED not in run.stderr:
+        sys.exit(f'horizon-java-analysis replaces failed ({run.returncode}): {run.stderr[-2000:]}')
+    return python_out, rust_out
+
+
 def compare_replaces(install, binary):
     """replaces.json (without `seconds` and `install`) and mixins/ from mod_replaces.run and the Rust command, each into its own temp folder."""
     found = []
     with tempfile.TemporaryDirectory(prefix='java-analysis-compare-') as scratch:
-        python_out, rust_out, cache = Path(scratch) / 'python', Path(scratch) / 'rust', Path(scratch) / 'cache'
-        args = argparse.Namespace(install=str(install), out=str(python_out), ledger=str(mr.LEDGER_JSON), cache=str(cache), mixins=None, routes_out=None)
-        try:
-            mr.run(args)
-        except SystemExit as e:
-            if not str(e.code).startswith('entity methods without a state group'):
-                raise
-        subprocess.run([str(binary), 'replaces', '--install', str(install), '--boot-jar', str(knowledge_jar(scratch)), '--out', str(rust_out), '--cache', str(cache)], check=True, capture_output=True)
+        python_out, rust_out = run_both(install, binary, scratch)
         python, rust = (json.loads((out / 'replaces.json').read_text()) for out in (python_out, rust_out))
         for doc in (python, rust):
             doc.pop('seconds'), doc.pop('install')
@@ -284,21 +296,51 @@ def compare_entity_guards(install, binary):
     return len(listeners) + len(ids), found
 
 
+def compare_entity_facts(install, binary):
+    """entity-facts.json from mod_replaces.run and the Rust `replaces` command."""
+    with tempfile.TemporaryDirectory(prefix='java-analysis-compare-') as scratch:
+        python_out, rust_out = run_both(install, binary, scratch)
+        python, rust = (json.loads((out / 'entity-facts.json').read_text()) for out in (python_out, rust_out))
+    found = [(f'entity-facts.json: {p}', x, y) for p, x, y in differences('', python, rust)]
+    return len(python['events']) + len(python['writes']) + len(python['routes']), found
+
+
+STAGES = {
+    'classes': (compare_classes, 'classes', 'the class-file reader'),
+    'libraries': (compare_libraries, 'library classes', 'library jars, class index, SPI names'),
+    'jars': (compare_jars, 'archives', 'mod archives and their jar facts'),
+    'mixins': (compare_mixins, 'mixin handlers', 'the mixin handler list'),
+    'knowledge': (compare_knowledge, 'keys', 'the port ledger rows, verdicts, routes and folded lambdas'),
+    'replaces': (compare_replaces, 'methods and events', 'replaces.json: changes, listeners, routing, summary'),
+    'entity-guards': (compare_entity_guards, 'type ids and guarded listeners', 'entity type ids and listener guards'),
+    'entity-facts': (compare_entity_facts, 'events, writers and routed classes', 'entity-facts.json: events, reads, writes, hooks, routes, caps'),
+}
+
+
+def report(stage, install, binary, detail):
+    """Runs one stage and prints its line; True when it found differences."""
+    compare, unit, _ = STAGES[stage]
+    count, found = compare(install, binary)
+    print(f'{count} {unit}, {len(found)} differences' if detail else f'{stage}: {count} {unit}, {len(found)} differences')
+    for where, python, rust in found[:SHOWN if detail else 3]:
+        print(f'{"" if detail else "  "}{where}: {str(python)[:200]} vs {str(rust)[:200]}')
+    return bool(found)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest='stage', required=True)
-    for name, text in (('classes', 'the class-file reader'), ('libraries', 'library jars, class index, SPI names'), ('jars', 'mod archives and their jar facts'), ('mixins', 'the mixin handler list'), ('knowledge', 'the port ledger rows, verdicts, routes and folded lambdas'), ('replaces', 'replaces.json: changes, listeners, routing, summary'), ('entity-guards', 'entity type ids and listener guards')):
+    for name, text in [(n, t) for n, (_, _, t) in STAGES.items()] + [('all', 'every stage, one line each')]:
         stage = sub.add_parser(name, help=text)
         stage.add_argument('--install', required=True)
         stage.add_argument('--bin', help='the horizon-java-analysis binary (default: the fast profile)')
     args = parser.parse_args()
-    unit = {'classes': 'classes', 'libraries': 'library classes', 'jars': 'archives', 'mixins': 'mixin handlers', 'knowledge': 'keys', 'replaces': 'methods and events', 'entity-guards': 'type ids and guarded listeners'}[args.stage]
-    compare = {'classes': compare_classes, 'libraries': compare_libraries, 'jars': compare_jars, 'mixins': compare_mixins, 'knowledge': compare_knowledge, 'replaces': compare_replaces, 'entity-guards': compare_entity_guards}[args.stage]
-    count, found = compare(args.install, rust_binary(args.bin))
-    print(f'{count} {unit}, {len(found)} differences')
-    for where, python, rust in found[:SHOWN]:
-        print(f'{where}: {str(python)[:200]} vs {str(rust)[:200]}')
-    sys.exit(1 if found else 0)
+    binary = rust_binary(args.bin)
+    if args.stage == 'all':
+        failed = [stage for stage in STAGES if report(stage, args.install, binary, False)]
+    else:
+        failed = report(args.stage, args.install, binary, True)
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == '__main__':

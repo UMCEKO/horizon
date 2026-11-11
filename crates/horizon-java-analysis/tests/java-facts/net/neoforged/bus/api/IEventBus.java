@@ -1,0 +1,1 @@
+package net.neoforged.bus.api; import java.util.function.Consumer; public interface IEventBus { <T extends Event> void addListener(Consumer<T> c); default <T extends Event> T post(T e) { new net.minecraft.world.entity.Entity().setPos(0, 0, 0); return e; } }

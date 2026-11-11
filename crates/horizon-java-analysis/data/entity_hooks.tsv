@@ -1,0 +1,7 @@
+# hook	NeoForge method the closure starts from; a line the jar lacks goes to hooks_missing
+entity_tick_pre	net/neoforged/neoforge/event/EventHooks#fireEntityTickPre(Lnet/minecraft/world/entity/Entity;)Lnet/neoforged/neoforge/event/tick/EntityTickEvent$Pre;
+entity_tick_post	net/neoforged/neoforge/event/EventHooks#fireEntityTickPost(Lnet/minecraft/world/entity/Entity;)V
+mob_despawn	net/neoforged/neoforge/event/EventHooks#checkMobDespawn(Lnet/minecraft/world/entity/Mob;)Z
+living_breathe	net/neoforged/neoforge/common/CommonHooks#onLivingBreathe(Lnet/minecraft/world/entity/LivingEntity;Lnet/minecraft/server/level/ServerLevel;II)V
+start_tracking	net/neoforged/neoforge/event/EventHooks#onStartEntityTracking(Lnet/minecraft/world/entity/Entity;Lnet/minecraft/world/entity/player/Player;)V
+stop_tracking	net/neoforged/neoforge/event/EventHooks#onStopEntityTracking(Lnet/minecraft/world/entity/Entity;Lnet/minecraft/world/entity/player/Player;)V

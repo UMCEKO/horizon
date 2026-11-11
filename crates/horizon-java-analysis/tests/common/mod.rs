@@ -1,4 +1,4 @@
-//! The folder of classes javac compiles from `tests/java/`, shared by the test binaries.
+//! The folders of classes javac compiles from `tests/java/` and `tests/java-facts/`, shared by the test binaries.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -15,38 +15,48 @@ fn java_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The folder of compiled fixture classes, or None when there is no javac.
+fn compile(tree: &str) -> Option<PathBuf> {
+    let Some(home) = std::env::var_os("JAVA_HOME") else {
+        eprintln!("skipped: no JAVA_HOME");
+        return None;
+    };
+    let javac = Path::new(&home).join("bin").join("javac");
+    if !javac.is_file() {
+        eprintln!("skipped: no JAVA_HOME");
+        return None;
+    }
+    let out = std::env::temp_dir().join(format!(
+        "horizon-java-analysis-{tree}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&out);
+    let mut sources = Vec::new();
+    java_files(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join(tree),
+        &mut sources,
+    );
+    let status = Command::new(javac)
+        .args(["-proc:none", "-nowarn", "-d"])
+        .arg(&out)
+        .args(&sources)
+        .status()
+        .unwrap();
+    assert!(status.success(), "javac failed");
+    Some(out)
+}
+
+/// The folder of compiled `tests/java/` classes, or None when there is no javac.
+#[allow(dead_code)]
 pub fn classes() -> Option<&'static Path> {
     static CLASSES: OnceLock<Option<PathBuf>> = OnceLock::new();
-    CLASSES
-        .get_or_init(|| {
-            let Some(home) = std::env::var_os("JAVA_HOME") else {
-                eprintln!("skipped: no JAVA_HOME");
-                return None;
-            };
-            let javac = Path::new(&home).join("bin").join("javac");
-            if !javac.is_file() {
-                eprintln!("skipped: no JAVA_HOME");
-                return None;
-            }
-            let out = std::env::temp_dir().join(format!(
-                "horizon-java-analysis-classes-{}",
-                std::process::id()
-            ));
-            let _ = std::fs::remove_dir_all(&out);
-            let mut sources = Vec::new();
-            java_files(
-                &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/java"),
-                &mut sources,
-            );
-            let status = Command::new(javac)
-                .args(["-proc:none", "-nowarn", "-d"])
-                .arg(&out)
-                .args(&sources)
-                .status()
-                .unwrap();
-            assert!(status.success(), "javac failed");
-            Some(out)
-        })
-        .as_deref()
+    CLASSES.get_or_init(|| compile("java")).as_deref()
+}
+
+/// The folder of compiled `tests/java-facts/` classes, or None when there is no javac.
+#[allow(dead_code)]
+pub fn facts_classes() -> Option<&'static Path> {
+    static CLASSES: OnceLock<Option<PathBuf>> = OnceLock::new();
+    CLASSES.get_or_init(|| compile("java-facts")).as_deref()
 }
