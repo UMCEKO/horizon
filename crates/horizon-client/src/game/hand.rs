@@ -124,6 +124,12 @@ impl Game<'_> {
             .unwrap_or(otherwise)
     }
 
+    /// `Player.entityInteractionRange`/`blockInteractionRange` for the tick's picks.
+    pub(super) fn update_interaction_ranges(&mut self) {
+        self.entity_reach = self.interaction_range("minecraft:entity_interaction_range", 3.0, 5.0);
+        self.block_reach = self.interaction_range("minecraft:block_interaction_range", 4.5, 5.0);
+    }
+
     /// ServerGamePacketListenerImpl.handleAttack's
     /// `Player.isWithinAttackRange(mainHandItem, box, 3.0)` for the player in
     /// place: the held item's `attack_range`, else `AttackRange.defaultFor`
