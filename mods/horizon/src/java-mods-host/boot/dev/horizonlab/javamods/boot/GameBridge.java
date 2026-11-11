@@ -145,6 +145,7 @@ public final class GameBridge {
         Crossing.game("hopper_transfer", GameBridge::hopperTransfer);
         Crossing.game("block_ticks", GameBridge::blockTicks);
         Crossing.game("entity_facts", input -> EntityFacts.bin());
+        Crossing.game("particle_facts", input -> ParticleFacts.export());
         Crossing.game("routes_bin", input -> Routing.bin());
         Crossing.game("route", Routing::call);
         Crossing.game("bench_route", Routing::benchCall);
@@ -643,6 +644,7 @@ public final class GameBridge {
         var here = levelOf(in);
         if (start && !serverStarted) {
             serverStarted = true;
+            if (!net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) ParticleFacts.report(false);
             worldFolder = Path.of(text(in));
             for (String id : List.of("minecraft:overworld", "minecraft:the_nether", "minecraft:the_end")) level(id);
             ServerView.openWorld(server, LEVELS.values(), worldFolder, here.getSeed(), dimensions);

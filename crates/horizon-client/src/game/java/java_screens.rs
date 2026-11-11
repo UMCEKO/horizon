@@ -1054,7 +1054,11 @@ pub(in crate::game) mod live {
                     let id = particle.map_or(-1, |particle| particle.id);
                     thread_local! { static UNKNOWN: RefCell<std::collections::HashSet<i32>> = RefCell::default(); }
                     if UNKNOWN.with_borrow_mut(|seen| seen.insert(id)) {
-                        log::info!("Horizon: Java particle {id} has no native particle yet (W3)");
+                        let name = super::super::java_particles::java_particle_name(id)
+                            .unwrap_or("?");
+                        log::info!(
+                            "Horizon: Java particle {name} ({id}) reached native, which can't draw it"
+                        );
                     }
                     continue;
                 };

@@ -19,6 +19,8 @@ import net.neoforged.neoforge.registries.DeferredRegister;
 @Mod("horizon_java_test")
 public final class TestMod {
     public static final DeferredRegister.Items ITEMS = DeferredRegister.createItems("horizon_java_test");
+    public static final DeferredRegister<net.minecraft.core.particles.ParticleType<?>> PARTICLE_TYPES = DeferredRegister.create(net.minecraft.core.registries.Registries.PARTICLE_TYPE, "horizon_java_test");
+    public static final java.util.function.Supplier<net.minecraft.core.particles.SimpleParticleType> SPARK = PARTICLE_TYPES.register("spark", () -> new net.minecraft.core.particles.SimpleParticleType(false));
 
     public TestMod(IEventBus bus) {
         ITEMS.registerItem("wand", Wand::new);
@@ -43,6 +45,7 @@ public final class TestMod {
         Battery.register(bus, ITEMS);
         Breakables.register(bus, ITEMS);
         ChunkData.register(bus);
+        PARTICLE_TYPES.register(bus);
         if (net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) {
             ClientKeys.register(bus);
             ClientWorldBox.register();

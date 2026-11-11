@@ -496,6 +496,14 @@ pub(super) fn java_hook_carried_content(root: &Path) -> Vec<PathBuf> {
     }
 }
 
+/// The particle types Java mods registered, which join the game's particle key table.
+pub(super) fn java_hook_owned_particles() -> Vec<String> {
+    #[cfg(feature = "java-mods")]
+    return super::java_particles::java_owned_particles();
+    #[cfg(not(feature = "java-mods"))]
+    Vec::new()
+}
+
 /// Columns a Java mod's `getChunk` unloaded while it waited, for `update_world` to save and drop.
 pub(super) fn java_hook_pumped_unloads() -> Vec<Arc<Chunk>> {
     #[cfg(feature = "java-mods")]
