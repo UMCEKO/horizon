@@ -240,6 +240,7 @@ public final class Boot {
         listening = true;
         NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false, HzPing.class, e -> Host.onEvent("HzPing listener ran on thread " + Thread.currentThread().getName() + " payload=" + e.payload));
         NeoForge.EVENT_BUS.addListener(EventPriority.NORMAL, false, RegisterCommandsEvent.class, Boot::onCommands);
+        EventPosts.own(RegisterCommandsEvent.class);
         return "listeners registered";
     }
 

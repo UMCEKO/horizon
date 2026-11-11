@@ -134,6 +134,8 @@ public final class Shells {
 
     static void install() {
         var bus = NeoForge.EVENT_BUS;
+        EventPosts.own(ScreenEvent.Init.Pre.class);
+        EventPosts.own(ScreenEvent.Init.Post.class);
         bus.addListener(EventPriority.LOWEST, true, ScreenEvent.Init.Pre.class, event -> {
             if (is(event.getScreen())) before = identity(event.getScreen().children());
         });

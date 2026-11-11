@@ -150,6 +150,7 @@ final class CreativeTabs {
 
     /** The one build per login: the login packet has given the client its player, registries and feature flags. */
     static void install() {
+        EventPosts.own(ClientPlayerNetworkEvent.LoggingIn.class);
         NeoForge.EVENT_BUS.addListener(ClientPlayerNetworkEvent.LoggingIn.class, event -> {
             try {
                 built = build(event.getPlayer());

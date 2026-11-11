@@ -15,7 +15,6 @@ impl Game<'_> {
         canceled: &mut bool,
         exp_to_drop: &mut Option<u32>,
     ) {
-        self.java_hook_break(pos, canceled);
         self.fire_break_block(pos, state, canceled, exp_to_drop);
     }
 }

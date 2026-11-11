@@ -137,6 +137,12 @@ pub fn main_with(
         .map(|i| entries.remove(manifests[i].id.as_str()).unwrap())
         .collect();
     let ids: Vec<_> = mods.iter().map(|entry| entry.fields().id).collect();
+    // Java's families go first: at equal priority Java mods hear an event before native ones, as the shims they replace did.
+    #[cfg(feature = "java-mods")]
+    let mods: Vec<_> = game::java_listener::entries(&launch.context.game_dir)
+        .into_iter()
+        .chain(mods)
+        .collect();
     mod_api::__private::install(mods.into());
     for id in ids {
         for slot in slots.iter().filter(|slot| slot.id() == id) {

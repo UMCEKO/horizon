@@ -60,6 +60,7 @@ public final class TestMod {
             Skies.register(bus);
             ClientSpark.register(bus);
             ClientProfiles.register();
+            ClientEvents.register();
         }
     }
 

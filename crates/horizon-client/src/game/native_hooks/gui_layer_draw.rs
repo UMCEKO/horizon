@@ -36,11 +36,7 @@ impl Game<'_> {
         let mut canceled = false;
         self.native_gui_layer_pre(layer, batch, &mut canceled);
         let java = crate::game::java_hooks_client::HudLayer::of(layer);
-        let drawn = if canceled {
-            None
-        } else {
-            self.hud_layer(batch, java, draw)
-        };
+        let drawn = self.hud_layer(batch, java, canceled, draw);
         self.native_gui_layer_post(layer, batch);
         drawn
     }
