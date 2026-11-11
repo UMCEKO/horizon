@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use horizon_java_analysis::class::{self, Parse};
 use horizon_java_analysis::knowledge::{self, Knowledge};
 use horizon_java_analysis::lambdas::{self, Vanilla};
-use horizon_java_analysis::{jars, libraries, mixins, replaces};
+use horizon_java_analysis::{entity_facts, jars, libraries, mixins, replaces};
 use serde_json::json;
 
 fn main() -> ExitCode {
@@ -28,6 +28,13 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("dump-entity-guards") => match dump_entity_guards(&args.collect::<Vec<_>>()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("horizon-java-analysis: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Some("mixins") => match write_mixins(&args.collect::<Vec<_>>()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
@@ -53,7 +60,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: horizon-java-analysis dump-classes JAR... | dump-libraries --install DIR [--cache C] | dump-jars --install DIR | mixins --install DIR --out OUT | replaces --install DIR --boot-jar JAR --out OUT [--cache C] | dump-knowledge --boot-jar JAR KEY... | dump-folds --install DIR KEY..."
+                "usage: horizon-java-analysis dump-classes JAR... | dump-libraries --install DIR [--cache C] | dump-jars --install DIR | mixins --install DIR --out OUT | replaces --install DIR --boot-jar JAR --out OUT [--cache C] | dump-entity-guards --install DIR | dump-knowledge --boot-jar JAR KEY... | dump-folds --install DIR KEY..."
             );
             ExitCode::from(2)
         }
@@ -193,6 +200,16 @@ fn dump_install(cmd: &str, args: &[String]) -> Result<(), String> {
         }
         json!(rows)
     };
+    let stdout = std::io::stdout();
+    let mut out = std::io::BufWriter::new(stdout.lock());
+    writeln!(out, "{doc}").map_err(|e| e.to_string())?;
+    out.flush().map_err(|e| e.to_string())
+}
+
+/// The entity type ids and every entity-event listener's guards, as one JSON document.
+fn dump_entity_guards(args: &[String]) -> Result<(), String> {
+    let (install, _) = install_args(args)?;
+    let doc = entity_facts::dump_guards(&install)?;
     let stdout = std::io::stdout();
     let mut out = std::io::BufWriter::new(stdout.lock());
     writeln!(out, "{doc}").map_err(|e| e.to_string())?;

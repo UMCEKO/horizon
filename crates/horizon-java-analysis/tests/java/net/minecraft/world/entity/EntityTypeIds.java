@@ -1,0 +1,1 @@
+package net.minecraft.world.entity; public class EntityTypeIds { public static final Object ZOMBIE = create("zombie"); public static final Object COW = create("cow"); static Object create(String s) { return s; } }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Dev only: compares the Rust mod analysis (crates/horizon-java-analysis) with the Python it ports, stage by stage.
 
-    python3 tools/java_analysis_compare.py classes|libraries|jars|mixins|knowledge|replaces --install DIR [--bin PATH]
+    python3 tools/java_analysis_compare.py classes|libraries|jars|mixins|knowledge|replaces|entity-guards --install DIR [--bin PATH]
 
 Writes only into a temp folder. Prints `N <units>, M differences` and the first 20 differences; exits 1 on any.
 """
@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import java_knowledge  # noqa: E402
 import lab  # noqa: E402
+import mod_entity_facts as ef  # noqa: E402
 import mod_parity_explain as ex  # noqa: E402
 import mod_parity as mp  # noqa: E402
 import mod_replaces as mr  # noqa: E402
@@ -235,16 +236,64 @@ def compare_replaces(install, binary):
     return len(python['methods']) + len(python['events']), found
 
 
+def compare_entity_guards(install, binary):
+    """The entity type ids and the guards of every entity-event listener of the mods, keyed `mod|class|method|event`."""
+    jars = mr.library_jars(Path(install) / 'libraries')
+    hier = mr.Hierarchy(mr.load_library_index(jars, None))
+    hier.jars = jars
+    archives, classes = [], []
+    for jar in sorted((Path(install) / 'mods').glob('*.jar')):
+        for mod, _, archive, _ in mr.walk(zipfile.ZipFile(jar), None, jar.stem):
+            archives.append((mod, archive))
+            for entry in archive.namelist():
+                if not entry.endswith('.class') or entry.startswith('META-INF/') or entry == 'module-info.class':
+                    continue
+                data = archive.read(entry)
+                try:
+                    head = mr.parse_class(data, members=False)
+                except (ValueError, IndexError, struct.error):
+                    continue
+                hier.add(head['name'], head['super'], head['ifaces'])
+                marked = b'addListener' in data or b'addGenericListener' in data or b'SubscribeEvent' in data
+                classes.append((len(archives) - 1, entry, head['name'], marked))
+    by_name = {name: (ai, entry) for ai, entry, name, _ in classes}
+    cache = {}
+
+    def infos(name):
+        if name not in cache:
+            ref = by_name.get(name)
+            try:
+                cache[name] = mr.parse_class(archives[ref[0]][1].read(ref[1]), annotations=True, code=True) if ref else None
+            except (ValueError, IndexError, struct.error):
+                cache[name] = None
+        return cache[name]
+
+    ids = ef.type_ids(hier)
+    listeners = {}
+    for ai, _, name, marked in classes:
+        info = infos(name) if marked else None
+        if info is None:
+            continue
+        for event, _, method, _, _, _, impl in mr.class_listeners(info, hier):
+            if event is None or not (event.startswith(ef.EVENT_PREFIXES) or hier.is_a(event, ef.ENTITY_EVENT)):
+                continue
+            listeners[f'{archives[ai][0]}|{name.replace("/", ".")}|{method}|{event}'] = ef.listener_guards(infos, impl, ids)
+    python = json.loads(json.dumps({'type_ids': ids, 'listeners': listeners}))
+    rust = rust_json(binary, 'dump-entity-guards', '--install', install)
+    found = [(f'entity-guards: {p}', x, y) for p, x, y in differences('', python, rust)]
+    return len(listeners) + len(ids), found
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest='stage', required=True)
-    for name, text in (('classes', 'the class-file reader'), ('libraries', 'library jars, class index, SPI names'), ('jars', 'mod archives and their jar facts'), ('mixins', 'the mixin handler list'), ('knowledge', 'the port ledger rows, verdicts, routes and folded lambdas'), ('replaces', 'replaces.json: changes, listeners, routing, summary')):
+    for name, text in (('classes', 'the class-file reader'), ('libraries', 'library jars, class index, SPI names'), ('jars', 'mod archives and their jar facts'), ('mixins', 'the mixin handler list'), ('knowledge', 'the port ledger rows, verdicts, routes and folded lambdas'), ('replaces', 'replaces.json: changes, listeners, routing, summary'), ('entity-guards', 'entity type ids and listener guards')):
         stage = sub.add_parser(name, help=text)
         stage.add_argument('--install', required=True)
         stage.add_argument('--bin', help='the horizon-java-analysis binary (default: the fast profile)')
     args = parser.parse_args()
-    unit = {'classes': 'classes', 'libraries': 'library classes', 'jars': 'archives', 'mixins': 'mixin handlers', 'knowledge': 'keys', 'replaces': 'methods and events'}[args.stage]
-    compare = {'classes': compare_classes, 'libraries': compare_libraries, 'jars': compare_jars, 'mixins': compare_mixins, 'knowledge': compare_knowledge, 'replaces': compare_replaces}[args.stage]
+    unit = {'classes': 'classes', 'libraries': 'library classes', 'jars': 'archives', 'mixins': 'mixin handlers', 'knowledge': 'keys', 'replaces': 'methods and events', 'entity-guards': 'type ids and guarded listeners'}[args.stage]
+    compare = {'classes': compare_classes, 'libraries': compare_libraries, 'jars': compare_jars, 'mixins': compare_mixins, 'knowledge': compare_knowledge, 'replaces': compare_replaces, 'entity-guards': compare_entity_guards}[args.stage]
     count, found = compare(args.install, rust_binary(args.bin))
     print(f'{count} {unit}, {len(found)} differences')
     for where, python, rust in found[:SHOWN]:
