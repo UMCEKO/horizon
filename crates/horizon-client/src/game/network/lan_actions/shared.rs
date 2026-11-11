@@ -113,6 +113,63 @@ pub(super) struct GuestPlay {
     score_recorded: super::scoreboard::Recorded,
 }
 
+/// What a guest's turn sends about that guest, in the order queued (`ServerGamePacketListenerImpl.send`).
+pub(super) enum Outgoing {
+    Packet(C),
+    /// `ServerPlayer.connection.send` of an entity event about the guest, whose entity id the turn does not hold.
+    EntityEvent(i8),
+    /// `ServerItemCooldowns.onCooldownStarted`.
+    Cooldown(std::sync::Arc<str>, i32),
+    /// `LivingEntity.onEquippedItemBroken`: `broadcastEntityEvent`, to the trackers and the guest.
+    EquipmentBreak(i8),
+}
+
+#[cfg(test)]
+impl Outgoing {
+    /// The cooldown group this entry starts, if it is a cooldown.
+    pub(in crate::game) fn cooldown_group(&self) -> Option<&str> {
+        match self {
+            Outgoing::Cooldown(group, _) => Some(group),
+            _ => None,
+        }
+    }
+}
+
+/// The equipment breaks queued in a turn's outbox.
+#[cfg(test)]
+pub(in crate::game) fn equipment_breaks(outbox: &[Outgoing]) -> Vec<i8> {
+    let events = outbox.iter().filter_map(|item| match item {
+        Outgoing::EquipmentBreak(event) => Some(*event),
+        _ => None,
+    });
+    events.collect()
+}
+
+/// Where a drained outbox entry goes.
+#[derive(Debug)]
+pub(super) enum Delivery {
+    /// The guest's own connection.
+    Guest(C),
+    /// `sendToTrackingPlayersAndSelf` of the guest's entity.
+    TrackingAndSelf(C),
+}
+
+/// Sends a turn's outbox through `send`, in order, as the guest's entity `entity_id`.
+pub(super) fn drain_outbox(outbox: Vec<Outgoing>, entity_id: i32, mut send: impl FnMut(Delivery)) {
+    let event = |event| C::EntityEvent(play::EntityEvent { id: entity_id, event });
+    for item in outbox {
+        send(match item {
+            Outgoing::Packet(packet) => Delivery::Guest(packet),
+            Outgoing::EntityEvent(e) => Delivery::Guest(event(e)),
+            Outgoing::Cooldown(group, duration) => Delivery::Guest(C::Cooldown(play::Cooldown {
+                group: group.to_string(),
+                duration,
+            })),
+            Outgoing::EquipmentBreak(e) => Delivery::TrackingAndSelf(event(e)),
+        });
+    }
+}
+
 /// A guest's command waiting for the hub (`LanHost::commands`).
 pub(super) struct GuestCommand {
     pub(super) conn: u32,
@@ -221,14 +278,8 @@ pub(super) struct GuestSwap {
     building_boxes: BuildingPlayers,
     /// That turn's `known_movement`.
     known_movement: Vec3,
-    /// The packets queued for that guest.
-    packets: Vec<play::Clientbound>,
-    /// The entity events queued for that guest.
-    entity_events: Vec<i8>,
-    /// The equipment breaks queued for that guest.
-    equipment_breaks: Vec<i8>,
-    /// The cooldown packets queued for that guest.
-    cooldown_events: Vec<(std::sync::Arc<str>, i32)>,
+    /// The outbox of that guest's turn.
+    packets: Vec<Outgoing>,
     /// The player-source sounds queued for that guest.
     player_sounds: Vec<(String, [f64; 3], f32, f32)>,
     block_sounds: Vec<(String, [f64; 3], f32, f32)>,
@@ -492,6 +543,45 @@ mod tests {
     use super::{copied_respawn_point, eye_columns, reset_use_attack_strength};
     use crate::game::api_values::TryIntoApi;
     use horizon_client::pose::Pose;
+
+    /// The packets, entity events, cooldowns and equipment breaks of one turn leave in the order they were queued.
+    #[test]
+    fn a_turns_outbox_keeps_its_order() {
+        use super::{Delivery, Outgoing, drain_outbox};
+        use horizon_protocol::packets::play::{self, Clientbound as C};
+        let outbox = vec![
+            Outgoing::Packet(C::SetPassengers(play::SetPassengers {
+                vehicle: 7,
+                passengers: vec![3],
+            })),
+            Outgoing::EntityEvent(9),
+            Outgoing::EquipmentBreak(48),
+            Outgoing::Cooldown("minecraft:ender_pearl".into(), 20),
+            Outgoing::Packet(C::SetPassengers(play::SetPassengers {
+                vehicle: 7,
+                passengers: Vec::new(),
+            })),
+        ];
+        let mut sent = Vec::new();
+        drain_outbox(outbox, 3, |d| sent.push(d));
+        assert_eq!(sent.len(), 5);
+        assert!(matches!(&sent[0], Delivery::Guest(C::SetPassengers(p)) if p.passengers == [3]));
+        assert!(
+            matches!(&sent[1], Delivery::Guest(C::EntityEvent(e)) if e.id == 3 && e.event == 9)
+        );
+        assert!(matches!(
+            &sent[2],
+            Delivery::TrackingAndSelf(C::EntityEvent(e)) if e.id == 3 && e.event == 48
+        ));
+        assert!(matches!(
+            &sent[3],
+            Delivery::Guest(C::Cooldown(c)) if c.group == "minecraft:ender_pearl" && c.duration == 20
+        ));
+        assert!(
+            matches!(&sent[4], Delivery::Guest(C::SetPassengers(p)) if p.passengers.is_empty())
+        );
+    }
+
     #[test]
     fn use_swing_resets_attack_charge_only_when_started() {
         let mut ticker = 20;

@@ -15,13 +15,14 @@ impl Game<'_> {
     /// game's HUD; a server client receives it as a packet.
     pub(super) fn send_overlay_message(&mut self, message: Text) {
         if self.lan_acting.is_some() {
-            self.guest_packets
-                .push(horizon_protocol::packets::play::Clientbound::SystemChat(
+            self.guest_packets.push(crate::game::lan_actions::Outgoing::Packet(
+                horizon_protocol::packets::play::Clientbound::SystemChat(
                     horizon_protocol::packets::play::SystemChat {
                         content: horizon_client::lan::data::component_nbt(&message.component()),
                         overlay: true,
                     },
-                ));
+                ),
+            ));
         } else if self.options.dedicated.is_none() {
             self.titles.set_overlay(message, false);
         }

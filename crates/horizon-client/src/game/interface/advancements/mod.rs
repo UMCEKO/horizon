@@ -1067,9 +1067,9 @@ impl Game<'_> {
                     .remove_recipes(&world_stations!(self).recipe_index, &refused);
                 taken_back = removed.len();
                 if self.lan_acting.is_some() && !removed.is_empty() {
-                    self.guest_packets.push(C::RecipeBookRemove(
+                    self.guest_packets.push(crate::game::lan_actions::Outgoing::Packet(C::RecipeBookRemove(
                         horizon_protocol::packets::recipes::RecipeBookRemove { ids: removed },
-                    ));
+                    )));
                 }
             }
         } else {

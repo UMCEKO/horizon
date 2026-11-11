@@ -247,11 +247,12 @@ impl Game<'_> {
         ));
         // `player.connection.send(new ClientboundGameTestHighlightPosPacket(..))`.
         if self.lan_acting.is_some() {
-            self.guest_packets
-                .push(C::GameTestHighlightPos(play::GameTestHighlightPos {
+            self.guest_packets.push(crate::game::lan_actions::Outgoing::Packet(C::GameTestHighlightPos(
+                play::GameTestHighlightPos {
                     absolute: [target.0, target.1, target.2],
                     relative,
-                }));
+                },
+            )));
         } else {
             self.highlight_test_pos([target.0, target.1, target.2], relative);
         }

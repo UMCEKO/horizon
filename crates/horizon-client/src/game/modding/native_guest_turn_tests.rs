@@ -722,9 +722,16 @@ fn server_services_preserve_identity_and_message_delivery() {
                     .unwrap()
             );
             let packets = &game.guest_packets;
-            assert!(matches!(&packets[packets.len() - 3], C::SystemChat(p) if !p.overlay));
-            assert!(matches!(&packets[packets.len() - 2], C::SystemChat(p) if p.overlay));
-            assert!(matches!(&packets[packets.len() - 1], C::TabList(_)));
+            assert!(
+                matches!(&packets[packets.len() - 3], crate::game::lan_actions::Outgoing::Packet(C::SystemChat(p)) if !p.overlay)
+            );
+            assert!(
+                matches!(&packets[packets.len() - 2], crate::game::lan_actions::Outgoing::Packet(C::SystemChat(p)) if p.overlay)
+            );
+            assert!(matches!(
+                &packets[packets.len() - 1],
+                crate::game::lan_actions::Outgoing::Packet(C::TabList(_))
+            ));
             assert!(b.tell(game, Text::literal("other player")).unwrap());
             assert!(b.set_nickname(game, Some("B")));
             assert!(b.set_sleep_ignored(game, true));

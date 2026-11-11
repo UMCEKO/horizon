@@ -2161,7 +2161,9 @@ impl Game<'_> {
             }),
         });
         match t {
-            Target::Player if self.lan_acting.is_some() => self.guest_packets.push(packet),
+            Target::Player if self.lan_acting.is_some() => {
+                self.guest_packets.push(crate::game::lan_actions::Outgoing::Packet(packet));
+            }
             Target::Guest(conn) => {
                 if let Some(host) = self.lan.as_ref() {
                     host.hub.send_to(conn, &packet);

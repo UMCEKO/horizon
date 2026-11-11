@@ -80,10 +80,8 @@ impl Game<'_> {
                     if let (true, true, Some(c), Some(id)) =
                         (started, send_to_self, current, game.lan_acting_entity)
                     {
-                        game.guest_packets.push(super::lan_actions::swing_packet(
-                            id as i32,
-                            c.hand,
-                            c.animation,
+                        game.guest_packets.push(super::lan_actions::Outgoing::Packet(
+                            super::lan_actions::swing_packet(id as i32, c.hand, c.animation),
                         ));
                     }
                 });

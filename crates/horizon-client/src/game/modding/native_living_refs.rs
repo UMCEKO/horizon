@@ -1327,7 +1327,7 @@ mod tests {
                 game.audio.record_heard = true;
                 game.audio.engine.notifications.clear();
                 game.audio.heard.clear();
-                game.guest_equipment_breaks.clear();
+                game.guest_packets.clear();
                 let random = game.world.random.clone();
                 // Player.hurtArmor supplies FEET, LEGS, CHEST, HEAD;
                 // LivingEntity.doHurtEquipment finishes hurtAndBreak (including
@@ -1352,7 +1352,7 @@ mod tests {
                     }
                 }
                 let expected_armor = game.armor.clone();
-                let expected_events = game.guest_equipment_breaks.clone();
+                let expected_events = crate::game::lan_actions::equipment_breaks(&game.guest_packets);
                 let expected_sounds = game.audio.heard.clone();
                 let expected_sound_order: Vec<_> = game
                     .audio
@@ -1374,14 +1374,14 @@ mod tests {
                     );
                 }
                 game.armor = armor.clone();
-                game.guest_equipment_breaks.clear();
+                game.guest_packets.clear();
                 game.audio.capture = Some(Vec::new());
                 game.audio.heard.clear();
                 game.audio.engine.notifications.clear();
                 game.world.random = random;
                 game.hurt_armor(source, 4.0);
                 assert_eq!(game.armor, expected_armor);
-                assert_eq!(game.guest_equipment_breaks, expected_events);
+                assert_eq!(crate::game::lan_actions::equipment_breaks(&game.guest_packets), expected_events);
                 assert_eq!(game.audio.heard, expected_sounds);
                 assert_eq!(
                     game.audio

@@ -1236,7 +1236,7 @@ impl Game<'_> {
         for &t in targets {
             match t {
                 Target::Player if self.lan_acting.is_some() => {
-                    self.guest_packets.push(packet.clone());
+                    self.guest_packets.push(crate::game::lan_actions::Outgoing::Packet(packet.clone()));
                 }
                 Target::Player => self.show_play_dialog(holder),
                 Target::Guest(conn) => {
@@ -1254,7 +1254,7 @@ impl Game<'_> {
         for &t in targets {
             match t {
                 Target::Player if self.lan_acting.is_some() => {
-                    self.guest_packets.push(packet.clone());
+                    self.guest_packets.push(crate::game::lan_actions::Outgoing::Packet(packet.clone()));
                 }
                 Target::Player => self.clear_dialog(),
                 Target::Guest(conn) => {
