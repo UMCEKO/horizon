@@ -512,11 +512,12 @@ public final class ClientBridge {
         timer(minecraft).updateFrozenState(!((dev.horizonlab.javamods.boot.mixin.MinecraftActions) minecraft).horizon$runningNormally());
         if (minecraft.level != null) BlockRenders.probe(minecraft.level, BLOCK_ENTITIES.values());
         cameraAndPick(minecraft);
+        byte[] particles = ParticleRecorder.take(WorldFrame.camera());
         byte[] hud = hud();
         Toasts.applyPending(minecraft, timer(minecraft).getRealtimeDeltaTicks());
         byte[] world = WorldFrame.take(WorldFrame.camera(), partial, timer(minecraft), windowWidth, windowHeight, false);
         recordShell(minecraft, minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(false));
-        return status(hud, world);
+        return status(hud, world, particles);
     }
 
     private static byte[] lastHud;
@@ -975,7 +976,7 @@ public final class ClientBridge {
         return new byte[] {(byte) (scrollCanceled ? 1 : 0)};
     }
 
-    private static byte[] status(byte[] hud, byte[] world) throws IOException {
+    private static byte[] status(byte[] hud, byte[] world, byte[] particles) throws IOException {
         Screen screen = javaScreen();
         if (screen != null && screen != lastScreen) opened++;
         lastScreen = screen;
@@ -995,6 +996,11 @@ public final class ClientBridge {
         TOLD.clear();
         ClientSounds.take(out);
         ClientParticles.take(out);
+        out.writeBoolean(particles != null);
+        if (particles != null) {
+            out.writeInt(particles.length);
+            out.write(particles);
+        }
         out.writeInt(shapes);
         out.writeBoolean(hud != null);
         if (hud != null) {
@@ -1094,7 +1100,7 @@ public final class ClientBridge {
         receive();
         chunkEvents();
         recordShell(Minecraft.getInstance(), Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false));
-        return status(null, null);
+        return status(null, null, null);
     }
 
     /** Dev: how many of the code-built block models the reload baked have parts. */
@@ -1144,6 +1150,7 @@ public final class ClientBridge {
         animating = false;
         ClientSounds.forget();
         ClientParticles.forget();
+        ParticleRecorder.forget();
         Animate.forget();
         Clients.registries = null;
         return new byte[] {1};

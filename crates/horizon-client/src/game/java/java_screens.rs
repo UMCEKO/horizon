@@ -968,6 +968,19 @@ pub(in crate::game) mod live {
             }
             self.java_client_sounds(reply)?;
             self.java_client_particles(reply)?;
+            if reply.bool()? {
+                let blob = reply.bytes()?;
+                match horizon_client::particles::JavaParticles::parse(blob) {
+                    Some(java) => self.particles.set_java(java),
+                    None => {
+                        static WARNED: std::sync::Once = std::sync::Once::new();
+                        WARNED.call_once(|| {
+                            log::warn!("Horizon: the Java client's particle recording didn't read");
+                        });
+                        self.particles.set_java(Default::default());
+                    }
+                }
+            }
             let shapes = reply.int()?;
             let hud = reply
                 .bool()?
@@ -1416,6 +1429,7 @@ pub(in crate::game) mod live {
             horizon_client::dynamic_renders::clear();
             super::super::java_world_renders::java_world_left();
             super::super::java_toasts::java_toasts_left();
+            self.particles.set_java(Default::default());
             CLIENT.with_borrow_mut(|c| {
                 c.joined = false;
                 c.remote = false;
