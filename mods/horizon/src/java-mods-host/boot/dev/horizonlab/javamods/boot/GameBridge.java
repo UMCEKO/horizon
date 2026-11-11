@@ -765,16 +765,28 @@ public final class GameBridge {
 
     /** The level a call acts on, with the time it arrived at. */
     private static ServerLevel levelOf(Crossing.In in) throws Exception {
-        var level = level(in.name());
-        ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
+        return invalidated(level(in.name()), in.readLong());
+    }
+
+    private static ServerLevel levelOf(DataInputStream in) throws Exception {
+        return invalidated(level(text(in)), in.readLong());
+    }
+
+    private static ServerLevel invalidated(ServerLevel level, long gameTime) {
+        var data = (ViewLevelData) level.getLevelData();
+        data.gameTime = gameTime;
+        data.invalidatedAt = gameTime;
         level.environmentAttributes().invalidateTickCache();
         return level;
     }
 
-    private static ServerLevel levelOf(DataInputStream in) throws Exception {
-        var level = level(text(in));
-        ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
-        level.environmentAttributes().invalidateTickCache();
+    /** `levelOf` for a block entity's tick: the tick cache goes once per game tick, as at `ServerLevel.tick`'s start. */
+    private static ServerLevel tickingLevelOf(Crossing.In in) throws Exception {
+        var level = level(in.name());
+        long gameTime = in.readLong();
+        var data = (ViewLevelData) level.getLevelData();
+        if (data.invalidatedAt != gameTime) return invalidated(level, gameTime);
+        data.gameTime = gameTime;
         return level;
     }
 
@@ -823,7 +835,7 @@ public final class GameBridge {
     }
 
     private static void blockEntityTick(Crossing.In in, Crossing.Out out) throws Exception {
-        var level = levelOf(in);
+        var level = tickingLevelOf(in);
         boolean held = BlockEntities.tick(level, BlockPos.of(in.readLong()));
         out.writeBoolean(held);
         writeEffects(out);

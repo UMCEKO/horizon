@@ -63,8 +63,6 @@ import net.minecraft.util.thread.BlockableEventLoop;
 import net.minecraft.world.flag.FeatureFlags;
 import net.minecraft.world.level.block.EntityBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
-import net.minecraft.world.level.block.entity.BlockEntityTicker;
-import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.entity.TickingBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.network.connection.ConnectionType;
@@ -345,25 +343,23 @@ public final class ClientBridge {
     /** `LevelChunk.updateBlockEntityTicker`: one ticker a block entity keeps, its `getTicker` asked again when its state changes. */
     private static final class Ticker implements TickingBlockEntity {
         private final BlockEntity entity;
-        private BlockEntityTicker<BlockEntity> ticker;
+        private final BoundTicker<BlockEntity> bound;
 
         Ticker(BlockEntity entity) {
             this.entity = entity;
+            bound = new BoundTicker<>(entity);
             rebind();
         }
 
-        @SuppressWarnings({"unchecked", "rawtypes"})
         void rebind() {
-            BlockState state = entity.getBlockState();
-            ticker = state.getTicker(entity.getLevel(), (BlockEntityType) entity.getType());
+            bound.bind(entity.getLevel(), entity.getBlockState());
         }
 
         @Override
         public void tick() {
-            if (ticker == null || entity.isRemoved() || !entity.hasLevel()) return;
+            if (entity.isRemoved() || !entity.hasLevel()) return;
             BlockPos pos = entity.getBlockPos();
-            BlockState state = entity.getLevel().getBlockState(pos);
-            if (entity.getType().isValid(state)) ticker.tick(entity.getLevel(), pos, state, entity);
+            bound.run(entity.getLevel(), pos, entity.getLevel().getBlockState(pos));
         }
 
         @Override

@@ -25,6 +25,7 @@ final class ChecksBlockEntities {
     private static BlockCapabilityCache<ResourceHandler<ItemResource>, Direction> cache;
     private static BlockCapabilityCache<ResourceHandler<ItemResource>, Direction> placedCache;
     private static BlockCapabilityCache<ResourceHandler<ItemResource>, Direction> brokenCache;
+    private static int switcherAsks;
 
     private static int cobblestone(ResourceHandler<ItemResource> handler) {
         ItemResource cobblestone = ItemResource.of(Items.COBBLESTONE);
@@ -74,6 +75,8 @@ final class ChecksBlockEntities {
             }
             return handler.getAmountAsInt() == 100000;
         });
+        switcherAsks = Switcher.asks;
+        level.setBlock(at.north(4), Switcher.BLOCK.get().defaultBlockState(), 3);
         level.setBlock(at.above(2), Blocks.CHEST.defaultBlockState(), 3);
         Checks.check("vanilla_be_copy", () -> {
             if (!(level.getBlockEntity(at.above(2)) instanceof ChestBlockEntity chest)) return false;
@@ -147,6 +150,15 @@ final class ChecksBlockEntities {
         });
     }
 
+    /** The switcher flipped itself A to B and B to tickerless by Java `setBlock`, then the harness set it back to A natively. */
+    private static void switcherLater() {
+        String trace = Switcher.trace.toString();
+        Checks.check("ticker_java_flip_runs_new_ticker_next_tick", () -> trace.startsWith("AAAB") && Switcher.firstB == Switcher.thirdA + 1);
+        Checks.check("ticker_none_ticks_nothing", () -> trace.matches("AAABBBA*"));
+        Checks.check("ticker_native_flip_runs_new_ticker", () -> trace.matches("AAABBBA+"));
+        Checks.check("ticker_asked_once_per_bind", () -> Switcher.asks - switcherAsks == 4);
+    }
+
     /** After the world has run: the same machine, saved and loaded if this JVM didn't make it. */
     static void later(UseOnContext context) {
         Level level = context.getLevel();
@@ -164,6 +176,7 @@ final class ChecksBlockEntities {
         Checks.check("block_scheduled_tick", () -> level.getBlockState(at.south()).is(Blocks.EMERALD_BLOCK));
         Checks.check("block_neighbor_changed", () -> level.getBlockState(at.north()).is(Blocks.LAPIS_BLOCK));
         Checks.check("chest_written_back", () -> level.getBlockEntity(at.above(2)) instanceof ChestBlockEntity chest && chest.getItem(0).is(Items.DIAMOND) && chest.getItem(0).getCount() == 3);
+        if (!reloaded) switcherLater();
         if (reloaded) Checks.check("be_persisted", () -> second.energy.getAmountAsInt() > 0 && first.ticks > 0);
     }
 }
