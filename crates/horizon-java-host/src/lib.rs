@@ -242,6 +242,10 @@ impl Handover {
         Self(Mutex::new(if read { bytes } else { Vec::new() }))
     }
 
+    fn is_empty(&self) -> bool {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+    }
+
     fn take(&self) -> Vec<u8> {
         std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()))
     }
