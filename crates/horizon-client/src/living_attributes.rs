@@ -96,6 +96,70 @@ pub fn set_modifier(
     Ok(())
 }
 
+fn operation_by_id(id: i32) -> Operation {
+    match id {
+        1 => Operation::AddMultipliedBase,
+        2 => Operation::AddMultipliedTotal,
+        _ => Operation::AddValue,
+    }
+}
+
+/// A mod's `addTransientModifier`, `addOrUpdateTransientModifier`, `addPermanentModifier` or
+/// `addOrReplacePermanentModifier`: the modifier replaces one of its id. False for an attribute the entity lacks.
+pub fn put_modifier(
+    attributes: &mut Live,
+    attribute: &str,
+    id: &str,
+    amount: f64,
+    operation: i32,
+    permanent: bool,
+) -> Result<bool> {
+    let Some(handle) = instance(attributes, attribute)? else {
+        return Ok(false);
+    };
+    let modifier = Modifier::new(id, amount, operation_by_id(operation))?;
+    attributes
+        .edit(&handle, |value, observer| {
+            value.remove(modifier.id(), observer)?;
+            if permanent {
+                value.add_permanent(modifier, observer)
+            } else {
+                value.add_transient(modifier, observer)
+            }
+        })
+        .map_err(attribute_error)?;
+    Ok(true)
+}
+
+/// A mod's `removeModifier(id)`. False for an attribute the entity lacks.
+pub fn take_modifier(attributes: &mut Live, attribute: &str, id: &str) -> Result<bool> {
+    let Some(handle) = instance(attributes, attribute)? else {
+        return Ok(false);
+    };
+    attributes
+        .edit(&handle, |value, observer| value.remove(id, observer).map(drop))
+        .map_err(attribute_error)?;
+    Ok(true)
+}
+
+/// A mod's `setBaseValue`. False for an attribute the entity lacks.
+pub fn put_base(attributes: &mut Live, attribute: &str, value: f64) -> Result<bool> {
+    let Some(handle) = instance(attributes, attribute)? else {
+        return Ok(false);
+    };
+    attributes
+        .edit(&handle, |instance, observer| instance.set_base_value(value, observer))
+        .map_err(attribute_error)?;
+    Ok(true)
+}
+
+fn instance(attributes: &mut Live, attribute: &str) -> Result<Option<horizon_world::attributes::live::Handle>> {
+    let Some(key) = attributes.key(attribute) else {
+        return Ok(None);
+    };
+    Ok(attributes.get_instance(Some(key)).map_err(attribute_error)?)
+}
+
 /// `AttributeMap.pack` in `AttributeInstance.Packed.LIST_CODEC`'s form: each
 /// instance's id, base and, with `modifiers`, its permanent modifiers.
 pub fn pack(attributes: &Live, modifiers: bool) -> Vec<Tag> {

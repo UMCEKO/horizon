@@ -405,6 +405,7 @@ public final class GameBridge {
         ((GameModeAccessor) player.gameMode).horizon$type(type);
         if (modeChanged) Menus.gameModeChanged(player, type);
         type.updatePlayerAbilities(player.getAbilities());
+        PlayerSync.fillAbilities(player, in);
         var hand = in.readInt() == 0 ? InteractionHand.MAIN_HAND : InteractionHand.OFF_HAND;
         Inventory inventory = player.getInventory();
         ((dev.horizonlab.javamods.boot.mixin.InventoryAccessor) inventory).horizon$selected(in.readInt());

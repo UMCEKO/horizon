@@ -1092,18 +1092,23 @@ impl Game<'_> {
         }
         let mut stored_here = false;
         self.native_as_player_handle(player, |game| {
-            let Some(slot) = game.acting_abilities.as_mut() else {
-                return;
-            };
-            *slot = stored;
-            if let Some(body) = game.player.as_mut() {
-                body.invulnerable = stored.invulnerable;
-                body.may_fly = stored.may_fly;
-                body.flying = stored.flying;
-                body.flying_speed = stored.flying_speed;
-            }
-            stored_here = true;
+            stored_here = game.store_acting_abilities(stored);
         }) && stored_here
+    }
+
+    /// The acting player's abilities as a mod wrote them; the turn's end tells the client.
+    pub(in crate::game) fn store_acting_abilities(&mut self, stored: PlayerAbilities) -> bool {
+        let Some(slot) = self.acting_abilities.as_mut() else {
+            return false;
+        };
+        *slot = stored;
+        if let Some(body) = self.player.as_mut() {
+            body.invulnerable = stored.invulnerable;
+            body.may_fly = stored.may_fly;
+            body.flying = stored.flying;
+            body.flying_speed = stored.flying_speed;
+        }
+        true
     }
 
     /// `Player.isCreative`; Paper `HumanEntity#getGameMode`.

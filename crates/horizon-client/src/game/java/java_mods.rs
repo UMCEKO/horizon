@@ -340,6 +340,19 @@ impl Game<'_> {
         out.float(self.pitch);
         out.bool(self.keys.held(horizon_client::actions::Action::Sneak));
         out.int(self.mode as i32);
+        out.bool(self.acting_abilities.is_some());
+        let abilities = self.acting_abilities.unwrap_or_default();
+        for flag in [
+            abilities.invulnerable,
+            abilities.flying,
+            abilities.may_fly,
+            abilities.instabuild,
+            abilities.may_build,
+        ] {
+            out.bool(flag);
+        }
+        out.float(abilities.flying_speed);
+        out.float(abilities.walking_speed);
         out.int(matches!(self.hand, Hand::Off) as i32);
         out.int(self.selected as i32);
         out.int(self.experience.level);
