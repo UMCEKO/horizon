@@ -35,6 +35,8 @@ final class BridgeProcessor implements ClassProcessor {
     private static final String ROUTING = "dev/horizonlab/javamods/boot/Routing";
     /** W5's class; the unit check points it at a stand-in. */
     static String guiRoutes = "dev/horizonlab/javamods/boot/GuiRoutes";
+    /** Whose `beforeNativeBody()` a route stub calls before its native; the unit check points it at a stand-in. */
+    static String playerSync = "dev/horizonlab/javamods/boot/PlayerSync";
 
     /** `routing.tsv`'s row for one method: `tail` and `returns` decide whether a stub checks for an early return. */
     record Routed(boolean body, boolean tail, int returns) {}
@@ -155,7 +157,7 @@ final class BridgeProcessor implements ClassProcessor {
     }
 
     /** The native call with its arguments, behind the guard test that jumps to `body` when the receiver isn't backed; leaves the result on the stack. */
-    private static InsnList nativeCall(ClassNode node, MethodNode method, Entry entry, LabelNode body) {
+    private static InsnList nativeCall(ClassNode node, MethodNode method, Entry entry, LabelNode body, boolean flush) {
         boolean isStatic = (method.access & Opcodes.ACC_STATIC) != 0;
         Type[] params = Type.getArgumentTypes(method.desc);
         Type result = Type.getReturnType(method.desc);
@@ -178,6 +180,7 @@ final class BridgeProcessor implements ClassProcessor {
             javaBody(head, method, entry);
             return head;
         }
+        if (flush) head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, playerSync, "beforeNativeBody", "()V", false));
         int local = isStatic ? 0 : 1;
         int arg = 0;
         if (entry.args.length == params.length + 1) {
@@ -262,7 +265,7 @@ final class BridgeProcessor implements ClassProcessor {
         LabelNode body = new LabelNode();
         LabelNode join = new LabelNode();
         LabelNode tail = new LabelNode();
-        InsnList head = nativeCall(node, method, entry, body);
+        InsnList head = nativeCall(node, method, entry, body, true);
         if (value) head.add(new VarInsnNode(result.getOpcode(Opcodes.ISTORE), slot));
         if (earlyCheck) {
             head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, earlyOwner, earlyName, "()Z", false));
@@ -285,7 +288,7 @@ final class BridgeProcessor implements ClassProcessor {
         boolean isStatic = (method.access & Opcodes.ACC_STATIC) != 0;
         Type[] params = Type.getArgumentTypes(method.desc);
         LabelNode body = new LabelNode();
-        InsnList head = nativeCall(node, method, entry, body);
+        InsnList head = nativeCall(node, method, entry, body, false);
         head.add(new InsnNode(Type.getReturnType(method.desc).getOpcode(Opcodes.IRETURN)));
         head.add(body);
         if (!startsWithFrame(method)) head.add(frame(node, isStatic, params));

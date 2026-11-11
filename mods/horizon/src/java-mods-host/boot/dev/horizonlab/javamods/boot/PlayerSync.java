@@ -1,11 +1,19 @@
 package dev.horizonlab.javamods.boot;
 
-import java.io.DataInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.NbtOps;
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.syncher.EntityDataAccessor;
@@ -103,25 +111,100 @@ public final class PlayerSync {
         return (EntityDataAccessor<T>) f.get(null);
     }
 
-    /** Horizon's vitals and effects into the view as they are, setting fields so nothing writes back. */
-    static void fill(ServerPlayer player, Crossing.In in) throws IOException, ReflectiveOperationException {
-        player.getEntityData().set(PlayerSync.<Float>accessor(LivingEntity.class, "DATA_HEALTH_ID"), in.readFloat());
+    /** Horizon's vitals into the view as they are, setting fields so nothing writes back. */
+    static void fillVitals(ServerPlayer player, PlayerGroups g) throws ReflectiveOperationException {
+        player.getEntityData().set(PlayerSync.<Float>accessor(LivingEntity.class, "DATA_HEALTH_ID"), g.health);
         FoodData food = player.getFoodData();
-        FOOD.setInt(food, in.readInt());
-        SATURATION.setFloat(food, in.readFloat());
-        EXHAUSTION.setFloat(food, in.readFloat());
-        player.getEntityData().set(PlayerSync.<Float>accessor(Player.class, "DATA_PLAYER_ABSORPTION_ID"), in.readFloat());
+        FOOD.setInt(food, g.food);
+        SATURATION.setFloat(food, g.saturation);
+        EXHAUSTION.setFloat(food, g.exhaustion);
+        player.getEntityData().set(PlayerSync.<Float>accessor(Player.class, "DATA_PLAYER_ABSORPTION_ID"), g.absorption);
+    }
+
+    /** Horizon's effects into the view, telling the client what changed. */
+    static void fillEffects(ServerPlayer player, PlayerGroups g) {
         var effects = player.getActiveEffectsMap();
         var before = new HashMap<>(effects);
         effects.clear();
-        for (int n = in.readInt(); n > 0; n--) {
-            var id = Identifier.parse(GameBridge.text(in));
-            int duration = in.readInt(), amplifier = in.readInt();
-            boolean ambient = in.readBoolean(), visible = in.readBoolean();
-            var holder = BuiltInRegistries.MOB_EFFECT.get(id).orElse(null);
-            if (holder != null) effects.put(holder, new MobEffectInstance(holder, duration, amplifier, ambient, visible, visible));
+        for (var effect : g.effects) {
+            var holder = BuiltInRegistries.MOB_EFFECT.get(Identifier.parse(effect.id())).orElse(null);
+            if (holder != null) effects.put(holder, new MobEffectInstance(holder, effect.duration(), effect.amplifier(), effect.ambient(), effect.visible(), effect.visible()));
         }
         sendEffectChanges(player, before, effects);
+    }
+
+    static final int SLOTS = 41;
+    /** Per player, copies of the stacks native holds: what its view was last filled with or last told native. */
+    private static final Map<UUID, ItemStack[]> SYNCED = new HashMap<>();
+
+    static ItemStack[] synced(UUID id) {
+        return SYNCED.computeIfAbsent(id, k -> {
+            var stacks = new ItemStack[SLOTS];
+            Arrays.fill(stacks, ItemStack.EMPTY);
+            return stacks;
+        });
+    }
+
+    static void forget(UUID id) {
+        SYNCED.remove(id);
+    }
+
+    static void forgetAll() {
+        SYNCED.clear();
+    }
+
+    /** Native's own copy of the acting player's slots: they become what Java changed. */
+    static void stacksWritten(byte[] slots) {}
+
+    /** Before a routed method's native body: Java's changes to the acting player's slots reach native first, as the body reads them. */
+    public static void beforeNativeBody() {
+        var player = acting;
+        if (player == null) return;
+        var synced = synced(player.getUUID());
+        var inventory = player.getInventory();
+        List<Integer> changed = null;
+        for (int slot = 0; slot < SLOTS; slot++) {
+            if (!ItemStack.matches(synced[slot], inventory.getItem(slot))) {
+                if (changed == null) changed = new ArrayList<>();
+                changed.add(slot);
+            }
+        }
+        if (changed == null) return;
+        var bytes = new ByteArrayOutputStream();
+        try {
+            writeSlots(player, new DataOutputStream(bytes), changed);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        stacksWritten(bytes.toByteArray());
+    }
+
+    /** The reply's block for the player a call filled: experience, then the slots Java changed against what native holds. */
+    static void writeChanges(ServerPlayer player, DataOutputStream out) throws IOException {
+        out.writeInt(player.experienceLevel);
+        out.writeFloat(player.experienceProgress);
+        out.writeInt(player.totalExperience);
+        var synced = synced(player.getUUID());
+        var inventory = player.getInventory();
+        var changed = new ArrayList<Integer>();
+        for (int slot = 0; slot < SLOTS; slot++) {
+            if (!ItemStack.matches(synced[slot], inventory.getItem(slot))) changed.add(slot);
+        }
+        writeSlots(player, out, changed);
+    }
+
+    private static void writeSlots(ServerPlayer player, DataOutputStream out, List<Integer> slots) throws IOException {
+        var synced = synced(player.getUUID());
+        var inventory = player.getInventory();
+        var ops = GameBridge.registries().createSerializationContext(NbtOps.INSTANCE);
+        out.writeInt(slots.size());
+        for (int slot : slots) {
+            out.writeInt(slot);
+            ItemStack stack = inventory.getItem(slot);
+            if (stack.isEmpty()) out.writeInt(0);
+            else GameBridge.writeTag(out, (CompoundTag) ItemStack.CODEC.encodeStart(ops, stack).getOrThrow());
+            synced[slot] = stack.copy();
+        }
     }
 
     /** `ServerPlayer.onEffectAdded`, `onEffectUpdated` and `onEffectsRemoved` for what Horizon changed since the last fill: the client hears of an effect only from these. */

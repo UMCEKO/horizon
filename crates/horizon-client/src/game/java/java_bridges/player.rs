@@ -186,6 +186,14 @@ horizon_java_host::java_bridges! { table for Game<'static> {
         }
     }
 
+    "dev/horizonlab/javamods/boot/PlayerSync".stacksWritten
+    "([B)V" =>
+    fn player_stacks_written(game, slots: Bytes) -> () {
+        if game.java_apply_slots(&mut horizon_java_host::wire::In(&slots.0)).is_none() {
+            log::warn!("Horizon: the acting player's slots from Java answered in pieces");
+        }
+    }
+
     "dev/horizonlab/javamods/boot/PlayerSync".food
     "(IFF)V" =>
     fn sync_food(game, food: i32, saturation: f32, exhaustion: f32) -> () {

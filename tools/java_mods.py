@@ -354,6 +354,9 @@ def bridges(args):
             wrong.append('route_body_free_slot')
         send('select 3')
         send('wait 3')
+        # A native give between two player ticks: the Java view's next tick sees it.
+        send('command give @s minecraft:apple 1')
+        send('wait 3')
         send('command kill @e[type=item]')
         # Outside the checked stretches: an entity the player's client tracks.
         send(f'command summon minecraft:armor_stand {base[0] + 40} {y} {z - 12} {{NoGravity:1b}}')
@@ -501,7 +504,7 @@ def bridges(args):
     session(args, drive)
     checks = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     shutil.copy(Path(args.scratch) / 'ctl.log', Path(args.scratch) / 'first-session.log')
-    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java') if (name, 'ok') not in checks)
+    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'player_stack_keeps_identity', 'player_view_sees_native_give') if (name, 'ok') not in checks)
     session(args, again)
     second = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks += [(name + ' (second session)', result) for name, result in second]

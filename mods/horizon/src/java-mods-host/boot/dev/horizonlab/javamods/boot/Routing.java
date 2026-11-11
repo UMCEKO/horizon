@@ -364,9 +364,10 @@ public final class Routing {
             return;
         }
         Object receiver = null;
+        net.minecraft.server.level.ServerPlayer filled = null;
         switch (recv) {
             case 0 -> {
-                var player = GameBridge.fill(in, false).player();
+                var player = filled = GameBridge.fill(in, false).player();
                 receiver = owner.equals("net/minecraft/world/entity/player/Inventory") ? player.getInventory()
                         : owner.equals("net/minecraft/world/inventory/AbstractContainerMenu") ? player.containerMenu : player;
             }
@@ -389,7 +390,7 @@ public final class Routing {
             else if (type == net.minecraft.world.item.ItemStack.class) args.add(GameBridge.decode(in.readNBytes(in.readInt())));
             else if (type == net.minecraft.world.phys.Vec3.class) args.add(new net.minecraft.world.phys.Vec3(in.readDouble(), in.readDouble(), in.readDouble()));
             else if (type == net.minecraft.network.chat.Component.class) args.add(GameBridge.component(in.readNBytes(in.readInt())));
-            else if (type == net.minecraft.world.entity.player.Player.class) args.add(GameBridge.fill(in, false).player());
+            else if (type == net.minecraft.world.entity.player.Player.class) args.add(filled = GameBridge.fill(in, false).player());
             else args.add(net.minecraft.core.BlockPos.of(in.readLong()));
         }
         long started = Profile.ON ? System.nanoTime() : 0;
@@ -414,6 +415,8 @@ public final class Routing {
             case 'D' -> out.writeDouble((Double) result);
             default -> {}
         }
+        if (filled != null) PlayerSync.writeChanges(filled, out);
+        else out.writeInt(-1);
         GameBridge.writeEffects(out);
     }
 

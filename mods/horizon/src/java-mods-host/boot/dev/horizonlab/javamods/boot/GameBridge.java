@@ -382,51 +382,63 @@ public final class GameBridge {
         return out.toByteArray();
     }
 
-    record Call(Crossing.In in, ServerLevel level, ServerPlayer player, InteractionHand hand, ItemStack[] before) {}
+    record Call(Crossing.In in, ServerLevel level, ServerPlayer player, InteractionHand hand) {}
 
-    /** Fills the views from what Horizon holds now. */
+    /** Fills the acting player's view with what changed in Horizon since it last heard (`PlayerGroups`). */
     static Call fill(Crossing.In in, boolean refresh) throws Exception {
-        var id = new UUID(in.readLong(), in.readLong());
-        String name = text(in);
-        var level = level(text(in));
-        ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
-        boolean joined = !PLAYERS.containsKey(id);
-        var player = player(id, name, level);
-        player.setPose(net.minecraft.world.entity.Pose.valueOf(text(in)));
-        double x = in.readDouble(), y = in.readDouble(), z = in.readDouble();
-        float yRot = in.readFloat(), xRot = in.readFloat();
-        // absSnapTo sets the previous tick's position, rotation and the box too: rays from pick(range, partialTick) start here
-        player.absSnapTo(x, y, z, yRot, xRot);
-        player.setYHeadRot(yRot);
-        player.yHeadRotO = yRot;
-        player.setShiftKeyDown(in.readBoolean());
-        var type = GameType.byId(in.readInt());
-        boolean modeChanged = player.gameMode.getGameModeForPlayer() != type;
-        ((GameModeAccessor) player.gameMode).horizon$type(type);
-        if (modeChanged) Menus.gameModeChanged(player, type);
-        type.updatePlayerAbilities(player.getAbilities());
-        var hand = in.readInt() == 0 ? InteractionHand.MAIN_HAND : InteractionHand.OFF_HAND;
+        long started = Profile.ON ? System.nanoTime() : 0;
+        var g = PlayerGroups.read(in);
+        var level = level(g.dim);
+        ((ViewLevelData) level.getLevelData()).gameTime = g.gameTime;
+        boolean joined = !PLAYERS.containsKey(g.id);
+        boolean full = g.has(PlayerGroups.FULL);
+        if (joined && !full) throw new IllegalStateException("Horizon: the player view of " + g.name + " got a delta before its full fill");
+        var player = player(g.id, g.name, level);
+        if (g.has(PlayerGroups.POSE)) {
+            player.setPose(net.minecraft.world.entity.Pose.valueOf(g.pose));
+            // absSnapTo sets the previous tick's position, rotation and the box too: rays from pick(range, partialTick) start here
+            player.absSnapTo(g.x, g.y, g.z, g.yaw, g.pitch);
+            player.setYHeadRot(g.yaw);
+            player.yHeadRotO = g.yaw;
+            player.setShiftKeyDown(g.shift);
+        }
+        if (g.has(PlayerGroups.MODE)) {
+            var type = GameType.byId(g.mode);
+            boolean modeChanged = player.gameMode.getGameModeForPlayer() != type;
+            ((GameModeAccessor) player.gameMode).horizon$type(type);
+            if (modeChanged) Menus.gameModeChanged(player, type);
+            type.updatePlayerAbilities(player.getAbilities());
+        }
+        var hand = g.hand == 0 ? InteractionHand.MAIN_HAND : InteractionHand.OFF_HAND;
         Inventory inventory = player.getInventory();
-        ((dev.horizonlab.javamods.boot.mixin.InventoryAccessor) inventory).horizon$selected(in.readInt());
-        int experienceLevel = in.readInt();
-        float experienceProgress = in.readFloat();
-        int totalExperience = in.readInt();
-        PlayerSync.fill(player, in);
-        ServerView.setMotion(player, new Vec3(in.readDouble(), in.readDouble(), in.readDouble()), in.readBoolean());
-        var before = new ItemStack[SLOTS];
-        java.util.Arrays.fill(before, ItemStack.EMPTY);
-        // A refresh mid-call leaves what Java itself holds until the call's end: experience and stacks.
-        if (!refresh) {
-            player.experienceLevel = experienceLevel;
-            player.experienceProgress = experienceProgress;
-            player.totalExperience = totalExperience;
+        if (g.has(PlayerGroups.SELECTED)) ((dev.horizonlab.javamods.boot.mixin.InventoryAccessor) inventory).horizon$selected(g.selected);
+        if (g.has(PlayerGroups.XP)) {
+            player.experienceLevel = g.xpLevel;
+            player.experienceProgress = g.xpProgress;
+            player.totalExperience = g.xpTotal;
+        }
+        if (g.has(PlayerGroups.VITALS)) PlayerSync.fillVitals(player, g);
+        if (g.has(PlayerGroups.EFFECTS)) PlayerSync.fillEffects(player, g);
+        if (g.has(PlayerGroups.MOTION)) ServerView.setMotion(player, new Vec3(g.vx, g.vy, g.vz), g.onGround);
+        var synced = PlayerSync.synced(g.id);
+        if (full) {
             inventory.clearContent();
-            for (int n = in.readInt(); n > 0; n--) {
-                int slot = in.readInt();
-                ItemStack stack = decode(in.readNBytes(in.readInt()));
-                before[slot] = stack.copy();
-                inventory.setItem(slot, stack);
+            java.util.Arrays.fill(synced, ItemStack.EMPTY);
+        } else if (!refresh && outermost()) {
+            // A view changed outside any call (decision C2): native's copy wins, as the next full fill once did.
+            var listed = new boolean[SLOTS];
+            for (int slot : g.slots) listed[slot] = true;
+            for (int slot = 0; slot < SLOTS; slot++) {
+                if (!listed[slot] && !ItemStack.matches(inventory.getItem(slot), synced[slot])) {
+                    inventory.setItem(slot, synced[slot].copy());
+                    if (Profile.ON) Profile.event("player view drift", 0);
+                }
             }
+        }
+        for (int i = 0; i < g.slots.length; i++) {
+            ItemStack stack = g.tags[i].length == 0 ? ItemStack.EMPTY : decode(g.tags[i]);
+            inventory.setItem(g.slots[i], stack);
+            synced[g.slots[i]] = stack.copy();
         }
         PlayerSync.acting(player);
         // `PlayerList.placeNewPlayer`: a connected client gets its login once the player is in place.
@@ -435,7 +447,8 @@ public final class GameBridge {
             safely("PlayerLoggedIn", () -> EventHooks.firePlayerLoggedIn(player));
             safely("chunks sent before the player's view", () -> Tracking.joined(player, level));
         }
-        return new Call(in, level, player, hand, before);
+        if (Profile.ON) Profile.event("fill", System.nanoTime() - started);
+        return new Call(in, level, player, hand);
     }
 
     private static byte[] refresh(byte[] input) throws Exception {
@@ -456,7 +469,6 @@ public final class GameBridge {
         var level = call.level;
         var player = call.player;
         var hand = call.hand;
-        var before = call.before;
         var inventory = player.getInventory();
         InteractionResult result = InteractionResult.PASS;
         // A view keeps no use between calls: Horizon's player holds it, and a call that continues one restores it.
@@ -536,21 +548,7 @@ public final class GameBridge {
         out.writeBoolean(result != InteractionResult.PASS && result != InteractionResult.TRY_WITH_EMPTY_HAND);
         out.writeBoolean(player.isUsingItem());
         out.writeInt(player.isUsingItem() ? player.getTicksUsingItem() : 0);
-        out.writeInt(player.experienceLevel);
-        out.writeFloat(player.experienceProgress);
-        out.writeInt(player.totalExperience);
-        var ops = registries.createSerializationContext(NbtOps.INSTANCE);
-        var changed = new ArrayList<Integer>();
-        for (int slot = 0; slot < SLOTS; slot++) {
-            if (!ItemStack.matches(before[slot], inventory.getItem(slot))) changed.add(slot);
-        }
-        out.writeInt(changed.size());
-        for (int slot : changed) {
-            out.writeInt(slot);
-            ItemStack stack = inventory.getItem(slot);
-            if (stack.isEmpty()) out.writeInt(0);
-            else writeTag(out, (CompoundTag) ItemStack.CODEC.encodeStart(ops, stack).getOrThrow());
-        }
+        PlayerSync.writeChanges(player, out);
         writeEffects(out);
     }
 
@@ -681,6 +679,7 @@ public final class GameBridge {
     private static void closeWorld() {
         LEVELS.clear();
         PLAYERS.clear();
+        PlayerSync.forgetAll();
         SOUNDS.clear();
         nextEntityId = -1;
         ServerView.closeWorld(server);
@@ -755,6 +754,7 @@ public final class GameBridge {
 
     private static void removePlayer(UUID left) throws ReflectiveOperationException {
         var player = PLAYERS.remove(left);
+        PlayerSync.forget(left);
         if (player != null) {
             safely("closing the open menu", () -> Menus.close(player));
             safely("PlayerLoggedOut", () -> EventHooks.firePlayerLoggedOut(player));

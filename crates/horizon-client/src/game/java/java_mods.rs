@@ -26,6 +26,171 @@ pub(super) fn read_tag(bytes: &[u8]) -> Option<Tag> {
         .map(|(root, _)| root.tag)
 }
 
+/// The player groups before STACKS, in mask order: pose, mode, selected, experience, vitals, effects, motion.
+const GROUPS: usize = 7;
+const XP_GROUP: usize = 3;
+const STACKS: u32 = 1 << GROUPS;
+/// Every group is present and the view takes them as its whole state.
+const FULL: u32 = 1 << 30;
+
+type Effect = (String, i32, i32, bool, bool);
+
+/// What the acting player's Java view is filled from.
+pub(super) struct PlayerSnapshot {
+    pose: String,
+    at: [f64; 3],
+    yaw: f32,
+    pitch: f32,
+    shift: bool,
+    mode: i32,
+    selected: i32,
+    xp: (i32, f32, i32),
+    vitals: (f32, i32, f32, f32, f32),
+    effects: Vec<Effect>,
+    motion: ([f64; 3], bool),
+    stacks: Vec<Option<ItemStack>>,
+}
+
+impl PlayerSnapshot {
+    fn write_group(&self, group: usize, out: &mut Out) {
+        match group {
+            0 => {
+                out.text(&self.pose);
+                self.at.iter().for_each(|v| out.double(*v));
+                out.float(self.yaw);
+                out.float(self.pitch);
+                out.bool(self.shift);
+            }
+            1 => out.int(self.mode),
+            2 => out.int(self.selected),
+            XP_GROUP => write_xp(self.xp, out),
+            4 => {
+                let (health, food, saturation, exhaustion, absorption) = self.vitals;
+                out.float(health);
+                out.int(food);
+                out.float(saturation);
+                out.float(exhaustion);
+                out.float(absorption);
+            }
+            5 => {
+                out.int(self.effects.len() as i32);
+                for (id, duration, amplifier, ambient, visible) in &self.effects {
+                    out.text(id);
+                    out.int(*duration);
+                    out.int(*amplifier);
+                    out.bool(*ambient);
+                    out.bool(*visible);
+                }
+            }
+            _ => {
+                self.motion.0.iter().for_each(|v| out.double(*v));
+                out.bool(self.motion.1);
+            }
+        }
+    }
+}
+
+fn write_xp((level, progress, total): (i32, f32, i32), out: &mut Out) {
+    out.int(level);
+    out.float(progress);
+    out.int(total);
+}
+
+/// What the acting player's view last heard; groups as their wire bytes, so floats compare by bits.
+#[derive(Default)]
+pub(super) struct Sent {
+    primed: bool,
+    groups: [Option<Vec<u8>>; GROUPS],
+    stacks: Vec<Option<ItemStack>>,
+}
+
+impl Sent {
+    fn applied_slot(&mut self, slot: usize, stack: Option<ItemStack>) {
+        if self.stacks.len() <= slot {
+            self.stacks.resize(slot + 1, None);
+        }
+        self.stacks[slot] = stack;
+    }
+
+    fn applied_xp(&mut self, xp: (i32, f32, i32)) {
+        let mut out = Out::default();
+        write_xp(xp, &mut out);
+        self.groups[XP_GROUP] = Some(out.0);
+    }
+}
+
+thread_local! {
+    /// Per acting player's uuid; the server thread owns the views.
+    static SENT: std::cell::RefCell<std::collections::HashMap<[i32; 4], Sent>> = Default::default();
+}
+
+/// Forgets what one player's view (or every view) heard, so its next request is full.
+pub(super) fn java_player_view_reset(uuid: Option<[i32; 4]>) {
+    SENT.with_borrow_mut(|sent| match uuid {
+        Some(uuid) => {
+            sent.remove(&uuid);
+        }
+        None => sent.clear(),
+    });
+}
+
+fn write_player_header(out: &mut Out, uuid: [i32; 4], name: &str, dim: &str, time: i64, off: bool) {
+    let [a, b, c, d] = uuid;
+    out.long(((a as i64) << 32) | (b as u32 as i64));
+    out.long(((c as i64) << 32) | (d as u32 as i64));
+    out.text(name);
+    out.text(dim);
+    out.long(time);
+    out.int(off as i32);
+}
+
+/// The mask and the groups that differ from `sent`, which then holds `now`; None when a stack can't be encoded.
+pub(super) fn encode_player_groups(
+    now: &PlayerSnapshot,
+    sent: &mut Sent,
+    out: &mut Out,
+) -> Option<u32> {
+    let full = !sent.primed;
+    let at = out.0.len();
+    out.int(0);
+    let mut mask = if full { FULL } else { 0 };
+    let mut group = Out::default();
+    for (i, last) in sent.groups.iter_mut().enumerate() {
+        group.0.clear();
+        now.write_group(i, &mut group);
+        if full || last.as_deref() != Some(&group.0[..]) {
+            mask |= 1 << i;
+            out.0.extend_from_slice(&group.0);
+            *last = Some(group.0.clone());
+        }
+    }
+    sent.stacks.resize(now.stacks.len(), None);
+    let changed: Vec<usize> = (0..now.stacks.len())
+        .filter(|&slot| full || sent.stacks[slot] != now.stacks[slot])
+        .collect();
+    if !changed.is_empty() {
+        mask |= STACKS;
+        out.int(changed.len() as i32);
+        for slot in changed {
+            out.int(slot as i32);
+            match &now.stacks[slot] {
+                Some(stack) => {
+                    let Some(tag) = write_tag(horizon_client::save::item_to_nbt(stack)) else {
+                        *sent = Sent::default();
+                        return None;
+                    };
+                    out.bytes(&tag);
+                }
+                None => out.int(0),
+            }
+            sent.stacks[slot] = now.stacks[slot].clone();
+        }
+    }
+    sent.primed = true;
+    out.0[at..at + 4].copy_from_slice(&(mask as i32).to_be_bytes());
+    Some(mask)
+}
+
 impl Game<'_> {
     /// The slots of `Inventory.getItem`: main, boots to helmet, off hand.
     fn java_slot(&mut self, slot: usize) -> Option<&mut Option<ItemStack>> {
@@ -187,7 +352,7 @@ impl Game<'_> {
         self.java_bind_states();
         let mut request = self.java_use_request()?;
         request.extend(tail);
-        let reply = self.java_request(op, &request)?;
+        let reply = self.java_player_request(op, &request)?;
         let using = self.java_apply_use(&reply, claimed);
         if using.is_none() {
             log::warn!("Horizon: a Java mod's use of {what} answered in pieces");
@@ -198,8 +363,16 @@ impl Game<'_> {
 
     /// Fills the acting player's view again, for a bridge that changed something its getters read.
     pub(super) fn java_refresh_player(&mut self) {
-        if let (Some(host), Some(request)) = (horizon_java_host::get(), self.java_use_request()) {
-            horizon_java_host::bridge::with_active(self, || host.request("refresh", &request));
+        let Some(host) = horizon_java_host::get() else {
+            return;
+        };
+        let Some(request) = self.java_use_request() else {
+            return;
+        };
+        if horizon_java_host::bridge::with_active(self, || host.request("refresh", &request))
+            .is_none()
+        {
+            java_player_view_reset(Some(self.acting_uuid()));
         }
     }
 
@@ -318,65 +491,82 @@ impl Game<'_> {
         let _ = STATES.set(map);
     }
 
-    pub(in crate::game) fn java_use_request(&mut self) -> Option<Vec<u8>> {
-        let position = self.player.as_ref()?.position;
-        let [a, b, c, d] = self.acting_uuid();
-        let mut out = Out::default();
-        out.long(((a as i64) << 32) | (b as u32 as i64));
-        out.long(((c as i64) << 32) | (d as u32 as i64));
-        out.text(
-            &self
-                .lan_acting_name
-                .clone()
-                .unwrap_or_else(|| self.options.player_name()),
-        );
-        out.text(self.dim.id());
-        out.long(self.world.game_time);
-        out.text(self.player.as_ref()?.pose.name());
-        out.double(position.x);
-        out.double(position.y);
-        out.double(position.z);
-        out.float(self.yaw);
-        out.float(self.pitch);
-        out.bool(self.keys.held(horizon_client::actions::Action::Sneak));
-        out.int(self.mode as i32);
-        out.int(matches!(self.hand, Hand::Off) as i32);
-        out.int(self.selected as i32);
-        out.int(self.experience.level);
-        out.float(self.experience.progress);
-        out.int(self.experience.total);
+    /// The acting player as its view's fill needs it.
+    fn java_player_snapshot(&mut self) -> Option<PlayerSnapshot> {
         let player = self.player.as_ref()?;
-        out.float(player.health.health());
-        out.int(player.health.food.food);
-        out.float(player.health.food.saturation);
-        out.float(player.health.food.exhaustion);
-        out.float(player.health.absorption());
-        let effects = &self.potions.effects.list;
-        out.int(effects.len() as i32);
-        for effect in effects {
-            out.text(&format!("minecraft:{}", effect.id));
-            out.int(effect.duration);
-            out.int(effect.amplifier);
-            out.bool(effect.ambient);
-            out.bool(effect.visible);
-        }
-        out.double(player.velocity.x);
-        out.double(player.velocity.y);
-        out.double(player.velocity.z);
-        out.bool(player.ground.on_ground);
-        let mut stacks = Vec::new();
-        for slot in 0..=OFFHAND {
-            if let Some(Some(stack)) = self.java_slot(slot).map(|s| s.clone()) {
-                let tag = horizon_client::save::item_to_nbt(&stack);
-                stacks.push((slot, write_tag(tag)?));
-            }
-        }
-        out.int(stacks.len() as i32);
-        for (slot, bytes) in stacks {
-            out.int(slot as i32);
-            out.bytes(&bytes);
-        }
+        let (pose, at) = (player.pose.name().to_string(), player.position);
+        let (velocity, on_ground) = (player.velocity, player.ground.on_ground);
+        let vitals = (
+            player.health.health(),
+            player.health.food.food,
+            player.health.food.saturation,
+            player.health.food.exhaustion,
+            player.health.absorption(),
+        );
+        let effects = self
+            .potions
+            .effects
+            .list
+            .iter()
+            .map(|e| {
+                let id = format!("minecraft:{}", e.id);
+                (id, e.duration, e.amplifier, e.ambient, e.visible)
+            })
+            .collect();
+        let stacks = (0..=OFFHAND)
+            .map(|slot| self.java_slot(slot).and_then(|s| s.clone()))
+            .collect();
+        Some(PlayerSnapshot {
+            pose,
+            at: [at.x, at.y, at.z],
+            yaw: self.yaw,
+            pitch: self.pitch,
+            shift: self.keys.held(horizon_client::actions::Action::Sneak),
+            mode: self.mode as i32,
+            selected: self.selected as i32,
+            xp: (
+                self.experience.level,
+                self.experience.progress,
+                self.experience.total,
+            ),
+            vitals,
+            effects,
+            motion: ([velocity.x, velocity.y, velocity.z], on_ground),
+            stacks,
+        })
+    }
+
+    /// A player request's head and what changed in the acting player since its view last heard.
+    pub(in crate::game) fn java_use_request(&mut self) -> Option<Vec<u8>> {
+        let now = self.java_player_snapshot()?;
+        let uuid = self.acting_uuid();
+        let name = self
+            .lan_acting_name
+            .clone()
+            .unwrap_or_else(|| self.options.player_name());
+        let mut out = Out::default();
+        let off = matches!(self.hand, Hand::Off);
+        write_player_header(
+            &mut out,
+            uuid,
+            &name,
+            self.dim.id(),
+            self.world.game_time,
+            off,
+        );
+        SENT.with_borrow_mut(|sent| {
+            encode_player_groups(&now, sent.entry(uuid).or_default(), &mut out)
+        })?;
         Some(out.0)
+    }
+
+    /// A request that fills the acting player's view; a failed one leaves that view unknown, so the next is full.
+    fn java_player_request(&mut self, op: &str, input: &[u8]) -> Option<Vec<u8>> {
+        let reply = self.java_request(op, input);
+        if reply.is_none() {
+            java_player_view_reset(Some(self.acting_uuid()));
+        }
+        reply
     }
 
     fn java_apply_use(&mut self, reply: &[u8], claimed: &mut bool) -> Option<Option<u32>> {
@@ -384,11 +574,28 @@ impl Game<'_> {
         *claimed = reply.bool()?;
         let using = reply.bool()?;
         let ticks = reply.int()?;
+        let level = reply.int()?;
+        self.java_apply_changes(level, &mut reply)?;
+        self.java_apply_effects(&mut reply)?;
+        Some(using.then_some(ticks.max(0) as u32))
+    }
+
+    /// The acting player's experience and changed slots from a reply, after its `level`; its view holds them already.
+    pub(super) fn java_apply_changes(&mut self, level: i32, reply: &mut In<'_>) -> Option<()> {
         self.experience = horizon_client::entities::Experience {
-            level: reply.int()?,
+            level,
             progress: reply.float()?,
             total: reply.int()?,
         };
+        let xp = (level, self.experience.progress, self.experience.total);
+        let uuid = self.acting_uuid();
+        SENT.with_borrow_mut(|sent| sent.entry(uuid).or_default().applied_xp(xp));
+        self.java_apply_slots(reply)
+    }
+
+    /// `int n, n x (int slot, bytes tag)` into the acting player's slots.
+    pub(super) fn java_apply_slots(&mut self, reply: &mut In<'_>) -> Option<()> {
+        let uuid = self.acting_uuid();
         for _ in 0..reply.int()? {
             let slot = reply.int()? as usize;
             let bytes = reply.bytes()?;
@@ -397,15 +604,15 @@ impl Game<'_> {
             } else {
                 horizon_client::save::item_from_nbt(&read_tag(bytes)?)
             };
-            *self.java_slot(slot)? = stack;
+            *self.java_slot(slot)? = stack.clone();
+            SENT.with_borrow_mut(|sent| sent.entry(uuid).or_default().applied_slot(slot, stack));
             self.hand_stack_replaced(if slot == OFFHAND {
                 shield::OFFHAND_SLOT
             } else {
                 slot
             });
         }
-        self.java_apply_effects(&mut reply)?;
-        Some(using.then_some(ticks.max(0) as u32))
+        Some(())
     }
 
     /// What Java did to the world on a call: the sounds it played.
@@ -749,6 +956,7 @@ impl Game<'_> {
     /// `PlayerList.removeAll`: the players still in Java's server log out.
     pub(super) fn java_players_removed(&mut self) {
         if self.remote.is_none() && JAVA_SERVER.with_borrow(|s| s.started) {
+            java_player_view_reset(None);
             self.java_level_call("players_removed", |_| {});
         }
     }
@@ -893,7 +1101,7 @@ impl Game<'_> {
         let mut request = self.java_use_request()?;
         let mut out = Out(std::mem::take(&mut request));
         out.long(BlockPos::new(pos[0], pos[1], pos[2]).pack());
-        let reply = self.java_request("destroy_progress", &out.0)?;
+        let reply = self.java_player_request("destroy_progress", &out.0)?;
         In(&reply).float()
     }
 
@@ -906,7 +1114,7 @@ impl Game<'_> {
         self.java_bind_states();
         let mut out = Out(self.java_use_request()?);
         out.long(BlockPos::new(pos[0], pos[1], pos[2]).pack());
-        let reply = self.java_request("correct_tool", &out.0)?;
+        let reply = self.java_player_request("correct_tool", &out.0)?;
         In(&reply).byte().map(|b| b != 0)
     }
 
@@ -977,6 +1185,7 @@ impl Game<'_> {
             .unwrap_or(&root)
             .to_string_lossy()
             .into_owned();
+        java_player_view_reset(None);
         self.java_level_call(if open { "server_start" } else { "server_stop" }, |out| {
             out.text(&world);
         });
@@ -1013,6 +1222,7 @@ impl Game<'_> {
         if horizon_java_host::get().is_none() {
             return;
         }
+        java_player_view_reset(Some(horizon_client::lan::playerdata::uuid_ints(uuid)));
         let mut out = Out::default();
         out.long((uuid >> 64) as i64);
         out.long(uuid as i64);
@@ -1381,5 +1591,167 @@ mod tracking_tests {
             })
             .collect();
         assert_eq!(kinds, [0, 1, 2, 5, 4]);
+    }
+}
+
+#[cfg(test)]
+mod player_group_tests {
+    use super::*;
+
+    const ALL: u32 = FULL | 0xff;
+
+    fn stone() -> ItemStack {
+        ItemStack {
+            item: "minecraft:stone".into(),
+            count: 1,
+            damage: 0,
+            extra: None,
+        }
+    }
+
+    fn tag(stack: &ItemStack) -> Vec<u8> {
+        write_tag(horizon_client::save::item_to_nbt(stack)).unwrap()
+    }
+
+    fn snapshot() -> PlayerSnapshot {
+        let mut stacks = vec![None; OFFHAND + 1];
+        stacks[0] = Some(stone());
+        PlayerSnapshot {
+            pose: "STANDING".into(),
+            at: [1.5, 64.0, -2.25],
+            yaw: 90.0,
+            pitch: 0.0,
+            shift: false,
+            mode: 0,
+            selected: 0,
+            xp: (1, 0.5, 9),
+            vitals: (20.0, 20, 5.0, 0.0, 0.0),
+            effects: vec![("minecraft:speed".into(), 100, 1, false, true)],
+            motion: ([0.0, -0.0784, 0.0], true),
+            stacks,
+        }
+    }
+
+    fn encode(now: &PlayerSnapshot, sent: &mut Sent) -> (u32, Vec<u8>) {
+        let mut out = Out::default();
+        let mask = encode_player_groups(now, sent, &mut out).unwrap();
+        (mask, out.0)
+    }
+
+    #[test]
+    fn first_request_is_full() {
+        let (mask, bytes) = encode(&snapshot(), &mut Sent::default());
+        assert_eq!(mask, ALL);
+        let mut want = Out::default();
+        want.int(ALL as i32);
+        want.text("STANDING");
+        [1.5, 64.0, -2.25].iter().for_each(|v| want.double(*v));
+        want.float(90.0);
+        want.float(0.0);
+        want.bool(false);
+        want.int(0);
+        want.int(0);
+        want.int(1);
+        want.float(0.5);
+        want.int(9);
+        want.float(20.0);
+        want.int(20);
+        want.float(5.0);
+        want.float(0.0);
+        want.float(0.0);
+        want.int(1);
+        want.text("minecraft:speed");
+        want.int(100);
+        want.int(1);
+        want.bool(false);
+        want.bool(true);
+        [0.0, -0.0784, 0.0].iter().for_each(|v| want.double(*v));
+        want.bool(true);
+        want.int(41);
+        want.int(0);
+        want.bytes(&tag(&stone()));
+        for slot in 1..41 {
+            want.int(slot);
+            want.int(0);
+        }
+        assert_eq!(bytes, want.0);
+        let mut head = Out::default();
+        write_player_header(
+            &mut head,
+            [1, 2, 3, 4],
+            "Steve",
+            "minecraft:overworld",
+            77,
+            true,
+        );
+        head.0.extend(bytes);
+        println!("PLAYER_FULL {:02x?}", head.0);
+    }
+
+    #[test]
+    fn unchanged_player_sends_no_group() {
+        let mut sent = Sent::default();
+        encode(&snapshot(), &mut sent);
+        assert_eq!(encode(&snapshot(), &mut sent), (0, vec![0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn one_moved_stack_sends_two_slots() {
+        let mut sent = Sent::default();
+        let mut now = snapshot();
+        encode(&now, &mut sent);
+        now.stacks.swap(0, 5);
+        let (mask, bytes) = encode(&now, &mut sent);
+        assert_eq!(mask, STACKS);
+        let mut want = Out::default();
+        want.int(128);
+        want.int(2);
+        want.int(0);
+        want.int(0);
+        want.int(5);
+        want.bytes(&tag(&stone()));
+        assert_eq!(bytes, want.0);
+    }
+
+    #[test]
+    fn selected_slot_only() {
+        let mut sent = Sent::default();
+        let mut now = snapshot();
+        encode(&now, &mut sent);
+        now.selected = 3;
+        assert_eq!(encode(&now, &mut sent), (4, vec![0, 0, 0, 4, 0, 0, 0, 3]));
+    }
+
+    #[test]
+    fn reset_makes_the_next_request_full() {
+        let uuid = [9, 8, 7, 6];
+        let now = snapshot();
+        let first = SENT.with_borrow_mut(|s| encode(&now, s.entry(uuid).or_default()).0);
+        java_player_view_reset(Some(uuid));
+        let again = SENT.with_borrow_mut(|s| encode(&now, s.entry(uuid).or_default()).0);
+        java_player_view_reset(None);
+        assert_eq!((first, again), (ALL, ALL));
+    }
+
+    #[test]
+    fn applied_reply_is_not_sent_back() {
+        let mut sent = Sent::default();
+        let mut now = snapshot();
+        encode(&now, &mut sent);
+        sent.applied_slot(2, Some(stone()));
+        sent.applied_xp((2, 0.25, 20));
+        now.stacks[2] = Some(stone());
+        now.xp = (2, 0.25, 20);
+        assert_eq!(encode(&now, &mut sent), (0, vec![0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn negative_zero_is_a_change() {
+        let mut sent = Sent::default();
+        let mut now = snapshot();
+        now.yaw = 0.0;
+        encode(&now, &mut sent);
+        now.yaw = -0.0;
+        assert_eq!(encode(&now, &mut sent).0, 1);
     }
 }

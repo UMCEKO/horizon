@@ -47,6 +47,7 @@ public final class TestMod {
         Breakables.register(bus, ITEMS);
         ChunkData.register(bus);
         PARTICLE_TYPES.register(bus);
+        PlayerView.register();
         if (net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) {
             ClientKeys.register(bus);
             ClientTextures.register(bus);
