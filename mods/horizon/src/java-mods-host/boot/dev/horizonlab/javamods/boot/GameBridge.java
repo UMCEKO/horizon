@@ -114,6 +114,7 @@ public final class GameBridge {
         Crossing.free("profile_dump", GameBridge::profileDump);
         Crossing.free("bench_echo_free", input -> input);
         Crossing.game("prepare", input -> prepare());
+        Crossing.game("worldgen_export", GameBridge::worldgenExport);
         Crossing.game("items", input -> items());
         Crossing.game("states", input -> states());
         Crossing.game("refresh", GameBridge::refresh);
@@ -207,6 +208,12 @@ public final class GameBridge {
     }
 
     private static ReloadableServerResources resources;
+
+    /** Writes the final worldgen registries to the file the input names. */
+    private static byte[] worldgenExport(byte[] input) throws IOException {
+        WorldgenExport.write(new String(input, java.nio.charset.StandardCharsets.UTF_8));
+        return new byte[] {1};
+    }
 
     static byte[] prepare() throws Exception {
         if (registries != null) return new byte[] {1};
@@ -612,7 +619,7 @@ public final class GameBridge {
         return player.gameMode.getGameModeForPlayer();
     }
 
-    private static void safely(String what, Runnable step) {
+    static void safely(String what, Runnable step) {
         long start = Profile.ON ? System.nanoTime() : 0;
         try {
             step.run();

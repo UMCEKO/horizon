@@ -203,6 +203,16 @@ impl Game<'_> {
         }
     }
 
+    /// Has Java write its final worldgen registries to `path` (`WorldgenOverrides::from_java_export` reads them); whether it did.
+    #[allow(dead_code)] // The world start calls it (SPEC-3).
+    pub(in crate::game) fn java_worldgen_export(&mut self, path: &std::path::Path) -> bool {
+        let Some(path) = path.to_str() else {
+            return false;
+        };
+        self.java_request("worldgen_export", path.as_bytes())
+            .is_some_and(|reply| reply == [1])
+    }
+
     /// Java's block state ids against this game's, once.
     pub(super) fn java_bind_states(&mut self) {
         use horizon_java_host::bridge::{STATES, StateMap};
