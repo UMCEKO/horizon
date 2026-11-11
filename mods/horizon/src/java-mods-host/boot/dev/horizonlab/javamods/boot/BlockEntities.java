@@ -17,7 +17,6 @@ import net.minecraft.world.level.block.BaseRailBlock;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.EntityBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
-import net.minecraft.world.level.block.entity.BlockEntityTicker;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.storage.TagValueInput;
 import net.minecraft.util.ProblemReporter;
@@ -28,6 +27,8 @@ public final class BlockEntities {
 
     private static final org.slf4j.Logger LOGGER = com.mojang.logging.LogUtils.getLogger();
     private static final Map<ServerLevel, Long2ObjectOpenHashMap<BlockEntity>> HELD = new IdentityHashMap<>();
+    /** `LevelChunk.tickersInLevel`: each held block entity's ticker, bound at its first tick and again when its state changes. */
+    private static final Map<ServerLevel, Long2ObjectOpenHashMap<BoundTicker<BlockEntity>>> TICKERS = new IdentityHashMap<>();
     private static final Set<BlockEntity> VANILLA = Collections.newSetFromMap(new IdentityHashMap<>());
     private static final List<BlockEntity> FRESH = new ArrayList<>();
     private static boolean refreshing;
@@ -60,6 +61,7 @@ public final class BlockEntities {
 
     static void reset() {
         HELD.clear();
+        TICKERS.clear();
         VANILLA.clear();
         FRESH.clear();
         UNSAVED.clear();
@@ -77,6 +79,7 @@ public final class BlockEntities {
         if (previous != null && previous != entity) {
             previous.setRemoved();
             VANILLA.remove(previous);
+            unbind(level, previous.getBlockPos().asLong());
         }
         if (previous != entity) level.invalidateCapabilities(entity.getBlockPos());
         Clients.joined(level, entity);
@@ -91,6 +94,7 @@ public final class BlockEntities {
             if (!entity.isRemoved()) return entity;
             held.remove(key);
             VANILLA.remove(entity);
+            unbind(level, key);
             return null;
         }
         BlockState state = level.getBlockState(pos);
@@ -200,6 +204,7 @@ public final class BlockEntities {
         if (entity == null) return false;
         entity.setRemoved();
         VANILLA.remove(entity);
+        unbind(level, pos.asLong());
         level.invalidateCapabilities(pos);
         return true;
     }
@@ -236,7 +241,7 @@ public final class BlockEntities {
         for (BlockEntity entity : here) entity.setRemoved();
         for (BlockEntity entity : here) {
             VANILLA.remove(entity);
-            held.remove(entity.getBlockPos().asLong(), entity);
+            if (held.remove(entity.getBlockPos().asLong(), entity)) unbind(level, entity.getBlockPos().asLong());
         }
     }
 
@@ -275,22 +280,27 @@ public final class BlockEntities {
     /** `BlockEntityTicker.tick`, as vanilla's list does it; false when this one's saved form hasn't reached Java. */
     static boolean tick(ServerLevel level, BlockPos pos) {
         loadFresh();
-        BlockEntity entity = held(level).get(pos.asLong());
+        long key = pos.asLong();
+        BlockEntity entity = held(level).get(key);
         if (entity == null) return false;
         if (entity.isRemoved()) return true;
+        var tickers = TICKERS.computeIfAbsent(level, l -> new Long2ObjectOpenHashMap<>());
+        var bound = tickers.get(key);
+        if (bound == null || bound.entity != entity) {
+            bound = new BoundTicker<>(entity);
+            tickers.put(key, bound);
+        }
         BlockState state = level.getBlockState(pos);
-        if (state.getBlock() instanceof EntityBlock block) tickWith(block, level, state, entity);
+        // `LevelChunk.setBlockState` rebinds as it sets the state; here a native or Java change shows as a state other than the bound one.
+        if (state != bound.bound() && entity.getType().isValid(state)) bound.bind(level, state);
+        long started = Profile.ON ? System.nanoTime() : 0;
+        if (bound.run(level, pos, state) && Profile.ON) Profile.tick(entity.getType(), System.nanoTime() - started);
         return true;
     }
 
-    private static <T extends BlockEntity> void tickWith(EntityBlock block, ServerLevel level, BlockState state, T entity) {
-        @SuppressWarnings("unchecked")
-        var type = (net.minecraft.world.level.block.entity.BlockEntityType<T>) entity.getType();
-        BlockEntityTicker<T> ticker = block.getTicker(level, state, type);
-        if (ticker == null) return;
-        long started = Profile.ON ? System.nanoTime() : 0;
-        ticker.tick(level, entity.getBlockPos(), state, entity);
-        if (Profile.ON) Profile.tick(type, System.nanoTime() - started);
+    private static void unbind(ServerLevel level, long key) {
+        var tickers = TICKERS.get(level);
+        if (tickers != null) tickers.remove(key);
     }
 
     /** `LevelChunk.getBlockEntity(pos, CHECK)`: the one held, or the saved form Horizon keeps for it, never a new one. */
@@ -303,6 +313,7 @@ public final class BlockEntities {
         }
         if (entity != null && entity.isRemoved()) {
             held(level).remove(key);
+            unbind(level, key);
             return null;
         }
         return entity;

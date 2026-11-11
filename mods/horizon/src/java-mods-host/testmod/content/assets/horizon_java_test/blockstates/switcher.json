@@ -1,0 +1,5 @@
+{ "variants": {
+  "alt=false,off=false": { "model": "minecraft:block/iron_block" },
+  "alt=true,off=false": { "model": "minecraft:block/iron_block" },
+  "alt=false,off=true": { "model": "minecraft:block/iron_block" },
+  "alt=true,off=true": { "model": "minecraft:block/iron_block" } } }

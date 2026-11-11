@@ -401,6 +401,8 @@ def bridges(args):
         send(f'command item replace block {machine} {y + 4} {z} container.0 with minecraft:cobblestone 20')
         send(f'command setblock {machine} {y + 8} {z} minecraft:chest')
         send(f'command setblock {machine} {y + 10} {z} minecraft:air')
+        # The switcher went tickerless by Java's setBlock; a native setblock gives it ticker A again.
+        send(f'command setblock {machine} {y} {z - 4} horizon_java_test:switcher[alt=false,off=false]')
         send(f'command tp @s {x} {y} {z}')
         send('give horizon_java_test:probe')
         send('wait 40')

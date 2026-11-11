@@ -6,6 +6,8 @@ import net.minecraft.world.level.storage.WritableLevelData;
 /** What a view level answers about its world; Horizon's values arrive with each call. */
 final class ViewLevelData implements WritableLevelData {
     long gameTime;
+    /** The game time the level's `environmentAttributes` tick cache was last invalidated at. */
+    long invalidatedAt = Long.MIN_VALUE;
     RespawnData respawn = RespawnData.DEFAULT;
 
     @Override public RespawnData getRespawnData() { return respawn; }
