@@ -242,17 +242,6 @@ impl Integrated {
     pub(super) fn tell(&self, request: OwnerRequest) -> bool {
         self.tasks.send(request).is_ok()
     }
-    /// Transitional: a closure over the server's `Game`, answered like [`Self::ask`].
-    pub fn call<T: Send + 'static>(
-        &self,
-        f: impl FnOnce(&mut Game<'_>) -> T + Send + 'static,
-    ) -> Option<T> {
-        self.ask(|tx| {
-            OwnerRequest::Closure(Box::new(move |g| {
-                let _ = tx.send(f(g));
-            }))
-        })
-    }
     /// `IntegratedServer.halt(true)`: returns once the world is saved and let go.
     pub fn stop(mut self) -> Result<()> {
         self.halt()

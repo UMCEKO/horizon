@@ -17,6 +17,7 @@
 //! ```
 use super::event_loop::EventLoopCtl;
 use super::input_trace::{InputOrigin, TraceEvent, TraceKind};
+use super::owner_link::{ControlRequest, OwnerRequest};
 use super::{Game, Screen};
 use horizon_client::{Result, gamepad::Button, keybinds, text::Text, title::world_management};
 use horizon_core::geometry::Vec3;
@@ -550,7 +551,9 @@ impl Game<'_> {
         // save folder is the one to copy, not the client's title-screen save.
         let world_root = if mode == "local" {
             match self.integrated.as_ref() {
-                Some(server) => server.call(|game| game.world_root.clone()),
+                Some(server) => {
+                    server.ask(|reply| OwnerRequest::Control(ControlRequest::WorldRoot(reply)))
+                }
                 None if !self.world_root.as_os_str().is_empty() => Some(self.world_root.clone()),
                 None => None,
             }
@@ -584,7 +587,8 @@ impl Game<'_> {
             let root = world_root.as_ref().expect("a local world's save folder");
             if let Some(server) = self.integrated.as_ref() {
                 server.set_paused(true);
-                let saved = server.call(|game| game.save_game().map_err(|e| e.to_string()));
+                let saved =
+                    server.ask(|reply| OwnerRequest::Control(ControlRequest::SaveGame(reply)));
                 let copied = copy_tree(root, &dir.join("world"));
                 server.set_paused(self.pause);
                 match saved {

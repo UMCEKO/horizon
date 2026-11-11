@@ -1,7 +1,10 @@
 //! The owner link: the closed set of requests the window sends its integrated server thread.
 use super::{Dim, Game, integrated::ServerOptions, lan::LanSettings, lan_screen::Snapshot};
 use horizon_assets::resource_source::ResourceSource;
+use horizon_client::chunk::ColumnCensus;
 use horizon_client::datapack::DataPack;
+use horizon_client::fast_hash::FxHashSet;
+use horizon_core::geometry::Vec3;
 use horizon_mod_package::{manifest::MissingJar, selection::SelectedPackage};
 use horizon_protocol::connection::Pipe;
 use std::{
@@ -47,8 +50,62 @@ pub(super) enum OwnerRequest {
     SetPregen(bool),
     /// A live content mod switch: the data packs reload from the new root.
     ReloadMods(Box<ModsReload>),
-    /// Transitional: the requests not typed yet.
-    Closure(Box<dyn FnOnce(&mut Game<'_>) + Send>),
+    /// What agent control asks of the world.
+    Control(ControlRequest),
+}
+
+/// The agent-control asks, answered on the server thread in the owner's level.
+pub(super) enum ControlRequest {
+    /// `simulation blocks`: the server's own blocks in a box.
+    Blocks {
+        lo: [i32; 3],
+        hi: [i32; 3],
+        reply: Reply<serde_json::Value>,
+    },
+    /// `simulation`: the server's clock and projectiles.
+    Simulation(Reply<serde_json::Value>),
+    /// `server-hold`: stop or resume the server's tick.
+    HoldServer { held: bool, done: Reply<()> },
+    /// A console command run as the owner; the chat lines it produced.
+    ConsoleCommand {
+        command: String,
+        reply: Reply<Vec<String>>,
+    },
+    /// `time`: the server's day time.
+    SetDayTime { time: i64, done: Reply<()> },
+    /// `summon`: the new mob's id.
+    Summon {
+        kind: String,
+        at: [f64; 3],
+        baby: bool,
+        reply: Reply<Result<u32, String>>,
+    },
+    /// `mobs`: the mobs near `center`.
+    MobsAt {
+        radius: f64,
+        center: Vec3,
+        reply: Reply<serde_json::Value>,
+    },
+    /// `hurtlog`.
+    HurtLog(Reply<serde_json::Value>),
+    /// `save` and `save-all`.
+    Save {
+        all: bool,
+        reply: Reply<Result<(), String>>,
+    },
+    /// `setblock`, `fill`, `getblock` and `container`, with their words.
+    BlockCommand {
+        words: Vec<String>,
+        reply: Reply<Result<Option<serde_json::Value>, String>>,
+    },
+    /// The memory report: the server's levels and the addresses of their sections.
+    LevelCensus(Reply<(ColumnCensus, FxHashSet<usize>)>),
+    /// The memory report: the server's chunk generation.
+    ProtoCensus(Reply<serde_json::Value>),
+    /// The save folder of the server's world.
+    WorldRoot(Reply<std::path::PathBuf>),
+    /// Save the world now (the recording copies it).
+    SaveGame(Reply<Result<(), String>>),
 }
 
 /// What a live content mod switch changes on the server (`Game::mods_reloaded`).
@@ -108,7 +165,73 @@ impl Game<'_> {
             }
             OwnerRequest::SetPregen(enabled) => self.set_pregen_commands(enabled),
             OwnerRequest::ReloadMods(reload) => self.apply_mods_reload(*reload),
-            OwnerRequest::Closure(task) => task(self),
+            OwnerRequest::Control(request) => self.serve_control_request(request),
+        }
+    }
+
+    /// Answers one agent-control ask, on the server thread.
+    fn serve_control_request(&mut self, request: ControlRequest) {
+        match request {
+            ControlRequest::Blocks { lo, hi, reply } => {
+                let _ = reply.send(self.in_owner_level(|g| g.blocks_json(lo, hi)));
+            }
+            ControlRequest::Simulation(reply) => {
+                let _ = reply.send(self.in_owner_level(|g| g.simulation_status()));
+            }
+            ControlRequest::HoldServer { held, done } => {
+                self.agent.hold_server = held;
+                let _ = done.send(());
+            }
+            ControlRequest::ConsoleCommand { command, reply } => {
+                let _ = reply.send(self.owner_console_command(&command));
+            }
+            ControlRequest::SetDayTime { time, done } => {
+                self.world.day_time = time;
+                let _ = done.send(());
+            }
+            ControlRequest::Summon {
+                kind,
+                at,
+                baby,
+                reply,
+            } => {
+                let id = self.in_owner_level(|g| {
+                    g.summon_command_mob(&kind, Some(at), baby)
+                        .map_err(|e| e.to_string())
+                });
+                let _ = reply.send(id);
+            }
+            ControlRequest::MobsAt {
+                radius,
+                center,
+                reply,
+            } => {
+                let _ = reply.send(self.in_owner_level(|g| g.control_mobs_at(radius, center)));
+            }
+            ControlRequest::HurtLog(reply) => {
+                let _ = reply.send(self.control_hurt_log());
+            }
+            ControlRequest::Save { all, reply } => {
+                let _ = reply.send(self.control_save(all).map_err(|e| e.to_string()));
+            }
+            ControlRequest::BlockCommand { words, reply } => {
+                let words: Vec<&str> = words.iter().map(String::as_str).collect();
+                let out =
+                    self.in_owner_level(|g| g.block_command(&words).map_err(|e| e.to_string()));
+                let _ = reply.send(out);
+            }
+            ControlRequest::LevelCensus(reply) => {
+                let _ = reply.send((self.level_census(), self.section_addresses()));
+            }
+            ControlRequest::ProtoCensus(reply) => {
+                let _ = reply.send(self.proto_census_json());
+            }
+            ControlRequest::WorldRoot(reply) => {
+                let _ = reply.send(self.world_root.clone());
+            }
+            ControlRequest::SaveGame(reply) => {
+                let _ = reply.send(self.save_game().map_err(|e| e.to_string()));
+            }
         }
     }
 

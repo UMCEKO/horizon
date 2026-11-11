@@ -3,7 +3,10 @@
 //! the census of the client's columns, the integrated server's levels, the
 //! renderer's bookkeeping and the GPU allocator's resources by label say
 //! where it goes. Bytes the census doesn't reach show as the difference.
-use super::Game;
+use super::{
+    Game,
+    owner_link::{ControlRequest, OwnerRequest},
+};
 use horizon_client::chunk::ColumnCensus;
 use horizon_client::fast_hash::FxHashSet;
 use horizon_client::world::World;
@@ -70,15 +73,35 @@ fn shared<'a>(
 }
 
 impl Game<'_> {
+    /// The server thread's generation: waiting proto chunks and the light jobs' views of them.
+    pub(super) fn proto_census_json(&self) -> Value {
+        let c = self.streaming.proto_census();
+        let [blocks, lists, heightmaps, other, biomes, records] = c.bytes;
+        json!({
+            "protos": c.protos,
+            "protos_mb": mb(c.bytes.iter().sum::<usize>()),
+            "proto_blocks_mb": mb(blocks),
+            "proto_section_lists_mb": mb(lists),
+            "proto_heightmaps_mb": mb(heightmaps),
+            "proto_other_terrain_mb": mb(other),
+            "proto_biomes_mb": mb(biomes),
+            "proto_records_mb": mb(records),
+            "proto_sections_by_bits": c.sections_by_bits,
+            "light_views": c.light_views,
+            "light_views_mb": mb(c.light_view_bytes),
+            "caches": c.caches.iter().map(|(name, n, bytes)| json!([name, n, bytes.map(mb)])).collect::<Vec<_>>(),
+            "stages": self.streaming.stages().iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>(),
+        })
+    }
     fn all_worlds(&self) -> impl Iterator<Item = &World> {
         std::iter::once(&self.world).chain(self.levels.parked_worlds())
     }
     /// The census of this game's levels: the one in place and the parked ones.
-    fn level_census(&self) -> ColumnCensus {
+    pub(super) fn level_census(&self) -> ColumnCensus {
         census(self.all_worlds())
     }
     /// The addresses of this game's sections.
-    fn section_addresses(&self) -> FxHashSet<usize> {
+    pub(super) fn section_addresses(&self) -> FxHashSet<usize> {
         self.all_worlds()
             .flat_map(|w| w.chunks.values())
             .flat_map(|c| c.sections.iter().map(|s| Arc::as_ptr(s) as usize))
@@ -93,30 +116,13 @@ impl Game<'_> {
         let server = self
             .integrated
             .as_ref()
-            .and_then(|i| i.call(|g| (g.level_census(), g.section_addresses())));
+            .and_then(|i| i.ask(|reply| OwnerRequest::Control(ControlRequest::LevelCensus(reply))));
         // The server thread's generation: proto chunks waiting for their
         // neighbours, and the light jobs' views of them.
-        let generation = self.integrated.as_ref().and_then(|i| {
-            i.call(|g| {
-                let c = g.streaming.proto_census();
-                let [blocks, lists, heightmaps, other, biomes, records] = c.bytes;
-                json!({
-                    "protos": c.protos,
-                    "protos_mb": mb(c.bytes.iter().sum::<usize>()),
-                    "proto_blocks_mb": mb(blocks),
-                    "proto_section_lists_mb": mb(lists),
-                    "proto_heightmaps_mb": mb(heightmaps),
-                    "proto_other_terrain_mb": mb(other),
-                    "proto_biomes_mb": mb(biomes),
-                    "proto_records_mb": mb(records),
-                    "proto_sections_by_bits": c.sections_by_bits,
-                    "light_views": c.light_views,
-                    "light_views_mb": mb(c.light_view_bytes),
-                    "caches": c.caches.iter().map(|(name, n, bytes)| json!([name, n, bytes.map(mb)])).collect::<Vec<_>>(),
-                    "stages": g.streaming.stages().iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>(),
-                })
-            })
-        });
+        let generation = self
+            .integrated
+            .as_ref()
+            .and_then(|i| i.ask(|reply| OwnerRequest::Control(ControlRequest::ProtoCensus(reply))));
         // The window's sections the server thread holds too (lan/handoff.rs).
         let shared = server.as_ref().map(|(_, at)| {
             let (sections, bytes) = shared(self.all_worlds(), at);
