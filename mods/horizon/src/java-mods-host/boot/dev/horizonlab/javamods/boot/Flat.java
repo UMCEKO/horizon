@@ -150,6 +150,35 @@ public final class Flat {
         return Effects.entity(factory);
     }
 
+    private static final java.util.List<net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level>> OTHER_LEVELS = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    /** The level a level bridge was called on: 0 to 2 for vanilla's three, else 3 plus its place for `levelName`. */
+    public static int level(net.minecraft.server.level.ServerLevel level) {
+        var key = level.dimension();
+        if (key == net.minecraft.world.level.Level.OVERWORLD) return 0;
+        if (key == net.minecraft.world.level.Level.NETHER) return 1;
+        if (key == net.minecraft.world.level.Level.END) return 2;
+        int at = OTHER_LEVELS.indexOf(key);
+        if (at < 0) {
+            synchronized (OTHER_LEVELS) {
+                at = OTHER_LEVELS.indexOf(key);
+                if (at < 0) {
+                    OTHER_LEVELS.add(key);
+                    at = OTHER_LEVELS.size() - 1;
+                }
+            }
+        }
+        return 3 + at;
+    }
+
+    public static int level(net.minecraft.server.level.ServerChunkCache cache) {
+        return level((net.minecraft.server.level.ServerLevel) cache.getLevel());
+    }
+
+    public static String levelName(int level) {
+        return OTHER_LEVELS.get(level - 3).identifier().toString();
+    }
+
     /** The dimension of a server's level, else empty. */
     public static String raw(net.minecraft.world.level.Level level) {
         return Effects.level(level);

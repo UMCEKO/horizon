@@ -1093,6 +1093,27 @@ fn java_id(state: BlockStateId) -> i32 {
     state.into_raw()
 }
 
+/// The block events queued for the level in place, kept out of the queue while another level is.
+pub(super) struct BlockEventsAside(Vec<BlockEvent>);
+
+pub(super) fn set_block_events_aside() -> BlockEventsAside {
+    BlockEventsAside(BLOCK_EVENTS.take())
+}
+
+pub(super) fn has_block_events() -> bool {
+    BLOCK_EVENTS.with_borrow(|e| !e.is_empty())
+}
+
+impl BlockEventsAside {
+    /// Puts them back, dropping what the other level left undrained.
+    pub(super) fn restore(self) {
+        let dropped = BLOCK_EVENTS.replace(self.0).len();
+        if dropped > 0 {
+            log::warn!("Horizon: {dropped} block events of another level were left undrained");
+        }
+    }
+}
+
 fn push_event(kind: u8, pos: BlockPos, a: i32, b: i32, c: i32) {
     BLOCK_EVENTS.with_borrow_mut(|e| e.push(BlockEvent { kind, pos, a, b, c }));
 }

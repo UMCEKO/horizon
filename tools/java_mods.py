@@ -362,6 +362,10 @@ def bridges(args):
         machine = base[0] + 32
         send(f'command fill {machine - 3} {y} {z - 2} {machine + 2} {y + 8} {z + 2} air')
         send(f'command setblock {machine - 2} {y - 1} {z} minecraft:stone')
+        # The Nether's mark, which the test mod reads through its own ServerLevel while the Overworld is in place.
+        send('command execute in minecraft:the_nether run forceload add 0 0')
+        send('wait 40')
+        send('command execute in minecraft:the_nether run setblock 0 64 0 minecraft:lodestone')
         send('give horizon_java_test:wand')
         send('wait 20')
         send('select horizon_java_test:wand')
@@ -679,7 +683,8 @@ def check_bridges(args=None):
             if len(mine) != len(args) and not this:
                 errors.append(f'{where}: {len(mine)} arguments for {desc}')
                 continue
-            lined = ([f'L{"net/minecraft/world/entity/Entity" if guard.startswith("@") else owner};'] if this else []) + args
+            receiver = 'net/minecraft/world/entity/Entity' if guard.startswith('@') else guard or owner
+            lined = ([f'L{receiver};'] if this else []) + args
             for java, raw, name in zip(lined, mine, named):
                 if raw == '-':
                     continue

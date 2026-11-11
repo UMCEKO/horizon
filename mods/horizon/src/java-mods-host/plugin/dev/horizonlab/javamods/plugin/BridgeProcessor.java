@@ -182,7 +182,9 @@ final class BridgeProcessor implements ClassProcessor {
         int arg = 0;
         if (entry.args.length == params.length + 1) {
             head.add(new VarInsnNode(Opcodes.ALOAD, 0));
-            flatten(head, Type.getObjectType(entry.guard.startsWith("@") ? "net/minecraft/world/entity/Entity" : node.name), entry.args[arg++]);
+            String receiver = entry.guard.startsWith("@") ? "net/minecraft/world/entity/Entity" : entry.guard.isEmpty() ? node.name : entry.guard;
+            if (!receiver.equals(node.name) && !entry.guard.startsWith("@")) head.add(new TypeInsnNode(Opcodes.CHECKCAST, receiver));
+            flatten(head, Type.getObjectType(receiver), entry.args[arg++]);
         }
         for (Type param : params) {
             String flat = entry.args[arg++];

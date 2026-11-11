@@ -476,6 +476,38 @@ impl Arg for Pos {
     }
 }
 
+/// The `ServerLevel` a level bridge was called on, by `Flat.level`: vanilla's three by index, another by its id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LevelOn {
+    Overworld,
+    Nether,
+    End,
+    Named(String),
+}
+impl Arg for LevelOn {
+    type Raw = jint;
+    const RAW: &'static str = "I";
+    const FLAT: &'static str = "level";
+    fn from_raw(env: &mut JNIEnv, raw: jint) -> LevelOn {
+        match raw {
+            0 => LevelOn::Overworld,
+            1 => LevelOn::Nether,
+            2 => LevelOn::End,
+            other => LevelOn::Named(
+                env.call_static_method(
+                    "dev/horizonlab/javamods/boot/Flat",
+                    "levelName",
+                    "(I)Ljava/lang/String;",
+                    &[jni::objects::JValue::Int(other)],
+                )
+                .and_then(|name| name.l())
+                .map(|name| crate::js(env, &JString::from(name)))
+                .unwrap_or_default(),
+            ),
+        }
+    }
+}
+
 /// `Direction`, by ordinal.
 pub struct Dir(pub Direction);
 impl Arg for Dir {
@@ -690,6 +722,7 @@ mod tests {
         crate::java_bridges! { table for () {
             route "a/B".m "(I)I" if "a/G" => fn route_m(g, x: i32) -> i32 { x }
             "a/C".n "()V" => fn plain_n(g) -> () {}
+            "a/L".get "(J)I" if "a/S" => fn level_get(g, on: super::super::LevelOn, pos: super::super::Pos) -> i32 { 0 }
         } }
         pub fn lines() -> Vec<String> {
             table().iter().map(super::super::Bridge::line).collect()
@@ -704,6 +737,14 @@ mod tests {
             "a/B\tm\t(I)I\ta/G\thorizon$bridge$route_m\tI\tI\troute"
         );
         assert_eq!(lines[1], "a/C\tn\t()V\t\thorizon$bridge$plain_n\t\tV\t");
+    }
+
+    #[test]
+    fn a_level_receiver_goes_first_through_flat_level() {
+        assert_eq!(
+            table::lines()[2],
+            "a/L\tget\t(J)I\ta/S\thorizon$bridge$level_get\tlevel:I,J\tI\t"
+        );
     }
 
     #[test]
