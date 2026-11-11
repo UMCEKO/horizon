@@ -50,12 +50,12 @@ fn facts_file() -> PathBuf {
 }
 
 /// Starts the Java mods' boot, once the configs it starts from are in the fingerprint.
-pub(super) fn start(bridges: Vec<horizon_java_host::bridge::Bridge>) {
+pub(super) fn start(bridges: Vec<horizon_java_host::bridge::Bridge>, window: bool) {
     if let Some(run) = std::env::var_os("HORIZON_JAVA_RUN").map(PathBuf::from) {
         let _ = CONFIGS.set(configs(&run));
         horizon_client::mod_keys::expect_mod_keys();
     }
-    horizon_java_host::start(bridges, facts_file());
+    horizon_java_host::start(bridges, facts_file(), window);
 }
 
 /// The content folders of this run's Java mods: the cached ones, or, the first time these jars run, those generated once their boot is done.

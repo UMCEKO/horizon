@@ -54,9 +54,11 @@ public final class EntityFacts {
 
     private static volatile byte[] bin = new byte[0];
 
-    /** `entities.bin`, empty when the install has no analysis. */
-    static byte[] bin() {
-        return bin;
+    /** `entities.bin`, handed to Rust once: Java keeps no copy; empty when the install has no analysis. */
+    static synchronized byte[] bin() {
+        var out = bin;
+        bin = new byte[0];
+        return out;
     }
 
     /** Runs once in `Boot.main`, after the mods have loaded and `BootFacts.seal`. */

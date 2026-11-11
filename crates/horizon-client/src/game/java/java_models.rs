@@ -105,11 +105,11 @@ fn client_resources() -> Option<&'static ClientResources> {
     static PARSED: std::sync::OnceLock<Option<ClientResources>> = std::sync::OnceLock::new();
     PARSED
         .get_or_init(|| {
-            let reply = horizon_java_host::get()?.client_resources();
+            let reply = horizon_java_host::get()?.take_client_resources();
             if reply.is_empty() {
                 return None;
             }
-            let parsed = parse_resources(reply);
+            let parsed = parse_resources(&reply);
             if parsed.is_none() {
                 log::warn!("Horizon: the Java client's resource export was malformed");
             }

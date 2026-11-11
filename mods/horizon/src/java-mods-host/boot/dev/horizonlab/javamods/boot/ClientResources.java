@@ -28,9 +28,11 @@ public final class ClientResources {
         return barrier.wait(Unit.INSTANCE).thenAccept(unit -> {});
     }
 
-    /** The export, as `client_resources` hands it to Rust: empty until the reload has run. */
-    static byte[] export() {
-        return exported;
+    /** The export, handed to Rust once by `client_resources`: Java keeps no copy, so a second ask is empty. */
+    static synchronized byte[] export() {
+        var out = exported;
+        exported = new byte[0];
+        return out;
     }
 
     /** Streams the code-built block states' baked quads to `out` as `BakedWriter` writes them, for the game's generated content; the set is dropped after. */
