@@ -2,9 +2,12 @@
 // Only the java-mods Entity#move bridge calls this; until it lands, nothing does with either feature set.
 #![allow(dead_code)]
 use super::commands::Target;
+use super::entity::Entity as _;
 use super::*;
+use horizon_client::entity_rules::EntityRules as _;
 use horizon_client::{
     Result, collisions::SceneCollisions, landing::SceneSound, motion::ModBlockFactors,
+    projectiles::ProjectileKind,
 };
 use horizon_core::{
     geometry::{Aabb, Direction, VoxelShape, traverse_blocks},
@@ -74,6 +77,55 @@ impl BodyRef<'_> {
     pub(super) fn size_of(bounds: Aabb) -> [f64; 2] {
         let (lo, hi) = (bounds.min_position(), bounds.max_position());
         [hi.x - lo.x, hi.y - lo.y]
+    }
+}
+
+/// The parts of a [`BodyRef`] its kind fixes.
+#[derive(Clone, Copy)]
+struct Physics {
+    no_physics: bool,
+    gravity: f64,
+    air_drag: f32,
+    emission: MovementEmission,
+    fall: FallRule,
+    steered: bool,
+}
+
+impl Physics {
+    /// A plain `Entity`'s: physics, its own `checkFallDamage` and no one steering.
+    fn entity(gravity: f64, air_drag: f32, emission: MovementEmission) -> Self {
+        Self {
+            no_physics: false,
+            gravity,
+            air_drag,
+            emission,
+            fall: FallRule::Entity,
+            steered: false,
+        }
+    }
+}
+
+/// A copy of one entity's moving fields, lent to [`Game::move_body`] while the entity stays in its list.
+struct Lent {
+    position: Vec3,
+    velocity: Vec3,
+    moving: MoveState,
+    sync: bool,
+}
+
+impl Lent {
+    fn of(position: Vec3, velocity: Vec3, moving: &MoveState) -> Self {
+        Self {
+            position,
+            velocity,
+            moving: moving.clone(),
+            sync: false,
+        }
+    }
+    fn restore(&self, position: &mut Vec3, velocity: &mut Vec3, moving: &mut MoveState) {
+        *position = self.position;
+        *velocity = self.velocity;
+        moving.clone_from(&self.moving);
     }
 }
 
@@ -803,12 +855,248 @@ impl BlockLandingWorld for KindMoveWorld<'_, '_, '_> {
 
 impl Game<'_> {
     /// `Entity.move(moverType, delta)` of one native entity; false when it isn't in the level or its kind has no port.
-    pub(super) fn entity_move(&mut self, target: Target, _mover: MoverType, delta: Vec3) -> bool {
+    pub(super) fn entity_move(&mut self, target: Target, mover: MoverType, delta: Vec3) -> bool {
         match target {
             Target::Mob(id) => self.mob_move(id, delta),
             Target::Item(id) => self.item_move(id, delta),
+            Target::Orb(id) => self.orb_move(id, mover, delta),
+            Target::Stand(id) => self.stand_move(id, mover, delta),
+            Target::Projectile(id) => self.projectile_move(id, mover, delta),
+            Target::Boat(id) => self.boat_move(id, mover, delta),
+            Target::Crystal(id) => self.crystal_move(id, mover, delta),
+            Target::Bolt(id) => self.bolt_move(id, mover, delta),
+            Target::Dragon(id) => self.dragon_move(id, mover, delta),
+            Target::Tnt(id) => self.tnt_move(id, delta),
+            Target::Cart(id) => self.cart_move(id, delta),
+            Target::Frame(_) | Target::Painting(_) => self.block_attached_move(target, delta),
             _ => false,
         }
+    }
+
+    /// `Entity.move` of the copy in `lent`, which the caller writes back.
+    fn move_lent(
+        &mut self,
+        id: u32,
+        kind: &str,
+        size: [f64; 2],
+        lent: &mut Lent,
+        physics: Physics,
+        mover: MoverType,
+        delta: Vec3,
+    ) {
+        let body = BodyRef {
+            id,
+            kind,
+            position: &mut lent.position,
+            velocity: &mut lent.velocity,
+            moving: &mut lent.moving,
+            sync: Some(&mut lent.sync),
+            size,
+            removed: false,
+            no_physics: physics.no_physics,
+            step_height: 0.0,
+            gravity: physics.gravity,
+            air_drag: physics.air_drag,
+            emission: physics.emission,
+            fall: physics.fall,
+            steered: physics.steered,
+        };
+        self.move_body(body, mover, delta);
+    }
+
+    fn orb_move(&mut self, id: u32, mover: MoverType, delta: Vec3) -> bool {
+        let Some(orb) = self.orbs.iter().find(|o| o.id == id) else {
+            return false;
+        };
+        let (size, kind) = (BodyRef::size_of(orb.bounds()), orb.native_type());
+        let mut lent = Lent::of(orb.position, orb.velocity, &orb.moving);
+        let physics = Physics::entity(orb.get_gravity(), 0.98, MovementEmission::None);
+        self.move_lent(id, &kind, size, &mut lent, physics, mover, delta);
+        if let Some(i) = self.orbs.iter().position(|o| o.id == id) {
+            self.orbs.update(i, |o| lent.restore(&mut o.position, &mut o.velocity, &mut o.moving));
+        }
+        true
+    }
+
+    fn stand_move(&mut self, id: u32, mover: MoverType, delta: Vec3) -> bool {
+        let Some(stand) = self.armor_stands.iter().find(|s| s.id == id) else {
+            return false;
+        };
+        let (size, kind) = (BodyRef::size_of(stand.bounds()), stand.native_type());
+        let mut lent = Lent::of(stand.position, stand.velocity, &stand.moving);
+        let physics = Physics {
+            no_physics: stand.marker || stand.no_gravity,
+            fall: FallRule::Living,
+            ..Physics::entity(stand.get_gravity(), 0.98, MovementEmission::All)
+        };
+        self.move_lent(id, &kind, size, &mut lent, physics, mover, delta);
+        if let Some(i) = self.armor_stands.iter().position(|s| s.id == id) {
+            self.armor_stands
+                .update(i, |s| lent.restore(&mut s.position, &mut s.velocity, &mut s.moving));
+        }
+        true
+    }
+
+    /// `Entity.move` of a projectile, then `AbstractArrow.move`'s fall for an arrow pushed out of its block.
+    fn projectile_move(&mut self, id: u32, mover: MoverType, delta: Vec3) -> bool {
+        let Some(p) = self.creatures.projectiles.iter().find(|p| p.id == id) else {
+            return false;
+        };
+        let (size, kind) = (BodyRef::size_of(p.bounds()), p.native_type());
+        let arrow = p.arrow.is_some();
+        let mut lent = Lent::of(p.position, p.velocity, &p.moving);
+        lent.sync = p.needs_sync;
+        let physics = Physics {
+            no_physics: matches!(p.kind, ProjectileKind::ShulkerBullet { .. })
+                || p.arrow.as_ref().is_some_and(|a| a.no_physics),
+            ..Physics::entity(
+                p.get_gravity(),
+                p.air_drag(),
+                if arrow {
+                    MovementEmission::None
+                } else {
+                    MovementEmission::All
+                },
+            )
+        };
+        self.move_lent(id, &kind, size, &mut lent, physics, mover, delta);
+        let Some(i) = self.creatures.projectiles.iter().position(|p| p.id == id) else {
+            return true;
+        };
+        let mut p = self.creatures.projectiles[i].clone();
+        lent.restore(&mut p.position, &mut p.velocity, &mut p.moving);
+        p.needs_sync = lent.sync;
+        if arrow && mover != MoverType::SelfMovement {
+            let rain = self.arrow_rain();
+            horizon_client::arrows::after_move(&mut p, &self.arrow_scene(&rain));
+        }
+        self.creatures.projectiles.update(i, |slot| *slot = p);
+        true
+    }
+
+    fn boat_move(&mut self, id: u32, mover: MoverType, delta: Vec3) -> bool {
+        let Some(boat) = self.boats.iter().find(|b| b.id == id) else {
+            return false;
+        };
+        let (size, kind) = (BodyRef::size_of(boat.bounds()), boat.native_type());
+        let mut lent = Lent::of(boat.position, boat.velocity, &boat.moving);
+        let physics = Physics {
+            fall: FallRule::Boat,
+            steered: true,
+            ..Physics::entity(boat.get_gravity(), 1.0, MovementEmission::Events)
+        };
+        self.move_lent(id, &kind, size, &mut lent, physics, mover, delta);
+        if let Some(i) = self.boats.iter().position(|b| b.id == id) {
+            self.boats
+                .update(i, |b| lent.restore(&mut b.position, &mut b.velocity, &mut b.moving));
+        }
+        true
+    }
+
+    /// `Entity.move` of an end crystal, which holds no motion and keeps no move state between moves.
+    fn crystal_move(&mut self, id: u32, mover: MoverType, delta: Vec3) -> bool {
+        let Some(crystal) = self.crystals.iter().find(|c| c.id == id) else {
+            return false;
+        };
+        let size = BodyRef::size_of(crystal.bounds());
+        let mut lent = Lent::of(crystal.position, Vec3::ZERO, &MoveState::default());
+        let physics = Physics::entity(0.0, 0.98, MovementEmission::None);
+        self.move_lent(id, "minecraft:end_crystal", size, &mut lent, physics, mover, delta);
+        if let Some(i) = self.crystals.iter().position(|c| c.id == id) {
+            self.crystals.update(i, |c| c.position = lent.position);
+        }
+        true
+    }
+
+    /// `Entity.move` of a lightning bolt, whose box has no size.
+    fn bolt_move(&mut self, id: u32, mover: MoverType, delta: Vec3) -> bool {
+        let Some(bolt) = self.bolts.iter().find(|b| b.id == id) else {
+            return false;
+        };
+        let at = Vec3::new(bolt.at[0], bolt.at[1], bolt.at[2]);
+        let mut lent = Lent::of(at, Vec3::ZERO, &MoveState::default());
+        let physics = Physics::entity(0.0, 0.98, MovementEmission::All);
+        let kind = "minecraft:lightning_bolt";
+        self.move_lent(id, kind, [0.0; 2], &mut lent, physics, mover, delta);
+        if let Some(i) = self.bolts.iter().position(|b| b.id == id) {
+            let p = lent.position;
+            self.bolts.update(i, |b| b.at = [p.x, p.y, p.z]);
+        }
+        true
+    }
+
+    /// `Entity.move` of the dragon, which has `noPhysics`: it goes the whole way through blocks.
+    fn dragon_move(&mut self, id: u32, mover: MoverType, delta: Vec3) -> bool {
+        let Some(dragon) = self.dragon.as_ref().filter(|d| d.id == id) else {
+            return false;
+        };
+        // `EntityType.ENDER_DRAGON`'s `sized(16.0F, 8.0F)`.
+        let size = [16.0, 8.0];
+        let mut lent = Lent::of(dragon.position, Vec3::ZERO, &MoveState::default());
+        let physics = Physics {
+            no_physics: true,
+            fall: FallRule::Living,
+            ..Physics::entity(0.08, 0.98, MovementEmission::All)
+        };
+        let kind = "minecraft:ender_dragon";
+        self.move_lent(id, kind, size, &mut lent, physics, mover, delta);
+        if let Some(dragon) = self.dragon.as_mut().filter(|d| d.id == id) {
+            dragon.position = lent.position;
+        }
+        true
+    }
+
+    /// `Entity.move` of a primed TNT: [`PrimedTnt::move_by`], its block effects left to its tick.
+    fn tnt_move(&mut self, id: u32, delta: Vec3) -> bool {
+        let Some(i) = self.tnts.iter().position(|t| t.id == id) else {
+            return false;
+        };
+        let mut tnt = self.tnts[i].clone();
+        tnt.move_by(
+            &self.world,
+            self.collision,
+            self.res.facts(),
+            &self.loop_context,
+            Some(self.border.geometry()),
+            Some(&self.res.motion().blocks),
+            &[],
+            delta,
+        );
+        self.tnts.update(i, |slot| *slot = tnt);
+        true
+    }
+
+    /// `Entity.move` of a minecart: `move_cart`, as its own tick moves it.
+    fn cart_move(&mut self, id: u32, delta: Vec3) -> bool {
+        let Some(i) = self.carts.iter().position(|c| c.id == id) else {
+            return false;
+        };
+        let mut cart = self.carts[i].clone();
+        self.move_cart(&mut cart, delta);
+        self.carts.update(i, |slot| *slot = cart);
+        true
+    }
+
+    /// `BlockAttachedEntity.move`: on a server, any movement kills the entity and drops its item with no breaker.
+    fn block_attached_move(&mut self, target: Target, delta: Vec3) -> bool {
+        let index = match target {
+            Target::Frame(id) => self.item_frames.iter().position(|f| f.id == id),
+            Target::Painting(id) => self.paintings.iter().position(|p| p.id == id),
+            _ => None,
+        };
+        let Some(index) = index else {
+            return false;
+        };
+        if self.remote.is_some() || delta.length_squared() <= 0.0 {
+            return true;
+        }
+        match target {
+            Target::Frame(_) => self.kill_frame_and_drop(index),
+            _ => {
+                self.break_painting(index, false);
+            }
+        }
+        true
     }
 
     /// `Entity.move` of a mob: [`Mob::do_move_by`] with the mob lent out of its list.

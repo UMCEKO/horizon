@@ -740,7 +740,7 @@ impl Game<'_> {
     }
     /// Entity.move for a cart: collisions zero the blocked components, the world border's walls
     /// among them (`CollisionGetter.borderCollision`, asked for every entity).
-    fn move_cart(&self, c: &mut Minecart, mut delta: Vec3) {
+    pub(super) fn move_cart(&self, c: &mut Minecart, mut delta: Vec3) {
         // Entity.move: a stuck multiplier scales this move and zeroes the velocity.
         if c.stuck.length_squared() > 1.0e-7 {
             delta = delta.multiply(c.stuck);

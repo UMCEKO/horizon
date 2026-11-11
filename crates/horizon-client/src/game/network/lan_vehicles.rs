@@ -454,7 +454,7 @@ impl Game<'_> {
                 b.velocity,
                 b.bounds(),
                 0.0,
-                b.on_ground,
+                b.moving.ground.on_ground,
             )
         } else if let Some(i) = mount {
             let m = &self.mobs[i];
@@ -523,8 +523,8 @@ impl Game<'_> {
             self.mobs[i].fall_distance =
                 self.vehicle_fall_reset(self.mobs[i].fall_distance, old, resolved);
         } else if let Some(i) = boat {
-            let reset = self.vehicle_fall_reset(self.boats[i].fall_distance, old, resolved);
-            self.boats.update(i, |boat| boat.fall_distance = reset);
+            let reset = self.vehicle_fall_reset(self.boats[i].moving.fall_distance, old, resolved);
+            self.boats.update(i, |boat| boat.moving.fall_distance = reset);
         }
         if free_before && (wrongly || !free_after) {
             log::warn!("vehicle {id} moved wrongly");
@@ -641,7 +641,7 @@ impl Game<'_> {
             b.position = target;
             b.previous_yaw = b.yaw;
             b.yaw = p.yaw;
-            b.on_ground = p.on_ground;
+            b.moving.ground.on_ground = p.on_ground;
         });
         // handleMoveVehicle's `vehicle.move` counts the fall
         // (AbstractBoat.checkFallDamage); the server's baseTick resets it in
@@ -659,7 +659,7 @@ impl Game<'_> {
         } else {
             self.boat_fall(&self.boats[i], resolved.y)
         };
-        self.boats.update(i, |b| b.fall_distance = fall);
+        self.boats.update(i, |b| b.moving.fall_distance = fall);
         let seat = self.player_boat_seat(i);
         let Some(host) = self.lan.as_mut() else {
             return;
@@ -897,10 +897,10 @@ mod controller_tests {
         // handleMoveVehicle's `vehicle.move` runs AbstractBoat.checkFallDamage:
         // a boat that lands on the ground (a fall loaded from its save, here)
         // has no fall left.
-        game.boats.update(0, |b| b.fall_distance = 5.0);
+        game.boats.update(0, |b| b.moving.fall_distance = 5.0);
         game.guest_move_vehicle(3, &move_to(start.x + 0.6));
         assert_eq!(
-            game.boats[0].fall_distance, 0.0,
+            game.boats[0].moving.fall_distance, 0.0,
             "a guest's boat on the ground"
         );
     }

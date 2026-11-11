@@ -13364,7 +13364,7 @@ impl Game<'_> {
             // `getExperienceValue` sizes: 1 to 2477.
             value: value as i32,
             age: 0,
-            on_ground: false,
+            moving: Default::default(),
             count: 1,
             ticks: 0,
             health: 5,

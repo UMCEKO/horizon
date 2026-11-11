@@ -11,7 +11,7 @@ pub(super) fn load_projectile_entity_fields(p: &mut Projectile, tag: &Tag) {
     p.air_supply = tag.get("Air").and_then(int_value).unwrap_or(p.air_supply);
     p.has_visual_fire = flag(tag, "HasVisualFire");
     // Entity.load: getDoubleOr, any number widened.
-    p.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
+    p.moving.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
 }
 
 /// `Entity.saveWithoutId`: save the current fire and air as shorts, and

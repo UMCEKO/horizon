@@ -838,7 +838,7 @@ impl Game<'_> {
         let (area, id) = (self.armor_stands[i].bounds(), self.armor_stands[i].id);
         let (center, on_ground) = (
             self.armor_stands[i].position,
-            self.armor_stands[i].on_ground,
+            self.armor_stands[i].moving.ground.on_ground,
         );
         let hurt = self.punch_armor_stand(i);
         if hurt {
@@ -1076,15 +1076,15 @@ impl Game<'_> {
             }
             let a = &mut self.armor_stands[i];
             if in_water {
-                a.enchantment_fall_distance = 0.0;
+                a.moving.fall_distance = 0.0;
             } else {
                 // Entity.checkFallDamage narrows each movement before adding to the double.
-                a.enchantment_fall_distance +=
+                a.moving.fall_distance +=
                     f64::from((a.previous.y - a.position.y).max(0.0) as f32);
             }
-            let landed = a.on_ground && a.enchantment_fall_distance > 0.0;
-            if a.on_ground {
-                a.enchantment_fall_distance = 0.0;
+            let landed = a.moving.ground.on_ground && a.moving.fall_distance > 0.0;
+            if a.moving.ground.on_ground {
+                a.moving.fall_distance = 0.0;
             }
             // LivingEntity.checkFallDamage: onChangedBlock before the block's
             // fallOn, then aiStep's applyEffectsFromBlocks (stepOn, then the
@@ -1287,7 +1287,7 @@ impl Game<'_> {
     /// still steps). `canDestroyEgg` wants mob griefing before the level's roll.
     fn armor_stand_turtle_eggs(&mut self, i: usize, landed: bool) -> Result<()> {
         let stand = &self.armor_stands[i];
-        if !stand.on_ground || self.remote.is_some() || self.options.execution_role.is_client() {
+        if !stand.moving.ground.on_ground || self.remote.is_some() || self.options.execution_role.is_client() {
             return Ok(());
         }
         let p = stand.on_pos_legacy(|p| {

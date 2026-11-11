@@ -3320,7 +3320,7 @@ impl Game<'_> {
                 velocity: Vec3::ZERO,
                 value: 1,
                 age: 0,
-                on_ground: false,
+                moving: Default::default(),
                 count: 1,
                 ticks: 0,
                 health: 5,
@@ -3465,7 +3465,7 @@ impl Game<'_> {
                         at.yaw,
                     );
                 }
-                a.on_ground = on_ground;
+                a.moving.ground.on_ground = on_ground;
                 return;
             }
             // Interaction extends Entity and keeps its NO_OP interpolation
@@ -3563,7 +3563,7 @@ impl Game<'_> {
             // ticks (`tick_remote_entities`), while `ExperienceOrb.tick` keeps
             // moving it.
             if let Some(o) = self.orbs.iter_mut().find(|o| o.id == id as u32) {
-                o.on_ground = on_ground;
+                o.moving.ground.on_ground = on_ground;
                 r.lerps.insert(
                     id,
                     Lerp {

@@ -95,13 +95,8 @@ pub(super) struct Boat {
     pub paddle_controller: bool,
     /// left, right, up, down
     pub input: [bool; 4],
-    pub on_ground: bool,
-    /// `Entity.fallDistance`: counted by `AbstractBoat.checkFallDamage`, saved
-    /// and loaded (`fall_distance`).
-    pub fall_distance: f64,
-    /// `Entity.stuckSpeedMultiplier`: set where the boat sits in powder snow
-    /// (`PowderSnowBlock.entityInside`), spent by the next move.
-    stuck: Vec3,
+    /// `Entity.move`'s fields: `onGround`, `fallDistance` (saved) and `stuckSpeedMultiplier` (powder snow's) among them.
+    pub moving: horizon_world::entity_move::MoveState,
     /// `ChestBoat`: a chest with 27 slots in the back seat.
     pub chest: bool,
     pub items: Vec<Option<ItemStack>>,
@@ -219,9 +214,7 @@ impl Boat {
             paddling: [false; 2],
             paddle_controller: false,
             input: [false; 4],
-            on_ground: false,
-            fall_distance: 0.0,
-            stuck: Vec3::ZERO,
+            moving: Default::default(),
             chest: false,
             items: Vec::new(),
             leash: None,
@@ -257,12 +250,12 @@ impl Boat {
             self.position,
             self.velocity,
             [self.yaw, self.pitch],
-            (self.on_ground, self.fall_distance),
+            (self.moving.ground.on_ground, self.moving.fall_distance),
             uuid,
             raw,
             self.chest.then_some(&self.items[..]),
         );
-        horizon_client::entity_nbt::write_saved_flags(&mut tag, self.on_ground, self.no_gravity);
+        horizon_client::entity_nbt::write_saved_flags(&mut tag, self.moving.ground.on_ground, self.no_gravity);
         if let Tag::Compound(map) = &mut tag {
             map.insert("Fire".into(), Tag::Short(self.fire_ticks as i16));
         }
@@ -271,11 +264,11 @@ impl Boat {
     /// The start of `Entity.move`: a boat made stuck since its last move goes its
     /// velocity times the multiplier, and its velocity and the multiplier are spent.
     fn take_movement(&mut self) -> Vec3 {
-        if self.stuck.length_squared() <= 1.0e-7 {
+        if self.moving.stuck.length_squared() <= 1.0e-7 {
             return self.velocity;
         }
-        let movement = self.velocity.multiply(self.stuck);
-        self.stuck = Vec3::ZERO;
+        let movement = self.velocity.multiply(self.moving.stuck);
+        self.moving.stuck = Vec3::ZERO;
         self.velocity = Vec3::ZERO;
         movement
     }
@@ -722,7 +715,7 @@ impl Game<'_> {
     /// down over anything but water (the block under its `blockPosition`)
     /// adds to it.
     pub(super) fn boat_fall(&self, b: &Boat, moved_y: f64) -> f64 {
-        if b.on_ground {
+        if b.moving.ground.on_ground {
             return 0.0;
         }
         if moved_y < 0.0 {
@@ -732,10 +725,10 @@ impl Game<'_> {
                 b.position.z.floor() as i32,
             ));
             if below.fluid != Fluid::Water {
-                return b.fall_distance - f64::from(moved_y as f32);
+                return b.moving.fall_distance - f64::from(moved_y as f32);
             }
         }
-        b.fall_distance
+        b.moving.fall_distance
     }
     /// `AbstractBoat.tick` for one boat (`controlled` when the player rides it).
     pub(super) fn tick_boat(&mut self, mut b: Boat, controlled: bool) -> Boat {
@@ -770,7 +763,7 @@ impl Game<'_> {
             .0
             > 0.0
         {
-            b.fall_distance = 0.0;
+            b.moving.fall_distance = 0.0;
         }
         // floatBoat
         // `-getGravity()`: none with NoGravity.
@@ -871,15 +864,15 @@ impl Game<'_> {
             border: Some((self.border.geometry(), [b.position.x, b.position.z])),
         };
         let movement = b.take_movement();
-        if let Ok(moved) = scene.resolve(b.bounds(), movement, 0.0, b.on_ground) {
-            b.fall_distance = self.vehicle_fall_reset(b.fall_distance, b.position, moved);
+        if let Ok(moved) = scene.resolve(b.bounds(), movement, 0.0, b.moving.ground.on_ground) {
+            b.moving.fall_distance = self.vehicle_fall_reset(b.moving.fall_distance, b.position, moved);
             b.position = Vec3::new(
                 b.position.x + moved.x,
                 b.position.y + moved.y,
                 b.position.z + moved.z,
             );
-            b.on_ground = movement.y < 0.0 && moved.y > movement.y;
-            b.fall_distance = self.boat_fall(&b, moved.y);
+            b.moving.ground.on_ground = movement.y < 0.0 && moved.y > movement.y;
+            b.moving.fall_distance = self.boat_fall(&b, moved.y);
             if (moved.x - movement.x).abs() > 1.0e-7 {
                 b.velocity.x = 0.0;
             }
@@ -893,7 +886,7 @@ impl Game<'_> {
         // AbstractBoat.tick's applyEffectsFromBlocks: powder snow makes the boat stuck,
         // which slows its next move (`PowderSnowBlock.entityInside`).
         if !self.boat_powder_snow_cells(&b).is_empty() {
-            b.stuck = powder_snow_stuck();
+            b.moving.stuck = powder_snow_stuck();
         }
         // Entity.move's last step: soul sand and honey slow the boat too.
         let factor = crate::motion::block_speed_factor_at(
@@ -2136,11 +2129,11 @@ mod tests {
         b.velocity = Vec3::new(1.0, 0.5, 2.0);
         assert_eq!(b.take_movement(), Vec3::new(1.0, 0.5, 2.0));
         assert_eq!(b.velocity, Vec3::new(1.0, 0.5, 2.0));
-        b.stuck = powder_snow_stuck();
+        b.moving.stuck = powder_snow_stuck();
         let moved = b.take_movement();
         let slow = f64::from(0.9_f32);
         assert_eq!(moved, Vec3::new(slow, 0.75, 2.0 * slow));
-        assert_eq!((b.velocity, b.stuck), (Vec3::ZERO, Vec3::ZERO));
+        assert_eq!((b.velocity, b.moving.stuck), (Vec3::ZERO, Vec3::ZERO));
         b.velocity = Vec3::new(0.0, 0.1, 1.0);
         assert_eq!(b.take_movement(), Vec3::new(0.0, 0.1, 1.0), "spent");
     }

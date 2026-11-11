@@ -738,7 +738,7 @@ impl Game<'_> {
         EntityView {
             kind: b.entity_type(),
             position: [b.position.x, b.position.y, b.position.z],
-            on_ground: b.on_ground,
+            on_ground: b.moving.ground.on_ground,
             passengers: self
                 .mobs
                 .iter()

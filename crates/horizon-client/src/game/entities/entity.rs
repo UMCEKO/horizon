@@ -1383,7 +1383,7 @@ impl Entity for ExperienceOrb {
     }
 
     fn set_on_ground(&mut self, on_ground: bool) {
-        self.on_ground = on_ground;
+        self.moving.ground.on_ground = on_ground;
     }
     fn rotation(&self) -> [f32; 2] {
         self.rotation
@@ -1437,14 +1437,14 @@ impl Entity for ExperienceOrb {
         ExperienceOrb::bounds(self)
     }
     fn on_ground(&self) -> bool {
-        self.on_ground
+        self.moving.ground.on_ground
     }
     fn set_piston_on_ground(&mut self, on_ground: bool) {
-        self.on_ground = on_ground;
+        self.moving.ground.on_ground = on_ground;
     }
     fn piston_slime_bounce(&mut self, movement: Direction) {
         self.velocity = piston_push::bounce_velocity(movement, self.velocity);
-        self.on_ground = false;
+        self.moving.ground.on_ground = false;
     }
 }
 
@@ -1454,10 +1454,10 @@ impl Entity for Boat {
     }
 
     fn set_on_ground(&mut self, on_ground: bool) {
-        self.on_ground = on_ground;
+        self.moving.ground.on_ground = on_ground;
     }
     fn set_piston_on_ground(&mut self, on_ground: bool) {
-        self.on_ground = on_ground;
+        self.moving.ground.on_ground = on_ground;
     }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
@@ -1523,7 +1523,7 @@ impl Entity for Boat {
         Boat::bounds(self)
     }
     fn on_ground(&self) -> bool {
-        self.on_ground
+        self.moving.ground.on_ground
     }
 }
 
@@ -1618,11 +1618,11 @@ fn armor_stand_size(stand: &ArmorStand) -> (f64, f64) {
 
 impl Entity for ArmorStand {
     fn reset_fall_distance(&mut self) {
-        self.enchantment_fall_distance = 0.0;
+        self.moving.fall_distance = 0.0;
     }
 
     fn set_on_ground(&mut self, on_ground: bool) {
-        self.on_ground = on_ground;
+        self.moving.ground.on_ground = on_ground;
     }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.pitch]
@@ -1697,12 +1697,12 @@ impl Entity for ArmorStand {
         ArmorStand::bounds(self)
     }
     fn on_ground(&self) -> bool {
-        self.on_ground
+        self.moving.ground.on_ground
     }
     /// A living entity's own flag too: keeping the old support flag would run
     /// Frost Walker while the stand is moving over open water.
     fn set_piston_on_ground(&mut self, on_ground: bool) {
-        self.on_ground = on_ground;
+        self.moving.ground.on_ground = on_ground;
     }
     fn is_living(&self) -> bool {
         true
@@ -1870,8 +1870,8 @@ impl Entity for FallingBlock {
 
 impl Entity for Projectile {
     fn reset_fall_distance(&mut self) {
-        if let Some(arrow) = self.arrow.as_deref_mut() {
-            arrow.fall_distance = 0.0;
+        if self.arrow.is_some() {
+            self.moving.fall_distance = 0.0;
         }
     }
     fn rotation(&self) -> [f32; 2] {
@@ -1887,14 +1887,14 @@ impl Entity for Projectile {
         self.previous_pitch = self.pitch;
     }
     fn on_ground(&self) -> bool {
-        self.on_ground
+        self.moving.ground.on_ground
     }
     /// `Entity.move(MoverType.PISTON)` ends in `setOnGroundWithMovement`.
     fn set_piston_on_ground(&mut self, on_ground: bool) {
-        self.on_ground = on_ground;
+        self.moving.ground.on_ground = on_ground;
     }
     fn set_on_ground(&mut self, on_ground: bool) {
-        self.on_ground = on_ground;
+        self.moving.ground.on_ground = on_ground;
     }
     fn native_type(&self) -> Cow<'static, str> {
         self.entity_type().into()
@@ -2434,7 +2434,7 @@ mod set_rotation_tests {
             velocity: horizon_core::geometry::Vec3::ZERO,
             value: 1,
             age: 0,
-            on_ground: false,
+            moving: Default::default(),
             count: 1,
             ticks: 0,
             health: 5,

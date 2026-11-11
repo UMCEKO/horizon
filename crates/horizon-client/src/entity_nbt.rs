@@ -105,6 +105,13 @@ pub fn rotation(tag: &Tag) -> [f32; 2] {
 pub fn flag(tag: &Tag, key: &str) -> bool {
     flag_or(tag, key, false)
 }
+/// `OnGround` and `fall_distance` of `Entity.load`, as `Entity.move` keeps them.
+pub fn move_state(tag: &Tag) -> horizon_world::entity_move::MoveState {
+    let mut state = horizon_world::entity_move::MoveState::default();
+    state.ground.on_ground = flag(tag, "OnGround");
+    state.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
+    state
+}
 /// `getBooleanOr(key, default)`: any numeric tag's nonzero test, else `default`.
 pub fn flag_or(tag: &Tag, key: &str, default: bool) -> bool {
     // NBT floats floor before int narrowing; the final byte keeps the low bits.
@@ -2896,8 +2903,8 @@ pub fn orb_to_nbt(o: &ExperienceOrb, uuid: [i32; 4]) -> Tag {
         position: o.position,
         motion: o.velocity,
         rotation: o.rotation,
-        on_ground: o.on_ground,
-        fall_distance: 0.0,
+        on_ground: o.moving.ground.on_ground,
+        fall_distance: o.moving.fall_distance,
     };
     let mut tag = base.tag(None);
     for (key, value) in [
@@ -2932,7 +2939,7 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
         // `getShortOr("Value", 0)`, unclamped.
         value: tag.get("Value").and_then(int_value).unwrap_or(0) as i16 as i32,
         age: number(tag.get("Age")).unwrap_or(0).max(0) as u32,
-        on_ground: flag(tag, "OnGround"),
+        moving: move_state(tag),
         count,
         ticks: 0,
         health: number(tag.get("Health")).unwrap_or(5) as i32,
@@ -2972,8 +2979,8 @@ pub fn arrow_to_nbt(
         position: p.position,
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
-        on_ground: p.on_ground,
-        fall_distance: a.fall_distance,
+        on_ground: p.moving.ground.on_ground,
+        fall_distance: p.moving.fall_distance,
     };
     let mut tag = base.tag(raw);
     // `SpectralArrow.addAdditionalSaveData` always writes its integer duration.
@@ -3059,7 +3066,7 @@ pub fn arrow_from_nbt(
     p.left_owner = flag(tag, "LeftOwner");
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
-    p.on_ground = flag(tag, "OnGround");
+    p.moving.ground.on_ground = flag(tag, "OnGround");
     let a = p.arrow.as_mut()?;
     a.life = number(tag.get("life")).unwrap_or(0) as i16 as i32;
     a.shake = (number(tag.get("shake")).unwrap_or(0) as i8 as u8).into();
@@ -3080,7 +3087,6 @@ pub fn arrow_from_nbt(
         })
         .cloned();
     a.fire_ticks = number(tag.get("Fire")).unwrap_or(0) as i16 as i32;
-    a.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
     a.spectral = spectral;
     // `SpectralArrow.readAdditionalSaveData`: absent Duration defaults to 200.
     if spectral {
@@ -3116,8 +3122,8 @@ pub fn fireball_to_nbt(
         position: p.position,
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
-        on_ground: p.on_ground,
-        fall_distance: p.fall_distance,
+        on_ground: p.moving.ground.on_ground,
+        fall_distance: p.moving.fall_distance,
     };
     let mut tag = base.tag(raw);
     put(
@@ -3246,8 +3252,8 @@ pub fn throwable_to_nbt(
         position: p.position,
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
-        on_ground: p.on_ground,
-        fall_distance: p.fall_distance,
+        on_ground: p.moving.ground.on_ground,
+        fall_distance: p.moving.fall_distance,
     };
     let mut tag = base.tag(raw);
     put_projectile(&mut tag, p, owner);
@@ -3289,7 +3295,7 @@ pub fn throwable_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Project
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
     load_projectile_entity_fields(&mut p, tag);
-    p.on_ground = flag(tag, "OnGround");
+    p.moving.ground.on_ground = flag(tag, "OnGround");
     Some(p)
 }
 
@@ -3335,7 +3341,7 @@ pub fn spit_or_bullet_from_nbt(
     p.has_been_shot = flag(tag, "HasBeenShot");
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
-    p.on_ground = flag(tag, "OnGround");
+    p.moving.ground.on_ground = flag(tag, "OnGround");
     Some(p)
 }
 
@@ -3360,7 +3366,7 @@ pub fn spit_or_bullet_to_nbt(
         position: p.position,
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
-        on_ground: p.on_ground,
+        on_ground: p.moving.ground.on_ground,
         fall_distance: 0.0,
     };
     let mut tag = base.tag(raw);
@@ -3432,8 +3438,8 @@ pub fn fireball_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projecti
     if p.is_fireball() {
         load_projectile_entity_fields(&mut p, tag);
     }
-    p.on_ground = flag(tag, "OnGround");
-    p.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
+    p.moving.ground.on_ground = flag(tag, "OnGround");
+    p.moving.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
     p.acceleration = float(tag.get("acceleration_power")).unwrap_or(0.1);
     if let Some(item) = tag.get("Item").and_then(item_from_nbt) {
         p.set_item(item);
@@ -3773,8 +3779,8 @@ pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> 
         position: a.position,
         motion: a.velocity,
         rotation: [a.yaw, a.pitch],
-        on_ground: a.on_ground,
-        fall_distance: a.enchantment_fall_distance,
+        on_ground: a.moving.ground.on_ground,
+        fall_distance: a.moving.fall_distance,
     };
     let mut tag = base.non_mob_tag(raw);
     // `equipment` is saved only when something is worn, `Marker` only when set.
@@ -3865,7 +3871,7 @@ pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> 
 const SPEED_ATTRIBUTE: &str = "minecraft:movement_speed";
 pub fn armor_stand_from_nbt(tag: &Tag, id: u32) -> Option<ArmorStand> {
     let mut a = ArmorStand::new(id, position(tag)?, rotation(tag)[0]);
-    a.enchantment_fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
+    a.moving.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
     // AttributeMap.load makes an instance for each saved attribute.
     a.speed_instance = matches!(tag.get("attributes"), Some(Tag::List(list))
         if list.iter().any(|attr| text(attr.get("id")).as_deref() == Some(SPEED_ATTRIBUTE)));
@@ -3885,7 +3891,7 @@ pub fn armor_stand_from_nbt(tag: &Tag, id: u32) -> Option<ArmorStand> {
     a.invisible = flag(tag, "Invisible");
     a.marker = flag(tag, "Marker");
     a.no_gravity = flag(tag, "NoGravity");
-    a.on_ground = flag(tag, "OnGround");
+    a.moving.ground.on_ground = flag(tag, "OnGround");
     // ArmorStand.readAdditionalSaveData: each part of `Pose` that is a list of
     // three numbers, the others staying at their defaults.
     if let Some(pose) = tag.get("Pose") {
@@ -5901,7 +5907,7 @@ mod tests {
             velocity: Vec3::ZERO,
             value: 1,
             age: 0,
-            on_ground: false,
+            moving: Default::default(),
             count: 1,
             ticks: 0,
             health: 5,
@@ -5980,7 +5986,7 @@ mod tests {
             velocity: Vec3::ZERO,
             value: 7,
             age: 3,
-            on_ground: false,
+            moving: Default::default(),
             count: 3,
             ticks: 0,
             health: 5,

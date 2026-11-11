@@ -550,24 +550,28 @@ impl Game<'_> {
             self.item_frames[i].check_interval += 1;
             if self.item_frames[i].check_interval >= 100 {
                 self.item_frames[i].check_interval = 0;
-                let mut f = self.item_frames[i].clone();
-                if !self.frame_survives(&f) && !self.hanging_break_cancelled(f.kind(), f.pos, false)
-                {
-                    self.item_frames.remove(i);
-                    self.entity_killed_event(center(&f), false);
-                    self.audio
-                        .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
-                    self.drop_frame_items(&mut f, true, false);
-                    // ItemFrame.dropItem(level, null): BLOCK_CHANGE after the drops.
-                    let ctx = self.who_context(None, None);
-                    self.post_game_event("minecraft:block_change", center(&f), ctx);
-                    if f.item.is_some() {
-                        self.frame_output_changed(f.pos);
-                    }
+                let f = &self.item_frames[i];
+                let (kind, pos) = (f.kind(), f.pos);
+                if !self.frame_survives(f) && !self.hanging_break_cancelled(kind, pos, false) {
+                    self.kill_frame_and_drop(i);
                     continue;
                 }
             }
             i += 1;
+        }
+    }
+    /// `BlockAttachedEntity.kill` then `dropItem(level, null)` of the frame at `index`: it breaks with its item.
+    pub(super) fn kill_frame_and_drop(&mut self, index: usize) {
+        let mut f = self.item_frames.remove(index);
+        self.entity_killed_event(center(&f), false);
+        self.audio
+            .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
+        self.drop_frame_items(&mut f, true, false);
+        // ItemFrame.dropItem(level, null): BLOCK_CHANGE after the drops.
+        let ctx = self.who_context(None, None);
+        self.post_game_event("minecraft:block_change", center(&f), ctx);
+        if f.item.is_some() {
+            self.frame_output_changed(f.pos);
         }
     }
     /// ItemFrameRenderer: the frame model, then the item half size on its face.

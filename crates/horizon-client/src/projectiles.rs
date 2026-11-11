@@ -303,10 +303,8 @@ pub struct Projectile {
     pub previous_pitch: f32,
     pub age: u32,
     pub stuck: bool,
-    /// `Entity.stuckSpeedMultiplier`: set by a cobweb or powder snow its box
-    /// passed through on a block's push (`makeStuckInBlock`); the next push
-    /// (`Entity.move`) then stops it dead. Zero: not stuck.
-    pub stuck_speed: Vec3,
+    /// `Entity.move`'s fields: `onGround`, `fallDistance` and `stuckSpeedMultiplier` (a cobweb's or powder snow's, spent by the next push) among them.
+    pub moving: horizon_world::entity_move::MoveState,
     /// Whether the projectile has left its owner's box (Projectile.leftOwner).
     pub left_owner: bool,
     /// Non-arrow Projectile.hasBeenShot, independent of entity age.
@@ -331,9 +329,6 @@ pub struct Projectile {
     pub touching_water: bool,
     /// `Entity.noGravity` (`NoGravity` in its save): `getGravity` is 0.
     pub no_gravity: bool,
-    /// `Entity.onGround` (`OnGround` in its save). A projectile moves by
-    /// `setPos`, never `Entity.move`, so it keeps what it was loaded with.
-    pub on_ground: bool,
     /// `Entity.remainingFireTicks`: a thrown projectile that flew through a
     /// fire block burns for 160 ticks, with the flame drawn over it.
     pub fire_ticks: i32,
@@ -344,9 +339,6 @@ pub struct Projectile {
     pub no_deflect_ticks: u8,
     pub air_supply: i32,
     pub has_visual_fire: bool,
-    /// `Entity.fallDistance` (`fall_distance` in its save): a projectile sets
-    /// its position without `Entity.move`, so it keeps what it was given.
-    pub fall_distance: f64,
     /// `Entity.DATA_SHARED_FLAGS_ID`'s fire bit, set by the server's base tick.
     pub synced_fire: bool,
     /// `Fireball.DATA_ITEM_STACK`: the item a fireball is drawn as, a fire
@@ -591,7 +583,7 @@ impl Projectile {
             previous_pitch: 0.0,
             age: 0,
             stuck: false,
-            stuck_speed: Vec3::ZERO,
+            moving: Default::default(),
             left_owner: false,
             has_been_shot: false,
             shoot_event: None,
@@ -601,14 +593,12 @@ impl Projectile {
             bubble_surfaces: Vec::new(),
             touching_water: false,
             no_gravity: false,
-            on_ground: false,
             fire_ticks: 0,
             // Entity.random: seeded unpredictably, the position stands in.
             random: OwnRandom(unique_random(position)),
             no_deflect_ticks,
             air_supply: 300,
             has_visual_fire: false,
-            fall_distance: 0.0,
             synced_fire: false,
             item,
             arrow: kind_is_arrow.then(|| Box::new(crate::arrows::ArrowState::new())),
@@ -632,6 +622,19 @@ impl Projectile {
                 | ProjectileKind::WindCharge
                 | ProjectileKind::BreezeWindCharge
         )
+    }
+    /// `getAirDrag()`: arrows, throwables and llama spit keep 0.99, the others `Entity`'s 0.98.
+    pub fn air_drag(&self) -> f32 {
+        if self.is_hurting()
+            || matches!(
+                self.kind,
+                ProjectileKind::DragonFireball | ProjectileKind::ShulkerBullet { .. }
+            )
+        {
+            0.98
+        } else {
+            0.99
+        }
     }
     /// `Projectile.deflect(deflection, by, newOwner, byAttack, power)` on the
     /// server, for every caller: gameplay and a mod's handle. A wind charge
@@ -1517,7 +1520,7 @@ impl Projectile {
             for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
                 for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
                     if let Some(stuck) = w.stuck_speed([x, y, z]) {
-                        self.stuck_speed = stuck;
+                        self.moving.stuck = stuck;
                     }
                 }
             }
