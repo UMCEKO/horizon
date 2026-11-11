@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Dev only: compares the Rust mod analysis (crates/horizon-java-analysis) with the Python it ports, stage by stage.
 
-    python3 tools/java_analysis_compare.py classes|libraries|jars|mixins --install DIR [--bin PATH]
+    python3 tools/java_analysis_compare.py classes|libraries|jars|mixins|knowledge --install DIR [--bin PATH]
 
 Writes only into a temp folder. Prints `N <units>, M differences` and the first 20 differences; exits 1 on any.
 """
@@ -15,6 +15,7 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import java_knowledge  # noqa: E402
 import lab  # noqa: E402
 import mod_parity_explain as ex  # noqa: E402
 import mod_parity as mp  # noqa: E402
@@ -169,16 +170,58 @@ def compare_mixins(install, binary):
     return len(python), found
 
 
+MECHANISMS = ('mixin', 'override', 'implement')
+
+
+def knowledge_jar(scratch):
+    """A jar holding the analysis/ resources `java_knowledge.write` makes, as the boot jar does."""
+    folder = Path(scratch) / 'analysis'
+    java_knowledge.write(folder)
+    jar = Path(scratch) / 'knowledge.jar'
+    with zipfile.ZipFile(jar, 'w') as z:
+        for path in sorted(folder.iterdir()):
+            z.write(path, f'analysis/{path.name}')
+    return jar
+
+
+def compare_knowledge(install, binary):
+    """Native.info, verdict_of and route of every `methods` key of the Python replaces.json, then the folded lambdas' enclosing methods."""
+    ledger = json.loads(mr.LEDGER_JSON.read_text())
+    verdicts = mr.read_verdicts()
+    native = mr.Native(ledger)
+    found = []
+    with tempfile.TemporaryDirectory(prefix='java-analysis-compare-') as scratch:
+        out = Path(scratch) / 'out'
+        out.mkdir()
+        result = mr.analyse(install, out, ledger, Path(scratch) / 'cache', log=lambda *_: None, verdicts=verdicts)
+        methods = result['methods']
+        keys = sorted(methods)
+        rust = rust_json(binary, 'dump-knowledge', '--boot-jar', knowledge_jar(scratch), *keys)
+        for key in keys:
+            info = native.info(key)
+            expected = {**info, 'verdict': mr.verdict_of(verdicts, key), 'routes': {m: mr.route(m, info, key, verdicts) for m in MECHANISMS}}
+            found += [(f'{key}: {p}', x, y) for p, x, y in differences('', json.loads(json.dumps(expected)), rust.get(key))]
+        folds = {}
+        for key, entry in methods.items():
+            for change in entry['changes']:
+                if change.get('folded'):
+                    folds[f'{key.partition("#")[0]}#{change["folded"]}'] = [key.partition('#')[2], change['desc']]
+        folded = rust_json(binary, 'dump-folds', '--install', install, *sorted(folds))
+        for lambda_key, expected in sorted(folds.items()):
+            found += [(f'{lambda_key}: {p}', x, y) for p, x, y in differences('', expected, folded.get(lambda_key))]
+        return len(keys) + len(folds), found
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest='stage', required=True)
-    for name, text in (('classes', 'the class-file reader'), ('libraries', 'library jars, class index, SPI names'), ('jars', 'mod archives and their jar facts'), ('mixins', 'the mixin handler list')):
+    for name, text in (('classes', 'the class-file reader'), ('libraries', 'library jars, class index, SPI names'), ('jars', 'mod archives and their jar facts'), ('mixins', 'the mixin handler list'), ('knowledge', 'the port ledger rows, verdicts, routes and folded lambdas')):
         stage = sub.add_parser(name, help=text)
         stage.add_argument('--install', required=True)
         stage.add_argument('--bin', help='the horizon-java-analysis binary (default: the fast profile)')
     args = parser.parse_args()
-    unit = {'classes': 'classes', 'libraries': 'library classes', 'jars': 'archives', 'mixins': 'mixin handlers'}[args.stage]
-    compare = {'classes': compare_classes, 'libraries': compare_libraries, 'jars': compare_jars, 'mixins': compare_mixins}[args.stage]
+    unit = {'classes': 'classes', 'libraries': 'library classes', 'jars': 'archives', 'mixins': 'mixin handlers', 'knowledge': 'keys'}[args.stage]
+    compare = {'classes': compare_classes, 'libraries': compare_libraries, 'jars': compare_jars, 'mixins': compare_mixins, 'knowledge': compare_knowledge}[args.stage]
     count, found = compare(args.install, rust_binary(args.bin))
     print(f'{count} {unit}, {len(found)} differences')
     for where, python, rust in found[:SHOWN]:

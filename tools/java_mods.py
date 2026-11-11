@@ -27,9 +27,10 @@ from pathlib import Path
 
 os.environ.setdefault('HORIZON_NEOFORGE', '26.3.0.101')
 try:
-    from . import lab, neoforge_oracle as oracle
+    from . import java_knowledge, lab, neoforge_oracle as oracle
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import java_knowledge  # noqa: E402
     import lab  # noqa: E402
     import neoforge_oracle as oracle  # noqa: E402
 
@@ -67,6 +68,8 @@ def mixinextras(classpath):
 
 
 def build(java_only=False):
+    if not java_knowledge.mr.LEDGER_JSON.is_file():
+        sys.exit(java_knowledge.mr.NO_LEDGER)
     JARS.mkdir(parents=True, exist_ok=True)
     # Against the client, which holds the server's classes too.
     classpath = oracle.client_classpath(oracle.client()[0])
@@ -89,6 +92,11 @@ def build(java_only=False):
             jar_args = ['jar', 'cfm', str(jar), str(manifest), '-C', str(classes), '.']
         if (SOURCES / name / 'res').exists():
             jar_args += ['-C', str(SOURCES / name / 'res'), '.']
+        if name == 'boot':
+            knowledge = JARS / 'classes' / 'boot-knowledge'
+            shutil.rmtree(knowledge, ignore_errors=True)
+            java_knowledge.write(knowledge / 'analysis')
+            jar_args += ['-C', str(knowledge), '.']
         subprocess.run(jar_args, check=True)
     if java_only:
         return
@@ -193,7 +201,9 @@ def mods_analysis(name, jars):
         (folder / 'mods' / jar.name).symlink_to(jar.resolve())
     out = folder / 'analysis'
     out.mkdir()
-    ledger = json.loads(mod_replaces.LEDGER_JSON.read_text()) if mod_replaces.LEDGER_JSON.is_file() else {}
+    if not mod_replaces.LEDGER_JSON.is_file():
+        sys.exit(mod_replaces.NO_LEDGER)
+    ledger = json.loads(mod_replaces.LEDGER_JSON.read_text())
     result = mod_replaces.analyse(folder, out, ledger, JARS / 'mod-replaces', verdicts=mod_replaces.read_verdicts())
     mod_replaces.write_routing(out, result['routing'])
     (out / 'entity-facts.json').write_text(json.dumps(result['entity_facts'], indent=1) + '\n')
