@@ -1721,7 +1721,11 @@ impl Game<'_> {
                         log("INFO", "A performance report is already being recorded")
                     }
                     (Ok(seconds), None) => {
-                        state.report = Some(report::Recording::start(seconds, self.wire_bytes()));
+                        state.report = Some(report::Recording::start(
+                            seconds,
+                            self.wire_bytes(),
+                            horizon_bench::cpu_seconds(std::process::id()),
+                        ));
                         log(
                             "INFO",
                             &format!("Recording a performance report for {seconds} s (reports/)"),

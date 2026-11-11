@@ -1707,10 +1707,12 @@ dependencies = [
 name = "horizon-gameplay"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "horizon-client-core",
  "horizon-client-lib",
  "horizon-core",
  "horizon-world",
+ "log",
  "serde_json",
 ]
 
