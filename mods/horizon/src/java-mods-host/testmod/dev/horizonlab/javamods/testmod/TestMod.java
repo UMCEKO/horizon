@@ -48,6 +48,7 @@ public final class TestMod {
         Switcher.register(bus, ITEMS);
         ChunkData.register(bus);
         PARTICLE_TYPES.register(bus);
+        ExportFeature.register(bus);
         if (net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) {
             ClientKeys.register(bus);
             ClientTextures.register(bus);

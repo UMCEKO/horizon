@@ -27,7 +27,12 @@ import net.minecraft.world.level.storage.loot.LootTable;
 public final class BootFacts {
     private BootFacts() {}
 
-    private static final List<Registry<?>> REGISTRIES = List.of(BuiltInRegistries.BLOCK, BuiltInRegistries.ITEM, BuiltInRegistries.BLOCK_ENTITY_TYPE, BuiltInRegistries.DATA_COMPONENT_TYPE, BuiltInRegistries.FLUID, BuiltInRegistries.PARTICLE_TYPE);
+    /** The registries whose mod entries are kept: content, and the worldgen type registries `WorldgenExport` names owners by. */
+    private static List<Registry<?>> registries() {
+        var all = new java.util.ArrayList<Registry<?>>(List.of(BuiltInRegistries.BLOCK, BuiltInRegistries.ITEM, BuiltInRegistries.BLOCK_ENTITY_TYPE, BuiltInRegistries.DATA_COMPONENT_TYPE, BuiltInRegistries.FLUID, BuiltInRegistries.PARTICLE_TYPE));
+        all.addAll(WorldgenExport.typeRegistries());
+        return List.copyOf(all);
+    }
     private static final String[] CLIENT_MAPPERS = {
         "net.minecraft.client.renderer.item.ItemModels",
         "net.minecraft.client.renderer.special.SpecialModelRenderers",
@@ -48,7 +53,7 @@ public final class BootFacts {
     /** Vanilla's entries, once its bootstrap ran and before any mod is constructed. */
     static void snapshot(boolean client) {
         BootFacts.client = client;
-        for (Registry<?> registry : REGISTRIES) {
+        for (Registry<?> registry : registries()) {
             Map<Identifier, Object> entries = new HashMap<>();
             for (Identifier id : registry.keySet()) entries.put(id, registry.getValue(id));
             VANILLA.put(registry, entries);
@@ -79,7 +84,7 @@ public final class BootFacts {
     /** The mods' entries: added since the snapshot, or put in place of a vanilla one. */
     static void seal() {
         if (VANILLA.isEmpty()) throw new IllegalStateException("no snapshot of vanilla's registries was taken");
-        for (Registry<?> registry : REGISTRIES) {
+        for (Registry<?> registry : registries()) {
             Map<Identifier, Object> vanilla = VANILLA.get(registry);
             Set<Identifier> ids = new HashSet<>();
             for (Identifier id : registry.keySet()) {

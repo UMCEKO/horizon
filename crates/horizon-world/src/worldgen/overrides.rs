@@ -199,6 +199,27 @@ impl LevelHeight {
     }
 }
 
+/// What Java's worldgen export says about the entries it wrote.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExportOwners {
+    types: BTreeMap<(String, String), Vec<String>>,
+    /// Folders (entries and tags) the export holds that no bundle reads.
+    pub unread: std::collections::BTreeSet<String>,
+    /// Entries Java could not encode, as (bundle, id).
+    pub failed: Vec<(String, String)>,
+    /// Java's own notes on the export.
+    pub warnings: Vec<String>,
+}
+
+impl ExportOwners {
+    /// The mod-owned types inside the entry `id` of `bundle`: `<type registry>:<key>`, or `unregistered:<class>`.
+    pub fn mod_types(&self, bundle: &str, id: &str) -> &[String] {
+        self.types
+            .get(&(bundle.to_owned(), id.to_owned()))
+            .map_or(&[], Vec::as_slice)
+    }
+}
+
 /// Replacement and added bundle entries, and tag files, from data packs.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct WorldgenOverrides {
@@ -285,6 +306,63 @@ impl WorldgenOverrides {
         } else {
             PackFile::Other
         }
+    }
+    /// Java's export of the final worldgen registries (format 1): the entries and tags that differ from vanilla's, and the mod-owned types in each entry.
+    pub fn from_java_export(text: &str) -> Result<(Self, ExportOwners), String> {
+        let root: Value =
+            serde_json::from_str(text).map_err(|e| format!("worldgen export: {e}"))?;
+        if root["format"] != 1 {
+            return Err(format!(
+                "worldgen export: format {} is not 1",
+                root["format"]
+            ));
+        }
+        let bundle_of = |kinds: &[(&'static str, &'static str)], folder: &str| {
+            kinds
+                .iter()
+                .find(|(kind, _)| *kind == folder)
+                .map(|(_, bundle)| *bundle)
+        };
+        let (mut overrides, mut owners) = (Self::default(), ExportOwners::default());
+        for (folder, entries) in root["entries"].as_object().into_iter().flatten() {
+            let Some(bundle) = bundle_of(&KINDS, folder) else {
+                owners.unread.insert(folder.clone());
+                continue;
+            };
+            for (id, json) in entries.as_object().into_iter().flatten() {
+                if json.is_null() {
+                    owners.failed.push((bundle.to_owned(), id.clone()));
+                } else {
+                    overrides.set(bundle, id, json.to_string());
+                }
+            }
+        }
+        for (folder, tags) in root["tags"].as_object().into_iter().flatten() {
+            let Some(bundle) = bundle_of(&TAG_KINDS, folder) else {
+                owners.unread.insert(folder.clone());
+                continue;
+            };
+            for (id, json) in tags.as_object().into_iter().flatten() {
+                overrides.add_tag(bundle, id, "java", json.to_string());
+            }
+        }
+        for (folder, entries) in root["owners"].as_object().into_iter().flatten() {
+            let Some(bundle) = bundle_of(&KINDS, folder) else {
+                continue;
+            };
+            for (id, types) in entries.as_object().into_iter().flatten() {
+                let types = types.as_array().into_iter().flatten();
+                let types = types.filter_map(|t| t.as_str().map(str::to_owned));
+                owners
+                    .types
+                    .insert((bundle.to_owned(), id.clone()), types.collect());
+            }
+        }
+        let warnings = root["warnings"].as_array().into_iter().flatten();
+        owners.warnings = warnings
+            .filter_map(|w| w.as_str().map(str::to_owned))
+            .collect();
+        Ok((overrides, owners))
     }
     /// After the last pack: leaves out the packs' new biomes (`known` says
     /// which the game has), and what names them names the rest without
@@ -808,5 +886,57 @@ mod stem_sea_level_tests {
         assert_eq!(stem_sea_level(&flat, &read), None);
         let bad = json!({"generator": {"type": "minecraft:noise", "settings": {"sea_level": "x"}}});
         assert_eq!(stem_sea_level(&bad, &read), None);
+    }
+}
+
+#[cfg(test)]
+mod java_export_tests {
+    use super::*;
+
+    const EXPORT: &str = r#"{"format":1,
+      "entries":{
+        "worldgen/biome":{"t:bog":{"temperature":0.5},"t:broken":null},
+        "dimension":{"minecraft:overworld":{"type":"minecraft:overworld"}},
+        "worldgen/world_preset":{"t:preset":{}}},
+      "tags":{"tags/worldgen/biome":{"t:wet":{"replace":false,"values":["t:bog"]}},
+              "tags/worldgen/structure":{"t:x":{"values":[]}}},
+      "owners":{"worldgen/biome":{"t:bog":["minecraft:worldgen/feature_type:t:tree","unregistered:t.Wrap"]}},
+      "warnings":["worldgen export: t:bog modified by biome modifiers"]}"#;
+
+    #[test]
+    fn a_java_export_fills_the_bundles_tags_and_owners() {
+        let (o, owners) = WorldgenOverrides::from_java_export(EXPORT).unwrap();
+        let biomes: Vec<_> = o.entries("biomes").collect();
+        assert_eq!(biomes, [("t:bog", r#"{"temperature":0.5}"#)]);
+        let stems: Vec<_> = o.entries(DIMENSIONS).map(|(id, _)| id).collect();
+        assert_eq!(stems, ["minecraft:overworld"]);
+        let tags: Vec<_> = o.tags("biome_tags").collect();
+        assert_eq!(tags.len(), 1);
+        assert_eq!((tags[0].0, tags[0].1), ("t:wet", "java"));
+        assert_eq!(
+            serde_json::from_str::<Value>(tags[0].2).unwrap(),
+            serde_json::json!({"replace": false, "values": ["t:bog"]})
+        );
+        assert_eq!(
+            owners.mod_types("biomes", "t:bog"),
+            [
+                "minecraft:worldgen/feature_type:t:tree",
+                "unregistered:t.Wrap"
+            ]
+        );
+        assert!(owners.mod_types("biomes", "minecraft:plains").is_empty());
+        assert_eq!(
+            owners.failed,
+            [("biomes".to_owned(), "t:broken".to_owned())]
+        );
+        let unread: Vec<_> = owners.unread.iter().map(String::as_str).collect();
+        assert_eq!(unread, ["tags/worldgen/structure", "worldgen/world_preset"]);
+        assert_eq!(owners.warnings.len(), 1);
+    }
+
+    #[test]
+    fn a_java_export_of_another_format_is_refused() {
+        assert!(WorldgenOverrides::from_java_export(r#"{"format":2}"#).is_err());
+        assert!(WorldgenOverrides::from_java_export("not json").is_err());
     }
 }
