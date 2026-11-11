@@ -134,6 +134,11 @@ impl LegacyRandom {
         self.state
     }
 
+    /// The cached second `nextGaussian` value, if one is pending.
+    pub fn cached_gaussian(&self) -> Option<f64> {
+        self.gaussian
+    }
+
     fn bits(&mut self, count: u32) -> i32 {
         self.state = self.state.wrapping_mul(Self::MULTIPLIER).wrapping_add(11) & Self::MASK;
         let value = (self.state >> (48 - count)) as i32;
