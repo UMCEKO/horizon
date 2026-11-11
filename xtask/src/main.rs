@@ -13,17 +13,20 @@
 //! `tokens`: writes `crates/horizon-theme/tokens.css`, the design tokens of `crates/horizon-theme` as CSS
 //! custom properties (a horizon-theme test fails when the file is out of date).
 //!
+//! `sides [--json] [--list methods|fields|files] [--root DIR]`: the read-only client/server census of `impl Game` (see crates/horizon-game-discovery/README.md).
+//!
 //! `icons`: renders the icon masters in `docs/media/brand` (with `rsvg-convert`, from librsvg)
 //! into every size the platforms and the website use, and packs `packaging/icons/horizon.ico`
 //! and `horizon.icns`. `docs/media/brand/README.md` lists what goes where.
 
 mod mod_api;
+mod sides;
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-const USAGE: &str = "usage: cargo run -p xtask -- package BINARY OUTDIR | package-server ENGINE OUTDIR | mod-api [notes|coverage] | tokens | icons";
+const USAGE: &str = "usage: cargo run -p xtask -- package BINARY OUTDIR | package-server ENGINE OUTDIR | mod-api [notes|coverage] | tokens | icons | sides [--json] [--list methods|fields|files] [--root DIR]";
 
 /// What the release folder takes from the repository at HEAD, as `git archive` writes it.
 const ARCHIVED: [&str; 5] = [
@@ -55,6 +58,7 @@ fn main() -> ExitCode {
         [task, coverage] if task == "mod-api" && coverage == "coverage" => mod_api::coverage(),
         [task] if task == "tokens" => tokens(),
         [task] if task == "icons" => icons(),
+        [task, options @ ..] if task == "sides" => sides::run(options),
         _ => Err(USAGE.to_string()),
     };
     match result {

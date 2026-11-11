@@ -5,8 +5,14 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+census = ["dep:proc-macro2", "dep:serde", "dep:serde_json", "syn/visit"]
+
 [dependencies]
 syn = { version = "2", features = ["full"] }
+proc-macro2 = { version = "1", features = ["span-locations"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 
 [lints]
 workspace = true

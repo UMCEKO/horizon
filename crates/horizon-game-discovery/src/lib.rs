@@ -3,6 +3,9 @@
 
 use std::{collections::BTreeMap, fs, path::Path};
 
+#[cfg(feature = "census")]
+pub mod census;
+
 /// Discover area-root modules in deterministic filename order, preserving their logical scope.
 /// `explicit` lists root files or directories declared separately by the caller. Every other
 /// directory needs a `.game-area` marker. Headers select visibility, cfg and an optional logical

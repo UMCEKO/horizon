@@ -17,3 +17,9 @@ The extraction was scripted before boundary changes. Verify the verbatim move wi
 ```sh
 python3 tools/refactors/extract_game_discovery.py --verify --moved-commit f38483fc33
 ```
+
+## Side census (`census` feature)
+
+`cargo run -p xtask -- sides [--json] [--list methods|fields|files] [--root DIR]` reports which side's `Game` reaches each `impl Game` method, field and file: server, client, both or neither. It reads `crates/horizon-client/src/game.rs` and `game/` and writes nothing.
+
+It is lexical, not type-checked: a call edge is a call on a `Game` receiver (`self`, `g`, `x.game`...) matched by method name, blocks under a mode guard (`self.remote.is_some()`, `let Some(..) = self.lan`, `!execution_role.is_client()` and kin) are pruned per side, and the walk starts at the client roots (`tick_remote`, `render`, `handle_packet`, the window handler, the client trait impls) and the server roots (`tick_server_body`, `run_dedicated_inner`, `tick_lan`, the server trait impls). Data-dependent deadness is invisible, so "both" is an upper bound: a dispatcher that branches on `remote` pulls both sides into everything it calls. `--json` prints the typed `Census` (every method, field and file with its side).
