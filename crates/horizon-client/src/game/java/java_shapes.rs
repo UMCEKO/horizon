@@ -10,7 +10,8 @@ use std::collections::HashMap;
 
 const CACHE_LIMIT: usize = 4096;
 
-type Cached = (BlockStateId, i32, Vec<[f64; 6]>);
+type Boxes = Vec<[f64; 6]>;
+type Cached = (BlockStateId, i32, Boxes, Boxes);
 
 thread_local! {
     static CACHE: RefCell<HashMap<[i32; 3], Cached>> = RefCell::default();
@@ -39,15 +40,43 @@ fn shaped_by_java(state: BlockStateId) -> bool {
     })
 }
 
+fn read_boxes(reply: &mut In) -> Option<Boxes> {
+    let mut boxes = Vec::new();
+    for _ in 0..reply.int()? {
+        let mut b = [0.0; 6];
+        for v in &mut b {
+            *v = reply.double()?;
+        }
+        boxes.push(b);
+    }
+    Some(boxes)
+}
+
+/// A `client_shape` reply: the boxes, then the edges; an old reply without the edge list has none.
+fn parse_shape_reply(reply: &[u8]) -> Option<(Boxes, Boxes)> {
+    let mut reply = In(reply);
+    reply.byte()?;
+    let boxes = read_boxes(&mut reply)?;
+    let edges = read_boxes(&mut reply).unwrap_or_default();
+    Some((boxes, edges))
+}
+
 impl Game<'_> {
     /// The block-local boxes the Java client outlines this block with; None when Horizon's own facts apply.
-    pub(super) fn java_outline(&self, pos: [i32; 3], state: BlockStateId) -> Option<Vec<[f64; 6]>> {
+    pub(super) fn java_outline(&self, pos: [i32; 3], state: BlockStateId) -> Option<Boxes> {
+        self.java_outline_shape(pos, state).map(|(boxes, _)| boxes)
+    }
+
+    /// The block-local edges vanilla outlines this block with, from Java's shape; None when Horizon's own facts apply.
+    pub(super) fn java_outline_edges(&self, pos: [i32; 3], state: BlockStateId) -> Option<Boxes> {
+        self.java_outline_shape(pos, state)
+            .map(|(_, edges)| edges)
+            .filter(|edges| !edges.is_empty())
+    }
+
+    fn java_outline_shape(&self, pos: [i32; 3], state: BlockStateId) -> Option<(Boxes, Boxes)> {
         self.remote.as_ref()?;
-        let map = horizon_java_host::bridge::STATES.get()?;
-        let at = state.0 as usize;
-        if !map.owned.get(at).copied().unwrap_or(false)
-            || !map.entity.get(at).copied().unwrap_or(false)
-        {
+        if !shaped_by_java(state) {
             return None;
         }
         let host = horizon_java_host::get()?;
@@ -56,8 +85,8 @@ impl Game<'_> {
         let busy = java_client_running();
         let cached = CACHE.with_borrow(|c| {
             c.get(&pos)
-                .filter(|(s, g, _)| *s == state && (*g == generation || busy))
-                .map(|(_, _, boxes)| boxes.clone())
+                .filter(|(s, g, ..)| *s == state && (*g == generation || busy))
+                .map(|(_, _, boxes, edges)| (boxes.clone(), edges.clone()))
         });
         if cached.is_some() || busy {
             return cached;
@@ -65,23 +94,14 @@ impl Game<'_> {
         let mut out = Out::default();
         out.long(BlockPos::new(pos[0], pos[1], pos[2]).pack());
         let reply = host.request("client_shape", &out.0)?;
-        let mut reply = In(&reply);
-        reply.byte()?;
-        let mut boxes = Vec::new();
-        for _ in 0..reply.int()? {
-            let mut b = [0.0; 6];
-            for v in &mut b {
-                *v = reply.double()?;
-            }
-            boxes.push(b);
-        }
+        let (boxes, edges) = parse_shape_reply(&reply)?;
         CACHE.with_borrow_mut(|c| {
             if c.len() >= CACHE_LIMIT {
                 c.clear();
             }
-            c.insert(pos, (state, generation, boxes.clone()));
+            c.insert(pos, (state, generation, boxes.clone(), edges.clone()));
         });
-        Some(boxes)
+        Some((boxes, edges))
     }
 
     /// A mod's block's collision shape as Java's `getCollisionShape(level, pos)` answered it for `state`.
@@ -135,5 +155,41 @@ impl Game<'_> {
             let pos = BlockPos::unpack(pos);
             self.java_collision_shape([pos.x, pos.y, pos.z], state, &boxes);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reply(boxes: &[[f64; 6]], edges: Option<&[[f64; 6]]>) -> Vec<u8> {
+        let mut out = Out::default();
+        out.0.push(1);
+        for list in std::iter::once(boxes).chain(edges) {
+            out.int(list.len() as i32);
+            for v in list.iter().flatten() {
+                out.double(*v);
+            }
+        }
+        out.0
+    }
+
+    #[test]
+    fn reply_carries_boxes_and_edges() {
+        let slab = [0.0, 0.0, 0.0, 1.0, 0.5, 1.0];
+        let edges: Vec<[f64; 6]> = (0..12)
+            .map(|i| [f64::from(i), 0.0, 0.0, f64::from(i), 1.0, 0.0])
+            .collect();
+        let (b, e) = parse_shape_reply(&reply(&[slab], Some(&edges))).unwrap();
+        assert_eq!(b, vec![slab]);
+        assert_eq!(e, edges);
+    }
+
+    #[test]
+    fn reply_without_edge_list_has_no_edges() {
+        let slab = [0.0, 0.0, 0.0, 1.0, 0.5, 1.0];
+        let (b, e) = parse_shape_reply(&reply(&[slab], None)).unwrap();
+        assert_eq!(b, vec![slab]);
+        assert!(e.is_empty());
     }
 }

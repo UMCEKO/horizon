@@ -1153,7 +1153,12 @@ public final class ClientBridge {
         var pos = BlockPos.of(in.readLong());
         var entity = blockEntity(level, pos);
         if (entity == null) return new byte[0];
-        var boxes = entity.getBlockState().getShape(level, pos, net.minecraft.world.phys.shapes.CollisionContext.empty()).toAabbs();
+        return shapeReply(entity.getBlockState().getShape(level, pos, net.minecraft.world.phys.shapes.CollisionContext.empty()));
+    }
+
+    /** The reply of `client_shape`: the shape's boxes, then its edges as vanilla outlines them. */
+    static byte[] shapeReply(net.minecraft.world.phys.shapes.VoxelShape shape) throws IOException {
+        var boxes = shape.toAabbs();
         var bytes = new ByteArrayOutputStream();
         var out = new DataOutputStream(bytes);
         out.writeByte(1);
@@ -1166,6 +1171,10 @@ public final class ClientBridge {
             out.writeDouble(box.maxY);
             out.writeDouble(box.maxZ);
         }
+        var edges = new java.util.ArrayList<double[]>();
+        shape.forAllEdges((x1, y1, z1, x2, y2, z2) -> edges.add(new double[] {x1, y1, z1, x2, y2, z2}));
+        out.writeInt(edges.size());
+        for (var e : edges) for (double v : e) out.writeDouble(v);
         return bytes.toByteArray();
     }
 
