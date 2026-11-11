@@ -13,7 +13,7 @@ use std::{
 };
 
 /// Bumped when carry writes something else from the same facts.
-const GENERATION: u32 = 4;
+const GENERATION: u32 = 5;
 const DONE: &str = "done";
 const FACTS_HASH: &str = "facts.sha256";
 const KEYS: &str = "keys.tsv";
