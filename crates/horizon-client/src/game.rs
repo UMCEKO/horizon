@@ -10933,6 +10933,7 @@ impl Game<'_> {
                 alpha as f32,
                 &mut out,
             );
+            self.recorded_block_entity_geometry(camera, alpha as f32, &mut out);
             self.mark_stage(out.len(), "DESTROY");
             for &(pos, stage) in &cracks {
                 let state = self.world.block(pos[0], pos[1], pos[2]);

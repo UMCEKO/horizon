@@ -15,6 +15,7 @@ use horizon_assets::{
 use horizon_client::{
     block_entity_render::{TextRun, diffuse, diffuse_lights, push_text, vertex_light},
     containers::{BlockEntity, ModRevision},
+    dynamic_renders,
     fast_hash::FxHashMap,
     gfx::Cull,
     hud::Rect,
@@ -549,6 +550,24 @@ impl BlockEntityDraw {
     /// A quad of `corners` (blocks, under the pose) with unit UVs, shaded as
     /// vanilla's block entity models are (`Lighting`'s two lights).
     fn quad(&mut self, corners: [[f32; 3]; 4], uv: [[f32; 2]; 4], sprite: Rect, tint: u32) {
+        let light = self.light;
+        self.lit_quad(
+            corners,
+            uv,
+            sprite,
+            [0xFF00_0000 | tint & 0xFF_FFFF; 4],
+            [(light, false); 4],
+        );
+    }
+    /// `quad` with each corner's own 0xAARRGGBB colour and light; a full-bright corner is not shaded.
+    fn lit_quad(
+        &mut self,
+        corners: [[f32; 3]; 4],
+        uv: [[f32; 2]; 4],
+        sprite: Rect,
+        argb: [u32; 4],
+        lights: [(u32, bool); 4],
+    ) {
         let pose = self.pose();
         let at = corners.map(|c| pose.transform_point3(Vec3::from_array(c)));
         let normal = (at[1] - at[0]).cross(at[2] - at[0]).normalize_or_zero();
@@ -557,17 +576,18 @@ impl BlockEntityDraw {
         } else {
             normal
         };
-        let color = shaded(tint, diffuse(normal, self.lights));
-        for (p, uv) in at.into_iter().zip(uv) {
+        let shade = diffuse(normal, self.lights);
+        for k in 0..4 {
+            let (light, full_bright) = lights[k];
             self.vertices.push(Vertex {
-                pos: p.to_array(),
+                pos: at[k].to_array(),
                 uv: [
-                    sprite.u0 + (sprite.u1 - sprite.u0) * uv[0],
-                    sprite.v0 + (sprite.v1 - sprite.v0) * uv[1],
+                    sprite.u0 + (sprite.u1 - sprite.u0) * uv[k][0],
+                    sprite.v0 + (sprite.v1 - sprite.v0) * uv[k][1],
                 ],
                 layer: 0,
-                color,
-                light: self.light,
+                color: shaded_argb(argb[k], if full_bright { 1.0 } else { shade }),
+                light,
                 normal: [0; 4],
                 glint_uv: [0.0, 0.0],
             });
@@ -576,9 +596,15 @@ impl BlockEntityDraw {
 }
 
 /// 0xRRGGBB `tint` times `brightness`, as an opaque vertex colour.
+#[cfg(test)]
 fn shaded(tint: u32, brightness: f32) -> u32 {
-    let c = |shift: u32| (((tint >> shift) & 255) as f32 * brightness) as u32;
-    0xFF00_0000 | c(0) << 16 | c(8) << 8 | c(16)
+    shaded_argb(0xFF00_0000 | tint & 0xFF_FFFF, brightness)
+}
+
+/// 0xAARRGGBB `argb` with its colour times `brightness`, as a vertex colour.
+fn shaded_argb(argb: u32, brightness: f32) -> u32 {
+    let c = |shift: u32| (((argb >> shift) & 255) as f32 * brightness) as u32;
+    (argb >> 24) << 24 | c(0) << 16 | c(8) << 8 | c(16)
 }
 
 /// Game ticks kept geometry stays after it was last drawn, as signs' text.
@@ -887,6 +913,93 @@ impl Game<'_> {
             draw.records = overflow;
             draw.bake_recorded(&self.standalone_geometry.slots);
         }
+    }
+
+    /// Java renderers' recordings (`dynamic_renders`) replayed on this pose stack; no Java runs per frame.
+    pub(super) fn recorded_block_entity_geometry(
+        &self,
+        camera: DVec3,
+        partial: f32,
+        out: &mut Vec<Vertex>,
+    ) {
+        if dynamic_renders::is_empty() {
+            return;
+        }
+        let corner = |p: [i32; 3]| DVec3::new(f64::from(p[0]), f64::from(p[1]), f64::from(p[2]));
+        let light = |p: [i32; 3]| self.world.light(p[0], p[1], p[2]);
+        let visible = |p: [i32; 3]| {
+            let origin = (corner(p) - camera).as_vec3();
+            in_frustum(self.view_frustum.as_ref(), origin, DEFAULT_BOUNDS)
+        };
+        let sprites = &self.gui.atlas.sprites;
+        let frame = dynamic_renders::Frame {
+            camera,
+            game_time: self.world.game_time,
+            partial,
+            sprites,
+            nether: self.dim == Dim::Nether,
+            light: &light,
+            visible: &visible,
+        };
+        let mut draw = BlockEntityDraw::posed(
+            partial,
+            frame.game_time,
+            0,
+            [0; 3],
+            Mat4::IDENTITY,
+            diffuse_lights(frame.nether),
+            std::mem::take(out),
+        );
+        for recorded in dynamic_renders::in_view(&frame) {
+            let pos = recorded.pos;
+            self.mark_block_entity(draw.vertices.len(), self.world.block(pos[0], pos[1], pos[2]).0);
+            draw.block = pos;
+            let origin = Mat4::from_translation((corner(pos) - camera).as_vec3());
+            let world = light(pos);
+            for piece in recorded.draws.iter() {
+                replay_recorded(&mut draw, origin, piece, recorded.ticks, world, |texture| {
+                    sprites.get(dynamic_renders::atlas_key(texture)).copied()
+                });
+                let Some(item) = &piece.item else {
+                    continue;
+                };
+                let context = DisplayContext::ALL
+                    .get(usize::from(item.context))
+                    .copied()
+                    .unwrap_or(DisplayContext::Fixed);
+                let state = self.resolve_item(&item.stack, context, None, item.seed);
+                if !state.is_empty() {
+                    self.submit_item_world(&state, draw.pose(), draw.light, &mut draw.vertices);
+                }
+            }
+        }
+        *out = draw.into_vertices();
+    }
+}
+
+/// A recorded piece at `ticks` under `origin`, lit by the brighter of `world` and its own light; leaves `draw` posed for its item.
+fn replay_recorded(
+    draw: &mut BlockEntityDraw,
+    origin: Mat4,
+    piece: &dynamic_renders::Draw,
+    ticks: f32,
+    world: u8,
+    sprite: impl Fn(&str) -> Option<Rect>,
+) {
+    draw.poses.clear();
+    draw.poses.push(origin * piece.matrix(ticks));
+    draw.light = dynamic_renders::light(world, 0).0;
+    for quad in &piece.quads {
+        let Some(rect) = sprite(&quad.texture) else {
+            continue;
+        };
+        draw.lit_quad(
+            quad.corners.map(|c| [c[0], c[1], c[2]]),
+            quad.corners.map(|c| [c[3], c[4]]),
+            rect,
+            quad.color,
+            quad.light.map(|coords| dynamic_renders::light(world, coords)),
+        );
     }
 }
 
@@ -2596,6 +2709,51 @@ mod tests {
         let up = diffuse(Vec3::Y, diffuse_lights(false));
         assert_eq!(v.color, shaded(0xFFFFFF, up));
         assert_eq!(v.color >> 24, 0xFF);
+    }
+
+    #[test]
+    fn a_recorded_piece_replays_at_its_time_in_its_own_colours_and_light() {
+        use dynamic_renders::{Op, Param};
+        let quarter_turn_per_tick = Param::Linear(0.0, std::f32::consts::FRAC_PI_2);
+        let corner = |x: f32, z: f32, u: f32, v: f32| [x, 0.5, z, u, v];
+        let face = |texture: &str| dynamic_renders::Quad {
+            texture: texture.to_owned(),
+            corners: [
+                corner(1.0, 0.5, 0.0, 0.0),
+                corner(1.0, 1.0, 0.0, 1.0),
+                corner(0.5, 1.0, 1.0, 1.0),
+                corner(0.5, 0.5, 1.0, 0.0),
+            ],
+            color: [0x80FF_FFFF, 0xFF10_2030, 0xFFFF_FFFF, 0xFFFF_FFFF],
+            light: [0, 0xF0_00F0, 0x20_0000, 0],
+        };
+        let piece = dynamic_renders::Draw {
+            translucent: false,
+            ops: vec![
+                Op::Translate([Param::Const(0.5); 3]),
+                Op::Rotate(Vec3::Y, quarter_turn_per_tick),
+                Op::Translate([Param::Const(-0.5); 3]),
+            ],
+            quads: vec![face("mymod:block/blade"), face("mymod:block/missing")],
+            item: None,
+        };
+        let mut d = draw();
+        let origin = Mat4::from_translation(Vec3::new(2.0, 0.0, 0.0));
+        replay_recorded(&mut d, origin, &piece, 1.0, 0x5_3, |texture| {
+            (texture == "mymod:block/blade").then(sprite)
+        });
+        assert_eq!(d.vertices.len(), 4, "a quad with an unknown sprite is left out");
+        let at = Vec3::from_array(d.vertices[0].pos);
+        assert!((at - Vec3::new(2.5, 0.5, 0.0)).length() < 1e-5, "{at}");
+        assert_eq!(d.vertices[2].uv, [0.75, 0.5]);
+        let world = (5 * 16) | ((3 * 16) << 8);
+        assert_eq!(d.vertices[0].light, world, "no light of its own takes the world's");
+        assert_eq!(d.vertices[1].light, (15 * 16) | ((15 * 16) << 8));
+        assert_eq!(d.vertices[2].light, (5 * 16) | ((3 * 16) << 8), "a dimmer sky stays the world's");
+        assert_eq!(d.vertices[1].color, 0xFF30_2010, "full bright is not shaded");
+        assert_eq!(d.vertices[0].color >> 24, 0x80, "its own alpha is kept");
+        assert_ne!(d.vertices[2].color, 0xFFFF_FFFF, "the rest is shaded");
+        assert_eq!(d.pose(), origin * piece.matrix(1.0));
     }
 
     /// A frustum that sees nothing.

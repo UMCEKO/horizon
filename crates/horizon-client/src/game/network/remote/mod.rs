@@ -3223,6 +3223,17 @@ impl Game<'_> {
         let z = at[2].clamp(-3.0e7, 3.0e7);
         player.position = Vec3::new(x, at[1], z);
     }
+    /// What the Java client recorded for a block that changed stops drawing, as its block entity is removed.
+    fn drop_recorded(&self, pos: [i32; 3], previous: BlockStateId, state: BlockStateId) {
+        if previous == state {
+            return;
+        }
+        let facts = self.res.facts();
+        let (old, new) = (facts.get(previous), facts.get(state));
+        if horizon_client::dynamic_renders::stale(&old.name, &new.name, new.block_entity) {
+            horizon_client::dynamic_renders::remove(pos);
+        }
+    }
     fn set_block(&mut self, pos: [i32; 3], state: i32) {
         // A state we don't have (a server with mods we lack) reads as air, as in its chunks.
         let state = state.max(0) as u32;
@@ -3233,6 +3244,7 @@ impl Game<'_> {
             && self.world.set(pos[0], pos[1], pos[2], state).is_ok()
         {
             self.sync_block_entity((pos[0], pos[1], pos[2]), Some(previous), state);
+            self.drop_recorded(pos, previous, state);
             // LevelChunk.setBlockState removes the block entity of a block
             // that changes: the moving piston the client's moveBlocks made
             // stops when the server places what it moved (#3002).

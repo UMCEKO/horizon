@@ -44,6 +44,7 @@ pub mod custom_sky;
 pub mod datapack;
 pub mod dynamic_light;
 pub mod dynamic_models;
+pub mod dynamic_renders;
 pub mod effects;
 pub mod environment;
 pub mod extras;
