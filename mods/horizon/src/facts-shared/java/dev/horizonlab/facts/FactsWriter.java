@@ -258,7 +258,7 @@ public class FactsWriter {
         return order;
     }
 
-    private static String fluidStateKey(FluidState fs) {
+    static String fluidStateKey(FluidState fs) {
         List<String> parts = new ArrayList<>();
         for (Property<?> p : fs.getProperties()) {
             if (p.getName().equals("level")) parts.add("amount=" + fs.getAmount());

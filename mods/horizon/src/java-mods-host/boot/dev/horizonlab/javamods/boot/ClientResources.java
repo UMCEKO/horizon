@@ -40,10 +40,13 @@ public final class ClientResources {
         ResourceTextures.export(out.resolveSibling(out.getFileName().toString().replaceFirst("\\.[^.]+$", ".textures")));
         var states = bakeStates;
         bakeStates = java.util.Set.of();
-        if (states.isEmpty()) return new byte[] {1};
-        var models = Minecraft.getInstance().getModelManager().getBlockStateModelSet();
-        var n = dev.horizonlab.facts.BakedWriter.write(out, models::get, states::contains);
-        System.err.println("Horizon: baked " + n[0] + " blocks, " + n[1] + " states, " + n[2] + " quads for the content");
+        var manager = Minecraft.getInstance().getModelManager();
+        boolean fluids = false;
+        for (var fluid : BuiltInRegistries.FLUID) fluids |= BootFacts.ownsFluid(fluid);
+        if (states.isEmpty() && !fluids) return new byte[] {1};
+        var models = manager.getBlockStateModelSet();
+        var n = dev.horizonlab.facts.BakedWriter.write(out, models::get, states::contains, manager.getFluidStateModelSet(), BootFacts::ownsFluid, BootFacts::ownsBlock);
+        System.err.println("Horizon: baked " + n[0] + " blocks, " + n[1] + " states, " + n[2] + " quads, " + n[3] + " fluids for the content");
         return new byte[] {1};
     }
 
