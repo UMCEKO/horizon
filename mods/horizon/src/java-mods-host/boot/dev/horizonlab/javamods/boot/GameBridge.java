@@ -441,13 +441,12 @@ public final class GameBridge {
             player.experienceLevel = experienceLevel;
             player.experienceProgress = experienceProgress;
             player.totalExperience = totalExperience;
-            inventory.clearContent();
+            var stacks = SyncedStacks.of(player, SLOTS).fill();
             for (int n = in.readInt(); n > 0; n--) {
                 int slot = in.readInt();
-                ItemStack stack = decode(in.readNBytes(in.readInt()));
-                before[slot] = stack.copy();
-                inventory.setItem(slot, stack);
+                stacks.slot(slot, in.readNBytes(in.readInt()), GameBridge::decode);
             }
+            before = stacks.apply(inventory);
         }
         PlayerSync.acting(player);
         // `PlayerList.placeNewPlayer`: a connected client gets its login once the player is in place.
@@ -701,6 +700,7 @@ public final class GameBridge {
     private static void closeWorld() {
         levels = new ServerLevel[3];
         PLAYERS.clear();
+        SyncedStacks.reset();
         SOUNDS.clear();
         nextEntityId = -1;
         ServerView.closeWorld(server);
@@ -775,6 +775,7 @@ public final class GameBridge {
 
     private static void removePlayer(UUID left) throws ReflectiveOperationException {
         var player = PLAYERS.remove(left);
+        SyncedStacks.forget(left);
         if (player != null) {
             safely("closing the open menu", () -> Menus.close(player));
             safely("PlayerLoggedOut", () -> EventHooks.firePlayerLoggedOut(player));

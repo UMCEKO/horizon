@@ -373,18 +373,19 @@ impl Game<'_> {
         out.double(player.velocity.y);
         out.double(player.velocity.z);
         out.bool(player.ground.on_ground);
-        let mut stacks = Vec::new();
-        for slot in 0..=OFFHAND {
-            if let Some(Some(stack)) = self.java_slot(slot).map(|s| s.clone()) {
-                let tag = horizon_client::save::item_to_nbt(&stack);
-                stacks.push((slot, write_tag(tag)?));
+        let held = (0..=OFFHAND)
+            .filter(|&slot| matches!(self.java_slot(slot), Some(Some(_))))
+            .count();
+        out.int(held as i32);
+        STACK_BYTES.with_borrow_mut(|memo| {
+            for slot in 0..=OFFHAND {
+                if let Some(Some(stack)) = self.java_slot(slot) {
+                    out.int(slot as i32);
+                    out.bytes(memo.bytes([a, b, c, d], slot, stack)?);
+                }
             }
-        }
-        out.int(stacks.len() as i32);
-        for (slot, bytes) in stacks {
-            out.int(slot as i32);
-            out.bytes(&bytes);
-        }
+            Some(())
+        })?;
         Some(out.0)
     }
 
@@ -1051,6 +1052,9 @@ impl Game<'_> {
         if horizon_java_host::get().is_none() {
             return;
         }
+        STACK_BYTES.with_borrow_mut(|memo| {
+            memo.forget(horizon_client::lan::playerdata::uuid_ints(uuid))
+        });
         let mut out = Out::default();
         out.long((uuid >> 64) as i64);
         out.long(uuid as i64);
@@ -1130,6 +1134,36 @@ thread_local! {
     static WIRE_OUT: std::cell::RefCell<Vec<(u128, Vec<u8>)>> = const { std::cell::RefCell::new(Vec::new()) };
     static PUMPED_UNLOADS: std::cell::RefCell<Vec<Arc<horizon_client::chunk::Chunk>>> = const { std::cell::RefCell::new(Vec::new()) };
     static UNLOADING: std::cell::RefCell<horizon_client::fast_hash::FxHashSet<(i32, i32)>> = std::cell::RefCell::default();
+    static STACK_BYTES: std::cell::RefCell<StackBytes> = std::cell::RefCell::default();
+}
+
+/// The saved form of each player's stacks as last written for Java, so an unchanged stack is not encoded again every tick.
+#[derive(Default)]
+pub(super) struct StackBytes {
+    slots: horizon_client::fast_hash::FxHashMap<([i32; 4], usize), (ItemStack, Vec<u8>)>,
+}
+
+impl StackBytes {
+    /// `item_to_nbt` of `stack` as NBT bytes, reused while the slot holds an equal stack.
+    pub(super) fn bytes(&mut self, player: [i32; 4], slot: usize, stack: &ItemStack) -> Option<&[u8]> {
+        use std::collections::hash_map::Entry;
+        let encode = || write_tag(horizon_client::save::item_to_nbt(stack));
+        let kept = match self.slots.entry((player, slot)) {
+            Entry::Occupied(entry) => {
+                let kept = entry.into_mut();
+                if kept.0 != *stack {
+                    *kept = (stack.clone(), encode()?);
+                }
+                kept
+            }
+            Entry::Vacant(entry) => entry.insert((stack.clone(), encode()?)),
+        };
+        Some(&kept.1)
+    }
+
+    pub(super) fn forget(&mut self, player: [i32; 4]) {
+        self.slots.retain(|(of, _), _| *of != player);
+    }
 }
 
 impl Game<'_> {
@@ -1437,5 +1471,42 @@ mod tracking_tests {
             })
             .collect();
         assert_eq!(kinds, [0, 1, 2, 5, 4]);
+    }
+}
+
+#[cfg(test)]
+mod stack_bytes_tests {
+    use super::*;
+
+    fn stack(item: &str, count: u32) -> ItemStack {
+        ItemStack {
+            item: item.into(),
+            count,
+            damage: 0,
+            extra: None,
+        }
+    }
+
+    fn fresh(stack: &ItemStack) -> Vec<u8> {
+        write_tag(horizon_client::save::item_to_nbt(stack)).unwrap()
+    }
+
+    #[test]
+    fn each_slot_writes_what_it_holds_now() {
+        let mut memo = StackBytes::default();
+        let (one, two) = ([1, 2, 3, 4], [5, 6, 7, 8]);
+        let dirt = stack("minecraft:dirt", 3);
+        let more = stack("minecraft:dirt", 4);
+        let stone = stack("minecraft:stone", 1);
+        assert_ne!(fresh(&dirt), fresh(&more));
+        assert_eq!(memo.bytes(one, 0, &dirt).unwrap(), fresh(&dirt));
+        assert_eq!(memo.bytes(one, 0, &dirt).unwrap(), fresh(&dirt));
+        assert_eq!(memo.bytes(one, 0, &more).unwrap(), fresh(&more));
+        assert_eq!(memo.bytes(two, 0, &stone).unwrap(), fresh(&stone));
+        assert_eq!(memo.bytes(one, 1, &stone).unwrap(), fresh(&stone));
+        assert_eq!(memo.bytes(one, 0, &more).unwrap(), fresh(&more));
+        memo.forget(one);
+        assert_eq!(memo.bytes(two, 0, &stone).unwrap(), fresh(&stone));
+        assert_eq!(memo.bytes(one, 0, &dirt).unwrap(), fresh(&dirt));
     }
 }
