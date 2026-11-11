@@ -14632,7 +14632,7 @@ pub(crate) fn run_with(
 ) -> Result<()> {
     let mut options = Options::read(options)?;
     options.mods.native = Arc::new(native);
-    java_hooks::java_hook_start();
+    java_hooks::java_hook_start(options.execution_role.is_client());
     if options.execution_role == execution_role::ExecutionRole::DedicatedServer
         && !dedicated::preflight(&mut options)?
     {

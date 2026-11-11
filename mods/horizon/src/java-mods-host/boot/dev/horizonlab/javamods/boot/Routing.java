@@ -83,9 +83,11 @@ public final class Routing {
         return live[id];
     }
 
-    /** `routes.bin`, empty when the install has no routing. */
-    static byte[] bin() {
-        return bin;
+    /** `routes.bin`, handed to Rust once: Java keeps no copy; empty when the install has no routing. */
+    static synchronized byte[] bin() {
+        var out = bin;
+        bin = new byte[0];
+        return out;
     }
 
     /** Runs once in `Boot.main`, after `EntityFacts.confirm`. */

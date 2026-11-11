@@ -468,13 +468,15 @@ pub(super) fn java_hook_ready() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// The game's start: the JVM boots with the bridge table, and the protocol learns the mods' components.
-pub(super) fn java_hook_start() {
+/// The game's start: the JVM boots with the bridge table, and the protocol learns the mods' components; `window` when this process draws.
+pub(super) fn java_hook_start(window: bool) {
     #[cfg(feature = "java-mods")]
     {
-        super::java_content::start(super::java_bridges::bridges());
+        super::java_content::start(super::java_bridges::bridges(), window);
         super::java_components::install();
     }
+    #[cfg(not(feature = "java-mods"))]
+    let _ = window;
 }
 
 /// The loading screen's line while the Java mods boot.

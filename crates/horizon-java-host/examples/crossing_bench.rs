@@ -174,7 +174,7 @@ fn main() {
     let options = options();
     let facts =
         std::env::temp_dir().join(format!("crossing-bench-{}/facts.json", std::process::id()));
-    start(Vec::new(), facts.clone());
+    start(Vec::new(), facts.clone(), false);
     if let Err(e) = ready() {
         panic!("the host didn't boot: {e}");
     }

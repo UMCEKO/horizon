@@ -230,7 +230,21 @@ pub struct Host {
     items: Items,
     server_group: Option<GlobalRef>,
     facts: PathBuf,
-    client_resources: Vec<u8>,
+    client_resources: Handover,
+}
+
+/// A boot export with one native owner: kept only when a reader will come, and given up to it whole.
+#[derive(Default)]
+struct Handover(Mutex<Vec<u8>>);
+
+impl Handover {
+    fn kept(bytes: Vec<u8>, read: bool) -> Self {
+        Self(Mutex::new(if read { bytes } else { Vec::new() }))
+    }
+
+    fn take(&self) -> Vec<u8> {
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()))
+    }
 }
 
 /// The mods' items, and those whose class has its own `use` or `useOn`; the others' clicks are vanilla's, from their components.
@@ -289,6 +303,8 @@ impl Drop for Attached {
 }
 
 static FACTS: OnceLock<PathBuf> = OnceLock::new();
+/// Whether this process has a window, the only reader of the client's resource export.
+static WINDOW: OnceLock<bool> = OnceLock::new();
 
 static RUNNING: LazyLock<Boot> = LazyLock::new(|| {
     let Ok(run_dir) = std::env::var("HORIZON_JAVA_RUN") else {
@@ -339,7 +355,7 @@ fn boot(run_dir: &str) -> Result<Host, String> {
         items: Items::default(),
         server_group,
         facts,
-        client_resources: Vec::new(),
+        client_resources: Handover::default(),
     };
     host.call("prepare", "")?;
     let prepared = began.elapsed().as_secs_f64();
@@ -352,7 +368,9 @@ fn boot(run_dir: &str) -> Result<Host, String> {
         .request("items", &[])
         .ok_or("the mods' items didn't list")?;
     host.items = Items::read(&list).ok_or("the mods' item list ended early")?;
-    host.client_resources = host.request("client_resources", &[]).unwrap_or_default();
+    // Asked even without a window: Java hands the export over and drops its own copy.
+    let resources = host.request("client_resources", &[]).unwrap_or_default();
+    host.client_resources = Handover::kept(resources, WINDOW.get().copied().unwrap_or(true));
     let baked = host.baked();
     host.request("client_baked", baked.to_string_lossy().as_bytes());
     let keys = host.request("client_keys", &[]).unwrap_or_default();
@@ -382,11 +400,12 @@ fn boot(run_dir: &str) -> Result<Host, String> {
     Ok(host)
 }
 
-/// Starts the JVM behind the game's back when this run has Java mods, so a title screen never waits for it; the boot writes its facts to `facts`.
-pub fn start(bridges: Vec<bridge::Bridge>, facts: PathBuf) {
+/// Starts the JVM behind the game's back when this run has Java mods, so a title screen never waits for it; the boot writes its facts to `facts`; `window` when this process draws.
+pub fn start(bridges: Vec<bridge::Bridge>, facts: PathBuf, window: bool) {
     if configured() {
         let _ = bridge::TABLE.set(bridges);
         let _ = FACTS.set(facts);
+        let _ = WINDOW.set(window);
         let _ = std::thread::Builder::new()
             .name("Java mods".into())
             .stack_size(16 << 20)
@@ -466,9 +485,9 @@ impl Host {
         facts.load_types(&bytes)
     }
 
-    /// What the Java client's first resource reload made for the window (`ClientResources`), taken as the boot ended; empty without a client.
-    pub fn client_resources(&self) -> &[u8] {
-        &self.client_resources
+    /// What the Java client's first resource reload made for the window (`ClientResources`), given up whole to its one reader; empty after, without a window or a Java client.
+    pub fn take_client_resources(&self) -> Vec<u8> {
+        self.client_resources.take()
     }
 
     /// One `Boot.op` call; its Java error when it threw.
@@ -847,6 +866,18 @@ impl Drop for Nesting {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_boot_export_is_given_up_whole_once_and_only_kept_for_a_reader() {
+        let export = vec![0, 0, 0, 2, 7, 9];
+        let window = Handover::kept(export.clone(), true);
+        assert_eq!(window.take(), export);
+        assert!(window.take().is_empty());
+        assert_eq!(window.0.lock().unwrap().capacity(), 0);
+        let server = Handover::kept(export, false);
+        assert_eq!(server.0.lock().unwrap().capacity(), 0);
+        assert!(server.take().is_empty());
+    }
 
     #[test]
     fn ops_are_found_by_name_in_java_order() {
