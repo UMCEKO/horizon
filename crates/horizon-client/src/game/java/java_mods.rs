@@ -515,13 +515,31 @@ impl Game<'_> {
         }
     }
 
+    /// `ServerLevel.getEntity(int)` on the level in place, players aside, through the residency table.
     pub(in crate::game) fn java_target(&mut self, id: u32) -> Option<Target> {
-        if let Some(t) = self.entity(id).and_then(|e| self.native_entity_target(e)) {
-            return Self::java_target_id(t).map(|_| t);
+        if !self.is_logical_server() {
+            return self
+                .level_candidates()
+                .into_iter()
+                .find(|t| Self::java_target_id(*t) == Some(id));
         }
-        self.level_candidates()
-            .into_iter()
-            .find(|t| Self::java_target_id(*t) == Some(id))
+        self.java_resident(id).map(|(t, _)| t)
+    }
+
+    /// The entity `id` of the level in place and its join number, players aside; None while it is lifted out (`Taken`).
+    pub(in crate::game) fn java_resident(
+        &self,
+        id: u32,
+    ) -> Option<(Target, horizon_client::join_seq::JoinSeq)> {
+        match self.server_resident_entity(id) {
+            horizon_client::join_seq::residency::table::EntityLookup::Found { location, value }
+                if location.owner.dimension == self.dim.key()
+                    && Self::java_target_id(value).is_some() =>
+            {
+                Some((value, location.join))
+            }
+            _ => None,
+        }
     }
 
     /// `level.getBlockEntity` found nothing in Java: the saved form Horizon holds, if any, goes there now.

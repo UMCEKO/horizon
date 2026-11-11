@@ -60,6 +60,22 @@ fn handle(game: &Game<'static>, id: Ent) -> Option<EntityRef> {
     game.entity(id.0)
 }
 
+fn tnt<'a>(game: &'a mut Game<'static>, id: Ent) -> Option<&'a mut super::super::tnt::PrimedTnt> {
+    let (commands::Target::Tnt(_), join) = game.java_resident(id.0)? else {
+        return None;
+    };
+    let i = game.tnts.locate(join)?;
+    game.tnts.get_mut(i)
+}
+
+fn bolt<'a>(game: &'a mut Game<'static>, id: Ent) -> Option<&'a mut super::super::lightning::Bolt> {
+    let (commands::Target::Bolt(_), join) = game.java_resident(id.0)? else {
+        return None;
+    };
+    let i = game.bolts.locate(join)?;
+    game.bolts.get_mut(i)
+}
+
 fn after(game: &mut Game<'static>, id: Ent, groups: u32) {
     game.java_refresh_entity(id.0, groups);
 }
@@ -206,7 +222,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     "net/minecraft/world/entity/item/PrimedTnt".setFuse
     "(I)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
     fn tnt_set_fuse(game, id: Ent, fuse: i32) -> () {
-        if let Some(t) = game.tnts.iter_mut().find(|t| t.id == id.0) {
+        if let Some(t) = tnt(game, id) {
             t.fuse = fuse;
         }
         after(game, id, SPECIES);
@@ -215,7 +231,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     "net/minecraft/world/entity/item/PrimedTnt".setBlockState
     "(Lnet/minecraft/world/level/block/state/BlockState;)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
     fn tnt_set_block_state(game, id: Ent, state: State) -> () {
-        if let (Some(t), Some(state)) = (game.tnts.iter_mut().find(|t| t.id == id.0), state.0) {
+        if let (Some(t), Some(state)) = (tnt(game, id), state.0) {
             t.block_state = Some(state);
         }
         after(game, id, SPECIES);
@@ -224,7 +240,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     "net/minecraft/world/entity/LightningBolt".setVisualOnly
     "(Z)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
     fn bolt_set_visual_only(game, id: Ent, visual_only: bool) -> () {
-        if let Some(b) = game.bolts.iter_mut().find(|b| b.id == id.0) {
+        if let Some(b) = bolt(game, id) {
             b.visual_only = visual_only;
         }
         after(game, id, SPECIES);
@@ -233,7 +249,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     "net/minecraft/world/entity/LightningBolt".setDamage
     "(F)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
     fn bolt_set_damage(game, id: Ent, damage: f32) -> () {
-        if let Some(b) = game.bolts.iter_mut().find(|b| b.id == id.0) {
+        if let Some(b) = bolt(game, id) {
             b.damage = damage;
         }
         after(game, id, SPECIES);
