@@ -57,12 +57,66 @@ SOURCES.update({
           @Inject(method = "weak", at = @At("HEAD")) void weakHead(CallbackInfo ci) {}
         }''',
 })
+GUARDED = 'net/minecraft/world/rt/Guarded'
+ITEM_ENTITY = 'net/minecraft/world/entity/item/ItemEntity'
+SOURCES.update({
+    'net/minecraft/world/entity/item/ItemEntity.java': ('package net.minecraft.world.entity.item; public class ItemEntity extends net.minecraft.world.entity.Entity { public void tick() {} '
+                                                        'public boolean hurt(float a) { return false; } public boolean tryPick(int a) { return false; } '
+                                                        'public net.minecraft.world.item.ItemStack getItem() { return null; } }'),
+    'net/minecraft/world/item/Item.java': 'package net.minecraft.world.item; public class Item {}',
+    'net/minecraft/world/item/ItemStack.java': 'package net.minecraft.world.item; public class ItemStack { public Item getItem() { return null; } }',
+    'net/minecraft/world/item/ItemInstance.java': 'package net.minecraft.world.item; public interface ItemInstance { Item getItem(); net.minecraft.core.Holder<Item> typeHolder(); }',
+    'net/minecraft/core/Holder.java': 'package net.minecraft.core; public interface Holder<T> { T value(); }',
+    'net/minecraft/core/BlockPos.java': 'package net.minecraft.core; public class BlockPos {}',
+    'net/minecraft/world/level/block/Block.java': 'package net.minecraft.world.level.block; public class Block {}',
+    'net/minecraft/world/level/block/entity/BlockEntity.java': 'package net.minecraft.world.level.block.entity; public class BlockEntity {}',
+    'net/minecraft/world/level/block/state/BlockState.java': 'package net.minecraft.world.level.block.state; public class BlockState { public net.minecraft.world.level.block.Block getBlock() { return null; } }',
+    'net/minecraft/world/level/LevelReader.java': ('package net.minecraft.world.level; import net.minecraft.core.BlockPos; public interface LevelReader { '
+                                                   'net.minecraft.world.level.block.state.BlockState getBlockState(BlockPos p); net.minecraft.world.level.block.entity.BlockEntity getBlockEntity(BlockPos p); }'),
+    'net/minecraft/world/phys/shapes/VoxelShape.java': 'package net.minecraft.world.phys.shapes; public class VoxelShape {}',
+    RT + 'Guarded.java': '''package net.minecraft.world.rt; import net.minecraft.world.item.*; import net.minecraft.core.*; import net.minecraft.world.level.LevelReader;
+        public class Guarded {
+          public static int level(Holder<Object> h, ItemInstance s) { return 0; }
+          public void logged(ItemStack s) {}
+          public void twice(ItemStack s) {}
+          public boolean chestAt(LevelReader l, BlockPos p) { return false; }
+          public static boolean join(net.minecraft.world.phys.shapes.VoxelShape a, net.minecraft.world.phys.shapes.VoxelShape b) { return false; }
+          public static boolean joinLike(net.minecraft.world.phys.shapes.VoxelShape a, net.minecraft.world.phys.shapes.VoxelShape b) { return false; }
+        }''',
+    'fixture/ShapeLike.java': 'package fixture; public interface ShapeLike {}',
+    'fixture/FakeBackpackItem.java': 'package fixture; public class FakeBackpackItem extends net.minecraft.world.item.Item {}',
+    'fixture/FakeTool.java': 'package fixture; public class FakeTool extends net.minecraft.world.item.Item {}',
+    'fixture/FakeChestBlock.java': 'package fixture; public class FakeChestBlock extends net.minecraft.world.level.block.Block {}',
+    'fixture/FakeShape.java': 'package fixture; public class FakeShape extends net.minecraft.world.phys.shapes.VoxelShape {}',
+    'fixture/mixin/BackpackMixin.java': '''package fixture.mixin; import org.spongepowered.asm.mixin.*; import org.spongepowered.asm.mixin.injection.*; import org.spongepowered.asm.mixin.injection.callback.*;
+        import net.minecraft.world.entity.item.ItemEntity;
+        @Mixin(ItemEntity.class) public class BackpackMixin {
+          private boolean isBackpack() { return ((Object) this) instanceof ItemEntity e && e.getItem().getItem() instanceof fixture.FakeBackpackItem; }
+          @Inject(method = "tick", at = @At("HEAD")) void backpackTick(CallbackInfo ci) { if (!isBackpack()) return; System.out.println("backpack"); }
+        }''',
+    'fixture/mixin/GuardedMixin.java': '''package fixture.mixin; import org.spongepowered.asm.mixin.*; import org.spongepowered.asm.mixin.injection.*; import org.spongepowered.asm.mixin.injection.callback.*;
+        import net.minecraft.world.item.*; import net.minecraft.core.*; import net.minecraft.world.level.LevelReader; import net.minecraft.world.phys.shapes.VoxelShape;
+        @Mixin(net.minecraft.world.rt.Guarded.class) public class GuardedMixin {
+          @Inject(method = "level", at = @At("HEAD")) private static void tool(Holder<Object> h, ItemInstance s, CallbackInfoReturnable<Integer> c) {
+            if (!(s.getItem() instanceof fixture.FakeTool)) return; System.out.println("tool"); }
+          @Inject(method = "logged", at = @At("HEAD")) void logged(ItemStack s, CallbackInfo c) { System.out.println("first"); if (!(s.getItem() instanceof fixture.FakeTool)) return; }
+          @Inject(method = "twice", at = @At("HEAD")) void guardedOnce(ItemStack s, CallbackInfo c) { if (!(s.getItem() instanceof fixture.FakeTool)) return; System.out.println("x"); }
+          @Inject(method = "twice", at = @At("HEAD")) void openOnce(ItemStack s, CallbackInfo c) { System.out.println("y"); }
+          @Inject(method = "chestAt", at = @At("HEAD")) void chest(LevelReader l, BlockPos p, CallbackInfoReturnable<Boolean> c) {
+            if (!(l.getBlockState(p).getBlock() instanceof fixture.FakeChestBlock)) return; System.out.println("chest"); }
+          @Inject(method = "join", at = @At("HEAD")) private static void shape(VoxelShape a, VoxelShape b, CallbackInfoReturnable<Boolean> c) {
+            if (!(a instanceof fixture.FakeShape)) return; System.out.println("shape"); }
+          @Inject(method = "joinLike", at = @At("HEAD")) private static void shapeLike(VoxelShape a, VoxelShape b, CallbackInfoReturnable<Boolean> c) {
+            if (!(b instanceof fixture.ShapeLike)) return; System.out.println("shape"); }
+        }''',
+})
 KEY = 'net/minecraft/world/rt/Target#'
 ENTITY_SET_POS = 'net/minecraft/world/entity/Entity#setPos(DDD)V'
 LEDGER = {
     'methods': {},
     'fns': [{'file': 'crates/a.rs', 'line': 1}],
-    'ported': {KEY + n: [0] for n in ('head', 'headLocal', 'tail', 'wrapped', 'mixed', 'varArg', 'varNo', 'run', 'hook', 'body', 'bridged', 'pure2')} | {'net/minecraft/world/entity/Entity#setPos': [0]},
+    'ported': {KEY + n: [0] for n in ('head', 'headLocal', 'tail', 'wrapped', 'mixed', 'varArg', 'varNo', 'run', 'hook', 'body', 'bridged', 'pure2')} | {'net/minecraft/world/entity/Entity#setPos': [0], ITEM_ENTITY + '#tick': [0]}
+              | {f'{GUARDED}#{n}': [0] for n in ('level', 'logged', 'twice', 'chestAt', 'join', 'joinLike')},
     'mentioned': {KEY + 'weak': {'note': 'a comment'}},
 }
 BRIDGES = {('net/minecraft/world/rt/Target', 'bridged', '()V')}
@@ -81,6 +135,9 @@ ENTRIES = [
     mixin('inLambda', 'lambda$run$0', ['HEAD']), mixin('hookHead', 'hook', ['HEAD']),
     mixin('bodyWrap', 'body', ['INVOKE:Lnet/minecraft/world/rt/Target;pure()V'], 'wrap_operation'), mixin('weakHead', 'weak', ['HEAD']),
     mixin('wm', 'pure2', [], 'wrap_method'),
+    dict(mixin('backpackTick', 'tick', ['HEAD']), mixin='fixture.mixin.BackpackMixin', target_class=['net.minecraft.world.entity.item.ItemEntity']),
+    *(dict(mixin(handler, method, ['HEAD']), mixin='fixture.mixin.GuardedMixin', target_class=['net.minecraft.world.rt.Guarded'])
+      for handler, method in (('tool', 'level'), ('logged', 'logged'), ('guardedOnce', 'twice'), ('openOnce', 'twice'), ('chest', 'chestAt'), ('shape', 'join'), ('shapeLike', 'joinLike'))),
 ]
 
 
@@ -174,6 +231,45 @@ class Routing(unittest.TestCase):
         skipped = self.analyse({'Target.weak': 'missing'})
         self.assertEqual((skipped['routing']['undecided'], skipped['methods'][f'{KEY}weak']['changes'][0]['note']), ({}, 'native lacks it'))
         self.assertNotIn(f'{KEY}weak()V', skipped['routing']['routes'])
+
+    def guards(self, key):
+        return self.routes[key]['guards']
+
+    def open_except(self, **fields):
+        return {f: fields.get(f) for f in ('recv', 'recv_item', 'arg_item', 'arg_class', 'arg_block', 'block_at', 'be_at')}
+
+    def test_a_private_helper_guard_admits_backpack_item_entities_only(self):
+        self.assertEqual(self.guards(ITEM_ENTITY + '#tick()V'), self.open_except(recv=[ITEM_ENTITY], recv_item=['fixture/FakeBackpackItem']))
+
+    def test_a_static_handler_guarded_by_its_stacks_item_admits_that_item_class(self):
+        key = f'{GUARDED}#level(Lnet/minecraft/core/Holder;Lnet/minecraft/world/item/ItemInstance;)I'
+        self.assertEqual(self.guards(key), self.open_except(arg_item={'1': ['fixture/FakeTool']}))
+
+    def test_a_call_before_the_instanceof_stops_the_walk(self):
+        route = self.routes[f'{GUARDED}#logged(Lnet/minecraft/world/item/ItemStack;)V']
+        self.assertIsNone(route['guards'])
+        self.assertEqual(route['changes'][0]['guard_stop'], 'logged@0: getstatic java/lang/System.out')
+
+    def test_one_open_change_opens_the_route(self):
+        route = self.routes[f'{GUARDED}#twice(Lnet/minecraft/world/item/ItemStack;)V']
+        self.assertIsNone(route['guards'])
+        by_handler = {c['handler']: c['guards'] for c in route['changes']}
+        self.assertEqual(by_handler, {'guardedOnce': self.open_except(arg_item={'0': ['fixture/FakeTool']}), 'openOnce': None})
+
+    def test_the_block_at_a_position_argument_is_a_guard(self):
+        key = f'{GUARDED}#chestAt(Lnet/minecraft/world/level/LevelReader;Lnet/minecraft/core/BlockPos;)Z'
+        self.assertEqual(self.guards(key), self.open_except(block_at=['fixture/FakeChestBlock']))
+
+    def test_an_argument_class_guard_on_a_static_handler(self):
+        key = f'{GUARDED}#join(Lnet/minecraft/world/phys/shapes/VoxelShape;Lnet/minecraft/world/phys/shapes/VoxelShape;)Z'
+        self.assertEqual(self.guards(key), self.open_except(arg_class={'0': ['fixture/FakeShape']}))
+        self.assertTrue(self.routes[key]['inert'])
+        self.assertFalse(self.routes[f'{GUARDED}#chestAt(Lnet/minecraft/world/level/LevelReader;Lnet/minecraft/core/BlockPos;)Z']['inert'])
+        like = self.routes[key.replace('#join(', '#joinLike(')]
+        self.assertEqual((like['guards']['arg_class'], like['inert']), ({'1': ['fixture/ShapeLike']}, False), 'a mixin may add a mod interface to a vanilla class')
+
+    def test_routes_of_unguarded_handlers_admit_all(self):
+        self.assertIsNone(self.guards(f'{KEY}head(I)V'))
 
     def test_the_tsv_and_the_reference_list_carry_no_handler_names(self):
         rows = [line.split('\t') for line in mrt.tsv(self.report).splitlines()]

@@ -30,7 +30,8 @@ OUT/replaces.json (format 1):
   data     {kind: {mod: {files, samples}}}
   totals   {mechanism: n, routing: n, ...}
 OUT/routing.json (format 1, tools/mod_routing.py) and routing.tsv, from the mixins routed java:
-  routes     {"pkg/Class#name(desc)": {kind edge|body, static, family, args, ret, changes, returns, tail, overriders, closure, hot, side}}
+  routes     {"pkg/Class#name(desc)": {kind edge|body, static, family, args, ret, changes, returns, tail, overriders, closure, hot, side, guards}}
+             guards: null (all) or {recv, recv_item, arg_item, arg_class, arg_block, block_at, be_at}, each null (any) or the classes; a change has its own guards and guard_stop
   undecided  {key: {status, mods}}; lambdas {lambda key: enclosing key}; routing.tsv is owner, name, descriptor, kind, tail (0/1), returns
 OUT/replaces.md is the per-mod summary and the 40 vanilla methods changed by most mods.
 """
@@ -73,7 +74,7 @@ SUBSCRIBE = 'Lnet/neoforged/bus/api/SubscribeEvent;'
 CANCELLABLE = 'net/neoforged/bus/api/ICancellableEvent'
 MOD_BUS_EVENT = 'net/neoforged/fml/event/IModBusEvent'
 EVENT_BUS = 'net/neoforged/bus/api/IEventBus'
-ACC_PRIVATE, ACC_STATIC, ACC_ABSTRACT = 0x2, 0x8, 0x400
+ACC_PRIVATE, ACC_STATIC, ACC_INTERFACE, ACC_ABSTRACT = 0x2, 0x8, 0x200, 0x400
 ACTIVE_DATA = ('data/minecraft/', 'assets/minecraft/')
 
 
@@ -337,9 +338,16 @@ class Hierarchy:
         self.jars = []
         self.heads = {n: (e[0], e[1]) for n, e in libs.items()}
         self._ancestors = {}
+        self.mod_interfaces = {}
 
-    def add(self, name, sup, ifaces):
+    def add(self, name, sup, ifaces, access=None):
         self.heads[name] = (sup, ifaces)
+        if access is not None:
+            self.mod_interfaces[name] = bool(access & ACC_INTERFACE)
+
+    def mod_class(self, name):
+        """Whether a mod jar defines `name` as a class, not an interface: no vanilla class extends it, and no mixin can make one."""
+        return self.mod_interfaces.get(name) is False and not is_vanilla(name)
 
     def ancestors(self, name):
         """Supers breadth first, the class itself left out."""
@@ -683,7 +691,7 @@ def analyse(install, out, ledger, cache=None, entries=None, host=None, log=print
                     head = parse_class(data, members=False)
                 except (ValueError, IndexError, struct.error):
                     continue
-                hier.add(head['name'], head['super'], head['ifaces'])
+                hier.add(head['name'], head['super'], head['ifaces'], head['access'])
                 marked = b'addListener' in data or b'addGenericListener' in data or b'SubscribeEvent' in data
                 classes.append((len(archives) - 1, entry, head['name'], marked, b'addListener' in data or b'addGenericListener' in data))
     log(f'scanned {len(classes)} mod classes in {len(archives)} archives, {time.time() - started:.1f}s')

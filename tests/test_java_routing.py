@@ -81,6 +81,15 @@ class Lint(unittest.TestCase):
         self.assertEqual([], problems(GOOD, packs, deferred=[('a/B#live()V', 'client: phase C')]))
         self.assertEqual(PACK[KEY]['mods'], jr.merge_packs(PACK, {})[KEY]['mods'])
 
+    def test_a_route_inert_by_its_guards_needs_no_gate_and_counts_as_covered(self):
+        guards = {'recv': None, 'recv_item': None, 'arg_item': None, 'arg_class': {'0': ['mod/Shape']}, 'arg_block': None, 'block_at': None, 'be_at': None}
+        inert = {'kind': 'edge', 'family': 'static', 'tail': False, 'returns': 1, 'changes': [{'mod': 'm'}], 'closure': {'needs_bridge': []}, 'inert': True, 'guards': guards}
+        routing = {'routes': {'a/B#join()V': inert}}
+        self.assertEqual({}, jr.routing_packs(routing))
+        table = jr.report_table(routing, gates=[], deferred=[])
+        self.assertEqual(table[0], '1 routes, 1 covered: 1 inert')
+        self.assertIn('| `a/B#join()V` | edge | static | m | inert (guard) | arg_class[0]: Shape |  |', table)
+
     def test_lint_reads_each_install_routing_it_is_given(self):
         import json
         import tempfile

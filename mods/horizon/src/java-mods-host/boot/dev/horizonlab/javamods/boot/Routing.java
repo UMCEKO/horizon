@@ -25,7 +25,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 public final class Routing {
     private Routing() {}
 
-    static final int VERSION = 1;
+    static final int VERSION = 2;
 
     /** One method handle per route, by its place in `routes.bin`; null for a route that is off. */
     public static volatile MethodHandle[] HANDLES = new MethodHandle[0];
@@ -114,7 +114,7 @@ public final class Routing {
         boolean server = !net.neoforged.fml.loading.FMLEnvironment.getDist().isClient();
         var gates = gates(Routing.class.getResourceAsStream("/route_gates.tsv"));
         var ungated = new ArrayList<String>();
-        int id = 0, on = 0, dropped = 0;
+        int id = 0, on = 0, dropped = 0, inert = 0;
         var modOf = new java.util.HashMap<String, String>();
         for (var r : ordered.values()) {
             for (JsonElement c : r.getAsJsonArray("changes")) modOf.put(c.getAsJsonObject().get("mixin").getAsString(), c.getAsJsonObject().get("mod").getAsString());
@@ -169,19 +169,12 @@ public final class Routing {
             text(out, family);
             out.writeBoolean(live);
             out.writeBoolean(route.get("hot").getAsBoolean());
-            if (!live) {
-                out.writeInt(-1);
-            } else {
-                var admitted = admitted(family, type, owner, name, desc, route.getAsJsonArray("overriders"));
-                if (admitted == null) {
-                    out.writeInt(family.equals("entity") || family.equals("block_entity") ? -2 : -1);
-                } else {
-                    out.writeInt(admitted.size());
-                    for (String a : admitted) text(out, a);
-                }
-            }
-            System.err.println(line(key, body, live, gates.get(key), mods));
-            if (live && !gates.containsKey(key)) for (String mod : mods) ungated.add(mod + ": " + simple(owner) + "." + name);
+            var admission = live ? admission(family, type, owner, name, desc, route.getAsJsonArray("overriders"), route.get("guards"), loader) : null;
+            boolean none = admission != null && admission.inert();
+            write(out, admission, family);
+            if (none) inert++;
+            System.err.println(line(key, body, live, none, gates.get(key), mods));
+            if (live && !none && !gates.containsKey(key)) for (String mod : mods) ungated.add(mod + ": " + simple(owner) + "." + name);
             id++;
         }
         if (!ungated.isEmpty()) System.err.println(summary(ungated));
@@ -195,7 +188,7 @@ public final class Routing {
         Routing.live = liveFlags;
         edges = edgeFlags;
         bin = bytes.toByteArray();
-        System.err.println("Horizon: routes: " + on + " on, " + (ordered.size() - on) + " off, " + dropped + " changes dropped, confirmed in " + (System.nanoTime() - began) / 1_000_000 + " ms");
+        System.err.println("Horizon: routes: " + on + " on (" + inert + " inert by guard), " + (ordered.size() - on) + " off, " + dropped + " changes dropped, confirmed in " + (System.nanoTime() - began) / 1_000_000 + " ms");
     }
 
     /** The routes this build gates, from `route_gates.tsv`: key to the number of native sites that still skip the gate; empty when the stream is null. */
@@ -213,8 +206,8 @@ public final class Routing {
     }
 
     /** One route's boot line; `partial` is null for a route without a gate. */
-    static String line(String key, boolean body, boolean live, Integer partial, java.util.Collection<String> mods) {
-        String gate = partial == null ? "UNGATED" : partial == 0 ? "gated" : "gated (partial: " + partial + " sites)";
+    static String line(String key, boolean body, boolean live, boolean inert, Integer partial, java.util.Collection<String> mods) {
+        String gate = inert ? "inert (guard)" : partial == null ? "UNGATED" : partial == 0 ? "gated" : "gated (partial: " + partial + " sites)";
         return "Horizon: route " + key + " " + (body ? "body" : "edge") + " " + (live ? "on" : "off") + " " + gate + " (" + String.join(", ", mods) + ")";
     }
 
@@ -438,8 +431,42 @@ public final class Routing {
         return "unknown";
     }
 
-    /** The registry names the route's family admits, or null for a family without a list (all of it, or decided by the spec that adds its receivers). */
-    private static List<String> admitted(String family, Class<?> owner, String ownerName, String name, String desc, JsonArray overriders) {
+    /** A live route's admission: its family's receivers narrowed by the guards' receiver classes, and the guards' items and block states. */
+    static RouteGuards.Admission admission(String family, Class<?> owner, String ownerName, String name, String desc, JsonArray overriders, JsonElement guards, ClassLoader loader) {
+        var parsed = RouteGuards.parse(guards, loader);
+        return RouteGuards.admission(family, owner == null ? null : admitted(family, owner, ownerName, name, desc, overriders, parsed.recv()), parsed, RouteGuards::registeredItems);
+    }
+
+    /** One route's admission in `routes.bin`: receivers (-1 any, -2 pending, -3 none, else the names), items (-1 any, else the ids), block states (-1 any, else Java's ids). */
+    static void write(DataOutputStream out, RouteGuards.Admission admission, String family) throws IOException {
+        if (admission == null || admission.inert()) {
+            out.writeInt(admission == null ? -1 : -3);
+            out.writeInt(-1);
+            out.writeInt(-1);
+            return;
+        }
+        if (admission.receivers() == null) {
+            out.writeInt(family.equals("entity") || family.equals("block_entity") ? -2 : -1);
+        } else {
+            out.writeInt(admission.receivers().size());
+            for (String a : admission.receivers()) text(out, a);
+        }
+        if (admission.items() == null) {
+            out.writeInt(-1);
+        } else {
+            out.writeInt(admission.items().size());
+            for (String item : admission.items()) text(out, item);
+        }
+        if (admission.blocks() == null) {
+            out.writeInt(-1);
+        } else {
+            out.writeInt(admission.blocks().length);
+            for (int state : admission.blocks()) out.writeInt(state);
+        }
+    }
+
+    /** The registry names the route's family admits, or null for a family without a list (all of it, or decided by the spec that adds its receivers); `recv` keeps only those of its classes. */
+    private static List<String> admitted(String family, Class<?> owner, String ownerName, String name, String desc, JsonArray overriders, List<Class<?>> recv) {
         var registry = switch (family) {
             case "block" -> BuiltInRegistries.BLOCK;
             case "item" -> BuiltInRegistries.ITEM;
@@ -452,7 +479,8 @@ public final class Routing {
         // A state's methods (owner is not a supertype of the registry's values) reach every entry
         if (members.stream().noneMatch(owner::isAssignableFrom)) return null;
         for (var entry : registry.entrySet()) {
-            if (reaches(entry.getValue().getClass(), ownerName, name, desc, overriders)) out.add(entry.getKey().identifier().toString());
+            var member = entry.getValue().getClass();
+            if (reaches(member, ownerName, name, desc, overriders) && (recv == null || RouteGuards.matches(recv, member))) out.add(entry.getKey().identifier().toString());
         }
         return out;
     }

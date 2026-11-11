@@ -333,6 +333,223 @@ def targets_of(hier, archives, cache, owner, name, change):
     return ef.library_target(hier, owner, name, change['desc'], split[0] if split else None)
 
 
+# Guards: the receivers, items and blocks a handler's prefix proves it acts on (W12 SPEC-4)
+
+GUARD_FIELDS = ('recv', 'recv_item', 'arg_item', 'arg_class', 'arg_block', 'block_at', 'be_at')
+INDEXED = ('arg_item', 'arg_class', 'arg_block')
+ITEM_TYPE, STACK_TYPE, BLOCK_TYPE = 'Lnet/minecraft/world/item/Item;', 'Lnet/minecraft/world/item/ItemStack;', 'Lnet/minecraft/world/level/block/Block;'
+STATE_TYPE, BE_TYPE = 'Lnet/minecraft/world/level/block/state/BlockState;', 'Lnet/minecraft/world/level/block/entity/BlockEntity;'
+POS_TYPE, HOLDER_TYPE = 'Lnet/minecraft/core/BlockPos;', 'Lnet/minecraft/core/Holder;'
+ICONST_0, ICONST_1, IRETURN, IFNULL, IFNONNULL = 0x03, 0x04, 0xac, 0xc6, 0xc7
+
+
+def mixin_class(archives, cache, mod, mixin):
+    """The mixin class of that mod's jars, parsed with its code; None when it isn't there."""
+    k = ('class', mod, mixin)
+    if k not in cache:
+        entry, cache[k] = mixin.replace('.', '/') + '.class', None
+        for m, _, archive, _ in archives:
+            if m == mod and entry in archive.namelist():
+                cache[k] = mr.parse_class(archive.read(entry), code=True)
+                break
+    return cache[k]
+
+
+def guard_of(value, cls):
+    """The (field, argument index, class) that `instanceof cls` on a walked value proves, else None."""
+    kind = value[0]
+    if kind == 'THIS':
+        return ('recv', None, cls)
+    if kind == 'ARG':
+        return ('arg_class', value[1], cls)
+    if kind == 'ITEM':
+        base = value[1]
+        return ('recv_item', None, cls) if base[0] == 'THIS' else ('arg_item', base[1], cls)
+    if kind == 'BLOCK':
+        return ('arg_block', value[1][1], cls)
+    if kind in ('BLOCK_AT', 'BE_AT'):
+        return (kind.lower(), None, cls)
+    return None
+
+
+def invoked(pop, owner, name, desc, info, depth):
+    """(the walked value of a call, None), or (None, why the walk stops there)."""
+    args, ret = desc_parts(desc)
+    if args == [POS_TYPE] and (name, ret) in (('getBlockState', STATE_TYPE), ('getBlockEntity', BE_TYPE)):
+        pos, level = pop(), pop()
+        if level and pos and level[0] == 'ARG' and pos[0] == 'ARG':
+            return ('STATE_AT' if ret == STATE_TYPE else 'BE_AT', level[1], pos[1]), None
+        return None, f'{name} on an unknown level or position'
+    if args:
+        return None, f'a call of {owner}.{name}{desc}'
+    recv = pop()
+    if recv is None:
+        return None, f'a call of {owner}.{name}{desc} on an unknown value'
+    base = recv[1] if recv[0] in ('STACK', 'HOLDER') else recv
+    if name == 'getItem' and ret == STACK_TYPE and recv[0] in ('THIS', 'ARG'):
+        return ('STACK', recv), None
+    if name == 'getItem' and ret == ITEM_TYPE and recv[0] in ('THIS', 'ARG', 'STACK'):
+        return ('ITEM', base), None
+    if name == 'typeHolder' and ret == HOLDER_TYPE and recv[0] in ('THIS', 'ARG', 'STACK'):
+        return ('HOLDER', base), None
+    if name == 'value' and ret == 'Ljava/lang/Object;' and recv[0] == 'HOLDER':
+        return ('ITEM', base), None
+    if name == 'getBlock' and ret == BLOCK_TYPE and recv[0] in ('ARG', 'STATE_AT'):
+        return (('BLOCK', recv) if recv[0] == 'ARG' else ('BLOCK_AT',)), None
+    if owner == info['name'] and recv == ('THIS',) and desc == '()Z' and depth == 0:
+        helper = next((m for m in info['methods'] if m['name'] == name and m['desc'] == desc and m['access'] & mr.ACC_PRIVATE and 'code' in m), None)
+        if helper is None:
+            return None, f'{name}{desc} is no private helper'
+        found, why = walk_guard(info, helper, {0: ('THIS',)}, depth + 1)
+        return (('GUARDS', found), None) if found and why is None else (None, f'helper {name}: {why or "proves nothing"}')
+    return None, f'a call of {owner}.{name}{desc}'
+
+
+def walk_guard(info, method, locals_, depth=0):
+    """(the [(field, index, class)] a method's prefix proves, why the walk stopped); a helper (depth 1) proves them when it returns true, and stops with None there."""
+    pool = info['pool']
+    ins = ef.instructions(method['code'])
+    at = {o: n for n, (o, _, _) in enumerate(ins)}
+    stack, local, found = [], dict(locals_), []
+
+    def exits(n):
+        if n is not None and n < len(ins) and ins[n][1] == ef.GOTO:
+            n = at.get(ins[n][2])
+        if n is None or n >= len(ins):
+            return False
+        if depth == 0:
+            return ins[n][1] == ef.RETURN
+        return ins[n][1] == ICONST_0 and n + 1 < len(ins) and ins[n + 1][1] == IRETURN
+
+    def pop():
+        return stack.pop() if stack else None
+
+    n = 0
+    while n < len(ins):
+        offset, op, operand = ins[n]
+        where = f'{method["name"]}@{offset}'
+        n += 1
+        if ef.is_aload(op):
+            stack.append(local.get(operand))
+        elif ef.is_astore(op):
+            local[operand] = pop()
+        elif op == ef.DUP and stack:
+            stack.append(stack[-1])
+        elif op == ef.POP and stack:
+            stack.pop()
+        elif op == ef.CHECKCAST and stack:
+            continue
+        elif op in (ICONST_0, ICONST_1):
+            stack.append(('INT', op - ICONST_0))
+        elif op == ef.INSTANCEOF:
+            value = pop()
+            if value is None or guard_of(value, pool.cls(operand)) is None:
+                return found, f'{where}: instanceof on a value it does not follow'
+            stack.append(('INST', value, pool.cls(operand)))
+        elif op in (ef.INVOKEVIRTUAL, ef.INVOKEINTERFACE, ef.INVOKESPECIAL):
+            value, why = invoked(pop, *pool.ref(operand), info, depth)
+            if value is None:
+                return found, f'{where}: {why}'
+            stack.append(value)
+        elif op in (IFNULL, IFNONNULL, ef.IFEQ, ef.IFNE):
+            value, target = pop(), at.get(operand)
+            if target is None or operand <= offset:
+                return found, f'{where}: a backward branch'
+            if exits(target):
+                held = op == ef.IFEQ
+            elif exits(n):
+                held, n = op == ef.IFNE, target
+            else:
+                return found, f'{where}: a branch that does not exit'
+            if op in (IFNULL, IFNONNULL):
+                continue
+            if not (value and value[0] in ('INST', 'GUARDS')):
+                return found, f'{where}: a branch on a value it does not follow'
+            if held:
+                found += [guard_of(value[1], value[2])] if value[0] == 'INST' else value[1]
+        elif depth and op == IRETURN:
+            value = pop()
+            if value == ('INT', 1):
+                return found, None
+            if value and value[0] == 'INST':
+                return found + [guard_of(value[1], value[2])], None
+            return [], f'{where}: returns a value it does not follow'
+        elif depth and op == ef.GOTO:
+            target = at.get(operand)
+            if target is None or ins[target][1] != IRETURN or stack[-1:] != [('INT', 1)]:
+                return [], f'{where}: a jump it does not follow'
+            return found, None
+        elif op == ef.GETSTATIC:
+            owner, name, _ = pool.ref(operand)
+            return found, f'{where}: getstatic {owner}.{name}'
+        else:
+            return found, f'{where}: opcode 0x{op:02x}'
+    return found, f'{method["name"]}: the end of the code'
+
+
+def change_guards(archives, cache, change, target):
+    """(the guards one change proves, None for none; where its walk stopped)."""
+    mixin, handler, _ = handlers(archives, cache, change)
+    if change['kind'] != 'inject' or not target:
+        return None, f'a {change["kind"]} handler'
+    info = mixin_class(archives, cache, change['mod'], mixin)
+    fits = [m for m in (info['methods'] if info else []) if m['name'] == handler and 'code' in m and (s := callback_split(m['desc'])) and s[0] in (mr.params(target), [])]
+    if len(fits) != 1:
+        return None, 'no single handler method'
+    method = fits[0]
+    slot, locals_ = 0, {}
+    if not method['access'] & mr.ACC_STATIC:
+        locals_[0], slot = ('THIS',), 1
+    for i, t in enumerate(callback_split(method['desc'])[0]):
+        locals_[slot] = ('ARG', i)
+        slot += 2 if t in ('J', 'D') else 1
+    found, why = walk_guard(info, method, locals_)
+    if not found:
+        return None, why
+    out = {f: None for f in GUARD_FIELDS}
+    for field, index, cls in found:
+        if field in INDEXED:
+            out[field] = out[field] or {}
+            classes = out[field].setdefault(str(index), [])
+            if cls not in classes:
+                classes.append(cls)
+        elif out[field] is None:
+            out[field] = [cls]
+    return out, why
+
+
+def route_guards(guards):
+    """A route's admission: each field the union over its changes, None (any) when one change leaves it open; None (all) when one change has no guard."""
+    if not guards or any(g is None for g in guards):
+        return None
+    out = {}
+    for field in GUARD_FIELDS:
+        values = [g[field] for g in guards]
+        if any(v is None for v in values):
+            out[field] = None
+        elif field in INDEXED:
+            keys = set.intersection(*(set(v) for v in values))
+            out[field] = {k: sorted({c for v in values for c in v[k]}) for k in sorted(keys)} or None
+        else:
+            out[field] = sorted({c for v in values for c in v})
+    return out if any(v is not None for v in out.values()) else None
+
+
+LISTED = ('block', 'item', 'entity', 'block_entity')
+
+
+def inert_by_guard(family, guards, mod_class):
+    """Whether native can never pass the guards: mod classes (never interfaces, which a mixin may add to a vanilla class) on a receiver of a family without a list, or on an argument."""
+    if not guards:
+        return False
+
+    def mod_only(classes):
+        return bool(classes) and all(mod_class(c) for c in classes)
+    if family not in LISTED and mod_only(guards['recv']):
+        return True
+    return any(mod_only(classes) for classes in (guards['arg_class'] or {}).values())
+
+
 def routing(result, archives, hier, ledger, verdicts, vanilla_jar, bridges=None, vanilla=None):
     """The routing report for the mixin changes of `mod_replaces.analyse`'s result; `vanilla_jar` is the jar or jars holding the vanilla code."""
     vanilla = vanilla or Vanilla(vanilla_jar)
@@ -360,6 +577,8 @@ def routing(result, archives, hier, ledger, verdicts, vanilla_jar, bridges=None,
         rows = [change_row(archives, cache, change, desc) for change, _ in items]
         kind = 'edge' if all(edge for _, edge in rows) else 'body'
         changes = [r for r, _ in rows]
+        for row, (change, _) in zip(changes, items):
+            row['guards'], row['guard_stop'] = change_guards(archives, cache, change, desc)
         sides = {c['side'] for c, _ in items}
         static = bool(next((m[2] for m in hier.methods_of(owner) if m[0] == name and m[1] == desc), 0) & mr.ACC_STATIC)
         args, ret = desc_parts(desc) if desc else ([], 'V')
@@ -368,9 +587,11 @@ def routing(result, archives, hier, ledger, verdicts, vanilla_jar, bridges=None,
             'kind': kind, 'static': static, 'family': family(hier, owner, static), 'args': args, 'ret': ret, 'changes': changes,
             'returns': vanilla.ops(*k)[1], 'tail': any('TAIL' in c['at'] for c in changes),
             'overriders': overriders(graph, children, owner, name, desc) if desc else [],
+            'guards': route_guards([c['guards'] for c in changes]),
             'closure': {'bridged': [], 'pure': [], 'routed': [], 'needs_bridge': []},
             'hot': k in reach or (kind == 'edge' and owner in reach_owners),
             'side': sides.pop() if len(sides) == 1 and sides <= {'client', 'server'} else 'common'}
+        routes[full]['inert'] = inert_by_guard(routes[full]['family'], routes[full]['guards'], hier.mod_class)
         verdict = mr.verdict_of(verdicts, full)
         if verdict and status_of[full] in mr.WEAK_STATUSES:
             routes[full]['verdict'] = verdict
