@@ -44,7 +44,7 @@ pub struct Profiles {
     pub server_args: String,
 }
 
-/// The lines of `horizon-java.args` for the client (`dedicated` false) or the server.
+/// The lines of `horizon-java.args` for the client (`dedicated` false) or the server, led by the JDK home and the host jar.
 /// `assets` is the asset folder and its index id, used by the client only.
 pub fn args_lines(
     os: Os,
@@ -53,8 +53,13 @@ pub fn args_lines(
     neoforge: &str,
     profiles: &Profiles,
     assets: Option<(&Path, &str)>,
+    java: &Path,
+    host_jar: &Path,
 ) -> Vec<String> {
-    let mut lines = Vec::new();
+    let mut lines = vec![
+        format!("java {}", text(java)),
+        format!("host {}", text(host_jar)),
+    ];
     let (jvm, game) = if dedicated {
         server_parts(os, libs, profiles, &mut lines)
     } else {
@@ -139,20 +144,7 @@ fn server_parts(
     (jvm, game)
 }
 
-/// The directories of a JDK home that hold the JVM's libraries, for `os`.
-pub fn library_dirs(os: Os, java: &Path) -> Vec<PathBuf> {
-    match os {
-        Os::Linux => vec![java.join("lib/server"), java.join("lib")],
-        Os::MacOs => vec![
-            java.join("lib/server"),
-            java.join("lib/jli"),
-            java.join("lib"),
-        ],
-        Os::Windows => vec![java.join("bin/server"), java.join("bin")],
-    }
-}
-
-/// The variable the loader reads for shared libraries: `PATH` finds `jvm.dll` on Windows.
+/// The variable the loader reads for shared libraries.
 pub fn library_path_var(os: Os) -> &'static str {
     match os {
         Os::Linux => "LD_LIBRARY_PATH",
@@ -161,27 +153,20 @@ pub fn library_path_var(os: Os) -> &'static str {
     }
 }
 
-/// The environment the game needs for the Java mods of an install: its JDK, its library path (in
-/// front of `current`'s value), NeoForge's version, the host jar and the run folder.
+/// The environment the game needs for the Java mods of an install: the GL driver folder in front of `current`'s library path, and the run folder.
 pub fn launch_env(
     os: Os,
-    java: &Path,
-    neoforge: &str,
-    host_jar: &Path,
     run: &Path,
     current: &dyn Fn(&str) -> Option<String>,
 ) -> BTreeMap<String, String> {
     let var = library_path_var(os);
-    let mut dirs: Vec<String> = library_dirs(os, java).iter().map(|d| text(d)).collect();
+    let mut dirs: Vec<String> = Vec::new();
     if os == Os::Linux && Path::new("/run/opengl-driver/lib").is_dir() {
         dirs.push("/run/opengl-driver/lib".into());
     }
     dirs.extend(current(var).filter(|v| !v.is_empty()));
     let mut env = BTreeMap::new();
     env.insert(var.to_string(), joined(os, dirs));
-    env.insert("JAVA_HOME".into(), text(java));
-    env.insert("HORIZON_NEOFORGE".into(), neoforge.into());
-    env.insert("HORIZON_JAVA_HOST_JAR".into(), text(host_jar));
     env.insert("HORIZON_JAVA_RUN".into(), text(run));
     env
 }

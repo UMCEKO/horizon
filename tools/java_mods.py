@@ -146,9 +146,13 @@ def assets_index(resources, index_id, root):
     return folder
 
 
-def args_lines(dist, libs, neoforge, client=None, server=None, assets=None, analysis=None):
-    """The lines of `horizon-java.args`: `client` is (NeoForge's client profile, its library jars), `server` the text of its `unix_args.txt`, `assets` (folder, index id), `analysis` the install's entity-facts.json."""
+def args_lines(dist, libs, neoforge, client=None, server=None, assets=None, analysis=None, java=None, host=None):
+    """The lines of `horizon-java.args`: `client` is (NeoForge's client profile, its library jars), `server` the text of its `unix_args.txt`, `assets` (folder, index id), `analysis` the install's entity-facts.json, `java` the JDK home and `host` the host jar."""
     lines = []
+    if java is not None:
+        lines.append(f'java {java}')
+    if host is not None:
+        lines.append(f'host {host}')
     if dist == 'client':
         neo, jars = client
         lines.append('dist client')
@@ -216,9 +220,9 @@ def write_args(run, home, analysis=None):
     if DIST == 'client':
         _, neo, _, jars = oracle.client()
         index_id = json.loads((lab.GAME / 'manifest.json').read_text())['assetIndex']['id']
-        lines = args_lines('client', libs, NEOFORGE, client=(neo, jars), assets=(assets_index(lab.RESOURCES, index_id, JARS), index_id), analysis=analysis)
+        lines = args_lines('client', libs, NEOFORGE, client=(neo, jars), assets=(assets_index(lab.RESOURCES, index_id, JARS), index_id), analysis=analysis, java=java_home(), host=HOST_JAR)
     else:
-        lines = args_lines('server', libs, NEOFORGE, server=(libs / 'net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text(), analysis=analysis)
+        lines = args_lines('server', libs, NEOFORGE, server=(libs / 'net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text(), analysis=analysis, java=java_home(), host=HOST_JAR)
     (run / 'horizon-java.args').write_text('\n'.join(lines) + '\n')
 
 
@@ -1158,6 +1162,7 @@ def install_pack(args):
     except ImportError:
         import mod_replaces
     analysis = mod_replaces.install_analysis(install, cache / 'mod-replaces')
+    host = install / 'host' / 'horizon-java-host.jar'
     mod_links = [*sorted(mods.glob('*.jar')), install / 'host' / 'horizon-java-boot.jar', install / 'host' / 'horizon-java-plugin.jar']
     for dedicated in (False, True):
         run = install / run_name(dedicated)
@@ -1166,11 +1171,11 @@ def install_pack(args):
         if not (run / 'libraries').is_symlink():
             (run / 'libraries').symlink_to(Path('..') / 'libraries')
         if dedicated:
-            lines = args_lines('server', libs, NEOFORGE, server=(server_home / 'libraries/net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text(), analysis=analysis)
+            lines = args_lines('server', libs, NEOFORGE, server=(server_home / 'libraries/net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text(), analysis=analysis, java=java, host=host)
             if args.accept_eula:
                 write_if_changed(run / 'eula.txt', 'eula=true\n')
         else:
-            lines = args_lines('client', libs, NEOFORGE, client=(neo, [libs / j.relative_to(client_home / 'libraries') for j in client_jars]), assets=(assets, index_id), analysis=analysis)
+            lines = args_lines('client', libs, NEOFORGE, client=(neo, [libs / j.relative_to(client_home / 'libraries') for j in client_jars]), assets=(assets, index_id), analysis=analysis, java=java, host=host)
         write_if_changed(run / 'horizon-java.args', '\n'.join(lines) + '\n')
     print(f'{install}: {len(pack)} mods, NeoForge {NEOFORGE}, JDK at {java}')
     if not (install / 'server' / 'eula.txt').exists():
@@ -1179,13 +1184,13 @@ def install_pack(args):
 
 def launch_env(install, record, dedicated, base):
     """The environment the game needs for the Java mods of `install`; a home folder the caller set stays theirs, the rest live in the install."""
-    java = record['java']
     env = dict(base)
     library_path = 'DYLD_LIBRARY_PATH' if sys.platform == 'darwin' else 'LD_LIBRARY_PATH'
     drivers = '/run/opengl-driver/lib' if Path('/run/opengl-driver/lib').is_dir() else ''
-    env[library_path] = ':'.join(p for p in (f'{java}/lib/server', f'{java}/lib', drivers, base.get(library_path, '')) if p)
-    env.update(JAVA_HOME=java, HORIZON_NEOFORGE=record['neoforge'], HORIZON_JAVA_HOST_JAR=str(install / 'host' / 'horizon-java-host.jar'),
-               HORIZON_JAVA_RUN=str(install / run_name(dedicated)))
+    env[library_path] = ':'.join(p for p in (drivers, base.get(library_path, '')) if p)
+    for name in ('JAVA_HOME', 'HORIZON_JAVA_HOST_JAR'):
+        env.pop(name, None)
+    env.update(HORIZON_NEOFORGE=record['neoforge'], HORIZON_JAVA_RUN=str(install / run_name(dedicated)))
     for name, folder in (('HORIZON_HOME', 'horizon'), ('HORIZON_LAUNCHER_HOME', 'launcher'), ('XDG_DATA_HOME', 'xdg-data'), ('XDG_CONFIG_HOME', 'xdg-config')):
         if not env.get(name):
             env[name] = str(install / 'home' / folder)

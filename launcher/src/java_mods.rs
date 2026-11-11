@@ -689,6 +689,8 @@ pub fn prepare_run(tag: &str, install: &Path, run: &Path, dedicated: bool) -> Re
         &record.neoforge,
         &profiles,
         assets.as_ref().map(|(f, id)| (f.as_path(), id.as_str())),
+        &record.java_home(install),
+        &install.join("host").join(HOST_JARS[0]),
     );
     write_if_changed(&run.join("horizon-java.args"), &(lines.join("\n") + "\n"))
 }
@@ -773,14 +775,7 @@ pub fn apply(
         None => install.join(if dedicated { "server" } else { "client" }),
     };
     prepare_run(tag, &install, &run, dedicated)?;
-    let env = args::launch_env(
-        Os::current(),
-        &record.java_home(&install),
-        &record.neoforge,
-        &install.join("host").join(HOST_JARS[0]),
-        &run,
-        &|name| std::env::var(name).ok(),
-    );
+    let env = args::launch_env(Os::current(), &run, &|name| std::env::var(name).ok());
     cmd.envs(env);
     Ok(())
 }
