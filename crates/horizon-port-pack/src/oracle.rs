@@ -26,6 +26,12 @@ pub struct Facts {
     pub data_component_types: BTreeMap<String, DataComponentType>,
     #[serde(default)]
     pub tags: Tags,
+    /// Every fluid id in registry order, `minecraft:empty` first: the `incoming` index of [`Fluid::replaceable`].
+    #[serde(default)]
+    pub fluid_order: Vec<String>,
+    /// The fluids: the mods' in full, vanilla's without `replaceable`.
+    #[serde(default)]
+    pub fluids: BTreeMap<String, Fluid>,
     /// The mods' recipes NeoForge loaded: those whose `neoforge:conditions` passed.
     #[serde(default)]
     pub recipes: BTreeMap<String, serde::de::IgnoredAny>,
@@ -48,6 +54,101 @@ pub struct Owned {
     pub block_entity_type: BTreeSet<String>,
     #[serde(default)]
     pub data_component_type: BTreeSet<String>,
+    #[serde(default)]
+    pub fluid: BTreeSet<String>,
+}
+
+/// A fluid as the game's registry holds it (facts of schema 4 and later).
+#[derive(Debug, Deserialize)]
+pub struct Fluid {
+    /// The class and its superclasses, most derived first.
+    pub class: Vec<String>,
+    pub source: String,
+    pub flowing: String,
+    /// `minecraft:air` when none.
+    pub bucket: String,
+    /// Keyed `amount=<n>,falling=<b>` from the properties present, in the game's state order.
+    pub states: Ordered<FluidStateFacts>,
+    /// Who declares each hook the fluid's class resolves to: `vanilla`, `neoforge` or `mod`.
+    #[serde(default)]
+    pub code: BTreeMap<String, String>,
+    /// Bit string of `canBeReplacedWith`, mod fluids only; read it with [`Fluid::replaceable`].
+    #[serde(default)]
+    pub replaceable: Option<String>,
+    /// The `incoming` count `replaceable` was written for.
+    #[serde(default)]
+    pub replaceable_fluids: Option<u32>,
+    #[serde(default)]
+    pub fluid_type: Option<FluidTypeFacts>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FluidStateFacts {
+    pub amount: u8,
+    pub falling: bool,
+    pub source: bool,
+    pub random: bool,
+    /// The legacy block, `<id>[<state>]`.
+    pub block: String,
+}
+
+/// NeoForge's `FluidType` of a fluid.
+#[derive(Debug, Deserialize)]
+pub struct FluidTypeFacts {
+    pub id: String,
+    #[serde(rename = "motionScale")]
+    pub motion_scale: f64,
+    #[serde(rename = "canPushEntity")]
+    pub can_push_entity: bool,
+    #[serde(rename = "canSwim")]
+    pub can_swim: bool,
+    #[serde(rename = "canDrown")]
+    pub can_drown: bool,
+    #[serde(rename = "fallDistanceModifier")]
+    pub fall_distance_modifier: f32,
+    #[serde(rename = "canExtinguish")]
+    pub can_extinguish: bool,
+    #[serde(rename = "canConvertToSource")]
+    pub can_convert_to_source: bool,
+    #[serde(rename = "supportsBoating")]
+    pub supports_boating: bool,
+    #[serde(rename = "canHydrate")]
+    pub can_hydrate: bool,
+    #[serde(rename = "lightLevel")]
+    pub light_level: i32,
+    pub density: i32,
+    pub temperature: i32,
+    pub viscosity: i32,
+    #[serde(rename = "isWaterLike")]
+    pub is_water_like: bool,
+    /// `SoundAction` name to sound id.
+    #[serde(default)]
+    pub sounds: BTreeMap<String, String>,
+    /// Public `FluidType` methods the type's class re-declares outside NeoForge.
+    #[serde(default)]
+    pub overrides: Vec<String>,
+}
+
+impl Fluid {
+    /// `canBeReplacedWith` for the state at `state` (in `states` order) against the fluid at `incoming` (in `fluid_order`), pushed toward `direction` (`Direction.get3DDataValue`), with the fluid's own source above or not.
+    pub fn replaceable(
+        &self,
+        state: usize,
+        incoming: usize,
+        direction: usize,
+        above: bool,
+    ) -> Option<bool> {
+        let fluids = self.replaceable_fluids? as usize;
+        if state >= self.states.0.len() || incoming >= fluids || direction >= 6 {
+            return None;
+        }
+        let at = ((state * fluids + incoming) * 6 + direction) * 2 + usize::from(above);
+        match self.replaceable.as_ref()?.as_bytes().get(at)? {
+            b'1' => Some(true),
+            b'0' => Some(false),
+            _ => None,
+        }
+    }
 }
 
 /// A JSON object read with its keys in file order.
@@ -135,6 +236,15 @@ pub struct SetType {
     pub can_open_by_hand: bool,
 }
 
+/// The fluid a block state holds.
+#[derive(Debug, Deserialize)]
+pub struct StateFluid {
+    pub id: String,
+    pub amount: u8,
+    pub falling: bool,
+    pub source: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct State {
     pub hardness: f32,
@@ -164,6 +274,12 @@ pub struct State {
     /// `shears`, `silk_touch_pickaxe`...): item id → count.
     #[serde(default)]
     pub drops: BTreeMap<String, BTreeMap<String, u32>>,
+    /// The state's fluid; absent when it holds none.
+    #[serde(default)]
+    pub fluid: Option<StateFluid>,
+    /// Mod blocks that take fluids (`LiquidBlockContainer`): the fluids `canPlaceLiquid` accepts.
+    #[serde(default)]
+    pub can_place_liquid: Option<Vec<String>>,
 }
 
 /// Reads one per-state value of a block file's field from the oracle's state.
@@ -839,6 +955,14 @@ impl Facts {
         }
     }
 
+    /// Whether a mod registered the fluid, as [`Facts::owns_block`].
+    pub fn owns_fluid(&self, id: &str) -> bool {
+        match &self.owned {
+            Some(o) => o.fluid.contains(id),
+            None => !id.starts_with("minecraft:"),
+        }
+    }
+
     /// Whether a mod registered the item, as [`Facts::owns_block`].
     pub fn owns_item(&self, id: &str) -> bool {
         match &self.owned {
@@ -1122,6 +1246,60 @@ impl Facts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn goo_facts() -> Facts {
+        // Two states, three fluids: index ((state * 3 + incoming) * 6 + direction) * 2 + above.
+        let mut bits = vec![b'0'; 2 * 3 * 6 * 2];
+        for (state, incoming, direction, above) in [(0, 1, 4, 0), (1, 2, 5, 1), (1, 0, 0, 0)] {
+            bits[((state * 3 + incoming) * 6 + direction) * 2 + above] = b'1';
+        }
+        serde_json::from_value(json!({
+            "blocks": {}, "items": {},
+            "owned": {"fluid": ["m:goo"]},
+            "fluid_order": ["minecraft:empty", "minecraft:water", "m:goo"],
+            "fluids": {"m:goo": {
+                "class": ["m.Goo", "net.minecraft.world.level.material.FlowingFluid"],
+                "source": "m:goo", "flowing": "m:flowing_goo", "bucket": "m:goo_bucket",
+                "states": {
+                    "falling=false": {"amount": 8, "falling": false, "source": true, "random": false, "block": "m:goo[level=0]"},
+                    "falling=true": {"amount": 8, "falling": true, "source": false, "random": false, "block": "m:goo[level=8]"}
+                },
+                "code": {"tick": "vanilla"},
+                "replaceable": String::from_utf8(bits).unwrap(), "replaceable_fluids": 3,
+                "fluid_type": {"id": "m:goo", "motionScale": 0.002, "canPushEntity": true, "canSwim": true,
+                    "canDrown": true, "fallDistanceModifier": 0.5, "canExtinguish": true,
+                    "canConvertToSource": false, "supportsBoating": false, "canHydrate": false,
+                    "lightLevel": 3, "density": 2000, "temperature": 300, "viscosity": 3000,
+                    "isWaterLike": false, "sounds": {"bucket_fill": "minecraft:item.bucket.fill_lava"},
+                    "overrides": ["onVaporize"]}
+            }}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn fluid_facts_parse_and_decode_the_replaceable_bits() {
+        let facts = goo_facts();
+        assert!(facts.owns_fluid("m:goo") && !facts.owns_fluid("minecraft:water"));
+        let goo = &facts.fluids["m:goo"];
+        assert_eq!(goo.states.0.len(), 2);
+        assert_eq!(goo.states.0[1].0, "falling=true");
+        assert_eq!(goo.fluid_type.as_ref().unwrap().light_level, 3);
+        assert_eq!(goo.replaceable(0, 1, 4, false), Some(true));
+        assert_eq!(goo.replaceable(0, 1, 4, true), Some(false));
+        assert_eq!(goo.replaceable(1, 2, 5, true), Some(true));
+        assert_eq!(goo.replaceable(1, 0, 0, false), Some(true));
+        assert_eq!(goo.replaceable(1, 1, 4, false), Some(false));
+        assert_eq!(goo.replaceable(2, 0, 0, false), None);
+        assert_eq!(goo.replaceable(0, 3, 0, false), None);
+        assert_eq!(goo.replaceable(0, 0, 6, false), None);
+    }
+
+    #[test]
+    fn schema_3_facts_without_fluids_still_read() {
+        let facts: Facts = serde_json::from_value(json!({"blocks": {}, "items": {}})).unwrap();
+        assert!(facts.fluids.is_empty() && facts.fluid_order.is_empty());
+    }
 
     fn state(hardness: f32, sound: &str, outline: Value) -> Value {
         json!({"hardness": hardness, "emission": 0, "requires_tool": false, "map_color_id": 13,

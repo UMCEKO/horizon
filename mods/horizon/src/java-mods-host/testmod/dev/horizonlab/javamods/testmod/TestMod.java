@@ -41,6 +41,7 @@ public final class TestMod {
         ITEMS.registerSimpleItem("snack", p -> p.food(new net.minecraft.world.food.FoodProperties.Builder().nutrition(5).saturationModifier(0.7f).build()).stacksTo(16));
         ITEMS.register(bus);
         Battery.register(bus, ITEMS);
+        Goo.register(bus, ITEMS);
         Breakables.register(bus, ITEMS);
         ChunkData.register(bus);
         if (net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) {

@@ -122,7 +122,7 @@ public final class FactsExporter {
 
         void run() throws IOException {
             json.beginObject();
-            json.name("schema").value(3);
+            json.name("schema").value(4);
             json.name("minecraft").value(net.minecraft.SharedConstants.getCurrentVersion().name());
             json.name("namespaces");
             json.beginArray();
@@ -135,6 +135,7 @@ public final class FactsExporter {
             owned();
             level.setBlock(FLOOR, Blocks.STONE.defaultBlockState(), 3);
             blocks();
+            fluids();
             vanillaItems();
             items();
             dataComponentTypes();
