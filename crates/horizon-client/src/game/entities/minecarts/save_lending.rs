@@ -63,6 +63,7 @@ impl Game<'_> {
                 // AbstractMinecartContainer.remove: `Containers.dropContents`
                 // for every destroying removal (the kill below, and a creative
                 // hit's discard), with no `entity_drops` gate of its own.
+                self.unpack_cart(&mut c, 0.0);
                 self.drop_vehicle_contents(at, &c.items);
                 // VehicleEntity.destroy: `kill` (the cart's own ENTITY_DIE
                 // after that removal), then the drops; a creative hit only

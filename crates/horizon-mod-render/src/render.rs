@@ -75,8 +75,10 @@ pub struct BlockSpriteArrays<'a> {
     /// Layers per array on this device (2048 on most; fewer where the GPU holds fewer, and
     /// OpenGL pads each array past it): a sprite's `array` and `layer` are cut by it.
     pub split: u32,
-    /// A layer's width and height in texels.
+    /// The first array's layer width and height in texels.
     pub size: u32,
+    /// Each array's layer width and height in texels: a mod's big textures keep arrays of their own size.
+    pub sizes: &'a [u32],
     /// Nearest, repeating, the nearest mip level: texels drawn sharp.
     pub nearest: &'a wgpu::Sampler,
     /// The terrain's own (linear, clamped, anisotropic under that Texture Filtering).
@@ -297,6 +299,7 @@ pub mod built {
         pub views: &'a [wgpu::TextureView],
         pub split: u32,
         pub size: u32,
+        pub sizes: &'a [u32],
         pub nearest: &'a wgpu::Sampler,
         pub filtered: &'a wgpu::Sampler,
     }
@@ -306,6 +309,7 @@ pub mod built {
                 views,
                 split,
                 size,
+                sizes,
                 nearest,
                 filtered,
             } = v;
@@ -313,6 +317,7 @@ pub mod built {
                 views,
                 split,
                 size,
+                sizes,
                 nearest,
                 filtered,
             }

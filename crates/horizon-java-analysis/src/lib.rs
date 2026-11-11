@@ -3,5 +3,8 @@
 pub mod class;
 pub mod hierarchy;
 pub mod jars;
+pub mod knowledge;
+pub mod lambdas;
 pub mod libraries;
+pub mod mixins;
 pub mod pytext;

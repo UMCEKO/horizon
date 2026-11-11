@@ -975,7 +975,7 @@ impl Game<'_> {
             super::minecarts::forget_unreadable_display(&mut c, |t| {
                 self.state_from_nbt(t).is_some()
             });
-            self.roll_cart_loot(&mut c, &tag);
+            Self::load_cart_loot(&mut c, &tag);
             self.next_entity = id;
             self.remember(id, uuid, tag);
             self.bind_saved_entity_attachments(id, &mut c.attachment_lifetime);
@@ -1742,29 +1742,25 @@ impl Game<'_> {
     pub(super) fn persist_raw(&self, id: u32) -> Option<&Tag> {
         self.persist.raw.get(&id)
     }
-    /// A loaded chest minecart with a loot table and no items: the table
-    /// rolled now, as generated containers are (Horizon does not unpack on
-    /// first open), and kept to save it again while unchanged.
-    pub(in crate::game) fn roll_cart_loot(&self, cart: &mut super::minecarts::Minecart, tag: &Tag) {
-        let Some(table) = horizon_client::save::text(tag.get("LootTable")) else {
+    /// `ContainerEntity.readChestVehicleSaveData`: a cart loaded with a loot
+    /// table keeps it to unpack at its first access, and its items stay empty.
+    pub(in crate::game) fn load_cart_loot(cart: &mut super::minecarts::Minecart, tag: &Tag) {
+        cart.loot = None;
+        let Some(table) = horizon_client::save::text(tag.get("LootTable"))
+            .and_then(|id| horizon_client_core::identifier::normalize_id(&id))
+        else {
             return;
         };
-        if cart.items.is_empty() || cart.items.iter().any(Option::is_some) {
+        if cart.items.is_empty() {
             return;
         }
-        let loot = self.server_loot.get();
+        cart.items.fill(None);
         let p = cart.position;
-        let pos = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
-        let biome = self.biome_name_at(p).unwrap_or_default();
-        let seed = horizon_client::structure_blocks::loot_seed(tag);
-        cart.loot = Some(horizon_client::structure_blocks::roll_container(
-            &mut cart.items,
-            loot.as_deref(),
+        cart.loot = Some(horizon_client::save::PendingLoot {
+            pos: (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32),
             table,
-            seed,
-            pos,
-            &biome,
-        ));
+            seed: horizon_client::structure_blocks::loot_seed(tag),
+        });
     }
     /// An entity Horizon keeps no compound for (orbs, projectiles, the
     /// crystals and the dragon) still keeps its `Tags`, by entity id, so

@@ -31,7 +31,7 @@ struct Globals {
     // The sunrise fan's 16 triangles (gfx/sunrise_fan.rs): xyz the apex weight's normal, w the
     // triangle's volume with the camera; then each rim vertex's normal against the apex.
     sunrise_fan: array<vec4<f32>, 32>,
-    // x: Options.textureFiltering (0 none, 1 RGSS, 2 anisotropic), y: the sprite arrays' width
+    // x: Options.textureFiltering (0 none, 1 RGSS, 2 anisotropic), y: the first sprite array's width
     // in texels (vanilla's TextureSize), z: the mip level at which a sprite is one texel when
     // the views reach it, else 0 (`rotated_grid`).
     filtering: vec4<f32>,
@@ -105,6 +105,26 @@ fn sprite_level(uv: vec2<f32>, layer: u32, lod: f32) -> vec4<f32> {
         default: { return textureSampleLevel(sprites_7, sprite_sampler, uv, l, lod); }
     }
 }
+// The layer's array's width and `filtering.z` for it: a mod's big textures keep arrays of their own size.
+fn sprite_shape(layer: u32) -> vec2<f32> {
+    if SPRITE_ARRAYS == 1u {
+        return globals.filtering.yz;
+    }
+    switch layer / SPRITE_SPLIT {
+        case 0u: { return array_shape(textureDimensions(sprites).x, textureNumLevels(sprites)); }
+        case 1u: { return array_shape(textureDimensions(sprites_1).x, textureNumLevels(sprites_1)); }
+        case 2u: { return array_shape(textureDimensions(sprites_2).x, textureNumLevels(sprites_2)); }
+        case 3u: { return array_shape(textureDimensions(sprites_3).x, textureNumLevels(sprites_3)); }
+        case 4u: { return array_shape(textureDimensions(sprites_4).x, textureNumLevels(sprites_4)); }
+        case 5u: { return array_shape(textureDimensions(sprites_5).x, textureNumLevels(sprites_5)); }
+        case 6u: { return array_shape(textureDimensions(sprites_6).x, textureNumLevels(sprites_6)); }
+        default: { return array_shape(textureDimensions(sprites_7).x, textureNumLevels(sprites_7)); }
+    }
+}
+fn array_shape(width: u32, levels: u32) -> vec2<f32> {
+    let last = levels - 1u;
+    return vec2(f32(width), select(0.0, f32(last), (width >> last) == 1u));
+}
 // texture_sampling.glsl's sampleNearest: the sprite's texels stay square pixels, blending only
 // across the one screen pixel where two meet, so a linear (and anisotropic) sampler keeps them crisp.
 // `tiled`: a distant tile's face takes its sprite again per block, so its gradients span many
@@ -154,7 +174,7 @@ fn rotated_grid(uv: vec2<f32>, layer: u32, pixel: vec2<f32>, du: vec2<f32>,
     // From this level on the sprite is a single texel (0: the views stop before one is), and
     // the sampler clamps any level past it to it: there every tap reads the same value, so
     // one tap gives the four's mean. Distant tiles sit there.
-    let single = globals.filtering.z;
+    let single = sprite_shape(layer).y;
     if single > 0.0 && floor(exact) >= single {
         return sprite_level(uv, layer, floor(exact));
     }
@@ -186,7 +206,7 @@ fn sprite_at(tiled: vec2<f32>, layer: u32, du: vec2<f32>, dv: vec2<f32>) -> vec4
     // The wrap shifts a face's UVs by whole blocks, so half of one tells a tile's face from a
     // block's (whose UVs stay inside its sprite).
     let tiled_face = any(tiled - uv >= vec2(0.5));
-    let pixel = vec2(1.0 / globals.filtering.y);
+    let pixel = vec2(1.0 / sprite_shape(layer).x);
     let texel_screen = sqrt(du * du + dv * dv);
     if u32(globals.filtering.x) == 1u {
         return sample_rgss(uv, layer, pixel, du, dv, texel_screen, tiled_face);

@@ -56,7 +56,7 @@ fn terrain_source_ownership_gpu() {
         view_formats: &[],
     });
     let mut encoder = device.create_command_encoder(&Default::default());
-    let atlas = PackAtlas::new(&device, &mut encoder, &[texture], 1, 1, 1).unwrap();
+    let atlas = PackAtlas::new(&device, &mut encoder, &[texture], 1).unwrap();
     let inputs = atlas.terrain_inputs(true);
     // Inset faces of two source states sharing sprite zero, an extended multipart face,
     // and the second state's fluid face. Ownership is authored

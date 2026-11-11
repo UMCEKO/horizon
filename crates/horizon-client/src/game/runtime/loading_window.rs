@@ -9,17 +9,11 @@ pub(super) fn prepare_renderer_textures(
     let assets = &pack.render;
     horizon_client::gfx::PreparedTextures::new(
         &assets.pixels.get(),
-        assets.sprite_size,
-        assets.texture_layers,
+        &assets.sprite_layout,
         &assets.sprite_mips,
         (&pack.forcefield.2, pack.forcefield.0),
     )
-    .with_pbr(
-        &assets.pbr_normals,
-        &assets.pbr_specular,
-        assets.pbr_size,
-        assets.texture_layers,
-    )
+    .with_pbr(&assets.pbr_normals, &assets.pbr_specular)
 }
 
 /// Upload pack textures and create the renderer on the window's device.
@@ -56,9 +50,7 @@ pub(super) fn build_renderer(
         window,
         offscreen,
         &assets.pixels.get(),
-        assets.sprite_size,
-        assets.sprite_minimum_size,
-        assets.texture_layers,
+        &assets.sprite_layout,
         &assets.sprite_mips,
         &assets.animations,
         (&atlas_pixels, atlas.width, atlas.height),
@@ -141,9 +133,7 @@ pub(super) fn loading_renderer(
         window,
         offscreen,
         &[255, 255, 255, 255],
-        1,
-        1,
-        1,
+        &horizon_client::sprites::SpriteLayout::uniform(1, 1),
         &[],
         &[],
         (pixels, width, height),

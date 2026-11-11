@@ -59,7 +59,6 @@ fn reload_loot_case(
 ) -> Chunk {
     let pos = (1, 64, 2);
     let mut slots = vec![None; 27];
-    slots[0] = Some(crate::items::ItemStack::new("minecraft:gold_ingot", 2));
     let source = Tag::compound([
         ("id", string("minecraft:chest")),
         ("x", Tag::Int(pos.0)),
@@ -76,18 +75,16 @@ fn reload_loot_case(
         .expect("fixture's admitted external name");
     let mut extras = ChunkExtras {
         block_entity_sources: vec![(pos, source)],
-        rolled_loot: vec![RolledLoot {
+        pending_loot: vec![PendingLoot {
             pos,
             table: table.into(),
             seed: Some(seed),
-            items: encode_items(&slots),
         }],
         ..Default::default()
     };
-    // Exactly the production transition used when the player opens the chest.
+    // Exactly the production transition used when the chest is unpacked.
     if mode != 0 {
-        consume_container_loot(&mut extras, pos);
-        slots.fill(None);
+        take_pending_loot(&mut extras, pos);
         if mode == 2 {
             slots[0] = Some(crate::items::ItemStack::new("minecraft:gold_ingot", 1));
         }
@@ -135,30 +132,29 @@ fn consuming_one_table_preserves_unopened_neighbors_and_other_fields() {
         ("LootTableSeed", Tag::Long(42)),
         ("CustomName", string("keep")),
     ]);
-    let rolled = |pos| RolledLoot {
+    let pending = |pos| PendingLoot {
         pos,
         table: "minecraft:chests/ruined_portal".into(),
         seed: Some(42),
-        items: Tag::List(vec![]),
     };
     let mut extras = ChunkExtras {
         block_entity_sources: vec![(pos, tag.clone()), (other, tag.clone())],
-        rolled_loot: vec![rolled(pos), rolled(other)],
+        pending_loot: vec![pending(pos), pending(other)],
         ..Default::default()
     };
-    consume_container_loot(&mut extras, pos);
-    assert_eq!(extras.rolled_loot, vec![rolled(other)]);
+    assert_eq!(take_pending_loot(&mut extras, pos), Some(pending(pos)));
+    assert_eq!(extras.pending_loot, vec![pending(other)]);
     assert_eq!(extras.block_entity_sources[1].1, tag);
     assert_eq!(
         extras.block_entity_sources[0].1.get("CustomName"),
         Some(&string("keep"))
     );
     let saved = extras.block_entity_sources.clone();
-    consume_container_loot(&mut extras, pos);
+    assert_eq!(take_pending_loot(&mut extras, pos), None);
     assert_eq!(extras.block_entity_sources, saved);
-    // No rolled marker means an unopened source is not consumed by accident.
-    extras.rolled_loot.clear();
-    consume_container_loot(&mut extras, other);
+    // No pending marker means an unopened source is not consumed by accident.
+    extras.pending_loot.clear();
+    assert_eq!(take_pending_loot(&mut extras, other), None);
     assert_eq!(extras.block_entity_sources[1].1, tag);
 }
 

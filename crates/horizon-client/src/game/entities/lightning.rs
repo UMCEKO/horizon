@@ -1197,7 +1197,7 @@ mod tests {
                 step_sound: None,
                 food: Default::default(),
                 tempt: Default::default(),
-                passenger_attachments: Vec::new(),
+                attachments: Default::default(),
             });
             let mut pig = Mob::new(1, kind, Vec3::ZERO, 45.0);
             if baby {

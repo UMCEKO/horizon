@@ -193,24 +193,16 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
     let pixels = render.pixels.get();
     let prepared = PreparedTextures::new(
         &pixels,
-        render.sprite_size,
-        render.texture_layers,
+        &render.sprite_layout,
         &render.sprite_mips,
         (&zero[..], 1),
     )
-    .with_pbr(
-        &render.pbr_normals,
-        &render.pbr_specular,
-        render.pbr_size,
-        render.texture_layers,
-    );
+    .with_pbr(&render.pbr_normals, &render.pbr_specular);
     let mut renderer = pollster::block_on(Renderer::new(
         window,
         true,
         &pixels,
-        render.sprite_size,
-        render.sprite_minimum_size,
-        render.texture_layers,
+        &render.sprite_layout,
         &render.sprite_mips,
         &render.animations,
         (&one[..], 1, 1),

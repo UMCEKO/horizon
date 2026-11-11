@@ -145,7 +145,17 @@ fn horizon_block_pbr(uv: vec2<f32>, layer: u32, lod: f32, map: u32) -> vec4<f32>
 }
 // The prelude's `block_texture`: a sprite of the terrain's arrays at a mip level.
 fn horizon_block_size() -> vec2<f32> {
-    return vec2<f32>(textureDimensions(horizon_terrain_sprites).xy);
+    // Of the layer's array: a mod's big textures keep arrays of their own size.
+    switch horizon_block_layer / horizon_terrain_SPRITE_SPLIT {
+        case 0u: { return vec2<f32>(textureDimensions(horizon_terrain_sprites).xy); }
+        case 1u: { return vec2<f32>(textureDimensions(horizon_terrain_sprites_1).xy); }
+        case 2u: { return vec2<f32>(textureDimensions(horizon_terrain_sprites_2).xy); }
+        case 3u: { return vec2<f32>(textureDimensions(horizon_terrain_sprites_3).xy); }
+        case 4u: { return vec2<f32>(textureDimensions(horizon_terrain_sprites_4).xy); }
+        case 5u: { return vec2<f32>(textureDimensions(horizon_terrain_sprites_5).xy); }
+        case 6u: { return vec2<f32>(textureDimensions(horizon_terrain_sprites_6).xy); }
+        default: { return vec2<f32>(textureDimensions(horizon_terrain_sprites_7).xy); }
+    }
 }
 fn horizon_block_sample(uv: vec2<f32>, layer: u32, lod: f32) -> vec4<f32> {
     let s = horizon_terrain_sprite_sampler;

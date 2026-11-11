@@ -959,25 +959,23 @@ impl ChunkGenerator for VanillaTerrain {
     fn final_block_entities(
         &self,
         entries: &[(&Proto, &[([i32; 3], u32)])],
-    ) -> Vec<((i32, i32, i32), crate::chunk::block_entity::BlockEntity)> {
-        if !entries.iter().any(|(proto, _)| {
-            matches!(proto.downcast_ref::<VanillaProto>(), Some(VanillaProto::Ready(chunk)) if !chunk.block_entities.is_empty())
-        }) {
-            return Vec::new();
+    ) -> crate::streaming::FinalBlockEntities {
+        let mut out = crate::streaming::FinalBlockEntities::default();
+        for (proto, writes) in entries {
+            let Some(VanillaProto::Ready(chunk)) = proto.downcast_ref::<VanillaProto>() else {
+                continue;
+            };
+            if chunk.block_entities.is_empty() {
+                continue;
+            }
+            let written = |(x, y, z): (i32, i32, i32)| writes.iter().any(|(p, _)| *p == [x, y, z]);
+            let (made, pending) = crate::structure_blocks::block_entities(chunk);
+            out.entities
+                .extend(made.into_iter().filter(|(pos, _)| written(*pos)));
+            out.pending_loot
+                .extend(pending.into_iter().filter(|p| written(p.pos)));
         }
-        let loot = self.loot.get();
-        entries
-            .iter()
-            .flat_map(|(proto, writes)| {
-                let Some(VanillaProto::Ready(chunk)) = proto.downcast_ref::<VanillaProto>() else {
-                    return Vec::new();
-                };
-                let (made, _) = crate::structure_blocks::block_entities(chunk, loot.as_deref());
-                made.into_iter()
-                    .filter(|((x, y, z), _)| writes.iter().any(|(p, _)| *p == [*x, *y, *z]))
-                    .collect()
-            })
-            .collect()
+        out
     }
     fn decorate(&self, worker: &mut GeneratorWorker, region: &mut [Proto; 9]) {
         let taken: Vec<Box<VanillaProto>> = region
@@ -1197,9 +1195,7 @@ impl ChunkGenerator for VanillaTerrain {
             VanillaProto::Failed(x, z) => return Chunk::with_layout(x, z, self.layout()),
         };
         let mut out = self.column(&chunk);
-        let loot = self.loot.get();
-        let (block_entities, rolled_loot) =
-            crate::structure_blocks::block_entities(&chunk, loot.as_deref());
+        let (block_entities, pending_loot) = crate::structure_blocks::block_entities(&chunk);
         out.block_entities = block_entities;
         // The block entities Horizon does not model (decorated pots with their
         // sherds and loot table) stay as placed, like a
@@ -1225,18 +1221,18 @@ impl ChunkGenerator for VanillaTerrain {
             })
             .collect();
         add_default_block_entities(&self.block_entity_types, &mut out, &mut unmodelled);
-        if !unmodelled.is_empty() || !rolled_loot.is_empty() {
+        if !unmodelled.is_empty() || !pending_loot.is_empty() {
             let mut extras = out
                 .saved
                 .take()
                 .map(Arc::unwrap_or_clone)
                 .unwrap_or_default();
             extras.block_entities = unmodelled;
-            extras.rolled_loot = rolled_loot;
+            extras.pending_loot = pending_loot;
             out.saved = Some(Arc::new(extras));
         }
         let entities = std::mem::take(&mut chunk.entities);
-        // Chest minecarts keep their loot table; the game rolls it on load.
+        // Chest minecarts keep their loot table until their first access.
         out.entities = entities
             .into_iter()
             .map(horizon_core::nbt::Tag::Compound)

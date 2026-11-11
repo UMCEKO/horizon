@@ -428,8 +428,7 @@ fn main() {
             || {
                 std::hint::black_box(PreparedTextures::new(
                     &atlas.pixels,
-                    atlas.size,
-                    atlas.mips.len() as u32,
+                    &atlas.layout,
                     &atlas.mips,
                     (&border, atlas.size),
                 ));
