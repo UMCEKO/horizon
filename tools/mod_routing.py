@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """How each vanilla method the mods' mixins change is routed to Java: edge or body, receivers, callees (format in mod_replaces.py)."""
 import collections
+import re
 import struct
 import zipfile
 from pathlib import Path
@@ -37,6 +38,9 @@ FAMILIES = (
 LAMBDA_FACTORY = 'java/lang/invoke/LambdaMetafactory'
 RETURNS = range(0xac, 0xb2)
 INVOKESPECIAL, INVOKESTATIC, INVOKEVIRTUAL = 0xb7, 0xb8, 0xb6
+CONSTRUCTORS = ('<init>', '<clinit>')
+VIEW_INITS = Path(__file__).resolve().parents[1] / 'mods/horizon/src/java-mods-host/plugin/dev/horizonlab/javamods/plugin/ViewInits.java'
+JAVA_BUILT = ('client', 'player', 'entity', 'block_entity', 'block', 'item', 'level', 'menu', 'value')
 
 
 class Vanilla:
@@ -246,6 +250,23 @@ def family(hier, owner, static):
     if static:
         return 'static'
     return next((name for name, roots in FAMILIES if any(hier.is_a(owner, r) for r in roots)), 'value')
+
+
+def view_classes(path=VIEW_INITS):
+    """The classes whose views `ViewInits` keeps mods' constructor code for, read from its `VIEWS` set."""
+    found = re.search(r'VIEWS\s*=\s*Set\.of\(([^)]*)\)', path.read_text()) if path.is_file() else None
+    return frozenset(re.findall(r'"([^"]+)"', found.group(1))) if found else frozenset()
+
+
+def construction(owner, name, family_, views):
+    """(who runs a constructor's patches: java, seam or deferred; why). Rust never calls a constructor on an object it holds, so no constructor route is bound."""
+    if name == '<clinit>':
+        return 'java', 'a static initialiser runs in Java when Java loads the class'
+    if owner in views:
+        return 'seam', 'Java builds the view without its constructor; ViewInits keeps the patches and Inits.run calls them after'
+    if family_ in JAVA_BUILT:
+        return 'java', f'Java builds its own {family_} objects, so the patches run in their constructors'
+    return 'deferred', f'native builds {family_} objects and Java never does: no post-construct seam yet'
 
 
 def closure(graph, root, routed, bridges, native):
@@ -550,9 +571,10 @@ def inert_by_guard(family, guards, mod_class):
     return any(mod_only(classes) for classes in (guards['arg_class'] or {}).values())
 
 
-def routing(result, archives, hier, ledger, verdicts, vanilla_jar, bridges=None, vanilla=None):
+def routing(result, archives, hier, ledger, verdicts, vanilla_jar, bridges=None, vanilla=None, views=None):
     """The routing report for the mixin changes of `mod_replaces.analyse`'s result; `vanilla_jar` is the jar or jars holding the vanilla code."""
     vanilla = vanilla or Vanilla(vanilla_jar)
+    views = view_classes() if views is None else views
     graph, native = Graph(vanilla, hier), mr.Native(ledger)
     bridges = bridge_table() if bridges is None else bridges
     cache, grouped, undecided, lambdas, status_of = {}, collections.defaultdict(list), {}, {}, {}
@@ -583,20 +605,25 @@ def routing(result, archives, hier, ledger, verdicts, vanilla_jar, bridges=None,
         static = bool(next((m[2] for m in hier.methods_of(owner) if m[0] == name and m[1] == desc), 0) & mr.ACC_STATIC)
         args, ret = desc_parts(desc) if desc else ([], 'V')
         k = (owner, name, desc)
+        built = name in CONSTRUCTORS
         routes[full] = {
             'kind': kind, 'static': static, 'family': family(hier, owner, static), 'args': args, 'ret': ret, 'changes': changes,
             'returns': vanilla.ops(*k)[1], 'tail': any('TAIL' in c['at'] for c in changes),
-            'overriders': overriders(graph, children, owner, name, desc) if desc else [],
+            'overriders': overriders(graph, children, owner, name, desc) if desc and not built else [],
             'guards': route_guards([c['guards'] for c in changes]),
             'closure': {'bridged': [], 'pure': [], 'routed': [], 'needs_bridge': []},
             'hot': k in reach or (kind == 'edge' and owner in reach_owners),
             'side': sides.pop() if len(sides) == 1 and sides <= {'client', 'server'} else 'common'}
         routes[full]['inert'] = inert_by_guard(routes[full]['family'], routes[full]['guards'], hier.mod_class)
+        if built:
+            by, reason = construction(owner, name, routes[full]['family'], views)
+            routes[full]['construct'] = {'by': by, 'reason': reason}
+            routes[full]['inert'] = by != 'deferred'
         verdict = mr.verdict_of(verdicts, full)
         if verdict and status_of[full] in mr.WEAK_STATUSES:
             routes[full]['verdict'] = verdict
     for full, route in routes.items():
-        if route['kind'] == 'body' and split_key(full)[2]:
+        if route['kind'] == 'body' and split_key(full)[2] and 'construct' not in route:
             route['closure'] = closure(graph, split_key(full), set(routes), bridges, native)
     return {'format': 1, 'routes': dict(sorted(routes.items())), 'undecided': dict(sorted(undecided.items())), 'lambdas': dict(sorted(lambdas.items()))}
 

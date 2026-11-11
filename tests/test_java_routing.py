@@ -90,6 +90,16 @@ class Lint(unittest.TestCase):
         self.assertEqual(table[0], '1 routes, 1 covered: 1 inert')
         self.assertIn('| `a/B#join()V` | edge | static | m | inert (guard) | arg_class[0]: Shape |  |', table)
 
+    def test_a_constructor_route_takes_no_gate_or_deferral(self):
+        ctor = 'a/B#<init>(I)V'
+        built = {'kind': 'edge', 'family': 'worldgen', 'tail': False, 'returns': 1, 'changes': [{'mod': 'm'}], 'closure': {'needs_bridge': []}, 'inert': False,
+                 'construct': {'by': 'deferred', 'reason': 'r'}}
+        routing = {'routes': {ctor: built}}
+        self.assertEqual({}, jr.routing_packs(routing))
+        self.assertEqual([], problems(GOOD, jr.merge_packs(PACK, {ctor: {'kind': 'edge', 'family': 'worldgen', 'tail': False, 'returns': 1, 'mods': {'m'}}})))
+        self.assertTrue(any(e.startswith(f'{ctor}: a constructor') for e in problems(GOOD, deferred=[(ctor, 'worldgen: W10')])))
+        self.assertIn('constructor (deferred)', jr.report_table(routing, gates=[], deferred=[])[-1])
+
     def test_lint_reads_each_install_routing_it_is_given(self):
         import json
         import tempfile
