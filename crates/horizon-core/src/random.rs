@@ -63,6 +63,15 @@ impl std::fmt::Display for InvalidBound {
 
 impl std::error::Error for InvalidBound {}
 
+/// A random's draw state, for handing a roll's random to a hook that may advance it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RandomState {
+    /// `LegacyRandomSource.seed`: the 48-bit state.
+    Legacy(u64),
+    /// `Xoroshiro128PlusPlus`'s low and high words.
+    Xoroshiro(u64, u64),
+}
+
 pub trait RandomSource: Sized {
     type Positional: PositionalRandom<Source = Self>;
     fn set_seed(&mut self, seed: i64);
@@ -79,6 +88,16 @@ pub trait RandomSource: Sized {
     fn fork(&mut self) -> Self
     where
         Self: Sized;
+
+    /// The draw state, without the cached gaussian; None for a source that can't hand it out.
+    fn snapshot(&self) -> Option<RandomState> {
+        None
+    }
+    /// Draws on from `state` with no cached gaussian, as `setSeed` leaves it; false for another kind.
+    fn restore(&mut self, state: RandomState) -> bool {
+        let _ = state;
+        false
+    }
 
     fn consume_count(&mut self, count: i32) {
         for _ in 0..count {
@@ -167,6 +186,16 @@ impl RandomSource for LegacyRandom {
     }
     fn set_seed(&mut self, seed: i64) {
         *self = Self::new(seed);
+    }
+    fn snapshot(&self) -> Option<RandomState> {
+        Some(RandomState::Legacy(self.state))
+    }
+    fn restore(&mut self, state: RandomState) -> bool {
+        let RandomState::Legacy(state) = state else {
+            return false;
+        };
+        *self = Self::from_state(state & Self::MASK);
+        true
     }
 
     fn next_int(&mut self) -> i32 {
@@ -269,6 +298,16 @@ impl RandomSource for XoroshiroRandom {
     fn set_seed(&mut self, seed: i64) {
         *self = Self::new(seed);
     }
+    fn snapshot(&self) -> Option<RandomState> {
+        Some(RandomState::Xoroshiro(self.lo, self.hi))
+    }
+    fn restore(&mut self, state: RandomState) -> bool {
+        let RandomState::Xoroshiro(lo, hi) = state else {
+            return false;
+        };
+        *self = Self::from_state(lo, hi);
+        true
+    }
     fn next_int(&mut self) -> i32 {
         self.next_long() as i32
     }
@@ -367,6 +406,34 @@ mod tests {
     fn invalid_inputs_preserve_both_streams() {
         invalid_bounds_do_not_consume_state(LegacyRandom::new(0));
         invalid_bounds_do_not_consume_state(XoroshiroRandom::new(0));
+    }
+
+    fn restored_draws<R: RandomSource>(mut original: R, mut target: R) -> [i32; 5] {
+        for _ in 0..3 {
+            original.next_int_bound(10).unwrap();
+        }
+        assert!(target.restore(original.snapshot().unwrap()));
+        std::array::from_fn(|_| {
+            let next = target.next_int_bound(100).unwrap();
+            assert_eq!(next, original.next_int_bound(100).unwrap());
+            next
+        })
+    }
+
+    #[test]
+    fn a_snapshot_restored_elsewhere_draws_on_as_the_original() {
+        // jshell: var r = new java.util.Random(42); 3 × r.nextInt(10); then 5 × r.nextInt(100)
+        let legacy = restored_draws(LegacyRandom::new(42), LegacyRandom::new(0));
+        assert_eq!(legacy, [84, 70, 25, 5, 18]);
+        // jshell on server-game.jar: new XoroshiroRandomSource(1L, 2L); 3 × nextInt(10); 5 × nextInt(100)
+        let xoroshiro = restored_draws(XoroshiroRandom::from_state(1, 2), XoroshiroRandom::new(0));
+        assert_eq!(xoroshiro, [1, 42, 75, 83, 11]);
+        let mut cached = LegacyRandom::new(5);
+        cached.next_gaussian();
+        let state = cached.snapshot().unwrap();
+        assert!(cached.restore(state));
+        assert_eq!(<(u64, Option<f64>)>::from(&cached).1, None);
+        assert!(!cached.restore(RandomState::Xoroshiro(1, 2)));
     }
 
     #[test]

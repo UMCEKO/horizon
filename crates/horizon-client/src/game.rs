@@ -167,6 +167,7 @@ use horizon_core::{
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use horizon_mod_package::selection::{Argument, LaunchArguments};
+pub(crate) use java_hooks::{java_hook_loot_rolled, java_hook_loot_wanted};
 pub use native_block_entity_draw::BlockEntityDraw;
 pub use native_claimed_items::{HeldItemSlot, ModEvent};
 pub use native_components::NativeComponentError;
@@ -4883,6 +4884,8 @@ impl Game<'_> {
                 raining: weather && rain > 0.2,
                 thundering: weather && thunder > 0.9,
             }),
+            this_entity: None,
+            killer: None,
         }
     }
     /// `Block.getDrops` for a block a player breaks: the block's loot table
@@ -4897,8 +4900,10 @@ impl Game<'_> {
         block_entity: Option<horizon_core::nbt::Tag>,
     ) -> Vec<ItemStack> {
         let dynamic = self.pending.dynamic(pos);
-        let place = self.loot_place_at(pos.map(|v| f64::from(v) + 0.5), block_entity);
+        let mut place = self.loot_place_at(pos.map(|v| f64::from(v) + 0.5), block_entity);
         let (_, entity) = self.native_clicker();
+        let player = self.native_acting_id();
+        place.this_entity = Some((entity, player));
         let mut drops = horizon_world::loot::with_native_loot_place(place, || {
             let roll = horizon_client::items::BlockLootRoll {
                 held,
@@ -4908,7 +4913,6 @@ impl Game<'_> {
             };
             self.roll_block_loot(pos, state, Some(entity as u32), roll)
         });
-        let player = self.native_acting_id();
         self.native_block_loot(pos, state, Some(player), held, None, &mut drops);
         drops
     }

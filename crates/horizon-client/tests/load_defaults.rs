@@ -82,6 +82,8 @@ fn default_components_reader_baseline() -> client::Result<()> {
             },
             loot_function: |_, _, _, _| {},
             loot_condition: |_, _, _, _| {},
+            loot_wanted: |_| false,
+            loot_rolled: |_, _, _, _, _| {},
         })
         .is_ok()
     );

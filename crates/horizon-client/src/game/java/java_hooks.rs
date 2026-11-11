@@ -460,6 +460,23 @@ pub(super) fn java_frames() -> Option<std::sync::Arc<dyn Fn() -> Vec<Vec<u8>> + 
     None
 }
 
+/// Whether a Java mod modifies the loot of a top-level roll of `table` (NeoForge's `modifyLoot`).
+pub(crate) fn java_hook_loot_wanted(table: &str) -> bool {
+    let _ = table;
+    false
+}
+
+/// NeoForge's `CommonHooks.modifyLoot` for a roll [`java_hook_loot_wanted`] took.
+pub(crate) fn java_hook_loot_rolled(
+    table: &str,
+    ctx: &horizon_world::loot::LootContext<'_>,
+    tool: Option<&horizon_world::loot::LootStack>,
+    random: &mut Option<horizon_core::random::RandomState>,
+    items: &mut Vec<horizon_world::loot::LootStack>,
+) {
+    let _ = (table, ctx, tool, random, items);
+}
+
 /// Opening a world waits on the Java mods' start: Err when they failed to start.
 pub(super) fn java_hook_ready() -> Result<(), &'static str> {
     #[cfg(feature = "java-mods")]

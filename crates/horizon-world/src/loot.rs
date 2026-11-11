@@ -104,6 +104,35 @@ pub fn native_loot_condition(kind: &str, data: &Value, ctx: &LootContext<'_>, ho
     crate::native_load_hooks::loot_condition(kind, data, ctx, holds);
 }
 
+/// NeoForge's `modifyLoot` after a top-level roll and its splitter; a no-op unless a hook wants `table`.
+pub fn rolled<'c, R: RandomSource>(
+    table: &str,
+    ctx: impl FnOnce() -> LootContext<'c>,
+    tool: Option<&LootStack>,
+    random: &mut R,
+    items: &mut Vec<LootStack>,
+) {
+    if !crate::native_load_hooks::loot_wanted(table) {
+        return;
+    }
+    let Some(before) = random.snapshot() else {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            log::warn!("a loot roll's random has no state to hand out: {table} skips the loot hook")
+        });
+        return;
+    };
+    let mut state = Some(before);
+    crate::native_load_hooks::loot_rolled(table, &ctx(), tool, &mut state, items);
+    if let Some(after) = state.filter(|after| *after != before)
+        && !random.restore(after)
+    {
+        log::warn!(
+            "the loot hook gave {table} back a random state of another kind; kept the roll's"
+        );
+    }
+}
+
 /// The tool a loot context names: its item id and enchantments.
 pub struct LootTool {
     pub item: String,
@@ -159,6 +188,10 @@ pub struct LootPlace {
     pub block_entity: Option<Tag>,
     /// The level the roll is in.
     pub level: Option<LootLevel>,
+    /// `THIS_ENTITY`: the entity id and UUID of the breaking player or the dying mob.
+    pub this_entity: Option<(i32, u128)>,
+    /// `LAST_DAMAGE_PLAYER`: the UUID of the player who killed the mob.
+    pub killer: Option<u128>,
 }
 
 /// The level a loot roll is in, as a mod's own loot kinds see it.
@@ -278,7 +311,129 @@ impl LootStack {
     pub fn get_count(&self) -> i32 {
         if self.is_empty() { 0 } else { self.count }
     }
+    /// `ItemStack.CODEC`'s JSON form; `map` and `exploration` are not in it.
+    pub fn to_codec_json(&self) -> Value {
+        let mut components = serde_json::Map::new();
+        if self.damage != 0 {
+            components.insert(DAMAGE.into(), self.damage.into());
+        }
+        if !self.enchantments.is_empty() {
+            let levels = self
+                .enchantments
+                .iter()
+                .map(|(id, level)| (id.clone(), Value::from(*level)));
+            components.insert(ENCHANTMENTS.into(), Value::Object(levels.collect()));
+        }
+        if let Some(potion) = &self.potion {
+            components.insert(
+                POTION_CONTENTS.into(),
+                serde_json::json!({ "potion": potion }),
+            );
+        }
+        for (id, text) in &self.names {
+            components.insert(id.clone(), text.clone());
+        }
+        if !self.stew_effects.is_empty() {
+            let effects = self
+                .stew_effects
+                .iter()
+                .map(|(id, duration)| serde_json::json!({ "id": id, "duration": duration }));
+            components.insert(STEW_EFFECTS.into(), Value::Array(effects.collect()));
+        }
+        if let Some(amplifier) = self.ominous_amplifier {
+            components.insert(OMINOUS_AMPLIFIER.into(), amplifier.into());
+        }
+        for (id, value) in &self.components {
+            components.remove(id);
+            components.remove(&format!("!{id}"));
+            match value {
+                Some(tag) => {
+                    if let Ok(json) = horizon_core::json_nbt::tag_to_json(tag) {
+                        components.insert(id.clone(), json);
+                    }
+                }
+                None => {
+                    components.insert(format!("!{id}"), Value::Object(Default::default()));
+                }
+            }
+        }
+        let mut out = serde_json::json!({ "id": self.item, "count": self.count });
+        if !components.is_empty() {
+            out["components"] = Value::Object(components);
+        }
+        out
+    }
+    /// A stack from `ItemStack.CODEC`'s JSON form, untyped components kept in `components`.
+    pub fn from_codec_json(json: &Value) -> Option<LootStack> {
+        let mut stack = LootStack::new(json["id"].as_str()?);
+        stack.count = json
+            .get("count")
+            .map_or(Some(1), |count| count.as_i64().map(|c| c as i32))?;
+        let int = |v: &Value| v.as_i64().map(|v| v as i32);
+        for (id, value) in json["components"].as_object().into_iter().flatten() {
+            match id.as_str() {
+                DAMAGE if int(value).is_some() => stack.damage = int(value).unwrap_or(0),
+                ENCHANTMENTS if value.is_object() => {
+                    let levels = value
+                        .get("levels")
+                        .filter(|l| l.is_object())
+                        .unwrap_or(value);
+                    stack.enchantments = levels
+                        .as_object()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|(id, level)| Some((id.clone(), int(level)?)))
+                        .collect();
+                }
+                POTION_CONTENTS => {
+                    let potion = value.as_str().or_else(|| value["potion"].as_str());
+                    stack.potion = potion.map(str::to_owned);
+                    let only_potion = value.is_string()
+                        || value
+                            .as_object()
+                            .is_some_and(|o| o.keys().all(|k| k == "potion"));
+                    if !only_potion && let Ok(tag) = horizon_core::json_nbt::json_to_tag(value) {
+                        stack.components.push((id.clone(), Some(tag)));
+                    }
+                }
+                CUSTOM_NAME | ITEM_NAME => stack.names.push((id.clone(), value.clone())),
+                STEW_EFFECTS if value.is_array() => {
+                    stack.stew_effects = value
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|e| {
+                            let duration = e.get("duration").map_or(Some(160), int)?;
+                            Some((e["id"].as_str()?.to_owned(), duration))
+                        })
+                        .collect();
+                }
+                OMINOUS_AMPLIFIER if int(value).is_some() => stack.ominous_amplifier = int(value),
+                _ => match id.strip_prefix('!') {
+                    Some(removed) => stack.components.push((removed.to_owned(), None)),
+                    None => {
+                        let tag = if id == "minecraft:custom_data" && value.is_string() {
+                            nbt_predicate_tag(value)
+                        } else {
+                            horizon_core::json_nbt::json_to_tag(value).ok()
+                        };
+                        if let Some(tag) = tag {
+                            stack.components.push((id.clone(), Some(tag)));
+                        }
+                    }
+                },
+            }
+        }
+        Some(stack)
+    }
 }
+const DAMAGE: &str = "minecraft:damage";
+const ENCHANTMENTS: &str = "minecraft:enchantments";
+const POTION_CONTENTS: &str = "minecraft:potion_contents";
+const CUSTOM_NAME: &str = "minecraft:custom_name";
+const ITEM_NAME: &str = "minecraft:item_name";
+const STEW_EFFECTS: &str = "minecraft:suspicious_stew_effects";
+const OMINOUS_AMPLIFIER: &str = "minecraft:ominous_bottle_amplifier";
 
 #[derive(Clone, Copy, Debug, Default)]
 struct ItemFacts {
@@ -1110,7 +1265,9 @@ impl LootData {
         };
         let mut items = Vec::new();
         c.table_raw(table, json, &mut |c, stack| c.data.split(stack, &mut items));
+        let ctx = c.hook_ctx();
         *random = c.random;
+        rolled(table, ctx, None, random, &mut items);
         items
     }
     /// LootTable.getRandomItems for an entity context: the generated stacks
@@ -1158,7 +1315,9 @@ impl LootData {
         };
         let mut items = Vec::new();
         c.table_raw(table, json, &mut |c, stack| c.data.split(stack, &mut items));
+        let ctx = c.hook_ctx();
         *random = c.random;
+        rolled(table, ctx, None, random, &mut items);
         items
     }
     /// LootTable.getRandomItems with an empty context (a trial spawner's
@@ -1184,7 +1343,9 @@ impl LootData {
         };
         let mut items = Vec::new();
         c.table_raw(table, json, &mut |c, stack| c.data.split(stack, &mut items));
+        let ctx = c.hook_ctx();
         *random = c.random;
+        rolled(table, ctx, None, random, &mut items);
         items
     }
     /// LootTable.createStackSplitter (every item is enabled).
@@ -1260,7 +1421,9 @@ impl LootData {
         };
         let mut items = Vec::new();
         c.table_raw(table, json, &mut |c, stack| c.data.split(stack, &mut items));
+        let ctx = c.hook_ctx();
         *random = c.random;
+        rolled(table, ctx, None, random, &mut items);
         let mut available: Vec<usize> = (0..slots).collect();
         shuffle(&mut available, random);
         shuffle_and_split(&mut items, available.len(), random);
@@ -1387,7 +1550,7 @@ struct Context<'a, R> {
 }
 type Sink<'s, R> = dyn FnMut(&mut Context<'_, R>, LootStack) + 's;
 
-impl<R: RandomSource> Context<'_, R> {
+impl<'a, R: RandomSource> Context<'a, R> {
     /// A `LootContext.EntityTarget` parameter.
     fn target(&self, name: &str) -> Option<&LootEntity> {
         let p = self.entity?;
@@ -1627,6 +1790,21 @@ impl<R: RandomSource> Context<'_, R> {
                 self.run(m, stack)
             }
             _ => stack,
+        }
+    }
+    /// [`Self::native_ctx`] without the seed draw: the loot hook gets the random itself.
+    fn hook_ctx(&self) -> impl FnOnce() -> LootContext<'a> + use<'a, R> {
+        let (entity, biome, luck) = (self.entity, self.biome, self.luck);
+        move || LootContext {
+            entity: entity.map(|e| &e.this),
+            damage: entity.and_then(|e| e.damage.as_ref()),
+            player: entity.and_then(|e| e.player.as_ref()),
+            tool: None,
+            block: None,
+            luck,
+            biome,
+            seed: 0,
+            place: current_native_loot_place(),
         }
     }
     /// The context a mod's own loot kinds see: drawn lazily, only when
@@ -3267,6 +3445,28 @@ mod native_kinds_tests {
         let mut r6 = horizon_core::random::LegacyRandom::new(42);
         let b = modded.roll("minecraft:test", &mut r6, 0.0, None, None);
         assert_eq!(a, b, "same seed, different result");
+    }
+
+    #[test]
+    fn a_stack_crosses_as_vanilla_item_stack_codec_json() {
+        // Printed by vanilla's ItemStack.CODEC with JsonOps for the same stack.
+        let vanilla = serde_json::json!({"id":"minecraft:diamond_sword","count":1,"components":{"minecraft:damage":3,"minecraft:enchantments":{"minecraft:sharpness":2},"minecraft:potion_contents":{"potion":"minecraft:swiftness"},"minecraft:custom_name":"Blade","minecraft:custom_data":{"mark":"s124","n":5}}});
+        let mut stack = LootStack::new("minecraft:diamond_sword");
+        stack.damage = 3;
+        stack.enchantments = vec![("minecraft:sharpness".into(), 2)];
+        stack.potion = Some("minecraft:swiftness".into());
+        stack.names = vec![("minecraft:custom_name".into(), "Blade".into())];
+        let data = Tag::compound([("mark", Tag::String("s124".into())), ("n", Tag::Byte(5))]);
+        stack.components = vec![("minecraft:custom_data".into(), Some(data))];
+        assert_eq!(stack.to_codec_json(), vanilla);
+        assert_eq!(LootStack::from_codec_json(&vanilla), Some(stack));
+
+        let mut removed = LootStack::new("minecraft:stick");
+        removed.count = 2;
+        removed.components = vec![("minecraft:lore".into(), None)];
+        let json = removed.to_codec_json();
+        assert_eq!(json["components"]["!minecraft:lore"], serde_json::json!({}));
+        assert_eq!(LootStack::from_codec_json(&json), Some(removed));
     }
 
     fn place(x: f64) -> LootPlace {

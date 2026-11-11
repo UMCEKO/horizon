@@ -198,6 +198,10 @@ pub fn main_with(
             loot_condition: |kind, data, ctx, holds| {
                 crate::game::api_values::dispatch_loot_condition(kind, data, ctx, holds);
             },
+            loot_wanted: |table| crate::game::java_hook_loot_wanted(table),
+            loot_rolled: |table, ctx, tool, random, items| {
+                crate::game::java_hook_loot_rolled(table, ctx, tool, random, items);
+            },
         },
     )
     .is_err()
