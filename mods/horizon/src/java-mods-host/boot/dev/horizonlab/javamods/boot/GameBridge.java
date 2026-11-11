@@ -144,6 +144,7 @@ public final class GameBridge {
         Crossing.game("bench_route", Routing::benchCall);
         Crossing.game("entity_types", input -> EntityFacts.types(level(OVERWORLD)));
         Crossing.game("level_add", GameBridge::levelAdd);
+        Crossing.game("craft_facts", input -> CraftFacts.bin(server()));
         Crossing.game("click_block", (in, out) -> use(in, out, 2));
         Crossing.game("event_click_block", (in, out) -> use(in, out, 3));
         Crossing.game("event_use_item", (in, out) -> use(in, out, 4));

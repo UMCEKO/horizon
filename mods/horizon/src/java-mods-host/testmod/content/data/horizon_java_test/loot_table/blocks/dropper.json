@@ -1,0 +1,21 @@
+{
+  "type": "minecraft:block",
+  "pools": [
+    {
+      "condition": {
+        "type": "horizon_java_test:always"
+      },
+      "entries": [
+        {
+          "type": "minecraft:item",
+          "modifier": {
+            "type": "horizon_java_test:stamp"
+          },
+          "name": "horizon_java_test:dropper"
+        }
+      ],
+      "rolls": 1
+    }
+  ],
+  "random_sequence": "horizon_java_test:blocks/dropper"
+}

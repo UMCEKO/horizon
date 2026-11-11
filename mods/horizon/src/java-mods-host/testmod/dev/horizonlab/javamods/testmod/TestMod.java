@@ -46,6 +46,7 @@ public final class TestMod {
         Goo.register(bus, ITEMS);
         Breakables.register(bus, ITEMS);
         Switcher.register(bus, ITEMS);
+        Crafting.register(bus, ITEMS);
         ChunkData.register(bus);
         PARTICLE_TYPES.register(bus);
         ExportFeature.register(bus);

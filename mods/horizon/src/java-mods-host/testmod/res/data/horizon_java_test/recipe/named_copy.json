@@ -1,0 +1,15 @@
+{
+  "type": "horizon_java_test:named_copy",
+  "key": {
+    "#": "minecraft:name_tag",
+    "P": "minecraft:paper"
+  },
+  "pattern": [
+    "P",
+    "#"
+  ],
+  "result": {
+    "count": 1,
+    "id": "minecraft:name_tag"
+  }
+}
