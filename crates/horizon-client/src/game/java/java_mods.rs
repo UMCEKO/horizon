@@ -321,6 +321,7 @@ impl Game<'_> {
     pub(in crate::game) fn java_use_request(&mut self) -> Option<Vec<u8>> {
         let position = self.player.as_ref()?.position;
         let [a, b, c, d] = self.acting_uuid();
+        let key = self.java_level_key();
         let mut out = Out::default();
         out.long(((a as i64) << 32) | (b as u32 as i64));
         out.long(((c as i64) << 32) | (d as u32 as i64));
@@ -330,7 +331,7 @@ impl Game<'_> {
                 .clone()
                 .unwrap_or_else(|| self.options.player_name()),
         );
-        out.text(self.dim.id());
+        out.int(key as i32);
         out.long(self.world.game_time);
         out.text(self.player.as_ref()?.pose.name());
         out.double(position.x);
@@ -419,6 +420,23 @@ impl Game<'_> {
         Some(())
     }
 
+    /// This level's key in Java's table of levels: Java is told the level's name once, when it first needs it.
+    pub(super) fn java_level_key(&mut self) -> u32 {
+        self.java_register_level(self.dim);
+        self.dim.key().slot()
+    }
+
+    fn java_register_level(&mut self, dim: Dim) {
+        let key = dim.key().slot();
+        if JAVA_SERVER.with_borrow(|s| s.known.contains(&key)) {
+            return;
+        }
+        let Some(host) = horizon_java_host::get() else {
+            return;
+        };
+        horizon_java_host::bridge::with_active(self, || register_level(host, dim));
+    }
+
     /// Calls `GameBridge`'s `op` for this level, with what it does to the world applied after.
     fn java_level_call(&mut self, op: &str, body: impl FnOnce(&mut Out)) {
         let Some(host) = horizon_java_host::get() else {
@@ -426,12 +444,12 @@ impl Game<'_> {
         };
         self.java_bind_states();
         self.java_push_stale();
-        let (dim, time) = (self.dim.id(), self.world.game_time);
+        let (key, time) = (self.java_level_key(), self.world.game_time);
         let effects = horizon_java_host::bridge::with_active(self, || {
             host.call_with(
                 op,
                 |out| {
-                    out.text(dim);
+                    out.int(key as i32);
                     out.long(time);
                     body(out);
                 },
@@ -565,8 +583,9 @@ impl Game<'_> {
     /// `data get block` of a block entity Java holds: its live saved form replaces the chunk's copy first.
     pub(in crate::game) fn java_refresh_block_entity(&mut self, pos: BlockPos) {
         self.java_bind_states();
+        let key = self.java_level_key();
         let mut out = Out::default();
-        out.text(self.dim.id());
+        out.int(key as i32);
         out.long(self.world.game_time);
         out.long(pos.pack());
         let reply = self.java_request("block_entity_data", &out.0);
@@ -615,8 +634,9 @@ impl Game<'_> {
             return None;
         }
         let pos = |p: (i32, i32, i32)| BlockPos::new(p.0, p.1, p.2).pack();
+        let key = self.java_level_key();
         let mut out = Out::default();
-        out.text(self.dim.id());
+        out.int(key as i32);
         out.long(self.world.game_time);
         out.long(pos(hopper));
         out.long(pos(target));
@@ -669,7 +689,7 @@ impl Game<'_> {
         if self.remote.is_some() || !JAVA_SERVER.with_borrow(|s| s.started) {
             return;
         }
-        let behind = JAVA_SERVER.with_borrow_mut(|s| s.levels.insert(self.dim.id().to_owned()));
+        let behind = JAVA_SERVER.with_borrow_mut(|s| s.levels.insert(self.dim.key().slot()));
         if loaded.is_empty() && unloaded.is_empty() && !behind {
             return;
         }
@@ -706,8 +726,9 @@ impl Game<'_> {
                 }
             }
         }
+        let key = self.java_level_key();
         let mut out = Out::default();
-        out.text(self.dim.id());
+        out.int(key as i32);
         out.long(self.world.game_time);
         out.int(entities.len() as i32);
         for (pos, bytes) in &entities {
@@ -766,7 +787,7 @@ impl Game<'_> {
     /// Whether this level's chunks are the Java server's: it started, and the level caught up on its chunks.
     pub(super) fn java_level_running(&self) -> bool {
         self.remote.is_none()
-            && JAVA_SERVER.with_borrow(|s| s.started && s.levels.contains(self.dim.id()))
+            && JAVA_SERVER.with_borrow(|s| s.started && s.levels.contains(&self.dim.key().slot()))
     }
 
     /// What changed in the players' views, chunks and pairings, for the `ChunkMap` in Java: views and resets, then the chunks watched and unwatched, then pairings and departures.
@@ -847,8 +868,9 @@ impl Game<'_> {
         if horizon_java_host::get().is_none() {
             return true;
         }
+        let key = self.java_level_key();
         let mut out = Out::default();
-        out.text(self.dim.id());
+        out.int(key as i32);
         out.long(self.world.game_time);
         out.long(at.pack());
         let reply = self.java_request("block_entity_tick", &out.0);
@@ -977,12 +999,20 @@ impl Game<'_> {
             .unwrap_or(&root)
             .to_string_lossy()
             .into_owned();
+        if open {
+            for dim in Dim::all() {
+                self.java_register_level(dim);
+            }
+        }
         self.java_level_call(if open { "server_start" } else { "server_stop" }, |out| {
             out.text(&world);
         });
         JAVA_SERVER.with_borrow_mut(|s| {
             s.started = open;
             s.levels.clear();
+            if !open {
+                s.known.clear();
+            }
         });
         horizon_client::lan::chunk_watch::set_java_side(
             open && horizon_java_host::get().is_some(),
@@ -1034,8 +1064,9 @@ impl Game<'_> {
         if horizon_java_host::get().is_none() {
             return;
         }
+        let key = self.java_level_key();
         let mut out = Out::default();
-        out.text(self.dim.id());
+        out.int(key as i32);
         let reply = self.java_request("block_entities_save", &out.0);
         let Some(reply) = reply else {
             return;
@@ -1061,11 +1092,28 @@ pub(super) struct BlockEvent {
     c: i32,
 }
 
+/// Tells Java the name of a level's key, once: its `ServerLevel` is made then.
+pub(super) fn register_level(host: &horizon_java_host::Host, dim: Dim) {
+    let key = dim.key().slot();
+    if JAVA_SERVER.with_borrow(|s| s.known.contains(&key)) {
+        return;
+    }
+    let mut out = Out::default();
+    out.int(key as i32);
+    out.text(dim.id());
+    horizon_java_host::profile::record_dimension_name();
+    if host.request("level_add", &out.0).is_some() {
+        JAVA_SERVER.with_borrow_mut(|s| s.known.insert(key));
+    }
+}
+
 /// Whether Java's server started, and the levels whose loaded chunks Java has taken since.
 #[derive(Default)]
 struct JavaServer {
     started: bool,
-    levels: std::collections::HashSet<String>,
+    levels: std::collections::HashSet<u32>,
+    /// The keys of the levels Java holds a `ServerLevel` for.
+    known: std::collections::HashSet<u32>,
 }
 
 thread_local! {

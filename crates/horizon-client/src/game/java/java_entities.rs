@@ -61,7 +61,7 @@ pub(in crate::game) fn uuid_bits(uuid: [i32; 4]) -> u128 {
 }
 
 thread_local! {
-    static VIEWED: std::cell::RefCell<std::collections::HashSet<(String, u32)>> = Default::default();
+    static VIEWED: std::cell::RefCell<std::collections::HashSet<(u32, u32)>> = Default::default();
 }
 
 pub(in crate::game) fn reset_views() {
@@ -568,7 +568,7 @@ impl Game<'_> {
         let Some((groups, tag)) = self.java_groups(t, mask) else {
             return false;
         };
-        let known = VIEWED.with_borrow(|v| v.contains(&(self.dim.id().to_owned(), id)));
+        let known = VIEWED.with_borrow(|v| v.contains(&(self.dim.key().slot(), id)));
         let Some(saved) = (if known {
             Some(Vec::new())
         } else {
@@ -618,8 +618,9 @@ impl Game<'_> {
 
     fn java_entity_request(&mut self, op: &str, body: impl FnOnce(&mut Out)) -> Option<Vec<u8>> {
         self.java_bind_states();
+        let key = self.java_level_key();
         let mut out = Out::default();
-        out.text(self.dim.id());
+        out.int(key as i32);
         out.long(self.world.game_time);
         body(&mut out);
         self.java_request(op, &out.0)
@@ -651,14 +652,14 @@ impl Game<'_> {
         let joined = reply.bool().unwrap_or(true);
         self.java_apply_effects(&mut reply);
         if joined {
-            VIEWED.with_borrow_mut(|v| v.insert((self.dim.id().to_owned(), id)));
+            VIEWED.with_borrow_mut(|v| v.insert((self.dim.key().slot(), id)));
         }
         joined
     }
 
     /// The leave hook: Java drops the view and sets its removal reason.
     pub(in crate::game) fn java_entity_left(&mut self, id: u32, why: Removal) {
-        let dim = self.dim.id().to_owned();
+        let dim = self.dim.key().slot();
         if !VIEWED.with_borrow_mut(|v| v.remove(&(dim, id))) {
             return;
         }
@@ -678,7 +679,7 @@ impl Game<'_> {
         if !self.java_level_running() {
             return;
         }
-        let dim = self.dim.id().to_owned();
+        let dim = self.dim.key().slot();
         let ids: Vec<u32> = self
             .level_candidates()
             .into_iter()
@@ -688,7 +689,7 @@ impl Game<'_> {
                 })
             })
             .filter_map(viewed_id)
-            .filter(|id| VIEWED.with_borrow(|v| v.contains(&(dim.clone(), *id))))
+            .filter(|id| VIEWED.with_borrow(|v| v.contains(&(dim, *id))))
             .collect();
         if ids.is_empty() {
             return;
@@ -696,8 +697,9 @@ impl Game<'_> {
         let Some(host) = horizon_java_host::get() else {
             return;
         };
+        let key = self.java_level_key();
         let mut out = Out::default();
-        out.text(&dim);
+        out.int(key as i32);
         out.int(ids.len() as i32);
         for id in &ids {
             out.int(*id as i32);

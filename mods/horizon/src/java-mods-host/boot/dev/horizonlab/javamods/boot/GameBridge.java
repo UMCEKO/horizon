@@ -83,7 +83,9 @@ public final class GameBridge {
     private record Sound(String id, double x, double y, double z, float volume, float pitch) {}
 
     private static final int SLOTS = 41;
-    private static final Map<String, ServerLevel> LEVELS = new HashMap<>();
+    /** Horizon's level keys: `DimensionKey` slots, the three vanilla dimensions first. */
+    static final int OVERWORLD = 0;
+    private static ServerLevel[] levels = new ServerLevel[3];
     private static final Map<UUID, ServerPlayer> PLAYERS = new HashMap<>();
     private static final List<Sound> SOUNDS = new ArrayList<>();
     private static RegistryAccess.Frozen registries;
@@ -148,7 +150,8 @@ public final class GameBridge {
         Crossing.game("routes_bin", input -> Routing.bin());
         Crossing.game("route", Routing::call);
         Crossing.game("bench_route", Routing::benchCall);
-        Crossing.game("entity_types", input -> EntityFacts.types(level("minecraft:overworld")));
+        Crossing.game("entity_types", input -> EntityFacts.types(level(OVERWORLD)));
+        Crossing.game("level_add", GameBridge::levelAdd);
         Crossing.game("click_block", (in, out) -> use(in, out, 2));
         Crossing.game("event_click_block", (in, out) -> use(in, out, 3));
         Crossing.game("event_use_item", (in, out) -> use(in, out, 4));
@@ -291,26 +294,44 @@ public final class GameBridge {
         return type.cast(ReflectionFactory.getReflectionFactory().newConstructorForSerialization(type, parent).newInstance(args));
     }
 
-    static ServerLevel level(String id) throws ReflectiveOperationException {
-        var level = LEVELS.get(id);
-        if (level != null) return level;
+    /** The level of a key Horizon sent with `level_add`: any other key is an error. */
+    static ServerLevel level(int key) {
+        if (key < 0 || key >= levels.length || levels[key] == null) throw new IllegalStateException("no level for key " + key);
+        return levels[key];
+    }
+
+    /** Every level, in key order. */
+    private static List<ServerLevel> allLevels() {
+        var out = new ArrayList<ServerLevel>();
+        for (var level : levels) if (level != null) out.add(level);
+        return out;
+    }
+
+    /** `level_add`: Horizon names the dimension of a key once, and its `ServerLevel` is made. */
+    private static byte[] levelAdd(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        int slot = in.readInt();
+        add(slot, text(in));
+        return new byte[0];
+    }
+
+    static ServerLevel add(int slot, String id) throws ReflectiveOperationException {
+        if (slot < 0) throw new IllegalArgumentException("level key " + slot);
+        if (slot < levels.length && levels[slot] != null) return levels[slot];
         var key = ResourceKey.create(Registries.DIMENSION, Identifier.parse(id));
         ResourceKey<DimensionType> type = key == Level.NETHER ? BuiltinDimensionTypes.NETHER : key == Level.END ? BuiltinDimensionTypes.END : BuiltinDimensionTypes.OVERWORLD;
         Holder<DimensionType> holder = registries.lookupOrThrow(Registries.DIMENSION_TYPE).getOrThrow(type);
         var parent = Level.class.getDeclaredConstructor(WritableLevelData.class, ResourceKey.class, RegistryAccess.class, Holder.class, boolean.class, boolean.class, long.class, int.class);
-        level = construct(ServerLevel.class, parent, new ViewLevelData(), key, registries, holder, false, false, 0L, 1000000);
+        var level = construct(ServerLevel.class, parent, new ViewLevelData(), key, registries, holder, false, false, 0L, 1000000);
         ServerView.attach(server, level);
         Inits.run(level, server, key, holder, level.getLevelData());
-        LEVELS.put(id, level);
+        if (slot >= levels.length) levels = java.util.Arrays.copyOf(levels, slot + 1);
+        levels[slot] = level;
         return level;
     }
 
     static ServerPlayer playerView(UUID id) {
         return PLAYERS.get(id);
-    }
-
-    static ServerLevel levelOrNull(String id) {
-        return LEVELS.get(id);
     }
 
     private static ServerPlayer player(UUID id, String name, ServerLevel level) throws ReflectiveOperationException {
@@ -396,7 +417,7 @@ public final class GameBridge {
     static Call fill(Crossing.In in, boolean refresh) throws Exception {
         var id = new UUID(in.readLong(), in.readLong());
         String name = text(in);
-        var level = level(text(in));
+        var level = level(in.readInt());
         ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
         boolean joined = !PLAYERS.containsKey(id);
         var player = player(id, name, level);
@@ -644,11 +665,10 @@ public final class GameBridge {
         if (start && !serverStarted) {
             serverStarted = true;
             worldFolder = Path.of(text(in));
-            for (String id : List.of("minecraft:overworld", "minecraft:the_nether", "minecraft:the_end")) level(id);
-            ServerView.openWorld(server, LEVELS.values(), worldFolder, here.getSeed(), dimensions);
+            ServerView.openWorld(server, allLevels(), worldFolder, here.getSeed(), dimensions);
             safely("ServerAboutToStart", () -> ServerLifecycleHooks.handleServerAboutToStart(server));
             safely("ServerStarting", () -> ServerLifecycleHooks.handleServerStarting(server));
-            for (ServerLevel level : LEVELS.values()) {
+            for (ServerLevel level : allLevels()) {
                 ChunkEvents.customSpawners(level);
                 safely("LevelEvent.Load", () -> NeoForge.EVENT_BUS.post(new LevelEvent.Load(level)));
             }
@@ -657,9 +677,9 @@ public final class GameBridge {
             serverStarted = false;
             if (!stopping) safely("ServerStopping", () -> ServerLifecycleHooks.handleServerStopping(server));
             stopping = false;
-            for (ServerLevel level : LEVELS.values()) safely("LevelEvent.Unload", () -> NeoForge.EVENT_BUS.post(new LevelEvent.Unload(level)));
+            for (ServerLevel level : allLevels()) safely("LevelEvent.Unload", () -> NeoForge.EVENT_BUS.post(new LevelEvent.Unload(level)));
             safely("ServerStopped", () -> ServerLifecycleHooks.handleServerStopped(server));
-            safely("saving saved data", () -> ServerView.saveWorld(server, LEVELS.values()));
+            safely("saving saved data", () -> ServerView.saveWorld(server, allLevels()));
             closeWorld();
         }
         return effects();
@@ -686,7 +706,7 @@ public final class GameBridge {
 
     /** A server's levels, players and block entities are its own: the next world's start builds new ones. */
     private static void closeWorld() {
-        LEVELS.clear();
+        levels = new ServerLevel[3];
         PLAYERS.clear();
         SOUNDS.clear();
         nextEntityId = -1;
@@ -772,14 +792,14 @@ public final class GameBridge {
 
     /** The level a call acts on, with the time it arrived at. */
     private static ServerLevel levelOf(Crossing.In in) throws Exception {
-        var level = level(in.name());
+        var level = level(in.readInt());
         ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
         level.environmentAttributes().invalidateTickCache();
         return level;
     }
 
     private static ServerLevel levelOf(DataInputStream in) throws Exception {
-        var level = level(text(in));
+        var level = level(in.readInt());
         ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
         level.environmentAttributes().invalidateTickCache();
         return level;
@@ -927,7 +947,7 @@ public final class GameBridge {
     /** The Java-owned keys of the listed entities' views, at native's save of them. */
     private static byte[] entitiesSave(byte[] input) throws Exception {
         var in = new DataInputStream(new ByteArrayInputStream(input));
-        var level = level(text(in));
+        var level = level(in.readInt());
         var bytes = new ByteArrayOutputStream();
         EntityViews.save(level, in, new DataOutputStream(bytes));
         return bytes.toByteArray();
@@ -943,8 +963,8 @@ public final class GameBridge {
 
     private static byte[] blockEntitiesSave(byte[] input) throws Exception {
         var in = new DataInputStream(new ByteArrayInputStream(input));
-        safely("saving saved data", () -> ServerView.saveWorld(server, LEVELS.values()));
-        var saved = BlockEntities.saveAll(level(text(in)));
+        safely("saving saved data", () -> ServerView.saveWorld(server, allLevels()));
+        var saved = BlockEntities.saveAll(level(in.readInt()));
         var bytes = new ByteArrayOutputStream();
         var out = new DataOutputStream(bytes);
         out.writeInt(saved.size());
@@ -1000,22 +1020,22 @@ public final class GameBridge {
     private static byte[] blockTicks(byte[] input) throws Exception {
         var id = Identifier.tryParse(new String(input, java.nio.charset.StandardCharsets.UTF_8));
         if (id == null || !BuiltInRegistries.BLOCK.containsKey(id)) return new byte[0];
-        return BlockEntities.ticks(BuiltInRegistries.BLOCK.getValue(id), level("minecraft:overworld")) ? new byte[] {1} : new byte[0];
+        return BlockEntities.ticks(BuiltInRegistries.BLOCK.getValue(id), level(OVERWORLD)) ? new byte[] {1} : new byte[0];
     }
 
     /** A dev run without the game: real data packs, then a level and a player view of each dimension; a mod's reload listener or a mixin on these classes shows here. */
     static String worldProbe() throws Exception {
         prepare();
         var ids = List.of("minecraft:overworld", "minecraft:the_nether", "minecraft:the_end");
-        for (String id : ids) level(id);
-        ServerView.openWorld(server, LEVELS.values(), Path.of("world").toAbsolutePath(), 1L, dimensions);
+        for (int slot = 0; slot < ids.size(); slot++) add(slot, ids.get(slot));
+        ServerView.openWorld(server, allLevels(), Path.of("world").toAbsolutePath(), 1L, dimensions);
         worldFolder = Path.of("world").toAbsolutePath();
         ServerLifecycleHooks.handleServerAboutToStart(server);
         ServerLifecycleHooks.handleServerStarting(server);
-        for (ServerLevel level : LEVELS.values()) NeoForge.EVENT_BUS.post(new LevelEvent.Load(level));
+        for (ServerLevel level : allLevels()) NeoForge.EVENT_BUS.post(new LevelEvent.Load(level));
         ServerLifecycleHooks.handleServerStarted(server);
         int views = 0;
-        for (String id : ids) player(new UUID(1, views++), "Probe", level(id));
+        for (int slot = 0; slot < ids.size(); slot++) player(new UUID(1, views++), "Probe", level(slot));
         ServerView.tick(server);
         EventHooks.fireServerTickPre(() -> true, server);
         EventHooks.fireServerTickPost(() -> true, server);

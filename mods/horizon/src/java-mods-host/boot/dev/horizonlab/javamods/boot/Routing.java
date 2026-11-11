@@ -376,7 +376,7 @@ public final class Routing {
                         : owner.equals("net/minecraft/world/inventory/AbstractContainerMenu") ? player.containerMenu : player;
             }
             case 1 -> {
-                var level = GameBridge.level(GameBridge.text(in));
+                var level = GameBridge.level(in.readInt());
                 ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
                 receiver = level;
             }

@@ -54,6 +54,7 @@ impl Game<'_> {
     pub(super) fn java_hook_block_ticks(&self, block: &str, ticks: &mut bool) {
         #[cfg(feature = "java-mods")]
         if let Some(host) = horizon_java_host::get() {
+            super::java_mods::register_level(host, super::Dim::Overworld);
             *ticks |= host.request("block_ticks", block.as_bytes()).is_some();
         }
         let _ = (block, ticks);

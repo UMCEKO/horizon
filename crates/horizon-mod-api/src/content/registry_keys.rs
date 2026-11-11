@@ -165,6 +165,13 @@ impl DimensionKey {
     /// `minecraft:the_end`.
     pub const END: Self = Self(2);
 
+    /// Its slot in the game's dimension table. For the game.
+    // hidden: a game-side helper, not part of the mod surface
+    #[doc(hidden)]
+    pub fn slot(self) -> u32 {
+        self.0
+    }
+
     #[cfg(any(not(target_arch = "wasm32"), test))]
     pub(crate) fn from_slot(slot: u32) -> Result<Self, &'static str> {
         let key = Self(slot);
