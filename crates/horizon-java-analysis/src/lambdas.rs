@@ -12,6 +12,7 @@ use zip::ZipArchive;
 use crate::class::{self, ClassInfo, Event, Parse, PoolEntry};
 use crate::hierarchy::Hierarchy;
 use crate::libraries::entry_names;
+use crate::replaces::Change;
 
 const LAMBDA_FACTORY: &str = "java/lang/invoke/LambdaMetafactory";
 const RETURNS: std::ops::RangeInclusive<u8> = 0xac..=0xb1;
@@ -241,13 +242,6 @@ pub fn enclosing(
     found
 }
 
-/// The fields of a change record `fold_lambdas` reads and writes; the rest of the record is SPEC-8's.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Change {
-    pub desc: Option<String>,
-    pub folded: Option<String>,
-}
-
 /// Port of mod_routing.fold_lambdas.
 pub fn fold_lambdas(
     records: Vec<(String, bool, Change)>,
@@ -272,6 +266,7 @@ pub fn fold_lambdas(
                     let record = Change {
                         desc: Some(hit_desc),
                         folded: Some(folded),
+                        ..record
                     };
                     return (format!("{owner}#{hit_name}"), is_vanilla, record);
                 }
