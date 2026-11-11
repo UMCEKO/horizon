@@ -442,6 +442,9 @@ impl Game<'_> {
     /// end asks the mods' `native_player_break_speed`. Every dig's progress comes from
     /// here: single player's, a host's for each guest, a remote client's own.
     pub(super) fn destroy_progress(&mut self, pos: [i32; 3]) -> f32 {
+        if let Some(progress) = self.java_hook_destroy_progress(pos) {
+            return progress;
+        }
         let state = self.world.block(pos[0], pos[1], pos[2]);
         let facts = self.res.facts().get(state);
         if facts.hardness == -1.0 {

@@ -92,7 +92,7 @@ impl Game<'_> {
         self.with_hand(hand, |g| match &stack {
             // `release_used_item` ends the use and sends its vibration, as `stopUsingItem` does.
             Some(stack) => {
-                g.release_used_item(stack, ticks, false);
+                g.release_used_item_natively(stack, ticks, false);
                 if &*stack.item == "minecraft:crossbow" {
                     g.tick_crossbow(slot, ticks, stack);
                 }
@@ -140,7 +140,7 @@ impl Game<'_> {
     }
 
     /// `ItemStack.interactLivingEntity` of an item whose own code answers it, once the mob aimed at passed (`Player.interactOn`).
-    pub(super) fn java_interact_living(&mut self) -> bool {
+    pub(super) fn java_interact_living(&mut self, entity: i32) -> bool {
         let Some(host) = horizon_java_host::get() else {
             return false;
         };
@@ -150,11 +150,8 @@ impl Game<'_> {
         if !host.item_entity_code(&stack.item) {
             return false;
         }
-        let Some((index, ..)) = self.mob_hit() else {
-            return false;
-        };
         let mut out = Out::default();
-        out.int(self.mobs[index].id as i32);
+        out.int(entity);
         let mut claimed = false;
         self.java_call_use(&stack.item, "interact_entity", out.0, &mut claimed);
         if claimed {
@@ -611,6 +608,11 @@ impl Game<'_> {
         horizon_java_host::get()?;
         self.java_bind_states();
         if !horizon_java_host::bridge::java_block(self.world.block(target.0, target.1, target.2)) {
+            return None;
+        }
+        // A hopper minecart's view is keyed off the world: only a block hopper reaches Java.
+        let at = self.world.block(hopper.0, hopper.1, hopper.2);
+        if &*self.res.facts().get(at).name != "minecraft:hopper" {
             return None;
         }
         let pos = |p: (i32, i32, i32)| BlockPos::new(p.0, p.1, p.2).pack();
