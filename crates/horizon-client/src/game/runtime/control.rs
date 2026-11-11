@@ -660,6 +660,16 @@ impl Game<'_> {
                 self.require_world()?;
                 // KeyboardHandler.keyPress: the open screen's narration hears it.
                 super::narrator::narrate_key(&mut self.narration, key, arg(2)? != "up");
+                if self.screen == Screen::Java {
+                    let action = arg(2)?;
+                    if action != "up" {
+                        self.java_screen_key_code(key, true, false, None, None);
+                    }
+                    if action != "down" && self.screen == Screen::Java {
+                        self.java_screen_key_code(key, false, false, None, None);
+                    }
+                    return ok();
+                }
                 // The sign editor takes raw presses (Enter, arrows, Backspace, Escape).
                 if self.sign_edit.is_some() {
                     if arg(2)? != "up" {
@@ -715,6 +725,10 @@ impl Game<'_> {
                         self.physical_keys.remove(&physical);
                     }
                     return ok();
+                }
+                self.java_key_input(physical, action != "up", action == "repeat");
+                if action == "tap" {
+                    self.java_key_input(physical, false, false);
                 }
                 self.native_panel_key_event(physical, action != "up", action == "repeat");
                 // The merchant's focused offer and the recipe book's last
@@ -897,6 +911,7 @@ impl Game<'_> {
                     return Err("hotbar slot must be 1..9".into());
                 }
                 self.selected = slot - 1;
+                self.java_key_action(super::java_hooks_client::JavaKeyAction::Hotbar(slot - 1));
                 ok()
             }
             "give" => {

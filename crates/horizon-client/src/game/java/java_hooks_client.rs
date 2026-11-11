@@ -89,6 +89,16 @@ impl Game<'_> {
         #[cfg(not(feature = "java-mods"))]
         let _ = picked;
     }
+
+    /// Whether the Java shell hears the window's input: it is open and no prompt, dialog or closing save is over it.
+    pub(in crate::game) fn java_shell_accepts(&self) -> bool {
+        self.java_shell_open()
+            && self.pending_save.is_none()
+            && !self.dialog_open()
+            && self.link_prompt.is_none()
+            && self.code_of_conduct.is_none()
+            && self.server_packs.prompt.is_none()
+    }
 }
 
 #[cfg(not(feature = "java-mods"))]

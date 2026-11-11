@@ -1,5 +1,6 @@
 //! A key press while a world is open (`KeyboardHandler.keyPress` and the gameplay mappings).
 use super::inventory_input::drop_whole_stack;
+use super::java_hooks_client::JavaKeyAction;
 use super::*;
 
 impl Game<'_> {
@@ -225,6 +226,7 @@ impl Game<'_> {
             // key.swapOffhand: on a server, ServerboundPlayerActionPacket SWAP_ITEM_WITH_OFFHAND
             // (the server swaps the hands and sends both slots back; spectators can't).
             KeyCode::KeyF if self.screen == Screen::Playing && self.remote.is_some() => {
+                self.java_key_action(JavaKeyAction::SwapHands);
                 if !self.spectator()
                     && let Some(r) = self.remote.as_mut()
                 {
@@ -248,6 +250,7 @@ impl Game<'_> {
                 // handleKeybinds: the number keys select before key.drop.
                 self.select_queued_hotbar();
                 let all = drop_whole_stack(self.modifiers) || self.input_takes_stack_drop();
+                self.java_key_action(JavaKeyAction::Drop(all));
                 self.drop_held(all);
             }
             KeyCode::Digit1

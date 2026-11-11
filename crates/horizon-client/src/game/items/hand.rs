@@ -276,6 +276,7 @@ impl Game<'_> {
     pub(super) fn select_queued_hotbar(&mut self) {
         for slot in std::mem::take(&mut self.hotbar_presses) {
             self.selected = slot;
+            self.java_key_action(super::java_hooks_client::JavaKeyAction::Hotbar(slot));
         }
     }
     /// The tick's clicks are done: later picks follow the crosshair again.
