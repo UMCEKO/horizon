@@ -42,7 +42,7 @@ pub fn pick(
 
 /// `getSuitableHotbarSlot`: from the selected slot on, the first empty one,
 /// else the first without enchantments, else the selected one.
-fn suitable_hotbar_slot(items: &[Option<ItemStack>], selected: usize) -> usize {
+pub fn suitable_hotbar_slot(items: &[Option<ItemStack>], selected: usize) -> usize {
     let from = |ok: &dyn Fn(&Option<ItemStack>) -> bool| {
         (0..9).map(|i| (selected + i) % 9).find(|&i| ok(&items[i]))
     };
