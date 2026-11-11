@@ -20,6 +20,11 @@ public final class RouteStubCheck {
         public static boolean earlyFlag;
         public static int earlyCalls;
         public static int voidCalls;
+        public static int flushes;
+
+        public static void beforeNativeBody() {
+            flushes++;
+        }
 
         public static int nat(int x) {
             return nativeValue;
@@ -115,6 +120,7 @@ public final class RouteStubCheck {
     }
 
     public static void main(String[] args) throws Exception {
+        BridgeProcessor.playerSync = BASE;
         MethodNode plain = build("P", "java/lang/Object").methods.stream().filter(m -> m.name.equals("twoReturns")).findFirst().orElseThrow();
         int base = returns(plain);
         for (boolean early : new boolean[] {false, true}) {
@@ -145,11 +151,15 @@ public final class RouteStubCheck {
             Object on = new Loader().define(onNode.name, write(onNode)).getDeclaredConstructor().newInstance();
             var twoOn = on.getClass().getMethod("twoReturns", int.class);
             Base.earlyCalls = 0;
+            Base.flushes = 0;
+            twoOff.invoke(off, 4);
+            check(Base.flushes == 0, "the original body flushes nothing");
             for (boolean flag : new boolean[] {false, true}) {
                 Base.earlyFlag = flag;
                 check((int) twoOn.invoke(on, -3) == 7 && (int) twoOn.invoke(on, 4) == 7, "guard on answers with the native, early=" + early + " flag=" + flag);
             }
             check(Base.earlyCalls == (early ? 4 : 0), "early is asked only with earlyCheck, got " + Base.earlyCalls);
+            check(Base.flushes == 4, "Java's player changes reach native before each native body, got " + Base.flushes);
             Base.voidCalls = 0;
             on.getClass().getMethod("oneVoid").invoke(on);
             off.getClass().getMethod("oneVoid").invoke(off);

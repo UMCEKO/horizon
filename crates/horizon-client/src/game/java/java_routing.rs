@@ -302,6 +302,13 @@ mod gate {
             };
             let mut reply = In(&reply);
             let value = read_value::<R>(key, &mut reply);
+            let level = reply
+                .int()
+                .unwrap_or_else(|| panic!("Horizon: route {key} answered in pieces"));
+            // -1: no player was filled for this call.
+            if level != -1 && self.java_apply_changes(level, &mut reply).is_none() {
+                panic!("Horizon: route {key} answered in pieces");
+            }
             if self.java_apply_effects(&mut reply).is_none() {
                 panic!("Horizon: route {key} answered in pieces");
             }
@@ -412,7 +419,15 @@ mod gate {
             let mut reply = Out::default();
             reply.0.push(0);
             reply.int(7);
-            assert_eq!(read_value::<i32>("k", &mut In(&reply.0)), 7);
+            reply.int(-1);
+            reply.int(0);
+            let mut reply = In(&reply.0);
+            assert_eq!(read_value::<i32>("k", &mut reply), 7);
+            // After the value: no player's changes (-1), then no sounds.
+            assert_eq!(
+                (reply.int(), reply.int(), reply.int()),
+                (Some(-1), Some(0), None)
+            );
         }
 
         #[test]
