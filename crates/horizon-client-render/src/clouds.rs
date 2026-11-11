@@ -306,8 +306,7 @@ pub(crate) struct Mesh {
     hits: u32,
 }
 
-/// The key after the camera's next cell crossing (the nearer edge in time), from its place in
-/// the snapped origin's window and its last motion.
+/// The key after the camera's next cell crossing, from its place in the snapped window and its last motion.
 fn predicted_key(
     key: &MeshKey,
     (fx, fz): (f32, f32),
