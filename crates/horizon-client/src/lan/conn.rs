@@ -559,10 +559,12 @@ pub(crate) fn wired_sender(
     });
     let sender = PlayerSender {
         player: 0,
+        undrained: Arc::default(),
         pending,
         held: Arc::default(),
         to: To::Pool(outbox.clone(), watch),
         wire: None,
+        fake: Arc::default(),
     };
     let (socket, reader, writer) = connection.detach();
     io_pool::adopt(

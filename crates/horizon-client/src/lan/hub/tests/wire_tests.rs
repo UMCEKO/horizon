@@ -107,10 +107,12 @@ fn wire(threshold: Option<i32>) -> Vec<Vec<u8>> {
             mob(52, "minecraft:cow", [45.5, 64.0, 9.5], round),
         ];
         let mut ctx = TickCtx {
+            sea_level: 63,
             world: &mut world,
             entities: &mobs,
             next_entity: &mut next_entity,
             spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,
