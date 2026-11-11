@@ -742,7 +742,10 @@ impl Game<'_> {
             }
             laps.lap("tp_animate");
             // The Horizon Weather option off means no rain visuals or sounds at all.
-            if rain > 0.0 && self.settings.horizon.weather {
+            if rain > 0.0
+                && self.settings.horizon.weather
+                && !horizon_client::world_renders::environment().rain_tick
+            {
                 // ClientLevel.tickWeatherEffects: rain splashes within the weather
                 // radius, and the rain sound.
                 let mut random = LegacyRandom::new(self.world.game_time.wrapping_mul(312_987_231));

@@ -953,7 +953,12 @@ pub(in crate::game) mod live {
                 .map(<[u8]>::to_vec);
             let world_animating = reply.bool()?;
             let (tabs_ready, shell, segments, shell_animating) = read_shell_tail(reply)?;
-            super::super::java_world_renders::java_world_status(world.as_deref(), world_animating);
+            let environment = reply.int()?;
+            super::super::java_world_renders::java_world_status(
+                world.as_deref(),
+                world_animating,
+                environment,
+            );
             let refused = CLIENT.with_borrow_mut(|c| {
                 c.hud_animating = animating;
                 c.recorded = true;

@@ -999,6 +999,7 @@ public final class ClientBridge {
         out.writeInt(Shells.is(Minecraft.getInstance().gui.screen()) ? 1 : 0);
         Shells.write(out, shellSegments, shellChanged, true);
         out.writeBoolean(Shells.animating);
+        out.writeInt(Environments.bits);
         shellSegments = null;
         shellChanged = false;
         return bytes.toByteArray();

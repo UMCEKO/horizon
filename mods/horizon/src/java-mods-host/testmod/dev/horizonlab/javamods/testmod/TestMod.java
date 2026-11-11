@@ -46,6 +46,7 @@ public final class TestMod {
         if (net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) {
             ClientKeys.register(bus);
             ClientWorldBox.register();
+            Skies.register(bus);
             ClientProfiles.register();
         }
     }

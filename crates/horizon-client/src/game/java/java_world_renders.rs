@@ -23,11 +23,12 @@ fn world_frame_wanted(animating: bool, recorded: bool, busy: bool) -> bool {
     animating && !recorded && !busy
 }
 
-/// A tick's status: its recording when it changed, and whether the world keeps changing.
-pub(super) fn java_world_status(blob: Option<&[u8]>, animating: bool) {
+/// A tick's status: its recording when it changed, whether the world keeps changing, and what the custom sky, cloud and weather renderers replaced.
+pub(super) fn java_world_status(blob: Option<&[u8]>, animating: bool, environment: i32) {
     if let Some(blob) = blob {
         horizon_client::world_renders::apply(blob);
     }
+    horizon_client::world_renders::set_environment(environment);
     WORLD.with_borrow_mut(|w| {
         w.animating = animating;
         w.recorded = true;
@@ -109,5 +110,18 @@ mod tests {
         assert!(!world_frame_wanted(true, true, false));
         assert!(!world_frame_wanted(true, false, true));
         assert!(!world_frame_wanted(false, false, false));
+    }
+
+    #[test]
+    fn a_status_with_sky_and_weather_replaced_leaves_native_clouds() {
+        java_world_status(None, false, 5);
+        let replaced = horizon_client::world_renders::environment();
+        assert!(replaced.sky && replaced.weather);
+        assert!(!replaced.clouds && !replaced.rain_tick);
+        java_world_left();
+        assert_eq!(
+            horizon_client::world_renders::environment(),
+            Default::default()
+        );
     }
 }

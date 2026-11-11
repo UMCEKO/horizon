@@ -336,6 +336,7 @@ final class ClientLoader {
         // `onGameLoadFinished`'s first screens are left out: Horizon shows its own title screen.
         ClientHooks.fireResourceLoadFinishedEvent(true);
         ClientResources.take();
+        Environments.decide();
     }
 
     /** Vanilla's client resolver: the connection's player info first; with no session service, a stranger resolves to nothing. */
