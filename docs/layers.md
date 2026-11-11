@@ -81,7 +81,9 @@ clipboard library, no HTTP client, and no engine crate outside this list. The pl
 (`wgpu`, `winit`, `cpal`), which a handheld console or a browser can't run, so a port there builds on these crates
 instead. They stay that way: the layer check fails when one takes `winit`, `wgpu`, `cpal`, `gilrs`, `arboard` or
 `ureq`, or an engine crate outside the list (#13002). Gameplay itself still lives in `horizon-client`; step P of
-the [plan](#plan) moves it here over time.
+the [plan](#plan) moves it into `horizon-gameplay` (what the server jar holds) and `horizon-client-gameplay`
+(client only) over time. `horizon-gameplay` is not on the list yet: `portable.pending` in `tools/layers.json`
+lets it take `horizon-client-lib` until the types it needs move down, and only ever shrinks.
 
 ## Platform
 
@@ -557,7 +559,8 @@ build doesn't compile it: inline `#[cfg(test)] mod name { ... }` modules, and fi
   - a dependency its layer may not use that `allowed` doesn't list;
   - a branch adding an `allowed` entry for a crate that already had a layer (a crate newly split out of another
     may carry the old crate's exceptions);
-  - shipped code depending on a tool.
+  - shipped code depending on a tool;
+  - a `portable.pending` crate depending on anything beyond its entry, or a branch adding to an entry.
 
   Each failure names the section of this page that applies. An `allowed` entry with no dependency left is only a
   note.
