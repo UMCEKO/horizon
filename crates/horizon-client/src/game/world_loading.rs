@@ -687,7 +687,8 @@ pub(super) fn level_shapes(
     // What the packs leave out is logged when the generator reads them.
     let (overrides, _) =
         horizon_client::datapack::worldgen_overrides(&enabled, |b| biomes.contains(b));
-    for level in LevelShapes::vanilla().keys().map(LevelKey::id) {
+    let keys: Vec<LevelKey> = shapes.keys().collect();
+    for level in keys.into_iter().map(LevelKey::id) {
         let shape = overrides.level_height(level).and_then(|h| {
             LevelShape::new(
                 h.min_y,

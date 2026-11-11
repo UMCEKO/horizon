@@ -13,6 +13,7 @@ use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
+    sync::LazyLock,
 };
 
 /// RegistryDataLoader.SYNCHRONIZED_REGISTRIES, in vanilla's order.
@@ -859,13 +860,13 @@ impl SyncData {
     }
 }
 
-/// The vanilla dimension type `name` (its NBT `data`) with the shape the
-/// world gives the level of that name, if its data packs changed it.
+/// The vanilla dimension type `name` (its NBT `data`) with the shape of a level of
+/// that type, if the world's data packs changed that level's shape.
 fn changed_dimension_type(name: &str, data: &Tag, levels: &LevelShapes) -> Option<Tag> {
-    let vanilla = LevelShapes::vanilla();
+    static VANILLA: LazyLock<LevelShapes> = LazyLock::new(LevelShapes::vanilla);
     let shape = levels
         .keys()
-        .find(|&k| levels.dimension_type(k.id()) == name && levels.shape(k) != vanilla.shape(k))
+        .find(|&k| levels.dimension_type(k.id()) == name && levels.shape(k) != VANILLA.shape(k))
         .map(|k| levels.shape(k))?;
     let mut data = data.clone();
     let Tag::Compound(fields) = &mut data else {
