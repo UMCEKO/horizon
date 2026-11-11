@@ -1192,12 +1192,18 @@ public final class ClientBridge {
         return bytes.toByteArray();
     }
 
-    /** Horizon's font's advances, sent whole as the client starts, in the player's language. */
+    /** Horizon's fonts' advances, sent as the client starts and again when native's fonts change, in the player's language. */
     private static byte[] font(DataInputStream in) throws Exception {
         ClientLoader.language(text(in));
-        float[] table = new float[in.readInt()];
-        for (int i = 0; i < table.length; i++) table[i] = in.readFloat();
-        ClientLoader.advances(table);
+        float missing = in.readFloat();
+        var tables = new java.util.HashMap<net.minecraft.resources.Identifier, float[]>();
+        for (int fonts = in.readInt(); fonts > 0; fonts--) {
+            var id = net.minecraft.resources.Identifier.parse(text(in));
+            float[] table = new float[in.readInt()];
+            for (int i = 0; i < table.length; i++) table[i] = in.readFloat();
+            tables.put(id, table);
+        }
+        ClientLoader.fonts(missing, tables);
         return new byte[] {1};
     }
 }

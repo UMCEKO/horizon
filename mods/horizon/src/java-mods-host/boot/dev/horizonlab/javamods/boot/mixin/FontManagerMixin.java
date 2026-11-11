@@ -10,7 +10,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-/** Horizon's font draws every text and Java measures with its advances (`ClientLoader.advances`), so the glyph providers this would load are never read. */
+/** Horizon's font draws every text and Java measures with its advances (`ClientLoader.fonts`), so the glyph providers this would load are never read. */
 @Mixin(FontManager.class)
 abstract class FontManagerMixin {
     @Inject(method = "reload", at = @At("HEAD"), cancellable = true)

@@ -47,8 +47,8 @@ impl SaveDir {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use horizon_core::nbt::Tag;
     use crate::chunk::LevelShape;
+    use horizon_core::nbt::Tag;
 
     #[test]
     fn a_written_record_is_saved_in_place_of_its_chunk() {
@@ -58,8 +58,10 @@ mod tests {
         let root = std::path::PathBuf::from(root);
         let assets = crate::assets::Assets::load(&root).expect("assets");
         let biomes = Arc::new(
-            Biomes::load(&horizon_assets::resource_source::ResourceRoot::directory(root))
-                .expect("biomes"),
+            Biomes::load(&horizon_assets::resource_source::ResourceRoot::directory(
+                root,
+            ))
+            .expect("biomes"),
         );
         let dir = std::env::temp_dir().join(format!("horizon-written-save-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

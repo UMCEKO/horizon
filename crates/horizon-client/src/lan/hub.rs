@@ -48,10 +48,10 @@ pub mod chat_filter;
 mod java;
 mod spawn_info;
 mod tracking;
+use advancements::AdvancementOwners;
 pub use java::Tracking;
 pub use tracking::TrackingBatch;
 use tracking::take_tracking;
-use advancements::AdvancementOwners;
 
 pub mod game_event {
     pub const NO_RESPAWN_BLOCK_AVAILABLE: u8 = 0;

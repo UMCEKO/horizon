@@ -35,4 +35,3 @@ pub(super) fn take_tracking(
         });
     }
 }
-

@@ -61,9 +61,9 @@ use {
 pub const VERSION_NAME: &str = horizon_core::VANILLA_VERSION;
 
 mod gateway;
-mod written;
 #[cfg(test)]
 mod loot_tests;
+mod written;
 
 /// Snapshot live block entities and custom names for a save batch without
 /// mutating the world. Each map is visited once, retaining its iteration order

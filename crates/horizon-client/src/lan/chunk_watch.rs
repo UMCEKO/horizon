@@ -90,8 +90,8 @@ pub fn java_side() -> bool {
 pub fn listened() -> bool {
     java_side()
         || [HookId::ChunkWatch, HookId::ChunkSent, HookId::ChunkUnwatch]
-        .into_iter()
-        .any(mod_api::__private::listened)
+            .into_iter()
+            .any(mod_api::__private::listened)
 }
 
 /// `g` stops watching chunk `(x, z)` (`ChunkMap.dropChunk`), if it did.

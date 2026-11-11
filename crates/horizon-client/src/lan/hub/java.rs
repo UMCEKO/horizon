@@ -82,14 +82,21 @@ impl Hub {
             data: frame,
         })
         .encode();
-        for g in self.guests.iter().filter(|g| java_client(g) && g.uuid == uuid) {
+        for g in self
+            .guests
+            .iter()
+            .filter(|g| java_client(g) && g.uuid == uuid)
+        {
             g.sender.send(body.clone());
         }
     }
 
     /// The guests with a Java client of their own, in the order they joined.
     pub fn java_guests(&self) -> impl Iterator<Item = u128> + '_ {
-        self.guests.iter().filter(|g| java_client(g)).map(|g| g.uuid)
+        self.guests
+            .iter()
+            .filter(|g| java_client(g))
+            .map(|g| g.uuid)
     }
 
     /// `MinecraftServer.getProfilePermissions`: a player's command level, joined or not.
