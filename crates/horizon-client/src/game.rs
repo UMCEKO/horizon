@@ -4950,6 +4950,8 @@ impl Game<'_> {
         held: Option<&ItemStack>,
         block_entity: Option<horizon_core::nbt::Tag>,
     ) -> Vec<ItemStack> {
+        let swapped = self.java_hook_tool_for_loot(held);
+        let held = swapped.as_ref().or(held);
         let dynamic = self.pending.dynamic(pos);
         let mut place = self.loot_place_at(pos.map(|v| f64::from(v) + 0.5), block_entity);
         let (_, entity) = self.native_clicker();
