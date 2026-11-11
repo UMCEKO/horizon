@@ -451,17 +451,27 @@ impl Game<'_> {
         horizon_java_host::bridge::with_active(self, || host.request(op, input))
     }
 
-    /// What Java holds of a block entity Horizon changed on its own: the new saved form, or its removal.
+    /// What Java holds of a block entity Horizon changed on its own, by generation: a replacement or removal, or the saved form read into the object it keeps.
     pub(in crate::game) fn java_push_stale(&mut self) {
-        for key in self.world.block_entities.take_java_stale() {
+        for (key, rewritten) in self.world.block_entities.take_java_stale() {
+            let Some(held) = self.world.block_entities.java_held_generation(&key) else {
+                continue;
+            };
             let pos = BlockPos::new(key.0, key.1, key.2);
-            match self.world.block_entities.get(&key) {
-                Some(BlockEntity::Mod(_)) => self.world.block_entities.release_for_java(&key),
-                Some(_) => self.java_send_block_entity(pos),
-                None => {
+            let Some(entity) = self.world.block_entities.get(&key) else {
+                // Out of the map for its tick: `put` logs it again.
+                if self.world.block_entities.generation(&key).is_none() {
                     self.world.block_entities.release_for_java(&key);
                     self.java_level_call("block_entity_drop", |out| out.long(pos.pack()));
                 }
+                continue;
+            };
+            let is_mod = matches!(entity, BlockEntity::Mod(_));
+            let replaced = self.world.block_entities.generation(&key) != Some(held);
+            // A mod's object is newer than its saved form: only a whole-record write reaches it.
+            if (replaced || rewritten || !is_mod) && !self.java_load_block_entity(pos) && replaced {
+                self.world.block_entities.release_for_java(&key);
+                self.java_level_call("block_entity_drop", |out| out.long(pos.pack()));
             }
         }
     }
@@ -526,12 +536,20 @@ impl Game<'_> {
 
     /// `level.getBlockEntity` found nothing in Java: the saved form Horizon holds, if any, goes there now.
     pub(in crate::game) fn java_send_block_entity(&mut self, pos: BlockPos) {
+        self.java_load_block_entity(pos);
+    }
+
+    /// Sends the saved form at `pos` with its generation, which Java holds from then on; false when there is nothing to send.
+    fn java_load_block_entity(&mut self, pos: BlockPos) -> bool {
         let key = (pos.x, pos.y, pos.z);
         let Some(entity) = self.world.block_entities.get(&key) else {
-            return;
+            return false;
+        };
+        let Some(generation) = self.world.block_entities.generation(&key) else {
+            return false;
         };
         if matches!(entity, BlockEntity::Mod(m) if m.id().is_empty()) {
-            return;
+            return false;
         }
         let name = self
             .res
@@ -541,25 +559,45 @@ impl Game<'_> {
             .clone();
         let tag = horizon_client::save::encode_block_entity(key, entity, &name);
         let Some(bytes) = write_tag(tag) else {
-            return;
+            return false;
         };
-        self.world.block_entities.hold_for_java(key);
+        self.world.block_entities.hold_for_java(key, generation);
         self.java_level_call("block_entity_load", |out| {
             out.long(pos.pack());
+            out.long(generation as i64);
             out.bytes(&bytes);
         });
+        true
     }
 
-    /// `BlockEntities.store`: a vanilla block entity Java changed, written through to Horizon's chunk.
-    pub(in crate::game) fn java_store_block_entity(&mut self, pos: BlockPos, tag: &[u8]) {
+    /// Whether a Java object bound to `generation` (0: not told yet) is still the one Horizon's record at `key` goes with.
+    pub(in crate::game) fn java_generation_current(
+        &self,
+        key: (i32, i32, i32),
+        generation: i64,
+    ) -> bool {
+        generation == 0 || self.world.block_entities.generation(&key) == Some(generation as u64)
+    }
+
+    /// `BlockEntities.store`: a vanilla block entity Java changed, written through to Horizon's chunk; the generation it now holds, 0 if the object was replaced.
+    pub(in crate::game) fn java_store_block_entity(
+        &mut self,
+        pos: BlockPos,
+        generation: i64,
+        tag: &[u8],
+    ) -> i64 {
         let Some((key, entity)) =
             read_tag(tag).and_then(|t| horizon_client::save::decode_block_entity(&t))
         else {
             log::warn!("Horizon: a Java mod's block entity at {pos:?} didn't decode");
-            return;
+            return generation;
         };
-        self.world.block_entities.insert_from_java(key, entity);
+        if !self.java_generation_current(key, generation) {
+            return 0;
+        }
+        let (_, held) = self.world.block_entities.insert_from_java(key, entity);
         self.world.modified.insert((key.0 >> 4, key.2 >> 4));
+        held as i64
     }
 
     /// `data get block` of a block entity Java holds: its live saved form replaces the chunk's copy first.
@@ -630,7 +668,7 @@ impl Game<'_> {
     }
 
     /// Java made a block entity: its place in the chunk, which saves it and gives it its turn to tick.
-    pub(in crate::game) fn java_adopt_block_entity(&mut self, pos: BlockPos, id: String) {
+    pub(in crate::game) fn java_adopt_block_entity(&mut self, pos: BlockPos, id: String) -> i64 {
         let entity = BlockEntity::Mod(Box::new(horizon_client::containers::ModBlockEntity::new(
             id,
             horizon_client::containers::ModBlockEntityFields::default(),
@@ -638,6 +676,9 @@ impl Game<'_> {
         let key = (pos.x, pos.y, pos.z);
         self.world.block_entities.release_for_java(&key);
         self.world.block_entities.insert(key, entity);
+        let generation = self.world.block_entities.generation(&key).unwrap_or(0);
+        self.world.block_entities.hold_for_java(key, generation);
+        generation as i64
     }
 
     /// `BlockEntityTicker.tick` of a block entity Java holds, which it took when its chunk loaded.
@@ -686,7 +727,7 @@ impl Game<'_> {
         };
         self.java_chunks_leaving(unloaded);
         self.java_chunks_read(&joined);
-        let mut entities: Vec<(BlockPos, Vec<u8>)> = Vec::new();
+        let mut entities: Vec<(BlockPos, u64, Vec<u8>)> = Vec::new();
         if !joined.is_empty() {
             for (&key, entity) in self.world.block_entities.iter() {
                 let BlockEntity::Mod(m) = entity else {
@@ -701,8 +742,9 @@ impl Game<'_> {
                 }
                 let name = &self.res.facts().get(state).name;
                 let tag = horizon_client::save::encode_block_entity(key, entity, name);
-                if let Some(bytes) = write_tag(tag) {
-                    entities.push((BlockPos::new(key.0, key.1, key.2), bytes));
+                let generation = self.world.block_entities.generation(&key);
+                if let (Some(bytes), Some(generation)) = (write_tag(tag), generation) {
+                    entities.push((BlockPos::new(key.0, key.1, key.2), generation, bytes));
                 }
             }
         }
@@ -710,8 +752,9 @@ impl Game<'_> {
         out.text(self.dim.id());
         out.long(self.world.game_time);
         out.int(entities.len() as i32);
-        for (pos, bytes) in &entities {
+        for (pos, generation, bytes) in &entities {
             out.long(pos.pack());
+            out.long(*generation as i64);
             out.bytes(bytes);
         }
         out.int(unloaded.len() as i32);
@@ -721,6 +764,10 @@ impl Game<'_> {
         }
         let reply = self.java_request("chunks_changed", &out.0);
         UNLOADING.take();
+        for (pos, generation, _) in &entities {
+            let key = (pos.x, pos.y, pos.z);
+            self.world.block_entities.hold_for_java(key, *generation);
+        }
         let Some(reply) = reply else {
             return;
         };
@@ -984,9 +1031,7 @@ impl Game<'_> {
             s.started = open;
             s.levels.clear();
         });
-        horizon_client::lan::chunk_watch::set_java_side(
-            open && horizon_java_host::get().is_some(),
-        );
+        horizon_client::lan::chunk_watch::set_java_side(open && horizon_java_host::get().is_some());
         super::java_entities::reset_views();
         // Building every entity type reads the level through bridged natives (`getDifficulty`), so the game must be active.
         if open {

@@ -401,6 +401,11 @@ def bridges(args):
         send(f'command item replace block {machine} {y + 4} {z} container.0 with minecraft:cobblestone 20')
         send(f'command setblock {machine} {y + 8} {z} minecraft:chest')
         send(f'command setblock {machine} {y + 10} {z} minecraft:air')
+        # A chest Java holds destroyed and placed again, one merged into and one removed natively: replaced, kept, dropped.
+        send(f'command setblock {machine} {y + 6} {z} minecraft:air')
+        send(f'command setblock {machine} {y + 6} {z} minecraft:chest')
+        send(f'command data merge block {machine} {y + 7} {z} {{Items:[{{Slot:0b,id:"minecraft:diamond",count:5}}]}}')
+        send(f'command setblock {machine} {y + 9} {z} minecraft:air')
         send(f'command tp @s {x} {y} {z}')
         send('give horizon_java_test:probe')
         send('wait 40')

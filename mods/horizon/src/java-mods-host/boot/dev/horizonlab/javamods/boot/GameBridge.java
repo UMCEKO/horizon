@@ -841,10 +841,11 @@ public final class GameBridge {
         var level = levelOf(in);
         for (int n = in.readInt(); n > 0; n--) {
             var pos = BlockPos.of(in.readLong());
+            long generation = in.readLong();
             var tag = NbtIo.read(new DataInputStream(new ByteArrayInputStream(in.readNBytes(in.readInt()))), NbtAccounter.unlimitedHeap());
             try {
                 // A mod's getChunk may have promoted this one already, as `LevelChunk.getBlockEntity` promotes a pending tag.
-                if (BlockEntities.held(level).get(pos.asLong()) == null) BlockEntities.load(level, pos, tag);
+                if (BlockEntities.held(level).get(pos.asLong()) == null) BlockEntities.load(level, pos, generation, tag);
             } catch (Throwable t) {
                 t.printStackTrace();
             }
@@ -879,8 +880,9 @@ public final class GameBridge {
         var in = new DataInputStream(new ByteArrayInputStream(input));
         var level = levelOf(in);
         var pos = BlockPos.of(in.readLong());
+        long generation = in.readLong();
         var tag = NbtIo.read(new DataInputStream(new ByteArrayInputStream(in.readNBytes(in.readInt()))), NbtAccounter.unlimitedHeap());
-        BlockEntities.load(level, pos, tag);
+        BlockEntities.load(level, pos, generation, tag);
         return effects();
     }
 

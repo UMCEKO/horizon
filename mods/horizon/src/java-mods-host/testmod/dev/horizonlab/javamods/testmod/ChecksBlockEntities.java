@@ -22,6 +22,9 @@ final class ChecksBlockEntities {
 
     private static BlockPos area;
     private static ChestBlockEntity chest;
+    private static ChestBlockEntity replacedChest;
+    private static ChestBlockEntity mergedChest;
+    private static ChestBlockEntity removedChest;
     private static BlockCapabilityCache<ResourceHandler<ItemResource>, Direction> cache;
     private static BlockCapabilityCache<ResourceHandler<ItemResource>, Direction> placedCache;
     private static BlockCapabilityCache<ResourceHandler<ItemResource>, Direction> brokenCache;
@@ -81,6 +84,20 @@ final class ChecksBlockEntities {
             chest.setChanged();
             return true;
         });
+        for (int up : new int[] {6, 7, 9}) {
+            level.setBlock(at.above(up), Blocks.CHEST.defaultBlockState(), 3);
+            Checks.check("chest_made_" + up, () -> {
+                if (!(level.getBlockEntity(at.above(up)) instanceof ChestBlockEntity found)) return false;
+                found.setItem(0, new ItemStack(Items.DIAMOND, 1));
+                found.setChanged();
+                switch (up) {
+                    case 6 -> replacedChest = found;
+                    case 7 -> mergedChest = found;
+                    default -> removedChest = found;
+                }
+                return true;
+            });
+        }
         BlockPos chestAt = at.above(4);
         level.setBlock(chestAt, Blocks.CHEST.defaultBlockState(), 3);
         Checks.check("chest_cache_made", () -> {
@@ -129,6 +146,9 @@ final class ChecksBlockEntities {
                 move(cache.getCapability(), true, 3, true);
                 return cobblestone(cache.getCapability()) == 18 && chest.getItem(0).getCount() == 18;
             });
+            Checks.check("be_replaced_natively_is_new_object", () -> level.getBlockEntity(chestAt.above(2)) instanceof ChestBlockEntity fresh && fresh != replacedChest && fresh.getItem(0).isEmpty());
+            Checks.check("be_data_merge_keeps_object", () -> level.getBlockEntity(chestAt.above(3)) == mergedChest && mergedChest.getItem(0).is(Items.DIAMOND) && mergedChest.getItem(0).getCount() == 5);
+            Checks.check("be_removed_natively_is_dropped", () -> level.getBlockEntity(chestAt.above(5)) == null && removedChest.isRemoved());
             Checks.check("cache_sees_chest_placed_natively", () -> placedCache.getCapability() != null);
             Checks.check("cache_sees_chest_broken_natively", () -> brokenCache.getCapability() == null);
             return;
