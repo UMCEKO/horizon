@@ -1707,7 +1707,9 @@ dependencies = [
 name = "horizon-gameplay"
 version = "0.1.0"
 dependencies = [
+ "horizon-client-core",
  "horizon-client-lib",
+ "serde_json",
 ]
 
 [[package]]

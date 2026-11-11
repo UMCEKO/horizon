@@ -7,7 +7,9 @@ rust-version.workspace = true
 description = "Vanilla's logical side: the gameplay the server jar holds, common code included"
 
 [dependencies]
+horizon-client-core = { path = "../horizon-client-core" }
 horizon-client-lib = { path = "../horizon-client-lib", default-features = false }
+serde_json = { version = "1.0.151", features = ["raw_value"] }
 
 [lints]
 workspace = true
