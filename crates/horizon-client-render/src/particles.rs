@@ -5922,6 +5922,24 @@ mod tests {
         assert!((lifetime_alpha(a, 40, 40, 0.0) - 0.6).abs() < 1e-6);
     }
     #[test]
+    fn discard_empties_what_only_ticking_drained() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        engine.explosion([1.0, 2.0, 3.0], false, 10, 4.0, &|_| false);
+        engine.fireworks(
+            [0.0; 3],
+            [0.0; 3],
+            vec![FireworkExplosion::default()],
+            [0.0; 3],
+            true,
+        );
+        assert_eq!(engine.tracked_explosions.len(), 1);
+        assert_eq!(engine.starters.len(), 1);
+        engine.discard();
+        assert!(engine.tracked_explosions.is_empty());
+        assert!(engine.starters.is_empty());
+        assert!(engine.is_empty());
+    }
+    #[test]
     fn explosion_tracker_tracks_and_ignores_zero_blocks() {
         let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
         assert!(engine.tracked_explosions.is_empty());
