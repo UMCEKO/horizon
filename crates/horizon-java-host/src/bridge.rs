@@ -133,6 +133,14 @@ pub fn with_active<G, R>(game: &mut G, f: impl FnOnce() -> R) -> R {
     out
 }
 
+/// Runs `f`, a call into Java made where no `&mut` game is in reach: a native it reaches finds no game.
+pub fn without_active<R>(f: impl FnOnce() -> R) -> R {
+    let prior = ACTIVE.replace(std::ptr::null_mut());
+    let out = f();
+    ACTIVE.set(prior);
+    out
+}
+
 /// What the game runs on the thread of a native that just returned to Java, with the game it acted on; it may call back into Java.
 static AFTER_NATIVE: OnceLock<After> = OnceLock::new();
 type After = (std::any::TypeId, Box<dyn Fn(*mut ()) + Send + Sync>);
@@ -608,6 +616,21 @@ macro_rules! java_bridges {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_call_without_a_game_hides_the_active_one_and_gives_it_back() {
+        let mut game = 7u64;
+        let at = std::ptr::from_mut(&mut game).cast::<()>();
+        let (inside, hidden, after) = with_active(&mut game, || {
+            let inside = ACTIVE.get();
+            let hidden = without_active(|| ACTIVE.get());
+            (inside, hidden, ACTIVE.get())
+        });
+        assert_eq!(inside, at);
+        assert!(hidden.is_null());
+        assert_eq!(after, at);
+        assert!(ACTIVE.get().is_null());
+    }
 
     fn entry(guard: &'static str) -> Bridge {
         Bridge {
