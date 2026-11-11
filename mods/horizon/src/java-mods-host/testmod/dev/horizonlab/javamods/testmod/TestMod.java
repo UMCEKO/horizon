@@ -55,6 +55,7 @@ public final class TestMod {
             Goo.registerClient(bus);
             ClientWorldBox.register();
             Skies.register(bus);
+            ClientSpark.register(bus);
             ClientProfiles.register();
         }
     }
