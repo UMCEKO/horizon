@@ -164,7 +164,8 @@ impl Game<'_> {
             let java = host.profile("profile_take", &[]).unwrap_or_default();
             let calls = horizon_java_host::profile::take_calls();
             let dims = horizon_java_host::profile::take_dimension_names();
-            let line = horizon_java_host::profile::java_line(unix_ms, calls, dims, &java);
+            let tree = horizon_java_host::profile::take_tree();
+            let line = horizon_java_host::profile::java_tree_line(unix_ms, calls, dims, &java, tree);
             horizon_java_host::profile::append(dir, "java-ticks.log", &line);
         }
     }

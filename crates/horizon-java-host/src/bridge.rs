@@ -161,6 +161,7 @@ pub fn enter<G: 'static, R: Ret>(
     f: impl FnOnce(&mut JNIEnv, &mut G) -> R,
 ) -> R::Raw {
     let out = catch_unwind(AssertUnwindSafe(|| {
+        let _node = crate::profile::cross(crate::profile::Way::Native, name);
         // A table for `()` is pure: it answers on any thread, with no game behind it.
         let game = if std::mem::size_of::<G>() == 0 {
             std::ptr::NonNull::<G>::dangling().as_ptr()

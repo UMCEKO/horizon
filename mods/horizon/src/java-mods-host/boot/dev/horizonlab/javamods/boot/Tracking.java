@@ -24,7 +24,7 @@ public final class Tracking {
 
     private static final class Seen {
         int entity;
-        String dimension = "";
+        int level = -1;
         ChunkTrackingView view = ChunkTrackingView.EMPTY;
         final LongOpenHashSet sent = new LongOpenHashSet();
     }
@@ -49,7 +49,7 @@ public final class Tracking {
     /** The events `ChunkMap.markChunkPendingToSend` and `PlayerChunkSender` owe a view that came after its chunks did. */
     static void joined(ServerPlayer player, ServerLevel level) {
         var seen = seen(player.getUUID());
-        if (!seen.dimension.equals(level.dimension().identifier().toString())) return;
+        if (seen.level < 0 || seen.level != GameBridge.keyOf(level)) return;
         for (long at : seen.sent.toLongArray()) arrived(player, level, ChunkPos.getX(at), ChunkPos.getZ(at));
     }
 
@@ -64,7 +64,7 @@ public final class Tracking {
     /** `ChunkMap.isChunkTracked`'s second half: `PlayerChunkSender.isPending` is whether Horizon's hub hasn't sent it yet. */
     public static boolean sent(ServerPlayer player, ServerLevel level, int x, int z) {
         var seen = PLAYERS.get(player.getUUID());
-        return seen != null && seen.sent.contains(ChunkPos.pack(x, z)) && seen.dimension.equals(level.dimension().identifier().toString());
+        return seen != null && seen.sent.contains(ChunkPos.pack(x, z)) && seen.level >= 0 && seen.level == GameBridge.keyOf(level);
     }
 
     /** The hub's changes since the last call, as `Hub::take_tracking` lists them. */
@@ -77,7 +77,7 @@ public final class Tracking {
                 case 0 -> {
                     var seen = seen(id);
                     seen.entity = in.readInt();
-                    seen.dimension = GameBridge.readText(in);
+                    seen.level = in.readInt();
                     seen.view = ChunkTrackingView.of(new ChunkPos(in.readInt(), in.readInt()), in.readInt());
                     if (player != null) player.setChunkTrackingView(seen.view);
                 }

@@ -7,13 +7,14 @@ import java.util.Map;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 
-/** `HORIZON_PROFILE`: per-second time of mods' block entity tickers and of the wait for the server side's turn (`lock=`), and JFR dumps. */
+/** `HORIZON_PROFILE`: per-second time of mods' block entity tickers and of the wait for the server side's turn (`lock=`) and its hold (`hold=`), and JFR dumps. */
 final class Profile {
     static final boolean ON = System.getenv("HORIZON_PROFILE") != null && !System.getenv("HORIZON_PROFILE").isEmpty();
     private static final int TOP = 15;
     private static final IdentityHashMap<BlockEntityType<?>, long[]> TICKS = new IdentityHashMap<>();
     private static final HashMap<String, long[]> WAITS = new HashMap<>();
     private static final HashMap<String, long[]> EVENTS = new HashMap<>();
+    private static final HashMap<String, long[]> HOLDS = new HashMap<>();
 
     private Profile() {}
 
@@ -35,6 +36,11 @@ final class Profile {
         add(WAITS.computeIfAbsent(op, k -> new long[3]), ns);
     }
 
+    /** The server side's turn held by an outermost `op`, nested ops included. */
+    static synchronized void hold(String op, long ns) {
+        add(HOLDS.computeIfAbsent(op, k -> new long[3]), ns);
+    }
+
     private static String rows(Map<String, long[]> stats) {
         var all = new ArrayList<>(stats.entrySet());
         all.sort((a, b) -> Long.compare(b.getValue()[1], a.getValue()[1]));
@@ -47,7 +53,7 @@ final class Profile {
         return out.isEmpty() ? "-" : out.toString();
     }
 
-    /** `be=... lock=... ev=...` for the time since the last take, in the rows Rust's `profile::format_stats` writes. */
+    /** `be=... lock=... ev=... hold=...` for the time since the last take, in the rows Rust's `profile::format_stats` writes. */
     static synchronized String take() {
         var ticks = new HashMap<String, long[]>();
         TICKS.forEach((type, s) -> ticks.merge(String.valueOf(BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(type)), s, (a, b) -> {
@@ -56,10 +62,11 @@ final class Profile {
             a[2] = Math.max(a[2], b[2]);
             return a;
         }));
-        String line = "be=" + rows(ticks) + " lock=" + rows(WAITS) + " ev=" + rows(EVENTS);
+        String line = "be=" + rows(ticks) + " lock=" + rows(WAITS) + " ev=" + rows(EVENTS) + " hold=" + rows(HOLDS);
         TICKS.clear();
         WAITS.clear();
         EVENTS.clear();
+        HOLDS.clear();
         return line;
     }
 

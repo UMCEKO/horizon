@@ -1463,7 +1463,7 @@ impl TrackRecord {
             }) => {
                 head(out, 0, *uuid);
                 out.int(*entity_id);
-                out.text(dimension);
+                out.int(mod_api::__private::dimension_key(dimension).slot() as i32);
                 out.int(center.0);
                 out.int(center.1);
                 out.int(*radius);
@@ -1571,6 +1571,22 @@ mod tracking_tests {
             })
             .collect();
         assert_eq!(kinds, [0, 1, 2, 5, 4]);
+    }
+
+    #[test]
+    fn a_view_names_its_level_by_the_key_level_add_gave_it() {
+        let view = TrackRecord::Tracking(Tracking::View {
+            uuid: 7,
+            entity_id: 1,
+            dimension: "minecraft:the_nether".into(),
+            center: (3, -4),
+            radius: 2,
+        });
+        let mut out = Out::default();
+        view.write(&mut out);
+        let int = |at: usize| i32::from_be_bytes(out.0[at..at + 4].try_into().unwrap());
+        assert_eq!(out.0.len(), 4 + 16 + 4 * 5);
+        assert_eq!([int(20), int(24), int(28), int(32), int(36)], [1, 1, 3, -4, 2]);
     }
 }
 
