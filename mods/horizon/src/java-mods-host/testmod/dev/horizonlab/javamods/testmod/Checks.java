@@ -23,7 +23,7 @@ public final class Checks {
     }
 
     public static void runAll(UseOnContext context) {
-        Family[] families = {ChecksRules::run, ChecksLevelApi::run, ChecksEffects::run, ChecksPlayer::run, ChecksValues::run, ChecksEntities::run, ChecksBlockEntities::run, ChecksServer::run, ChecksChunks::run, ChecksFluids::run};
+        Family[] families = {ChecksRules::run, ChecksLevelApi::run, ChecksEffects::run, ChecksPlayer::run, ChecksValues::run, ChecksEntities::run, ChecksBlockEntities::run, ChecksServer::run, ChecksChunks::run, ChecksFluids::run, ChecksMirror::run};
         BlockPos base = context.getClickedPos();
         for (int i = 0; i < families.length; i++) families[i].run(context, base.offset(8 + i * 4, 0, 0));
         System.out.println("CHECK done ok");

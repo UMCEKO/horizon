@@ -505,6 +505,28 @@ pub struct StateMap {
 }
 pub static STATES: OnceLock<StateMap> = OnceLock::new();
 
+/// Vanilla's five fluids keep their `BuiltInRegistries.FLUID` ids as tick ids; mods' fluids have no map yet.
+const VANILLA_FLUIDS: u32 = 5;
+
+impl horizon_world::worldgen::mirror::StateMapping for StateMap {
+    fn to_java(&self, state: BlockStateId) -> Option<u32> {
+        let java = *self.to_java.get(state.0 as usize)?;
+        u32::try_from(java).ok()
+    }
+    fn to_native(&self, java: u32) -> Option<BlockStateId> {
+        self.to_horizon.get(java as usize).copied().flatten()
+    }
+    fn java_states(&self) -> usize {
+        self.to_horizon.len()
+    }
+    fn fluid_to_java(&self, fluid: u32) -> Option<u32> {
+        (fluid < VANILLA_FLUIDS).then_some(fluid)
+    }
+    fn fluid_to_native(&self, java: u32) -> Option<u32> {
+        (java < VANILLA_FLUIDS).then_some(java)
+    }
+}
+
 /// Whether Java runs any `animateTick`, of a picked state or the whole loop.
 #[inline]
 pub fn java_animates() -> bool {
@@ -616,6 +638,58 @@ macro_rules! java_bridges {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mirror_write_log_on_the_wire_carries_javas_state_ids() {
+        use horizon_world::worldgen::mirror::{MirrorError, Write, WriteLog};
+        // A mod's block sits between vanilla's in Java's registry: Horizon's 2 is Java's 3.
+        let map = StateMap {
+            to_horizon: vec![
+                Some(BlockStateId(0)),
+                Some(BlockStateId(1)),
+                None,
+                Some(BlockStateId(2)),
+            ],
+            to_java: vec![0, 1, 3, UNMAPPED],
+            java_air: 0,
+            owned: vec![false; 4],
+            entity: vec![false; 4],
+            animate: vec![0; 4],
+            animate_whole: false,
+            animate_any: false,
+        };
+        let pos = BlockPos::new(1, 2, 3);
+        let mut log = WriteLog::default();
+        log.record(Write::Block {
+            pos,
+            state: BlockStateId(2),
+            flags: 3,
+        });
+        let bytes = log.encode(&map).unwrap();
+        let mut expected = 1i32.to_be_bytes().to_vec();
+        expected.push(0);
+        expected.extend(pos.pack().to_be_bytes());
+        expected.extend(3i32.to_be_bytes());
+        expected.extend(3i32.to_be_bytes());
+        assert_eq!(bytes, expected);
+        assert_eq!(WriteLog::decode(&bytes, &map).unwrap(), log);
+        let mut unmapped = WriteLog::default();
+        unmapped.record(Write::Block {
+            pos,
+            state: BlockStateId(3),
+            flags: 3,
+        });
+        assert!(matches!(
+            unmapped.encode(&map),
+            Err(MirrorError::NoJavaState(_))
+        ));
+        let mut stray = bytes.clone();
+        stray[13..17].copy_from_slice(&2i32.to_be_bytes());
+        assert!(matches!(
+            WriteLog::decode(&stray, &map),
+            Err(MirrorError::NoNativeState(2))
+        ));
+    }
 
     #[test]
     fn a_call_without_a_game_hides_the_active_one_and_gives_it_back() {

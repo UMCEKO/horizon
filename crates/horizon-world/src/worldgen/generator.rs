@@ -846,6 +846,9 @@ impl ProtoChunk {
     pub fn biomes(&self) -> &BiomeChunk<BiomeId> {
         &self.biomes
     }
+    pub(super) fn biomes_mut(&mut self) -> &mut BiomeChunk<BiomeId> {
+        &mut self.biomes
+    }
     pub fn data(&self) -> &Arc<GeneratorData> {
         &self.data
     }
@@ -2461,6 +2464,8 @@ pub(super) struct WorkerState {
     /// Decorate with structure pieces only (for structure parity checks).
     pub(super) structures_only: bool,
     pub(super) structure_mobs: Option<Arc<dyn StructureMobs>>,
+    /// Decoration's writes while a region session records them (off by default).
+    pub(super) write_log: Option<super::mirror::WriteLog>,
     /// The world's surface rule compiled once for this worker's chunks: a
     /// `CompiledSurfaceRule` of the pipeline's random.
     surface_rule: Option<Box<dyn Any + Send>>,
@@ -3750,6 +3755,7 @@ impl OverworldGenerator {
                 timings: StageTimings::default(),
                 structures_only: false,
                 structure_mobs: None,
+                write_log: None,
                 heights: HashMap::new(),
                 surface_rule: None,
             },
@@ -3913,6 +3919,13 @@ impl GeneratorWorker {
     /// (for structure placement parity checks).
     pub fn set_structures_only(&mut self, only: bool) {
         self.state.structures_only = only;
+    }
+    /// Starts recording decoration's writes into `log`, or stops with `None`; returns the old log.
+    pub fn record_writes(
+        &mut self,
+        log: Option<super::mirror::WriteLog>,
+    ) -> Option<super::mirror::WriteLog> {
+        std::mem::replace(&mut self.state.write_log, log)
     }
     pub fn set_structure_mobs(&mut self, mobs: Arc<dyn StructureMobs>) {
         self.state.structure_mobs = Some(mobs);
