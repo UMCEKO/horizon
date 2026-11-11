@@ -13,7 +13,7 @@ import net.minecraft.sounds.SoundSource;
 import net.minecraft.util.RandomSource;
 import net.neoforged.neoforge.client.event.sound.PlaySoundEvent;
 
-/** `PlaySoundEvent` for the sounds native plays: native asks right before it plays one, at `SoundEngine.play`'s point, only when a loaded mod listens, and applies the answer. */
+/** `PlaySoundEvent` for the sounds native plays: Rust's listener posts it right before it plays one, at `SoundEngine.play`'s point, and applies the answer. */
 final class NativeSounds {
     private NativeSounds() {}
 
@@ -21,34 +21,11 @@ final class NativeSounds {
     static final byte AS_ASKED = 1;
     static final byte CHANGED = 2;
 
-    /** Whether a loaded mod listens; decided once when the mods have loaded. */
-    static volatile boolean listened;
-
-    /** Whether the bus has a listener of the event. */
-    static boolean listened(net.neoforged.bus.api.IEventBus bus) {
-        try {
-            var list = net.neoforged.bus.EventBus.class.getDeclaredMethod("getListenerList", Class.class);
-            list.setAccessible(true);
-            return ((net.neoforged.bus.ListenerList) list.invoke(bus, PlaySoundEvent.class)).getListeners().length > 0;
-        } catch (ReflectiveOperationException e) {
-            throw new IllegalStateException(e);
-        }
-    }
-
-    static void decide() {
-        listened = listened(net.neoforged.neoforge.common.NeoForge.EVENT_BUS);
-        System.err.println("Horizon: " + (listened ? "a mod listens to PlaySoundEvent; native asks it before it plays a sound" : "no mod listens to PlaySoundEvent; native plays its sounds unasked"));
-    }
-
-    static byte[] listenedReply() {
-        return new byte[] {(byte) (listened ? 1 : 0)};
-    }
-
     private static String text(DataInputStream in) throws IOException {
         return new String(in.readNBytes(in.readInt()), StandardCharsets.UTF_8);
     }
 
-    /** The event for one sound native is about to play (name, source, volume, pitch, relative, position, looping, delay, linear), posted through `post`; answers cancel, as asked, or the sound the listeners left. */
+    /** The event for one sound native is about to play (name, source, volume, pitch, relative, position, looping, delay, linear), posted through `post`; answers cancel, as asked, or the sound the listeners left in the fields it was asked with. */
     static byte[] ask(DataInputStream in, UnaryOperator<SoundInstance> post) throws IOException {
         Identifier id = Identifier.parse(text(in));
         SoundSource source = SoundSource.values()[in.readInt()];
@@ -72,11 +49,16 @@ final class NativeSounds {
             byte[] name = result.getIdentifier().toString().getBytes(StandardCharsets.UTF_8);
             out.writeInt(name.length);
             out.write(name);
+            out.writeInt(result.getSource().ordinal());
             out.writeFloat(ClientSounds.volume(result));
             out.writeFloat(ClientSounds.pitch(result));
+            out.writeBoolean(result.isRelative());
             out.writeDouble(result.getX());
             out.writeDouble(result.getY());
             out.writeDouble(result.getZ());
+            out.writeBoolean(result.isLooping());
+            out.writeInt(result.getDelay());
+            out.writeBoolean(result.getAttenuation() == SoundInstance.Attenuation.LINEAR);
         }
         return bytes.toByteArray();
     }

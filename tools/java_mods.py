@@ -338,6 +338,9 @@ def bridges(args):
             send(f'command fill {at} {y} {z - 6} {at + 14} {y + 14} {z + 4} air')
             send(f'command fill {at} {y - 1} {z - 6} {at + 14} {y - 1} {z + 4} minecraft:stone')
         send('wait 2')
+        # The test mod drops this sound in its PlaySoundEvent, which native posts from play_sound.
+        send('command playsound minecraft:block.note_block.bell master @s')
+        send('wait 5')
         # ctl counts slots from 1: the server's setSelectedSlot sees 1, 7 (the test mod cancels it), then 2.
         for slot in (2, 8, 3):
             send(f'select {slot}')
@@ -501,7 +504,7 @@ def bridges(args):
     session(args, drive)
     checks = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     shutil.copy(Path(args.scratch) / 'ctl.log', Path(args.scratch) / 'first-session.log')
-    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java') if (name, 'ok') not in checks)
+    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'play_sound_posted_from_native', 'gui_layer_pre_cancel') if (name, 'ok') not in checks)
     session(args, again)
     second = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks += [(name + ' (second session)', result) for name, result in second]

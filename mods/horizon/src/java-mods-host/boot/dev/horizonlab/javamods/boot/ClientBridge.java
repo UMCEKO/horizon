@@ -100,14 +100,15 @@ public final class ClientBridge {
         GameBridge.client = ClientBridge::call;
         for (String name : OPS.keySet()) Crossing.client(name);
         WorldFrame.decide();
-        NativeSounds.decide();
         Shells.install();
         HudLayers.install(net.neoforged.neoforge.common.NeoForge.EVENT_BUS);
         CreativeTabs.install();
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.LOWEST, true,
                 net.neoforged.neoforge.client.event.InputEvent.MouseScrollingEvent.class, event -> scrollCanceled = event.isCanceled());
+        EventPosts.own(net.neoforged.neoforge.client.event.InputEvent.MouseScrollingEvent.class);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.LOWEST, true,
                 net.neoforged.neoforge.client.event.InputEvent.InteractionKeyMappingTriggered.class, ClientBridge::clicked);
+        EventPosts.own(net.neoforged.neoforge.client.event.InputEvent.InteractionKeyMappingTriggered.class);
         Clients.dynamic = state -> ClientModels.dynamic(state) || BlockRenders.has(state);
         Clients.clientEntities = chunk -> {
             var here = new HashMap<BlockPos, BlockEntity>();
@@ -193,8 +194,7 @@ public final class ClientBridge {
         OPS.put("client_item_text", in -> ItemText.take(in));
         OPS.put("client_collisions_take", in -> collisions());
         OPS.put("client_creative_tabs", in -> CreativeTabs.take());
-        OPS.put("client_sound_listened", in -> NativeSounds.listenedReply());
-        OPS.put("client_play_sound", in -> NativeSounds.ask(in));
+        OPS.put("client_post_event", in -> EventPosts.client(in));
         OPS.put("client_shell_frame", in -> shellFrame(in));
         OPS.put("client_shell_input", in -> shellInput(in));
     }

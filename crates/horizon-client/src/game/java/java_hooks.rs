@@ -114,12 +114,6 @@ impl Game<'_> {
         }
     }
 
-    pub(super) fn java_hook_break(&mut self, pos: [i32; 3], canceled: &mut bool) {
-        #[cfg(feature = "java-mods")]
-        self.java_break_event(pos, canceled);
-        let _ = (pos, canceled);
-    }
-
     /// The progress of a break from Java's `getDestroyProgress`; None leaves it to Horizon.
     pub(super) fn java_hook_destroy_progress(&mut self, pos: [i32; 3]) -> Option<f32> {
         #[cfg(feature = "java-mods")]
@@ -240,12 +234,6 @@ impl Game<'_> {
             let _ = state;
             0
         }
-    }
-
-    pub(super) fn java_hook_attack(&mut self, entity: i32, canceled: &mut bool) {
-        #[cfg(feature = "java-mods")]
-        self.java_attack_event(entity, canceled);
-        let _ = (entity, canceled);
     }
 
     /// Java's queued block events of this level, before native answers its own.
@@ -474,6 +462,7 @@ pub(super) fn java_hook_start(window: bool) {
     {
         super::java_content::start(super::java_bridges::bridges(), window);
         super::java_components::install();
+        super::java_listener::take_census();
     }
     #[cfg(not(feature = "java-mods"))]
     let _ = window;

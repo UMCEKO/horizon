@@ -52,6 +52,7 @@ public final class TestMod {
             ClientTextures.register(bus);
             ClientWorldBox.register();
             ClientProfiles.register();
+            ClientEvents.register();
         }
     }
 

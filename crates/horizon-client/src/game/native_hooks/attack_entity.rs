@@ -18,7 +18,6 @@ impl Game<'_> {
         pos: [f64; 3],
         canceled: &mut bool,
     ) {
-        self.java_hook_attack(entity, canceled);
         self.fire_attack_entity(entity, kind, pos, canceled);
     }
 }

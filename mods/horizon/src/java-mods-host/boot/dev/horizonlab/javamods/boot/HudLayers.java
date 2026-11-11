@@ -106,6 +106,8 @@ public final class HudLayers {
 
     /** The listeners that see what mods do to a vanilla layer: a pose they moved in `Pre` (a wrap) and a cancel. */
     static void install(IEventBus bus) {
+        EventPosts.own(RenderGuiLayerEvent.Pre.class);
+        EventPosts.own(RenderGuiLayerEvent.Pre.class);
         bus.addListener(EventPriority.HIGHEST, RenderGuiLayerEvent.Pre.class, event -> {
             if (recording != null && IDS.containsKey(event.getName())) recording.poseAtPre = new Matrix3x2f(event.getGuiGraphics().pose());
         });

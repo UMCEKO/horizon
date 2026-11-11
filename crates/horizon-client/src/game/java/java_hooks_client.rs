@@ -181,9 +181,10 @@ impl Game<'_> {
         &mut self,
         batch: &mut HudBatch,
         _layer: Option<HudLayer>,
+        canceled: bool,
         native: impl FnOnce(&mut Self, &mut HudBatch) -> R,
     ) -> Option<R> {
-        Some(native(self, batch))
+        (!canceled).then(|| native(self, batch))
     }
     pub(super) fn java_screen_click(&mut self, _button: MouseButton, _pressed: bool) {}
     pub(super) fn java_screen_moved(&mut self) {}

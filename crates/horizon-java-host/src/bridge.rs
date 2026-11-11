@@ -125,11 +125,20 @@ thread_local! {
     static ACTIVE: Cell<*mut ()> = const { Cell::new(std::ptr::null_mut()) };
 }
 
-/// Runs `f`, a call into Java, with `game` as what bridges on this thread act on.
-pub fn with_active<G, R>(game: &mut G, f: impl FnOnce() -> R) -> R {
+/// Runs `f`, a call into Java, with `game` as what bridges on this thread act on; a trait object lends the value behind it.
+pub fn with_active<G: ?Sized, R>(game: &mut G, f: impl FnOnce() -> R) -> R {
     let prior = ACTIVE.replace(std::ptr::from_mut(game).cast());
     let out = f();
     ACTIVE.set(prior);
+    out
+}
+
+/// Runs `f` on the game the innermost `with_active` lent, as a native does; nothing else on this thread reaches it meanwhile, and `None` outside one.
+pub fn on_active<G: 'static, R>(f: impl FnOnce(&mut G) -> R) -> Option<R> {
+    let game = ACTIVE.replace(std::ptr::null_mut()).cast::<G>();
+    // SAFETY: as in `enter`: `with_active` holds the only `&mut G` for this call, and the pointer is taken out until `f` returns.
+    let out = (!game.is_null()).then(|| f(unsafe { &mut *game }));
+    ACTIVE.set(game.cast());
     out
 }
 
@@ -630,6 +639,35 @@ mod tests {
         assert!(hidden.is_null());
         assert_eq!(after, at);
         assert!(ACTIVE.get().is_null());
+    }
+
+    trait Counter {
+        fn count(&self) -> u64;
+    }
+    impl Counter for u64 {
+        fn count(&self) -> u64 {
+            *self
+        }
+    }
+
+    #[test]
+    fn a_lent_trait_object_is_reached_once_and_given_back() {
+        let mut game = 7u64;
+        let lent: &mut dyn Counter = &mut game;
+        let (first, nested, again) = with_active(lent, || {
+            let first = on_active::<u64, _>(|game| {
+                *game += 1;
+                on_active::<u64, _>(|_| ()).is_none()
+            });
+            (
+                first,
+                ACTIVE.get().is_null(),
+                on_active::<u64, _>(|game| *game),
+            )
+        });
+        assert_eq!((first, nested, again), (Some(true), false, Some(8)));
+        assert_eq!(on_active::<u64, _>(|game| *game), None);
+        assert_eq!(game.count(), 8);
     }
 
     fn entry(guard: &'static str) -> Bridge {

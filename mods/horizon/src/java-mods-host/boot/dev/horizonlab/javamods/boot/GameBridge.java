@@ -113,6 +113,7 @@ public final class GameBridge {
         Crossing.free("profile_take", input -> Profile.take().getBytes(java.nio.charset.StandardCharsets.UTF_8));
         Crossing.free("profile_dump", GameBridge::profileDump);
         Crossing.free("bench_echo_free", input -> input);
+        Crossing.free("listener_census", EventPosts::census);
         Crossing.game("prepare", input -> prepare());
         Crossing.game("items", input -> items());
         Crossing.game("states", input -> states());
@@ -143,12 +144,11 @@ public final class GameBridge {
         Crossing.game("click_block", (in, out) -> use(in, out, 2));
         Crossing.game("event_click_block", (in, out) -> use(in, out, 3));
         Crossing.game("event_use_item", (in, out) -> use(in, out, 4));
-        Crossing.game("event_break", (in, out) -> use(in, out, 5));
+        Crossing.game("post_event", EventPosts::server);
         Crossing.game("destroy_progress", GameBridge::destroyProgress);
         Crossing.game("correct_tool", GameBridge::correctTool);
         Crossing.game("mine_block", (in, out) -> use(in, out, 12));
         Crossing.game("destroy_block", (in, out) -> use(in, out, 13));
-        Crossing.game("event_attack", (in, out) -> use(in, out, 6));
         Crossing.game("player_tick", (in, out) -> use(in, out, 7));
         Crossing.game("player_left", GameBridge::playerLeft);
         Crossing.game("remote_join", GameBridge::remoteJoin);
@@ -451,7 +451,7 @@ public final class GameBridge {
         return new byte[] {1};
     }
 
-    private static void use(Crossing.In in, Crossing.Out out, int kind) throws Exception {
+    static void use(Crossing.In in, Crossing.Out out, int kind) throws Exception {
         var call = fill(in, false);
         var level = call.level;
         var player = call.player;

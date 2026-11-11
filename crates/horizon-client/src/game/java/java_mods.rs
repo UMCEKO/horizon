@@ -184,8 +184,33 @@ impl Game<'_> {
         tail: Vec<u8>,
         claimed: &mut bool,
     ) -> Option<u32> {
+        self.java_call_use_after(what, op, Vec::new(), tail, claimed)
+    }
+
+    /// A server event posted on the acting player's view (`post_event`): `cancelled` is what its listeners left.
+    pub(super) fn java_post_server_event(
+        &mut self,
+        event: &str,
+        fields: Vec<u8>,
+        cancelled: &mut bool,
+    ) {
+        let mut head = Out::default();
+        head.text(event);
+        self.java_call_use_after(event, "post_event", head.0, fields, cancelled);
+    }
+
+    /// [`Self::java_call_use`] with `head` before the player's view.
+    fn java_call_use_after(
+        &mut self,
+        what: &str,
+        op: &str,
+        head: Vec<u8>,
+        tail: Vec<u8>,
+        claimed: &mut bool,
+    ) -> Option<u32> {
         self.java_bind_states();
-        let mut request = self.java_use_request()?;
+        let mut request = head;
+        request.extend(self.java_use_request()?);
         request.extend(tail);
         let reply = self.java_request(op, &request)?;
         let using = self.java_apply_use(&reply, claimed);
@@ -874,15 +899,6 @@ impl Game<'_> {
         claimed.then_some(false)
     }
 
-    /// `BreakBlockEvent`, where a player's break starts.
-    pub(super) fn java_break_event(&mut self, pos: [i32; 3], canceled: &mut bool) {
-        if horizon_java_host::get().is_some() {
-            let mut out = Out::default();
-            out.long(BlockPos::new(pos[0], pos[1], pos[2]).pack());
-            self.java_call_use("a break", "event_break", out.0, canceled);
-        }
-    }
-
     /// `BlockState.getDestroyProgress` on the player's view, so its tool's and mods' break speeds run; the window asks its Java client.
     pub(super) fn java_destroy_progress(&mut self, pos: [i32; 3]) -> Option<f32> {
         if self.remote.is_some() {
@@ -959,14 +975,6 @@ impl Game<'_> {
         true
     }
 
-    /// `AttackEntityEvent`, where a player's attack starts.
-    pub(super) fn java_attack_event(&mut self, entity: i32, canceled: &mut bool) {
-        if horizon_java_host::get().is_some() {
-            let mut out = Out::default();
-            out.int(entity);
-            self.java_call_use("an attack", "event_attack", out.0, canceled);
-        }
-    }
 
     /// The server's start and end, with NeoForge's real hooks.
     pub(super) fn java_world_phase(&mut self, open: bool) {

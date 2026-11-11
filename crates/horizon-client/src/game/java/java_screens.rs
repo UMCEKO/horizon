@@ -358,9 +358,14 @@ pub(in crate::game) mod live {
     }
 
     /// Whether native draws a vanilla layer and whether Java's own content for it is painted: a cancelled layer is neither, a layer Java drew is Java's.
-    fn hud_layer_draws(cancelled: u32, drawn: u32, layer: HudLayer) -> (bool, bool) {
-        let bit = 1u32 << layer as u32;
-        (cancelled & bit == 0 && drawn & bit == 0, drawn & bit != 0)
+    fn hud_layer_draws(canceled: bool, drawn: u32, layer: HudLayer) -> (bool, bool) {
+        let java = drawn & (1u32 << layer as u32) != 0;
+        (!canceled && !java, !canceled && java)
+    }
+
+    /// Whether a Java mod cancelled the layer's `RenderGuiLayerEvent.Pre` in the Java client's last HUD recording.
+    pub(in crate::game) fn java_hud_layer_cancelled(layer: HudLayer) -> bool {
+        CLIENT.with_borrow(|c| c.hud.cancelled & (1 << layer as u32) != 0)
     }
 
     /// A shell's segments and the steps Java drew.
@@ -1024,7 +1029,9 @@ pub(in crate::game) mod live {
                             can_start_silent: reply.bool()?,
                             tickable: reply.bool()?,
                         };
-                        let id = self.audio.play_external(&sound);
+                        let id = super::super::java_listen_sound::external(|| {
+                            self.audio.play_external(&sound)
+                        });
                         CLIENT.with_borrow_mut(|c| c.sounds.insert(handle, id));
                     }
                     SOUND_UPDATE => {
@@ -1036,6 +1043,7 @@ pub(in crate::game) mod live {
                     }
                     SOUND_STOP => {
                         if let Some(id) = CLIENT.with_borrow_mut(|c| c.sounds.remove(&handle)) {
+                            super::super::java_listen_sound::external_stopped(id);
                             self.audio.stop_and_release(id);
                         }
                     }
@@ -1081,6 +1089,7 @@ pub(in crate::game) mod live {
             out.int(finished.len() as i32);
             for (handle, id) in finished {
                 out.int(handle);
+                super::super::java_listen_sound::external_stopped(id);
                 self.audio.stop_and_release(id);
                 CLIENT.with_borrow_mut(|c| c.sounds.remove(&handle));
             }
@@ -1360,6 +1369,7 @@ pub(in crate::game) mod live {
                 c.queued = 0;
             });
             for (_, id) in CLIENT.with_borrow_mut(|c| std::mem::take(&mut c.sounds)) {
+                super::super::java_listen_sound::external_stopped(id);
                 self.audio.stop_and_release(id);
             }
             super::super::java_bridges::client_world::java_forget_client_world();
@@ -1697,21 +1707,22 @@ pub(in crate::game) mod live {
             }
         }
 
-        /// Native's vanilla layer, unless a mod cancelled it or Java drew it; then what mods drew after it.
+        /// Native's vanilla layer, unless `gui_layer_pre` cancelled it or Java drew it; then what mods drew after it.
         pub(in crate::game) fn hud_layer<R>(
             &mut self,
             batch: &mut HudBatch,
             layer: Option<HudLayer>,
+            canceled: bool,
             native: impl FnOnce(&mut Self, &mut HudBatch) -> R,
         ) -> Option<R> {
             let Some(layer) = layer else {
-                return Some(native(self, batch));
+                return (!canceled).then(|| native(self, batch));
             };
-            let (cancelled, drawn) = CLIENT.with_borrow_mut(|c| {
+            let drawn = CLIENT.with_borrow_mut(|c| {
                 c.hud_painted |= 1 << layer as u32;
-                (c.hud.cancelled, c.hud.drawn)
+                c.hud.drawn
             });
-            let (drawn_by_native, drawn_by_java) = hud_layer_draws(cancelled, drawn, layer);
+            let (drawn_by_native, drawn_by_java) = hud_layer_draws(canceled, drawn, layer);
             let index = layer as usize * 2;
             let mut answer = None;
             if drawn_by_java {
@@ -2279,20 +2290,21 @@ pub(in crate::game) mod live {
 
         #[test]
         fn a_cancelled_layer_skips_native_and_a_drawn_one_is_javas() {
-            let (cancelled, drawn) = (
-                1 << HudLayer::FoodLevel as u32,
-                1 << HudLayer::Hotbar as u32,
-            );
+            let drawn = 1 << HudLayer::Hotbar as u32;
             assert_eq!(
-                hud_layer_draws(cancelled, drawn, HudLayer::FoodLevel),
+                hud_layer_draws(true, drawn, HudLayer::FoodLevel),
                 (false, false)
             );
             assert_eq!(
-                hud_layer_draws(cancelled, drawn, HudLayer::Hotbar),
+                hud_layer_draws(true, drawn, HudLayer::Hotbar),
+                (false, false)
+            );
+            assert_eq!(
+                hud_layer_draws(false, drawn, HudLayer::Hotbar),
                 (false, true)
             );
             assert_eq!(
-                hud_layer_draws(cancelled, drawn, HudLayer::Chat),
+                hud_layer_draws(false, drawn, HudLayer::Chat),
                 (true, false)
             );
         }
