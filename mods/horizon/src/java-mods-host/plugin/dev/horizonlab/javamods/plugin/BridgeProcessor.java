@@ -164,9 +164,20 @@ final class BridgeProcessor implements ClassProcessor {
             head.add(new VarInsnNode(Opcodes.ALOAD, 0));
             head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, guiRoutes, "backed", "(Ljava/lang/Object;)Z", false));
         } else if (!isStatic && entry.guard.startsWith("@")) {
-            int dot = entry.guard.lastIndexOf('.');
+            boolean withArgs = entry.guard.endsWith("+");
+            String predicate = withArgs ? entry.guard.substring(0, entry.guard.length() - 1) : entry.guard;
+            int dot = predicate.lastIndexOf('.');
             head.add(new VarInsnNode(Opcodes.ALOAD, 0));
-            head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, entry.guard.substring(1, dot), entry.guard.substring(dot + 1), "(Ljava/lang/Object;)Z", false));
+            StringBuilder guardDesc = new StringBuilder("(Ljava/lang/Object;");
+            if (withArgs) {
+                int slot = 1;
+                for (Type param : params) {
+                    head.add(new VarInsnNode(param.getOpcode(Opcodes.ILOAD), slot));
+                    guardDesc.append(param.getDescriptor());
+                    slot += param.getSize();
+                }
+            }
+            head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, predicate.substring(1, dot), predicate.substring(dot + 1), guardDesc.append(")Z").toString(), false));
         } else if (!isStatic && !entry.guard.isEmpty()) {
             head.add(new VarInsnNode(Opcodes.ALOAD, 0));
             head.add(new TypeInsnNode(Opcodes.INSTANCEOF, entry.guard));
@@ -283,7 +294,7 @@ final class BridgeProcessor implements ClassProcessor {
         return true;
     }
 
-    private static void bridge(ClassNode node, MethodNode method, Entry entry) {
+    static void bridge(ClassNode node, MethodNode method, Entry entry) {
         boolean isStatic = (method.access & Opcodes.ACC_STATIC) != 0;
         Type[] params = Type.getArgumentTypes(method.desc);
         LabelNode body = new LabelNode();

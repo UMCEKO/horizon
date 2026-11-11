@@ -18,6 +18,7 @@ import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.particles.PowerParticleOption;
 import net.minecraft.core.particles.SimpleParticleType;
 import net.minecraft.core.particles.SpellParticleOption;
+import net.minecraft.network.protocol.game.ClientboundLevelParticlesPacket;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtAccounter;
@@ -105,48 +106,59 @@ final class Effects {
         out.writeFloat(colour.z());
     }
 
-    /** The type's name, a kind (0 plain, 1 block, 2 dust, 3 dust transition, 4 colour, 5 spell, 6 power, 9 a payload Horizon can't carry), then its fields. */
+    /** 0 plain, 1 block, 2 dust, 3 dust transition, 4 colour, 5 spell, 6 power, 9 a payload Horizon can't carry. */
+    static int kind(ParticleOptions options) {
+        return switch (options) {
+            case BlockParticleOption block -> 1;
+            case DustParticleOptions dust -> 2;
+            case DustColorTransitionOptions transition -> 3;
+            case ColorParticleOption colour -> 4;
+            case SpellParticleOption spell -> 5;
+            case PowerParticleOption power -> 6;
+            case SimpleParticleType plain -> 0;
+            default -> 9;
+        };
+    }
+
+    /** Whether Horizon's port sends these particles: a vanilla type whose options it carries. */
+    public static boolean nativeParticles(Object level, ParticleOptions options, boolean overrideLimiter, boolean alwaysShow,
+            double x, double y, double z, int count, double xDist, double yDist, double zDist, double xSpeed, double ySpeed, double zSpeed,
+            ClientboundLevelParticlesPacket.RandomizationType randomization) {
+        return Flat.ON && !ParticleFacts.owned(options.getType()) && kind(options) != 9;
+    }
+
+    /** The type's name, its kind, then its fields. */
     static byte[] particle(ParticleOptions options) {
         try {
             var bytes = new ByteArrayOutputStream();
             var out = new DataOutputStream(bytes);
             text(out, BuiltInRegistries.PARTICLE_TYPE.getKey(options.getType()).toString());
+            out.writeInt(kind(options));
             switch (options) {
-                case BlockParticleOption block -> {
-                    out.writeInt(1);
-                    out.writeInt(Block.BLOCK_STATE_REGISTRY.getId(block.getState()));
-                }
+                case BlockParticleOption block -> out.writeInt(Block.BLOCK_STATE_REGISTRY.getId(block.getState()));
                 case DustParticleOptions dust -> {
-                    out.writeInt(2);
                     colour(out, dust.getColor());
                     out.writeFloat(dust.getScale());
                 }
                 case DustColorTransitionOptions transition -> {
-                    out.writeInt(3);
                     colour(out, transition.getFromColor());
                     colour(out, transition.getToColor());
                     out.writeFloat(transition.getScale());
                 }
                 case ColorParticleOption colour -> {
-                    out.writeInt(4);
                     out.writeFloat(colour.getRed());
                     out.writeFloat(colour.getGreen());
                     out.writeFloat(colour.getBlue());
                     out.writeFloat(colour.getAlpha());
                 }
                 case SpellParticleOption spell -> {
-                    out.writeInt(5);
                     out.writeFloat(spell.getRed());
                     out.writeFloat(spell.getGreen());
                     out.writeFloat(spell.getBlue());
                     out.writeFloat(spell.getPower());
                 }
-                case PowerParticleOption power -> {
-                    out.writeInt(6);
-                    out.writeFloat(power.getPower());
-                }
-                case SimpleParticleType plain -> out.writeInt(0);
-                default -> out.writeInt(9);
+                case PowerParticleOption power -> out.writeFloat(power.getPower());
+                default -> {}
             }
             return bytes.toByteArray();
         } catch (IOException e) {
