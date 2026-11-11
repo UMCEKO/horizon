@@ -26,6 +26,14 @@ pub(super) fn read_tag(bytes: &[u8]) -> Option<Tag> {
         .map(|(root, _)| root.tag)
 }
 
+/// What NeoForge's chat decorator made of a message.
+#[derive(Debug, PartialEq)]
+pub(super) enum ChatVerdict {
+    Unchanged,
+    Cancelled,
+    Changed(Tag),
+}
+
 /// A sound Java played during a call (`GameBridge.writeEffects`), owned so the reply's buffer can go back to the host.
 #[derive(Debug, PartialEq)]
 pub(super) struct JavaSound {
@@ -397,6 +405,39 @@ impl Game<'_> {
         claimed: &mut bool,
     ) -> Option<u32> {
         self.java_call_use_after(what, op, Vec::new(), tail, claimed)
+    }
+
+    /// A guest's chat message through NeoForge's chat decorator (`server_chat`), as the acting player; unchanged when Java did not answer.
+    pub(super) fn java_server_chat(&mut self, raw: &str) -> ChatVerdict {
+        self.java_bind_states();
+        let Some(mut request) = self.java_use_request() else {
+            return ChatVerdict::Unchanged;
+        };
+        let mut tail = Out::default();
+        tail.text(raw);
+        request.extend(tail.0);
+        let Some(reply) = self.java_player_request("server_chat", &request) else {
+            return ChatVerdict::Unchanged;
+        };
+        let mut reply = In(&reply);
+        let verdict = match reply.byte() {
+            Some(0) => ChatVerdict::Unchanged,
+            Some(1) => ChatVerdict::Cancelled,
+            Some(2) => match reply
+                .bytes()
+                .and_then(read_tag)
+                .and_then(|wrapper| wrapper.get("text").cloned())
+            {
+                Some(tag) => ChatVerdict::Changed(tag),
+                None => return ChatVerdict::Unchanged,
+            },
+            _ => return ChatVerdict::Unchanged,
+        };
+        if self.java_apply_effects(&mut reply).is_none() {
+            log::warn!("Horizon: a Java mod's chat decoration answered in pieces");
+        }
+        self.java_drain_block_events();
+        verdict
     }
 
     /// A server event posted on the acting player's view (`post_event`): `cancelled` is what its listeners left.
