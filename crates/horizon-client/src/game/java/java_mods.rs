@@ -209,12 +209,17 @@ impl Game<'_> {
         let Some(host) = horizon_java_host::get() else {
             return;
         };
-        if STATES.get().is_some() {
+        static FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if STATES.get().is_some() || FAILED.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
         let Some(listed) =
             horizon_java_host::bridge::with_active(self, || host.request("states", &[]))
         else {
+            FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+            log::error!(
+                "Horizon: Java's `states` request threw (see its stack trace above); Java mods' blocks stay unbound and it is not retried"
+            );
             return;
         };
         let registry = &self.pack.assets.registry;
@@ -231,6 +236,8 @@ impl Game<'_> {
         let mut listed = In(&listed);
         let (Some(count), Some(air), Some(whole)) = (listed.int(), listed.int(), listed.bool())
         else {
+            FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+            log::error!("Horizon: Java's block state list has no header; Java mods' blocks are unbound");
             return;
         };
         map.java_air = air;
@@ -258,6 +265,7 @@ impl Game<'_> {
                 log::error!(
                     "Horizon: Java's block state list ended early; Java mods' blocks are unbound"
                 );
+                FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
                 return;
             };
             let state = horizon_world::chunk::BlockState {
