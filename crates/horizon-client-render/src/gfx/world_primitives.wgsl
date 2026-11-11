@@ -75,3 +75,36 @@ struct LineOut {
 @fragment fn fs_line(in: LineOut) -> @location(0) vec4<f32> {
     return in.color;
 }
+
+// Recorded quads (world_renders) at AfterTranslucentBlocks: textured and lit through the lightmap.
+@group(1) @binding(0) var lightmap: texture_2d<f32>;
+@group(1) @binding(1) var lightmap_sampler: sampler;
+
+struct LitOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) color: vec4<f32>,
+    // 1 drops back-facing pixels (Vertex::normal w = 1, mesher::CULL_BACK), as a culling pipeline.
+    @location(2) @interpolate(flat) cull: u32,
+}
+
+// Light as Vertex::light packs it: sky*16 in the low byte, block*16 in the next, as entity.wgsl reads it.
+@vertex fn vs_lit_quad(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>,
+    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: u32,
+    @location(5) normal: vec4<f32>) -> LitOut {
+    var out: LitOut;
+    out.clip = globals.view_proj * vec4(pos, 1.0);
+    out.uv = uv;
+    let l = vec2(f32((light >> 8u) & 0xffu), f32(light & 0xffu));
+    let lm = textureSampleLevel(lightmap, lightmap_sampler,
+        clamp(l / 256.0 + 0.5 / 16.0, vec2(0.5 / 16.0), vec2(15.5 / 16.0)), 0.0);
+    out.color = vec4(color.rgb * lm.rgb, color.a);
+    out.cull = select(0u, 1u, normal.w > 0.0 && normal.w < 0.5);
+    return out;
+}
+
+@fragment fn fs_lit_quad(in: LitOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let color = textureSample(atlas, atlas_sampler, in.uv) * in.color;
+    if color.a < 0.1 || (in.cull != 0u && !front) { discard; }
+    return color;
+}

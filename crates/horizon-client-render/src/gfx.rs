@@ -4954,6 +4954,7 @@ impl Renderer {
             ));
         }
         let mut world_primitives = world_primitives::WorldPrimitives::new(&device, frame_format);
+        world_primitives.set_lightmap(&device, &lightmap_view, &lightmap_sampler);
         world_primitives.reserve(
             &device,
             &mut |buffer, bytes| queue.write_buffer(buffer, 0, bytes),
@@ -11410,8 +11411,7 @@ impl Renderer {
                     self.mark_translucent_terrain(&mut pass, None, solid_draws, translucent_draws);
                 }
             }
-            // RenderLevelStageEvent.AfterTranslucentBlocks: after translucent terrain, here or
-            // OIT's.
+            // AfterTranslucentBlocks (world_primitives::AFTER_TRANSLUCENT_BLOCKS), here or OIT's.
             if world_primitives && !pack_draws_water && !pack_draws_terrain {
                 self.world_primitives
                     .draw_through(&mut pass, &mut primitive_stage, 2);

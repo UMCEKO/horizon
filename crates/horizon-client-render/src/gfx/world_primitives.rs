@@ -14,6 +14,9 @@ pub const DEFAULT_CAPACITY: u32 = 4096;
 /// The stages a frame draws primitives at, in frame order (`RenderLevelStage`).
 pub const STAGES: usize = 5;
 
+/// `RenderLevelStage::AfterTranslucentBlocks`, the stage that also draws a batch's recorded quads.
+pub const AFTER_TRANSLUCENT_BLOCKS: usize = 2;
+
 /// A frame's primitives, camera-relative, as the game tessellated them: quads of 4 vertices
 /// from the shared atlas (plain colours on its white texel, text on its glyphs, beams on the
 /// beacon beam sprite) and lines as `gizmos::camera_relative` gives them. `*_through` ones are
@@ -28,6 +31,10 @@ pub struct Batch<'a> {
     /// lines through walls: each slice holds its stages in frame order, and what follows the
     /// last end is the last stage's. All zero, everything draws at the last stage.
     pub stage_ends: [[u32; 4]; STAGES - 1],
+    /// Recorded quads (`world_renders`) at `AFTER_TRANSLUCENT_BLOCKS`: textured, lit, blended without depth writes.
+    pub recorded: &'a [Vertex],
+    /// Recorded quads at the same stage whose pipeline writes depth, drawn after `recorded`.
+    pub recorded_depth: &'a [Vertex],
 }
 
 impl Batch<'_> {
@@ -36,6 +43,8 @@ impl Batch<'_> {
             && self.quads_through.is_empty()
             && self.lines.is_empty()
             && self.lines_through.is_empty()
+            && self.recorded.is_empty()
+            && self.recorded_depth.is_empty()
     }
 }
 
@@ -51,7 +60,12 @@ pub struct WorldPrimitives {
     /// Depth tested, then seen through walls.
     quad_pipelines: [wgpu::RenderPipeline; 2],
     line_pipelines: [wgpu::RenderPipeline; 2],
+    /// Recorded quads blended without depth writes, then those writing depth.
+    lit_pipelines: [wgpu::RenderPipeline; 2],
     layout: wgpu::BindGroupLayout,
+    lit_layout: wgpu::BindGroupLayout,
+    /// The lightmap recorded quads are lit through (group 1); none, they are not drawn.
+    lightmap: Option<wgpu::BindGroup>,
     globals: wgpu::Buffer,
     sampler: wgpu::Sampler,
     quads: wgpu::Buffer,
@@ -66,6 +80,8 @@ pub struct WorldPrimitives {
     counts: [u32; 4],
     /// The batch's `stage_ends`, clamped to `counts`.
     stage_ends: [[u32; 4]; STAGES - 1],
+    /// Recorded quads blended, then writing depth, uploaded after the other quads.
+    recorded: [u32; 2],
 }
 
 struct AtlasGroup {
@@ -115,11 +131,47 @@ impl WorldPrimitives {
                 },
             ],
         });
+        let texture_entry = |binding, ty| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty,
+            count: None,
+        };
+        let lit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("World primitives lightmap"),
+            entries: &[
+                texture_entry(
+                    0,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                texture_entry(
+                    1,
+                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                ),
+            ],
+        });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("World primitives"),
             bind_group_layouts: &[Some(&layout)],
             ..Default::default()
         });
+        let lit_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("World primitives recorded"),
+            bind_group_layouts: &[Some(&layout), Some(&lit_layout)],
+            ..Default::default()
+        });
+        let lit_attributes = wgpu::vertex_attr_array![
+            0=>Float32x3,1=>Float32x2,2=>Uint32,3=>Unorm8x4,4=>Uint32,5=>Snorm8x4
+        ];
+        let lit_buffers = [Some(wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &lit_attributes,
+        })];
         let quad_attributes =
             wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x2,2=>Uint32,3=>Unorm8x4,4=>Uint32];
         let line_attributes =
@@ -134,14 +186,16 @@ impl WorldPrimitives {
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &line_attributes,
         })];
-        let pipeline = |label: &str,
-                        entry: [&str; 2],
-                        buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
-                        topology,
-                        through: bool| {
+        let pipeline_with = |label: &str,
+                             entry: [&str; 2],
+                             buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+                             topology,
+                             layout: &wgpu::PipelineLayout,
+                             through: bool,
+                             depth_write: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
-                layout: Some(&pipeline_layout),
+                layout: Some(layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some(entry[0]),
@@ -158,7 +212,7 @@ impl WorldPrimitives {
                 // the primitives behind it. Reversed depth: nearer is greater.
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled: Some(false),
+                    depth_write_enabled: Some(depth_write),
                     depth_compare: Some(if through {
                         wgpu::CompareFunction::Always
                     } else {
@@ -181,6 +235,21 @@ impl WorldPrimitives {
                 multiview_mask: None,
                 cache: None,
             })
+        };
+        let pipeline = |label: &str,
+                        entry: [&str; 2],
+                        buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+                        topology,
+                        through: bool| {
+            pipeline_with(
+                label,
+                entry,
+                buffers,
+                topology,
+                &pipeline_layout,
+                through,
+                false,
+            )
         };
         let quads = ["vs_quad", "fs_quad"];
         let lines = ["vs_line", "fs_line"];
@@ -206,6 +275,27 @@ impl WorldPrimitives {
                 true,
             ),
         ];
+        let lit = ["vs_lit_quad", "fs_lit_quad"];
+        let lit_pipelines = [
+            pipeline_with(
+                "World recorded quads",
+                lit,
+                &lit_buffers,
+                list,
+                &lit_pipeline_layout,
+                false,
+                false,
+            ),
+            pipeline_with(
+                "World recorded quads writing depth",
+                lit,
+                &lit_buffers,
+                list,
+                &lit_pipeline_layout,
+                false,
+                true,
+            ),
+        ];
         let buffer = |label, size, usage| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -217,6 +307,9 @@ impl WorldPrimitives {
         Self {
             quad_pipelines,
             line_pipelines,
+            lit_pipelines,
+            lit_layout,
+            lightmap: None,
             globals: buffer(
                 "World primitive globals",
                 std::mem::size_of::<Globals>() as u64,
@@ -237,7 +330,31 @@ impl WorldPrimitives {
             index_data: Vec::new(),
             counts: [0; 4],
             stage_ends: [[0; 4]; STAGES - 1],
+            recorded: [0; 2],
         }
+    }
+
+    /// Binds the lightmap recorded quads are lit through, with its sampler.
+    pub fn set_lightmap(
+        &mut self,
+        device: &wgpu::Device,
+        lightmap: &wgpu::TextureView,
+        sampler: &wgpu::Sampler,
+    ) {
+        self.lightmap = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("World primitives lightmap"),
+            layout: &self.lit_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(lightmap),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        }));
     }
 
     /// Reserves CPU and GPU geometry storage for `quads` and `lines`, total across both depth
@@ -292,14 +409,20 @@ impl WorldPrimitives {
         let lines = [batch.lines, batch.lines_through].map(|l| l.len() as u32);
         self.counts = [quads[0], quads[1], lines[0], lines[1]];
         self.stage_ends = clamped_ends(batch.stage_ends, self.counts);
+        self.recorded = [batch.recorded, batch.recorded_depth].map(|q| (q.len() / 4) as u32);
         if batch.is_empty() {
             return false;
         }
-        let total_quads = quads[0] + quads[1];
+        let total_quads = quads[0] + quads[1] + self.recorded[0] + self.recorded[1];
         self.reserve(device, upload, total_quads, lines[0] + lines[1]);
         if total_quads > 0 {
             self.quad_vertices.clear();
-            for q in [batch.quads, batch.quads_through] {
+            for q in [
+                batch.quads,
+                batch.quads_through,
+                batch.recorded,
+                batch.recorded_depth,
+            ] {
                 self.quad_vertices.extend_from_slice(&q[..q.len() / 4 * 4]);
             }
             let bytes: &[u8] = bytemuck::cast_slice(&self.quad_vertices);
@@ -348,6 +471,7 @@ impl WorldPrimitives {
     /// not reach in this pass draws here, after those before it. Within the stages, the
     /// depth-tested quads and lines, then those seen through walls over everything. Leaves
     /// the pass with its own pipeline, bind group 0 and buffers.
+    /// The recorded quads draw after the depth-tested ones when `AFTER_TRANSLUCENT_BLOCKS` is among the stages.
     pub fn draw_through(&self, pass: &mut wgpu::RenderPass<'_>, next: &mut usize, stage: usize) {
         let (first, last) = (*next, stage.min(STAGES - 1));
         if first > last {
@@ -359,10 +483,14 @@ impl WorldPrimitives {
         };
         let [quads, quads_through, lines, lines_through] =
             spans(self.counts, &self.stage_ends, first, last);
+        let recorded = self.lightmap.as_ref().filter(|_| {
+            (first..=last).contains(&AFTER_TRANSLUCENT_BLOCKS) && self.recorded != [0; 2]
+        });
         if quads.is_empty()
             && quads_through.is_empty()
             && lines.is_empty()
             && lines_through.is_empty()
+            && recorded.is_none()
         {
             return;
         }
@@ -381,6 +509,19 @@ impl WorldPrimitives {
                 pass.set_pipeline(&self.line_pipelines[through]);
                 pass.set_vertex_buffer(0, self.lines.slice(..));
                 pass.draw(0..4, line_range);
+            }
+            if let Some(lightmap) = recorded.filter(|_| through == 0) {
+                pass.set_bind_group(1, lightmap, &[]);
+                pass.set_vertex_buffer(0, self.quads.slice(..));
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                let mut start = self.counts[0] + self.counts[1];
+                for (pipeline, count) in self.lit_pipelines.iter().zip(self.recorded) {
+                    if count > 0 {
+                        pass.set_pipeline(pipeline);
+                        pass.draw_indexed(start * 6..(start + count) * 6, 0, 0..1);
+                    }
+                    start += count;
+                }
             }
         }
     }
@@ -903,5 +1044,211 @@ mod tests {
         );
         // The line is its width (4 pixels) thick, not more.
         assert_eq!(at(48, 52), black);
+    }
+
+    /// Recorded quads draw only once `AfterTranslucentBlocks` is reached, lit through the lightmap by their sky and block bytes,
+    /// dropping back faces only when culled, and the depth-writing ones hide a later primitive behind them.
+    #[test]
+    fn recorded_quads_are_lit_culled_and_drawn_after_translucent_blocks() {
+        let Some((device, queue)) = device() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let view_proj = super::super::world_projection(70.0, 1.0, 512.0);
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let texture = |size: u32, format, usage| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let filled = |size: u32, texels: &[u8]| {
+            let t = texture(
+                size,
+                format,
+                wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            );
+            queue.write_texture(
+                t.as_image_copy(),
+                texels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size * 4),
+                    rows_per_image: None,
+                },
+                t.size(),
+            );
+            t
+        };
+        let atlas = filled(1, &[255; 4]);
+        // White everywhere but block 0, sky 15 (column 0, row 15): half grey.
+        let mut lightmap_texels = vec![255u8; 16 * 16 * 4];
+        lightmap_texels[15 * 16 * 4..15 * 16 * 4 + 3].copy_from_slice(&[128; 3]);
+        let lightmap = filled(16, &lightmap_texels);
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let (half, full) = (SIZE as f32 / 2.0, SIZE as f32);
+        let lit = |mut q: [Vertex; 4], normal: [i8; 4], reversed: bool| {
+            for v in &mut q {
+                v.light = 15 * 16;
+                v.normal = normal;
+            }
+            if reversed {
+                q.reverse();
+            }
+            q
+        };
+        let cull = crate::mesher::CULL_BACK;
+        // Top left: blended, a primitive behind it shows over it. Bottom left: a culled back
+        // face. Bottom right: the same back face, not culled.
+        let recorded = [
+            lit(
+                quad(view_proj, [0.0, 0.0, half, half], 2.0, RED),
+                cull,
+                false,
+            ),
+            lit(
+                quad(view_proj, [0.0, half, half, full], 2.0, RED),
+                cull,
+                true,
+            ),
+            lit(
+                quad(view_proj, [half, half, full, full], 2.0, RED),
+                [0; 4],
+                true,
+            ),
+        ]
+        .concat();
+        // Top right: writing depth, it hides the primitive behind it.
+        let recorded_depth = lit(
+            quad(view_proj, [half, 0.0, full, half], 2.0, GREEN),
+            cull,
+            false,
+        );
+        let behind = quad(view_proj, [0.0, 0.0, full, half], 3.0, BLUE);
+        let batch = Batch {
+            quads: &behind,
+            stage_ends: [[0; 4]; STAGES - 1],
+            recorded: &recorded,
+            recorded_depth: &recorded_depth,
+            ..Default::default()
+        };
+        let mut primitives = WorldPrimitives::new(&device, format);
+        primitives.set_lightmap(
+            &device,
+            &lightmap.create_view(&Default::default()),
+            &sampler,
+        );
+        assert!(primitives.prepare(
+            &device,
+            &mut |buffer, bytes| queue.write_buffer(buffer, 0, bytes),
+            &batch,
+            view_proj,
+            [SIZE, SIZE],
+            &atlas.create_view(&Default::default()),
+        ));
+        let color = texture(
+            SIZE,
+            format,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let depth = texture(
+            SIZE,
+            wgpu::TextureFormat::Depth32Float,
+            wgpu::TextureUsages::RENDER_ATTACHMENT,
+        );
+        let render = |stages: &[usize]| {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            {
+                let color_view = color.create_view(&Default::default());
+                let depth_view = depth.create_view(&Default::default());
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &color_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    ..Default::default()
+                });
+                let mut next = 0;
+                for &stage in stages {
+                    primitives.draw_through(&mut pass, &mut next, stage);
+                }
+            }
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: u64::from(SIZE * SIZE * 4),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            encoder.copy_texture_to_buffer(
+                color.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(SIZE * 4),
+                        rows_per_image: None,
+                    },
+                },
+                color.size(),
+            );
+            queue.submit([encoder.finish()]);
+            readback.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let texels = readback.slice(..).get_mapped_range().unwrap().to_vec();
+            move |x: u32, y: u32| {
+                let i = ((y * SIZE + x) * 4) as usize;
+                [texels[i], texels[i + 1], texels[i + 2], texels[i + 3]]
+            }
+        };
+        let black = [0, 0, 0, 255];
+        let before = render(&[1]);
+        for (x, y) in [(16, 16), (48, 16), (16, 48), (48, 48)] {
+            assert_eq!(before(x, y), black, "nothing recorded before the stage");
+        }
+        let at = render(&[AFTER_TRANSLUCENT_BLOCKS, STAGES - 1]);
+        assert_eq!(
+            at(16, 16),
+            [0, 0, 255, 255],
+            "a primitive behind a blended quad shows"
+        );
+        assert_eq!(
+            at(48, 16),
+            [0, 128, 0, 255],
+            "a depth-writing quad hides it, lit half"
+        );
+        assert_eq!(at(16, 48), black, "a culled back face is dropped");
+        assert_eq!(
+            at(48, 48),
+            [128, 0, 0, 255],
+            "an unculled back face draws, lit half"
+        );
     }
 }
