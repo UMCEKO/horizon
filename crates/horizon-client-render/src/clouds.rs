@@ -343,7 +343,14 @@ fn predicted_key(
     let snapped = |origin: i64, f: f32, step: i64, period: u32| {
         let next = (origin + cell(f) + step).rem_euclid(i64::from(period));
         let snap = next / SNAP_CELLS * SNAP_CELLS;
-        (snap, if inside_layer { (next - snap) as i32 } else { 0 })
+        (
+            snap,
+            if inside_layer {
+                (next - snap) as i32
+            } else {
+                0
+            },
+        )
     };
     let (cell_x, sub_x) = snapped(key.cell_x, fx, sx, w);
     let (cell_z, sub_z) = snapped(key.cell_z, fz, sz, h);
@@ -827,11 +834,20 @@ mod tests {
             [0.6, 0.0, 0.5],
             [-0.8, 0.0, 0.3],
         ] {
-            let frames = flight([20.0, 100.0, 30.0], step, 200, 0);
+            let frames = flight([20.0, 100.0, 30.0], step, 600, 0);
             let (rebuilds, hits) = assert_same_as_synchronous(&texture, &frames);
             assert!(rebuilds >= 6);
             assert!(hits + 1 >= rebuilds, "{step:?}: {hits} hits of {rebuilds}");
         }
+    }
+
+    #[test]
+    fn prefetched_meshes_equal_synchronous_ones_in_a_flight_through_the_layer() {
+        let texture = texture();
+        let frames = flight([20.0, 194.0, 30.0], [0.7, 0.0, 0.0], 200, 0);
+        let (rebuilds, hits) = assert_same_as_synchronous(&texture, &frames);
+        assert!(rebuilds >= 12, "{rebuilds} rebuilds");
+        assert!(hits + 1 >= rebuilds, "{hits} hits of {rebuilds}");
     }
 
     #[test]
