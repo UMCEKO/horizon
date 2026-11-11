@@ -22,6 +22,8 @@ public final class TestMod {
     public static final DeferredRegister<net.minecraft.core.particles.ParticleType<?>> PARTICLE_TYPES = DeferredRegister.create(net.minecraft.core.registries.Registries.PARTICLE_TYPE, "horizon_java_test");
     public static final java.util.function.Supplier<net.minecraft.core.particles.SimpleParticleType> SPARK = PARTICLE_TYPES.register("spark", () -> new net.minecraft.core.particles.SimpleParticleType(false));
 
+    public static final java.util.function.Supplier<net.minecraft.core.particles.SimpleParticleType> BEAM = PARTICLE_TYPES.register("beam", () -> new net.minecraft.core.particles.SimpleParticleType(true));
+
     public TestMod(IEventBus bus) {
         ITEMS.registerItem("wand", Wand::new);
         ITEMS.registerItem("probe", Probe::new);

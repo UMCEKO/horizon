@@ -20,7 +20,7 @@ public final class WorldFrameOrderCheck {
     private static List<String> run(boolean sky, boolean oit) {
         SEEN.clear();
         var frame = new WorldFrame.Frame(null, null, null, null, null, null, null, null, null, new Matrix4f(), List.of(), new RecordingRenderPass(new RecordingDevice()), sky, oit);
-        WorldFrame.fire(frame, (what, event) -> NeoForge.EVENT_BUS.post(event));
+        WorldFrame.fire(frame, (what, event) -> NeoForge.EVENT_BUS.post(event), () -> SEEN.add("Particles@" + WorldFrame.stage));
         return new ArrayList<>(SEEN);
     }
 
@@ -38,7 +38,7 @@ public final class WorldFrameOrderCheck {
         listen(RenderLevelStageEvent.AfterLevel.class, "AfterLevel");
         listen(RenderLevelStageEvent.OitTranslucent.class, "Oit");
         NeoForge.EVENT_BUS.start();
-        var base = List.of("Extract@0", "Submit@0", "Prepare@0", "AfterSky@1", "AfterOpaqueBlocks@2", "AfterOpaqueFeatures@3", "AfterTranslucentFeatures@4", "AfterTranslucentBlocks@5",
+        var base = List.of("Extract@0", "Submit@0", "Particles@0", "Prepare@0", "AfterSky@1", "AfterOpaqueBlocks@2", "AfterOpaqueFeatures@3", "AfterTranslucentFeatures@4", "AfterTranslucentBlocks@5",
                 "AfterTranslucentParticles@6", "AfterWeather@7", "AfterLevel@8");
         var plain = run(true, false);
         if (!plain.equals(base)) throw new AssertionError(plain);

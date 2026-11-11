@@ -151,11 +151,12 @@ public final class WorldFrame {
     }
 
     /** `ExtractLevelRenderStateEvent`, `SubmitCustomGeometryEvent`, `PrepareRenderBuffersEvent`, then the stages' events; `FrameGraphSetupEvent` needs a frame graph and its targets, which this client has none of. */
-    static void fire(Frame f, Sink sink) {
+    static void fire(Frame f, Sink sink, Runnable particles) {
         stage = SUBMIT;
         sink.post("ExtractLevelRenderStateEvent", new ExtractLevelRenderStateEvent(f.extractor(), f.state(), f.options(), f.level(), f.camera(), f.frustum(), f.delta()));
         stage = SUBMIT;
         sink.post("SubmitCustomGeometryEvent", new SubmitCustomGeometryEvent(f.state(), f.collector(), new PoseStack(), f.sections()));
+        particles.run();
         sink.post("PrepareRenderBuffersEvent", new PrepareRenderBuffersEvent(f.renderer(), f.state(), f.options()));
         if (f.sky()) {
             stage = AFTER_SKY;
@@ -702,8 +703,8 @@ public final class WorldFrame {
             stack.mul(frame.viewRotation());
             var out = new Recording(new ArrayList<>(), new LinkedHashMap<>());
             var pieces = new ArrayList<Piece>();
-            if (needed) {
-                fire(frame, WorldFrame::safely);
+            if (needed || ParticleRecorder.groupsLive()) {
+                fire(frame, WorldFrame::safely, () -> ParticleRecorder.submitGroups(frame.frustum(), frame.camera(), frame.state().worldPartialTicks, frame.collector(), frame.state().cameraRenderState));
                 submitted(capture, cam, out, pieces);
                 drawn(cam, frame.viewRotation(), out, pieces);
             }
@@ -841,9 +842,14 @@ public final class WorldFrame {
         return height;
     }
 
+    /** Whether the last recording held a mod's particle group: the one after it clears the geometry. */
+    private static boolean groupsWere;
+
     /** A recording of the world for one tick or one frame: its blob if it changed, with the animation bookkeeping. */
     static byte[] take(Cam cam, float partial, DeltaTracker delta, int windowWidth, int windowHeight, boolean frame) {
-        if (!Environments.wanted(cam) && !needed) return null;
+        boolean groups = ParticleRecorder.groupsLive();
+        if (!Environments.wanted(cam) && !needed && !groups && !groupsWere) return null;
+        groupsWere = groups;
         try {
             var recording = record(cam, partial, delta, windowWidth, windowHeight, !frame);
             if (recording == null) return null;
