@@ -1378,10 +1378,10 @@ as the terrain samples them.
 
 - `WorldDrawn::block_sprites` (`BlockSpriteArrays`) holds the block sprite arrays as `D2Array` views: the terrain's
   eight, a 1-layer stand-in past the ones in use, each with the mip levels the Mipmap Levels option leaves, animated
-  layers at the frame shown. Each texture is a whole square layer of `size` texels, its UVs 0 to 1 across it,
-  gamma-encoded as the world uses it. `split` layers go to an array (2048 on most GPUs, fewer where the GPU holds
-  fewer): every vanilla texture is usually in array 0. `nearest` samples texels sharp (nearest, repeating, the
-  nearest mip level), `filtered` is the terrain's own sampler.
+  layers at the frame shown. Each texture is a whole square layer of `sizes[array]` texels (`size` is array 0's; a
+  mod's textures over 64 texels get arrays of their own size), its UVs 0 to 1 across it, gamma-encoded. `split`
+  layers go to an array (2048 on most GPUs, fewer where the GPU holds fewer): every vanilla texture is usually in
+  array 0. `nearest` samples texels sharp (nearest, repeating, the nearest mip level), `filtered` the terrain's own.
 - `native_block_sprites(blocks)` says, for each block (`minecraft:grass_block`, `oak_log[axis=x]`; properties left
   out take the default), what its model draws on each side, in `Direction` order (down, up, north, south, west,
   east): its faces in the order drawn, each with its `sprite` (`array`, `layer`, `animated`, `cutout`), its `rect`

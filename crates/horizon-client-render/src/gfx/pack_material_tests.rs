@@ -96,14 +96,8 @@ void main() {
                     )
                 })
                 .collect();
-            super::super::pack_atlas::PackAtlas::material(
-                &device,
-                &mut encoder,
-                &arrays,
-                split,
-                layers,
-            )
-            .unwrap()
+            super::super::pack_atlas::PackAtlas::material(&device, &mut encoder, &arrays, split)
+                .unwrap()
         })
         .collect();
     queue.submit([encoder.finish()]);

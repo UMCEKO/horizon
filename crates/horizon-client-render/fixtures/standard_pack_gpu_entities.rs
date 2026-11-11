@@ -218,6 +218,7 @@ fn benchmark_slots() -> Result<serde_json::Value, Box<dyn std::error::Error>> {
             views: &[],
             split: 1,
             size: 1,
+            sizes: &[1],
             nearest: &sampler,
             filtered: &sampler,
         }),

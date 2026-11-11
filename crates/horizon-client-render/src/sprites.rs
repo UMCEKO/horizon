@@ -103,14 +103,93 @@ struct StillKey {
     flags: [bool; 4],
 }
 
+/// One block sprite array, set by [`Sprites::finish`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SpriteArray {
+    /// Its layers' side: its largest texture's as a power of two, within the texture budget.
+    pub size: u32,
+    pub layers: u32,
+    /// Its LabPBR maps' side.
+    pub pbr_size: u32,
+    /// The smallest texture of its size group before scaling up (`sprite_mipmap_limit`).
+    pub minimum_size: u32,
+}
+
+/// Where the block sprites are: array `a` holds `arrays[a].layers` layers from id `a * split`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SpriteLayout {
+    pub split: u32,
+    pub arrays: Vec<SpriteArray>,
+}
+
+impl Default for SpriteLayout {
+    fn default() -> Self {
+        Self::uniform(SPRITE_SIZE, 0)
+    }
+}
+
+impl SpriteLayout {
+    /// `layers` layers of `size`, cut by the split resources load with.
+    pub fn uniform(size: u32, layers: u32) -> Self {
+        let all = SpriteArray {
+            size,
+            layers,
+            pbr_size: SPRITE_SIZE,
+            minimum_size: size,
+        };
+        Self::cut(all, crate::gfx::sprite_split())
+    }
+    /// `all.layers` layers like `all`, `split` to an array (one array when there are none).
+    fn cut(all: SpriteArray, split: u32) -> Self {
+        let split = split.max(1);
+        let arrays = (0..all.layers.div_ceil(split).max(1))
+            .map(|a| SpriteArray {
+                layers: all.layers.saturating_sub(a * split).min(split),
+                ..all
+            })
+            .collect();
+        Self { split, arrays }
+    }
+    /// The layer ids the arrays span, the unused ones between arrays included.
+    pub fn count(&self) -> u32 {
+        let last = self.arrays.len().saturating_sub(1) as u32;
+        last * self.split + self.arrays.last().map_or(0, |a| a.layers)
+    }
+    /// The array holding `layer`.
+    pub fn array_of(&self, layer: u32) -> Option<&SpriteArray> {
+        self.arrays
+            .get((layer / self.split) as usize)
+            .filter(|a| layer % self.split < a.layers)
+    }
+    /// One size and no unused ids, as vanilla's textures make: any split cuts it alike.
+    pub fn is_uniform(&self) -> bool {
+        let n = self.arrays.len();
+        self.arrays.iter().enumerate().all(|(i, a)| {
+            let first = self.arrays[0];
+            (a.size, a.pbr_size, a.minimum_size) == (first.size, first.pbr_size, first.minimum_size)
+                && (i + 1 == n || a.layers == self.split)
+        })
+    }
+    /// This layout cut by `split`, when it [`is_uniform`](Self::is_uniform).
+    pub fn resplit(&self, split: u32) -> Option<Self> {
+        let all = SpriteArray {
+            layers: self.count(),
+            ..self.arrays[0]
+        };
+        self.is_uniform().then(|| Self::cut(all, split))
+    }
+}
+
 #[derive(Default)]
 pub struct Sprites {
     source: ResourceSource,
-    /// Edge length of every array layer and the layers' current frames, set
-    /// by [`Sprites::finish`].
+    /// Edge length of the largest array's layers, set by [`Sprites::finish`].
     pub size: u32,
     /// Smallest native layer before array-size resampling.
     pub minimum_size: u32,
+    /// The arrays, set by [`Sprites::finish`].
+    pub layout: SpriteLayout,
+    /// The arrays' layers' current frames, array after array, each at its array's size.
     pub pixels: Vec<u8>,
     pub layers: BTreeMap<String, u32>,
     pub animations: Vec<SpriteAnimation>,
@@ -119,16 +198,17 @@ pub struct Sprites {
     /// Each layer's `MipmapGenerator` settings.
     pub mips: Vec<crate::mipmap::Settings>,
     /// Each layer's frames at the texture's own resolution (square), and the
-    /// frame shown first.
+    /// frame shown first; an id between arrays has none.
     native: Vec<(u32, Arc<Vec<Vec<u8>>>, usize)>,
+    /// Each array's size class ([`size_class`]) and the layers given out in it so far.
+    fill: Vec<(u32, u32)>,
     /// Each layer's LabPBR maps (`_n` normals, `_s` specular) beside its texture: their
     /// frames at their own resolution (square).
     pbr: Vec<[Option<(u32, Vec<Vec<u8>>)>; 2]>,
-    /// The layers' normal and specular maps at `pbr_size`, layer after layer, set by
-    /// [`Sprites::finish`]: empty when no texture has either.
+    /// The layers' normal and specular maps at their array's `pbr_size`, laid out as `pixels`,
+    /// set by [`Sprites::finish`]: empty when no texture has either.
     pub normals: Vec<u8>,
     pub specular: Vec<u8>,
-    pub pbr_size: u32,
     /// Still textures by their pixels, their LabPBR maps and mip settings: mods copy vanilla's
     /// textures under their own names, and one layer serves them all (the GPU's array may
     /// hold as few as 2048).
@@ -141,6 +221,25 @@ pub struct Sprites {
 }
 /// Edge length of vanilla's block textures: the smallest array layer.
 pub const SPRITE_SIZE: u32 = 16;
+/// Textures up to vanilla's largest block texture (`straw_bed`) share arrays; larger ones get their own.
+pub const SHARED_SIZE: u32 = 64;
+/// The arrays a texture `side` pixels wide goes into: the shared ones, or its power of two's.
+fn size_class(side: u32) -> u32 {
+    side.max(SHARED_SIZE).next_power_of_two()
+}
+/// `MissingTextureAtlasSprite.generateMissingImage`: 16x16 RGBA, magenta and black quarters.
+pub fn missing_image() -> Vec<u8> {
+    (0..SPRITE_SIZE * SPRITE_SIZE)
+        .flat_map(|i| {
+            let (x, y) = (i % SPRITE_SIZE, i / SPRITE_SIZE);
+            if (y < SPRITE_SIZE / 2) ^ (x < SPRITE_SIZE / 2) {
+                [248, 0, 248, 255]
+            } else {
+                [0, 0, 0, 255]
+            }
+        })
+        .collect()
+}
 /// The largest sprite array (all layers of the top mip level) when the settings leave it to
 /// Horizon: resource packs with bigger textures are sampled down to fit.
 pub const DEFAULT_TEXTURE_BUDGET: u64 = 256 << 20;
@@ -193,6 +292,27 @@ fn side_within(start: u32, layers: u64, bytes: u64) -> u32 {
     }
     size
 }
+/// [`side_within`] for size groups (start side, layers) sharing `bytes`: the largest sides halve first.
+fn sides_within(groups: &[(u32, u64)], bytes: u64) -> Vec<u32> {
+    let mut sides: Vec<u32> = groups
+        .iter()
+        .map(|g| g.0.max(SPRITE_SIZE).next_power_of_two())
+        .collect();
+    loop {
+        let total: u64 = groups
+            .iter()
+            .zip(&sides)
+            .map(|(g, &s)| g.1 * u64::from(s) * u64::from(s) * 4)
+            .sum();
+        let largest = sides.iter().copied().max().unwrap_or(SPRITE_SIZE);
+        if total <= bytes || largest <= SPRITE_SIZE {
+            return sides;
+        }
+        for side in sides.iter_mut().filter(|s| **s == largest) {
+            *side /= 2;
+        }
+    }
+}
 /// Reduce data maps by selecting whole texels: material IDs and sentinel bytes cannot be averaged.
 fn shrink_map(frame: Vec<u8>, side: u32, max: u32) -> (u32, Vec<u8>) {
     if side <= max || !side.is_power_of_two() || !max.is_power_of_two() {
@@ -238,9 +358,50 @@ impl Sprites {
             disk.save();
         }
     }
-    /// How many array layers the textures take.
+    /// The layer ids the textures take, the unused ones between arrays included.
     pub fn count(&self) -> usize {
         self.native.len()
+    }
+    /// A layer for a texture `side` pixels wide, in an array of its [`size_class`]; with every
+    /// array taken, in the nearest larger class's (or the largest's), drawn at that size.
+    fn next_layer(&mut self, side: u32) -> Result<u32> {
+        let split = crate::gfx::sprite_split();
+        let class = size_class(side);
+        let room = |fill: &[(u32, u32)]| -> Vec<usize> {
+            (0..fill.len()).filter(|&a| fill[a].1 < split).collect()
+        };
+        let open = room(&self.fill);
+        let array = match open.iter().find(|&&a| self.fill[a].0 == class) {
+            Some(&a) => a,
+            None if self.fill.len() < crate::gfx::SPRITE_ARRAYS as usize => {
+                self.fill.push((class, 0));
+                self.fill.len() - 1
+            }
+            None => open
+                .iter()
+                .copied()
+                .filter(|&a| self.fill[a].0 >= class)
+                .min_by_key(|&a| self.fill[a].0)
+                .or_else(|| open.iter().copied().max_by_key(|&a| self.fill[a].0))
+                .ok_or_else(|| {
+                    format!(
+                        "more block textures than Horizon draws ({})",
+                        split * crate::gfx::SPRITE_ARRAYS
+                    )
+                })?,
+        };
+        let layer = array as u32 * split + self.fill[array].1;
+        self.fill[array].1 += 1;
+        let next = layer as usize + 1;
+        if self.native.len() < next {
+            self.native
+                .resize_with(next, || (0, Arc::new(Vec::new()), 0));
+            self.opaque.resize(next, true);
+            self.translucent.resize(next, false);
+            self.mips.resize(next, crate::mipmap::Settings::default());
+            self.pbr.resize(next, [None, None]);
+        }
+        Ok(layer)
     }
     /// `SpriteContents.computeTransparency(u0, v0, u1, v1)` is NONE: every texel under
     /// the quad's UV box is fully opaque in every frame, so the quad needs no alpha test.
@@ -265,10 +426,7 @@ impl Sprites {
             })
         })
     }
-    /// Lay every layer out at one size: the largest texture's (resource packs
-    /// may ship 32x, 64x... textures, like vanilla's stitched atlas), rounded
-    /// up to a power of two and limited to the texture budget (`set_texture_budget`). Smaller
-    /// textures are scaled up by whole pixels, so UVs stay per layer.
+    /// Lay each size class's arrays out at its largest texture's power of two, within the budget.
     pub fn finish(&mut self) {
         self.lay_out(true);
     }
@@ -280,70 +438,158 @@ impl Sprites {
     fn lay_out(&mut self, pixels: bool) {
         // Prefetched textures nothing inserted.
         self.ready = Default::default();
-        let layers = self.native.len().max(1) as u64;
-        let largest = self.native.iter().map(|n| n.0).max().unwrap_or(SPRITE_SIZE);
-        self.minimum_size = self.native.iter().map(|n| n.0).min().unwrap_or(SPRITE_SIZE);
-        let budget = TEXTURE_BUDGET.load(std::sync::atomic::Ordering::Relaxed);
-        let size = side_within(largest, layers, budget);
-        if pixels {
-            log::info!(
-                "Horizon: block sprites: {layers} layers at {size} px (largest {largest} px, budget {} MiB)",
-                budget >> 20
-            );
+        let split = crate::gfx::sprite_split();
+        let used = |n: &&(u32, Arc<Vec<Vec<u8>>>, usize)| !n.1.is_empty();
+        self.minimum_size = self
+            .native
+            .iter()
+            .filter(used)
+            .map(|n| n.0)
+            .min()
+            .unwrap_or(SPRITE_SIZE);
+        // Layers given without `next_layer` (tests) share arrays in order.
+        let fill: Vec<(u32, u32)> = if self.fill.is_empty() {
+            let chunks = self.native.chunks(split as usize);
+            chunks.map(|c| (SHARED_SIZE, c.len() as u32)).collect()
+        } else {
+            self.fill.clone()
+        };
+        let ids = |a: usize, layers: u32| {
+            let first = a * split as usize;
+            first..first + layers as usize
+        };
+        // Per size class: the class, its largest and smallest texture, layers and largest map.
+        let mut groups: Vec<(u32, u32, u32, u64, Option<u32>)> = Vec::new();
+        let mut group_of = Vec::with_capacity(fill.len());
+        for (a, &(class, layers)) in fill.iter().enumerate() {
+            let g = groups.iter().position(|g| g.0 == class).unwrap_or_else(|| {
+                groups.push((class, 0, u32::MAX, 0, None));
+                groups.len() - 1
+            });
+            group_of.push(g);
+            for layer in ids(a, layers) {
+                let side = self.native[layer].0;
+                let map = self.pbr.get(layer).into_iter().flatten().flatten();
+                let group = &mut groups[g];
+                (group.1, group.2) = (group.1.max(side), group.2.min(side));
+                group.3 += 1;
+                group.4 = group.4.max(map.map(|m| m.0).max());
+            }
         }
+        let budget = TEXTURE_BUDGET.load(std::sync::atomic::Ordering::Relaxed);
+        let sizes = sides_within(
+            &groups.iter().map(|g| (g.1, g.3)).collect::<Vec<_>>(),
+            budget,
+        );
+        let maps = pixels && groups.iter().any(|g| g.4.is_some());
+        let pbr_sizes = if maps {
+            let starts: Vec<_> = groups
+                .iter()
+                .zip(&sizes)
+                .map(|(g, &size)| (g.4.map_or(SPRITE_SIZE, |l| l.min(size)), g.3))
+                .collect();
+            sides_within(&starts, max_map_bytes())
+        } else {
+            vec![SPRITE_SIZE; groups.len()]
+        };
+        if pixels {
+            for ((_, largest, _, layers, _), size) in groups.iter().zip(&sizes) {
+                log::info!(
+                    "Horizon: block sprites: {layers} layers at {size} px (largest {largest} px, budget {} MiB)",
+                    budget >> 20
+                );
+            }
+        }
+        let arrays: Vec<SpriteArray> = fill
+            .iter()
+            .zip(&group_of)
+            .map(|(&(_, layers), &g)| SpriteArray {
+                size: sizes[g],
+                layers,
+                pbr_size: pbr_sizes[g],
+                minimum_size: groups[g].2,
+            })
+            .collect();
+        self.layout = if arrays.is_empty() {
+            SpriteLayout::uniform(SPRITE_SIZE, 0)
+        } else {
+            SpriteLayout { split, arrays }
+        };
+        self.size = self
+            .layout
+            .arrays
+            .iter()
+            .map(|a| a.size)
+            .max()
+            .unwrap_or(SPRITE_SIZE);
         if !pixels {
             self.pixels = Vec::new();
             self.animations = Vec::new();
             self.pbr = Vec::new();
-            self.size = size;
             return;
         }
-        let mut resized = Vec::with_capacity(self.native.len());
+        let mut resized = vec![None; self.native.len()];
         self.pixels.clear();
-        for (from, frames, initial) in &self.native {
-            let frames: Arc<Vec<Vec<u8>>> =
-                Arc::new(frames.iter().map(|f| resample(f, *from, size)).collect());
-            self.pixels.extend_from_slice(&frames[*initial]);
-            resized.push(frames);
+        for (a, array) in self.layout.arrays.iter().enumerate() {
+            for layer in ids(a, array.layers) {
+                let (from, frames, initial) = &self.native[layer];
+                let frames: Arc<Vec<Vec<u8>>> = Arc::new(
+                    frames
+                        .iter()
+                        .map(|f| resample(f, *from, array.size))
+                        .collect(),
+                );
+                self.pixels.extend_from_slice(&frames[*initial]);
+                resized[layer] = Some(frames);
+            }
         }
         for animation in &mut self.animations {
-            animation.frames = resized[animation.layer as usize].clone();
+            if let Some(frames) = &resized[animation.layer as usize] {
+                animation.frames = frames.clone();
+            }
         }
-        self.size = size;
         self.normals.clear();
         self.specular.clear();
-        let largest_map = self.pbr.iter().flatten().flatten().map(|m| m.0).max();
-        self.pbr_size = largest_map.map_or(SPRITE_SIZE, |l| {
-            side_within(l.min(size), layers, max_map_bytes())
-        });
-        if largest_map.is_some() {
-            let pbr_size = self.pbr_size;
-            log::info!("Horizon: LabPBR maps at {pbr_size} px, {layers} layers");
+        if maps {
+            for (array, (_, _, _, layers, _)) in pbr_sizes.iter().zip(&groups) {
+                log::info!("Horizon: LabPBR maps at {array} px, {layers} layers");
+            }
             for animation in &mut self.animations {
-                animation.materials = self.pbr[animation.layer as usize].each_ref().map(|map| {
-                    map.as_ref().map(|(from, frames)| {
-                        Arc::new(
-                            frames
-                                .iter()
-                                .map(|frame| resample(frame, *from, pbr_size))
-                                .collect(),
-                        )
+                let Some(array) = self.layout.array_of(animation.layer) else {
+                    continue;
+                };
+                let maps = self.pbr.get(animation.layer as usize);
+                animation.materials = maps.map_or([None, None], |maps| {
+                    maps.each_ref().map(|map| {
+                        map.as_ref().map(|(from, frames)| {
+                            Arc::new(
+                                frames
+                                    .iter()
+                                    .map(|frame| resample(frame, *from, array.pbr_size))
+                                    .collect(),
+                            )
+                        })
                     })
                 });
             }
-            for (layer, maps) in std::mem::take(&mut self.pbr).into_iter().enumerate() {
-                for (map, (out, none)) in maps.into_iter().zip([
-                    (&mut self.normals, FLAT_NORMAL),
-                    (&mut self.specular, NO_SPECULAR),
-                ]) {
-                    match map {
-                        Some((from, frames)) => {
-                            let initial = self.native[layer].2 % frames.len();
-                            let (from, pixels) =
-                                shrink_map(frames[initial].clone(), from, pbr_size);
-                            out.extend(resample(&pixels, from, pbr_size));
+            let mut pbr = std::mem::take(&mut self.pbr);
+            for (a, array) in self.layout.arrays.iter().enumerate() {
+                let pbr_size = array.pbr_size;
+                for layer in ids(a, array.layers) {
+                    let maps = pbr.get_mut(layer).map(std::mem::take).unwrap_or_default();
+                    for (map, (out, none)) in maps.into_iter().zip([
+                        (&mut self.normals, FLAT_NORMAL),
+                        (&mut self.specular, NO_SPECULAR),
+                    ]) {
+                        match map {
+                            Some((from, frames)) => {
+                                let initial = self.native[layer].2 % frames.len();
+                                let (from, pixels) =
+                                    shrink_map(frames[initial].clone(), from, pbr_size);
+                                out.extend(resample(&pixels, from, pbr_size));
+                            }
+                            None => out.extend(none.repeat((pbr_size * pbr_size) as usize)),
                         }
-                        None => out.extend(none.repeat((pbr_size * pbr_size) as usize)),
                     }
                 }
             }
@@ -402,25 +648,9 @@ impl Sprites {
                 if name != "minecraft:missingno" {
                     log::warn!("Horizon: using the missing texture for {name}: {e}");
                 }
-                // MissingTextureAtlasSprite.generateMissingImage: 16x16,
-                // magenta and black quarters.
-                let frame: Vec<u8> = (0..SPRITE_SIZE * SPRITE_SIZE)
-                    .flat_map(|i| {
-                        let (x, y) = (i % SPRITE_SIZE, i / SPRITE_SIZE);
-                        if (y < SPRITE_SIZE / 2) ^ (x < SPRITE_SIZE / 2) {
-                            [248, 0, 248, 255]
-                        } else {
-                            [0, 0, 0, 255]
-                        }
-                    })
-                    .collect();
-                let layer = u32::try_from(self.native.len())?;
-                self.opaque.push(true);
-                self.pbr.push([None, None]);
-                self.translucent.push(false);
-                self.mips.push(crate::mipmap::Settings::default());
+                let layer = self.next_layer(SPRITE_SIZE)?;
                 self.layers.insert(name.to_owned(), layer);
-                self.native.push((SPRITE_SIZE, Arc::new(vec![frame]), 0));
+                self.native[layer as usize] = (SPRITE_SIZE, Arc::new(vec![missing_image()]), 0);
                 Ok(layer)
             }
         }
@@ -723,7 +953,6 @@ impl Sprites {
             .map(AnimationMetadata::from_json)
             .transpose()?;
         let count = frames.len() as u32;
-        let layer = u32::try_from(self.native.len())?;
         let pbr = match name.split_once(':') {
             Some(_) if labpbr_maps() => {
                 let path = crate::atlas_sources::texture_resource(name, "textures");
@@ -767,17 +996,18 @@ impl Sprites {
             self.layers.insert(name.to_owned(), same);
             return Ok(same);
         }
+        let clip = animation
+            .as_ref()
+            .map(|m| m.clip(count))
+            .transpose()?
+            .flatten();
+        let layer = self.next_layer(side)?;
         if let Some(key) = still {
             self.still.insert(key, layer);
         }
         let frames = Arc::new(frames);
         let mut initial = 0;
-        if let Some(clip) = animation
-            .as_ref()
-            .map(|m| m.clip(count))
-            .transpose()?
-            .flatten()
-        {
+        if let Some(clip) = clip {
             initial = clip.sample(0).frame as usize;
             self.animations.push(SpriteAnimation {
                 layer,
@@ -786,12 +1016,13 @@ impl Sprites {
                 materials: [None, None],
             });
         }
-        self.mips.push(settings);
-        self.opaque.push(opaque);
-        self.translucent.push(translucent);
-        self.pbr.push(pbr);
+        let at = layer as usize;
+        self.mips[at] = settings;
+        self.opaque[at] = opaque;
+        self.translucent[at] = translucent;
+        self.pbr[at] = pbr;
         self.layers.insert(name.to_owned(), layer);
-        self.native.push((side, frames, initial));
+        self.native[at] = (side, frames, initial);
         Ok(layer)
     }
 }
@@ -1073,7 +1304,7 @@ mod tests {
             ..Default::default()
         };
         sprites.finish();
-        assert_eq!(sprites.pbr_size, 16);
+        assert_eq!(sprites.layout.arrays[0].pbr_size, 16);
         assert_eq!(sprites.normals[..4], [9, 8, 7, 6]);
         assert_eq!(sprites.normals[16 * 16 * 4..][..4], FLAT_NORMAL);
         assert_eq!(sprites.specular[..4], NO_SPECULAR);
@@ -1621,5 +1852,102 @@ mod tests {
         let stepped = test_clip(16, 0, r#"{"frametime":4}"#);
         assert_eq!(stepped.blend(1), blend(0, 0, 0));
         assert_eq!(stepped.blend(5), blend(1, 1, 0));
+    }
+
+    /// A layer for a still texture of `side` pixels, all `value`, with a LabPBR normal map when `map`.
+    fn add(sprites: &mut Sprites, side: u32, value: u8, map: bool) -> u32 {
+        let layer = sprites.next_layer(side).unwrap();
+        let frame = vec![value; (side * side * 4) as usize];
+        sprites.native[layer as usize] = (side, Arc::new(vec![frame.clone()]), 0);
+        sprites.pbr[layer as usize] = [map.then(|| (side, vec![frame])), None];
+        layer
+    }
+
+    #[test]
+    fn textures_up_to_vanilla_sizes_share_one_array_in_order() {
+        let mut sprites = Sprites::default();
+        let layers = [16, 32, 16, 64, 16].map(|side| add(&mut sprites, side, 1, false));
+        sprites.finish();
+        // As one size for all made them: ids in order, every layer at the largest side.
+        assert_eq!(layers, [0, 1, 2, 3, 4]);
+        let array = SpriteArray {
+            size: 64,
+            layers: 5,
+            pbr_size: SPRITE_SIZE,
+            minimum_size: 16,
+        };
+        assert_eq!(sprites.layout.arrays, [array]);
+        assert!(sprites.layout.is_uniform());
+        assert_eq!((sprites.size, sprites.count()), (64, 5));
+        assert_eq!(sprites.pixels.len(), 5 * 64 * 64 * 4);
+    }
+
+    #[test]
+    fn larger_textures_take_arrays_of_their_own_size() {
+        let mut sprites = Sprites::default();
+        let split = crate::gfx::sprite_split();
+        let small = [
+            add(&mut sprites, 16, 1, true),
+            add(&mut sprites, 16, 2, false),
+        ];
+        let big = add(&mut sprites, 256, 3, true);
+        let middle = add(&mut sprites, 128, 4, false);
+        let odd = add(&mut sprites, 100, 5, false);
+        let after = add(&mut sprites, 32, 6, false);
+        assert_eq!(small, [0, 1]);
+        assert_eq!(
+            [big, middle, odd, after],
+            [split, 2 * split, 2 * split + 1, 2]
+        );
+        sprites.finish();
+        let sizes: Vec<_> = sprites
+            .layout
+            .arrays
+            .iter()
+            .map(|a| (a.size, a.layers, a.pbr_size))
+            .collect();
+        // The 16 and 32 px textures stay at 32 px; the maps follow their array's sizes.
+        assert_eq!(sizes, [(32, 3, 16), (256, 1, 256), (128, 2, 16)]);
+        assert!(!sprites.layout.is_uniform());
+        assert_eq!(sprites.layout.count(), 2 * split + 2);
+        let colour = (3 * 32 * 32 + 256 * 256 + 2 * 128 * 128) * 4;
+        assert_eq!(sprites.pixels.len(), colour);
+        assert_eq!(
+            sprites.normals.len(),
+            (3 * 16 * 16 + 256 * 256 + 2 * 16 * 16) * 4
+        );
+        // Each layer's pixels are its own, at its array's size.
+        let at = |offset: usize| sprites.pixels[offset];
+        assert_eq!(at(3 * 32 * 32 * 4), 3);
+        assert_eq!(at(3 * 32 * 32 * 4 + 256 * 256 * 4 + 128 * 128 * 4), 5);
+        assert_eq!(sprites.normals[3 * 16 * 16 * 4], 3);
+        let ids = (0..sprites.count() as u32).filter(|&l| sprites.layout.array_of(l).is_some());
+        assert_eq!(ids.count(), 6);
+    }
+
+    #[test]
+    fn a_size_class_past_the_last_array_joins_the_nearest_larger_one() {
+        let mut sprites = Sprites::default();
+        for side in [16, 128, 256, 512, 1024, 2048, 4096, 8192] {
+            sprites.next_layer(side).unwrap();
+        }
+        let split = crate::gfx::sprite_split();
+        assert_eq!(sprites.next_layer(8).unwrap(), 1);
+        assert_eq!(sprites.next_layer(200).unwrap(), 2 * split + 1);
+        assert_eq!(sprites.next_layer(9000).unwrap(), 7 * split + 1);
+    }
+
+    #[test]
+    fn the_budget_halves_the_largest_arrays_first() {
+        // 1000 layers of 64 px and 4 of 1024 px in 24 MiB: the big ones come down to 512 px.
+        let sides = sides_within(&[(64, 1000), (1024, 4)], 24 << 20);
+        assert_eq!(sides, [64, 512]);
+        // One group: the same as one size for all.
+        for budget in [1 << 20, 32 << 20, DEFAULT_TEXTURE_BUDGET] {
+            assert_eq!(
+                sides_within(&[(512, 1300)], budget),
+                [side_within(512, 1300, budget)]
+            );
+        }
     }
 }

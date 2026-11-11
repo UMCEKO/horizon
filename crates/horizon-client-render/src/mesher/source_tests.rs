@@ -85,7 +85,7 @@ fn fixture() -> (Scratch, Assets, RenderAssets, MeshTables, Biomes) {
     .unwrap();
     let render = RenderAssets {
         sprite_size: 1,
-        sprite_minimum_size: 1,
+        sprite_layout: crate::sprites::SpriteLayout::uniform(1, 1),
         pixels: SpritePixels::new(vec![255; 4]),
         texture_layers: 1,
         model_catalog: catalog,
@@ -99,7 +99,6 @@ fn fixture() -> (Scratch, Assets, RenderAssets, MeshTables, Biomes) {
         sprite_mips: vec![],
         pbr_normals: vec![],
         pbr_specular: vec![],
-        pbr_size: 1,
         connected: Default::default(),
         fusion: Default::default(),
         generation: 1,

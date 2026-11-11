@@ -42,7 +42,7 @@ fn terrain_fade_reaches_pack_pixels_through_real_instances() {
         view_formats: &[],
     });
     let mut encoder = device.create_command_encoder(&Default::default());
-    let mut atlas = PackAtlas::new(&device, &mut encoder, &[array], 1, 1, 2).unwrap();
+    let mut atlas = PackAtlas::new(&device, &mut encoder, &[array], 1).unwrap();
     atlas.separate_ao = true;
     queue.submit([encoder.finish()]);
     let folder = ProbePack(
@@ -212,7 +212,7 @@ fn terrain_tier_reaches_pack_pixels() {
         view_formats: &[],
     });
     let mut encoder = device.create_command_encoder(&Default::default());
-    let atlas = PackAtlas::new(&device, &mut encoder, &[array], 1, 1, 2).unwrap();
+    let atlas = PackAtlas::new(&device, &mut encoder, &[array], 1).unwrap();
     queue.submit([encoder.finish()]);
     let folder = ProbePack(
         std::env::temp_dir().join(format!("horizon-terrain-tier-{}", std::process::id())),

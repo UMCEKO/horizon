@@ -28,7 +28,7 @@ fn vis_id(page: u32, s: SectionCorner) -> u32 {
 fn vis_sprite(tiled: vec2<f32>, layer: u32, du: vec2<f32>, dv: vec2<f32>) -> vec4<f32> {
     let uv = tile_uv(tiled);
     let tiled_face = any(tiled - uv >= vec2(0.5));
-    let pixel = vec2(1.0 / globals.filtering.y);
+    let pixel = vec2(1.0 / sprite_shape(layer).x);
     let texel_screen = sqrt(du * du + dv * dv);
     if u32(globals.filtering.x) != 1u {
         return sample_nearest(uv, layer, pixel, du, dv, texel_screen, tiled_face);
