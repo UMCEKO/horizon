@@ -75,7 +75,9 @@ def build(java_only=False):
     classpath = oracle.client_classpath(oracle.client()[0])
     cp = ':'.join(jar for jar in classpath.split(':') if 'installertools' not in jar) + ':' + mixinextras(classpath)
     host_classes = str(JARS / 'classes' / 'host')
-    for name, jar, extra in (('host', HOST_JAR, ''), ('plugin', PLUGIN_JAR, host_classes), ('boot', BOOT_JAR, host_classes), ('testmod', TEST_JAR, '')):
+    # The test mod checks boot's own classes (`ChunkMirror`), which share the game layer with it.
+    boot_classes = f"{host_classes}:{JARS / 'classes' / 'boot'}"
+    for name, jar, extra in (('host', HOST_JAR, ''), ('plugin', PLUGIN_JAR, host_classes), ('boot', BOOT_JAR, host_classes), ('testmod', TEST_JAR, boot_classes)):
         classes = JARS / 'classes' / name
         shutil.rmtree(classes, ignore_errors=True)
         classes.mkdir(parents=True)

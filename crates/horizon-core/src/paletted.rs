@@ -65,6 +65,10 @@ impl Strategy {
     pub fn wire_has_palette(self, bits: u8) -> bool {
         self.config(bits) != Config::Global
     }
+    /// How many bits per entry the longs after a leading byte of `bits` hold.
+    pub fn wire_storage_bits(self, bits: u8) -> u8 {
+        self.storage_bits(self.config(bits))
+    }
     /// Bits of the storage a configuration keeps in memory.
     fn storage_bits(self, config: Config) -> u8 {
         match config {

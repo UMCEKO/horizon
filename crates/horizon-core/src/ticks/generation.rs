@@ -18,7 +18,7 @@ impl ProtoChunkTicks {
         }
         result
     }
-    fn schedule_saved(&mut self, tick: SavedTick) -> bool {
+    pub fn schedule_saved(&mut self, tick: SavedTick) -> bool {
         if !self.positions.insert((tick.kind, tick.pos)) {
             return false;
         }
