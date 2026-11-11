@@ -4,8 +4,6 @@ use super::Game;
 use super::native_lifecycle::{ServerTickPhase, WorldPhase};
 use horizon_client::chunk::Chunk;
 use horizon_client::items::ItemStack;
-use horizon_client::lan::chunk_watch::LevelWatches;
-use horizon_client::lan::hub::{Hub, Tracking};
 use horizon_client::spans::Span;
 use horizon_core::nbt::NamedTag;
 use horizon_core::position::BlockPos;
@@ -371,10 +369,13 @@ impl Game<'_> {
         Ok(())
     }
 
-    /// A guest's `ServerPlayer.tick` in Java, its state in place.
-    pub(super) fn java_hook_player_tick(&mut self) {
+    /// A guest's `ServerPlayer.tick` in Java, its state swapped in for the call while Java mods run.
+    pub(super) fn java_hook_player_tick(&mut self, gi: usize, conn: u32) {
         #[cfg(feature = "java-mods")]
-        self.java_player_tick();
+        if horizon_java_host::get().is_some() {
+            let _ = self.as_guest_at(gi, conn, Self::java_player_tick);
+        }
+        let _ = (gi, conn);
     }
 
     /// A guest left the server: its Java player logs out.
@@ -402,20 +403,10 @@ impl Game<'_> {
         let _ = (uuid, java_client, frame);
     }
 
-    /// The hub's tracking changes reach Java's `ChunkMap`, then the frames Java wrote reach their clients.
-    pub(super) fn java_hook_tracking(
-        &mut self,
-        hub: &Hub,
-        events: Vec<Tracking>,
-        watches: &[LevelWatches],
-    ) {
+    /// The hub's tracking changes reach Java's `ChunkMap` while its Java side is on, then the frames Java wrote reach their clients.
+    pub(super) fn java_hook_tracking(&mut self) {
         #[cfg(feature = "java-mods")]
-        {
-            self.java_tracking(events, watches);
-            super::java_mods::java_wire_flush(hub);
-        }
-        #[cfg(not(feature = "java-mods"))]
-        let _ = (hub, events, watches);
+        self.java_lan_tracking();
     }
 
     /// A server tick ended: its time joins the profile, when one is recorded.

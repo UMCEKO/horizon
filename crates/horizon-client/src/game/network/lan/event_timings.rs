@@ -6,7 +6,7 @@
 //! names the player who spent the most of it. Kinds are packet names and players are the
 //! server's guests, so the groups stay as few as those, and only while timing is recorded.
 
-pub(super) struct Burst<W, D> {
+pub(in crate::game) struct Burst<W, D> {
     pub kind: &'static str,
     /// What every event of the group was about, when it was the same for all of them.
     pub detail: Option<D>,
@@ -26,7 +26,7 @@ struct Group<W, D> {
     players: Vec<(W, u32, f32)>,
 }
 
-pub(super) struct EventTimings<W, D> {
+pub(in crate::game) struct EventTimings<W, D> {
     threshold: f32,
     groups: Vec<Group<W, D>>,
 }

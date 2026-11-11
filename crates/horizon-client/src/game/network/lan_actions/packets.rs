@@ -776,6 +776,14 @@ impl Game<'_> {
             S::CustomPayload(p) if p.channel == horizon_protocol::mod_net::CHANNEL => {
                 self.guest_native_net(conn, &p.data)
             }
+            S::CustomPayload(p) if p.channel == horizon_protocol::java::CHANNEL => {
+                let Some(host) = self.lan.as_ref() else {
+                    return;
+                };
+                let uuid = host.hub.guests[gi].uuid;
+                let java_client = host.hub.java_guests().any(|u| u == uuid);
+                self.java_hook_remote_in(uuid, java_client, &p.data);
+            }
             S::CustomPayload(p) if p.channel == horizon_client::lan::recipes::TRANSFER_CHANNEL => {
                 self.guest_recipe_transfer(conn, &p.data);
             }

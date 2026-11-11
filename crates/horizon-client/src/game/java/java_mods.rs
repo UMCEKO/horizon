@@ -783,6 +783,26 @@ impl Game<'_> {
         });
     }
 
+    /// The hub's chunk watches run for the native mods first, then Java hears them with the views and pairings; the pairings stay for `run_native_tracking`.
+    pub(super) fn java_lan_tracking(&mut self) {
+        if !horizon_client::lan::chunk_watch::java_side() {
+            return;
+        }
+        let Some(host) = self.lan.as_mut() else {
+            return;
+        };
+        let watches = host.hub.chunk_watches.take();
+        host.hub.chunk_watches =
+            horizon_client::lan::chunk_watch::ChunkWatchLog::new(watches.clone());
+        self.run_chunk_watches();
+        let Some(host) = self.lan.as_mut() else {
+            return;
+        };
+        let events = host.hub.take_tracking();
+        self.java_tracking(events, &watches);
+        self.java_wire_flush_lan();
+    }
+
     /// `ServerChunkCache.getChunk` with `load`: a ticket on the chunk and the server thread waiting for it, as `managedBlock` does; streaming's unloads wait for the next `update_world`.
     pub(in crate::game) fn java_load_chunk(&mut self, x: i32, z: i32) -> bool {
         let key = (x, z);
@@ -960,6 +980,9 @@ impl Game<'_> {
             s.started = open;
             s.levels.clear();
         });
+        horizon_client::lan::chunk_watch::set_java_side(
+            open && horizon_java_host::get().is_some(),
+        );
         // Building every entity type reads the level through bridged natives (`getDifficulty`), so the game must be active.
         if open {
             horizon_java_host::bridge::with_active(self, super::java_content::entity_types);
@@ -1148,7 +1171,7 @@ impl Game<'_> {
         let mut out = Out::default();
         out.long((uuid >> 64) as i64);
         out.long(uuid as i64);
-        host.request("remote_join", &out.0);
+        horizon_java_host::bridge::with_active(self, || host.request("remote_join", &out.0));
     }
 
     /// A frame from a guest's Java client: the packet it wrote, for the player's listener at its next turn.
@@ -1160,7 +1183,7 @@ impl Game<'_> {
         out.long((uuid >> 64) as i64);
         out.long(uuid as i64);
         out.bytes(frame);
-        host.request("remote_in", &out.0);
+        horizon_java_host::bridge::with_active(self, || host.request("remote_in", &out.0));
     }
 
     /// The frames the Java side wrote while the hub was in use elsewhere, now that it is free.
