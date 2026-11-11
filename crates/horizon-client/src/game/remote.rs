@@ -784,10 +784,8 @@ pub(super) struct Remote {
     clock_game_time: i64,
     /// `ClientChunkCache.Storage`'s view centre (ClientboundSetChunkCacheCenterPacket).
     chunk_center: (i32, i32),
-    /// Received events a frame left for the next one, in order, and when
-    /// the oldest of them first waited (`poll_remote`).
-    backlog: VecDeque<Received>,
-    backlog_since: Option<Instant>,
+    /// Events a frame left for the next one, in order, with when each was received (`poll_remote`).
+    backlog: VecDeque<(Instant, Received)>,
     /// `ClientboundTransferPacket`'s target: when the connection ends the
     /// game connects here, the stored cookies carried over (`TransferState`).
     transfer: Option<String>,
@@ -805,9 +803,7 @@ pub(super) struct Remote {
 /// time the player crossed a chunk border at 32 chunks; they decode on the
 /// chunk decoder's thread now, and the frame only inserts them.
 const CHUNK_PACKETS_PER_FRAME: Duration = Duration::from_millis(1);
-/// Events that have waited this long are all handled in the next frame,
-/// whatever inserting their columns costs, up to a column still decoding:
-/// the packets after a slow machine's chunks don't wait on its frames.
+/// A chunk packet that has waited this long is inserted whatever the frame's chunk budget.
 const BACKLOG_LIMIT: Duration = Duration::from_millis(50);
 /// The open menu name of a server's horse inventory, then its chest's
 /// columns (the packet names no `MenuType`).
@@ -1276,7 +1272,6 @@ impl Game<'_> {
             clock_game_time: 0,
             chunk_center: (0, 0),
             backlog: VecDeque::new(),
-            backlog_since: None,
             server_links: Vec::new(),
             debug_query: Default::default(),
             transfer: None,
@@ -1506,7 +1501,6 @@ impl Game<'_> {
             clock_game_time: 0,
             chunk_center: (0, 0),
             backlog: VecDeque::new(),
-            backlog_since: None,
             server_links: Vec::new(),
             debug_query: Default::default(),
             transfer: None,
