@@ -83,6 +83,8 @@ pub struct Joined {
     pub properties: Vec<horizon_protocol::packets::login::Property>,
     pub info: ClientInformation,
     pub brand: String,
+    /// The client answered the server's `horizon:java` probe: it has Java mods of its own.
+    pub java: bool,
     pub sender: PlayerSender,
     /// Smoothed keep-alive round trip in milliseconds.
     pub latency: Arc<AtomicI32>,
@@ -162,6 +164,9 @@ pub const ACCEPT_OLDER_CLIENTS: &str = "horizon-accept-older-clients";
 pub const OLDER_CLIENTS_UNFINISHED: &str =
     "This server lets 26.2 join, but Horizon cannot translate 26.2 yet: join with 26.3";
 
+/// The Java side's configuration frames for a client that joins.
+pub type JavaFrames = Arc<dyn Fn() -> Vec<Vec<u8>> + Send + Sync>;
+
 /// How the server side of the network behaves: an integrated server's LAN
 /// uses the defaults, a dedicated server takes them from server.properties.
 #[derive(Clone)]
@@ -225,6 +230,8 @@ pub struct NetConfig {
     /// client whose `minecraft:brand` isn't Horizon's is turned away during
     /// configuration. A brand can be spoofed: a gate, not security.
     pub horizon_clients_only: bool,
+    /// The server's Java side: a client with a Java client of its own gets its configuration frames over `horizon:java`.
+    pub java_frames: Option<JavaFrames>,
     /// `horizon-accept-older-clients` (off): a client of 26.2 joins too, its packets renumbered
     /// (horizon_protocol::adapter::ClientSession). Off, it is turned away as vanilla turns it away.
     pub accept_older_clients: bool,
@@ -282,6 +289,7 @@ impl NetConfig {
             code_of_conducts: Vec::new(),
             server_links: Vec::new(),
             horizon_clients_only: false,
+            java_frames: None,
             accept_older_clients: false,
             older_clients_play: false,
             lod_distance: crate::lod_net::DEFAULT_DISTANCE,

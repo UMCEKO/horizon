@@ -930,6 +930,7 @@ mod hub_tests {
                 properties: Vec::new(),
                 info: horizon_protocol::packets::configuration::ClientInformation::new(4),
                 brand: "vanilla".into(),
+                java: false,
                 sender: PlayerSender::new(tx, std::sync::Arc::default()),
                 latency: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0)),
                 address: "127.0.0.1:25565".parse().unwrap(),

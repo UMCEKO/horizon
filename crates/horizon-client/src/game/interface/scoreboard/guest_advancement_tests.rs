@@ -59,6 +59,7 @@ fn selector_reads_independent_host_and_guest_progress() {
                 properties: Vec::new(),
                 info: ClientInformation::new(2),
                 brand: "test".into(),
+                java: false,
                 sender: PlayerSender::new(tx, Arc::default()),
                 latency: Arc::new(AtomicI32::new(0)),
                 address: "127.0.0.1:25565".parse().unwrap(),

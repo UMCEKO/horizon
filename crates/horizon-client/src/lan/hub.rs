@@ -45,7 +45,12 @@ use {
 pub mod advancements;
 pub mod chat;
 pub mod chat_filter;
+mod java;
 mod spawn_info;
+mod tracking;
+pub use java::Tracking;
+pub use tracking::TrackingBatch;
+use tracking::take_tracking;
 use advancements::AdvancementOwners;
 
 pub mod game_event {
@@ -259,14 +264,6 @@ pub struct TickGrants {
     pub grants: Vec<super::advancements::CriterionGrant>,
 }
 
-/// What one player started and stopped tracking, in order, for the game to
-/// tell the mods.
-pub struct TrackingBatch {
-    pub player: u128,
-    pub name: String,
-    pub events: Vec<super::entity::TrackEvent>,
-}
-
 /// A holder whose synced attachments one player is sent whole, because the
 /// player started seeing it.
 pub struct AttachmentSnapshot {
@@ -287,38 +284,13 @@ fn queue_snapshots(
     );
 }
 
-/// Moves a guest's tracking events into `out`, one batch, and the entities it
-/// started tracking into `snapshots`.
-fn take_tracking(
-    g: &mut Guest,
-    out: &mut Vec<TrackingBatch>,
-    snapshots: &mut Vec<AttachmentSnapshot>,
-    sync_attachments: bool,
-) {
-    let events = g.tracker.take_events();
-    if !events.is_empty() {
-        if sync_attachments {
-            let started = events.iter().filter(|e| e.start);
-            queue_snapshots(
-                snapshots,
-                g.uuid,
-                started.map(|e| Holder::Entity(e.entity as u32)),
-            );
-        }
-        out.push(TrackingBatch {
-            player: g.uuid,
-            name: g.name.clone(),
-            events,
-        });
-    }
-}
-
 pub struct Hub {
     /// Clicks on and closings of native mods' menus, for the game.
     pub native_menu_events: Vec<super::menu::NativeMenuEvent>,
     /// The chunks players started and stopped watching, for the mods
     /// (`chunk_watch`): recorded only while a mod listens.
     pub chunk_watches: ChunkWatchLog,
+    java_tracking: Vec<Tracking>,
     /// Kicks waiting for the game thread to notify native mods.
     pending_kicks: Vec<HostEvent>,
     /// `[transfer]` on (a dedicated server's `--transfers`): the players a proxy
@@ -822,6 +794,7 @@ impl Hub {
             mod_commands: (serde_json::Value::Null, None),
             native_menu_events: Vec::new(),
             chunk_watches: ChunkWatchLog::default(),
+            java_tracking: Vec::new(),
             pending_kicks: Vec::new(),
             transfers: None,
             native_tracking: Vec::new(),
@@ -2590,6 +2563,7 @@ impl Hub {
     pub(super) fn remove_guest(&mut self, i: usize, reason: &str) -> Guest {
         let mut g = self.guests.remove(i);
         super::chunk_watch::unwatch_all(&mut self.chunk_watches, &mut g);
+        java::left(&mut self.java_tracking, &g);
         if let Some(m) = g
             .menu
             .as_ref()
@@ -2931,6 +2905,7 @@ impl Hub {
                 return;
             }
             g.center = Some((cx, cz));
+            java::view(&mut self.java_tracking, g, (cx, cz));
             if g.center_sent.take() != Some((cx, cz)) {
                 g.send(&C::SetChunkCacheCenter(play::SetChunkCacheCenter {
                     x: cx,
@@ -5238,6 +5213,7 @@ impl Hub {
             }
             g.tracker.clear();
             g.sent_chunks.clear();
+            java::reset(&mut self.java_tracking, g);
             g.far_sent_chunks.clear();
             g.chunk_queue.clear();
             g.far_queue.clear();
@@ -5377,6 +5353,7 @@ impl Hub {
             // respawn only, and covers a level change with its separate `isChangingDimension` term.
             g.tracker.clear();
             g.sent_chunks.clear();
+            java::reset(&mut self.java_tracking, g);
             g.far_sent_chunks.clear();
             g.chunk_queue.clear();
             g.far_queue.clear();
@@ -5681,6 +5658,7 @@ mod tests {
                 properties: Vec::new(),
                 info: horizon_protocol::packets::configuration::ClientInformation::new(8),
                 brand: "vanilla".into(),
+                java: false,
                 sender: crate::lan::PlayerSender::new(tx, Arc::default()),
                 latency: Arc::new(std::sync::atomic::AtomicI32::new(0)),
                 address: "127.0.0.1:25566".parse().unwrap(),
@@ -6184,6 +6162,7 @@ mod tests {
                 properties: Vec::new(),
                 info: horizon_protocol::packets::configuration::ClientInformation::new(8),
                 brand: "vanilla".into(),
+                java: false,
                 sender: crate::lan::PlayerSender::new(tx, std::sync::Arc::default()),
                 latency: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0)),
                 address: "127.0.0.1:25565".parse().unwrap(),
@@ -6609,6 +6588,7 @@ mod tests {
                 properties: Vec::new(),
                 info: horizon_protocol::packets::configuration::ClientInformation::new(8),
                 brand: String::new(),
+                java: false,
                 sender: crate::lan::PlayerSender::new(tx, std::sync::Arc::default()),
                 latency: std::sync::Arc::default(),
                 address: "127.0.0.1:25565".parse().unwrap(),
@@ -6701,6 +6681,7 @@ mod tests {
                 properties: Vec::new(),
                 info: horizon_protocol::packets::configuration::ClientInformation::new(8),
                 brand: "vanilla".into(),
+                java: false,
                 sender: crate::lan::PlayerSender::new(tx, std::sync::Arc::default()),
                 latency: std::sync::Arc::default(),
                 address: "127.0.0.1:25566".parse().unwrap(),
@@ -6792,6 +6773,7 @@ mod tests {
                 properties: Vec::new(),
                 info: horizon_protocol::packets::configuration::ClientInformation::new(8),
                 brand: "horizon".into(),
+                java: false,
                 sender: crate::lan::PlayerSender::new(tx, std::sync::Arc::default()),
                 latency: std::sync::Arc::default(),
                 address: "127.0.0.1:25566".parse().unwrap(),

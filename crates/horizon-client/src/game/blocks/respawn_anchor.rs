@@ -728,6 +728,7 @@ mod connected_spawnpoint_rotation_tests {
                 properties: Vec::new(),
                 info: ClientInformation::new(2),
                 brand: "test".into(),
+                java: false,
                 sender: PlayerSender::new(tx, Arc::default()),
                 latency: Arc::new(AtomicI32::new(0)),
                 address: "127.0.0.1:7".parse().unwrap(),

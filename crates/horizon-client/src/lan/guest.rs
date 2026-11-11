@@ -128,6 +128,7 @@ struct GuestInit {
     properties: Vec<horizon_protocol::packets::login::Property>,
     info: ClientInformation,
     brand: String,
+    java: bool,
     sender: PlayerSender,
     latency: Arc<AtomicI32>,
     address: std::net::SocketAddr,
@@ -138,6 +139,8 @@ pub struct Guest {
     /// Identity generation and journal binding travel with the actual player record.
     pub residency: crate::join_seq::residency::member::Member,
     pub kind: GuestKind,
+    /// The client has a Java client of its own, which hears of the Java mods over `horizon:java`.
+    pub java: bool,
     pub conn: u32,
     /// The client's address (IP bans, `list`).
     pub address: std::net::SocketAddr,
@@ -502,6 +505,7 @@ impl Guest {
             properties,
             info,
             brand,
+            java,
             sender,
             latency,
             address,
@@ -516,6 +520,7 @@ impl Guest {
                 properties,
                 info,
                 brand,
+                java,
                 sender,
                 latency,
                 address,
@@ -542,6 +547,7 @@ impl Guest {
             properties: Vec::new(),
             info: ClientInformation::new(2),
             brand: String::new(),
+            java: false,
             sender: PlayerSender::disabled(),
             latency: Arc::default(),
             address: ([0, 0, 0, 0], 0).into(),
@@ -601,6 +607,7 @@ impl Guest {
         Self {
             residency: Default::default(),
             kind,
+            java: j.java,
             conn: j.conn,
             address: j.address,
             last_action_tick: 0,
@@ -2372,6 +2379,7 @@ mod tests {
                 properties: Vec::new(),
                 info: ClientInformation::new(8),
                 brand: String::new(),
+                java: false,
                 sender: PlayerSender::new(tx, Arc::new(std::sync::atomic::AtomicUsize::new(0))),
                 latency: Arc::new(AtomicI32::new(0)),
                 address: "127.0.0.1:1".parse().unwrap(),

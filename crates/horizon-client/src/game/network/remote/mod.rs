@@ -2357,6 +2357,7 @@ impl Game<'_> {
                     registries,
                     name,
                     uuid,
+                    java: _,
                 } => {
                     self.set_registries(registries);
                     self.extras_joined();
@@ -2389,6 +2390,7 @@ impl Game<'_> {
                         remote.quiet_commands = true;
                     }
                 }
+                Event::Java(_) => {}
                 Event::ModNet => {
                     if let Some(remote) = &mut self.remote {
                         remote.mod_net = true;
@@ -2405,9 +2407,7 @@ impl Game<'_> {
                     self.flush_chat_queue();
                     self.send_chat_acknowledgement();
                     self.close_dialogs();
-                    // The server configuring us now (a proxy's next one)
-                    // offers its own far terrain, or none, and announces its
-                    // own features again (a Horizon server's quiet commands).
+                    // A proxy's next server offers its own far terrain and quiet commands, if any.
                     if let Some(remote) = &mut self.remote {
                         remote.far_terrain = None;
                         remote.quiet_commands = false;
