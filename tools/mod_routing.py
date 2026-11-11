@@ -153,7 +153,7 @@ def bridge_table():
         from . import java_mods as jm
     except ImportError:
         import java_mods as jm
-    return {(owner, name, desc) for path in sorted(jm.BRIDGES_DIR.glob('*.rs')) for owner, name, desc, *_ in jm.BRIDGE_ENTRY.findall(path.read_text())}
+    return {(owner, name, desc) for path in sorted(jm.BRIDGES_DIR.rglob('*.rs')) for owner, name, desc, *_ in jm.BRIDGE_ENTRY.findall(path.read_text())}
 
 
 class Graph:

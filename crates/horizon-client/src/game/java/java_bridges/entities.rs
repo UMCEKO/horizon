@@ -1,6 +1,5 @@
 // game-module-cfg: feature java-mods
 //! Entities, on live views: queries answered with ids and groups, and every setter of a backed view written through to native.
-#![allow(dead_code)]
 
 use super::super::java_entities::{
     AI, AIR, EQUIPMENT, FIRE, FLAGS, HEALTH, ITEM, MOTION, NAME, POSITION, REMOVAL, RIDING,

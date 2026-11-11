@@ -1,6 +1,5 @@
 // game-module-cfg: feature java-mods
 //! Heavy pure work, where Rust measurably beats the JIT (docs/java-mods.md); a table for `()` needs no game.
-#![allow(dead_code)]
 
 use super::*;
 use horizon_core::geometry::Vec3;

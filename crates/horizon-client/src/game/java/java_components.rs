@@ -1,6 +1,5 @@
 // game-module-cfg: feature java-mods
 //! Mods' data components on the wire: each type's own stream codec, in the JVM.
-#![allow(dead_code)]
 use super::java_mods::{read_tag, write_tag};
 use horizon_client::net::JavaLink;
 use horizon_core::nbt::Tag;

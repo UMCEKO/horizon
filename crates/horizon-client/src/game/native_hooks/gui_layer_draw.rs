@@ -7,6 +7,21 @@ impl Game<'_> {
     pub(in crate::game) fn native_gui_layer_draw(&self, layer: &str, draw: &mut HudBatch) {
         self.fire_gui_layer_draw(layer, draw);
     }
+    /// The HUD pass starts: the mods' layers draw among vanilla's while it shows, after what Java mods drew first.
+    pub(in crate::game) fn hud_begin(&mut self, show_hud: bool, batch: &mut HudBatch) {
+        self.hud_layer_next = show_hud.then_some(0);
+        if show_hud {
+            self.hud_start(batch);
+        }
+    }
+    /// The HUD pass ends: what Java mods drew after layers not drawn, then the mod layers above the last vanilla one.
+    pub(in crate::game) fn hud_finish(&mut self, show_hud: bool, batch: &mut HudBatch) {
+        if show_hud {
+            self.hud_end(batch);
+        }
+        self.draw_mod_gui_layers(None, batch);
+        self.hud_layer_next = None;
+    }
     /// Draws one vanilla HUD layer between the mods' hooks: first the mods' layers
     /// placed below it (`draw_mod_gui_layers`), then `native_gui_layer_pre` (which
     /// may hide it), the layer, then `native_gui_layer_post`. `None` when a mod hid
@@ -20,7 +35,12 @@ impl Game<'_> {
         self.draw_mod_gui_layers(Some(layer), batch);
         let mut canceled = false;
         self.native_gui_layer_pre(layer, batch, &mut canceled);
-        let drawn = (!canceled).then(|| draw(self, batch));
+        let java = crate::game::java_hooks_client::HudLayer::of(layer);
+        let drawn = if canceled {
+            None
+        } else {
+            self.hud_layer(batch, java, draw)
+        };
         self.native_gui_layer_post(layer, batch);
         drawn
     }

@@ -2,9 +2,8 @@
 //! Java mods' screens in Horizon's window: the Java client in the same JVM opens them from what the
 //! player's server view sent it, draws them into a list Rust paints, and takes the window's mouse
 //! and keys while one is open.
-#![allow(dead_code)]
 
-use super::java_hooks_client::{HudLayer, JavaClick, JavaKeyAction, Leaf, face_index};
+use super::java_hooks_client::{HudLayer, JavaClick, JavaKeyAction, Leaf};
 use super::*;
 
 /// One segment before the first layer, then two per layer.
@@ -45,6 +44,8 @@ pub(in crate::game) mod live {
         hud_frames: (u32, u128),
         /// The selected hotbar slot the HUD recording was asked for, while Java draws the hotbar layer.
         hud_selected: usize,
+        /// Bit per `HudLayer` whose after-segment this frame painted.
+        hud_painted: u32,
         states: bool,
         /// Input the world took since the last tick, in order, as `events` reads it.
         queue: Vec<u8>,
@@ -1290,7 +1291,10 @@ pub(in crate::game) mod live {
         }
 
         /// The window joined a server in another process whose Java side the Java client connected to in configuration: its play packets go over the window's connection.
-        pub(in crate::game) fn java_remote_joined(&mut self) {
+        pub(in crate::game) fn java_remote_joined(&mut self, java: bool) {
+            if !java {
+                return;
+            }
             CLIENT.with_borrow_mut(|c| c.remote = true);
             self.java_bind_states();
         }
@@ -1664,12 +1668,18 @@ pub(in crate::game) mod live {
 
         /// What mods drew before the first layer.
         pub(in crate::game) fn hud_start(&mut self, batch: &mut HudBatch) {
+            CLIENT.with_borrow_mut(|c| c.hud_painted = 0);
             self.paint_hud_segment(batch, 0);
         }
 
-        /// The layers a mod cancelled, as the Java client last recorded them.
-        pub(in crate::game) fn java_hud_cancelled(&self) -> u32 {
-            CLIENT.with_borrow(|c| c.hud.cancelled)
+        /// What mods drew after the layers native did not draw this frame, in vanilla's order.
+        pub(in crate::game) fn hud_end(&mut self, batch: &mut HudBatch) {
+            let painted = CLIENT.with_borrow(|c| c.hud_painted);
+            for layer in HudLayer::ALL {
+                if painted & (1 << layer as u32) == 0 {
+                    self.paint_hud_segment(batch, layer as usize * 2 + 2);
+                }
+            }
         }
 
         fn paint_hud_segment(&mut self, batch: &mut HudBatch, index: usize) {
@@ -1682,21 +1692,29 @@ pub(in crate::game) mod live {
         }
 
         /// Native's vanilla layer, unless a mod cancelled it or Java drew it; then what mods drew after it.
-        pub(in crate::game) fn hud_layer(
+        pub(in crate::game) fn hud_layer<R>(
             &mut self,
             batch: &mut HudBatch,
-            layer: HudLayer,
-            native: impl FnOnce(&mut Self, &mut HudBatch),
-        ) {
-            let (cancelled, drawn) = CLIENT.with_borrow(|c| (c.hud.cancelled, c.hud.drawn));
+            layer: Option<HudLayer>,
+            native: impl FnOnce(&mut Self, &mut HudBatch) -> R,
+        ) -> Option<R> {
+            let Some(layer) = layer else {
+                return Some(native(self, batch));
+            };
+            let (cancelled, drawn) = CLIENT.with_borrow_mut(|c| {
+                c.hud_painted |= 1 << layer as u32;
+                (c.hud.cancelled, c.hud.drawn)
+            });
             let (drawn_by_native, drawn_by_java) = hud_layer_draws(cancelled, drawn, layer);
             let index = layer as usize * 2;
+            let mut answer = None;
             if drawn_by_java {
                 self.paint_hud_segment(batch, index + 1);
             } else if drawn_by_native {
-                native(self, batch);
+                answer = Some(native(self, batch));
             }
             self.paint_hud_segment(batch, index + 2);
+            answer
         }
 
         /// The open Java screen asked for the menu blur this frame.
@@ -1846,13 +1864,6 @@ pub(in crate::game) mod live {
                 paint_frame(batch, &self.gui.atlas, &frame, |batch, reply| {
                     self.java_screen_item(batch, reply)
                 });
-            }
-        }
-
-        /// Before the first step: what mods drew in `Render.Pre`.
-        pub(in crate::game) fn shell_start(&mut self, batch: &mut HudBatch) {
-            if CLIENT.with_borrow(|c| c.shell.open) {
-                self.paint_shell_segment(batch, Leaf::Start as usize * 2);
             }
         }
 
@@ -2570,5 +2581,17 @@ pub(in crate::game) mod live {
             let painted = paint_frame(&mut batch, &atlas, &plain.0, |_, _| Some(()));
             assert!(painted.is_some_and(|p| !p.blur));
         }
+    }
+}
+
+/// `Direction.get3DDataValue` of a face's normal.
+fn face_index(face: [i32; 3]) -> i32 {
+    match face {
+        [0, -1, 0] => 0,
+        [0, 1, 0] => 1,
+        [0, 0, -1] => 2,
+        [0, 0, 1] => 3,
+        [-1, 0, 0] => 4,
+        _ => 5,
     }
 }

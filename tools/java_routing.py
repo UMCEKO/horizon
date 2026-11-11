@@ -142,7 +142,7 @@ def route_bridges(root=ROOT):
     except ImportError:
         import java_mods as jm
     found = set()
-    for path in sorted((root / 'crates/horizon-client/src/game/java').glob('*.rs')):
+    for path in sorted((root / 'crates/horizon-client/src/game/java').rglob('*.rs')):
         text = path.read_text()
         for m in jm.BRIDGE_ENTRY.finditer(text):
             if re.search(r'\broute\s*$', text[:m.start()]):

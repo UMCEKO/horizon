@@ -1,5 +1,4 @@
 //! The Java client's window shims: cfg-free for their call sites, empty without `--features java-mods`.
-#![allow(dead_code)]
 
 use super::*;
 
@@ -53,24 +52,72 @@ pub(in crate::game) enum HudLayer {
     SubtitleOverlay,
 }
 
+impl HudLayer {
+    pub(in crate::game) const ALL: [HudLayer; 24] = [
+        HudLayer::CameraOverlays,
+        HudLayer::Crosshair,
+        HudLayer::AfterCameraDecorations,
+        HudLayer::Hotbar,
+        HudLayer::PlayerHealth,
+        HudLayer::ArmorLevel,
+        HudLayer::FoodLevel,
+        HudLayer::VehicleHealth,
+        HudLayer::AirLevel,
+        HudLayer::ContextualInfoBarBackground,
+        HudLayer::ExperienceLevel,
+        HudLayer::ContextualInfoBar,
+        HudLayer::SelectedItemName,
+        HudLayer::SpectatorTooltip,
+        HudLayer::Effects,
+        HudLayer::BossOverlay,
+        HudLayer::SleepOverlay,
+        HudLayer::DemoOverlay,
+        HudLayer::ScoreboardSidebar,
+        HudLayer::OverlayMessage,
+        HudLayer::Title,
+        HudLayer::Chat,
+        HudLayer::TabList,
+        HudLayer::SubtitleOverlay,
+    ];
+
+    /// The vanilla layer a `gui_layer` id names; a mod's layer is none.
+    pub(in crate::game) fn of(id: &str) -> Option<HudLayer> {
+        const IDS: [&str; 24] = [
+            "minecraft:camera_overlays",
+            "minecraft:crosshair",
+            "minecraft:after_camera_decorations",
+            "minecraft:hotbar",
+            "minecraft:player_health",
+            "minecraft:armor_level",
+            "minecraft:food_level",
+            "minecraft:vehicle_health",
+            "minecraft:air_level",
+            "minecraft:contextual_info_bar_background",
+            "minecraft:experience_level",
+            "minecraft:contextual_info_bar",
+            "minecraft:selected_item_name",
+            "minecraft:spectator_tooltip",
+            "minecraft:effects",
+            "minecraft:boss_overlay",
+            "minecraft:sleep_overlay",
+            "minecraft:demo_overlay",
+            "minecraft:scoreboard_sidebar",
+            "minecraft:overlay_message",
+            "minecraft:title",
+            "minecraft:chat",
+            "minecraft:tab_list",
+            "minecraft:subtitle_overlay",
+        ];
+        IDS.iter().position(|i| *i == id).map(|at| HudLayer::ALL[at])
+    }
+}
+
 /// `handleKeybinds`' key actions the Java client hears of as the window performs them.
 #[derive(Clone, Copy)]
 pub(in crate::game) enum JavaKeyAction {
-    Drop(bool),
+    Drop(#[cfg_attr(not(feature = "java-mods"), expect(dead_code, reason = "only the Java client reads it"))] bool),
     SwapHands,
-    Hotbar(usize),
-}
-
-/// `Direction.get3DDataValue` of a face's normal.
-pub(in crate::game) fn face_index(face: [i32; 3]) -> i32 {
-    match face {
-        [0, -1, 0] => 0,
-        [0, 1, 0] => 1,
-        [0, 0, -1] => 2,
-        [0, 0, 1] => 3,
-        [-1, 0, 0] => 4,
-        _ => 5,
-    }
+    Hotbar(#[cfg_attr(not(feature = "java-mods"), expect(dead_code, reason = "only the Java client reads it"))] usize),
 }
 
 /// A click the window is about to act on, as `handleKeybinds` would start it.
@@ -88,6 +135,17 @@ impl Game<'_> {
         self.java_set_animate_picked(picked);
         #[cfg(not(feature = "java-mods"))]
         let _ = picked;
+    }
+
+    /// The Java client ran the click first and a mod canceled it: the window swings as it said and acts no further.
+    pub(in crate::game) fn java_click_handled(&mut self, click: JavaClick) -> bool {
+        let Some(swing) = self.java_click_canceled(click) else {
+            return false;
+        };
+        if let Some(hand) = swing {
+            self.swing_hand(hand, horizon_client::first_person::SwingAnimation::DEFAULT);
+        }
+        true
     }
 
     /// Whether the Java shell hears the window's input: it is open and no prompt, dialog or closing save is over it.
@@ -118,16 +176,14 @@ impl Game<'_> {
         false
     }
     pub(super) fn hud_start(&mut self, _batch: &mut HudBatch) {}
-    pub(super) fn java_hud_cancelled(&self) -> u32 {
-        0
-    }
-    pub(super) fn hud_layer(
+    pub(super) fn hud_end(&mut self, _batch: &mut HudBatch) {}
+    pub(super) fn hud_layer<R>(
         &mut self,
         batch: &mut HudBatch,
-        _layer: HudLayer,
-        native: impl FnOnce(&mut Self, &mut HudBatch),
-    ) {
-        native(self, batch);
+        _layer: Option<HudLayer>,
+        native: impl FnOnce(&mut Self, &mut HudBatch) -> R,
+    ) -> Option<R> {
+        Some(native(self, batch))
     }
     pub(super) fn java_screen_click(&mut self, _button: MouseButton, _pressed: bool) {}
     pub(super) fn java_screen_moved(&mut self) {}
@@ -152,14 +208,13 @@ impl Game<'_> {
     pub(super) fn java_client_frame(&mut self) {}
     pub(super) fn java_client_left(&mut self) {}
     pub(super) fn java_client_font(&self) {}
-    pub(super) fn java_remote_joined(&mut self) {}
+    pub(super) fn java_remote_joined(&mut self, _java: bool) {}
     pub(super) fn java_apply_mod_keys(&self) {}
     pub(super) fn java_wire_in(&mut self, _frame: &[u8]) {}
     pub(super) fn java_shell_open(&self) -> bool {
         false
     }
     pub(super) fn java_shell_frame(&mut self) {}
-    pub(super) fn shell_start(&mut self, _batch: &mut HudBatch) {}
     pub(super) fn shell_leaf(
         &mut self,
         batch: &mut HudBatch,

@@ -1031,6 +1031,7 @@ impl Game<'_> {
             |a| (a.name.clone(), a.uuid),
         );
         self.server_packs_connect(local.is_none().then_some(address), user);
+        self.java_client_font();
         let session = match local {
             Some(pipe) => Session::connect_local(
                 pipe,
@@ -1624,6 +1625,7 @@ impl Game<'_> {
             }
             None => false,
         };
+        self.java_client_left();
         // A splitscreen player leaving says nothing of where P1 plays.
         if !self.options.split_guest {
             mod_api::content::crash::clear_detail("Server");
@@ -2357,8 +2359,9 @@ impl Game<'_> {
                     registries,
                     name,
                     uuid,
-                    java: _,
+                    java,
                 } => {
+                    self.java_remote_joined(java);
                     self.set_registries(registries);
                     self.extras_joined();
                     // handleLogin: the level loading screen replaces any dialog.
@@ -2390,7 +2393,7 @@ impl Game<'_> {
                         remote.quiet_commands = true;
                     }
                 }
-                Event::Java(_) => {}
+                Event::Java(frame) => self.java_wire_in(&frame),
                 Event::ModNet => {
                     if let Some(remote) = &mut self.remote {
                         remote.mod_net = true;
@@ -8636,6 +8639,9 @@ impl Game<'_> {
         if self.hands_busy() {
             return;
         }
+        if self.java_click_handled(super::java_hooks_client::JavaClick::Use) {
+            return;
+        }
         // InputEvent.InteractionKeyMappingTriggered for the main hand: a cancel
         // ends the whole click, the off hand gets no turn.
         if let Some(swing) = self.native_interaction(InteractionKey::Use, Hand::Main, attempt) {
@@ -8893,7 +8899,12 @@ impl Game<'_> {
                 && held.is_some()
                 && vanilla_block
                 && self.shelf_hit(&hit).is_some();
-            let (result, changes) = if let Some(answer) = block_answer {
+            let java = (hand == Hand::Main && !spectator && block_used && block_answer.is_none())
+                .then(|| self.java_block_prediction(hit.pos))
+                .flatten();
+            let (result, changes) = if let Some(result) = java {
+                (result, DryUse::default())
+            } else if let Some(answer) = block_answer {
                 if let Some(result) = super::native_hooks::block_use_result(answer) {
                     (result, DryUse::default())
                 } else if hand == Hand::Main {
@@ -10273,6 +10284,9 @@ impl Game<'_> {
             .held()
             .and_then(|s| horizon_client::spear::Kinetic::of(&s.item));
         if spear.is_some() && self.cannot_attack_with_item(self.hand_strength.ticker, 0) {
+            return false;
+        }
+        if self.java_click_handled(super::java_hooks_client::JavaClick::Attack) {
             return false;
         }
         // InputEvent.InteractionKeyMappingTriggered, after the checks that stop
@@ -12213,6 +12227,9 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
         self.0.remote_use(attempt);
     }
     fn pick(&mut self) {
+        if self.0.java_click_handled(super::java_hooks_client::JavaClick::Pick) {
+            return;
+        }
         // Minecraft.pickBlockOrEntity: an entity before the block is asked
         // for (`handlePickItemFromEntity`), else the block.
         if let Some(entity) = self.0.pick_entity_hit() {

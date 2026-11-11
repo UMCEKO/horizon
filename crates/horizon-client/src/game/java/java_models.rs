@@ -1,7 +1,6 @@
 // game-module-cfg: feature java-mods
 //! Geometry the Java client bakes from a mod block entity's data (cable parts, inserted cells): the
 //! replies are parsed here into `dynamic_models`, which the mesher draws from, and the sections remesh.
-#![allow(dead_code)]
 
 use super::*;
 use horizon_assets::item_model::FoilType;

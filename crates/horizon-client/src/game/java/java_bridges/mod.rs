@@ -1,6 +1,5 @@
 // game-module-cfg: feature java-mods
 //! Vanilla methods Java mods reach, served by Horizon's own ports (`docs/java-mods.md`).
-#![allow(dead_code)]
 
 use super::*;
 pub(super) use horizon_java_host::bridge::{Bytes, Dir, Point, Pos, Skip, State, Text};

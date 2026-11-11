@@ -1,5 +1,4 @@
 //! Where the hook points reach Java mods (`docs/java-mods.md`); each does nothing without `--features java-mods`.
-#![allow(dead_code)]
 use super::Game;
 use super::native_lifecycle::{ServerTickPhase, WorldPhase};
 use horizon_client::chunk::Chunk;
@@ -417,6 +416,23 @@ impl Game<'_> {
         #[cfg(feature = "java-mods")]
         self.profile_tick(wall_ms, spans);
         let _ = (wall_ms, spans);
+    }
+
+    /// The JVM's flight recording written now, named by the time (`profile dump`).
+    pub(super) fn java_hook_profile_dump(&mut self) -> Result<std::path::PathBuf, String> {
+        #[cfg(feature = "java-mods")]
+        return self.profile_dump();
+        #[cfg(not(feature = "java-mods"))]
+        Err("this build has no Java mods".into())
+    }
+
+    /// A stopping server writes the JVM's recording when one is kept, since the process exits without the JVM's own exit dump.
+    pub(super) fn java_hook_profile_stop(&mut self) -> Option<Result<std::path::PathBuf, String>> {
+        #[cfg(feature = "java-mods")]
+        if super::profile::dir().is_some() {
+            return Some(self.profile_dump());
+        }
+        None
     }
 }
 

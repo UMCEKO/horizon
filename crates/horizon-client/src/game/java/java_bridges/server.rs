@@ -1,6 +1,5 @@
 // game-module-cfg: feature java-mods
 //! The server, the connection, commands.
-#![allow(dead_code)]
 
 use super::*;
 

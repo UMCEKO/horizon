@@ -1,6 +1,5 @@
 // game-module-cfg: feature java-mods
 //! Shapes of mods' blocks that depend on their block entity: the server's collisions from the server's Java block, the window's from the Java client's copy.
-#![allow(dead_code)]
 
 use super::java_screens::live::{java_client_running, java_shape_generation};
 use super::*;

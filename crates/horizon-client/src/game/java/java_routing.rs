@@ -1,13 +1,10 @@
 // game-module-cfg: feature java-mods
 //! W12: a vanilla method a loaded mod's mixin patches runs as Java's merged method; its body stays native unless the patch is inside it.
-#![allow(dead_code)]
 
 /// Who a routed method's receiver is.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::game) enum Recv {
     Player,
-    Level,
     Static,
 }
 
@@ -29,13 +26,6 @@ macro_rules! route_gate {
     };
 }
 
-#[cfg(not(feature = "java-mods"))]
-macro_rules! route_gate {
-    ($game:expr, $key:literal, $recv:expr, ($($arg:expr),* $(,)?)) => {
-        ()
-    };
-}
-
 /// Marks the native site that serves a GUI key; expands to nothing.
 #[allow(unused_macros)]
 macro_rules! gui_route {
@@ -46,28 +36,10 @@ macro_rules! gui_route {
 pub(in crate::game) use {gui_route, route_gate as route};
 
 /// A routed `Component` argument: its saved form.
-#[allow(dead_code)]
 pub(in crate::game) struct ComponentArg<'a>(pub &'a horizon_core::nbt::Tag);
 
 /// A routed `Player` argument: the acting player, as a call fills its view.
-#[allow(dead_code)]
 pub(in crate::game) struct PlayerArg(pub Option<Vec<u8>>);
-
-#[cfg(feature = "java-mods")]
-pub(in crate::game) mod route {
-    #[allow(dead_code)]
-    pub fn early<T>(value: T) -> T {
-        horizon_java_host::bridge::early(value)
-    }
-}
-
-#[cfg(not(feature = "java-mods"))]
-pub(in crate::game) mod route {
-    #[allow(dead_code)]
-    pub fn early<T>(value: T) -> T {
-        value
-    }
-}
 
 #[cfg(feature = "java-mods")]
 pub(in crate::game) use gate::{Gate, RouteArg};
@@ -269,11 +241,6 @@ mod gate {
                 Recv::Player => {
                     out.0.push(0);
                     out.0.extend(self.java_use_request()?);
-                }
-                Recv::Level => {
-                    out.0.push(1);
-                    out.text(self.dim.id());
-                    out.long(self.world.game_time);
                 }
                 Recv::Static => out.0.push(2),
             }

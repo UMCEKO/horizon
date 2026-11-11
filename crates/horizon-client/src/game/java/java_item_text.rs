@@ -1,6 +1,5 @@
 // game-module-cfg: feature java-mods
 //! Names and tooltips of mods' items, which the Java client computes (`getHoverName`, `getTooltipLines`): asked once per stack and cached.
-#![allow(dead_code)]
 
 use super::java_hooks::JavaItemText;
 use super::*;
