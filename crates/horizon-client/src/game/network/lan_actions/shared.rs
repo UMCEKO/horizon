@@ -269,6 +269,7 @@ pub(super) struct GuestSwap {
         Option<String>,
         Option<u128>,
         Option<u8>,
+        bool,
         Option<u32>,
         Option<i32>,
     ),

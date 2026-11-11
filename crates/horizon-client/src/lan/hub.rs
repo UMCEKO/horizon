@@ -3899,9 +3899,8 @@ impl Hub {
                     }));
                 }
             }
-            // ServerEntity.sendDirtyEntityData: the shared flags go to the player
-            // too, so the sprint a hit stops (Player.causeExtraKnockback) stops
-            // on its client.
+            // ServerEntity.sendDirtyEntityData: the shared and living flags go to the player too,
+            // so a sprint a hit stops, or a use the server ends, stops on its client.
             let shared = shared_flags(g.sneaking, g.sprinting, &guest_body(g));
             if shared != g.sent_shared {
                 g.sent_shared = shared;
@@ -3910,6 +3909,7 @@ impl Hub {
                     values: vec![(0, serializer::BYTE, Value::Byte(shared))],
                 }));
             }
+            g.send_own_living();
             let pose = g.pose();
             if matches!(
                 pose,

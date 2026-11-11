@@ -282,7 +282,13 @@ impl Game<'_> {
                         {
                             play.destroy_pos = Some(pos);
                         }
-                        if !one_hit {
+                        if one_hit {
+                            // handleBlockBreakAction: START breaks at once when the progress is complete.
+                            self.as_guest(conn, |g| {
+                                g.mining = None;
+                                let _ = g.break_block(pos);
+                            });
+                        } else {
                             self.guest_dig_feedback(conn);
                         }
                     }

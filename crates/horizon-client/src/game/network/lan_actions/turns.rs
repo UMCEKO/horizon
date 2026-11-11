@@ -99,6 +99,15 @@ impl Game<'_> {
         self.enter_guest_at(i, conn, outer_dimension).ok()
     }
 
+    /// `Player.getMainArm` of the player this game acts as: a guest's `ClientInformation`, else the window's option.
+    pub(in crate::game) fn acting_main_arm_left(&self) -> bool {
+        if self.lan_acting.is_some() {
+            self.lan_acting_main_arm_left
+        } else {
+            self.settings.main_hand_left
+        }
+    }
+
     /// `enter_guest` for the guest at `i`, which must be `conn`.
     pub(super) fn enter_guest_at(
         &mut self,
@@ -404,6 +413,7 @@ impl Game<'_> {
             self.lan_acting_name.replace(g.name.clone()),
             self.lan_acting_uuid.replace(g.uuid),
             self.lan_acting_permission.replace(g.permission),
+            std::mem::replace(&mut self.lan_acting_main_arm_left, g.main_arm_left()),
             self.lan_acting_entity.replace(g.entity_id as u32),
             std::mem::replace(&mut self.lan_acting_spawn_protection, spawn_protection),
         );
@@ -727,6 +737,7 @@ impl Game<'_> {
             self.lan_acting_name,
             self.lan_acting_uuid,
             self.lan_acting_permission,
+            self.lan_acting_main_arm_left,
             self.lan_acting_entity,
             self.lan_acting_spawn_protection,
         ) = acting;

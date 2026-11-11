@@ -343,7 +343,7 @@ impl Game<'_> {
             .as_ref()
             .map_or([0.0; 3], |p| [p.position.x, p.position.y, p.position.z]);
         let mut owner = owner_at(position, self.yaw, "minecraft:player");
-        owner.main_arm_left = self.settings.main_hand_left;
+        owner.main_arm_left = self.acting_main_arm_left();
         owner.is_local_player = true;
         owner.is_view_entity = true;
         owner.last_death_location = self
