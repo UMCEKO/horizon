@@ -17,19 +17,18 @@ impl Game<'_> {
         self.set_selected_slot_body(slot);
     }
 
-    /// `Inventory.setSelectedSlot`'s body, through the server's own write of the acting player's slot.
+    /// `Inventory.setSelectedSlot`'s body: the acting player's own slot; the client already knows it.
     pub(in crate::game) fn set_selected_slot_body(&mut self, slot: i32) {
-        if let (Ok(slot), Some(player)) = (usize::try_from(slot), self.native_acting_player()) {
-            self.player_set_selected_slot(player, slot);
+        if let Ok(slot) = usize::try_from(slot)
+            && slot < 9
+        {
+            self.selected = slot;
         }
     }
 
     /// `ServerGamePacketListenerImpl.tryPickItem`'s inventory part through the methods mods patch.
     pub(in crate::game) fn pick_item_routed(&mut self, stack: &ItemStack, infinite: bool) {
-        let found = self.inventory[..36]
-            .iter()
-            .position(|s| s.as_ref().is_some_and(|s| s.same_item_same_components(stack)));
-        match found {
+        match pick_item::find_slot_matching_item(&self.inventory[..36], stack) {
             Some(slot) if slot < 9 => self.set_selected_slot(slot as i32),
             Some(slot) => self.pick_slot(slot as i32),
             None if infinite => self.add_and_pick_item(stack),
@@ -55,7 +54,7 @@ impl Game<'_> {
         if let Ok(slot) = usize::try_from(slot)
             && slot < 36
         {
-            self.inventory.swap(self.selected, slot);
+            pick_item::swap_selected_with(&mut self.inventory[..36], self.selected, slot);
         }
     }
 
@@ -74,13 +73,8 @@ impl Game<'_> {
     pub(in crate::game) fn add_and_pick_item_body(&mut self, stack: &ItemStack) {
         let suitable = pick_item::suitable_hotbar_slot(&self.inventory[..36], self.selected);
         self.set_selected_slot(suitable as i32);
-        let selected = self.selected;
-        if self.inventory[selected].is_some()
-            && let Ok(free) = usize::try_from(self.free_slot())
-        {
-            self.inventory[free] = self.inventory[selected].take();
-        }
-        self.inventory[selected] = Some(stack.clone());
+        let free = usize::try_from(self.free_slot()).ok();
+        pick_item::place_picked(&mut self.inventory[..36], self.selected, stack, free);
     }
 
     /// `Inventory.getFreeSlot`: the first empty main-inventory slot, or -1.
@@ -96,9 +90,6 @@ impl Game<'_> {
 
     /// `Inventory.getFreeSlot`'s body.
     pub(in crate::game) fn free_slot_body(&self) -> i32 {
-        self.inventory[..36]
-            .iter()
-            .position(Option::is_none)
-            .map_or(-1, |slot| slot as i32)
+        pick_item::free_slot_in(&self.inventory[..36]).map_or(-1, |slot| slot as i32)
     }
 }

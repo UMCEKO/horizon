@@ -3623,7 +3623,30 @@ impl Dim {
 /// hotbar and the main inventory), then into empty slots of the inventory
 /// (`getFreeSlot`, never the off hand). What does not fit stays in `stack`;
 /// true when some of it is left.
+#[cfg_attr(feature = "java-mods", allow(dead_code))]
 fn inventory_add(
+    inventory: &mut [Option<ItemStack>],
+    offhand: &mut Option<ItemStack>,
+    selected: usize,
+    max: u32,
+    stack: &mut ItemStack,
+) -> bool {
+    if !inventory_stack_onto(inventory, offhand, selected, max, stack) {
+        return false;
+    }
+    while let Some(i) =
+        horizon_client::pick_item::free_slot_in(&inventory[..inventory.len().min(36)])
+    {
+        if !inventory_fill_free(inventory, i, max, stack) {
+            return false;
+        }
+    }
+    true
+}
+
+/// `Inventory.add`'s first half: onto equal stacks in the selected slot, the off hand, then the
+/// hotbar and the main inventory; true when some of `stack` is left.
+fn inventory_stack_onto(
     inventory: &mut [Option<ItemStack>],
     offhand: &mut Option<ItemStack>,
     selected: usize,
@@ -3651,20 +3674,23 @@ fn inventory_add(
             }
         }
     }
-    for slot in inventory.iter_mut().take(36) {
-        if slot.is_none() {
-            let moved = stack.count.min(max);
-            *slot = Some(ItemStack {
-                count: moved,
-                ..stack.clone()
-            });
-            stack.count -= moved;
-            if stack.count == 0 {
-                return false;
-            }
-        }
-    }
     true
+}
+
+/// Puts up to `max` of `stack` into the empty slot `i`; true when some of it is left.
+fn inventory_fill_free(
+    inventory: &mut [Option<ItemStack>],
+    i: usize,
+    max: u32,
+    stack: &mut ItemStack,
+) -> bool {
+    let moved = stack.count.min(max);
+    inventory[i] = Some(ItemStack {
+        count: moved,
+        ..stack.clone()
+    });
+    stack.count -= moved;
+    stack.count > 0
 }
 
 fn facing_offset(facing: &str) -> [i32; 3] {
@@ -4650,6 +4676,7 @@ impl Game<'_> {
             .get(&stack.item)
             .map_or(64, |i| i.max_stack);
         let before = stack.count;
+        #[cfg(not(feature = "java-mods"))]
         let left = inventory_add(
             &mut self.inventory,
             &mut self.offhand,
@@ -4657,6 +4684,21 @@ impl Game<'_> {
             max,
             &mut stack,
         );
+        // `Inventory.add`'s empty slot comes from the gated `getFreeSlot`.
+        #[cfg(feature = "java-mods")]
+        let left = {
+            let mut left = inventory_stack_onto(
+                &mut self.inventory,
+                &mut self.offhand,
+                self.selected,
+                max,
+                &mut stack,
+            );
+            while left && let Ok(i) = usize::try_from(self.free_slot()) {
+                left = inventory_fill_free(&mut self.inventory, i, max, &mut stack);
+            }
+            left
+        };
         if stack.count < before {
             self.tutorial_get_item(tutorial_item.as_ref());
         }

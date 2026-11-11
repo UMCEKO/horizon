@@ -69,11 +69,11 @@ WanderingTraderSpawner.getTraderData	port	crates/horizon-client/src/game/mobs/wa
 WanderingTraderSpawner.tryToSpawnLlamaFor	port	crates/horizon-client/src/game/mobs/wandering_trader.rs::Game::spawn_trader_llama	
 WanderingTraderSpawner.findSpawnPositionNear	port	crates/horizon-client/src/game/mobs/wandering_trader.rs::Game::find_trader_spawn_near	
 WanderingTraderSpawner.hasEnoughSpace	port	crates/horizon-client/src/game/mobs/wandering_trader.rs::Game::trader_has_space	
-Inventory.setSelectedSlot	port	crates/horizon-client/src/game/interface/inventory_slots.rs::Game::set_selected_slot	gated port; an invalid slot is ignored here, not a thrown exception; horizon-world PlayerInventory is the harness oracle
+Inventory.setSelectedSlot	port	crates/horizon-client/src/game/java/inventory.rs::Game::set_selected_slot	gated port; an invalid slot is ignored here, not a thrown exception; horizon-world PlayerInventory is the harness oracle
 Inventory.hasRemainingSpaceForItem	port	crates/horizon-world/src/inventory_pickup.rs::remaining	
-Inventory.getFreeSlot	port	crates/horizon-client/src/game/interface/inventory_slots.rs::Game::free_slot	gated port; horizon-world PlayerInventory is the harness oracle
-Inventory.addAndPickItem	port	crates/horizon-client/src/game/interface/inventory_slots.rs::Game::add_and_pick_item	gated port; horizon-world PlayerInventory is the harness oracle
-Inventory.pickSlot	port	crates/horizon-client/src/game/interface/inventory_slots.rs::Game::pick_slot	gated port; horizon-world PlayerInventory is the harness oracle
+Inventory.getFreeSlot	port	crates/horizon-client/src/game/java/inventory.rs::Game::free_slot	gated port; horizon-world PlayerInventory is the harness oracle
+Inventory.addAndPickItem	port	crates/horizon-client/src/game/java/inventory.rs::Game::add_and_pick_item	gated port; horizon-world PlayerInventory is the harness oracle
+Inventory.pickSlot	port	crates/horizon-client/src/game/java/inventory.rs::Game::pick_slot	gated port; horizon-world PlayerInventory is the harness oracle
 Inventory.findSlotMatchingItem	port	crates/horizon-world/src/player_inventory.rs::PlayerInventory::find_matching	
 Inventory.findSlotMatchingCraftingIngredient	port	crates/horizon-world/src/player_inventory.rs::PlayerInventory::find_crafting	
 Inventory.getSuitableHotbarSlot	port	crates/horizon-world/src/player_inventory.rs::PlayerInventory::suitable_hotbar	

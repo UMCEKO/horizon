@@ -269,7 +269,21 @@ def ledger_lint(gates, packs, deferred, ledger, routing=None):
 
     def holds(i, gs):
         f = fns[i]
-        return any(f['file'] == g['file'] and ((f['name'] == g['fn'] and f['line'] <= g['line'] <= f['end']) or f['name'] == g['body']) for g in gs)
+        return any((f['file'] == g['file'] and f['name'] == g['fn'] and f['line'] <= g['line'] <= f['end']) or f['name'] == g['body'] for g in gs)
+
+    def below(roots):
+        """The fns reachable from `roots` through callees."""
+        seen, todo = set(roots), list(roots)
+        while todo:
+            for callee in fns[todo.pop()].get('callees', []):
+                if callee not in seen:
+                    seen.add(callee)
+                    todo.append(callee)
+        return seen
+
+    def dispatches(i, gs):
+        """Whether fn `i` calls a gated fn, so it reaches the port through the gate."""
+        return any(holds(c, gs) for c in fns[i].get('callees', []))
 
     for key, gs in sorted(by_key.items()):
         short = key.split('(')[0]
@@ -279,10 +293,11 @@ def ledger_lint(gates, packs, deferred, ledger, routing=None):
                 break
         else:
             ids = []
+        inside = below([i for i in range(len(fns)) if holds(i, gs)])
         for i in ids:
-            if holds(i, gs):
+            if holds(i, gs) or i in inside or dispatches(i, gs):
                 continue
-            outside = sorted(c for c in callers[i] if not holds(c, gs))
+            outside = sorted(c for c in callers[i] if not (holds(c, gs) or c in inside or dispatches(c, gs) or fns[c]['file'] == fns[i]['file']))
             if outside:
                 f = fns[i]
                 errors.append(f'{key}: native port {f["file"]}:{f["name"]} bypasses the gate (called by {", ".join(fns[c]["file"] + ":" + fns[c]["name"] for c in outside[:3])})')

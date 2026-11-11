@@ -121,8 +121,6 @@ impl Game<'_> {
             ),
             _ => horizon_client::containers::display_name(None, default_key),
         };
-        let title = horizon_client::component::name_text(&title);
-        self.send_overlay_message(Text::translate("container.isLocked", &[title]));
         // `Level.playSound(null, pos, SoundEvents.CHEST_LOCKED, BLOCKS, 1, 1)`:
         // the block's centre, or between the halves of a double chest.
         let at = match (halves[0], halves[1]) {
@@ -138,9 +136,22 @@ impl Game<'_> {
             ],
             _ => [0.0; 3],
         };
+        #[cfg(feature = "java-mods")]
+        self.send_chest_locked_here(at, &title);
+        #[cfg(not(feature = "java-mods"))]
+        self.send_chest_locked_here_body(at, &title);
+        true
+    }
+    /// `BaseContainerBlockEntity.sendChestLockedNotifications`'s body for the player in place.
+    pub(in crate::game) fn send_chest_locked_here_body(
+        &mut self,
+        at: [f64; 3],
+        name: &horizon_core::nbt::Tag,
+    ) {
+        let title = horizon_client::component::name_text(name);
+        self.send_overlay_message(Text::translate("container.isLocked", &[title]));
         self.audio
             .play("minecraft:block.chest.locked", Some(at), 1.0, 1.0);
-        true
     }
     /// ShulkerBoxSlot.mayPlace: no shulker box inside a shulker box.
     pub(super) fn refuses(&self, slot: usize, stack: &ItemStack) -> bool {

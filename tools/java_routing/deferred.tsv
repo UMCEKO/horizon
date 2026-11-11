@@ -112,8 +112,8 @@ net/minecraft/world/entity/item/ItemEntity#fireImmune()Z	view: entity
 net/minecraft/world/entity/item/ItemEntity#hurtServer(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/damagesource/DamageSource;F)Z	view: entity
 net/minecraft/world/entity/item/ItemEntity#tick()V	view: entity
 net/minecraft/world/entity/npc/villager/VillagerType#byBiome(Lnet/minecraft/core/Holder;)Lnet/minecraft/resources/ResourceKey;	seam: crates/horizon-client/src/mobs/finalize.rs:2187
-net/minecraft/world/entity/player/Inventory#getFreeSlot()I	seam: crates/horizon-client/src/menu.rs:1814
-net/minecraft/world/entity/player/Inventory#getFreeSlot()I	seam: crates/horizon-client/src/menu.rs:1837
+net/minecraft/world/entity/player/Inventory#getFreeSlot()I	seam: crates/horizon-client/src/menu.rs:2508
+net/minecraft/world/entity/player/Inventory#getFreeSlot()I	seam: crates/horizon-client/src/menu.rs:2522
 net/minecraft/world/entity/player/Player#readAdditionalSaveData(Lnet/minecraft/world/level/storage/ValueInput;)V	view: save_stream
 net/minecraft/world/inventory/AbstractContainerMenu#doClick(IILnet/minecraft/world/inventory/ContainerInput;Lnet/minecraft/world/entity/player/Player;)V	seam: crates/horizon-client/src/game/blocks/stations.rs:816
 net/minecraft/world/inventory/AbstractContainerMenu#getRedstoneSignalFromContainer(Lnet/minecraft/world/Container;)I	seam: crates/horizon-client/src/game/blocks/machines/mod.rs:684
