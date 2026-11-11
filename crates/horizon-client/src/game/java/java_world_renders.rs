@@ -61,6 +61,19 @@ pub(super) fn java_world_frame_apply(reply: &[u8], spent: u128) {
     });
 }
 
+/// The camera Java is told: the locator's, else the aligned view's (backed off, turned round in front view); none before a view was aligned.
+fn camera_for_java(
+    view: &horizon_client::camera::Camera,
+    fov: f32,
+    far: f32,
+    locator: Option<([f64; 3], f32, f32, f32)>,
+) -> Option<([f64; 3], [f32; 4])> {
+    if let Some((at, yaw, pitch, fov)) = locator {
+        return Some((at, [yaw, pitch, fov, far]));
+    }
+    (view.position != [0.0; 3]).then_some((view.position, [view.y_rot, view.x_rot, fov, far]))
+}
+
 /// The window's world recordings and registry end with its server.
 pub(super) fn java_world_left() {
     horizon_client::world_renders::clear();
@@ -72,12 +85,11 @@ impl Game<'_> {
     pub(super) fn java_world_camera(&self) -> Option<([f64; 3], [f32; 4])> {
         let far =
             horizon_client::camera::depth_far(self.terrain_distance(), self.settings.cloud_range);
-        match self.locator_camera {
-            Some((at, yaw, pitch, fov)) => Some((at, [yaw, pitch, fov, far])),
-            None => self
-                .eye_position()
-                .map(|at| (at, [self.yaw, self.pitch, 70.0, far])),
-        }
+        let fov = self.fov_degrees(self.clock.fraction() as f32, self.view.position);
+        camera_for_java(&self.view, fov, far, self.locator_camera).or_else(|| {
+            self.eye_position()
+                .map(|at| (at, [self.yaw, self.pitch, 70.0, far]))
+        })
     }
 
     /// While the world animates, this frame's recording request as the level's frame would extract it; none on the frame that took a tick's status or while a tick runs.
@@ -102,6 +114,24 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn java_is_told_the_detached_view_and_the_locator_wins() {
+        let mut view = horizon_client::camera::Camera::default();
+        assert_eq!(camera_for_java(&view, 70.0, 256.0, None), None);
+        // Third person front at yaw 30, pitch 10: Camera.setup turns round to yaw + 180, -pitch.
+        view.position = [0.0, 64.0, -4.0];
+        view.y_rot = 30.0 + 180.0;
+        view.x_rot = -10.0;
+        assert_eq!(
+            camera_for_java(&view, 80.0, 256.0, None),
+            Some(([0.0, 64.0, -4.0], [210.0, -10.0, 80.0, 256.0]))
+        );
+        assert_eq!(
+            camera_for_java(&view, 80.0, 256.0, Some(([1.0, 2.0, 3.0], 5.0, 6.0, 90.0))),
+            Some(([1.0, 2.0, 3.0], [5.0, 6.0, 90.0, 256.0]))
+        );
+    }
 
     #[test]
     fn a_frame_is_recorded_only_while_the_world_animates_and_nothing_else_serves_it() {

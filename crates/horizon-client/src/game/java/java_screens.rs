@@ -105,7 +105,7 @@ pub(in crate::game) mod live {
         Screen(bool, bool, u8),
         Focus(bool),
         /// The window camera's position, yaw, pitch, field of view and far plane, told when its block or its view changes.
-        Camera([f64; 3], [f32; 4]),
+        Camera([f64; 3], [f32; 4], u8),
         /// `handleKeybinds`' drop, with the whole stack or not.
         Drop(bool),
         SwapHands,
@@ -179,9 +179,10 @@ pub(in crate::game) mod live {
                     out.bool(arrived);
                 }
                 Input::Wire(frame) => out.bytes(frame),
-                Input::Camera(at, view) => {
+                Input::Camera(at, view, camera_type) => {
                     at.iter().for_each(|v| out.double(*v));
                     view.iter().for_each(|v| out.float(*v));
+                    out.0.push(camera_type);
                 }
                 Input::Animate(group) => {
                     out.int(group.len() as i32);
@@ -222,7 +223,7 @@ pub(in crate::game) mod live {
         native_screen: Option<(bool, bool, u8)>,
         layout: Option<[i32; 5]>,
         focused: Option<bool>,
-        camera: Option<([i32; 3], [f32; 4])>,
+        camera: Option<([i32; 3], [f32; 4], u8)>,
         cursor: Option<(f64, f64)>,
         motion: Option<Motion>,
         particles: Option<i32>,
@@ -1424,6 +1425,7 @@ pub(in crate::game) mod live {
             let native_screen = (open, open && self.pause, kind);
             let layout = (kind != 0).then(|| self.java_shell_layout());
             let camera = self.java_world_camera();
+            let camera_type = self.camera_type as u8;
             self.java_publish_client_world();
             let (left, arrived) = self.java_client_chunk_changes();
             CLIENT.with_borrow_mut(|c| {
@@ -1468,10 +1470,10 @@ pub(in crate::game) mod live {
                 }
                 let block = camera.map(|(p, _)| p.map(|v| v.floor() as i32));
                 if let (Some((at, view)), Some(block)) = (camera, block)
-                    && c.sent.camera != Some((block, view))
+                    && c.sent.camera != Some((block, view, camera_type))
                 {
-                    c.sent.camera = Some((block, view));
-                    Input::Camera(at, view).write(&mut events);
+                    c.sent.camera = Some((block, view, camera_type));
+                    Input::Camera(at, view, camera_type).write(&mut events);
                     count += 1;
                 }
                 for group in c.animate.drain(..) {
@@ -2161,6 +2163,15 @@ pub(in crate::game) mod live {
                 (read.int(), read.int(), read.int()),
                 (Some(1), Some(64), Some(101))
             );
+        }
+
+        #[test]
+        fn a_camera_input_carries_the_perspective_after_the_seven_numbers() {
+            let mut out = Out::default();
+            Input::Camera([1.0, 2.0, 3.0], [4.0, 5.0, 6.0, 7.0], 2).write(&mut out);
+            assert_eq!(out.0[0], 13);
+            assert_eq!(out.0.len(), 1 + 3 * 8 + 4 * 4 + 1);
+            assert_eq!(out.0[41], 2);
         }
 
         fn segments_of(sizes: &[(usize, u8)]) -> Out {
