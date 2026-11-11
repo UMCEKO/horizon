@@ -1021,7 +1021,7 @@ impl Game<'_> {
         alpha: f64,
     ) -> glam::DVec3 {
         // Player.getRopeHoldPosition: `0.22 * (RIGHT ? -1 : 1)`.
-        let hand_dir = if self.settings.main_hand_left {
+        let hand_dir = if self.acting_main_arm_left() {
             1.0
         } else {
             -1.0

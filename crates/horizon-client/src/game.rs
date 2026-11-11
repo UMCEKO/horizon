@@ -3394,6 +3394,7 @@ struct Game<'a> {
     tnt_refused: Option<BlockPos>,
     /// Their permission level: an op's above 0 (`PlayerList.isOp`).
     lan_acting_permission: Option<u8>,
+    lan_acting_main_arm_left: bool,
     /// The spawn protection radius that holds the acting guest back
     /// (`DedicatedServer.isUnderSpawnProtection` before the position test):
     /// None for an operator, without operators, or off a dedicated server.
@@ -8182,12 +8183,8 @@ impl Game<'_> {
             self.destroy_progress_event(pos, hit.face, ticks);
         }
         let m = self.mining.as_mut().ok_or("mining")?;
-        // ServerPlayerGameMode breaks a player's block at once only when it is instant (START's
-        // insta-mine); otherwise it waits for the client's STOP_DESTROY_BLOCK
-        // (`guest_stop_digging`), never breaking it on its own count. Breaking it here would
-        // take the block from under the player's crack before the player's client predicts the
-        // break, so it gets neither particles nor sound.
-        if m.progress >= 1.0 && (self.lan_acting.is_none() || m.ticks == 1) {
+        // A guest's block breaks at its START (instant) or its STOP_DESTROY_BLOCK, never on a count here.
+        if m.progress >= 1.0 && self.lan_acting.is_none() {
             let pos = m.pos;
             self.mining = None;
             self.break_block(pos)?;
@@ -16859,6 +16856,7 @@ impl<'a> Game<'a> {
             lan_acting_uuid: None,
             tnt_refused: None,
             lan_acting_permission: None,
+            lan_acting_main_arm_left: false,
             lan_acting_spawn_protection: None,
             lan_acting_entity: None,
             lan_acting_fake: false,

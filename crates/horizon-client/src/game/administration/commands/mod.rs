@@ -1507,12 +1507,10 @@ impl Game<'_> {
             // Item.getDescriptionId: a block item's is the block's.
             let (namespace, path) = item.split_once(':').unwrap_or(("minecraft", item));
             let key = format!("item.{namespace}.{path}");
-            let key = if self.pack.names.get(&key).is_some() {
-                key
-            } else {
-                format!("block.{namespace}.{path}")
-            };
-            Text::translate(&key, &[])
+            let block = format!("block.{namespace}.{path}");
+            // An item no language names shows its own key, as an untranslated `item_name` does.
+            let named = |k: &str| self.pack.names.get(k).is_some();
+            Text::translate(if named(&key) || !named(&block) { &key } else { &block }, &[])
         };
         // Component.empty().append(getHoverName()), italic for a custom name.
         let mut name = Text::empty().append(hover);

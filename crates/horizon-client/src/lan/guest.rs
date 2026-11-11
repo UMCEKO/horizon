@@ -9,7 +9,7 @@ use crate::{
 };
 use horizon_core::geometry::{Aabb, Vec3};
 use horizon_protocol::{
-    attachment_sync,
+    attachment_sync, entity_data,
     item::Stack,
     packets::{
         configuration::{ClientInformation, CustomPayload},
@@ -374,6 +374,8 @@ pub struct Guest {
     /// The shared flags (Entity.DATA_SHARED_FLAGS_ID) the player's client was
     /// last sent about itself.
     pub sent_shared: i8,
+    /// The living flags (`LivingEntity.DATA_LIVING_ENTITY_FLAGS`) its client was last sent about itself.
+    pub sent_living: i8,
     /// Pose last delivered to this player's own entity data, initially Standing.
     pub sent_pose: Pose,
     /// The shoulder parrots (Player.DATA_SHOULDER_PARROT_LEFT and _RIGHT) the
@@ -715,6 +717,7 @@ impl Guest {
             sent_air: (300, 0.0),
             sent_frozen: 0,
             sent_shared: 0,
+            sent_living: 0,
             sent_pose: Pose::Standing,
             sent_shoulders: [None; 2],
             sent_stuck: (0, 0),
@@ -868,6 +871,31 @@ impl Guest {
             (self.position[0].floor() as i32) >> 4,
             (self.position[2].floor() as i32) >> 4,
         )
+    }
+    /// `Avatar.getMainArm` of the server player: `ClientInformation.mainHand` is a `HumanoidArm` id, 0 left and 1 right.
+    pub fn main_arm_left(&self) -> bool {
+        self.info.main_hand == 0
+    }
+    /// The living flags to send the player about itself, once each time they change (`ServerEntity.sendDirtyEntityData`).
+    pub fn send_own_living(&mut self) {
+        if let Some(flags) = self.own_living_flags() {
+            let values = vec![(
+                8,
+                entity_data::serializer::BYTE,
+                entity_data::Value::Byte(flags),
+            )];
+            let id = self.entity_id;
+            self.send(&play::Clientbound::SetEntityData(play::SetEntityData {
+                id,
+                values,
+            }));
+        }
+    }
+    fn own_living_flags(&mut self) -> Option<i8> {
+        (self.living_flags != self.sent_living).then(|| {
+            self.sent_living = self.living_flags;
+            self.living_flags
+        })
     }
     pub fn creative(&self) -> bool {
         self.game_mode == CREATIVE
@@ -2310,6 +2338,28 @@ mod tests {
             stack.component(component::INSTRUMENT),
             Some(&Component::Instrument(1))
         );
+    }
+
+    #[test]
+    fn a_guests_main_arm_is_its_client_information() {
+        let mut g = guest_at([0.0; 3]);
+        assert!(!g.main_arm_left());
+        g.info.main_hand = 0;
+        assert!(g.main_arm_left());
+    }
+
+    #[test]
+    fn own_living_flags_go_once_per_change() {
+        let mut g = guest_at([0.5, 64.0, 0.5]);
+        assert_eq!(g.own_living_flags(), None);
+        g.living_flags = 1;
+        assert_eq!(g.own_living_flags(), Some(1));
+        assert_eq!(g.own_living_flags(), None);
+        g.living_flags = 3;
+        assert_eq!(g.own_living_flags(), Some(3));
+        g.living_flags = 0;
+        assert_eq!(g.own_living_flags(), Some(0));
+        assert_eq!(g.own_living_flags(), None);
     }
 
     fn guest_at(position: [f64; 3]) -> Guest {
