@@ -1,6 +1,6 @@
 // game-module-cfg: feature java-mods
 //! Particles, explosions, drops, items used up.
-#![allow(dead_code, clippy::too_many_arguments)]
+#![allow(clippy::too_many_arguments)]
 
 use super::*;
 use explosion::BlockInteraction;

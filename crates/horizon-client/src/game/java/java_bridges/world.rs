@@ -1,6 +1,5 @@
 // game-module-cfg: feature java-mods
 //! The level's blocks, signals and events.
-#![allow(dead_code)]
 
 use super::*;
 
@@ -145,6 +144,8 @@ horizon_java_host::java_bridges! { table for Game<'static> {
         if let Ok((root, _)) = tag && let Some(text) = root.tag.get("text") {
             if overlay {
                 game.java_overlay_tag(text);
+            } else if let Some(player) = game.native_acting_player() {
+                game.player_tell(player, remote::remote_text(text));
             } else {
                 game.system_message(remote::remote_text(text));
             }

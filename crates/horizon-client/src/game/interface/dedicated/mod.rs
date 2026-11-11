@@ -1771,6 +1771,12 @@ impl Game<'_> {
                     }
                 }
             }
+            // Horizon's own, on the console only: the JVM's flight recording written now (profile.rs).
+            "profile" if rest == ["dump"] => match self.java_hook_profile_dump() {
+                Ok(path) => log("INFO", &format!("Profile written to {}", path.display())),
+                Err(e) => log("ERROR", &format!("profile dump: {e}")),
+            },
+            "profile" => log("INFO", "profile dump"),
             // Horizon's own, on the console only: every thread's spans as a timeline (report.rs).
             "horizon-trace" if rest.first() == Some(&"stop") => {
                 match horizon_client::spans::trace::stop() {
@@ -2409,6 +2415,11 @@ impl Game<'_> {
         self.native_lifecycle.begin_close();
         self.native_configs_server_stop();
         log("INFO", "Stopping server");
+        match self.java_hook_profile_stop() {
+            Some(Ok(path)) => log("INFO", &format!("Profile written to {}", path.display())),
+            Some(Err(e)) => log("WARN", &format!("profile dump: {e}")),
+            None => {}
+        }
         self.native_players_leaving();
         log("INFO", "Saving players");
         self.flush_native_net();

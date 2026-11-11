@@ -1,6 +1,5 @@
 // game-module-cfg: feature java-mods
 //! Native entities as live Java views: one per entity from its join to its leave, refreshed raw, written through by bridges.
-#![allow(dead_code)]
 
 use super::java_mods::{read_tag, write_tag};
 use super::*;

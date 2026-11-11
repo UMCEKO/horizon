@@ -1,6 +1,5 @@
 // game-module-cfg: feature java-mods
 //! Block entities and mods' blocks: Java holds the objects, Horizon their saved form and their turn to tick.
-#![allow(dead_code)]
 
 use super::*;
 use horizon_java_host::bridge::Doubles;

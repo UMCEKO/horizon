@@ -1,7 +1,6 @@
 // game-module-cfg: feature java-mods
 //! Java mods' items: their real `Item.use` runs in the embedded JVM on a view of the acting player,
 //! and what it changed lands in Horizon's own player and world.
-#![allow(dead_code)]
 
 use super::*;
 use commands::Target;

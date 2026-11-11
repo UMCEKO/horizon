@@ -1,6 +1,8 @@
 //! `Entity.move` for the kinds without a port of their own, in vanilla's order through `move_entity`.
-// Only the java-mods Entity#move bridge calls this; until it lands, nothing does with either feature set.
-#![allow(dead_code)]
+#![cfg_attr(
+    not(feature = "java-mods"),
+    expect(dead_code, reason = "only the Java layer's Entity#move bridge calls it")
+)]
 use super::commands::Target;
 use super::entity::Entity as _;
 use super::*;

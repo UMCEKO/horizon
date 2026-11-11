@@ -1,7 +1,6 @@
 // game-module-cfg: feature java-mods
 //! `ChunkMap`'s chunk events for Java mods, driven by Horizon's chunk loading, saving and unloading, with the
 //! chunk's full vanilla tag as mods read and write it (`ChunkEvents` in Java).
-#![allow(dead_code)]
 
 use super::*;
 use horizon_client::chunk::{Chunk, ChunkExtras};

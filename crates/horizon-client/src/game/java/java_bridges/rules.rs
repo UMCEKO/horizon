@@ -1,6 +1,5 @@
 // game-module-cfg: feature java-mods
 //! Weather, chunks, spawn protection, world rules.
-#![allow(dead_code)]
 
 use super::*;
 

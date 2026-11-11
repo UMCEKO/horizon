@@ -609,7 +609,6 @@ enum Screen {
     /// WinScreen: the end poem and the credits (game/interface/win.rs).
     Win,
     /// A Java mod's screen, drawn and driven by the Java client (game/java/java_screens.rs).
-    #[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
     Java,
     /// DebugOptionsScreen, F3+F6 (game/interface/debug_options.rs).
     DebugOptions,
@@ -3129,7 +3128,6 @@ struct Game<'a> {
     spawner_tick_positions: Vec<horizon_client::block_entities::Pos>,
     trial_spawner_tick_positions: Vec<horizon_client::block_entities::Pos>,
     /// What mods' level-frame recordings draw this frame, per native pass.
-    #[allow(dead_code)]
     world_outputs: horizon_client::world_renders::Outputs,
     creative_screen: Creative,
     /// `CreativeModeInventoryScreen.ignoreTextInput`: the chat key opened the
@@ -7728,7 +7726,7 @@ impl Game<'_> {
             in_game_ui(self.screen, self.book.is_some() || self.sign_edit.is_some()),
         );
         // The mods' layers (`register_gui_layers`) draw among vanilla's while the HUD shows.
-        self.hud_layer_next = show_hud.then_some(0);
+        self.hud_begin(show_hud, &mut batch);
         self.ui.room = self.hud_room(w, h, show_hud);
         let mut guide_from = 0;
         if show_hud {
@@ -7955,8 +7953,7 @@ impl Game<'_> {
             });
         }
         // The mod layers above the last vanilla layer drawn.
-        self.draw_mod_gui_layers(None, &mut batch);
-        self.hud_layer_next = None;
+        self.hud_finish(show_hud, &mut batch);
         // Screen.extractBlurredBackground blurs the world and HUD, while the
         // screen's background, widgets, toasts and debug overlay stay sharp.
         batch.blur_at = batch.vertices.len() as u32;

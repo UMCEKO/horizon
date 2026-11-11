@@ -172,16 +172,6 @@ impl Game<'_> {
             locked |= check;
         }
         if locked {
-            let Some(host) = self.lan.as_mut() else {
-                return MenuOpen::Refused;
-            };
-            host.hub.send_to(
-                conn,
-                &C::SystemChat(play::SystemChat {
-                    content: horizon_client::containers::locked_message(&title),
-                    overlay: true,
-                }),
-            );
             // `ChestBlock`: the double chest sounds between its halves, from
             // the first one's centre plus half a block toward the other.
             let at = match &slots {
@@ -197,8 +187,14 @@ impl Game<'_> {
                 ],
                 _ => [0.0; 3],
             };
-            let name = "minecraft:block.chest.locked";
-            self.send_level_sound(LevelSound::new(name, at, 1.0, 1.0), None);
+            #[cfg(feature = "java-mods")]
+            if self.lan_acting == Some(conn) {
+                self.send_chest_locked_notifications(conn, at, &title);
+            } else {
+                self.as_guest(conn, |g| g.send_chest_locked_notifications(conn, at, &title));
+            }
+            #[cfg(not(feature = "java-mods"))]
+            self.send_chest_locked_notifications_body(conn, at, &title);
             return MenuOpen::Refused;
         }
         // A mod menu type only for a client that has it: as
@@ -729,5 +725,27 @@ impl Game<'_> {
                     .map(|b| b.bounds())
             });
         bounds.is_some_and(|b| guest_within_entity_range(g, &b, 4.0))
+    }
+}
+
+impl Game<'_> {
+    /// `BaseContainerBlockEntity.sendChestLockedNotifications`'s body for guest `conn`: its action bar names the container, and everyone near hears it.
+    pub(in crate::game) fn send_chest_locked_notifications_body(
+        &mut self,
+        conn: u32,
+        at: [f64; 3],
+        name: &horizon_core::nbt::Tag,
+    ) {
+        if let Some(host) = self.lan.as_mut() {
+            host.hub.send_to(
+                conn,
+                &C::SystemChat(play::SystemChat {
+                    content: horizon_client::containers::locked_message(name),
+                    overlay: true,
+                }),
+            );
+        }
+        let sound = "minecraft:block.chest.locked";
+        self.send_level_sound(LevelSound::new(sound, at, 1.0, 1.0), None);
     }
 }

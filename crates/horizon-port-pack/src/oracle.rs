@@ -812,7 +812,7 @@ impl Facts {
         Choice {
             template: template.to_owned(),
             properties,
-            states: own_states.then(|| block.properties.clone()),
+            states: (own_states && !block.properties.is_empty()).then(|| block.properties.clone()),
             default_state: pairs(&block.default)
                 .into_iter()
                 .map(|(k, v)| (k, json!(v)))
@@ -1183,6 +1183,24 @@ mod tests {
             .unwrap();
         assert_eq!(tile.template, "minecraft:stone");
         assert_eq!(tile.differences[0], "sounds: no vanilla block has them");
+    }
+
+    #[test]
+    fn a_stateless_block_over_its_class_chain_declares_no_states() {
+        let cube = json!([[0, 0, 0, 1, 1, 1]]);
+        let block_class = "net.minecraft.world.level.block.Block";
+        let entity_block = "net.minecraft.world.level.block.BaseEntityBlock";
+        let facts: Facts = serde_json::from_value(json!({
+            "blocks": {
+                "minecraft:stone": block(&[block_class], json!({}), json!({"": state(1.5, "stone", cube.clone())})),
+                "m:anchor": block(&["m.Anchor", entity_block, block_class], json!({}), json!({"": state(0.1, "stone", cube)})),
+            },
+            "items": {}
+        }))
+        .unwrap();
+        let anchor = facts.template("m:anchor", &|_: &str| true).unwrap();
+        assert_eq!(anchor.template, "minecraft:stone");
+        assert_eq!(anchor.states, None);
     }
 
     #[test]

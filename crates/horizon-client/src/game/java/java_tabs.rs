@@ -1,6 +1,5 @@
 // game-module-cfg: feature java-mods
 //! The creative tabs of the Java client: built by its login, fetched once; the screen itself never calls Java.
-#![allow(dead_code)]
 
 use super::*;
 use horizon_client::creative::{JavaTab, JavaTabKind, JavaTabStack, JavaTabs};

@@ -1,6 +1,5 @@
 // game-module-cfg: feature java-mods
 //! What mods draw in the level's frame, as the Java client records it: applied from a tick's status, and recorded per window frame only while it changes.
-#![allow(dead_code)]
 
 use super::*;
 use horizon_java_host::wire::{In, Out};

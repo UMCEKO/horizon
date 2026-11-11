@@ -442,9 +442,13 @@ impl Game<'_> {
                         return;
                     }
                 }
+                // Inventory.setSelectedSlot, through the route a Java mod may take.
+                #[cfg(feature = "java-mods")]
+                self.as_guest(conn, |g| g.set_selected_slot(i32::from(p.slot)));
                 let Some(host) = self.lan.as_mut() else {
                     return;
                 };
+                #[cfg(not(feature = "java-mods"))]
                 {
                     let value = p.slot as usize;
                     host.hub.guests.update(gi, |guest| guest.selected = value);
@@ -1136,6 +1140,9 @@ impl Game<'_> {
             if cancel {
                 return None;
             }
+            #[cfg(feature = "java-mods")]
+            g.pick_item_routed(&stack, infinite);
+            #[cfg(not(feature = "java-mods"))]
             horizon_client::pick_item::pick(
                 &mut g.inventory[..36],
                 &mut g.selected,

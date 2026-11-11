@@ -1,6 +1,5 @@
 // game-module-cfg: feature java-mods
 //! The acting player's inventory methods that mods' mixins can patch.
-#![allow(dead_code)]
 
 use super::java_routing::{Recv, route};
 use super::*;
@@ -22,6 +21,19 @@ impl Game<'_> {
     pub(in crate::game) fn set_selected_slot_body(&mut self, slot: i32) {
         if let (Ok(slot), Some(player)) = (usize::try_from(slot), self.native_acting_player()) {
             self.player_set_selected_slot(player, slot);
+        }
+    }
+
+    /// `ServerGamePacketListenerImpl.tryPickItem`'s inventory part through the methods mods patch.
+    pub(in crate::game) fn pick_item_routed(&mut self, stack: &ItemStack, infinite: bool) {
+        let found = self.inventory[..36]
+            .iter()
+            .position(|s| s.as_ref().is_some_and(|s| s.same_item_same_components(stack)));
+        match found {
+            Some(slot) if slot < 9 => self.set_selected_slot(slot as i32),
+            Some(slot) => self.pick_slot(slot as i32),
+            None if infinite => self.add_and_pick_item(stack),
+            None => {}
         }
     }
 

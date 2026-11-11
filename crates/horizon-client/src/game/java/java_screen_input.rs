@@ -1,6 +1,5 @@
 // game-module-cfg: feature java-mods
 //! What the Java client's screens ask of native's open inventory and connection: which keys and clicks native keeps.
-#![allow(dead_code)]
 
 use super::*;
 

@@ -1031,6 +1031,7 @@ impl Game<'_> {
             |a| (a.name.clone(), a.uuid),
         );
         self.server_packs_connect(local.is_none().then_some(address), user);
+        self.java_client_font();
         let session = match local {
             Some(pipe) => Session::connect_local(
                 pipe,
@@ -1624,6 +1625,7 @@ impl Game<'_> {
             }
             None => false,
         };
+        self.java_client_left();
         // A splitscreen player leaving says nothing of where P1 plays.
         if !self.options.split_guest {
             mod_api::content::crash::clear_detail("Server");
@@ -2357,8 +2359,9 @@ impl Game<'_> {
                     registries,
                     name,
                     uuid,
-                    java: _,
+                    java,
                 } => {
+                    self.java_remote_joined(java);
                     self.set_registries(registries);
                     self.extras_joined();
                     // handleLogin: the level loading screen replaces any dialog.
@@ -2390,7 +2393,7 @@ impl Game<'_> {
                         remote.quiet_commands = true;
                     }
                 }
-                Event::Java(_) => {}
+                Event::Java(frame) => self.java_wire_in(&frame),
                 Event::ModNet => {
                     if let Some(remote) = &mut self.remote {
                         remote.mod_net = true;
@@ -6079,71 +6082,6 @@ impl Game<'_> {
             }
         }
     }
-    fn poll_own_profile(&mut self) {
-        let auth = self.auth();
-        let Some(r) = self.remote.as_mut() else {
-            return;
-        };
-        match &mut r.own_profile {
-            OwnProfile::Idle => {
-                let Some(auth) = auth else {
-                    r.own_profile = OwnProfile::Done(None);
-                    return;
-                };
-                let (send, recv) = std::sync::mpsc::channel();
-                std::thread::Builder::new()
-                    .name("Own profile".into())
-                    .spawn(move || {
-                        let _ = send.send(horizon_client::auth::own_textures(auth.as_ref()));
-                    })
-                    .ok();
-                r.own_profile = OwnProfile::Fetching(recv);
-            }
-            OwnProfile::Fetching(recv) => {
-                if let Ok(own) = recv.try_recv() {
-                    r.own_profile = OwnProfile::Done(own);
-                }
-            }
-            OwnProfile::Done(_) => {}
-        }
-    }
-    /// `PlayerInfo.getSkin` for every player entity, including NPCs that are
-    /// never in the tab list: resolve each profile's textures and give the
-    /// level's player models their skin.
-    /// The 3D skin layers model for a player (Options → Skin Customization,
-    /// `threeDSkinLayers`): `kind`'s outer layer with one slab per painted
-    /// texel, built once per (skin, slim) from the decoded image the skin
-    /// downloader still holds (`horizon_client::mobs::skin_layers`). `None`
-    /// while the option is off or the image is not in memory yet.
-    fn skin_3d_model(
-        &self,
-        kind: &std::sync::Arc<horizon_client::mobs::MobType>,
-        skin: &str,
-        slim: bool,
-    ) -> Option<std::sync::Arc<horizon_client::mobs::Part>> {
-        use horizon_client::mobs::skin_layers;
-        if !self.settings.extras.three_d_skin_layers {
-            return None;
-        }
-        let key = (skin.to_owned(), slim);
-        if let Some(model) = self.skin_3d.borrow_mut().get(&key) {
-            return Some(model);
-        }
-        let model_key = if slim { "player_slim#main" } else { "main" };
-        let base = kind
-            .layer(model_key)
-            .cloned()
-            .unwrap_or_else(|| kind.model.clone());
-        let image = self.skin_downloads.borrow().image(skin)?.to_vec();
-        let model = std::sync::Arc::new(skin_layers::extrude(
-            &base,
-            &image,
-            skin_layers::SIZE,
-            skin_layers::DEPTH,
-        )?);
-        self.skin_3d.borrow_mut().insert(key, model.clone());
-        Some(model)
-    }
 
     pub(super) fn update_remote_skins(&mut self) {
         let local = self.remote.as_ref().map(|r| r.profile);
@@ -8701,6 +8639,9 @@ impl Game<'_> {
         if self.hands_busy() {
             return;
         }
+        if self.java_click_handled(super::java_hooks_client::JavaClick::Use) {
+            return;
+        }
         // InputEvent.InteractionKeyMappingTriggered for the main hand: a cancel
         // ends the whole click, the off hand gets no turn.
         if let Some(swing) = self.native_interaction(InteractionKey::Use, Hand::Main, attempt) {
@@ -8958,7 +8899,12 @@ impl Game<'_> {
                 && held.is_some()
                 && vanilla_block
                 && self.shelf_hit(&hit).is_some();
-            let (result, changes) = if let Some(answer) = block_answer {
+            let java = (hand == Hand::Main && !spectator && block_used && block_answer.is_none())
+                .then(|| self.java_block_prediction(hit.pos))
+                .flatten();
+            let (result, changes) = if let Some(result) = java {
+                (result, DryUse::default())
+            } else if let Some(answer) = block_answer {
                 if let Some(result) = super::native_hooks::block_use_result(answer) {
                     (result, DryUse::default())
                 } else if hand == Hand::Main {
@@ -10338,6 +10284,9 @@ impl Game<'_> {
             .held()
             .and_then(|s| horizon_client::spear::Kinetic::of(&s.item));
         if spear.is_some() && self.cannot_attack_with_item(self.hand_strength.ticker, 0) {
+            return false;
+        }
+        if self.java_click_handled(super::java_hooks_client::JavaClick::Attack) {
             return false;
         }
         // InputEvent.InteractionKeyMappingTriggered, after the checks that stop
@@ -12278,6 +12227,9 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
         self.0.remote_use(attempt);
     }
     fn pick(&mut self) {
+        if self.0.java_click_handled(super::java_hooks_client::JavaClick::Pick) {
+            return;
+        }
         // Minecraft.pickBlockOrEntity: an entity before the block is asked
         // for (`handlePickItemFromEntity`), else the block.
         if let Some(entity) = self.0.pick_entity_hit() {
@@ -12641,6 +12593,8 @@ fn in_storage_range(view_distance: i32, center: (i32, i32), x: i32, z: i32) -> b
 }
 
 // A packet's removals (`RemoveEntities`), apart: this file may not grow.
+mod own_profile;
+
 #[cfg(test)]
 mod interaction_event_tests;
 

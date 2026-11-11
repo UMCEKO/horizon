@@ -1,6 +1,5 @@
 // game-module-cfg: feature java-mods
 //! The acting player, on its view.
-#![allow(dead_code)]
 
 use super::*;
 use horizon_client::effects::EffectInstance;

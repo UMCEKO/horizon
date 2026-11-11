@@ -580,7 +580,7 @@ def unbridged_writers(analysis, extends=None):
 
     A bridge on a subclass covers its parent's method (an abstract `hurtServer` has no body to bridge)."""
     facts = json.loads(Path(analysis).read_text())
-    tables = (oracle.ROOT / 'crates' / 'horizon-client' / 'src' / 'game' / 'java').glob('*.rs')
+    tables = (oracle.ROOT / 'crates' / 'horizon-client' / 'src' / 'game' / 'java').rglob('*.rs')
     bridged = [(owner, name) for path in tables for owner, name in re.findall(r'"([\w/$]+)"\.(\w+)\s+"\(', path.read_text())]
     covered = {f'{owner}#{name}' for owner, name in bridged}
     for path in (oracle.ROOT / 'tools' / 'java_mods_skips').glob('*.tsv'):
@@ -656,7 +656,7 @@ def check_bridges(args=None):
         return False
 
     errors, total, natives = [], 0, set()
-    for path in sorted((oracle.ROOT / 'crates' / 'horizon-client' / 'src' / 'game' / 'java').glob('*.rs')):
+    for path in sorted((oracle.ROOT / 'crates' / 'horizon-client' / 'src' / 'game' / 'java').rglob('*.rs')):
         for owner, method, desc, guard, native, params, result in entry.findall(path.read_text()):
             total += 1
             where = f'{path.name}: {native}'
@@ -865,7 +865,7 @@ def surface(args):
                 found.add('game' if '/horizon-client/src/game' in file else 'client' if '/horizon-client' in file else 'library')
         return found
 
-    tables = (oracle.ROOT / 'crates' / 'horizon-client' / 'src' / 'game' / 'java').glob('*.rs')
+    tables = (oracle.ROOT / 'crates' / 'horizon-client' / 'src' / 'game' / 'java').rglob('*.rs')
     bound = {f'{owner}#{name}' for path in tables for owner, name in re.findall(r'"([\w/$]+)"\.(\w+)\s+"\(', path.read_text())}
     skipped = {}
     for path in (oracle.ROOT / 'tools' / 'java_mods_skips').glob('*.tsv'):

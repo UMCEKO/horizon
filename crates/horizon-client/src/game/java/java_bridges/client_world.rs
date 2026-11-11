@@ -1,7 +1,6 @@
 // game-module-cfg: feature java-mods
 //! The Java client's level reads the window's own chunks, the data the server sent this client: the window publishes them as shared
 //! columns, which bridged natives read on the Java client's thread without copying a chunk.
-#![allow(dead_code)]
 
 use super::*;
 use horizon_client::chunk::Chunk;

@@ -1,6 +1,5 @@
 // game-module-cfg: feature java-mods
 //! Java mods' blocks and items as content, generated from the facts their boot exports and cached by what made them (`docs/java-mods.md`).
-#![allow(dead_code)]
 use sha2::{Digest, Sha256};
 use std::{
     fs,

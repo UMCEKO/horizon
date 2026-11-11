@@ -1,7 +1,6 @@
 // game-module-cfg: feature java-mods
 //! `HORIZON_PROFILE=<dir>`: a line per second of the server's tick times, spans and load in `server-ticks.log`,
 //! and the JVM's in `java-ticks.log`. Read by `tools/profile_report.py`.
-#![allow(dead_code)]
 use super::Game;
 use horizon_client::spans::Span;
 use std::{

@@ -1,6 +1,5 @@
 // game-module-cfg: feature java-mods
 //! What `Level` and `ServerLevel` answer that Java has no data for.
-#![allow(dead_code)]
 
 use super::*;
 use horizon_client::collisions::{SceneCollisions, no_collision_empty, no_collision_or_liquid};
