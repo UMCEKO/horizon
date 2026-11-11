@@ -745,7 +745,7 @@ impl Game<'_> {
                 crate::game::minecarts::forget_unreadable_display(&mut cart, |t| {
                     self.state_from_nbt(t).is_some()
                 });
-                self.roll_cart_loot(&mut cart, &tag);
+                Self::load_cart_loot(&mut cart, &tag);
                 if !self.store_cart_back(i, cart) {
                     return Err(stale());
                 }
@@ -2189,7 +2189,7 @@ mod loot_table_tests {
         chunk::Chunk,
         containers::BlockEntity,
         items::ItemStack,
-        save::{self, ChunkExtras, RolledLoot},
+        save::{self, ChunkExtras, PendingLoot},
     };
     use horizon_core::nbt::Tag;
     use std::sync::Arc;
@@ -2260,7 +2260,7 @@ mod loot_table_tests {
         game.build_registries();
         game.set_allow_commands(true);
 
-        // Two chests as a load leaves them: rolled, with the table in their source.
+        // Two chests as a load leaves them: pending, with the table in their source.
         let removed = (1, 64, 2);
         let merged = (2, 64, 2);
         let chest = game
@@ -2272,14 +2272,12 @@ mod loot_table_tests {
         let mut chunk = Chunk::empty(0, 0);
         let mut extras = ChunkExtras::default();
         for pos in [removed, merged] {
-            let mut slots = vec![None; 27];
-            slots[0] = Some(ItemStack::new("minecraft:gold_ingot", 2));
+            let slots: Vec<Option<ItemStack>> = vec![None; 27];
             chunk.set(pos.0, pos.1, pos.2, chest.0);
-            extras.rolled_loot.push(RolledLoot {
+            extras.pending_loot.push(PendingLoot {
                 pos,
                 table: TABLE.into(),
                 seed: Some(42),
-                items: save::encode_items(&slots),
             });
             extras.block_entity_sources.push((
                 pos,

@@ -895,35 +895,24 @@ pub struct SavedProto {
     pub entities: Vec<Tag>,
 }
 
-/// A container's loot table and what Horizon rolled from it. Vanilla keeps
-/// `LootTable` and `LootTableSeed` until the container is first opened;
-/// Horizon rolls when it generates or loads the chunk, and saves the table
-/// again while the container still holds exactly the rolled items.
+/// A container's loot table not unpacked yet (`RandomizableContainer.lootTable`
+/// and `lootTableSeed`): it rolls at the first access (`unpackLootTable`).
 #[derive(Clone, Debug, PartialEq)]
-pub struct RolledLoot {
+pub struct PendingLoot {
     pub pos: (i32, i32, i32),
     pub table: String,
     /// The saved `LootTableSeed`, written back unless 0 (trySaveLootTable).
     pub seed: Option<i64>,
-    /// The rolled `Items`.
-    pub items: Tag,
 }
-impl RolledLoot {
-    /// Puts the loot table back in place of `Items` while they are still the
-    /// roll; false once the container holds anything else.
-    pub fn restore(&self, map: &mut Compound) -> bool {
-        // An empty shulker box saves no `Items`, which matches an empty roll.
-        let saved = map.get(&"Items".into());
-        let empty = matches!(&self.items, Tag::List(l) if l.is_empty());
-        if saved != Some(&self.items) && !(saved.is_none() && empty) {
-            return false;
-        }
+impl PendingLoot {
+    /// `RandomizableContainer.trySaveLootTable`: the table and seed in place of `Items`.
+    pub fn save_into(&self, map: &mut Compound) {
         map.remove(&"Items".into());
         map.insert("LootTable".into(), Tag::String(self.table.as_str().into()));
+        map.remove(&"LootTableSeed".into());
         if let Some(seed) = self.seed.filter(|s| *s != 0) {
             map.insert("LootTableSeed".into(), Tag::Long(seed));
         }
-        true
     }
 }
 
@@ -955,8 +944,8 @@ pub struct ChunkExtras {
     pub fluid_ticks: Vec<horizon_core::ticks::SavedTick>,
     /// Game time written as `LastUpdate`.
     pub last_update: i64,
-    /// Containers still holding their loot table's roll.
-    pub rolled_loot: Vec<RolledLoot>,
+    /// Containers whose loot table is not unpacked yet.
+    pub pending_loot: Vec<PendingLoot>,
 }
 
 #[cfg(test)]

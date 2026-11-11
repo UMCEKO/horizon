@@ -237,38 +237,31 @@ pub fn forget_loot_data() {
     *LOOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
-/// `RandomizableContainer.unpackLootTable` of a container at `pos`: `table`
-/// rolled into `slots`. A missing or zero seed is the level's random in
-/// vanilla; Horizon derives one from the position. Without loot data the
-/// container stays empty and still saves its table.
+/// `LootTable.fill` of a container at `pos` as `RandomizableContainer.unpackLootTable`
+/// runs it: `table` rolled into `slots` with the opener's `luck`. A missing or zero
+/// seed is the level's random in vanilla; Horizon derives one from the position.
 pub fn roll_container(
     slots: &mut [Option<ItemStack>],
     loot: Option<&LootData>,
-    table: String,
+    table: &str,
     saved_seed: Option<i64>,
     pos: (i32, i32, i32),
     biome: &str,
-) -> crate::save::RolledLoot {
+    luck: f32,
+) {
     let seed = saved_seed.filter(|s| *s != 0).unwrap_or_else(|| {
         horizon_core::random::position_seed(horizon_core::position::BlockPos::new(
             pos.0, pos.1, pos.2,
         ))
     });
-    if let Some(loot) = loot {
-        // LootTable.fill spreads the items over the container's own size.
-        let rolled = loot.fill(&table, seed, slots.len(), Some(biome));
-        for (slot, stack) in slots.iter_mut().zip(rolled) {
-            // With what the rolls put on them: enchantments
-            // (enchant_with_levels in End city chests), potions and an
-            // ominous bottle's level.
-            *slot = stack.map(|s| loot_item_with_components(&s));
-        }
-    }
-    crate::save::RolledLoot {
-        pos,
-        table,
-        seed: saved_seed,
-        items: crate::save::encode_items(slots),
+    let Some(loot) = loot else {
+        return;
+    };
+    // LootTable.fill spreads the items over the container's own size.
+    let rolled = loot.fill_lucky(table, seed, slots.len(), Some(biome), luck);
+    for (slot, stack) in slots.iter_mut().zip(rolled) {
+        // With what the rolls put on them: enchantments, potions and an ominous bottle's level.
+        *slot = stack.map(|s| loot_item_with_components(&s));
     }
 }
 
@@ -321,36 +314,32 @@ fn generated_block_entity(block: &str, nbt: &Compound) -> Option<BlockEntity> {
 }
 
 /// Client block entities for the generated block entities of a chunk, and the
-/// loot rolled into its containers.
+/// loot tables their containers hold until first unpacked
+/// (`RandomizableContainer.setBlockEntityLootTable`).
 pub fn block_entities(
     chunk: &ProtoChunk,
-    loot: Option<&LootData>,
 ) -> (
     Vec<((i32, i32, i32), BlockEntity)>,
-    Vec<crate::save::RolledLoot>,
+    Vec<crate::save::PendingLoot>,
 ) {
     let mut out = Vec::new();
-    let mut rolled = Vec::new();
+    let mut pending = Vec::new();
     for (pos, nbt) in &chunk.block_entities {
         let [x, y, z] = *pos;
         let block = chunk.block_name(x, y, z);
-        let Some(mut entity) = generated_block_entity(block, nbt) else {
+        let Some(entity) = generated_block_entity(block, nbt) else {
             continue;
         };
-        if let (BlockEntity::Chest(slots), Some(table)) = (&mut entity, text(nbt, "LootTable")) {
-            let seed = loot_seed(&Tag::Compound(nbt.clone()));
-            rolled.push(roll_container(
-                slots,
-                loot,
+        if let (BlockEntity::Chest(_), Some(table)) = (&entity, text(nbt, "LootTable")) {
+            pending.push(crate::save::PendingLoot {
+                pos: (x, y, z),
                 table,
-                seed,
-                (x, y, z),
-                chunk.biome_at(x, y, z),
-            ));
+                seed: loot_seed(&Tag::Compound(nbt.clone())),
+            });
         }
         out.push(((x, y, z), entity));
     }
-    (out, rolled)
+    (out, pending)
 }
 
 #[cfg(test)]
@@ -539,19 +528,16 @@ mod tests {
     }
 
     #[test]
-    fn a_container_rolled_without_loot_data_saves_its_table() {
-        let mut slots = vec![None; 27];
-        let rolled = roll_container(
-            &mut slots,
-            None,
-            "minecraft:chests/simple_dungeon".into(),
-            Some(7),
-            (1, 2, 3),
-            "minecraft:plains",
-        );
+    fn a_pending_container_saves_its_table_in_place_of_items() {
+        let slots: Vec<Option<ItemStack>> = vec![None; 27];
+        let pending = crate::save::PendingLoot {
+            pos: (1, 2, 3),
+            table: "minecraft:chests/simple_dungeon".into(),
+            seed: Some(7),
+        };
         let mut saved = horizon_core::nbt::Compound::new();
         saved.insert("Items".into(), crate::save::encode_items(&slots));
-        assert!(rolled.restore(&mut saved));
+        pending.save_into(&mut saved);
         assert!(!saved.contains_key(&"Items".into()));
         assert_eq!(saved.get(&"LootTableSeed".into()), Some(&Tag::Long(7)));
     }

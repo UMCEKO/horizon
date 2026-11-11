@@ -149,9 +149,9 @@ pub(super) struct Minecart {
     pub fuse: i32,
     /// Hopper minecarts: an unpowered activator rail enables them.
     pub enabled: bool,
-    /// Chest minecarts: the loot table rolled into `items` on load, saved
-    /// again while the items are still that roll.
-    pub loot: Option<horizon_client::save::RolledLoot>,
+    /// Chest and hopper minecarts: the loot table not unpacked yet
+    /// (`ContainerEntity.getContainerLootTable`), rolled at the first access.
+    pub loot: Option<horizon_client::save::PendingLoot>,
     /// `Entity.firstTick`: not ticked yet (saved as `HasTicked`).
     pub first_tick: bool,
     /// `Entity.isInWater` (`wasTouchingWater`): `AbstractMinecart.tick`
@@ -1465,10 +1465,9 @@ impl Game<'_> {
     }
     /// Runs `push_from_cart` for the cart being ticked (`c` is a copy of the
     /// stored one, kept at `slot`): the stored cart is replaced by `c` for the
-    /// push and `c` takes back what the push changed. The rolled loot stays
-    /// with `c`: the stored cart is without it for the whole tick
-    /// (`tick_carts_now`), and a mineshaft's chest cart carries its whole roll
-    /// as NBT.
+    /// push and `c` takes back what the push changed. The pending loot table
+    /// stays with `c`: the stored cart is without it for the whole tick
+    /// (`tick_carts_now`).
     fn push_from_ticked_cart(&mut self, c: &mut Minecart, slot: usize, index: &mut CartIndex) {
         let Some(i) = cart_at(&self.carts, c.id, slot) else {
             return;
@@ -2096,10 +2095,8 @@ impl Game<'_> {
             let Some(i) = cart_at(&self.carts, id, i) else {
                 continue;
             };
-            // The ticked copy takes the loot roll instead of copying it: only
-            // opening the cart, a command or a save reads it, never a tick, and
-            // a mineshaft's chest cart carries its whole roll as NBT. The
-            // stored cart keeps its slots for whatever reads them meanwhile.
+            // The ticked copy takes the pending loot table instead of copying
+            // it. The stored cart keeps its slots for whatever reads them meanwhile.
             let due = self.with_entity_held_out(id, |game| {
                 let loot = game.carts.update(i, |c| c.loot.take());
                 let mut c = game.carts[i].clone();
@@ -2425,7 +2422,7 @@ impl Game<'_> {
         edit: impl FnOnce(&mut Vec<Option<ItemStack>>) -> R,
     ) -> Option<R> {
         let i = self.carts.iter().position(|c| c.id == id)?;
-        self.carts.update(i, |c| c.loot = None);
+        self.unpack_cart_loot_at(i, false);
         match self
             .world
             .block_entities
@@ -2435,16 +2432,44 @@ impl Game<'_> {
             _ => Some(self.carts.update(i, |c| edit(&mut c.items))),
         }
     }
-    /// `ContainerEntity.unpackChestVehicleLootTable` for a player who opens a
-    /// chest minecart: a roll it still holds fires `player_generates_container_loot`
-    /// for its table, and the cart keeps its items from then on.
-    fn unpack_cart_loot(&mut self, i: usize) {
-        let Some(loot) = self.carts.update(i, |c| c.loot.take()) else {
+    /// `ContainerEntity.unpackChestVehicleLootTable` on a cart held out of the
+    /// list: the pending table is cleared, then rolled into its slots with `luck`.
+    pub(in crate::game) fn unpack_cart(&self, c: &mut Minecart, luck: f32) -> Option<String> {
+        let pending = c.loot.take()?;
+        let loot = self.server_loot.get();
+        let biome = self.biome_name_at(c.position).unwrap_or_default();
+        horizon_client::structure_blocks::roll_container(
+            &mut c.items,
+            loot.as_deref(),
+            &pending.table,
+            pending.seed,
+            pending.pos,
+            &biome,
+            luck,
+        );
+        Some(pending.table)
+    }
+    /// `unpackChestVehicleLootTable` for the cart at `i`: for the player who
+    /// opens it, `player_generates_container_loot` fires and their luck counts.
+    pub(in crate::game) fn unpack_cart_loot_at(&mut self, i: usize, player: bool) {
+        let Some(table) = self.carts[i].loot.as_ref().map(|l| l.table.clone()) else {
             return;
         };
-        if loot.items == horizon_client::save::encode_items(&self.carts[i].items) {
-            self.trigger_loot_table(&loot.table);
-        }
+        let luck = if player {
+            self.trigger_loot_table(&table);
+            self.player
+                .as_mut()
+                .and_then(|p| p.attribute("minecraft:luck").ok())
+                .unwrap_or(0.0) as f32
+        } else {
+            0.0
+        };
+        let mut c = self.carts[i].clone();
+        self.unpack_cart(&mut c, luck);
+        self.carts.update(i, |cart| {
+            cart.loot = None;
+            cart.items = c.items;
+        });
     }
     /// `interact`: ride, open, fuel or ignite the cart under the crosshair, or
     /// the one a guest's interact packet named.
@@ -2528,7 +2553,7 @@ impl Game<'_> {
     /// own slots, kept under a placeholder key until it closes
     /// (`store_cart_items`/`close_cart_container`).
     pub(super) fn open_cart_container(&mut self, i: usize) {
-        self.unpack_cart_loot(i);
+        self.unpack_cart_loot_at(i, true);
         let c = self.carts[i].clone();
         let key = (i32::MAX - 15, CART_KEY_Y, c.id as i32);
         // `startOpen` shares one container, it does not reset it: a stand-in
@@ -3100,14 +3125,9 @@ impl Minecart {
                 }
                 CartKind::Rideable => {}
             }
-            // A loaded loot table goes back while the items are still its roll;
-            // otherwise the items replace it, as vanilla's unpackLootTable does.
-            if self.loot.as_ref().is_some_and(|l| l.restore(map)) {
-                if let Some(table) = horizon_client::save::text(map.get(&"LootTable".into()))
-                    .and_then(|id| horizon_client_core::identifier::normalize_id(&id))
-                {
-                    map.insert("LootTable".into(), Tag::String(table.as_str().into()));
-                }
+            // ContainerEntity.saveChestVehicleLootTable: a pending table in place of the items.
+            if let Some(pending) = &self.loot {
+                pending.save_into(map);
             } else {
                 map.remove(&JavaString::from("LootTable"));
                 map.remove(&JavaString::from("LootTableSeed"));
@@ -4084,15 +4104,15 @@ mod tnt_impact_tests {
 #[cfg(test)]
 mod cart_push_tests {
     use super::{CartKind, Minecart};
-    use horizon_client::{items::ItemStack, save::RolledLoot};
+    use horizon_client::save::PendingLoot;
     use horizon_core::geometry::Vec3;
 
     /// Two chest carts pushed apart (`OldMinecartBehavior.pushAndPickupEntities`):
     /// the push runs on copies of the ticked cart, and the one still holding
-    /// its mineshaft roll keeps the roll, so it is saved as its loot table.
+    /// its mineshaft table keeps it, so it is saved as its loot table.
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn a_pushed_chest_cart_keeps_its_rolled_loot() {
+    fn a_pushed_chest_cart_keeps_its_pending_loot() {
         super::super::native_entity_refs::tests::with_game(|game| {
             game.options.dedicated = Some(Vec::new());
             game.world.chunks.insert(
@@ -4110,17 +4130,14 @@ mod cart_push_tests {
                     game.world.set(x, 63, z, stone).unwrap();
                 }
             }
-            let items = vec![Some(ItemStack::new("minecraft:rail", 12)); 27];
-            let loot = RolledLoot {
+            let loot = PendingLoot {
                 pos: (8, 64, 8),
                 table: "minecraft:chests/abandoned_mineshaft".into(),
                 seed: Some(42),
-                items: horizon_client::save::encode_items(&items),
             };
-            let mut rolled = Minecart::new(1, CartKind::Chest, Vec3::new(8.3, 64.0, 8.5));
-            rolled.items = items;
-            rolled.loot = Some(loot.clone());
-            game.carts.push(rolled);
+            let mut pending = Minecart::new(1, CartKind::Chest, Vec3::new(8.3, 64.0, 8.5));
+            pending.loot = Some(loot.clone());
+            game.carts.push(pending);
             // Facing along X (yaw 0) and 0.4 apart on X: the old behaviour pushes.
             game.carts
                 .push(Minecart::new(2, CartKind::Chest, Vec3::new(8.7, 64.0, 8.5)));

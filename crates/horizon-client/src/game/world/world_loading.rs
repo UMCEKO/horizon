@@ -950,7 +950,6 @@ pub(super) fn make_streaming(
         shape,
     );
     save.enable_trusted_fluid_load();
-    save.set_loot_source(loot.clone());
     let save = Arc::new(save);
     if dim == Dim::End {
         // Migrate before any chunk reader can cache the old block entities. A side file it

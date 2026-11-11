@@ -65,9 +65,9 @@ def main():
         matched_output_lines=matched, output_sha256=lab.digest(build / 'rust.txt', 'sha256'),
         scope='Native chest unpackLootTable, save and reload on a recording level versus Horizon opening bookkeeping, '
               'chunk encoding, binary NBT roundtrip and chunk decoding. Compares loot table/seed retention and opened inventory counts. '
-              'Unopened inventory contents are intentionally not compared: Horizon eagerly rolls while vanilla defers. '
-              'Three real native chest tables,64 seeds,unopened/emptied/replaced contents. Native dirty notifications suppressed; '
-              'Rust begins with an original synthetic eager-roll inventory. No loot-output/RNG comparison,full world/UI run or region-file I/O.'))
+              'Unopened containers keep their table and seed until unpacked, in both. '
+              'Three real native chest tables,64 seeds,unopened/emptied/replaced contents. Native dirty notifications suppressed. '
+              'No loot-output/RNG comparison,full world/UI run or region-file I/O.'))
     print(f'{matched} opened-loot save/reload cases match the pinned client: {report}', flush=True)
 
 

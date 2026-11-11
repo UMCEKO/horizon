@@ -429,17 +429,23 @@ impl Game<'_> {
             b.position.y.floor() as i32,
             b.position.z.floor() as i32,
         );
+        self.trigger_loot_table(&table);
+        let luck = self
+            .player
+            .as_mut()
+            .and_then(|p| p.attribute("minecraft:luck").ok())
+            .unwrap_or(0.0) as f32;
         self.boats.update(i, |b| {
             crate::structure_blocks::roll_container(
                 &mut b.items,
                 loot.as_deref(),
-                table.clone(),
+                &table,
                 seed,
                 pos,
                 &biome,
+                luck,
             )
         });
-        self.trigger_loot_table(&table);
     }
 
     /// The guest's open container is closing (`AbstractContainerMenu.removed`):

@@ -1212,7 +1212,18 @@ impl LootData {
         slots: usize,
         biome: Option<&str>,
     ) -> Vec<Option<LootStack>> {
-        self.fill_with(table, &mut LegacyRandom::new(seed), slots, biome)
+        self.fill_lucky(table, seed, slots, biome, 0.0)
+    }
+    /// `fill` with `LootParams.withLuck`: a player's `unpackLootTable` passes their luck.
+    pub fn fill_lucky(
+        &self,
+        table: &str,
+        seed: i64,
+        slots: usize,
+        biome: Option<&str>,
+        luck: f32,
+    ) -> Vec<Option<LootStack>> {
+        self.fill_with_luck(table, &mut LegacyRandom::new(seed), slots, biome, luck)
     }
     /// LootTable.fill drawing from `random` (a seeded random or the table's
     /// random sequence), which is advanced.
@@ -1223,6 +1234,16 @@ impl LootData {
         slots: usize,
         biome: Option<&str>,
     ) -> Vec<Option<LootStack>> {
+        self.fill_with_luck(table, random, slots, biome, 0.0)
+    }
+    fn fill_with_luck<R: RandomSource + Clone>(
+        &self,
+        table: &str,
+        random: &mut R,
+        slots: usize,
+        biome: Option<&str>,
+        luck: f32,
+    ) -> Vec<Option<LootStack>> {
         let mut out = vec![None; slots];
         let Some(json) = self.tables.get(table) else {
             return out;
@@ -1232,7 +1253,7 @@ impl LootData {
             random: random.clone(),
             biome,
             visited: Vec::new(),
-            luck: 0.0,
+            luck,
             open_water: None,
             entity: None,
             enchanted_level: None,

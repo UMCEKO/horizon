@@ -613,7 +613,7 @@ impl World {
         });
     }
     /// The fields Horizon keeps beside a block entity's model, for a journal: the tag it was
-    /// loaded or set with (its `lock`) and its loot table roll.
+    /// loaded or set with (its `lock`) and its pending loot table.
     pub fn block_entity_extras(&self, key: (i32, i32, i32)) -> BlockEntityExtras {
         let saved = self
             .chunks
@@ -626,7 +626,7 @@ impl World {
                     .find(|(p, _)| *p == key)
                     .map(|(_, tag)| tag.clone())
             }),
-            rolled_loot: saved.and_then(|s| s.rolled_loot.iter().find(|r| r.pos == key).cloned()),
+            pending_loot: saved.and_then(|s| s.pending_loot.iter().find(|r| r.pos == key).cloned()),
         }
     }
     /// Puts back what [`World::block_entity_extras`] kept.
@@ -636,15 +636,25 @@ impl World {
             extras
                 .block_entity_sources
                 .extend(kept.source.map(|tag| (key, tag)));
-            extras.rolled_loot.retain(|r| r.pos != key);
-            extras.rolled_loot.extend(kept.rolled_loot);
+            extras.pending_loot.retain(|r| r.pos != key);
+            extras.pending_loot.extend(kept.pending_loot);
+        });
+    }
+    /// `RandomizableContainer.setLootTable` for the container at `pending.pos`.
+    pub fn set_pending_loot(&mut self, pending: crate::chunk::PendingLoot) {
+        let key = pending.pos;
+        self.with_chunk_extras(key, |extras| {
+            extras.pending_loot.retain(|r| r.pos != key);
+            extras.pending_loot.push(pending);
         });
     }
     /// `LevelChunk.removeBlockEntity`: the tag a block entity was loaded or set
-    /// with goes with it, so a container placed there later starts unlocked.
+    /// with goes with it, and so does its pending loot table, so a container
+    /// placed there later starts unlocked and empty.
     pub fn forget_block_entity_source(&mut self, key: (i32, i32, i32)) {
         self.with_chunk_extras(key, |extras| {
             extras.block_entity_sources.retain(|(p, _)| *p != key);
+            extras.pending_loot.retain(|r| r.pos != key);
         });
     }
     /// Run `f` on the keep-as-loaded data of the chunk holding `key`, put back
@@ -845,5 +855,5 @@ mod tests {
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlockEntityExtras {
     source: Option<horizon_core::nbt::Tag>,
-    rolled_loot: Option<crate::chunk::RolledLoot>,
+    pending_loot: Option<crate::chunk::PendingLoot>,
 }

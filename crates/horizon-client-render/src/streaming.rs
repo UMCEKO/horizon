@@ -156,12 +156,12 @@ pub trait ChunkGenerator: Send + Sync + 'static {
     }
     /// The block entities decoration made at the blocks `writes` put into a
     /// final chunk (a chest of a structure piece, a spawner), with their
-    /// contents.
+    /// contents and the loot tables their containers hold.
     fn final_block_entities(
         &self,
         _entries: &[(&Proto, &[([i32; 3], u32)])],
-    ) -> Vec<((i32, i32, i32), crate::chunk::block_entity::BlockEntity)> {
-        Vec::new()
+    ) -> FinalBlockEntities {
+        FinalBlockEntities::default()
     }
     fn finish(&self, proto: Proto) -> Chunk;
     /// Whether `proto` has been decorated (a saved one can come back decorated).
@@ -342,7 +342,13 @@ enum Job {
 #[derive(Default)]
 pub struct FinalWrites {
     blocks: Vec<([i32; 3], u32)>,
-    block_entities: Vec<((i32, i32, i32), crate::chunk::block_entity::BlockEntity)>,
+    block_entities: FinalBlockEntities,
+}
+/// Block entities decoration made in a final chunk, and their pending loot tables.
+#[derive(Default)]
+pub struct FinalBlockEntities {
+    pub entities: Vec<((i32, i32, i32), crate::chunk::block_entity::BlockEntity)>,
+    pub pending_loot: Vec<crate::chunk::PendingLoot>,
 }
 pub enum Done {
     Generated(Chunk),
@@ -1489,10 +1495,13 @@ impl Streaming {
         }
         // After the blocks: the write of a block with a block entity made a
         // default one, which the generated one replaces.
-        for (pos, entity) in writes.block_entities {
+        for (pos, entity) in writes.block_entities.entities {
             if world.chunks.contains_key(&(pos.0 >> 4, pos.2 >> 4)) {
                 world.block_entities.insert(pos, entity);
             }
+        }
+        for pending in writes.block_entities.pending_loot {
+            world.set_pending_loot(pending);
         }
     }
     /// Saved proto chunks come back; those now out of range are dropped by

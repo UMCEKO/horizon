@@ -763,6 +763,10 @@ impl GameLevel<'_> {
                 .block_entities
                 .put(lease, BlockEntity::Mod(entity));
         }
+        if side_effects {
+            // Containers.dropContents reads the items, which unpacks the loot table.
+            super::loot_unpack::unpack_in(self.world, self.biomes, self.loot.as_deref(), key, 0.0);
+        }
         let entity = self.world.block_entities.remove(&key);
         self.world.block_names.remove(&key);
         self.world.forget_block_entity_source(key);
