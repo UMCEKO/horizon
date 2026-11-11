@@ -17,6 +17,25 @@ pub(super) struct JavaItemText {
 }
 
 impl Game<'_> {
+    /// The slot bits of the toasts mods added to the Java client, shown in the window's column.
+    pub(super) fn java_hook_toast_slots(&self) -> u32 {
+        #[cfg(feature = "java-mods")]
+        return self.java_toast_slots();
+        #[cfg(not(feature = "java-mods"))]
+        0
+    }
+
+    /// The mods' toasts take the slots native's kinds left free, then draw.
+    pub(super) fn java_hook_draw_toasts(
+        &mut self,
+        batch: &mut horizon_client::hud::HudBatch,
+        hidden: bool,
+    ) {
+        #[cfg(feature = "java-mods")]
+        self.java_draw_toasts(batch, hidden);
+        let _ = (batch, hidden);
+    }
+
     /// The Java client's text for a mod item's stack; None for any other item and until it has answered.
     pub(super) fn java_hook_item_text(
         &self,

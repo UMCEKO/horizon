@@ -174,6 +174,7 @@ public final class ClientBridge {
         OPS.put("client_frame", in -> frame(in));
         OPS.put("client_hud_frame", in -> hudFrame(in));
         OPS.put("client_world_frame", in -> worldFrame(in));
+        OPS.put("client_toast_frame", in -> toastFrame(in));
         OPS.put("client_input", in -> input(in));
         OPS.put("client_scroll", in -> scroll(in));
         OPS.put("client_font", in -> font(in));
@@ -514,6 +515,7 @@ public final class ClientBridge {
         if (minecraft.level != null) BlockRenders.probe(minecraft.level, BLOCK_ENTITIES.values());
         cameraAndPick(minecraft);
         byte[] hud = hud();
+        Toasts.applyPending(minecraft, timer(minecraft).getRealtimeDeltaTicks());
         byte[] world = WorldFrame.take(WorldFrame.camera(), partial, timer(minecraft), windowWidth, windowHeight, false);
         recordShell(minecraft, minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(false));
         return status(hud, world);
@@ -625,6 +627,13 @@ public final class ClientBridge {
         return out.toByteArray();
     }
 
+    /** The toasts' recordings for one window frame while one animates: `int n` x (`int id`, `long fullyVisibleFor`) in, the updates and whether any still animates out. */
+    private static byte[] toastFrame(DataInputStream in) throws Exception {
+        Minecraft minecraft = Minecraft.getInstance();
+        timer(minecraft).advanceRealTime(net.minecraft.util.Util.getMillis());
+        return Toasts.frame(in, minecraft, timer(minecraft).getRealtimeDeltaTicks());
+    }
+
     /** The columns the window has given the Java client, for the sections a world event walks. */
     static it.unimi.dsi.fastutil.longs.LongList columns() {
         return new it.unimi.dsi.fastutil.longs.LongArrayList(CHUNKS);
@@ -712,6 +721,8 @@ public final class ClientBridge {
     private static final byte ANIMATE = 14;
     private static final byte PARTICLES = 15;
     private static final byte SHELL_LAYOUT = 16;
+    private static final byte TOASTS = 26;
+    private static final byte NOTIFICATION_TIME = 27;
 
     private static double cursorX, cursorY;
     private static BlockPos cameraBlock;
@@ -753,6 +764,8 @@ public final class ClientBridge {
                     minecraft.mouseHandler.onScroll(window, dx, dy);
                 }
                 case SCREEN -> nativeScreen(in.readBoolean(), in.readBoolean(), in.readByte());
+                case TOASTS -> Toasts.input(in);
+                case NOTIFICATION_TIME -> minecraft.options.notificationDisplayTime().set(in.readDouble());
                 case SHELL_LAYOUT -> Shells.layout(new int[] {in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readInt()});
                 case FOCUS -> set(Window.class, minecraft.getWindow(), "focused", in.readBoolean());
                 case DROP -> {
@@ -999,6 +1012,7 @@ public final class ClientBridge {
         out.writeInt(Shells.is(Minecraft.getInstance().gui.screen()) ? 1 : 0);
         Shells.write(out, shellSegments, shellChanged, true);
         out.writeBoolean(Shells.animating);
+        Toasts.writeStatus(out);
         shellSegments = null;
         shellChanged = false;
         return bytes.toByteArray();

@@ -2368,14 +2368,14 @@ impl Game<'_> {
             self.audio
                 .play("minecraft:ui.toast.challenge_complete", None, 1.0, 1.0);
         }
-        if hidden {
-            return;
-        }
-        for i in 0..self.adv.toasts.len() {
-            if let Some(slot) = self.adv.toasts[i].slot {
-                self.draw_toast(batch, i, 32.0 * slot as f32, multiplier);
+        if !hidden {
+            for i in 0..self.adv.toasts.len() {
+                if let Some(slot) = self.adv.toasts[i].slot {
+                    self.draw_toast(batch, i, 32.0 * slot as f32, multiplier);
+                }
             }
         }
+        self.java_hook_draw_toasts(batch, hidden);
     }
     /// The slots held by shown advancement, recipe, pack and narrator toasts,
     /// as bits.
@@ -2388,6 +2388,7 @@ impl Game<'_> {
             .chain(packs)
             .chain(self.narrator_toast.as_ref().and_then(|t| t.slot))
             .fold(self.tutorial_toast_slots(), |used, slot| used | 1 << slot)
+            | self.java_hook_toast_slots()
     }
     pub(super) fn add_advancement_toast(&mut self, mut toast: Toast) {
         let kind = if toast.is_recipe() {
