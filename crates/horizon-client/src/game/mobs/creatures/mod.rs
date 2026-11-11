@@ -42,6 +42,7 @@ use horizon_client::{
     particles::{ParticleOptions, ParticleType},
     projectiles::{Hit, Projectile, ProjectileKind, ProjectileWorld, clip_including_border},
 };
+use horizon_client_core::who::EventSource;
 use horizon_core::{
     geometry::{Aabb, Direction, Vec3, traverse_blocks, trig::Mth},
     position::BlockPos,
@@ -411,7 +412,7 @@ pub(super) struct ProjectileHitter {
 impl ProjectileHitter {
     pub(super) fn of(p: &Projectile) -> Self {
         Self {
-            owner: p.owner,
+            owner: p.who(),
             guest: p.guest,
             arrow: p.arrow.is_some(),
             kind: p.entity_type(),
@@ -2540,12 +2541,12 @@ impl Game<'_> {
         // its save keeps even once the owner is gone.
         if p.owner_uuid.is_none() {
             p.owner_uuid = match p.owner {
-                Some(Who::Player) => Some(self.acting_player_uuid()),
-                Some(Who::Mob(id)) => Some(self.uuid_for(id)),
+                Some(EventSource::Player) => Some(self.acting_player_uuid()),
+                Some(EventSource::Mob(id) | EventSource::Entity(id)) => Some(self.uuid_for(id)),
                 None => None,
             };
         }
-        let player = (p.owner == Some(Who::Player))
+        let player = (p.who() == Some(Who::Player))
             .then(|| horizon_client::lan::playerdata::ints_uuid(self.acting_player_uuid()));
         let name = if player.is_some() {
             self.acting_player_name().to_owned()
@@ -3362,7 +3363,7 @@ impl Game<'_> {
                         // `CrossbowItem.createProjectile`: a rocket, from 0.15 under the eyes.
                         let mut at = arrow.position;
                         at.y -= f64::from(0.15f32) - 0.1;
-                        self.launch_angled_rocket(at, arrow.velocity, &ammo, arrow.owner);
+                        self.launch_angled_rocket(at, arrow.velocity, &ammo, arrow.who());
                     } else {
                         Self::arrow_from_ammo(&ammo, &mut arrow);
                         self.launch_mob_projectile(arrow);
@@ -5046,11 +5047,16 @@ impl Game<'_> {
                 {
                     pickable_projectile_hitboxes_into(&projectiles, &keep_flags, i, &mut winds);
                 }
+                // canHitEntity's getOwner while it may still be inside its owner.
+                let p = &projectiles[i];
+                if p.owner.is_none() && p.owner_uuid.is_some() && !p.left_owner {
+                    projectiles.update(i, |p| self.claim_owner(p));
+                }
                 let mut redirect = None;
                 projectiles.update(i, |p| {
                     if vanish
                         && matches!(p.kind, ProjectileKind::EnderPearl)
-                        && p.owner == Some(Who::Player)
+                        && p.who() == Some(Who::Player)
                         && p.guest.map_or(host_dead, |c| dead_guests.contains(&c))
                     {
                         keep_flags[i] = false;
@@ -5058,7 +5064,7 @@ impl Game<'_> {
                     }
                     // The projectile as it was, to fly on if a mod cancels its impact.
                     let before = (hear && !p.stuck).then(|| p.clone());
-                    let mob_shot = !matches!(p.owner, Some(Who::Player));
+                    let mob_shot = !matches!(p.who(), Some(Who::Player));
                     // A player's arrows, snowballs and eggs meet every player; a
                     // guest's flies from that guest (Projectile.getOwner), not
                     // from the host, until it has left them.
@@ -5069,7 +5075,7 @@ impl Game<'_> {
                         .and_then(|c| guest_entities.iter().find(|(g, _)| *g == c))
                         .map(|&(_, id)| Who::Mob(id));
                     if shooter.is_some() {
-                        p.owner = shooter;
+                        p.owner = shooter.map(EventSource::from);
                     }
                     let use_guests = (mob_shot || pvp) && has_guests;
                     let (keep, hit) = match (p.arrow.is_some(), use_guests, winds.is_empty()) {
@@ -5116,10 +5122,10 @@ impl Game<'_> {
                         }
                     }
                     if shooter.is_some() {
-                        p.owner = Some(Who::Player);
+                        p.owner = Some(EventSource::Player);
                     }
                     if let Some(at) = p.take_shoot_event() {
-                        shoot_events.push((p.owner, p.guest, [at.x, at.y, at.z]));
+                        shoot_events.push((p.who(), p.guest, [at.x, at.y, at.z]));
                     }
                     // AbstractHurtingProjectile.tick ends with createParticleTrail.
                     if super::remote_projectiles::has_smoke_trail(&p.kind) {
@@ -5145,7 +5151,7 @@ impl Game<'_> {
                     if let Some(a) = p.arrow.as_mut() {
                         arrow_events.extend(a.events.drain(..).map(|e| {
                             if e == horizon_client::arrows::ArrowEvent::ShootEvent {
-                                shoot_events.push((p.owner, p.guest, p.position.components()));
+                                shoot_events.push((p.owner.and_then(EventSource::actor), p.guest, p.position.components()));
                             }
                             (p.position, e)
                         }));
@@ -5172,7 +5178,7 @@ impl Game<'_> {
                             let a = p.arrow.as_mut().expect("an arrow");
                             arrow_events.extend(a.events.drain(..).map(|e| {
                                 if e == horizon_client::arrows::ArrowEvent::ShootEvent {
-                                    shoot_events.push((p.owner, p.guest, p.position.components()));
+                                    shoot_events.push((p.owner.and_then(EventSource::actor), p.guest, p.position.components()));
                                 }
                                 (p.position, e)
                             }));
@@ -5217,7 +5223,7 @@ impl Game<'_> {
                     }
                 });
                 if let Some((j, (owner, owner_uuid, guest))) = redirect {
-                    let look = self.owner_look(owner, guest);
+                    let look = self.owner_look(owner.and_then(EventSource::actor), guest);
                     projectiles.update(j, |wind| {
                         super::deflect::aim_deflect(wind, look, owner, owner_uuid, guest);
                     });
@@ -5278,7 +5284,11 @@ impl Game<'_> {
             projectiles,
             horizon_client::join_seq::RestoreOrder::SpawnsFirst,
         );
-        for (p, hit) in hits {
+        for (mut p, hit) in hits {
+            // The hit's getOwner: an owner that loaded since it was shot.
+            if p.owner.is_none() {
+                self.claim_owner(&mut p);
+            }
             // A player's arrow on another player lands as the victim's hurt.
             if let Some(victim) = self.projectile_pvp_victim(&p, hit) {
                 self.projectile_hits_player(&p, hit, victim)?;
@@ -5310,7 +5320,7 @@ impl Game<'_> {
     /// guest's (the host on its server thread too) reaches their statistics
     /// and `player_killed_entity`, as the arrow's hit does.
     fn player_hurt_mob(&mut self, p: &Projectile, id: u32) {
-        if p.owner == Some(Who::Player) {
+        if p.who() == Some(Who::Player) {
             self.remember_mob_player_credit(id);
         }
     }
@@ -5318,7 +5328,7 @@ impl Game<'_> {
     /// 0 damage included: the hit is its owner's, and a player's fires PLAYER_HURT_ENTITY.
     fn thrown_hurt_mob(&mut self, p: &Projectile, id: u32, kind: &str, amount: f32) {
         self.player_hurt_mob(p, id);
-        if p.owner == Some(Who::Player)
+        if p.who() == Some(Who::Player)
             && let Some(m) = self.mobs.iter().find(|m| m.id == id)
         {
             let victim = self.mob_entity(m);
@@ -5365,7 +5375,7 @@ impl Game<'_> {
         damage_type: &str,
     ) {
         if let Who::Mob(id) = who {
-            self.mob_post_attack(id, p.owner, Some(direct), Some(damage_type));
+            self.mob_post_attack(id, p.who(), Some(direct), Some(damage_type));
         }
     }
     /// What an arrow or a thrown trident hits an entity of type `victim`
@@ -5397,7 +5407,7 @@ impl Game<'_> {
                 shot.arrow_damage() + shot.bonus.damage
             };
         };
-        let attacker_kind = match shot.owner {
+        let attacker_kind = match shot.who() {
             Some(Who::Player) => Some("minecraft:player".to_owned()),
             Some(Who::Mob(id)) => self
                 .mobs
@@ -5424,7 +5434,7 @@ impl Game<'_> {
             ..Default::default()
         };
         let player = self.own_entity_id() as u32;
-        let attacker = shot.owner.map(|owner| match owner {
+        let attacker = shot.who().map(|owner| match owner {
             Who::Player => self
                 .combat
                 .enchantment_projectile_attacker
@@ -5457,7 +5467,7 @@ impl Game<'_> {
     /// (`VehicleEntity.hurtServer`): even 0 shakes it (`Snowball`, `ThrownEgg`,
     /// `ThrownEnderpearl` `.onHitEntity`), 5 from a small fireball destroys it.
     fn hurt_vehicle(&mut self, p: &Projectile, id: u32, amount: f32) {
-        let creative = p.owner == Some(Who::Player) && self.creative;
+        let creative = p.who() == Some(Who::Player) && self.creative;
         let damage_kind = match p.kind {
             ProjectileKind::Arrow { .. } | ProjectileKind::Trident => DamageKind::Arrow,
             ProjectileKind::SmallFireball | ProjectileKind::LargeFireball { .. } => {
@@ -5467,7 +5477,7 @@ impl Game<'_> {
         };
         let damage_type = source_damage_type(Damage {
             kind: damage_kind,
-            attacker: p.owner,
+            attacker: p.who(),
             from: None,
             attacker_species: None,
         });
@@ -5492,11 +5502,11 @@ impl Game<'_> {
         damage_type: &str,
     ) -> bool {
         let causing = match p.owner {
-            Some(Who::Player) => match p.guest {
+            Some(EventSource::Player) => match p.guest {
                 Some(conn) => self.command_guest(conn).map_or(0, |g| g.entity_id),
                 None => self.own_entity_id(),
             },
-            Some(Who::Mob(id)) => id as i32,
+            Some(EventSource::Mob(id) | EventSource::Entity(id)) => id as i32,
             None => 0,
         };
         let source = horizon_client::health::HurtSource {
@@ -5505,7 +5515,7 @@ impl Game<'_> {
             direct: p.id as i32,
             position: Some([p.position.x, p.position.y, p.position.z]),
         };
-        let creative = match p.owner {
+        let creative = match p.who() {
             Some(Who::Player) => match p.guest {
                 Some(conn) => self.command_guest(conn).is_some_and(|g| g.creative()),
                 None => self.creative,
@@ -5582,8 +5592,8 @@ impl Game<'_> {
         );
         use horizon_client::arrows::OwnerLookup;
         let shooter_may_break = match p.owner {
-            Some(Who::Player) => self.mode != GameMode::Adventure,
-            Some(Who::Mob(_)) => {
+            Some(EventSource::Player) => self.mode != GameMode::Adventure,
+            Some(EventSource::Mob(_) | EventSource::Entity(_)) => {
                 matches!(p.kind, ProjectileKind::Arrow { .. })
                     && self
                         .ui
@@ -5819,7 +5829,7 @@ impl Game<'_> {
             if event == horizon_client::arrows::ArrowEvent::Drop {
                 self.spawn_at_location(arrow.position, f64::from(0.1f32), item.clone());
             } else if event == horizon_client::arrows::ArrowEvent::ShootEvent {
-                self.projectile_shoot_event(arrow.owner, arrow.guest, arrow.position.components());
+                self.projectile_shoot_event(arrow.who(), arrow.guest, arrow.position.components());
             } else {
                 self.arrow_event(arrow.position, event);
             }
@@ -5901,10 +5911,10 @@ impl Game<'_> {
 
     /// A projectile's hit, landed in the attack of its owner.
     pub(super) fn projectile_hit(&mut self, p: &Projectile, hit: Hit) -> Result<()> {
-        let mut attack = self.attack_of_who(p.owner);
+        let mut attack = self.attack_of_who(p.who());
         attack.projectile = Some(p.id as i32);
         let result = self.with_attack(attack, |g| g.projectile_hit_landed(p, hit));
-        self.settle_dealt_absorbed(p.owner == Some(Who::Player));
+        self.settle_dealt_absorbed(p.who() == Some(Who::Player));
         result?;
         // The hit's hurt teleports an enderman or a shulker now (`hurtServer`).
         self.settle_hurt_teleports()
@@ -5918,7 +5928,7 @@ impl Game<'_> {
             self.projectile_block_impact(&ProjectileHitter::of(p), pos, at, face)?;
             self.projectile_breaks_block(p, pos);
         }
-        self.combat.projectile_owner = match p.owner {
+        self.combat.projectile_owner = match p.who() {
             Some(Who::Mob(id)) => Some(id),
             _ => None,
         };
@@ -5964,7 +5974,7 @@ impl Game<'_> {
                 ProjectileKind::WitherSkull { .. } | ProjectileKind::DragonFireball
             )
         {
-            let by_player = p.owner == Some(Who::Player);
+            let by_player = p.who() == Some(Who::Player);
             if p.arrow.is_some() {
                 // AbstractArrow.onHitEntity: spent if the part or crystal took
                 // it, else turned back (a perched dragon sets it alight first).
@@ -6038,7 +6048,7 @@ impl Game<'_> {
             let victim_type = self.carts[i].kind.id().to_owned();
             let amount = self.shot_damage(&mut arrow, Some(&victim_type), Who::Mob(id));
             let burning = p.arrow.as_ref().is_some_and(|a| a.on_fire());
-            let creative = p.owner == Some(Who::Player) && self.creative;
+            let creative = p.who() == Some(Who::Player) && self.creative;
             let kind = self.carts[i].kind.id();
             let refused = self.vehicle_refuses_projectile(p, id, kind, "minecraft:arrow");
             if !refused {
@@ -6065,7 +6075,7 @@ impl Game<'_> {
             let mut arrow = p.clone();
             let victim_type = self.boats[i].entity_type();
             let amount = self.shot_damage(&mut arrow, Some(&victim_type), Who::Mob(id));
-            let creative = p.owner == Some(Who::Player) && self.creative;
+            let creative = p.who() == Some(Who::Player) && self.creative;
             let kind = self.boats[i].entity_type();
             let refused = self.vehicle_refuses_projectile(p, id, &kind, "minecraft:arrow");
             if !refused {
@@ -6083,7 +6093,7 @@ impl Game<'_> {
         }
         let atp = [at.x, at.y, at.z];
         // Projectile.onHit: the landing is heard.
-        self.projectile_landed_event(p.id, p.owner, atp);
+        self.projectile_landed_event(p.id, p.who(), atp);
         let source_kind = match p.kind {
             ProjectileKind::Arrow { .. } | ProjectileKind::Trident => DamageKind::Arrow,
             ProjectileKind::SmallFireball | ProjectileKind::LargeFireball { .. } => {
@@ -6091,13 +6101,13 @@ impl Game<'_> {
             }
             _ => DamageKind::Thrown,
         };
-        let attacker_species = match p.owner {
+        let attacker_species = match p.who() {
             Some(Who::Mob(id)) => self.mobs.iter().find(|m| m.id == id).map(|m| m.species()),
             _ => None,
         };
         let source = Damage {
             kind: source_kind,
-            attacker: p.owner,
+            attacker: p.who(),
             from: Some([p.previous.x, p.previous.y, p.previous.z]),
             attacker_species,
         };
@@ -6213,7 +6223,7 @@ impl Game<'_> {
                                 m.species() == Species::Enderman
                                     && horizon_client::mobs::enderman::dodges(m, &source)
                             });
-                        if p.owner == Some(Who::Player) {
+                        if p.who() == Some(Who::Player) {
                             self.remember_mob_player_credit(id);
                             if hurt && let Some(m) = self.mobs.iter().find(|m| m.id == id) {
                                 // LivingEntity.hurtServer: PLAYER_HURT_ENTITY.
@@ -6277,7 +6287,7 @@ impl Game<'_> {
                             .find(|m| m.id == id)
                             .map(|m| m.kind.id.as_str()),
                     };
-                    let owner = match p.owner {
+                    let owner = match p.who() {
                         Some(Who::Player) => Some("minecraft:player"),
                         Some(Who::Mob(id)) => self
                             .mobs
@@ -6419,7 +6429,7 @@ impl Game<'_> {
                         }
                         // LivingEntity.hurtServer: PLAYER_HURT_ENTITY.
                         if hurt
-                            && p.owner == Some(Who::Player)
+                            && p.who() == Some(Who::Player)
                             && let Some(m) = self.mobs.iter().find(|m| m.id == id)
                         {
                             let victim = self.mob_entity(m);
@@ -6510,7 +6520,7 @@ impl Game<'_> {
                 let mut damage = 5.0;
                 let mut cancel = false;
                 // EntityTeleportEvent.EnderPearl: a server player's pearl.
-                if p.owner == Some(Who::Player)
+                if p.who() == Some(Who::Player)
                     && let Some(from) = self.player.as_ref().map(|pl| pl.position)
                     && let Some(owner) = self.native_acting_player().map(|player| player.entity())
                 {
@@ -6541,7 +6551,7 @@ impl Game<'_> {
                         self.sleeping.is_some(),
                     )
                 });
-                if p.owner == Some(Who::Player) && taken && !cancel {
+                if p.who() == Some(Who::Player) && taken && !cancel {
                     // ThrownEnderpearl: 5% endermite where the player was
                     // (when monsters spawn), teleport, 5 damage.
                     if self.world.random.next_float() < 0.05
@@ -6576,7 +6586,7 @@ impl Game<'_> {
                         1.0,
                     );
                 }
-                if let Some(Who::Mob(id)) = p.owner {
+                if let Some(Who::Mob(id)) = p.who() {
                     self.mob_pearl_teleport(p, id);
                 }
             }
@@ -6641,7 +6651,7 @@ impl Game<'_> {
                     // BaseFireBlock.getState placed with updates (the fire
                     // ticks, ages and goes out where it can't stay).
                     let fire = [pos[0] + face[0], pos[1] + face[1], pos[2] + face[2]];
-                    let may = match p.owner {
+                    let may = match p.who() {
                         Some(Who::Mob(owner)) => self.can_entity_grief(Some(owner)),
                         _ => true,
                     };
@@ -6663,7 +6673,7 @@ impl Game<'_> {
                 // Fireball explosions are caused by the shooter. A direct hit
                 // on the player takes `projectile_owner`, so read the owner
                 // from the fireball.
-                let owner = match p.owner {
+                let owner = match p.who() {
                     Some(Who::Mob(id)) => Some(id),
                     _ => None,
                 };
@@ -6701,12 +6711,12 @@ impl Game<'_> {
                 self.combat.explosion_in_water = p.touching_water;
                 // The blast's source names the owner, so a dragon it kills
                 // remembers the player who shot it.
-                self.set_blast_by_player(p.owner == Some(Who::Player));
+                self.set_blast_by_player(p.who() == Some(Who::Player));
                 // LargeFireball.onHit: the fire follows
                 // `EventHooks.canEntityGrief(level, getOwner())`, so a mod's
                 // answer for whoever owns the fireball decides: the ghast that
                 // shot it, or the player who sent it back.
-                let fire = self.large_fireball_fire(p.owner, p.guest);
+                let fire = self.large_fireball_fire(p.who(), p.guest);
                 self.combat.explosion_direct = Some(p.id);
                 let result = self.explode_mob(
                     atp,
@@ -6756,7 +6766,7 @@ impl Game<'_> {
                     } => self.mobs.iter().find(|m| m.id == id).map(|m| m.position),
                     _ => None,
                 };
-                let owner = self.potion_owner(p.owner);
+                let owner = self.potion_owner(p.who());
                 let item = stack.item.to_string();
                 self.splash(
                     stack,
@@ -13074,7 +13084,7 @@ mod chorus_projectile_drop_tests {
         assert!(p.no_gravity);
         assert_eq!(p.owner_uuid, owner.then_some([116, 0, 0, 99]));
         if owner {
-            assert!(matches!(p.owner, Some(Who::Mob(_))));
+            assert!(matches!(p.who(), Some(Who::Mob(_))));
         }
         p.id
     }
@@ -13305,6 +13315,7 @@ mod chorus_projectile_drop_tests {
 #[cfg(test)]
 mod loaded_arrow_shot_tests {
     use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client_core::who::EventSource;
     use horizon_client::{
         chunk::Chunk,
         mobs::Who,
@@ -13628,8 +13639,8 @@ mod loaded_arrow_shot_tests {
             let owner = owner(game);
             assert_eq!(arrow.owner_uuid, Some([114, 0, 0, 99]));
             // Resolve through the actual registered owner, as tick_projectiles does.
-            arrow.owner = game.who_by_uuid(arrow.owner_uuid.unwrap());
-            assert_eq!(arrow.owner, Some(Who::Mob(owner)));
+            arrow.owner = game.who_by_uuid(arrow.owner_uuid.unwrap()).map(EventSource::from);
+            assert_eq!(arrow.who(), Some(Who::Mob(owner)));
             assert!(!arrow.arrow.as_ref().unwrap().has_been_shot);
             let id = arrow.id;
             start_events();
@@ -13726,7 +13737,7 @@ mod loaded_arrow_shot_tests {
             assert_eq!(game.lan_acting, None);
             let arrow = game.creatures.projectiles.pop().unwrap();
             assert_eq!(arrow.guest, Some(2));
-            assert_eq!(arrow.owner, Some(Who::Player));
+            assert_eq!(arrow.who(), Some(Who::Player));
             assert_eq!(arrow.owner_uuid, Some([0, 0, 0, 114]));
             assert!(!arrow.arrow.as_ref().unwrap().has_been_shot);
             let at = [arrow.position.x, arrow.position.y, arrow.position.z];
@@ -13857,7 +13868,7 @@ mod loaded_mob_arrow_permission_tests {
                 assert_eq!(p.owner_uuid, Some([197, 0, 0, 1]));
                 assert_eq!(
                     p.owner,
-                    Some(Who::Mob(owner)),
+                    Some(EventSource::Mob(owner)),
                     "actual resolved loaded Mob, not raw Owner alone"
                 );
                 assert!(matches!(p.kind, ProjectileKind::Arrow { .. }));

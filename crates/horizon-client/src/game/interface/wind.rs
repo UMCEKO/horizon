@@ -134,7 +134,7 @@ impl Game<'_> {
             Hit::None => return Ok(()),
         };
         // The charge owner is the indirect source of the explosion.
-        let owner = match p.owner {
+        let owner = match p.who() {
             Some(Who::Player) => Some(self.own_entity_id() as u32),
             Some(Who::Mob(id)) => self.mobs.iter().any(|m| m.id == id).then_some(id),
             None => None,
@@ -150,7 +150,7 @@ impl Game<'_> {
     }
     /// `AbstractWindCharge.onHitEntity`: one point of damage.
     fn wind_charge_damage(&mut self, p: &Projectile, who: Who) {
-        let owner_breeze = matches!(p.owner, Some(Who::Mob(id))
+        let owner_breeze = matches!(p.who(), Some(Who::Mob(id))
             if self.mobs.iter().any(|m| m.id == id && m.species() == Species::Breeze));
         match who {
             Who::Player => {
@@ -169,7 +169,7 @@ impl Game<'_> {
                     self.hit_special(
                         id,
                         1.0,
-                        p.owner == Some(Who::Player),
+                        p.who() == Some(Who::Player),
                         horizon_client::mobs::DamageKind::WindCharge,
                         Some(p),
                     );
@@ -178,7 +178,7 @@ impl Game<'_> {
             Who::Mob(id) => {
                 let source = Damage {
                     kind: DamageKind::Thrown,
-                    attacker: p.owner,
+                    attacker: p.who(),
                     from: Some([p.previous.x, p.previous.y, p.previous.z]),
                     attacker_species: owner_breeze.then_some(Species::Breeze),
                 };
@@ -199,7 +199,7 @@ impl Game<'_> {
                         source,
                     );
                 }
-                if p.owner == Some(Who::Player) {
+                if p.who() == Some(Who::Player) {
                     self.remember_mob_player_credit(id);
                 }
                 if hurt {

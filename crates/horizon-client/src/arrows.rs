@@ -13,6 +13,7 @@ use crate::{
     projectiles::{Hit, Projectile, ProjectileKind},
     world::World,
 };
+use horizon_client_core::who::EventSource;
 use horizon_core::{
     geometry::{Aabb, Direction, Vec3, sweep_intersected_blocks},
     position::BlockPos,
@@ -892,7 +893,7 @@ impl Ticker<'_, '_, '_, '_> {
         }
         let owner = targets
             .iter()
-            .find(|(who, _)| Some(*who) == self.p.collision_owner())
+            .find(|(who, _)| Some(*who) == self.p.target())
             .map(|(_, b)| *b);
         let swept = bounds(self.p.position)
             .expand_towards(self.p.velocity)
@@ -942,7 +943,7 @@ impl Ticker<'_, '_, '_, '_> {
         // ThrownTrident.findHitEntity: none once it has dealt damage.
         let targets = if self.st.dealt_damage { &[] } else { targets };
         for (who, b) in targets {
-            if Some(*who) == self.p.collision_owner() && !self.p.left_owner || !b.intersects(area) {
+            if Some(*who) == self.p.target() && !self.p.left_owner || !b.intersects(area) {
                 continue;
             }
             // canHitEntity: not an entity a piercing arrow has gone through.
@@ -1081,7 +1082,7 @@ impl Ticker<'_, '_, '_, '_> {
             self.st.events.push(ArrowEvent::Block {
                 pos,
                 reaction,
-                owner: self.p.owner,
+                owner: self.p.who(),
             });
         }
         let v = self.p.velocity;
@@ -1099,14 +1100,17 @@ impl Ticker<'_, '_, '_, '_> {
         self.st.pierce = 0;
         self.st.pierced.clear();
     }
-    /// `Projectile.mayInteract`: a mob's arrows need `mob_griefing`, or a
-    /// mod's yes for the owner (NeoForge's `canEntityGrief(level, owner)`).
+    /// `Projectile.mayInteract`: an arrow owned by anything but a player needs
+    /// `mob_griefing`, or a mod's yes for a loaded owner (`canEntityGrief(level, owner)`).
     fn may_interact(&self) -> bool {
         match self.p.owner {
-            Some(Who::Mob(owner)) => match self.scene.mob_hooks {
-                Some(hooks) => hooks.can_grief(owner, self.scene.mob_griefing),
-                None => self.scene.mob_griefing,
-            },
+            Some(EventSource::Player) => true,
+            Some(EventSource::Mob(owner) | EventSource::Entity(owner)) => {
+                match self.scene.mob_hooks {
+                    Some(hooks) => hooks.can_grief(owner, self.scene.mob_griefing),
+                    None => self.scene.mob_griefing,
+                }
+            }
             None => {
                 !self
                     .p
@@ -1114,7 +1118,6 @@ impl Ticker<'_, '_, '_, '_> {
                     .is_some_and(|u| self.scene.owners.non_player_entity(u))
                     || self.scene.mob_griefing
             }
-            Some(Who::Player) => true,
         }
     }
     /// `onProjectileHit` of the blocks a burning projectile lights.

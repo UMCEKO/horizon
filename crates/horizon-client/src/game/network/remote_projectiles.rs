@@ -920,7 +920,7 @@ impl Game<'_> {
         }
         for p in &self.creatures.projectiles {
             out.push(json!({"id": p.id, "kind": format!("{:?}", p.kind).split([' ', '{']).next().unwrap_or(""), "position": at(p.position), "velocity": at(p.velocity),
-                "player_owned": p.owner == Some(horizon_client::mobs::Who::Player),
+                "player_owned": p.who() == Some(horizon_client::mobs::Who::Player),
                 "on_fire": p.arrow.as_ref().is_some_and(|a| a.on_fire())}));
         }
         for (kind, p, _) in self.potions.thrown_entities() {

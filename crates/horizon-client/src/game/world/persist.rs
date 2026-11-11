@@ -2227,8 +2227,9 @@ impl Game<'_> {
             .passenger_slots
             .retain(|id, _| alive.contains(id));
     }
-    /// A loaded projectile's `Owner`: living hit credit and vehicle collision identity.
-    fn claim_owner(&self, p: &mut horizon_client::projectiles::Projectile) {
+    /// A loaded projectile's `Owner` (`EntityReference.getEntity`): a guest, a mob or any other loaded entity.
+    pub(in crate::game) fn claim_owner(&self, p: &mut horizon_client::projectiles::Projectile) {
+        use horizon_client_core::who::EventSource;
         let Some(uuid) = p.owner_uuid else {
             return;
         };
@@ -2241,16 +2242,22 @@ impl Game<'_> {
                 .map(|g| g.conn)
         });
         if guest.is_some() {
-            (p.owner, p.guest) = (Some(Who::Player), guest);
-        } else if p.owner.is_none() {
-            p.owner = self.mob_by_uuid(uuid).map(Who::Mob);
+            (p.owner, p.guest) = (Some(EventSource::Player), guest);
+            return;
         }
-        use super::commands::Target;
-        p.owner_vehicle =
-            match self.target_by_uuid(horizon_client::lan::playerdata::ints_uuid(uuid)) {
-                Some(Target::Boat(id) | Target::Cart(id)) => Some(id),
-                _ => None,
-            };
+        p.resolve(
+            |_| None,
+            |u| {
+                if let Some(id) = self.mob_by_uuid(u) {
+                    return Some(EventSource::Mob(id));
+                }
+                use super::commands::Target;
+                match self.target_by_uuid(horizon_client::lan::playerdata::ints_uuid(u))? {
+                    Target::Player | Target::Guest(_) => None,
+                    other => self.projectile_owner_of(other).map(|(owner, _)| owner),
+                }
+            },
+        );
     }
     /// Save and remove the entities of chunks that unloaded.
     pub(super) fn unload_entities(&mut self, unloaded: &[Arc<Chunk>]) {

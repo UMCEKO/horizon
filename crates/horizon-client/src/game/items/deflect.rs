@@ -8,6 +8,7 @@ use horizon_client::{
     mobs::Who,
     projectiles::{Projectile, ProjectileKind, Turn},
 };
+use horizon_client_core::who::EventSource;
 use horizon_core::geometry::{Aabb, Vec3};
 
 /// `AbstractHurtingProjectile.getPickRadius`: the crosshair finds it a block
@@ -35,7 +36,7 @@ pub(super) fn redirectable(p: &Projectile) -> bool {
 pub(super) fn aim_deflect(
     p: &mut Projectile,
     look: Option<Vec3>,
-    owner: Option<Who>,
+    owner: Option<EventSource>,
     owner_uuid: Option<[i32; 4]>,
     guest: Option<u32>,
 ) -> bool {
@@ -210,7 +211,7 @@ impl Game<'_> {
         let dir = view_vector(self.yaw, self.pitch);
         let (guest, owner_uuid) = (self.lan_acting, Some(self.acting_player_uuid()));
         self.creatures.projectiles.update(i, |p| {
-            let owner = (Some(Who::Player), owner_uuid, guest);
+            let owner = (Some(EventSource::Player), owner_uuid, guest);
             let look = Vec3::new(dir[0], dir[1], dir[2]);
             if !p.deflect(Turn::Direction(Some(look)), [1.0; 3], owner, true) {
                 return false;
@@ -282,18 +283,18 @@ mod tests {
         assert!(!aim_deflect(
             &mut p,
             Some(look),
-            Some(Who::Player),
+            Some(EventSource::Player),
             None,
             None
         ));
         assert_eq!(p.velocity, Vec3::new(0.0, 1.5, 0.0));
-        assert_eq!(p.owner, Some(Who::Mob(7)));
+        assert_eq!(p.who(), Some(Who::Mob(7)));
         assert!(!p.needs_sync);
         p.no_deflect_ticks = 0;
         assert!(aim_deflect(
             &mut p,
             Some(look),
-            Some(Who::Player),
+            Some(EventSource::Player),
             None,
             None
         ));
@@ -304,9 +305,9 @@ mod tests {
     fn a_redirected_wind_charge_flies_along_the_new_owners_look() {
         let mut p = wind_charge();
         let look = Vec3::new(0.0, -1.0, 0.0);
-        aim_deflect(&mut p, Some(look), Some(Who::Player), Some([4; 4]), Some(3));
+        aim_deflect(&mut p, Some(look), Some(EventSource::Player), Some([4; 4]), Some(3));
         assert_eq!(p.velocity, look);
-        assert_eq!((p.owner, p.owner_uuid), (Some(Who::Player), Some([4; 4])));
+        assert_eq!((p.who(), p.owner_uuid), (Some(Who::Player), Some([4; 4])));
         assert_eq!(p.guest, Some(3));
         assert_eq!(p.acceleration, 0.1);
         assert!(p.needs_sync);

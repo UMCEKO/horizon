@@ -210,7 +210,7 @@ impl Game<'_> {
                     });
                 let target = who.and_then(|who| self.save_who_uuid(who));
                 let p = self.creatures.projectiles.iter().find(|p| p.id == id)?;
-                let owner = if p.owner == Some(horizon_client::mobs::Who::Player) {
+                let owner = if p.who() == Some(horizon_client::mobs::Who::Player) {
                     player_uuid
                 } else {
                     None

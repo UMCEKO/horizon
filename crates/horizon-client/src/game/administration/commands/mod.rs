@@ -219,7 +219,7 @@ fn wrap_degrees(angle: f32) -> f32 {
 }
 
 /// The network id of a target that is no player: its entity id.
-fn non_player_entity_id(t: Target) -> Option<i32> {
+pub(in crate::game) fn non_player_entity_id(t: Target) -> Option<i32> {
     let (Target::Mob(id)
     | Target::Item(id)
     | Target::Orb(id)
