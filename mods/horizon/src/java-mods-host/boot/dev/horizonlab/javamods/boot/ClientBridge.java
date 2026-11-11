@@ -510,6 +510,7 @@ public final class ClientBridge {
             minecraft.tick();
         }
         windowTicks++;
+        if (HUD_DEBUG && minecraft.particleEngine != null) ClientParticles.debug(minecraft);
         timer(minecraft).updatePauseState(minecraft.isPaused());
         timer(minecraft).updateFrozenState(!((dev.horizonlab.javamods.boot.mixin.MinecraftActions) minecraft).horizon$runningNormally());
         if (minecraft.level != null) BlockRenders.probe(minecraft.level, BLOCK_ENTITIES.values());

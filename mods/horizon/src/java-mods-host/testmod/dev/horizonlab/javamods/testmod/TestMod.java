@@ -51,6 +51,7 @@ public final class TestMod {
             ClientKeys.register(bus);
             ClientTextures.register(bus);
             ClientWorldBox.register();
+            ClientSpark.register(bus);
             ClientProfiles.register();
         }
     }
