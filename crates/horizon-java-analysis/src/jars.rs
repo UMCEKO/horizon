@@ -2,17 +2,18 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde_json::Value as Json;
 use zip::ZipArchive;
 
-use crate::libraries::entry_names;
+use crate::libraries::{entry_names, glob};
 use crate::pytext;
 
 const ACTIVE_DATA: [&str; 2] = ["data/minecraft/", "assets/minecraft/"];
 const OPAQUE_FILES: [&str; 1] = ["META-INF/coremods.json"];
+const HOST_JARS: [&str; 2] = ["horizon-java-boot.jar", "horizon-java-plugin.jar"];
 const MODS_TOML: &str = "META-INF/neoforge.mods.toml";
 
 /// One archive: a mod jar or a jar nested in it.
@@ -30,6 +31,16 @@ pub struct JarFacts {
     pub at_lines: usize,
     pub opaque: Vec<String>,
     pub plugins: BTreeMap<String, String>,
+}
+
+/// The jars of a run folder or install, `mods/*.jar` without the host's own boot and plugin jars.
+pub fn mod_jars(run: &Path) -> Vec<PathBuf> {
+    let mut jars = glob(run, "mods/*.jar");
+    jars.retain(|j| {
+        !j.file_name()
+            .is_some_and(|n| HOST_JARS.iter().any(|h| n == *h))
+    });
+    jars
 }
 
 /// An entry's bytes.

@@ -5,12 +5,13 @@ use std::fs::File;
 use std::io::{Read, Seek};
 use std::path::Path;
 
+use serde::Serialize;
 use zip::ZipArchive;
 
 const NATIVE: &str = "analysis/native.tsv";
 const VERDICTS: &str = "analysis/verdicts.tsv";
 const HOST_WORDS: &str = "analysis/host_words.txt";
-const WEAK_STATUSES: [&str; 5] = ["mentioned", "inferred", "absent", "none", "unknown"];
+pub const WEAK_STATUSES: [&str; 5] = ["mentioned", "inferred", "absent", "none", "unknown"];
 const ROUTING_ORDER: [&str; 6] = [
     "java",
     "java-own-type",
@@ -21,7 +22,7 @@ const ROUTING_ORDER: [&str; 6] = [
 ];
 
 /// What the port ledger says about a vanilla method: who owns it in Rust.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeInfo {
     pub status: String,
     pub owned: bool,
