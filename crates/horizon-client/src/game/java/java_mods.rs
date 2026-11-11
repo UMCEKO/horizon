@@ -866,7 +866,7 @@ impl Game<'_> {
     /// `BlockState.getDestroyProgress` on the player's view, so its tool's and mods' break speeds run; the window asks its Java client.
     pub(super) fn java_destroy_progress(&mut self, pos: [i32; 3]) -> Option<f32> {
         if self.remote.is_some() {
-            return None;
+            return self.java_client_destroy_progress(pos);
         }
         horizon_java_host::get()?;
         self.java_bind_states();

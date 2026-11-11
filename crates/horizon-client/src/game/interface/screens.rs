@@ -62,7 +62,7 @@ impl Screen {
             // No screen over the world, and Horizon's own screens that
             // draw over it (the emote wheel, a native mod's screen and
             // Studio) leave it running as they always have.
-            | Self::Playing | Self::EmoteWheel | Self::Mod | Self::Studio
+            | Self::Playing | Self::EmoteWheel | Self::Mod | Self::Java | Self::Studio
             // WinScreen.isPauseScreen is `!poem`: Game::win_screen_pauses.
             | Self::Win => false,
             // Every other screen, and the game-master block editors
@@ -106,6 +106,7 @@ impl Screen {
             | Self::Dead
             | Self::CommandBlock
             | Self::BlockEditor
+            | Self::Java
             | Self::Mod
             // The HUD editor shows the HUD it moves.
             | Self::HudEditor

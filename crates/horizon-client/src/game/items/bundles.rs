@@ -29,7 +29,7 @@ impl Game<'_> {
     /// A slot a bundle can be selected in: the player's inventory and off hand in any
     /// menu (#4436: a crafting table's, an enchanting table's...), and a container's own
     /// slots. A server only knows those in chest-like menus.
-    fn bundle_slot(&mut self, slot: usize) -> bool {
+    pub(super) fn bundle_slot(&mut self, slot: usize) -> bool {
         slot < 36
             || slot == 504
             || ((300..500).contains(&slot)
