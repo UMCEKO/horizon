@@ -8,7 +8,11 @@ pub(super) use horizon_world::registry::BlockStateId;
 
 mod block_entities;
 pub(super) mod client_world;
+mod effects;
+mod entities;
 mod level_api;
+mod player;
+mod rules;
 mod server;
 mod values;
 mod world;
@@ -19,7 +23,11 @@ pub(super) fn bridges() -> Vec<horizon_java_host::bridge::Bridge> {
     [
         block_entities::table(),
         client_world::table(),
+        effects::table(),
+        entities::table(),
         level_api::table(),
+        player::table(),
+        rules::table(),
         server::table(),
         values::table(),
         world::table(),

@@ -29,13 +29,15 @@ pub(super) struct Bolt {
     /// The entity id a server's players know it by (0 until it has one).
     pub id: u32,
     pub at: [f64; 3],
-    life: i32,
-    flashes: i32,
-    seed: i64,
+    pub(super) life: i32,
+    pub(super) flashes: i32,
+    pub(super) seed: i64,
+    /// `LightningBolt.damage`: what its `thunderHit` deals, 5 unless a mod set it.
+    pub(super) damage: f32,
     /// The bolt's own random (`Entity.random`): its seed, flashes, flash
     /// timing, fire spots and thunder pitch draw from it, never the level's.
     random: LegacyRandom,
-    visual_only: bool,
+    pub(super) visual_only: bool,
     /// Mooshrooms and copper golems change once per bolt.
     converted: Vec<u32>,
     /// The mobs it has struck (`hitEntities`).
@@ -65,6 +67,7 @@ impl Bolt {
             life: 2,
             flashes,
             seed,
+            damage: 5.0,
             random,
             visual_only,
             converted: Vec::new(),
@@ -641,7 +644,11 @@ impl Game<'_> {
                 m.ignite_for_ticks(160);
             }
 
-            m.damage(crate::game::entity::damage_level_of!(self), 5.0, damage);
+            m.damage(
+                crate::game::entity::damage_level_of!(self),
+                b.damage,
+                damage,
+            );
         }
         for entity in powered {
             self.native_creeper_power(entity, [at[0], at[1], at[2]]);
@@ -692,7 +699,7 @@ impl Game<'_> {
                     };
                     let vanilla = self.saved_refuses_damage(id, "minecraft:lightning_bolt", false);
                     if !self.native_nonliving_invulnerable(id, &kind, source, vanilla) {
-                        self.hurt_boat(i, 5.0, false);
+                        self.hurt_boat(i, b.damage, false);
                     }
                 }
                 EntityHandle::Cart(i) => {
@@ -705,7 +712,7 @@ impl Game<'_> {
                     };
                     let vanilla = self.saved_refuses_damage(id, "minecraft:lightning_bolt", false);
                     if !self.native_nonliving_invulnerable(id, kind, source, vanilla) {
-                        self.hurt_cart(i, 5.0, false, false);
+                        self.hurt_cart(i, b.damage, false, false);
                     }
                 }
                 EntityHandle::Orb(i) => {
@@ -722,7 +729,7 @@ impl Game<'_> {
                         "minecraft:experience_orb",
                         source,
                         vanilla,
-                    ) && self.orbs[i].hurt(5.0)
+                    ) && self.orbs[i].hurt(b.damage)
                     {
                         self.orbs.remove(i);
                     }
@@ -732,6 +739,7 @@ impl Game<'_> {
         }
         self.native_leaves_flush();
         // Every player in the box, the server's players too (0.6 x 1.8).
+        let bolt_damage = b.damage;
         let strike_players = move |g: &mut Self| {
             if let Some(p) = g.player.as_ref().map(|p| p.position)
                 && meets([p.x, p.y, p.z], 0.3, 1.8)
@@ -745,7 +753,7 @@ impl Game<'_> {
                         g.error = Some(error);
                     }
                 }
-                g.hurt_player_by("minecraft:lightning_bolt", 5.0);
+                g.hurt_player_by("minecraft:lightning_bolt", bolt_damage);
             }
         };
         strike_players(self);

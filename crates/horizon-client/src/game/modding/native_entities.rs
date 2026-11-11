@@ -179,7 +179,8 @@ impl Game<'_> {
     /// entity it announces; nothing runs when no mod is loaded, on a client
     /// of a server (which tells nothing), or when nothing is new.
     pub(super) fn native_joins_flush(&mut self, loaded_from_disk: bool, watch: u32) -> bool {
-        if self.remote.is_some() || mod_api::__private::mods().is_empty() || !self.joins_pending() {
+        let unheard = mod_api::__private::mods().is_empty() && !self.java_hook_hears_entities();
+        if self.remote.is_some() || unheard || !self.joins_pending() {
             return true;
         }
         let observed = horizon_client::join_seq::JoinSeq::latest();
@@ -213,6 +214,7 @@ impl Game<'_> {
                 loaded_from_disk,
                 &mut canceled,
             );
+            self.java_hook_entity_joining(id, loaded_from_disk, &mut canceled);
             if canceled {
                 self.persist.joins_canceled += 1;
                 self.forget_entity(id);
@@ -342,7 +344,8 @@ impl Game<'_> {
     /// be told when it leaves.
     pub(super) fn native_joins_skip(&mut self) {
         let observed = horizon_client::join_seq::JoinSeq::latest();
-        if self.remote.is_none() && !mod_api::__private::mods().is_empty() {
+        let heard = !mod_api::__private::mods().is_empty() || self.java_hook_hears_entities();
+        if self.remote.is_none() && heard {
             self.assign_pending_join_ids();
             while let Some((slot, id, seq)) = self.next_unannounced() {
                 self.persist.joined_seq = seq;
@@ -368,6 +371,7 @@ impl Game<'_> {
             let (id, kind, _) = self.persist.live.remove(i);
             let dimension = self.dim.id();
             self.native_entity_leave_level(dimension, id, &kind);
+            self.java_hook_entity_left(id);
         }
     }
     /// Tells `native_entity_leave_level` for every announced entity that is
@@ -404,6 +408,7 @@ impl Game<'_> {
             let (id, kind, _) = self.persist.live.remove(i);
             let dimension = self.dim.id();
             self.native_entity_leave_level(dimension, id, &kind);
+            self.java_hook_entity_left(id);
         }
     }
 }
