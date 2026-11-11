@@ -1863,6 +1863,7 @@ pub mod test_backend {
         pub volume: HashMap<ChannelId, f32>,
         pub pitch: HashMap<ChannelId, f32>,
         pub position: HashMap<ChannelId, [f64; 3]>,
+        pub paused: HashMap<ChannelId, bool>,
     }
     impl Backend for Null {
         fn create(&mut self, _streaming: bool) -> Option<ChannelId> {
@@ -1889,8 +1890,12 @@ pub mod test_backend {
         fn stop(&mut self, c: ChannelId) {
             self.stopped.insert(c, true);
         }
-        fn pause(&mut self, _: ChannelId) {}
-        fn unpause(&mut self, _: ChannelId) {}
+        fn pause(&mut self, c: ChannelId) {
+            self.paused.insert(c, true);
+        }
+        fn unpause(&mut self, c: ChannelId) {
+            self.paused.insert(c, false);
+        }
         fn stopped(&mut self, c: ChannelId) -> bool {
             self.stopped.get(&c).copied().unwrap_or(true)
         }
@@ -1969,6 +1974,46 @@ mod tests {
         assert_eq!(engine.census()["playing"], 0);
         assert_eq!(engine.census()["ticking"], 0);
         assert_eq!(engine.census()["handles"], 0);
+    }
+
+    #[test]
+    fn pausing_all_but_music_pauses_ui_sounds_and_keeps_music() {
+        let mut registry = SoundRegistry::default();
+        registry.add_file(
+            "example",
+            br#"{"click":{"sounds":["ui/click"]},"song":{"sounds":["music/song"]}}"#,
+            &|_, _| true,
+        );
+        let mut engine = SoundEngine::new(registry);
+        let mut backend = test_backend::Null::default();
+        let mut play = |event: &str, source: usize| {
+            let instance = SoundInstance::new(
+                event,
+                source,
+                1.0,
+                1.0,
+                LegacyRandom::new(1),
+                false,
+                0,
+                Attenuation::None,
+                [0.0; 3],
+                true,
+            );
+            let (id, result) = engine.play_new(instance, true, &mut backend);
+            assert_eq!(result, PlayResult::Started);
+            id
+        };
+        let click = play("example:click", UI);
+        let song = play("example:song", MUSIC);
+        let (click, song) = (
+            engine.channel(click).unwrap(),
+            engine.channel(song).unwrap(),
+        );
+        engine.pause_all_except(&[MUSIC], &mut backend);
+        assert_eq!(backend.paused.get(&click), Some(&true), "a UI sound pauses");
+        assert_eq!(backend.paused.get(&song), None, "music keeps playing");
+        engine.resume(&mut backend);
+        assert_eq!(backend.paused.get(&click), Some(&false));
     }
 
     #[test]

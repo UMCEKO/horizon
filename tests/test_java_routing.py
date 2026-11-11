@@ -60,6 +60,10 @@ class Lint(unittest.TestCase):
         self.assertTrue(any('bad deferral reason' in e for e in problems(GOOD, deferred=[('x#y()V', 'because')])))
         self.assertEqual([], problems(GOOD, deferred=[('x#y()V', 'seam: a/b.rs:3')]))
 
+    def test_the_loop_and_reload_specials_parse_and_an_unknown_special_fails(self):
+        self.assertEqual([], problems(GOOD, deferred=[('x#y()V', 'special: loop'), ('x#z()V', 'special: reload')]))
+        self.assertTrue(any('bad deferral reason' in e for e in problems(GOOD, deferred=[('x#y()V', 'special: frame')])))
+
     def test_gated_and_deferred_is_an_error_unless_a_partial_seam(self):
         self.assertTrue(any('remove the deferral' in e for e in problems(GOOD, deferred=[(KEY, 'worldgen: W10')])))
         self.assertEqual([], problems(GOOD, deferred=[(KEY, 'seam: a/b.rs:3')]))

@@ -28,7 +28,7 @@ GUI_ROUTE = re.compile(r'(?<![\w!])gui_route!\(\s*"([^"]+)"')
 FN = re.compile(r'\bfn\s+(\w+)')
 IMPL = re.compile(r'^[ \t]*(?:unsafe\s+)?impl\b[^\n{]*', re.M)
 BODY_CALL = re.compile(r'\s*(?:return\s+)?self\.(\w+)\(')
-REASON = re.compile(r'^(worldgen: W10|client: phase C|view: (entity|block_entity|scoreboard|save_stream|connection)|seam: lift|seam: \S+:\d+|special: (animate|item_code|sounds|screens)|verdict: undecided)')
+REASON = re.compile(r'^(worldgen: W10|client: phase C|view: (entity|block_entity|scoreboard|save_stream|connection)|seam: lift|seam: \S+:\d+|special: (animate|item_code|sounds|screens|loop|reload)|verdict: undecided)')
 PARTIAL = re.compile(r'^seam: \S+:\d+')
 
 

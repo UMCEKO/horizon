@@ -228,7 +228,7 @@ public final class Routing {
     }
 
     /** A merged handler as it stands in the target class: the annotation Mixin kept names what it injects into and where. */
-    record Applied(String name, String mixin, String kind, List<String> at, boolean argsOnly, int params, List<String> targets) {}
+    record Applied(String name, String mixin, String kind, List<String> at, boolean argsOnly, int params, List<String> targets, List<String> atTargets) {}
 
     private static int declaredNamed(Class<?> type, String name) {
         int n = 0;
@@ -248,9 +248,11 @@ public final class Routing {
                     var targets = a.annotationType().getMethod("method").invoke(a);
                     if (!(targets instanceof String[] names)) continue;
                     var at = new ArrayList<String>();
+                    var atTargets = new ArrayList<String>();
                     var raw = a.annotationType().getMethod("at").invoke(a);
                     for (Object one : raw instanceof Object[] many ? many : new Object[] {raw}) {
                         at.add((String) one.getClass().getMethod("value").invoke(one));
+                        atTargets.add((String) one.getClass().getMethod("target").invoke(one));
                     }
                     boolean argsOnly = false;
                     try {
@@ -258,7 +260,7 @@ public final class Routing {
                     } catch (NoSuchMethodException none) {
                         // only ModifyVariable has it
                     }
-                    out.add(new Applied(m.getName(), from.mixin(), kind, at, argsOnly, m.getParameterCount(), List.of(names)));
+                    out.add(new Applied(m.getName(), from.mixin(), kind, at, argsOnly, m.getParameterCount(), List.of(names), atTargets));
                 } catch (ReflectiveOperationException | LinkageError | ClassCastException unreadable) {
                     // not an injector annotation
                 }
@@ -310,12 +312,14 @@ public final class Routing {
         return null;
     }
 
-    private static boolean targets(String target, String name, String desc) {
+    static boolean targets(String target, String name, String desc) {
         String bare = target.substring(target.indexOf(';') + 1);
         return bare.contains("(") ? bare.equals(name + desc) : bare.equals(name);
     }
 
     private static MethodHandle handle(Class<?> owner, String key, String name, String desc, boolean isStatic, ClassLoader loader) throws Exception {
+        // Native never calls a constructor as a route: LoopEdges runs `<init>`'s handlers.
+        if (name.startsWith("<")) return null;
         try {
             var lookup = MethodHandles.privateLookupIn(owner, MethodHandles.lookup());
             var type = MethodType.fromMethodDescriptorString(desc, loader);

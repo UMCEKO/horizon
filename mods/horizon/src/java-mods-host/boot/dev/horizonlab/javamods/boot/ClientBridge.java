@@ -196,6 +196,7 @@ public final class ClientBridge {
         OPS.put("client_play_sound", in -> NativeSounds.ask(in));
         OPS.put("client_shell_frame", in -> shellFrame(in));
         OPS.put("client_shell_input", in -> shellInput(in));
+        OPS.put("client_pause_sources", in -> LoopEdges.pauseSources());
     }
 
     private static byte[] run(String op, byte[] input) {

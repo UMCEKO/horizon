@@ -17,7 +17,7 @@ final class Inits {
         return Integer.parseInt(method.getName().substring(PREFIX.length()));
     }
 
-    private static Object argument(Class<?> type, Object[] have) {
+    static Object argument(Class<?> type, Object[] have) {
         for (Object value : have) {
             if (type.isInstance(value)) return value;
         }

@@ -1,0 +1,2 @@
+# key, Java side: GUI keys a native site serves with a Java op (tools/java_routing.py lints the gui_route! markers against these rows)
+net/minecraft/client/Minecraft#runTick(Z)V	LoopEdges.pauseSources (client_pause_sources)

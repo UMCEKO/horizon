@@ -8,12 +8,11 @@ net/minecraft/client/KeyMapping#matchesMouse(Lnet/minecraft/client/input/MouseBu
 net/minecraft/client/KeyMapping#same(Lnet/minecraft/client/KeyMapping;)Z	client: phase C
 net/minecraft/client/KeyMapping#setAll()V	special: screens
 net/minecraft/client/KeyboardHandler#keyPress(JILnet/minecraft/client/input/KeyEvent;)V	client: phase C
-net/minecraft/client/Minecraft#<init>(Lnet/minecraft/client/main/GameConfig;)V	client: phase C
+net/minecraft/client/Minecraft#<init>(Lnet/minecraft/client/main/GameConfig;)V	special: loop
 net/minecraft/client/Minecraft#continueAttack(Z)V	client: phase C
 net/minecraft/client/Minecraft#handleKeybinds()V	client: phase C
 net/minecraft/client/Minecraft#resizeGui()V	client: phase C
-net/minecraft/client/Minecraft#run()V	client: phase C
-net/minecraft/client/Minecraft#runTick(Z)V	client: phase C
+net/minecraft/client/Minecraft#run()V	special: loop
 net/minecraft/client/Minecraft#startAttack()Z	client: phase C
 net/minecraft/client/Minecraft#startUseItem()V	client: phase C
 net/minecraft/client/Minecraft#tick()V	client: phase C
@@ -52,11 +51,11 @@ net/minecraft/client/multiplayer/ClientPacketListener#handleRecipeBookRemove(Lne
 net/minecraft/client/multiplayer/ClientSuggestionProvider#getSelectedEntities()Ljava/util/Collection;	client: phase C
 net/minecraft/client/renderer/entity/player/AvatarRenderer#<init>(Lnet/minecraft/client/renderer/entity/EntityRendererProvider$Context;Z)V	client: phase C
 net/minecraft/client/renderer/fog/FogRenderer#setupFog(Lnet/minecraft/client/Camera;ILnet/minecraft/client/DeltaTracker;FLnet/minecraft/client/multiplayer/ClientLevel;)Lnet/minecraft/client/renderer/fog/FogData;	client: phase C
-net/minecraft/client/resources/language/LanguageManager#onResourceManagerReload(Lnet/minecraft/server/packs/resources/ResourceManager;)V	client: phase C
+net/minecraft/client/resources/language/LanguageManager#onResourceManagerReload(Lnet/minecraft/server/packs/resources/ResourceManager;)V	special: reload
 net/minecraft/client/server/IntegratedServer#initServer()Z	client: phase C
 net/minecraft/client/sounds/MusicManager#tick()V	client: phase C
-net/minecraft/client/sounds/SoundEngine#refreshCategoryVolume(Lnet/minecraft/sounds/SoundSource;)V	client: phase C
-net/minecraft/client/sounds/SoundEngine#reload()V	client: phase C
+net/minecraft/client/sounds/SoundEngine#refreshCategoryVolume(Lnet/minecraft/sounds/SoundSource;)V	special: sounds
+net/minecraft/client/sounds/SoundEngine#reload()V	special: sounds
 net/minecraft/core/component/BlockTransformer#transformBlock(Lnet/minecraft/world/item/context/UseOnContext;)Lnet/minecraft/world/InteractionResult;	seam: crates/horizon-client/src/block_transform.rs:226
 net/minecraft/core/component/BlockTransformer#transformBlock(Lnet/minecraft/world/item/context/UseOnContext;Lnet/minecraft/core/Holder;)Lnet/minecraft/world/InteractionResult;	seam: crates/horizon-client/src/block_transform.rs:226
 net/minecraft/server/Eula#readFile()Z	seam: crates/horizon-server-files/src/eula.rs:29
