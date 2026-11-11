@@ -828,6 +828,11 @@ pub fn replaces_json(r: &Replaces, install: &Path, seconds: f64) -> Result<Strin
         totals: &r.totals,
         seconds: (seconds * 10.0).round() / 10.0,
     };
+    python_json(&doc)
+}
+
+/// A value as Python's `json.dumps(value, indent=1)` writes it, with a final newline.
+pub fn python_json<T: Serialize>(doc: &T) -> Result<String, String> {
     let mut bytes = Vec::new();
     let format = serde_json::ser::PrettyFormatter::with_indent(b" ");
     let mut ser = serde_json::Serializer::with_formatter(&mut bytes, format);
