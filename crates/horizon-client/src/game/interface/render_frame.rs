@@ -1,5 +1,6 @@
 //! The frame built for the renderer: world, entities, sky, hand and screen.
 use super::*;
+use horizon_world::dimension_type::Skybox;
 
 impl Game<'_> {
     /// Build the complete frame before handing its borrowed geometry and lighting to
@@ -640,13 +641,13 @@ impl Game<'_> {
         pr.lap("pr_dragon_bolts");
         let (celestial, stars) = if title || replaced.sky {
             (Vec::new(), None)
-        } else if self.dim == Dim::Overworld
+        } else if self.type_skybox(Skybox::Overworld)
             && self.potions.effects.get("darkness").is_none()
             && self.potions.effects.get("blindness").is_none()
         {
             // Camera.doesMobEffectBlockSky: no sun, moon or stars.
             self.celestial_geometry(&sky, rain)
-        } else if self.dim == Dim::End && self.settings.horizon.sky {
+        } else if self.type_skybox(Skybox::End) && self.settings.horizon.sky {
             (self.end_flash_geometry(), None)
         } else {
             (Vec::new(), None)
@@ -746,7 +747,7 @@ impl Game<'_> {
         let frame = Frame {
             weather: &weather,
             weather_time: horizon_client::weather::Time::new(self.world.game_time, alpha as f32),
-            nether_lighting: self.dim == Dim::Nether,
+            nether_lighting: self.nether_cardinal_light(),
             camera,
             yaw,
             pitch,
@@ -786,8 +787,8 @@ impl Game<'_> {
                     || self.potions.effects.get("darkness").is_some(),
                 self.boss_overlay.should_create_world_fog(),
             ),
-            skybox: self.dim == Dim::Overworld && self.settings.horizon.sky && !replaced.sky,
-            end_sky: self.dim == Dim::End && self.settings.horizon.sky && !replaced.sky,
+            skybox: self.type_skybox(Skybox::Overworld) && self.settings.horizon.sky && !replaced.sky,
+            end_sky: self.type_skybox(Skybox::End) && self.settings.horizon.sky && !replaced.sky,
             end_sky_sprite: self
                 .gui
                 .atlas
