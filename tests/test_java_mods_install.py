@@ -14,16 +14,17 @@ SERVER = '\n'.join([
 class Args(unittest.TestCase):
     def test_client_args_name_the_libraries_assets_and_neoforge(self):
         libs = Path('/i/libraries')
-        lines = java_mods.args_lines('client', libs, '9.9', client=(NEO, [libs / 'a.jar', libs / 'b.jar']), assets=(Path('/i/assets'), '34'))
+        lines = java_mods.args_lines('client', libs, '9.9', client=(NEO, [libs / 'a.jar', libs / 'b.jar']), assets=(Path('/i/assets'), '34'), java=Path('/j'), host=Path('/i/host/h.jar'))
         self.assertEqual(lines, [
-            'dist client', 'cp /i/libraries/a.jar:/i/libraries/b.jar', 'jvm -Dlibs=/i/libraries',
+            'java /j', 'host /i/host/h.jar', 'dist client', 'cp /i/libraries/a.jar:/i/libraries/b.jar', 'jvm -Dlibs=/i/libraries',
             'jvm --add-opens=java.base/java.lang=ALL-UNNAMED', 'jvm -Xss1m', 'prog --fml.neoForgeVersion', 'prog 1',
             'mod /i/libraries/net/neoforged/neoforge/9.9/neoforge-9.9-universal.jar',
             'prog --assetsDir', 'prog /i/assets', 'prog --assetIndex', 'prog 34'])
 
     def test_server_args_come_from_unix_args_and_have_no_dist_line(self):
-        lines = java_mods.args_lines('server', Path('/i/libraries'), '9.9', server=SERVER)
-        self.assertEqual(lines[0], 'cp /i/libraries/a/a.jar:/i/libraries/b/b.jar')
+        lines = java_mods.args_lines('server', Path('/i/libraries'), '9.9', server=SERVER, java=Path('/j'), host=Path('/i/host/h.jar'))
+        self.assertEqual(lines[:2], ['java /j', 'host /i/host/h.jar'])
+        self.assertEqual(lines[2], 'cp /i/libraries/a/a.jar:/i/libraries/b/b.jar')
         self.assertIn('jvm -Dlibs=/i/libraries', lines)
         self.assertIn('jvm --add-exports=java.base/x=y', lines)
         self.assertIn('prog --fml.mcVersion', lines)
@@ -96,12 +97,12 @@ class Launch(unittest.TestCase):
 
     def test_env_has_what_the_game_needs_and_homes_inside_the_install(self):
         env = java_mods.launch_env(Path('/i'), self.record, False, {'PATH': '/bin'})
-        self.assertEqual(env['JAVA_HOME'], '/i/jdk')
         self.assertEqual(env['HORIZON_JAVA_RUN'], '/i/client')
-        self.assertEqual(env['HORIZON_JAVA_HOST_JAR'], '/i/host/horizon-java-host.jar')
+        self.assertNotIn('JAVA_HOME', env)
+        self.assertNotIn('HORIZON_JAVA_HOST_JAR', env)
         self.assertEqual(env['HORIZON_NEOFORGE'], '9.9')
         self.assertEqual(env['HORIZON_HOME'], '/i/home/horizon')
-        self.assertTrue(env.get('LD_LIBRARY_PATH', env.get('DYLD_LIBRARY_PATH')).startswith('/i/jdk/lib/server:/i/jdk/lib'))
+        self.assertNotIn('/i/jdk', env.get('LD_LIBRARY_PATH', env.get('DYLD_LIBRARY_PATH', '')))
         self.assertEqual(env['PATH'], '/bin')
 
     def test_homes_the_caller_set_stay_and_the_server_has_its_own_run(self):

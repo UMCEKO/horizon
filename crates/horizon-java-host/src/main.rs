@@ -74,13 +74,16 @@ fn main() {
     let ops: Vec<String> = std::env::args().skip(1).collect();
     let rss_before = status("VmRSS");
     let t = Instant::now();
-    let (vm, prog) = create_vm(&run_dir);
+    let (vm, run) = create_vm(&run_dir).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1)
+    });
     let t_create = ms(t);
     let mut env = vm.attach_current_thread_permanently().unwrap();
     register_natives(&mut env);
     let rss_vm = status("VmRSS");
     let t = Instant::now();
-    run_fml(&mut env, &prog, &run_dir);
+    run_fml(&mut env, &run);
     check(&mut env, "run");
     let t_boot = ms(t);
     let t_point = ms(t0);
