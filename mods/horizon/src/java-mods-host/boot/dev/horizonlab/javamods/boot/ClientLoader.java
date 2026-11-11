@@ -20,6 +20,7 @@ import net.minecraft.client.gui.font.glyphs.EffectGlyph;
 import net.minecraft.client.main.GameConfig;
 import net.minecraft.network.chat.FontDescription;
 import net.minecraft.network.chat.Style;
+import net.minecraft.resources.Identifier;
 import net.minecraft.util.RandomSource;
 import com.mojang.blaze3d.font.GlyphInfo;
 import com.mojang.blaze3d.platform.DisplayData;
@@ -66,51 +67,80 @@ final class ClientLoader {
         f.set(target, value);
     }
 
-    private static volatile float[] advances = new float[0];
-    private static final java.util.Map<Integer, BakedGlyph> GLYPHS = new java.util.concurrent.ConcurrentHashMap<>();
+    /** One font's advances by code point, and the glyphs measuring with them; past the table's end a glyph advances `missing`. */
+    private static final class Table implements GlyphSource {
+        private final float[] advances;
+        private final float missing;
+        private final java.util.Map<Integer, BakedGlyph> glyphs = new java.util.concurrent.ConcurrentHashMap<>();
+        private volatile java.util.Map<Integer, int[]> byWidth;
 
-    /** Horizon's font's advances by character, so text measures in Java as Horizon draws it. */
-    static void advances(float[] table) {
-        advances = table;
-        GLYPHS.clear();
+        Table(float[] advances, float missing) {
+            this.advances = advances;
+            this.missing = missing;
+        }
+
+        @Override
+        public BakedGlyph getGlyph(int codepoint) {
+            return glyphs.computeIfAbsent(codepoint, c -> {
+                float advance = c >= 0 && c < advances.length ? advances[c] : missing;
+                return new BakedGlyph() {
+                    @Override
+                    public GlyphInfo info() {
+                        return GlyphInfo.simple(advance);
+                    }
+
+                    @Override
+                    public TextRenderable.Styled createGlyph(float x, float y, int color, int shadow, Style style, float bold, float offset) {
+                        return null;
+                    }
+                };
+            });
+        }
+
+        @Override
+        public BakedGlyph getRandomGlyph(RandomSource random, int width) {
+            var widths = byWidth;
+            if (widths == null) {
+                var lists = new java.util.HashMap<Integer, it.unimi.dsi.fastutil.ints.IntArrayList>();
+                for (int c = 0; c < advances.length; c++) {
+                    lists.computeIfAbsent((int) Math.ceil(advances[c]), w -> new it.unimi.dsi.fastutil.ints.IntArrayList()).add(c);
+                }
+                var built = new java.util.HashMap<Integer, int[]>();
+                lists.forEach((w, list) -> built.put(w, list.toIntArray()));
+                byWidth = widths = built;
+            }
+            int[] chars = widths.get(width);
+            return chars == null || chars.length == 0 ? getGlyph('a') : getGlyph(chars[random.nextInt(chars.length)]);
+        }
     }
 
-    private static BakedGlyph glyph(int codepoint) {
-        return GLYPHS.computeIfAbsent(codepoint, c -> {
-            float[] table = advances;
-            // 6 is vanilla's missing glyph, as `FontManager` answers until the first resource load.
-            float advance = c < table.length ? table[c] : 6;
-            return new BakedGlyph() {
-                @Override
-                public GlyphInfo info() {
-                    return GlyphInfo.simple(advance);
-                }
+    /** Vanilla's `GlyphInfo.simple(8.0F)` for every sprite glyph. */
+    private static final Table SPRITES = new Table(new float[0], 8.0F);
 
-                @Override
-                public TextRenderable.Styled createGlyph(float x, float y, int color, int shadow, Style style, float bold, float offset) {
-                    return null;
-                }
-            };
-        });
+    private static volatile java.util.Map<Identifier, Table> fonts = java.util.Map.of();
+    private static volatile Table missing = new Table(new float[0], 6.0F);
+
+    /** Every font's advances by id, so text measures in Java as Horizon draws it in the font its style names. */
+    static void fonts(float missingAdvance, java.util.Map<Identifier, float[]> tables) {
+        var built = new java.util.HashMap<Identifier, Table>();
+        tables.forEach((id, advances) -> built.put(id, new Table(advances, missingAdvance)));
+        missing = new Table(new float[0], missingAdvance);
+        fonts = built;
     }
 
     /** Measures text for mods; nothing draws through it, as Horizon draws the text itself. */
-    private static Font font() {
-        GlyphSource source = new GlyphSource() {
-            @Override
-            public BakedGlyph getGlyph(int codepoint) {
-                return glyph(codepoint);
-            }
-
-            @Override
-            public BakedGlyph getRandomGlyph(RandomSource random, int width) {
-                return glyph('a');
-            }
-        };
+    static Font font() {
         return new Font(new Font.Provider() {
             @Override
             public GlyphSource glyphs(FontDescription description) {
-                return source;
+                if (description instanceof FontDescription.Resource resource) {
+                    var table = fonts.get(resource.id());
+                    return table != null ? table : missing;
+                }
+                if (description instanceof FontDescription.AtlasSprite || description instanceof FontDescription.PlayerSprite) {
+                    return SPRITES;
+                }
+                return missing;
             }
 
             @Override

@@ -31,7 +31,8 @@ pub(in crate::game) mod live {
         told: Vec<(i32, i32)>,
         /// The server is in another process: the Java client's packets go over the window's connection.
         remote: bool,
-        font: bool,
+        /// The font's measure key and the language the Java client's tables were last sent for.
+        font_sent: Option<(u64, String)>,
         owed: i32,
         open: bool,
         shapes: i32,
@@ -1341,21 +1342,58 @@ pub(in crate::game) mod live {
             }
         }
 
-        /// Horizon's font's advances, which the Java client measures text with: all of them, ready for its start.
+        /// Every font's advances, which the Java client measures text with, ready for its start.
         pub(in crate::game) fn java_client_font(&self) {
             if std::env::var_os("HORIZON_JAVA_RUN").is_none()
-                || CLIENT.with_borrow_mut(|c| std::mem::replace(&mut c.font, true))
+                || CLIENT.with_borrow(|c| c.font_sent.is_some())
             {
                 return;
             }
-            let advances = trimmed_advances(self.gui.atlas.font.advances());
+            super::super::java_components::prepare_font(self.java_font_tables());
+        }
+
+        /// The tables again when native's fonts or the language changed since they were sent.
+        fn java_client_font_resend(&self, host: &horizon_java_host::Host) {
+            let stale = CLIENT.with_borrow(|c| {
+                c.font_sent.as_ref().is_some_and(|sent| *sent != self.java_font_key())
+            });
+            if stale {
+                host.request("client_font", &self.java_font_tables());
+            }
+        }
+
+        fn java_font_key(&self) -> (u64, String) {
+            (
+                self.gui.atlas.font.measure_key(),
+                self.settings.language.clone(),
+            )
+        }
+
+        fn java_font_tables(&self) -> Vec<u8> {
+            let font = &self.gui.atlas.font;
+            let missing = font.missing_advance();
+            let ids = font.ids();
             let mut out = Out::default();
             out.text(&self.settings.language);
-            out.int(advances.len() as i32);
-            for advance in advances {
-                out.float(advance);
+            out.float(missing);
+            out.int(ids.len() as i32);
+            for id in &ids {
+                let advances = trimmed_advances(font.advances_in(id), missing);
+                out.text(id);
+                out.int(advances.len() as i32);
+                for advance in advances {
+                    out.float(advance);
+                }
             }
-            super::super::java_components::prepare_font(out.0);
+            if std::env::var_os("HORIZON_JAVA_DEBUG").is_some() {
+                eprintln!(
+                    "Horizon: fonts for Java: {} fonts, {} bytes",
+                    ids.len(),
+                    out.0.len()
+                );
+            }
+            CLIENT.with_borrow_mut(|c| c.font_sent = Some(self.java_font_key()));
+            out.0
         }
 
         /// `Minecraft.disconnect`, once the window has left its server: the Java client ends with no level and no screen, ready for the next join.
@@ -1441,6 +1479,7 @@ pub(in crate::game) mod live {
             if java_client_busy() {
                 return;
             }
+            self.java_client_font_resend(host);
             self.java_client_collisions();
             let mut out = Out::default();
             out.int(CLIENT.with_borrow_mut(|c| std::mem::take(&mut c.owed)));
@@ -2180,14 +2219,11 @@ pub(in crate::game) mod live {
         }
     }
 
-    /// The advance Java's font answers for a code point past the table's end.
-    const JAVA_MISSING_ADVANCE: f32 = 6.0;
-
     /// The table up to the last code point whose advance Java wouldn't answer by itself.
-    fn trimmed_advances(mut advances: Vec<f32>) -> Vec<f32> {
+    fn trimmed_advances(mut advances: Vec<f32>, missing: f32) -> Vec<f32> {
         let keep = advances
             .iter()
-            .rposition(|a| *a != JAVA_MISSING_ADVANCE)
+            .rposition(|a| *a != missing)
             .map_or(0, |last| last + 1);
         advances.truncate(keep);
         advances
@@ -2200,10 +2236,35 @@ pub(in crate::game) mod live {
             let mut table = vec![6.0; 0x11_0000];
             table[0x41] = 5.0;
             table[0xFFFD] = 7.0;
-            let trimmed = super::trimmed_advances(table);
+            let trimmed = super::trimmed_advances(table, 6.0);
             assert_eq!(trimmed.len(), 0xFFFE);
             assert_eq!(trimmed[0xFFFD], 7.0);
-            assert!(super::trimmed_advances(vec![6.0; 8]).is_empty());
+            assert!(super::trimmed_advances(vec![6.0; 8], 6.0).is_empty());
+            assert_eq!(super::trimmed_advances(vec![6.0, 4.0, 4.0], 4.0), vec![6.0]);
+        }
+
+        #[test]
+        fn the_font_tables_parse_back_per_font() {
+            let mut out = Out::default();
+            out.text("en_us");
+            out.float(6.0);
+            out.int(2);
+            for (id, table) in [("minecraft:default", vec![6.0, 5.0]), ("minecraft:alt", vec![])] {
+                out.text(id);
+                out.int(table.len() as i32);
+                for a in &table {
+                    out.float(*a);
+                }
+            }
+            let mut read = In(&out.0);
+            assert_eq!(read.text(), Some("en_us"));
+            assert_eq!(read.float(), Some(6.0));
+            assert_eq!(read.int(), Some(2));
+            assert_eq!(read.text(), Some("minecraft:default"));
+            assert_eq!(read.int(), Some(2));
+            assert_eq!((read.float(), read.float()), (Some(6.0), Some(5.0)));
+            assert_eq!(read.text(), Some("minecraft:alt"));
+            assert_eq!(read.int(), Some(0));
         }
 
         #[test]

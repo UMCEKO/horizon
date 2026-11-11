@@ -135,6 +135,8 @@ pub struct Font {
     cache: RefCell<Cache>,
     /// Set anew for each font and each `reset_cache` (see `epoch`).
     generation: std::cell::Cell<u64>,
+    /// The generation this font was loaded with, kept through cache resets (see `measure_key`).
+    load_id: u64,
     /// "Force Unicode Font": the `uniform` filter option.
     pub uniform: bool,
     /// "Japanese Glyph Variants": the `jp` filter option.
@@ -662,6 +664,7 @@ impl Font {
         metrics_only: bool,
     ) -> Self {
         let sheets = sprites.clone();
+        let load_id = next_generation();
         let font = Self {
             sheets,
             missing: Glyph {
@@ -689,7 +692,8 @@ impl Font {
                 // `Font.random`: `RandomSource.create()`.
                 random: crate::random_source::create(),
             }),
-            generation: std::cell::Cell::new(next_generation()),
+            generation: std::cell::Cell::new(load_id),
+            load_id,
             uniform: false,
             japanese: false,
         };
@@ -775,6 +779,23 @@ impl Font {
     /// out under one epoch can be kept until it changes.
     pub fn epoch(&self) -> u64 {
         self.generation.get() << 2 | u64::from(self.uniform) << 1 | u64::from(self.japanese)
+    }
+    /// Changes when advances may change (another font, the options), not when glyphs only move in the atlas.
+    pub fn measure_key(&self) -> u64 {
+        self.load_id << 2 | u64::from(self.uniform) << 1 | u64::from(self.japanese)
+    }
+    /// The loaded fonts' ids, the default first.
+    pub fn ids(&self) -> Vec<String> {
+        self.cache
+            .borrow()
+            .sets
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+    /// The advance of a code point nothing in a font has.
+    pub fn missing_advance(&self) -> f32 {
+        self.missing.advance
     }
     /// The glyph for a character in the default font (FontSet.getGlyph).
     pub fn glyph(&self, c: char) -> Glyph {
@@ -1071,9 +1092,13 @@ impl Font {
     /// The default font's advance of every code point, as `glyph` gives it,
     /// without rasterizing any.
     pub fn advances(&self) -> Vec<f32> {
+        self.advances_in(DEFAULT)
+    }
+    /// The font `id`'s advance of every code point, without rasterizing any; empty for an unknown font.
+    pub fn advances_in(&self, id: &str) -> Vec<f32> {
         let mut cache = self.cache.borrow_mut();
-        let Some((_, set)) = cache.sets.iter_mut().find(|(k, _)| k == DEFAULT) else {
-            return vec![self.missing.advance; 0x11_0000];
+        let Some((_, set)) = cache.sets.iter_mut().find(|(k, _)| k == id) else {
+            return Vec::new();
         };
         (0..0x11_0000)
             .map(|c| {
@@ -1701,6 +1726,8 @@ mod tests {
         };
         assert_eq!(font.glyph_styled('a', &alt).advance, 7.0);
         assert_eq!(font.glyph_in("alt", 'b').advance, 3.0);
+        assert_eq!(font.advances_in("minecraft:alt")['b' as usize], 3.0);
+        assert!(font.advances_in("minecraft:nope").is_empty());
         assert!(font.glyph_styled('a', &alt).rect.is_some());
         // Not in alt (no space provider there), or no such font at all.
         assert_eq!(font.glyph_styled(' ', &alt).advance, 6.0);
@@ -1714,6 +1741,23 @@ mod tests {
         assert_eq!(font.width_text(&text), 10.0);
         assert_eq!(font.random_glyph(&alt, 7.0).advance, 7.0);
         assert!(!font.take_patches().is_empty());
+    }
+
+    #[test]
+    fn the_measure_key_follows_options_and_not_cache_resets() {
+        let default = br#"{"providers":[]}"#;
+        let root = root(
+            "measure_key",
+            &[("assets/minecraft/font/default.json", default)],
+        );
+        let mut font = load(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(font.ids(), vec![DEFAULT.to_owned()]);
+        let key = font.measure_key();
+        font.reset_cache();
+        assert_eq!(font.measure_key(), key);
+        font.uniform = true;
+        assert_ne!(font.measure_key(), key);
     }
 
     #[test]
