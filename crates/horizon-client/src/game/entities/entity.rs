@@ -1160,6 +1160,7 @@ impl Game<'_> {
         keys: &HashSet<ChunkKey>,
         out: &mut HashMap<ChunkKey, Vec<Tag>>,
     ) {
+        self.java_hook_entities_save(keys);
         // Saved by chunk in the order they joined, so a reload adds them in
         // that order (a chunk's entity list is in insertion order in vanilla).
         let mut staged: HashMap<ChunkKey, Vec<(JoinSeq, Tag)>> = HashMap::new();

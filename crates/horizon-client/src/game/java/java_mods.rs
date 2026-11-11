@@ -520,6 +520,9 @@ impl Game<'_> {
     }
 
     pub(in crate::game) fn java_target(&mut self, id: u32) -> Option<Target> {
+        if let Some(t) = self.entity(id).and_then(|e| self.native_entity_target(e)) {
+            return Self::java_target_id(t).map(|_| t);
+        }
         self.level_candidates()
             .into_iter()
             .find(|t| Self::java_target_id(*t) == Some(id))
@@ -964,6 +967,7 @@ impl Game<'_> {
             s.started = open;
             s.levels.clear();
         });
+        super::java_entities::reset_views();
         // Building every entity type reads the level through bridged natives (`getDifficulty`), so the game must be active.
         if open {
             horizon_java_host::bridge::with_active(self, super::java_content::entity_types);

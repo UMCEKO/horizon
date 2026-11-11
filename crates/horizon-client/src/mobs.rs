@@ -5,6 +5,7 @@
 //! fly and amphibious node evaluators (`path`, `nav`), move/look/jump/body
 //! controls (`control`), `LivingEntity` physics (`living`) and per-species
 //! behaviour, models, animations and sounds.
+mod actually_hurt;
 pub mod ai;
 pub mod allay;
 pub mod ambient;
@@ -4465,127 +4466,21 @@ impl Mob {
             }
             amount = incoming - self.last_hurt;
         }
-        // LivingEntity.getDamageAfterArmorAbsorb asks `hurtArmor` *before*
-        // `CombatRules.getDamageAfterAbsorb`, so a worn piece wears by the
-        // damage the armour, toughness and enchantment reductions have not
-        // touched yet, and only a hit outside `#bypasses_armor` asks at all.
-        let armor_hit = (!source.bypasses_armor() && amount > 0.0).then_some(amount);
-        let entered = amount;
-        let armor_ran = !source.bypasses_armor();
-        if armor_ran {
-            let (armor, armor_toughness) = armor::values(self);
-            if armor > 0.0 {
-                // CombatRules.getDamageAfterAbsorb
-                let toughness = 2.0 + armor_toughness / 4.0;
-                let effective = (armor - amount / toughness).clamp(armor * 0.2, 20.0);
-                let mut fraction = effective / 25.0;
-                if let Some(modify) = armor_effectiveness {
-                    fraction = modify(fraction, level.random()).clamp(0.0, 1.0);
-                }
-                amount *= 1.0 - fraction;
-            }
-        }
-        amount = container.reduce(
-            Reduction::Armor,
-            entered,
-            entered - amount,
-            amount,
-            armor_ran,
-        );
-        let after_armor = amount;
-        // LivingEntity.getDamageAfterMagicAbsorb: Resistance takes 20% per level off
-        // (`#bypasses_resistance` and `#bypasses_effects` skip it) ...
-        let mut resisted = false;
-        if !source.kind.bypasses_effects()
-            && !source.kind.bypasses_resistance()
-            && let Some(&StoredEffect { amplifier: amp, .. }) = self
-                .extra
-                .effects
-                .iter()
-                .find(|e| e.id == "minecraft:resistance")
-        {
-            let remainder = 25i32.wrapping_sub(amp.wrapping_add(1).wrapping_mul(5));
-            amount = (amount * remainder as f32 / 25.0).max(0.0);
-            resisted = true;
-            // actuallyHurt is void: zero health damage still lets hurtServer set hurt state.
-        }
-        amount = container.reduce(
-            Reduction::MobEffects,
-            after_armor,
-            after_armor - amount,
-            amount,
-            resisted,
-        );
-        let after_effects = amount;
-        // ... then, with damage left and outside `#bypasses_enchantments` (a
-        // warden's sonic boom), CombatRules.getDamageAfterMagicAbsorb's
-        // enchantment protection (#11308).
-        let enchanted = amount > 0.0 && !source.kind.bypasses_enchantments();
-        if enchanted {
-            let epf = gear::protection(self, source.kind);
-            if epf > 0.0 {
-                amount *= 1.0 - epf / 25.0;
-            }
-        }
-        amount = container.reduce(
-            Reduction::Enchantments,
-            after_effects,
-            after_effects - amount,
-            amount,
-            enchanted,
-        );
-        let after_enchantments = amount;
-        // Witch.getDamageAfterMagicAbsorb: none from its own doing, else
-        // 85% less from `#witch_resistant_to`.
-        let witch = self.species() == Species::Witch;
-        if witch {
-            if source.attacker == Some(Who::Mob(self.id)) {
-                amount = 0.0;
-            } else if matches!(
-                source.kind,
-                DamageKind::Magic
-                    | DamageKind::IndirectMagic
-                    | DamageKind::SonicBoom
-                    | DamageKind::Thorns
-            ) {
-                amount *= 0.15;
-            }
-        }
-        amount = container.reduce(
-            Reduction::InnateResistance,
-            after_enchantments,
-            after_enchantments - amount,
-            amount,
-            witch,
-        );
-        // Wolf.actuallyHurt: wolf armor takes the damage instead of the wolf.
-        let absorbed = self.wolf_armor_absorbs(&source);
-        let mut knock = true;
         let window = cooldown;
         container.record_should_cause_side_effects(!window);
         if window {
             container.record_reduction(Reduction::Invulnerability, self.last_hurt);
         }
-        let mut dealt = amount;
         // The cooldown the hit leaves: what is left of it within it, else vanilla's 20 or
         // what `LivingIncomingDamageEvent` set.
         if window {
             container.set_post_attack_invulnerability_ticks(self.invulnerable);
         }
-        // Wolf.actuallyHurt keeps a hit its armor takes away from LivingEntity.actuallyHurt.
-        if !absorbed {
-            container.enter_pre(dealt);
-            level.damage_pre(crate::health::Hurting::Mob(self, &source), &mut container);
-            dealt = container.capture_inflicted();
-        }
-        let mut through = 0.0;
-        if absorbed {
-            self.hurt_wolf_armor(dealt);
-        } else {
-            through = self.soak_hit(dealt, &source, &container);
-            container.record_reduction(Reduction::Absorption, dealt - through);
-            self.health -= through;
-        }
+        let taken =
+            self.actually_hurt_health(level, &mut container, source, amount, armor_effectiveness);
+        amount = taken.amount;
+        let absorbed = taken.absorbed;
+        let mut knock = true;
         // `lastHurt` takes what Pre left: vanilla's value plus what Pre
         // added, so a hit no listener changes keeps vanilla's.
         self.last_hurt = incoming + container.pre_change();
@@ -4595,35 +4490,7 @@ impl Mob {
         } else {
             self.hurt_time = 10;
         }
-        // LivingEntity.actuallyHurt: a hit that reaches the health is
-        // recorded (`CombatTracker.recordDamage`), with the fall it ends;
-        // Wolf.actuallyHurt keeps a hit its armor takes out of it.
-        if !absorbed && dealt != 0.0 {
-            self.record_damage(source, dealt);
-        }
-        if through != 0.0 {
-            container.record_health_damage(through);
-            level.damage_post(crate::health::Hurting::Mob(self, &source), &container);
-        }
-        // LivingEntity.hurtArmor: `Horse` is the only mob that overrides it, and
-        // it hands `doHurtEquipment` the body slot alone. A wolf's armour has
-        // its own rule (`Wolf.actuallyHurt`, `hurt_wolf_armor`) and a player's
-        // four pieces theirs, so the other "body slot" species — donkey, mule,
-        // llama, camel, the skeleton and zombie horses — wear nothing.
-        if let Some(damage) = armor_hit
-            && self.species() == Species::Horse
-            && self.extra.body_id().is_some()
-        {
-            self.outbox.push(MobEvent::ArmorHurt {
-                mob: self.id,
-                amount: damage,
-                kind: source.kind,
-            });
-        }
-        // Animal.actuallyHurt: damage taken ends love mode (`resetLove`).
-        if drops::is_animal(self.species()) {
-            self.extra.in_love = 0;
-        }
+        self.actually_hurt_after(level, &mut container, source, &taken);
         // A hit blocked whole is not a success: vanilla records the source and runs the
         // effects' `onMobHurt` only for a success.
         let success = blocked <= 0.0 || amount > 0.0;

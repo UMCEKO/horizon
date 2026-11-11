@@ -445,7 +445,7 @@ pub(super) fn put_saved_entity(
 }
 
 impl GameLevel<'_> {
-    fn pop_resource(&mut self, pos: [i32; 3], mut stack: ItemStack) {
+    pub(super) fn pop_resource(&mut self, pos: [i32; 3], mut stack: ItemStack) {
         self.pending.attach(pos, &mut stack);
         let at = pop_position(&mut self.world.random, pos);
         if self.rules.block_drops {
