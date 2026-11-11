@@ -291,6 +291,11 @@ public final class Crossing {
             return sink.length;
         }
 
+        /** Overwrites the int written at `at`, for a count known only at the reply's end. */
+        void patchInt(int at, int value) {
+            for (int i = 0; i < 4; i++) sink.buffer[at + i] = (byte) (value >>> (24 - 8 * i));
+        }
+
         byte[] buffer() {
             return sink.buffer;
         }

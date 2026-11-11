@@ -76,6 +76,33 @@ pub fn take_calls() -> Vec<(String, Stat)> {
     std::mem::take(&mut *CALLS.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
+/// Runs and their entries by the call they batch: `(name, runs, entries)`.
+static RUNS: Mutex<Vec<(String, u64, u64)>> = Mutex::new(Vec::new());
+
+/// One crossing that carried `entries` entries of `op`'s work.
+pub fn record_run(op: &str, entries: usize) {
+    let mut runs = RUNS.lock().unwrap_or_else(|e| e.into_inner());
+    match runs.iter_mut().find(|(name, ..)| name == op) {
+        Some((_, n, e)) => {
+            *n += 1;
+            *e += entries as u64;
+        }
+        None => runs.push((op.to_owned(), 1, entries as u64)),
+    }
+}
+
+/// Every thread's runs since the last take, as `name|runs|entries` rows; `-` when empty.
+pub fn take_runs() -> String {
+    let runs = std::mem::take(&mut *RUNS.lock().unwrap_or_else(|e| e.into_inner()));
+    if runs.is_empty() {
+        return "-".into();
+    }
+    runs.iter()
+        .map(|(name, n, e)| format!("{name}|{n}|{e}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// `name|count|total_us|max_us` rows, slowest total first, comma separated; `-` when empty.
 pub fn format_stats<N: AsRef<str>>(rows: impl IntoIterator<Item = (N, Stat)>) -> String {
     let mut rows: Vec<(N, Stat)> = rows.into_iter().collect();
@@ -120,9 +147,12 @@ pub fn parse_stats(text: &str) -> HashMap<String, Stat> {
         .collect()
 }
 
-/// One line of `java-ticks.log`; `java` is the JVM's `be=... lock=...` text.
-pub fn java_line(unix_ms: u128, calls: Vec<(String, Stat)>, java: &str) -> String {
-    format!("t={unix_ms} calls={} {java}", format_stats(calls))
+/// One line of `java-ticks.log`; `runs` is `take_runs`'s text, `java` the JVM's `be=... lock=...` text.
+pub fn java_line(unix_ms: u128, calls: Vec<(String, Stat)>, runs: &str, java: &str) -> String {
+    format!(
+        "t={unix_ms} calls={} runs={runs} {java}",
+        format_stats(calls)
+    )
 }
 
 /// Appends a line to a log in the profile folder.
@@ -182,7 +212,7 @@ mod tests {
 
     #[test]
     fn a_java_line_has_the_call_rows_then_the_jvms() {
-        let line = java_line(5, vec![("x".into(), stat(2, 3, 2))], "be=- lock=-");
-        assert_eq!(line, "t=5 calls=x|2|3|2 be=- lock=-");
+        let line = java_line(5, vec![("x".into(), stat(2, 3, 2))], "-", "be=- lock=-");
+        assert_eq!(line, "t=5 calls=x|2|3|2 runs=- be=- lock=-");
     }
 }

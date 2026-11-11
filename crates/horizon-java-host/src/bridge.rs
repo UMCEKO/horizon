@@ -154,6 +154,19 @@ pub fn after_native<G: 'static>(hook: fn(&mut G)) {
     let _ = AFTER_NATIVE.set((std::any::TypeId::of::<G>(), Box::new(run)));
 }
 
+/// What the game runs before each native acting on it, told the native's name; it may call back into Java.
+static BEFORE_NATIVE: OnceLock<Before> = OnceLock::new();
+type Before = (std::any::TypeId, Box<dyn Fn(*mut (), &str) + Send + Sync>);
+
+/// Registers what runs before each native acting on a `G`, once.
+pub fn before_native<G: 'static>(hook: fn(&mut G, &str)) {
+    let run = move |game: *mut (), name: &str| {
+        // SAFETY: `enter` passes the `G` its native is about to act on, which no one else uses until it returns.
+        hook(unsafe { &mut *game.cast::<G>() }, name);
+    };
+    let _ = BEFORE_NATIVE.set((std::any::TypeId::of::<G>(), Box::new(run)));
+}
+
 /// The body of a native: a Rust panic, or a call with no game behind it, becomes a Java exception.
 pub fn enter<G: 'static, R: Ret>(
     mut env: JNIEnv,
@@ -169,6 +182,11 @@ pub fn enter<G: 'static, R: Ret>(
         };
         // SAFETY: `with_active` holds the only `&mut G` for this call, and no one uses it until the call returns.
         (!game.is_null()).then(|| {
+            if let Some((kind, before)) = BEFORE_NATIVE.get()
+                && *kind == std::any::TypeId::of::<G>()
+            {
+                before(game.cast(), name);
+            }
             let out = f(&mut env, unsafe { &mut *game });
             if let Some((kind, after)) = AFTER_NATIVE.get()
                 && *kind == std::any::TypeId::of::<G>()
