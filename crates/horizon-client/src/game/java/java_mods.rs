@@ -526,11 +526,15 @@ impl Game<'_> {
         self.java_resident(id).map(|(t, _)| t)
     }
 
-    /// The entity `id` of the level in place and its join number, players aside; None while it is lifted out (`Taken`).
+    /// The entity `id` of the level in place and its join number, players aside; None while lifted out (`Taken`) or held out.
     pub(in crate::game) fn java_resident(
         &self,
         id: u32,
     ) -> Option<(Target, horizon_client::join_seq::JoinSeq)> {
+        // A held-out row stays Found but is stale: its turn ticks a copy and stores it back over any write.
+        if self.held_out.contains(&id) {
+            return None;
+        }
         match self.server_resident_entity(id) {
             horizon_client::join_seq::residency::table::EntityLookup::Found { location, value }
                 if location.owner.dimension == self.dim.key()

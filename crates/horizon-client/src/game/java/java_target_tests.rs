@@ -93,6 +93,23 @@ fn java_target_of_an_entity_lifted_for_its_turn_is_none() {
 }
 
 #[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+/// A held-out row is Found in the table but stale (its turn ticks a copy): refused as ari's handles refuse it.
+fn java_target_of_an_entity_held_out_for_its_turn_is_none() {
+    with_game(|game| {
+        game.boats
+            .push(Boat::new(350, "oak".into(), Vec3::new(0.5, 64.0, 0.5), 0.0));
+        game.carts
+            .push(Minecart::new(351, CartKind::Hopper, Vec3::new(2.5, 64.0, 0.5)));
+        game.held_out.push(350);
+        assert_eq!(game.java_target(350), None);
+        assert_eq!(game.java_target(351), Some(Target::Cart(351)));
+        game.held_out.pop();
+        assert_eq!(game.java_target(350), Some(Target::Boat(350)));
+    });
+}
+
+#[test]
 #[ignore = "timing; needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn java_target_bench() {
     with_game(|game| {

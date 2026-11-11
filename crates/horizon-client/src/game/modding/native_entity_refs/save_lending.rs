@@ -9,7 +9,7 @@ impl Game<'_> {
         action: impl FnOnce(&mut Self) -> R,
     ) -> R {
         let _save_lease = horizon_client::join_seq::visibility::PassLease::enter();
-        if mod_api::__private::mods().is_empty() {
+        if mod_api::__private::mods().is_empty() && !self.java_hook_hears_entities() {
             return action(self);
         }
         self.held_out.push(id);
