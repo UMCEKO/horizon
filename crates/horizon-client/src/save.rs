@@ -61,6 +61,7 @@ use {
 pub const VERSION_NAME: &str = horizon_core::VANILLA_VERSION;
 
 mod gateway;
+mod written;
 #[cfg(test)]
 mod loot_tests;
 
@@ -3388,25 +3389,7 @@ impl SaveDir {
         registry: &'static BlockRegistry,
         biomes: &Arc<Biomes>,
     ) -> Result<usize> {
-        let encoding = Arc::new(Encoding {
-            registry,
-            biomes: biomes.clone(),
-            tables: self.tables.get().cloned(),
-            shape: self.shape,
-        });
-        let records = chunks
-            .iter()
-            .map(|c| {
-                let blending = self.calculated_blending(c.x, c.z);
-                (
-                    (c.x, c.z),
-                    Record::Chunk(c.clone(), encoding.clone(), blending),
-                )
-            })
-            .collect();
-        self.queue(Folder::Region, records, false)?;
-        self.save_poi(chunks, false)?;
-        Ok(chunks.len())
+        self.save_later_written(chunks, registry, biomes, Vec::new())
     }
     /// Write the entity chunks (`EntityStorage`): an empty list deletes it.
     pub fn save_entities(&self, chunks: Vec<((i32, i32), Vec<Tag>)>) -> Result<()> {
