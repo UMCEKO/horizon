@@ -1425,6 +1425,7 @@ impl Streaming {
         for &(x, z) in gone {
             self.lit.remove(&(x, z));
             self.meshed.remove(&(x, z));
+            crate::dynamic_models::forget_column((x, z));
             self.lighting.remove(&(x, z));
             world.dirty_sections.take_column(x, z);
             world.entities_pending.remove(&(x, z));
@@ -1959,6 +1960,7 @@ impl Streaming {
                 world.entities_pending.remove(key);
                 self.lit.remove(key);
                 self.meshed.remove(key);
+                crate::dynamic_models::forget_column(*key);
                 self.lighting.remove(key);
                 self.light_snapshots.remove(key);
             }
@@ -2312,6 +2314,17 @@ impl Streaming {
             let Some(region) = Self::region(world, x, z) else {
                 continue;
             };
+            // A column holding states drawn from block entity data waits for the Java client's answer, so it meshes once, whole.
+            if !self.meshed.contains(&(x, z))
+                && crate::dynamic_models::holds_first_mesh((x, z), || {
+                    world
+                        .chunks
+                        .get(&(x, z))
+                        .is_some_and(|chunk| crate::dynamic_models::column_has_dynamic(chunk))
+                })
+            {
+                continue;
+            }
             world.dirty_sections.take_column(x, z);
             for sy in sections.iter().map(|sy| sy as i32) {
                 let first = self.meshed.insert((x, z));

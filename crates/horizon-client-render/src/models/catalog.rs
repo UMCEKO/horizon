@@ -93,6 +93,8 @@ pub struct BakedFace {
     pub opaque: bool,
     /// Fractional alpha: drawn in the sorted translucent pass.
     pub translucent: bool,
+    /// The color a mod's code resolved for this quad (`BlockTintSource.colorInWorld`); None: the state's tint rules.
+    pub tint: Option<u32>,
     /// The Fusion connecting texture rule its sprite joins by ([`crate::fusion`]), plus one:
     /// two bytes, within the padding every face already has.
     pub fusion: Option<std::num::NonZeroU16>,
@@ -118,6 +120,7 @@ impl BakedFace {
             layer,
             opaque,
             translucent,
+            tint: None,
             fusion,
             shapes,
             uv_fixed,
