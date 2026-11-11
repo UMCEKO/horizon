@@ -269,6 +269,7 @@ impl WorldGeometry {
             quads: &self.quads[0],
             quads_through: &self.quads[1],
             stage_ends: self.stage_ends(),
+            ..Default::default()
         }
     }
     /// Quads, quads through walls, lines and lines through walls queued so far.
