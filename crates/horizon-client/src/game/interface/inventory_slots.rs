@@ -146,6 +146,8 @@ impl Game<'_> {
         ));
         draws.push(hud_layout::GuiDraw::Pop);
         hud_layout::paint(batch, &self.gui.atlas, &draws);
+        #[cfg(feature = "java-mods")]
+        self.draw_java_item_decorations(batch, stack, x, y);
         self.native_item_decorations(stack, x, y, batch);
     }
     pub(super) fn inventory_origin(&self, batch: &HudBatch) -> (f32, f32) {

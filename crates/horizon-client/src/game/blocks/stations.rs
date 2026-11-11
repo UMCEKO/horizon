@@ -2228,24 +2228,6 @@ impl Game<'_> {
             self.pack.names.display_item(&stack.item)
         }
     }
-    /// `ItemStack.getTooltipLines`. A `nested` stack is a crossbow's
-    /// projectile: `ChargedProjectiles.addProjectileTooltip` takes its details
-    /// without the name, the player and the advanced flag. `creative` is
-    /// `TooltipFlag.isCreative`: a creative tab's own slot.
-    fn stack_tooltip_lines(
-        &self,
-        stack: &ItemStack,
-        nested: bool,
-        creative: bool,
-    ) -> Vec<(horizon_client::text::Text, u32)> {
-        self.build_stack_tooltip_lines(
-            stack,
-            nested,
-            creative,
-            self.options_advanced_tooltips(),
-            true,
-        )
-    }
 
     #[allow(clippy::needless_question_mark)] // TODO(#2273)
     pub(in crate::game) fn item_resource_tooltip(
@@ -2267,7 +2249,7 @@ impl Game<'_> {
         )
     }
 
-    fn build_stack_tooltip_lines(
+    pub(super) fn build_stack_tooltip_lines(
         &self,
         stack: &ItemStack,
         nested: bool,

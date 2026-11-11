@@ -97,6 +97,7 @@ impl Game<'_> {
             || (self.title.is_none()
                 && self.player.is_some()
                 && (self.screen.blurs_background(self.pause_menu)
+                    || (self.screen == Screen::Java && self.java_screen_blurred())
                     || self.dialog_open()
                     || (self.screen == Screen::Win && self.win_screen_pauses())))
             || self.screen_blur_requested.get();

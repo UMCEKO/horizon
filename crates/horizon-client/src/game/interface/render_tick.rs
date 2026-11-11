@@ -699,6 +699,14 @@ impl Game<'_> {
         };
         // Level.isThundering: a thunder level above 0.9 where the sky is open.
         let thundering = self.can_have_weather() && world.weather.levels(1.0).1 > 0.9;
+        let picked = std::cell::RefCell::new(Vec::new());
+        let java = |state, pos| {
+            let routed = Self::java_animate_route(state);
+            if routed != 0 {
+                picked.borrow_mut().push(pos);
+            }
+            routed
+        };
         let ctx = AnimateContext {
             world,
             facts,
@@ -715,7 +723,7 @@ impl Game<'_> {
             gateway_particles: &gateway_particles,
             thundering,
             ultrawarm: self.dim == Dim::Nether,
-            java: None,
+            java: Self::java_animates().then_some(&java as &dyn Fn(_, _) -> _),
         };
         if let Some(e) = eye {
             let block = [
@@ -729,7 +737,9 @@ impl Game<'_> {
             if let Some(registry) = &self.pack.polytone_particles {
                 registry.set_biomes(biomes);
             }
-            animate_tick(self.res.animate(), &mut self.particles, &ctx, block);
+            if !Self::java_animate_whole() {
+                animate_tick(self.res.animate(), &mut self.particles, &ctx, block);
+            }
             laps.lap("tp_animate");
             // The Horizon Weather option off means no rain visuals or sounds at all.
             if rain > 0.0 && self.settings.horizon.weather {
@@ -879,6 +889,7 @@ impl Game<'_> {
             }
         });
         laps.lap("tp_engine");
+        self.java_animate_picked(picked.into_inner());
         self.tick_pickups();
         laps.lap("tp_pickups");
         let camera = self.particles.camera;
