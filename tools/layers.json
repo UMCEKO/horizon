@@ -20,6 +20,7 @@
     "horizon-client-render": "engine",
     "horizon-command": "engine",
     "horizon-core": "engine",
+    "horizon-gameplay": "engine",
     "horizon-hooks": "engine",
     "horizon-items": "engine",
     "horizon-narrator": "engine",
