@@ -9,8 +9,8 @@ use serde_json::Value as Json;
 use zip::ZipArchive;
 
 use crate::class::{Annotation, Const, Parse, Value, parse_class};
-use crate::jars::{lenient_json, read_entry};
-use crate::libraries::{entry_names, glob};
+use crate::jars::{lenient_json, mod_jars, read_entry};
+use crate::libraries::entry_names;
 use crate::pytext;
 
 const MIXIN: &str = "Lorg/spongepowered/asm/mixin/Mixin;";
@@ -457,7 +457,7 @@ pub fn scan_install(
     warnings: &mut Vec<String>,
 ) -> Result<(Vec<MixinEntry>, usize), String> {
     let mut found = Vec::new();
-    for jar in glob(install, "mods/*.jar") {
+    for jar in mod_jars(install) {
         let label = jar
             .file_stem()
             .map_or_else(String::new, |s| s.to_string_lossy().into_owned());

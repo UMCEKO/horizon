@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use horizon_java_analysis::class::{self, Parse};
 use horizon_java_analysis::knowledge::{self, Knowledge};
 use horizon_java_analysis::lambdas::{self, Vanilla};
-use horizon_java_analysis::{jars, libraries, mixins};
+use horizon_java_analysis::{jars, libraries, mixins, replaces};
 use serde_json::json;
 
 fn main() -> ExitCode {
@@ -35,6 +35,13 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("replaces") => match write_replaces(&args.collect::<Vec<_>>()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("horizon-java-analysis: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Some(cmd @ ("dump-knowledge" | "dump-folds")) => {
             match dump_knowledge(cmd, &args.collect::<Vec<_>>()) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -46,7 +53,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: horizon-java-analysis dump-classes JAR... | dump-libraries --install DIR [--cache C] | dump-jars --install DIR | mixins --install DIR --out OUT | dump-knowledge --boot-jar JAR KEY... | dump-folds --install DIR KEY..."
+                "usage: horizon-java-analysis dump-classes JAR... | dump-libraries --install DIR [--cache C] | dump-jars --install DIR | mixins --install DIR --out OUT | replaces --install DIR --boot-jar JAR --out OUT [--cache C] | dump-knowledge --boot-jar JAR KEY... | dump-folds --install DIR KEY..."
             );
             ExitCode::from(2)
         }
@@ -177,7 +184,7 @@ fn dump_install(cmd: &str, args: &[String]) -> Result<(), String> {
     } else {
         let spis = libraries::spi_names(&library_jars)?;
         let mut rows = Vec::new();
-        for jar in libraries::glob(&install, "mods/*.jar") {
+        for jar in jars::mod_jars(&install) {
             for mut archive in jars::walk(&jar)? {
                 let facts = jars::jar_facts(&mut archive, &spis)
                     .map_err(|e| format!("{}: {e}", archive.label))?;
@@ -209,4 +216,44 @@ fn write_mixins(args: &[String]) -> Result<(), String> {
     let mut warnings = Vec::new();
     let (entries, classes) = mixins::scan_install(&install, &mut warnings)?;
     mixins::write_mixins(&out, &entries, classes, &warnings)
+}
+
+/// `replaces --install DIR --boot-jar JAR --out OUT [--cache C]`: writes `replaces.json` and `mixins/`.
+fn write_replaces(args: &[String]) -> Result<(), String> {
+    let (mut install, mut boot, mut out, mut cache) = (None, None, None, None);
+    let mut it = args.iter();
+    while let Some(flag) = it.next() {
+        let value = it.next().ok_or_else(|| format!("{flag} needs a value"))?;
+        match flag.as_str() {
+            "--install" => install = Some(PathBuf::from(value)),
+            "--boot-jar" => boot = Some(PathBuf::from(value)),
+            "--out" => out = Some(PathBuf::from(value)),
+            "--cache" => cache = Some(PathBuf::from(value)),
+            other => return Err(format!("unknown argument {other}")),
+        }
+    }
+    let install = install.ok_or("--install DIR is required")?;
+    let boot = boot.ok_or("--boot-jar JAR is required")?;
+    let out = out.ok_or("--out OUT is required")?;
+    let started = std::time::Instant::now();
+    let knowledge = Knowledge::from_boot_jar(&boot)?;
+    let result = replaces::analyse(&install, &knowledge, cache.as_deref(), &mut |line| {
+        eprintln!("{line}");
+    })?;
+    mixins::write_mixins(
+        &out.join("mixins"),
+        &result.entries,
+        result.mixin_classes,
+        &result.warnings,
+    )?;
+    let seconds = started.elapsed().as_secs_f64();
+    replaces::write_replaces(&out, &result, &install, seconds)?;
+    println!(
+        "{}: {} mods, {} methods, {} events in {seconds:.1}s",
+        out.join("replaces.json").display(),
+        result.mods.len(),
+        result.methods.len(),
+        result.events.len()
+    );
+    Ok(())
 }
