@@ -1046,8 +1046,17 @@ impl LevelAccess for GameLevel<'_> {
             self.world.block_entities.insert(key, entity);
         }
     }
-    fn observe_block_changed(&self, pos: BlockPos, old: BlockStateId, new: BlockStateId, _: i32) {
+    fn observe_block_changed(
+        &self,
+        pos: BlockPos,
+        old: BlockStateId,
+        new: BlockStateId,
+        flags: i32,
+    ) {
         if self.native_authoritative {
+            let block_changed =
+                self.behaviours.table.block(old) != self.behaviours.table.block(new);
+            java_hooks::java_note_block_changed(pos, old, new, flags, block_changed);
             self.native_block_changed(self.dimension, pos, old, new);
         }
     }
@@ -1070,11 +1079,13 @@ impl LevelAccess for GameLevel<'_> {
         changed: horizon_world::level::BlockId,
         moved: bool,
     ) {
-        if self.native_authoritative
-            && api_values::block_state::block_listens(mod_api::HookId::NeighborChanged, state)
-        {
-            use api_values::TryIntoApi;
-            let Ok(changed) = self.behaviours.table.default_state(changed).try_into_api() else {
+        if !self.native_authoritative {
+            return;
+        }
+        let changed = self.behaviours.table.default_state(changed);
+        java_hooks::java_note_neighbor_changed(pos, state, changed, moved);
+        if api_values::block_state::block_listens(mod_api::HookId::NeighborChanged, state) {
+            let Ok(changed) = changed.try_into_api() else {
                 return;
             };
             self.native_neighbor_changed(ticks, self.dimension, pos, state, changed.block(), moved);
@@ -1496,6 +1507,7 @@ impl LevelAccess for GameLevel<'_> {
         handled: &mut bool,
     ) {
         if self.native_authoritative {
+            java_hooks::java_note_block_tick(pos, *state, true);
             // Any block the hook writes moves the world's revision on.
             let revision = self.world.revision;
             self.native_random_tick(ticks, self.dimension, pos, *state, handled);
@@ -1512,6 +1524,7 @@ impl LevelAccess for GameLevel<'_> {
         handled: &mut bool,
     ) {
         if self.native_authoritative {
+            java_hooks::java_note_block_tick(pos, *state, false);
             // Any block the hook writes moves the world's revision on.
             let revision = self.world.revision;
             self.native_tick_block(ticks, self.dimension, pos, *state, handled);
@@ -1531,6 +1544,7 @@ impl LevelAccess for GameLevel<'_> {
         new: &mut Option<BlockStateId>,
     ) {
         if self.native_authoritative {
+            java_hooks::java_note_shape_update(pos, state, direction, neighbour);
             self.native_update_shape(
                 ticks,
                 native_hooks::UpdateShapeCall {
@@ -5975,6 +5989,7 @@ impl Game<'_> {
     }
     /// Side effects reported by the behaviour library, in vanilla order.
     fn process_level_events(&mut self) -> Result<()> {
+        self.java_hook_drain_block_events();
         let events = std::mem::take(&mut self.level_events);
         self.lan_record_events(&events);
         dispense_fixture::record_events(&events);
@@ -14689,49 +14704,6 @@ impl Game<'_> {
         }
         inventory
     }
-    /// Save the level in place: its changed chunks, its entities and its raids.
-    fn save_level(&mut self, wait: bool) -> Result<()> {
-        Self::admit_entity_save()?;
-        self.save_border();
-        self.save_chunk_tickets()?;
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            match self.streaming.prepare_save(&mut self.world, wait, deadline) {
-                horizon_client::streaming::SaveStep::Full(chunk) => {
-                    self.native_late_full_chunk_snapshot(&chunk);
-                    self.streaming.save_finished(chunk);
-                }
-                horizon_client::streaming::SaveStep::Protos(protos) => {
-                    self.native_proto_snapshots(&protos);
-                    self.streaming.finish_save(protos, wait);
-                    break;
-                }
-                horizon_client::streaming::SaveStep::Pending => unreachable!(),
-            }
-        }
-        let keys: Vec<_> = self.world.modified.iter().copied().collect();
-        self.save.save_attachments(&self.world.attachments)?;
-        for key in &keys {
-            self.world.modified.remove(key);
-        }
-        let chunks = self.with_entities(keys.iter().filter_map(|k| self.world.chunks.get(k)));
-        self.native_full_chunk_snapshots(&chunks);
-        self.save
-            .save_later(&chunks, self.pack.assets.registry, world_biomes!(self))?;
-        // Prepare entities while the chunk writer runs, then use one barrier.
-        if !wait {
-            self.world.modified.autosaved(&keys, Instant::now());
-        }
-        self.save_entities(false)?;
-        self.save_raids();
-        if wait {
-            self.save.flush()?;
-        }
-        if mod_api::__private::listened(mod_api::HookId::LevelSave) {
-            self.native_level_save(self.dim.id());
-        }
-        Ok(())
-    }
     /// `ChunkMap.saveChunksEagerly`: snapshot only while the tick and writer
     /// have room. NBT encoding, compression and durable writes stay on workers.
     fn save_chunks_eagerly(&mut self) {
@@ -15938,53 +15910,7 @@ impl Game<'_> {
         if self.options.headless {
             self.streaming.mesh = self.renderer.is_some();
         }
-        let areas = self.streaming.extra.len();
-        let waiting = std::mem::take(&mut self.spawn_wait);
-        self.streaming
-            .extra
-            .extend(waiting.into_iter().map(|chunk| (chunk, 0)));
-        let plan = horizon_client::spans::time("streaming_plan", || {
-            let mut step = self.streaming.begin_plan_update(&mut self.world);
-            loop {
-                match step {
-                    horizon_client::streaming::PlanStep::Ready(plan) => break plan,
-                    horizon_client::streaming::PlanStep::Save { chunk, resume } => {
-                        self.native_late_full_chunk_snapshot(&chunk);
-                        self.streaming.save_finished(chunk);
-                        step = self.streaming.resume_plan_update(&mut self.world, resume);
-                    }
-                }
-            }
-        });
-        let (commit, protos) = self.streaming.prepare_commit(&mut self.world, plan);
-        self.native_proto_snapshots(&protos);
-        self.streaming.submit_protos(protos);
-        let (uploads, unloaded) = horizon_client::spans::time("streaming", || {
-            self.streaming.complete_commit(&mut self.world, commit)
-        });
-        self.streaming.extra.truncate(areas);
-        let dirty: Vec<_> = unloaded
-            .iter()
-            .filter(|c| self.world.modified.remove(&(c.x, c.z)))
-            .cloned()
-            .collect();
-        let modified = horizon_client::spans::time("with_entities", || self.with_entities(&dirty));
-        self.native_full_chunk_snapshots(&modified);
-        if !modified.is_empty()
-            && let Err(e) = horizon_client::spans::time("save_chunks", || {
-                self.save
-                    .save_later(&modified, self.pack.assets.registry, world_biomes!(self))
-            })
-        {
-            log::warn!("Horizon: failed to save unloaded chunks: {e}");
-        }
-        self.spawn_fresh_chunks();
-        // Vanilla saves the chunk before its unload hook and drops its block entities afterwards.
-        self.native_chunks_loaded();
-        self.native_chunks_unloaded(&unloaded);
-        for chunk in &unloaded {
-            self.world.modified.unloaded(&(chunk.x, chunk.z));
-        }
+        let (uploads, unloaded) = self.stream_chunks();
         if let Some(lod) = &mut self.lod {
             self.lod_observe
                 .extend(uploads.iter().map(|(key, _)| (key.0, key.2)));
