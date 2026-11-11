@@ -3,37 +3,72 @@
 //! `getSuitableHotbarSlot`. `items` are the 36 main slots (0-8 the hotbar).
 use crate::items::ItemStack;
 
-/// Picks `stack` (the block's clone item): selects a matching stack already
-/// in the hotbar, or swaps one from the main inventory into a suitable
-/// hotbar slot; with infinite materials (creative) it adds the item when
-/// none is there. Returns whether anything changed.
+/// `Inventory.findSlotMatchingItem`: the first non-empty slot holding `stack`'s item and components.
+pub fn find_slot_matching_item(items: &[Option<ItemStack>], stack: &ItemStack) -> Option<usize> {
+    items.iter().position(|s| {
+        s.as_ref()
+            .is_some_and(|s| s.same_item_same_components(stack))
+    })
+}
+
+/// `Inventory.getFreeSlot`: the first empty main-inventory slot.
+pub fn free_slot_in(items: &[Option<ItemStack>]) -> Option<usize> {
+    items.iter().position(Option::is_none)
+}
+
+/// `Inventory.pickSlot` after `setSelectedSlot`: the selected slot trades places with `slot`.
+pub fn swap_selected_with(items: &mut [Option<ItemStack>], selected: usize, slot: usize) {
+    items.swap(selected, slot);
+}
+
+/// `Inventory.addAndPickItem` after `setSelectedSlot`: what the selected slot held moves to `free` (or is replaced when there is none), and the slot takes `stack`.
+pub fn place_picked(
+    items: &mut [Option<ItemStack>],
+    selected: usize,
+    stack: &ItemStack,
+    free: Option<usize>,
+) {
+    if items[selected].is_some()
+        && let Some(free) = free
+    {
+        items[free] = items[selected].take();
+    }
+    items[selected] = Some(stack.clone());
+}
+
+/// `Inventory.pickSlot` over `(items, selected)`: a main-inventory stack swaps into a suitable hotbar slot.
+pub fn pick_slot_body(items: &mut [Option<ItemStack>], selected: &mut usize, slot: usize) {
+    *selected = suitable_hotbar_slot(items, *selected);
+    swap_selected_with(items, *selected, slot);
+}
+
+/// `Inventory.addAndPickItem` over `(items, selected)`; `free_slot` is what `getFreeSlot` answers.
+pub fn add_and_pick_item_body(
+    items: &mut [Option<ItemStack>],
+    selected: &mut usize,
+    stack: &ItemStack,
+    free_slot: impl FnOnce(&[Option<ItemStack>]) -> Option<usize>,
+) {
+    *selected = suitable_hotbar_slot(items, *selected);
+    let free = free_slot(items);
+    place_picked(items, *selected, stack, free);
+}
+
+/// `tryPickItem` without a `Game`: selects a matching stack already in the
+/// hotbar, or swaps one from the main inventory into a suitable hotbar slot;
+/// with infinite materials (creative) it adds the item when none is there.
+/// Returns whether anything changed.
 pub fn pick(
     items: &mut [Option<ItemStack>],
     selected: &mut usize,
     stack: &ItemStack,
     infinite_materials: bool,
 ) -> bool {
-    let existing = items.iter().position(|s| {
-        s.as_ref()
-            .is_some_and(|s| s.same_item_same_components(stack))
-    });
-    match existing {
+    match find_slot_matching_item(items, stack) {
         Some(slot) if slot < 9 => *selected = slot,
-        Some(slot) => {
-            // pickSlot.
-            *selected = suitable_hotbar_slot(items, *selected);
-            items.swap(*selected, slot);
-        }
+        Some(slot) => pick_slot_body(items, selected, slot),
         None if infinite_materials => {
-            // addAndPickItem: what the hotbar slot held moves to a free slot
-            // (or is replaced when there is none).
-            *selected = suitable_hotbar_slot(items, *selected);
-            if items[*selected].is_some()
-                && let Some(free) = items.iter().position(Option::is_none)
-            {
-                items[free] = items[*selected].take();
-            }
-            items[*selected] = Some(stack.clone());
+            add_and_pick_item_body(items, selected, stack, free_slot_in);
         }
         None => return false,
     }
@@ -128,5 +163,71 @@ mod tests {
             (selected, items[4].clone(), items[9].clone()),
             (4, stack("stone", 1), stack("dirt", 5))
         );
+    }
+
+    #[test]
+    fn find_slot_matching_item_skips_empty_and_other_stacks() {
+        let items = inventory(&[(2, "dirt"), (7, "stone"), (30, "stone")]);
+        assert_eq!(find_slot_matching_item(&items, &stone()), Some(7));
+        assert_eq!(find_slot_matching_item(&items[..7], &stone()), None);
+    }
+
+    #[test]
+    fn pick_slot_body_swaps_into_an_empty_suitable_slot() {
+        let mut items = inventory(&[(3, "dirt"), (20, "stone")]);
+        let mut selected = 3;
+        pick_slot_body(&mut items, &mut selected, 20);
+        assert_eq!(selected, 4);
+        assert_eq!(
+            (items[4].clone(), items[20].clone()),
+            (stack("stone", 5), None)
+        );
+    }
+
+    #[test]
+    fn pick_slot_body_trades_places_when_the_hotbar_is_full() {
+        let mut items: Vec<_> = (0..9).map(|_| stack("dirt", 5)).collect();
+        items.extend((9..36).map(|i| if i == 12 { stack("stone", 5) } else { None }));
+        let mut selected = 2;
+        pick_slot_body(&mut items, &mut selected, 12);
+        assert_eq!(selected, 2);
+        assert_eq!(
+            (items[2].clone(), items[12].clone()),
+            (stack("stone", 5), stack("dirt", 5))
+        );
+    }
+
+    #[test]
+    fn add_and_pick_item_body_takes_an_empty_suitable_slot_untouched() {
+        let mut items = inventory(&[(0, "dirt")]);
+        let mut selected = 0;
+        add_and_pick_item_body(&mut items, &mut selected, &stone(), free_slot_in);
+        assert_eq!(selected, 1);
+        assert_eq!(
+            (items[0].clone(), items[1].clone()),
+            (stack("dirt", 5), stack("stone", 1))
+        );
+    }
+
+    #[test]
+    fn add_and_pick_item_body_moves_a_full_slot_to_the_free_slot() {
+        let mut items: Vec<_> = (0..9).map(|_| stack("dirt", 5)).collect();
+        items.extend(vec![None; 27]);
+        let mut selected = 4;
+        add_and_pick_item_body(&mut items, &mut selected, &stone(), free_slot_in);
+        assert_eq!(selected, 4);
+        assert_eq!(
+            (items[4].clone(), items[9].clone()),
+            (stack("stone", 1), stack("dirt", 5))
+        );
+    }
+
+    #[test]
+    fn add_and_pick_item_body_replaces_the_slot_when_nothing_is_free() {
+        let mut items: Vec<_> = (0..36).map(|_| stack("dirt", 5)).collect();
+        let mut selected = 4;
+        add_and_pick_item_body(&mut items, &mut selected, &stone(), free_slot_in);
+        assert_eq!(items[4], stack("stone", 1));
+        assert_eq!(items.iter().filter(|s| **s == stack("dirt", 5)).count(), 35);
     }
 }

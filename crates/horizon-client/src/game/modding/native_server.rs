@@ -1119,6 +1119,16 @@ impl Game<'_> {
         })
     }
 
+    /// `Inventory.setSelectedSlot` on the acting player, through the route a Java mod may take.
+    fn select_hotbar_slot(&mut self, slot: usize) {
+        #[cfg(feature = "java-mods")]
+        self.set_selected_slot(slot as i32);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            self.selected = slot;
+        }
+    }
+
     /// `Inventory.setSelectedSlot` for a server write: `slot` (0 to 8) becomes the hotbar slot the
     /// player holds and a guest's client is told (`SetHeldSlot`). A new slot ends a main-hand use,
     /// as `handleSetCarriedItem` does, without `player_switch_hotbar_slot_pre`, which is for the
@@ -1143,10 +1153,12 @@ impl Game<'_> {
             }),
             None => None,
         };
-        let changed = self.player_selected_slot(player) != Some(slot);
+        let before = self.player_selected_slot(player);
+        let mut now = slot;
         if !self.native_as_player_handle(player, |game| {
-            game.selected = slot;
-            if changed
+            game.select_hotbar_slot(slot);
+            now = game.selected;
+            if before != Some(now)
                 && game
                     .using
                     .is_some_and(|(held, _)| held != crate::game::shield::OFFHAND_SLOT)
@@ -1159,7 +1171,7 @@ impl Game<'_> {
         if let (Some(conn), Some(host)) = (conn, self.lan.as_ref()) {
             host.hub.send_to(
                 conn,
-                &C::SetHeldSlot(play::SetHeldSlot { slot: slot as i32 }),
+                &C::SetHeldSlot(play::SetHeldSlot { slot: now as i32 }),
             );
         }
         true

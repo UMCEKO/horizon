@@ -126,7 +126,7 @@ BannerBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_e
 BannerBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	banner patterns and name to item components
 BaseContainerBlockEntity.loadAdditional	port	crates/horizon-client-core/src/block_entity_nbt.rs::items	container slots from the saved list
 BaseContainerBlockEntity.saveAdditional	port	crates/horizon-client-core/src/block_entity_nbt.rs::canonical	container NBT in its saved form
-BaseContainerBlockEntity.sendChestLockedNotifications	port	crates/horizon-client-render/src/containers.rs::locked_message	the container.isLocked action-bar text, naming the container by its display name; the menu path in game/network/lan_actions.rs refuses a container whose Lock the held item does not open, sends this and plays block.chest.locked
+BaseContainerBlockEntity.sendChestLockedNotifications	port	crates/horizon-client/src/game/java/java_containers.rs::Game::send_chest_locked_notifications	gated port, with the player in place at game/java/java_containers.rs::Game::send_chest_locked_here; the container.isLocked action-bar text names the container by its display name (containers.rs::locked_message), then block.chest.locked plays
 BaseContainerBlockEntity.isEmpty	port	crates/horizon-client/src/game/blocks/machines/mod.rs::Containers::is_empty	
 BaseContainerBlockEntity.removeItem	port	crates/horizon-client/src/game/blocks/machines/mod.rs::Game::take_one	gap: minor: takes one item, not a chosen count.
 BaseContainerBlockEntity.createMenu	port	crates/horizon-client/src/game.rs::Game::open_menu	opens the container's screen
