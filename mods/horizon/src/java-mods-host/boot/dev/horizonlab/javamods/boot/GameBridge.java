@@ -835,13 +835,16 @@ public final class GameBridge {
         return effects();
     }
 
+    private static CompoundTag readTag(Crossing.In in) throws IOException {
+        return NbtIo.read(new DataInputStream(new ByteArrayInputStream(in.readNBytes(in.readInt()))), NbtAccounter.unlimitedHeap());
+    }
+
     /** The chunks that joined and left this level, in one call: the first's block entities, then the second's going. */
-    private static byte[] chunksChanged(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static void chunksChanged(Crossing.In in, Crossing.Out out) throws Exception {
         var level = levelOf(in);
         for (int n = in.readInt(); n > 0; n--) {
             var pos = BlockPos.of(in.readLong());
-            var tag = NbtIo.read(new DataInputStream(new ByteArrayInputStream(in.readNBytes(in.readInt()))), NbtAccounter.unlimitedHeap());
+            var tag = readTag(in);
             try {
                 // A mod's getChunk may have promoted this one already, as `LevelChunk.getBlockEntity` promotes a pending tag.
                 if (BlockEntities.held(level).get(pos.asLong()) == null) BlockEntities.load(level, pos, tag);
@@ -856,12 +859,9 @@ public final class GameBridge {
             ChunkViews.forget(level, x, z);
             BlockEntities.unload(level, x, z, saved);
         }
-        var bytes = new ByteArrayOutputStream();
-        var out = new DataOutputStream(bytes);
         out.writeInt(saved.size());
         for (CompoundTag tag : saved) writeTag(out, tag);
         writeEffects(out);
-        return bytes.toByteArray();
     }
 
     /** A chunk event of `ChunkEvents` for this level, with the effects of mods' listeners. */
@@ -875,37 +875,30 @@ public final class GameBridge {
         return bytes.toByteArray();
     }
 
-    private static byte[] blockEntityLoad(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static void blockEntityLoad(Crossing.In in, Crossing.Out out) throws Exception {
         var level = levelOf(in);
         var pos = BlockPos.of(in.readLong());
-        var tag = NbtIo.read(new DataInputStream(new ByteArrayInputStream(in.readNBytes(in.readInt()))), NbtAccounter.unlimitedHeap());
-        BlockEntities.load(level, pos, tag);
-        return effects();
+        BlockEntities.load(level, pos, readTag(in));
+        writeEffects(out);
     }
 
     /** A native entity joined: its live view exists from here; the reply is the join's verdict, then the call's effects. */
-    private static byte[] entityView(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static void entityView(Crossing.In in, Crossing.Out out) throws Exception {
         var level = levelOf(in);
         int id = in.readInt();
         in.readBoolean();
         byte[] tag = in.readNBytes(in.readInt());
         EntityViews.join(level, id, tag);
-        var bytes = new ByteArrayOutputStream();
-        var out = new DataOutputStream(bytes);
         out.writeBoolean(true);
         writeEffects(out);
-        return bytes.toByteArray();
     }
 
     /** A native entity left, for the reason (`Entity.RemovalReason` ordinal). */
-    private static byte[] entityLeft(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static void entityLeft(Crossing.In in, Crossing.Out out) throws Exception {
         var level = levelOf(in);
         int id = in.readInt();
         EntityViews.left(level, id, in.readByte());
-        return effects();
+        writeEffects(out);
     }
 
     /** A bridge changed a native entity: the group bytes of what it wrote reach its view. */
@@ -927,11 +920,10 @@ public final class GameBridge {
     }
 
     /** A block entity Horizon lost on its own: the object Java held goes, as `LevelChunk.removeBlockEntity` would. */
-    private static byte[] blockEntityDrop(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static void blockEntityDrop(Crossing.In in, Crossing.Out out) throws Exception {
         var level = levelOf(in);
         BlockEntities.drop(level, BlockPos.of(in.readLong()));
-        return effects();
+        writeEffects(out);
     }
 
     private static byte[] blockEntitiesSave(byte[] input) throws Exception {
@@ -946,28 +938,22 @@ public final class GameBridge {
     }
 
     /** `BlockDataAccessor.getData` of a block entity Java holds; an empty reply when it holds none. */
-    private static byte[] blockEntityData(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static void blockEntityData(Crossing.In in, Crossing.Out out) throws Exception {
         var tag = BlockEntities.data(levelOf(in), BlockPos.of(in.readLong()));
-        if (tag == null) return new byte[0];
-        var bytes = new ByteArrayOutputStream();
-        writeTag(new DataOutputStream(bytes), tag);
-        return bytes.toByteArray();
+        if (tag != null) writeTag(out, tag);
     }
 
     /** `BlockDataAccessor.setData`: the block entity Java holds reads the tag, or one is made from it. */
-    private static byte[] blockEntitySet(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static void blockEntitySet(Crossing.In in, Crossing.Out out) throws Exception {
         var level = levelOf(in);
         var pos = BlockPos.of(in.readLong());
-        var tag = NbtIo.read(new DataInputStream(new ByteArrayInputStream(in.readNBytes(in.readInt()))), NbtAccounter.unlimitedHeap());
+        var tag = readTag(in);
         if (!BlockEntities.setData(level, pos, tag)) BlockEntities.load(level, pos, tag);
-        return effects();
+        writeEffects(out);
     }
 
     /** NeoForge's hopper past vanilla containers: `VanillaInventoryCodeHooks` with the item handler at the target, if there is one. */
-    private static byte[] hopperTransfer(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static void hopperTransfer(Crossing.In in, Crossing.Out out) throws Exception {
         var level = levelOf(in);
         var hopperPos = BlockPos.of(in.readLong());
         var target = BlockPos.of(in.readLong());
@@ -981,12 +967,9 @@ public final class GameBridge {
                     : net.neoforged.neoforge.transfer.item.VanillaInventoryCodeHooks.extractHook(hopper, handler);
             if (moved) BlockEntities.changed(level, hopperPos);
         }
-        var bytes = new ByteArrayOutputStream();
-        var out = new DataOutputStream(bytes);
         out.writeBoolean(handler != null);
         out.writeBoolean(moved);
         writeEffects(out);
-        return bytes.toByteArray();
     }
 
     /** Whether a block's block entity ticks; an empty reply says no. */

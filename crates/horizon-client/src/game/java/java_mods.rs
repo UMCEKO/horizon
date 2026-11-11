@@ -26,6 +26,30 @@ pub(super) fn read_tag(bytes: &[u8]) -> Option<Tag> {
         .map(|(root, _)| root.tag)
 }
 
+/// A sound Java played during a call (`GameBridge.writeEffects`), owned so the reply's buffer can go back to the host.
+#[derive(Debug, PartialEq)]
+pub(super) struct JavaSound {
+    id: Box<str>,
+    at: [f64; 3],
+    volume: f32,
+    pitch: f32,
+}
+
+/// The effects that end a reply; a reply with none allocates nothing.
+pub(super) fn java_read_effects(reply: &mut In<'_>) -> Option<Vec<JavaSound>> {
+    let n = reply.int()?;
+    let mut sounds = Vec::new();
+    for _ in 0..n {
+        sounds.push(JavaSound {
+            id: reply.text()?.into(),
+            at: [reply.double()?, reply.double()?, reply.double()?],
+            volume: reply.float()?,
+            pitch: reply.float()?,
+        });
+    }
+    Some(sounds)
+}
+
 impl Game<'_> {
     /// The slots of `Inventory.getItem`: main, boots to helmet, off hand.
     fn java_slot(&mut self, slot: usize) -> Option<&mut Option<ItemStack>> {
@@ -410,37 +434,37 @@ impl Game<'_> {
 
     /// What Java did to the world on a call: the sounds it played.
     pub(super) fn java_apply_effects(&mut self, reply: &mut In<'_>) -> Option<()> {
-        for _ in 0..reply.int()? {
-            let sound = reply.text()?;
-            let at = [reply.double()?, reply.double()?, reply.double()?];
-            let (volume, pitch) = (reply.float()?, reply.float()?);
-            self.audio.play(sound, Some(at), volume, pitch);
-        }
+        let sounds = java_read_effects(reply)?;
+        self.java_play_effects(sounds);
         Some(())
+    }
+
+    /// Plays the sounds [`java_read_effects`] took out of a reply.
+    pub(super) fn java_play_effects(&mut self, sounds: Vec<JavaSound>) {
+        for sound in sounds {
+            self.audio
+                .play(&sound.id, Some(sound.at), sound.volume, sound.pitch);
+        }
     }
 
     /// Calls `GameBridge`'s `op` for this level, with what it does to the world applied after.
     fn java_level_call(&mut self, op: &str, body: impl FnOnce(&mut Out)) {
-        let Some(host) = horizon_java_host::get() else {
+        if horizon_java_host::get().is_none() {
             return;
-        };
+        }
         self.java_bind_states();
-        self.java_push_stale();
         let (dim, time) = (self.dim.id(), self.world.game_time);
-        let effects = horizon_java_host::bridge::with_active(self, || {
-            host.call_with(
-                op,
-                |out| {
-                    out.text(dim);
-                    out.long(time);
-                    body(out);
-                },
-                // Nothing changed is the common reply: no sounds.
-                |reply| Some((reply.0 != [0u8; 4]).then(|| reply.0.to_vec())),
-            )
-        });
-        if let Some(Some(reply)) = effects {
-            self.java_apply_effects(&mut In(&reply));
+        let sounds = self.java_call_with(
+            op,
+            |out| {
+                out.text(dim);
+                out.long(time);
+                body(out);
+            },
+            java_read_effects,
+        );
+        if let Some(sounds) = sounds {
+            self.java_play_effects(sounds);
         }
     }
 
@@ -449,6 +473,18 @@ impl Game<'_> {
         let host = horizon_java_host::get()?;
         self.java_push_stale();
         horizon_java_host::bridge::with_active(self, || host.request(op, input))
+    }
+
+    /// [`java_request`](Self::java_request) through the host's reused buffers: `write` fills the request and `read` parses the reply in place.
+    pub(super) fn java_call_with<R>(
+        &mut self,
+        op: &str,
+        write: impl FnOnce(&mut Out),
+        read: impl FnOnce(&mut In<'_>) -> Option<R>,
+    ) -> Option<R> {
+        let host = horizon_java_host::get()?;
+        self.java_push_stale();
+        horizon_java_host::bridge::with_active(self, || host.call_with(op, write, read))
     }
 
     /// What Java holds of a block entity Horizon changed on its own: the new saved form, or its removal.
@@ -565,15 +601,16 @@ impl Game<'_> {
     /// `data get block` of a block entity Java holds: its live saved form replaces the chunk's copy first.
     pub(in crate::game) fn java_refresh_block_entity(&mut self, pos: BlockPos) {
         self.java_bind_states();
-        let mut out = Out::default();
-        out.text(self.dim.id());
-        out.long(self.world.game_time);
-        out.long(pos.pack());
-        let reply = self.java_request("block_entity_data", &out.0);
-        let Some(tag) = reply
-            .filter(|r| !r.is_empty())
-            .and_then(|r| In(&r).bytes().and_then(read_tag))
-        else {
+        let (dim, time) = (self.dim.id(), self.world.game_time);
+        let Some(tag) = self.java_call_with(
+            "block_entity_data",
+            |out| {
+                out.text(dim);
+                out.long(time);
+                out.long(pos.pack());
+            },
+            |reply| reply.bytes().and_then(read_tag),
+        ) else {
             return;
         };
         if let Some((key, entity)) = horizon_client::save::decode_block_entity(&tag) {
@@ -615,17 +652,23 @@ impl Game<'_> {
             return None;
         }
         let pos = |p: (i32, i32, i32)| BlockPos::new(p.0, p.1, p.2).pack();
-        let mut out = Out::default();
-        out.text(self.dim.id());
-        out.long(self.world.game_time);
-        out.long(pos(hopper));
-        out.long(pos(target));
-        out.int(side as i32);
-        out.bool(insert);
-        let reply = self.java_request("hopper_transfer", &out.0)?;
-        let mut reply = In(&reply);
-        let (found, moved) = (reply.bool()?, reply.bool()?);
-        self.java_apply_effects(&mut reply);
+        let (dim, time) = (self.dim.id(), self.world.game_time);
+        let (found, moved, sounds) = self.java_call_with(
+            "hopper_transfer",
+            |out| {
+                out.text(dim);
+                out.long(time);
+                out.long(pos(hopper));
+                out.long(pos(target));
+                out.int(side as i32);
+                out.bool(insert);
+            },
+            |reply| {
+                let (found, moved) = (reply.bool()?, reply.bool()?);
+                Some((found, moved, java_read_effects(reply).unwrap_or_default()))
+            },
+        )?;
+        self.java_play_effects(sounds);
         found.then_some(moved)
     }
 
@@ -847,17 +890,22 @@ impl Game<'_> {
         if horizon_java_host::get().is_none() {
             return true;
         }
-        let mut out = Out::default();
-        out.text(self.dim.id());
-        out.long(self.world.game_time);
-        out.long(at.pack());
-        let reply = self.java_request("block_entity_tick", &out.0);
-        let Some(reply) = reply else {
+        let (dim, time) = (self.dim.id(), self.world.game_time);
+        let Some((held, sounds)) = self.java_call_with(
+            "block_entity_tick",
+            |out| {
+                out.text(dim);
+                out.long(time);
+                out.long(at.pack());
+            },
+            |reply| {
+                let held = reply.bool().unwrap_or(true);
+                Some((held, java_read_effects(reply).unwrap_or_default()))
+            },
+        ) else {
             return true;
         };
-        let mut reply = In(&reply);
-        let held = reply.bool().unwrap_or(true);
-        self.java_apply_effects(&mut reply);
+        self.java_play_effects(sounds);
         held
     }
 
@@ -1381,5 +1429,37 @@ mod tracking_tests {
             })
             .collect();
         assert_eq!(kinds, [0, 1, 2, 5, 4]);
+    }
+}
+
+#[cfg(test)]
+mod effects_tests {
+    use super::*;
+
+    #[test]
+    fn effects_read_as_java_writes_them() {
+        let mut bytes = 1i32.to_be_bytes().to_vec();
+        bytes.extend(13i32.to_be_bytes());
+        bytes.extend(b"block.anvil.x");
+        for v in [1.5f64, -2.0, 64.25] {
+            bytes.extend(v.to_be_bytes());
+        }
+        bytes.extend(0.5f32.to_be_bytes());
+        bytes.extend(1.25f32.to_be_bytes());
+        bytes.push(9);
+        let mut reply = In(&bytes);
+        let sounds = java_read_effects(&mut reply).unwrap();
+        let want = JavaSound {
+            id: "block.anvil.x".into(),
+            at: [1.5, -2.0, 64.25],
+            volume: 0.5,
+            pitch: 1.25,
+        };
+        assert_eq!(sounds, [want]);
+        assert_eq!(reply.byte(), Some(9), "the reply goes on after its effects");
+
+        let none = java_read_effects(&mut In(&[0, 0, 0, 0])).unwrap();
+        assert!(none.is_empty() && none.capacity() == 0);
+        assert_eq!(java_read_effects(&mut In(&bytes[..20])), None);
     }
 }
