@@ -53,6 +53,12 @@ public final class WorldgenExport {
     private static final int DEPTH = 64;
     private static final List<RegistryDataLoader.RegistryData<?>> LOADED = java.util.stream.Stream.concat(RegistryDataLoader.WORLD_REGISTRIES.stream(), RegistryDataLoader.DIMENSION_REGISTRIES.stream()).toList();
     private static RegistryAccess.Frozen vanilla;
+    private static final java.util.concurrent.atomic.AtomicInteger WRITES = new java.util.concurrent.atomic.AtomicInteger();
+
+    /** How many exports this run started, for the test mod's check of the world start's order. */
+    public static int writes() {
+        return WRITES.get();
+    }
 
     /** A value's type, as its type registry names it: the interface, the registry, and the method that gives the registry's value. */
     private record Typed(Class<?> type, Registry<?> registry, String method) {}
@@ -100,6 +106,7 @@ public final class WorldgenExport {
 
     /** Writes the export to `path`: a temp file renamed over it. */
     public static void write(String path) throws IOException {
+        WRITES.incrementAndGet();
         var registries = GameBridge.registries();
         if (registries == null) throw new IllegalStateException("the worldgen export needs the loaded registries");
         var base = vanilla();

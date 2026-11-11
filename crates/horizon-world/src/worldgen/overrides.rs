@@ -218,6 +218,11 @@ impl ExportOwners {
             .get(&(bundle.to_owned(), id.to_owned()))
             .map_or(&[], Vec::as_slice)
     }
+
+    /// How many entries hold a mod-owned type.
+    pub fn with_mod_types(&self) -> usize {
+        self.types.values().filter(|t| !t.is_empty()).count()
+    }
 }
 
 /// Replacement and added bundle entries, and tag files, from data packs.
@@ -244,6 +249,10 @@ impl WorldgenOverrides {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty() && self.tags.is_empty() && self.templates.is_empty()
+    }
+    /// How many bundle entries there are, over every bundle.
+    pub fn entry_count(&self) -> usize {
+        self.entries.values().map(BTreeMap::len).sum()
     }
     /// A pack's file for `id` in `bundle`: called for packs from the lowest
     /// to the highest, so the last call for an id wins.

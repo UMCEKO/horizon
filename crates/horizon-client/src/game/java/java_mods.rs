@@ -204,7 +204,6 @@ impl Game<'_> {
     }
 
     /// Has Java write its final worldgen registries to `path` (`WorldgenOverrides::from_java_export` reads them); whether it did.
-    #[allow(dead_code)] // The world start calls it (SPEC-3).
     pub(in crate::game) fn java_worldgen_export(&mut self, path: &std::path::Path) -> bool {
         let Some(path) = path.to_str() else {
             return false;
@@ -444,7 +443,7 @@ impl Game<'_> {
         self.dim.key().slot()
     }
 
-    fn java_register_level(&mut self, dim: Dim) {
+    pub(super) fn java_register_level(&mut self, dim: Dim) {
         let key = dim.key().slot();
         if JAVA_SERVER.with_borrow(|s| s.known.contains(&key)) {
             return;
@@ -1008,23 +1007,17 @@ impl Game<'_> {
         }
     }
 
-    /// The server's start and end, with NeoForge's real hooks.
+    /// The server's start, after `server_about_to_start` and native's levels, and its end, with NeoForge's real hooks.
     pub(super) fn java_world_phase(&mut self, open: bool) {
-        let root = self.save.root.clone();
-        let world = root
-            .ancestors()
-            .find(|dir| dir.join("level.dat").exists())
-            .unwrap_or(&root)
-            .to_string_lossy()
-            .into_owned();
         if open {
             for dim in Dim::all() {
                 self.java_register_level(dim);
             }
         }
-        self.java_level_call(if open { "server_start" } else { "server_stop" }, |out| {
-            out.text(&world);
-        });
+        self.java_level_call(if open { "server_start" } else { "server_stop" }, |_| {});
+        if open {
+            super::java_worldgen::recheck_export();
+        }
         JAVA_SERVER.with_borrow_mut(|s| {
             s.started = open;
             s.levels.clear();

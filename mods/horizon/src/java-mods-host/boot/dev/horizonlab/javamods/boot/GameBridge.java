@@ -158,6 +158,7 @@ public final class GameBridge {
         Crossing.game("remote_join", GameBridge::remoteJoin);
         Crossing.game("remote_in", GameBridge::remoteIn);
         Crossing.game("remote_config", input -> remoteConfig());
+        Crossing.game("server_about_to_start", GameBridge::serverAboutToStart);
         Crossing.game("server_start", input -> lifecycle(input, true));
         Crossing.game("server_stop", input -> lifecycle(input, false));
         Crossing.game("server_stopping", GameBridge::serverStopping);
@@ -658,15 +659,32 @@ public final class GameBridge {
         return worldFolder;
     }
 
+    /** Whether `server_start` ran since `server_about_to_start`. */
+    private static boolean levelsLoaded;
+
+    /** `MinecraftServer.runServer`'s start, before native builds its levels: the world's folder and seed, then `ServerAboutToStart`. */
+    private static byte[] serverAboutToStart(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        if (serverStarted) {
+            System.err.println("Horizon: server_about_to_start while a Java server runs; ignored");
+            return new byte[0];
+        }
+        serverStarted = true;
+        if (!net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) ParticleFacts.report(false);
+        worldFolder = Path.of(text(in));
+        long seed = in.readLong();
+        ServerView.openWorld(server, allLevels(), worldFolder, seed, dimensions);
+        safely("ServerAboutToStart", () -> ServerLifecycleHooks.handleServerAboutToStart(server));
+        return new byte[] {1};
+    }
+
     private static byte[] lifecycle(byte[] input, boolean start) throws Exception {
         var in = new DataInputStream(new ByteArrayInputStream(input));
-        var here = levelOf(in);
+        levelOf(in);
         if (start && !serverStarted) {
-            serverStarted = true;
-            if (!net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) ParticleFacts.report(false);
-            worldFolder = Path.of(text(in));
-            ServerView.openWorld(server, allLevels(), worldFolder, here.getSeed(), dimensions);
-            safely("ServerAboutToStart", () -> ServerLifecycleHooks.handleServerAboutToStart(server));
+            System.err.println("Horizon: server_start without server_about_to_start; the Java server is not started");
+        } else if (start && !levelsLoaded) {
+            levelsLoaded = true;
             safely("ServerStarting", () -> ServerLifecycleHooks.handleServerStarting(server));
             for (ServerLevel level : allLevels()) {
                 ChunkEvents.customSpawners(level);
@@ -675,6 +693,7 @@ public final class GameBridge {
             safely("ServerStarted", () -> ServerLifecycleHooks.handleServerStarted(server));
         } else if (!start && serverStarted) {
             serverStarted = false;
+            levelsLoaded = false;
             if (!stopping) safely("ServerStopping", () -> ServerLifecycleHooks.handleServerStopping(server));
             stopping = false;
             for (ServerLevel level : allLevels()) safely("LevelEvent.Unload", () -> NeoForge.EVENT_BUS.post(new LevelEvent.Unload(level)));

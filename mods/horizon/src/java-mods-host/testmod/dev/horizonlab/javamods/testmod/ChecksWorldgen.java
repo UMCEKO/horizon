@@ -12,6 +12,7 @@ final class ChecksWorldgen {
     private ChecksWorldgen() {}
 
     static void run(UseOnContext context, BlockPos area) {
+        Checks.check("world_start_order", WorldStart::inOrder);
         Checks.check("worldgen_export", () -> {
             try {
                 return exported();

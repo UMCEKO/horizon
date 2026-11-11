@@ -3238,6 +3238,8 @@ struct Game<'a> {
     integrated: Option<integrated::Integrated>,
     /// The shapes of the open world's levels, from its dimension types.
     level_shapes: horizon_client::chunk::LevelShapes,
+    /// The Java mods' worldgen export of the open world, which its levels' generators are built from.
+    java_worldgen: world_loading::JavaWorldgen,
     /// This game is that server thread's (game/world/integrated.rs).
     serving: Option<integrated::Serving>,
     /// The open world is shared behind an invite code (game/network/friends.rs).
@@ -9878,10 +9880,12 @@ impl Game<'_> {
             locator,
             loot,
             owner_migration,
+            java_worldgen,
         } = prepared;
         self.server_loot = loot;
         let dim = Dim::from_id(&level.dimension);
         self.level_shapes = shapes;
+        self.java_worldgen = java_worldgen;
         self.world_root = save_root.clone();
         // The root moves before the prepared level is installed. Until then a
         // final save must not run: the lock below only marks tag tables.
@@ -13815,6 +13819,7 @@ impl<'a> Game<'a> {
             lan: None,
             integrated: None,
             level_shapes: Default::default(),
+            java_worldgen: None,
             serving: None,
             world_options: None,
             options_to_world_options: false,

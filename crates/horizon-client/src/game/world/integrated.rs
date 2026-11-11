@@ -811,6 +811,9 @@ impl Game<'_> {
         }
         // MinecraftServer.loadLevel's start: nothing is loaded yet.
         self.native_server_about_to_start(false);
+        if let Some(answer) = opening.worldgen {
+            self.answer_world_opening(answer);
+        }
         self.native_server_starting(false);
         self.native_lifecycle_open_started();
         // `load_world`, with the world `serve` started preparing.
@@ -1258,6 +1261,9 @@ fn serve(
     // The world prepares, and the registries the server sends are read, on
     // helper threads while this one builds the server's own Game: none of
     // them reads what another makes (`integrated_open` takes them up).
+    let (ask, answer) = super::java_hooks::java_hook_wants_world_opening()
+        .then(super::world_loading::worldgen_exchange)
+        .unzip();
     let world = WorldRequest::new(
         &launch.folder,
         launch.name.as_deref(),
@@ -1269,6 +1275,7 @@ fn serve(
     // `IntegratedServer.setSingleplayerProfile`: the account this world belongs to
     // (an older world's offline owner moves to it at open).
     .map(|request| request.owned_by(&launch.player, launch.owner))
+    .map(|request| request.with_java_worldgen(ask))
     .and_then(|request| {
         WorldLoader::start(
             request,
@@ -1282,13 +1289,15 @@ fn serve(
     let opening = Opening {
         world,
         sync: preload_sync_data(&res.core.item_data),
+        worldgen: answer,
     };
     let mut server = match startup::time("server.game_new", || {
         server_game(res, pack, options, settings)
     }) {
         Ok(server) => server,
         Err(e) => {
-            // The world's session lock is let go before the failure is told.
+            // The world's session lock is let go before the failure is told; its worker stops waiting on us first.
+            drop(opening.worldgen);
             if let Ok(world) = opening.world {
                 drop(world.finish());
             }
@@ -1302,6 +1311,8 @@ fn serve(
 struct Opening {
     world: Result<WorldLoader>,
     sync: Option<SyncPreload>,
+    /// Where the world's worker waits for `ServerAboutToStart` and the Java mods' worldgen.
+    worldgen: Option<super::world_loading::WorldgenAnswer>,
 }
 
 /// Component oracles supply their own synthetic levels and entity phases.
