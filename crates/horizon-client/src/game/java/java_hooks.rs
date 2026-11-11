@@ -205,12 +205,15 @@ impl Game<'_> {
         }
     }
 
-    /// An item's own `interactLivingEntity`, once the mob aimed at passed.
-    pub(super) fn java_hook_interact_living(&mut self) -> bool {
+    /// An item's own `interactLivingEntity` on mob `entity`, once that mob's own action passed.
+    pub(super) fn java_hook_interact_living(&mut self, entity: i32) -> bool {
         #[cfg(feature = "java-mods")]
-        return self.java_interact_living();
+        return self.java_interact_living(entity);
         #[cfg(not(feature = "java-mods"))]
-        false
+        {
+            let _ = entity;
+            false
+        }
     }
 
     /// Whether Java runs any part of `animateTick`: native then reports the positions it picks.

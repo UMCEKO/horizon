@@ -88,6 +88,9 @@ impl Game<'_> {
         }
         // ServerPlayer.updateUsingItem: USING_ITEM every tick of the use.
         self.trigger_using_item(&stack);
+        if self.java_hook_tick_using(slot, ticks, &stack) {
+            return;
+        }
         let Some(info) = self.items().get(&stack.item).cloned() else {
             self.using = None;
             return;
@@ -207,8 +210,19 @@ impl Game<'_> {
     /// used for `ticks`, its hand acting: a bow or a trident lets go (not
     /// when its hand changed), a spyglass stops scoping, and a mod's own
     /// release follows. A mod's `Stop` may skip the release. `stopUsingItem`
-    /// ends the use after it.
+    /// ends the use after it. An item whose use is its mod's Java code releases there.
     pub(super) fn release_used_item(&mut self, stack: &ItemStack, ticks: u32, hand_changed: bool) {
+        if !self.java_hook_release_using(stack, ticks, hand_changed) {
+            self.release_used_item_natively(stack, ticks, hand_changed);
+        }
+    }
+    /// `release_used_item` without asking Java, for a release Java's own code asked for.
+    pub(super) fn release_used_item_natively(
+        &mut self,
+        stack: &ItemStack,
+        ticks: u32,
+        hand_changed: bool,
+    ) {
         let canceled = !hand_changed && !self.use_item_stopped(stack, ticks);
         let (release, spyglass) = item_use::release_parts(canceled, hand_changed);
         match &*stack.item {

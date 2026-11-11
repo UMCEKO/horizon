@@ -1299,6 +1299,9 @@ impl Game<'_> {
         };
         let front = offset(pos, facing);
         let face = facing.opposite();
+        if let Some(moved) = self.java_hook_hopper(pos, front, face, true) {
+            return moved;
+        }
         if let Some(part) = self.item_part_at(front, face) {
             let at = [front.0, front.1, front.2];
             self.native_hopper_inventory_search([pos.0, pos.1, pos.2], Some(at), None);
@@ -1450,6 +1453,9 @@ impl Game<'_> {
     /// (`getSourceContainerOrHandler`). `None` when there is no container. A capability part
     /// above takes the container's place.
     fn suck_from_container(&mut self, above: Pos, at: [f64; 3], hopper: &View) -> Option<bool> {
+        if let Some(took) = self.java_hook_hopper(hopper.parts[0].0, above, Direction::Down, false) {
+            return Some(took);
+        }
         if let Some(part) = self.item_part_at(above, Direction::Down) {
             let (x, y, z) = hopper.parts[0].0;
             let above = [above.0, above.1, above.2];

@@ -1056,6 +1056,7 @@ impl Game<'_> {
                 if let Some(tag) = self.comparator_data(*p).or_else(|| self.pot_data(*p)) {
                     return Ok(tag);
                 }
+                self.java_hook_block_entity_read(*p);
                 let key = (p[0], p[1], p[2]);
                 let name = self.data_block_name(*p);
                 let e = self
@@ -1160,6 +1161,7 @@ impl Game<'_> {
                         self.world.block_entities.insert(key, new);
                     }
                     self.world.set_block_lock(key, &tag);
+                    self.java_hook_block_entity_written(*p, &tag);
                     self.update_spawner_display(key);
                     self.command_block_loaded(key, was_auto);
                     // BlockDataAccessor.setData: setChanged and sendBlockUpdated(3),

@@ -9,6 +9,11 @@ impl Game<'_> {
         stack: &ItemStack,
         swing: &mut Option<bool>,
     ) {
+        // Java's own swing ran with its claim.
+        if self.java_hook_interact_living(entity) {
+            *swing = Some(false);
+            return;
+        }
         self.fire_item_interact_mob(entity, kind, stack, swing);
     }
 }
