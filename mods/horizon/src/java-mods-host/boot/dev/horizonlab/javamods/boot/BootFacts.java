@@ -152,6 +152,7 @@ public final class BootFacts {
             }
         };
         Path out = Path.of(path);
+        System.setProperty("horizon.facts", out.toString());
         Path partial = out.resolveSibling(out.getFileName() + ".partial");
         try (Writer w = Files.newBufferedWriter(partial, StandardCharsets.UTF_8); JsonWriter json = new JsonWriter(w)) {
             new FactsWriter(json, ops, scope) {
@@ -173,10 +174,11 @@ public final class BootFacts {
 
                 void run() throws IOException {
                     json.beginObject();
-                    json.name("schema").value(3);
+                    json.name("schema").value(4);
                     json.name("minecraft").value(net.minecraft.SharedConstants.getCurrentVersion().name());
                     owned();
                     blocks();
+                    fluids();
                     vanillaItems();
                     items();
                     dataComponentTypes();
