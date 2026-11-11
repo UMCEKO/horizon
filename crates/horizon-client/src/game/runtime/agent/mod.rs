@@ -474,6 +474,7 @@ impl Game<'_> {
             Screen::Win => "win",
             Screen::DebugOptions => "debug-options",
             Screen::Mod => "mod",
+            Screen::Java => "java",
             Screen::HudEditor => "hud-editor",
             Screen::Studio => "studio",
             Screen::EmoteWheel => "emote-wheel",

@@ -608,6 +608,9 @@ enum Screen {
     DialogWarning,
     /// WinScreen: the end poem and the credits (game/interface/win.rs).
     Win,
+    /// A Java mod's screen, drawn and driven by the Java client (game/java/java_screens.rs).
+    #[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+    Java,
     /// DebugOptionsScreen, F3+F6 (game/interface/debug_options.rs).
     DebugOptions,
     /// A screen of a native mod's own (`mod_screen_open`): it draws and
@@ -647,6 +650,7 @@ impl Screen {
             Screen::Win => "win",
             Screen::DebugOptions => "debug_options",
             Screen::Mod => "mod",
+            Screen::Java => "java",
             Screen::HudEditor => "hud_editor",
             Screen::Studio => "studio",
         }
@@ -3110,6 +3114,9 @@ struct Game<'a> {
     /// Block-entity positions retained between ticks for client effects.
     spawner_tick_positions: Vec<horizon_client::block_entities::Pos>,
     trial_spawner_tick_positions: Vec<horizon_client::block_entities::Pos>,
+    /// What mods' level-frame recordings draw this frame, per native pass.
+    #[allow(dead_code)]
+    world_outputs: horizon_client::world_renders::Outputs,
     creative_screen: Creative,
     /// `CreativeModeInventoryScreen.ignoreTextInput`: the chat key opened the
     /// search tab, so the letter it carries is not typed into the box.
@@ -9089,6 +9096,7 @@ impl Game<'_> {
             Screen::Stats => self.draw_stats(&mut batch),
             Screen::Advancements => self.draw_advancements(&mut batch),
             Screen::Mod => {}
+            Screen::Java => self.draw_java_screen(&mut batch),
             Screen::WorldOptions => self.draw_world_options(&mut batch),
             Screen::Friends => self.draw_friends_screen(&mut batch),
             Screen::Social => self.draw_social_screen(&mut batch),
@@ -13570,36 +13578,6 @@ impl Game<'_> {
             self.spawn_orbs(at, xp);
         }
     }
-    /// `Player.giveExperiencePoints`: `add_experience_levels` runs once for each
-    /// level gained or lost, and the mods hear of the level change once.
-    pub(super) fn give_experience_points(&mut self, points: i32) {
-        let Some(points) = self.xp_change(points) else {
-            return;
-        };
-        let old_level = self.experience.level;
-        self.experience.add_points(points);
-        while self.experience.progress < 0.0 {
-            let xp = &self.experience;
-            let lost = xp.progress * horizon_client::entities::Experience::needed(xp.level) as f32;
-            let had_level = xp.level > 0;
-            self.add_experience_levels(-1);
-            let xp = &mut self.experience;
-            xp.progress = if had_level {
-                1.0 + lost / horizon_client::entities::Experience::needed(xp.level) as f32
-            } else {
-                0.0
-            };
-        }
-        while self.experience.progress >= 1.0 {
-            let xp = &mut self.experience;
-            xp.progress =
-                (xp.progress - 1.0) * horizon_client::entities::Experience::needed(xp.level) as f32;
-            self.add_experience_levels(1);
-            let xp = &mut self.experience;
-            xp.progress /= horizon_client::entities::Experience::needed(xp.level) as f32;
-        }
-        self.native_player_level_changed(old_level);
-    }
     /// BowItem.releaseUsing: power from charge time, arrows at power * 3.
     fn release_bow(&mut self, stack: &ItemStack, ticks: u32) {
         let ammo = self.get_projectile(stack);
@@ -16716,6 +16694,7 @@ impl<'a> Game<'a> {
             pass_mobs: None,
             spawner_tick_positions: Vec::new(),
             trial_spawner_tick_positions: Vec::new(),
+            world_outputs: Default::default(),
             creative_screen: prepared.creative_screen,
             creative_ignore_text: false,
             control: None,

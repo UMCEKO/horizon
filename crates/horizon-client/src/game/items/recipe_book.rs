@@ -625,7 +625,7 @@ impl Game<'_> {
         Some([x, y, WIDTH, HEIGHT])
     }
     /// The green book button's top-left corner.
-    fn book_button_pos(&self, book: BookType, ox: f32, batch: &HudBatch) -> (f32, f32) {
+    pub(super) fn book_button_pos(&self, book: BookType, ox: f32, batch: &HudBatch) -> (f32, f32) {
         let mid = (batch.height / 2.0).floor();
         match book {
             BookType::Crafting if self.craft_size == 2 => (ox + 104.0, mid - 22.0),
@@ -646,7 +646,7 @@ impl Game<'_> {
     fn swap_index(&self) -> usize {
         (self.recipe_ui.time / SWAP_TICKS).floor() as usize
     }
-    fn batch_for_size(&self) -> Option<HudBatch> {
+    pub(super) fn batch_for_size(&self) -> Option<HudBatch> {
         let r = self.renderer.as_ref()?;
         Some(HudBatch::new(
             [r.config.width, r.config.height],
