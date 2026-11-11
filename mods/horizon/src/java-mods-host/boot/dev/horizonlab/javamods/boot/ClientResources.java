@@ -93,6 +93,7 @@ public final class ClientResources {
         exported = bytes.toByteArray();
         System.err.println("Horizon: the client's resource reload stitched " + atlases.size() + " atlases (" + sprites + " sprites), " + states.size()
                 + " block states with code-built models, " + drawn.size() + " items only their mods' code draws; freed " + freed / 1048576 + " MB of sprite mip levels" + report);
+        ParticleFacts.report(true);
     }
 
     private static void text(DataOutputStream out, String value) throws IOException {

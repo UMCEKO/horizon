@@ -810,6 +810,8 @@ fn resolve_particle_providers(
                 Some(id)
             }),
     );
+    // Java mods' types need no particle file to be named in the table.
+    particles.extend(super::java_hooks::java_hook_owned_particles());
     mod_api::__private::resolve_particles(particles.iter().map(String::as_str), |id| {
         horizon_client::particles::ParticleType::from_name(id)
             .map(|ty| mod_api::__private::ParticleKind::Vanilla(ty as u32))
