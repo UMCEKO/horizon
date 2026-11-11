@@ -123,6 +123,8 @@ wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 
 [features]
 default = ["audio", "controllers", "horizon-extras"]
+# Per-level-tick state digest for determinism checks (game/world/state_digest.rs).
+state-digest = []
 # Scoped trait-mod installation for a mod's own tests.
 testing = []
 # Sound output. Without it (and `controllers`) the program links neither libasound nor libudev on
