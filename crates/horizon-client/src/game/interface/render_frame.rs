@@ -450,6 +450,13 @@ impl Game<'_> {
                             })
                             .collect();
                     }
+                    #[cfg(feature = "java-mods")]
+                    if let Some(edges) = self.java_outline_edges(h.pos, state) {
+                        return edges
+                            .iter()
+                            .map(|e| std::array::from_fn(|i| p[i % 3] + e[i]))
+                            .collect();
+                    }
                     f.outline_edges
                         .iter()
                         .map(|e| std::array::from_fn(|i| p[i % 3] + o[i % 3] + e[i]))
