@@ -18,7 +18,13 @@ import net.neoforged.neoforge.attachment.AttachmentHolder;
 public final class ChunkViews {
     private ChunkViews() {}
 
-    private static final Map<Level, Long2ObjectOpenHashMap<LevelChunk>> VIEWS = new IdentityHashMap<>();
+    /** Each side's own, touched only by its thread: the server's levels, then the Java client's. */
+    private static final Map<Level, Long2ObjectOpenHashMap<LevelChunk>> SERVER = new IdentityHashMap<>();
+    private static final Map<Level, Long2ObjectOpenHashMap<LevelChunk>> CLIENT = new IdentityHashMap<>();
+
+    private static Map<Level, Long2ObjectOpenHashMap<LevelChunk>> views(Level level) {
+        return level instanceof ServerLevel ? SERVER : CLIENT;
+    }
 
     /** The server's chunks are those Horizon's server has loaded; the client's are those its chunk cache was told of, as `ClientChunkCache` holds only what it received. */
     public static boolean loaded(Level level, int x, int z) {
@@ -27,7 +33,7 @@ public final class ChunkViews {
 
     public static LevelChunk get(Level level, int x, int z) {
         if (!loaded(level, x, z)) return null;
-        return VIEWS.computeIfAbsent(level, l -> new Long2ObjectOpenHashMap<>()).computeIfAbsent(ChunkPos.pack(x, z), key -> view(level, x, z));
+        return views(level).computeIfAbsent(level, l -> new Long2ObjectOpenHashMap<>()).computeIfAbsent(ChunkPos.pack(x, z), key -> view(level, x, z));
     }
 
     /** `ServerChunkCache.getChunk` with `load`: the server thread waits until Horizon has it, as `managedBlock` does; null when Horizon couldn't load it. */
@@ -42,7 +48,7 @@ public final class ChunkViews {
 
     /** The view a column already has, without making one. */
     static LevelChunk peek(Level level, int x, int z) {
-        var views = VIEWS.get(level);
+        var views = views(level).get(level);
         return views == null ? null : views.get(ChunkPos.pack(x, z));
     }
 
@@ -52,17 +58,18 @@ public final class ChunkViews {
         return view != null ? view : view(level, x, z);
     }
 
+    /** The server's world closed; the client forgets its own levels as they change. */
     static void reset() {
-        VIEWS.clear();
+        SERVER.clear();
     }
 
     static void forget(Level level) {
-        VIEWS.remove(level);
+        views(level).remove(level);
     }
 
     /** The chunk unloaded: a later `getChunk` gets a new `LevelChunk`, as vanilla's would. */
     static void forget(Level level, int x, int z) {
-        var views = VIEWS.get(level);
+        var views = views(level).get(level);
         if (views != null) views.remove(ChunkPos.pack(x, z));
     }
 

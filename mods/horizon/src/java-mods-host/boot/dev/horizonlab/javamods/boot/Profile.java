@@ -7,7 +7,7 @@ import java.util.Map;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 
-/** `HORIZON_PROFILE`: per-second time of mods' block entity tickers and of the wait for `GameBridge`'s lock, and JFR dumps. */
+/** `HORIZON_PROFILE`: per-second time of mods' block entity tickers and of the wait for the server side's turn (`lock=`), and JFR dumps. */
 final class Profile {
     static final boolean ON = System.getenv("HORIZON_PROFILE") != null && !System.getenv("HORIZON_PROFILE").isEmpty();
     private static final int TOP = 15;
