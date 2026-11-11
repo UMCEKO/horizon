@@ -367,6 +367,8 @@ impl Game<'_> {
                     self.sync_pregen_option();
                     self.sync_agent_control();
                     self.ui.options.agent_status = self.agent_status_lines();
+                    // Mod key bindings change through `Changed` too: the Java client's `KeyMapping`s follow.
+                    self.java_apply_mod_keys();
                 }
                 Event::SliderDrag => {
                     self.apply_settings();

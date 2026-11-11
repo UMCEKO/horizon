@@ -278,6 +278,7 @@ impl Game<'_> {
             }
         }
         laps.lap("eg_shadows");
+        let mut world = std::mem::take(&mut self.world_outputs);
         // Block entities (BlockEntityRenderers): chests, shulker boxes, banners, skulls...
         if let Some(r) = &self.renderer {
             // Block entities outside the view frustum are skipped (with a
@@ -479,6 +480,7 @@ impl Game<'_> {
                 &mut out,
             );
             self.recorded_block_entity_geometry(camera, alpha as f32, &mut out);
+            self.recorded_world_geometry(camera, &mut world, &mut out);
             self.mark_stage(out.len(), "DESTROY");
             for &(pos, stage) in &cracks {
                 let state = self.world.block(pos[0], pos[1], pos[2]);
@@ -487,6 +489,8 @@ impl Game<'_> {
                     .render_breaking(&scene, pos, state.0, stage, &mut out);
             }
         }
+        self.see_through_vertices.append(&mut world.see_through);
+        self.world_outputs = world;
         laps.lap("eg_block_entities");
         self.mark_entity(out.len(), "minecraft:experience_orb");
         let orb_view = billboard_frustum

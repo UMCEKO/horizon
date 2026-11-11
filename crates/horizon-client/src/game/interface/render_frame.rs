@@ -375,8 +375,8 @@ impl Game<'_> {
             let scale = HudBatch::new(size, self.settings.gui_scale_inputs()).scale;
             crosshair.debug_crosshair(at, view_pitch, view_yaw, scale);
         }
-        let debug_lines = horizon_client::gizmos::camera_relative(&lines, at, view);
-        let debug_lines_on_top = horizon_client::gizmos::camera_relative(&on_top, at, view);
+        let mut debug_lines = horizon_client::gizmos::camera_relative(&lines, at, view);
+        let mut debug_lines_on_top = horizon_client::gizmos::camera_relative(&on_top, at, view);
         let debug_crosshair = horizon_client::gizmos::camera_relative(&crosshair.on_top, at, view);
         // LevelExtractor.extractBlockOutline: model translucency controls draw order;
         // no outline when an entity is targeted (Minecraft.hitResult an EntityHitResult).
@@ -612,6 +612,15 @@ impl Game<'_> {
         // Particles blended additively (resource packs' Polytone ones, #11486), from the
         // render that built `entities`.
         let mut additive = self.particles.take_additive();
+        let mut world = std::mem::take(&mut self.world_outputs);
+        if title {
+            world.clear();
+        }
+        additive.append(&mut world.additive);
+        let (recorded_lines, recorded_on_top) =
+            recorded_world_geometry::recorded_world_lines(&mut world, at, view);
+        debug_lines.extend(recorded_lines);
+        debug_lines_on_top.extend(recorded_on_top);
         // The dragon is drawn in every dimension, as any entity: a dragon
         // summoned outside the End (the server's AddEntity) is shown too.
         if !title {
@@ -822,7 +831,11 @@ impl Game<'_> {
             },
             additive: &additive,
             see_through: &see_through,
-            world_primitives: world_geometry.batch(),
+            world_primitives: horizon_client::gfx::world_primitives::Batch {
+                recorded: &world.after_translucent,
+                recorded_depth: &world.after_translucent_depth,
+                ..world_geometry.batch()
+            },
             shadow_only: &shadow_only,
             celestial: if self.settings.horizon.sky || title {
                 &celestial
@@ -908,6 +921,7 @@ impl Game<'_> {
         // Restore storage even when rendering fails (for example, a lost surface).
         self.entity_vertices = entities;
         self.world_geometry = Some(world_geometry);
+        self.world_outputs = world;
         *self.entity_spans.get_mut() = entity_spans;
         *self.entity_motion.get_mut() = entity_motion;
         *self.entity_motion_posed.get_mut() = entity_motion_posed;

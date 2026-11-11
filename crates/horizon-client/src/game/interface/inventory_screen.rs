@@ -8,6 +8,7 @@ impl Game<'_> {
             return;
         }
         let (ox, oy) = self.inventory_origin(batch);
+        self.java_shell_frame();
         {
             let atlas = &self.gui.atlas;
             self.render_transparent_background("inventory", batch);

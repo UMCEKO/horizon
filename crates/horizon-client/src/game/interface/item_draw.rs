@@ -427,6 +427,8 @@ impl Game<'_> {
             &self.item_env(),
             rule,
         );
+        #[cfg(feature = "java-mods")]
+        self.java_item_state(stack, display, &mut state);
         if let Some(glint) = glint {
             // The pack's enchantment rules replace vanilla's glint unless one keeps it, so far
             // only in the GUI, where their own layers draw: held, dropped and framed items keep

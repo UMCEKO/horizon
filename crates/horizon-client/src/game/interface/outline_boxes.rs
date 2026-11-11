@@ -23,6 +23,12 @@ impl Game<'_> {
             .is_none()
             .then(|| self.context_outline(pos, state, player_context, anims))
             .flatten();
+        #[cfg(feature = "java-mods")]
+        let java = (context.is_none() && declared.is_none())
+            .then(|| self.java_outline(pos, state))
+            .flatten();
+        #[cfg(not(feature = "java-mods"))]
+        let java: Option<Vec<[f64; 6]>> = None;
         let f = self.res.facts().get(state);
         let o = perspective::outline_offset(
             &self.pack.context.tables,
@@ -36,7 +42,7 @@ impl Game<'_> {
             f64::from(pos[1]) + o[1],
             f64::from(pos[2]) + o[2],
         ];
-        let boxes = if context.is_some() || declared.is_some() {
+        let boxes = if context.is_some() || declared.is_some() || java.is_some() {
             &[][..]
         } else {
             &f.outline[..]
@@ -54,6 +60,11 @@ impl Game<'_> {
                         let coords = [min.x, min.y, min.z, max.x, max.y, max.z];
                         std::array::from_fn(|i| base[i % 3] + coords[i])
                     }),
+            )
+            .chain(
+                java.into_iter()
+                    .flatten()
+                    .map(move |b| std::array::from_fn(|i| f64::from(pos[i % 3]) + b[i])),
             )
             .chain(
                 boxes

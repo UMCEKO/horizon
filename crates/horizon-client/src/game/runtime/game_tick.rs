@@ -25,8 +25,13 @@ impl Game<'_> {
                 self.set_screen(Screen::Inventory);
             }
         }
+        self.java_client_tick_begin();
+        #[cfg(feature = "java-mods")]
+        self.java_creative_tabs_take();
         if self.remote.is_some() {
-            return self.with_residency_tick(Self::tick_remote);
+            let result = self.with_residency_tick(Self::tick_remote);
+            self.java_client_tick_send();
+            return result;
         }
         // Only a server ticks its own world from here: its players are guests, swapped in for
         // their turns (`as_guest`), and the window's player is a client of it.
