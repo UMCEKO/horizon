@@ -144,10 +144,19 @@ pub fn on_active<G: 'static, R>(f: impl FnOnce(&mut G) -> R) -> Option<R> {
 
 /// Runs `f`, a call into Java made where no `&mut` game is in reach: a native it reaches finds no game.
 pub fn without_active<R>(f: impl FnOnce() -> R) -> R {
-    let prior = ACTIVE.replace(std::ptr::null_mut());
-    let out = f();
-    ACTIVE.set(prior);
-    out
+    struct Restore(*mut ());
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ACTIVE.set(self.0);
+        }
+    }
+    let _restore = Restore(ACTIVE.replace(std::ptr::null_mut()));
+    f()
+}
+
+/// Whether a native entered now would find a game.
+pub fn has_active() -> bool {
+    !ACTIVE.get().is_null()
 }
 
 /// What the game runs on the thread of a native that just returned to Java, with the game it acted on; it may call back into Java.
@@ -774,6 +783,21 @@ mod tests {
         assert_eq!((first, nested, again), (Some(true), false, Some(8)));
         assert_eq!(on_active::<u64, _>(|game| *game), None);
         assert_eq!(game.count(), 8);
+    }
+
+    #[test]
+    fn a_roll_isolated_from_java_finds_no_game_and_gives_it_back_after_a_panic() {
+        let mut game = 7u64;
+        let (isolated, after, unwound) = with_active(&mut game, || {
+            let isolated = without_active(has_active);
+            let after = has_active();
+            let panicked = std::panic::catch_unwind(|| without_active(|| panic!("a roll failed")));
+            (isolated, after, panicked.is_err() && has_active())
+        });
+        assert!(!isolated);
+        assert!(after);
+        assert!(unwound);
+        assert!(!has_active());
     }
 
     fn entry(guard: &'static str) -> Bridge {

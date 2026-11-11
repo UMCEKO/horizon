@@ -294,6 +294,8 @@ mod tests {
                     raining: true,
                     thundering: false,
                 }),
+                this_entity: None,
+                killer: None,
             })),
         }
         .try_into_api()
