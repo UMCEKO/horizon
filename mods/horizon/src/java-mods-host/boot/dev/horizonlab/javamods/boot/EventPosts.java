@@ -11,6 +11,13 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.item.context.UseOnContext;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.event.entity.player.UseItemOnBlockEvent;
 import net.minecraft.server.level.ServerLevel;
 import net.neoforged.bus.ListenerList;
 import net.neoforged.bus.api.Event;
@@ -43,7 +50,7 @@ public final class EventPosts {
     }
 
     /** The server events Rust posts through `post_event`, each with the acting player's view filled. */
-    private static final Map<String, PlayerPost> PLAYER = Map.of("BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity);
+    private static final Map<String, PlayerPost> PLAYER = Map.of("BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity, "UseItemOnBlockEvent", EventPosts::useItemOnBlock);
 
     /** The server events Rust posts through `post_level_event`. */
     private static final Map<String, LevelPost> LEVEL = Map.of();
@@ -207,6 +214,33 @@ public final class EventPosts {
     private static Posted attackEntity(GameBridge.Call call) {
         var target = call.level().getEntity(call.in().readInt());
         return new Posted(target != null && !CommonHooks.onPlayerAttackTarget(call.player(), target), Posted.NONE.result());
+    }
+
+    /** `byte phase, int hand, long pos, byte face, 3 double location, bool inside`; the result is `byte kind, byte swing` (0 pass, 1 success, 2 consume, 3 fail, 4 try with empty hand; 0 none, 1 client, 2 server). */
+    private static Posted useItemOnBlock(GameBridge.Call call) {
+        var in = call.in();
+        var phase = UseItemOnBlockEvent.UsePhase.values()[in.readByte()];
+        var hand = in.readInt() == 0 ? InteractionHand.MAIN_HAND : InteractionHand.OFF_HAND;
+        var pos = BlockPos.of(in.readLong());
+        var face = Direction.from3DDataValue(in.readByte());
+        var location = new Vec3(in.readDouble(), in.readDouble(), in.readDouble());
+        var context = new UseOnContext(call.player(), hand, new BlockHitResult(location, face, pos, in.readBoolean()));
+        var event = NeoForge.EVENT_BUS.post(new UseItemOnBlockEvent(context, phase));
+        var result = event.getCancellationResult();
+        byte kind = 0;
+        byte swing = 0;
+        if (result == InteractionResult.CONSUME) kind = 2;
+        else if (result instanceof InteractionResult.Success success) {
+            kind = 1;
+            swing = (byte) switch (success.swingSource()) {
+                case NONE -> 0;
+                case PREDICTED -> 1;
+                case SERVER_ONLY -> 2;
+            };
+        } else if (result == InteractionResult.FAIL) kind = 3;
+        else if (result == InteractionResult.TRY_WITH_EMPTY_HAND) kind = 4;
+        if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: server event UseItemOnBlockEvent " + phase + " canceled=" + event.isCanceled() + " result=" + kind);
+        return new Posted(event.isCanceled(), new byte[] {kind, swing});
     }
 
     /** `client_post_event`: the event's name, then its fields, posted on the Java client's thread. */
