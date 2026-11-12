@@ -82,21 +82,35 @@ impl Game<'_> {
         &mut self,
         click: JavaClick,
     ) -> Option<Option<Hand>> {
-        if !CLIENT.with_borrow(|c| c.joined) || self.entity_targeted() {
+        if !CLIENT.with_borrow(|c| c.joined) {
             return None;
         }
         let host = horizon_java_host::get()?;
         self.java_publish_client_world();
         let mut out = Out::default();
         out.int(click as i32);
-        let hit = self.pick();
-        out.bool(hit.is_some());
-        if let Some(hit) = hit {
+        // The crosshair's entity (before any block) is the Java client's `EntityHitResult`.
+        let entity = self
+            .pick_entity_hit_at()
+            .and_then(|(distance, id)| id.map(|id| (distance, id)))
+            .zip(self.aim());
+        if let Some(((distance, id), (eye, dir))) = entity {
+            out.int(2);
+            out.int(id);
+            for k in 0..3 {
+                out.double(eye[k] + dir[k] * distance);
+            }
+        } else if self.entity_targeted() {
+            return None;
+        } else if let Some(hit) = self.pick() {
+            out.int(1);
             out.long(BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]).pack());
             out.int(face_index(hit.face));
             for value in hit.point {
                 out.double(value);
             }
+        } else {
+            out.int(0);
         }
         let began = std::time::Instant::now();
         let reply = host.request("client_click", &out.0);

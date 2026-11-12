@@ -1226,13 +1226,30 @@ public final class ClientBridge {
         clickCanceled = !event.shouldSwingHand() ? 1 : event.getHand() == net.minecraft.world.InteractionHand.MAIN_HAND ? 2 : 3;
     }
 
+    private static boolean unfedClickLogged;
+
     /** `startAttack`, `startUseItem` or `pickBlockOrEntity` for a click the window is about to act on, with the window's hit as `hitResult`: answers whether a mod canceled it, and which hand swings then. */
     private static byte[] click(DataInputStream in) throws Exception {
         int kind = in.readInt();
         Minecraft minecraft = Minecraft.getInstance();
         if (player == null || minecraft.player == null || minecraft.level == null) return new byte[] {4}; // not run: the window acts alone
         net.minecraft.world.phys.HitResult hit;
-        if (in.readBoolean()) {
+        net.minecraft.world.entity.Entity target = null;
+        int hitKind = in.readInt();
+        if (hitKind == 2) {
+            int entityId = in.readInt();
+            var location = new net.minecraft.world.phys.Vec3(in.readDouble(), in.readDouble(), in.readDouble());
+            target = ClientEntities.get(entityId);
+            if (target != null) {
+                hit = new net.minecraft.world.phys.EntityHitResult(target, location);
+            } else {
+                if (!unfedClickLogged) {
+                    unfedClickLogged = true;
+                    System.err.println("Horizon: a click on entity " + entityId + " reached the Java client before its AddEntity; no Java hit");
+                }
+                hit = net.minecraft.world.phys.BlockHitResult.miss(minecraft.player.getEyePosition(), net.minecraft.core.Direction.getApproximateNearest(minecraft.player.getLookAngle()), minecraft.player.blockPosition());
+            }
+        } else if (hitKind == 1) {
             var pos = BlockPos.of(in.readLong());
             var face = net.minecraft.core.Direction.from3DDataValue(in.readInt());
             hit = new net.minecraft.world.phys.BlockHitResult(new net.minecraft.world.phys.Vec3(in.readDouble(), in.readDouble(), in.readDouble()), face, pos, false);
@@ -1240,9 +1257,10 @@ public final class ClientBridge {
             hit = net.minecraft.world.phys.BlockHitResult.miss(minecraft.player.getEyePosition(), net.minecraft.core.Direction.getApproximateNearest(minecraft.player.getLookAngle()), minecraft.player.blockPosition());
         }
         var previous = minecraft.hitResult;
+        var previousPick = minecraft.crosshairPickEntity;
         var actions = (dev.horizonlab.javamods.boot.mixin.MinecraftActions) minecraft;
         minecraft.hitResult = hit;
-        minecraft.crosshairPickEntity = null;
+        minecraft.crosshairPickEntity = target;
         clicking = true;
         clickCanceled = 0;
         blockUse = 0;
@@ -1255,6 +1273,7 @@ public final class ClientBridge {
         } finally {
             clicking = false;
             minecraft.hitResult = previous;
+            minecraft.crosshairPickEntity = previousPick;
         }
         return new byte[] {(byte) clickCanceled, (byte) blockUse};
     }
