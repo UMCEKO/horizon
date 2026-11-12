@@ -1154,6 +1154,7 @@ impl Game<'_> {
         let Some(host) = self.lan.as_mut() else {
             return;
         };
+        let mut permissions_changed = false;
         match pending {
             Publish::Open(listener, settings) => {
                 if let Err(e) = host.hub.lan.listen_on(listener, true) {
@@ -1163,7 +1164,8 @@ impl Game<'_> {
                 host.hub.config.force_game_mode = settings.force_game_mode;
                 // IntegratedServer.setGuestCommandAccess, then updatePermissions.
                 host.hub.config.guest_commands = settings.guest_commands && allow_commands;
-                host.hub.resend_commands();
+                host.hub.refresh_permissions();
+                permissions_changed = true;
             }
             Publish::Close => {
                 host.hub.lan.stop_listening();
@@ -1184,6 +1186,12 @@ impl Game<'_> {
                         translatable("multiplayer.disconnect.server_shutdown", &[]),
                     );
                 }
+            }
+        }
+        if permissions_changed {
+            self.java_hook_player_commands(None, true);
+            if let Some(host) = self.lan.as_mut() {
+                host.hub.resend_commands();
             }
         }
     }
@@ -1231,6 +1239,7 @@ impl Game<'_> {
             return;
         };
         let published = self.published_port().is_some();
+        let mut changed = false;
         if let Some(host) = self.lan.as_mut() {
             let level = if allow { 4 } else { 0 };
             host.hub.ops.insert(owner, level);
@@ -1241,7 +1250,14 @@ impl Game<'_> {
             if published {
                 host.hub.config.guest_commands = allow && host.settings.guest_commands;
             }
-            host.hub.resend_commands();
+            host.hub.refresh_permissions();
+            changed = true;
+        }
+        if changed {
+            self.java_hook_player_commands(None, true);
+            if let Some(host) = self.lan.as_mut() {
+                host.hub.resend_commands();
+            }
         }
     }
 }

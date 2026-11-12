@@ -1934,10 +1934,10 @@ impl Hub {
     /// The names of the root commands the tree `conn`'s player would get
     /// holds (before the mods take any out), in the tree's order.
     pub fn command_names(&self, conn: u32) -> Vec<String> {
-        let Some(g) = self.guest(conn) else {
+        let Some(i) = self.guests.connection_index(conn) else {
             return Vec::new();
         };
-        let packet = self.commands_packet(g.permission);
+        let packet = self.commands_packet(i);
         packet
             .nodes
             .get(packet.root as usize)
@@ -1984,7 +1984,7 @@ impl Hub {
     /// Commands.sendCommands: the command tree for this player.
     fn send_commands(&self, i: usize) {
         let g = &self.guests[i];
-        let mut packet = self.commands_packet(g.permission);
+        let mut packet = self.commands_packet(i);
         // What the mods took out is not in the tree the client gets.
         if !g.hidden_commands.is_empty() {
             let hidden: Vec<i32> = packet
@@ -2002,8 +2002,22 @@ impl Hub {
         g.send(&C::Commands(packet));
     }
 
-    /// The command tree a player of this permission level gets.
-    fn commands_packet(&self, permission: u8) -> play::Commands {
+    /// Sends a placed guest the tree it gets now (its Java roots just changed).
+    pub fn send_commands_to(&self, conn: u32) {
+        if let Some(i) = self.guests.connection_index(conn) {
+            self.send_commands(i);
+        }
+    }
+
+    /// Stores the Java server's roots for this guest's tree, as that player may use them.
+    pub fn set_java_commands(&mut self, conn: u32, tree: serde_json::Value) {
+        self.update_guest(conn, |guest| guest.java_commands = tree);
+    }
+
+    /// The command tree guest `i` gets: its permission level, the mods' commands and its Java roots.
+    fn commands_packet(&self, i: usize) -> play::Commands {
+        let guest = &self.guests[i];
+        let permission = guest.permission;
         match &self.sync.commands {
             Some(tree) => {
                 let dedicated = !self.config.integrated;
@@ -2012,6 +2026,7 @@ impl Hub {
                     dedicated,
                     &self.sync.builtin,
                     &super::commands::with_session_tools(&self.mod_commands.0),
+                    &guest.java_commands,
                     &self.sync.features,
                     &self.rule_registry,
                 )
@@ -6084,6 +6099,7 @@ mod tests {
             false,
             &hub.sync.builtin,
             &serde_json::Value::Null,
+            &serde_json::Value::Null,
             &[crate::gamerules::MINECART_IMPROVEMENTS.to_owned()],
             &hub.rule_registry,
         );
@@ -6105,6 +6121,7 @@ mod tests {
             .collect();
         expected.sort();
         assert_eq!(names, expected);
+        hub.guests.update(0, |g| g.permission = 0);
         assert!(
             !hub.commands_packet(0)
                 .nodes

@@ -28,8 +28,9 @@ public final class TestMod {
     public TestMod(IEventBus bus) {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.RegisterCommandsEvent event) -> {
             commandSelection = event.getCommandSelection();
-            event.getDispatcher().register(net.minecraft.commands.Commands.literal("horizon_java_test").executes(context -> 1));
+            event.getDispatcher().register(WordArgument.commands());
         });
+        WordArgument.register(bus);
         ITEMS.registerItem("wand", Wand::new);
         ITEMS.registerItem("probe", Probe::new);
         ITEMS.registerItem("tonic", Tonic::new);

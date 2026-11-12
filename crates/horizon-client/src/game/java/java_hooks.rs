@@ -23,6 +23,13 @@ pub(super) struct JavaItemText {
 }
 
 impl Game<'_> {
+    /// Each placed guest's tree gets the Java server's roots as that player may use them (`send`: its Java client gets its permission packet and tree too).
+    pub(super) fn java_hook_player_commands(&mut self, only: Option<u32>, send: bool) {
+        #[cfg(feature = "java-mods")]
+        self.java_player_commands(only, send);
+        let _ = (only, send);
+    }
+
     /// The slot bits of the toasts mods added to the Java client, shown in the window's column.
     pub(super) fn java_hook_toast_slots(&self) -> u32 {
         #[cfg(feature = "java-mods")]

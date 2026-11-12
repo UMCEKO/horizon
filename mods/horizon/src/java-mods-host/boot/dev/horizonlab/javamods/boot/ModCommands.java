@@ -3,6 +3,20 @@ package dev.horizonlab.javamods.boot;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.tree.ArgumentCommandNode;
 import com.mojang.brigadier.tree.CommandNode;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.mojang.brigadier.arguments.ArgumentType;
+import com.mojang.brigadier.tree.RootCommandNode;
+import dev.horizonlab.javamods.boot.mixin.CommandTreeCleanerAccess;
+import java.util.HashMap;
+import java.util.function.Function;
+import net.minecraft.commands.Commands;
+import net.minecraft.commands.synchronization.ArgumentTypeInfos;
+import net.minecraft.commands.synchronization.ArgumentUtils;
+import net.minecraft.commands.synchronization.SuggestionProviders;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.server.permissions.PermissionSet;
+import net.neoforged.neoforge.server.command.CommandHelper;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -70,5 +84,82 @@ final class ModCommands {
             if (kind != NATIVE) found.add(Map.entry(root.getName(), kind));
         }
         return found;
+    }
+
+    /** `commands_for`: the use request's header, then `bool send`; replies `text json` ("" when the player may use none), then effects. */
+    static void commandsFor(Crossing.In in, Crossing.Out out) throws Exception {
+        var call = GameBridge.fill(in, true);
+        boolean send = in.readBoolean();
+        var server = GameBridge.server();
+        if (send) server.getPlayerList().sendPlayerPermissionLevel(call.player());
+        var dispatcher = server.getCommands().getDispatcher();
+        var names = new ArrayList<String>();
+        for (var root : roots(dispatcher)) names.add(root.getKey());
+        GameBridge.writeText(out, names.isEmpty() ? "" : tree(dispatcher, call.player().createCommandSourceStack(), names).toString());
+        GameBridge.writeEffects(out);
+    }
+
+    private static boolean modOwned(ArgumentType<?> type) {
+        var registry = BuiltInRegistries.COMMAND_ARGUMENT_TYPE;
+        return BootFacts.owns(registry, registry.getKey(ArgumentTypeInfos.byClass(type)));
+    }
+
+    /** NeoForge's per-player copy of the roots in `names`, cleaned of mods' argument types, as the report's JSON with the inspector's answers. */
+    @SuppressWarnings("unchecked")
+    static JsonObject tree(CommandDispatcher<CommandSourceStack> dispatcher, CommandSourceStack source, List<String> names) {
+        Map<CommandNode<CommandSourceStack>, CommandNode<CommandSourceStack>> map = new HashMap<>();
+        var copy = new RootCommandNode<CommandSourceStack>();
+        map.put(dispatcher.getRoot(), copy);
+        CommandHelper.mergeCommandNode(dispatcher.getRoot(), copy, map, source, context -> 0, provider -> provider);
+        var clean = CommandTreeCleanerAccess.horizon$clean(copy, type -> !modOwned(type));
+        var originals = new IdentityHashMap<CommandNode<?>, CommandNode<?>>();
+        for (var entry : map.entrySet()) originals.put(entry.getValue(), entry.getKey());
+        var byClean = new IdentityHashMap<CommandNode<?>, CommandNode<?>>();
+        pair(clean, copy, originals, byClean);
+        var cleaned = new CommandDispatcher<CommandSourceStack>(clean);
+        var noPermission = Commands.createCompilationContext(PermissionSet.NO_PERMISSIONS);
+        var children = new JsonObject();
+        for (String name : names) {
+            var child = clean.getChild(name);
+            if (child == null) continue;
+            var json = ArgumentUtils.serializeNodeToJson(cleaned, child);
+            inspect(json, child, byClean, node -> !((CommandNode<CommandSourceStack>) node).getRequirement().test(noPermission), ModCommands::suggestionId);
+            children.add(name, json);
+        }
+        var root = new JsonObject();
+        root.addProperty("type", "root");
+        root.add("children", children);
+        return root;
+    }
+
+    private static String suggestionId(CommandNode<?> node) {
+        if (!(node instanceof ArgumentCommandNode<?, ?> argument) || argument.getCustomSuggestions() == null) return null;
+        return SuggestionProviders.getName(argument.getCustomSuggestions()).toString();
+    }
+
+    /** Maps each cleaned node to its original, walking the cleaned tree and the merged copy by child name. */
+    private static void pair(CommandNode<?> clean, CommandNode<?> copy, Map<CommandNode<?>, CommandNode<?>> originals, Map<CommandNode<?>, CommandNode<?>> out) {
+        var original = originals.get(copy);
+        if (original != null) out.put(clean, original);
+        for (CommandNode<?> child : clean.getChildren()) {
+            var twin = copy.getChild(child.getName());
+            if (twin != null) pair(child, twin, originals, out);
+        }
+    }
+
+    /** Adds `restricted` and `suggestions` to `json` for `copy`'s nodes, reading each answer off the original node; drops `permissions`. */
+    static void inspect(JsonObject json, CommandNode<?> copy, Map<CommandNode<?>, CommandNode<?>> originals, Predicate<CommandNode<?>> restricted, Function<CommandNode<?>, String> suggestions) {
+        json.remove("permissions");
+        var original = originals.get(copy);
+        if (original != null) {
+            json.addProperty("restricted", restricted.test(original));
+            String suggested = suggestions.apply(original);
+            if (suggested != null) json.addProperty("suggestions", suggested);
+        }
+        if (!(json.get("children") instanceof JsonObject children)) return;
+        for (CommandNode<?> child : copy.getChildren()) {
+            JsonElement element = children.get(child.getName());
+            if (element instanceof JsonObject object) inspect(object, child, originals, restricted, suggestions);
+        }
     }
 }
