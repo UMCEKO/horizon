@@ -220,7 +220,7 @@ pub(super) fn text(batch: &mut HudBatch, atlas: &HudAtlas, reply: &mut In) -> Op
 }
 
 /// One recorded glyph: its code point's quad in `font` at `(x, y)` in text space, with the pose's origin and scale.
-pub(super) fn glyph_quads(
+fn glyph_quads(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
     pose: [f32; 4],
@@ -246,7 +246,7 @@ pub(super) fn glyph_quads(
 }
 
 /// One recorded effect rectangle (underline, strikethrough, background) in text space.
-pub(super) fn effect_rect(batch: &mut HudBatch, atlas: &HudAtlas, pose: [f32; 4], rect: [f32; 4], color: u32) {
+fn effect_rect(batch: &mut HudBatch, atlas: &HudAtlas, pose: [f32; 4], rect: [f32; 4], color: u32) {
     let [ox, oy, sx, sy] = pose;
     let start = batch.vertices.len();
     let (x0, y0) = (ox + sx * rect[0], oy + sy * rect[1]);
@@ -279,7 +279,7 @@ struct RecordedEffect {
 }
 
 /// A `GLYPHS` entry: text as a patched `PreparedTextBuilder` laid it out, drawn glyph by glyph.
-pub(super) fn glyphs(batch: &mut HudBatch, atlas: &HudAtlas, reply: &mut In) -> Option<()> {
+fn glyphs(batch: &mut HudBatch, atlas: &HudAtlas, reply: &mut In) -> Option<()> {
     crate::game::java_routing::gui_route!("net/minecraft/client/gui/Font$PreparedTextBuilder#accept(ILnet/minecraft/network/chat/Style;Lnet/minecraft/client/gui/font/glyphs/BakedGlyph;)Z");
     crate::game::java_routing::gui_route!("net/minecraft/client/gui/Font$PreparedTextBuilder#getShadowColor(Lnet/minecraft/network/chat/Style;I)I");
     let pose = [
