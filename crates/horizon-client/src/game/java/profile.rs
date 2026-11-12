@@ -42,12 +42,17 @@ struct Window {
     ticks_ms: Vec<f32>,
     spans: HashMap<&'static str, (u64, f32, f32)>,
     java_ns: u64,
+    /// Entity saved forms built and loaded back for Java views.
+    entity_nbt: (u64, u64),
 }
 
 impl Window {
     fn add(&mut self, wall_ms: f32, spans: &[Span], java_ns: u64) {
         self.ticks_ms.push(wall_ms);
         self.java_ns += java_ns;
+        let (builds, loads) = super::java_entities::take_nbt_counts();
+        self.entity_nbt.0 += builds;
+        self.entity_nbt.1 += loads;
         for span in spans {
             let row = self.spans.entry(span.name).or_default();
             row.0 += 1;
@@ -68,6 +73,7 @@ impl Window {
             .unwrap_or(0.0);
         let max = ticks.last().copied().unwrap_or(0.0);
         let java_ms = std::mem::take(&mut self.java_ns) as f64 / 1e6;
+        let (nbt_builds, nbt_loads) = std::mem::take(&mut self.entity_nbt);
         let java_pct = if total > 0.0 {
             java_ms / f64::from(total) * 100.0
         } else {
@@ -92,7 +98,7 @@ impl Window {
             spans.join(",")
         };
         format!(
-            "t={unix_ms} ticks={} mean_ms={mean:.2} max_ms={max:.2} p99_ms={p99:.2} players={} chunks={} mobs={} items={} orbs={} block_entities={} java_ms={java_ms:.2} java_pct={java_pct:.1} spans={spans}",
+            "t={unix_ms} ticks={} mean_ms={mean:.2} max_ms={max:.2} p99_ms={p99:.2} players={} chunks={} mobs={} items={} orbs={} block_entities={} java_ms={java_ms:.2} java_pct={java_pct:.1} entity_nbt_builds={nbt_builds} entity_nbt_loads={nbt_loads} spans={spans}",
             ticks.len(),
             load.players,
             load.chunks,

@@ -2,8 +2,8 @@
 //! Entities, on live views: queries answered with ids and groups, and every setter of a backed view written through to native.
 
 use super::super::java_entities::{
-    AI, AIR, EQUIPMENT, FIRE, FLAGS, HEALTH, ITEM, MOTION, NAME, POSITION, REMOVAL, RIDING,
-    Removal, SPECIES, uuid_bits,
+    AI, AIR, EQUIPMENT, FIELD_WRITES, FIRE, FLAGS, HEALTH, ITEM, MOTION, NAME, POSITION, REMOVAL,
+    RIDING, Removal, SPECIES, Via, take_settled, uuid_bits,
 };
 use super::*;
 use horizon_core::nbt::{Compound, Tag};
@@ -56,16 +56,16 @@ fn equipment_slot(ordinal: i32) -> Option<EquipmentSlot> {
     })
 }
 
-fn handle(game: &Game<'static>, id: Ent) -> Option<EntityRef> {
+fn handle(game: &Game<'_>, id: Ent) -> Option<EntityRef> {
     game.entity(id.0)
 }
 
-fn after(game: &mut Game<'static>, id: Ent, groups: u32) {
+fn after(game: &mut Game<'_>, id: Ent, groups: u32) {
     game.java_refresh_entity(id.0, groups);
 }
 
 /// `Entity.remove(reason)`: native removes for a kill or a discard; the unloading reasons are the game's own.
-fn remove(game: &mut Game<'static>, id: Ent, why: Removal) {
+fn remove(game: &mut Game<'_>, id: Ent, why: Removal) {
     let reason = match why {
         Removal::Killed => RemovalReason::Killed,
         Removal::Discarded => RemovalReason::Discarded,
@@ -82,14 +82,14 @@ fn remove(game: &mut Game<'static>, id: Ent, why: Removal) {
     }
 }
 
-fn kill(game: &mut Game<'static>, id: Ent) {
+fn kill(game: &mut Game<'_>, id: Ent) {
     if let Some(t) = game.java_target(id.0) {
         game.kill_target(t);
     }
     after(game, id, HEALTH | REMOVAL);
 }
 
-fn hurt(game: &mut Game<'static>, id: Ent, source: &Source, amount: f32) -> bool {
+fn hurt(game: &mut Game<'_>, id: Ent, source: &Source, amount: f32) -> bool {
     let Some(e) = handle(game, id) else {
         return false;
     };
@@ -111,7 +111,7 @@ fn hurt(game: &mut Game<'static>, id: Ent, source: &Source, amount: f32) -> bool
     hurt
 }
 
-fn motion(game: &mut Game<'static>, id: Ent, v: [f64; 3], add: bool) {
+fn motion(game: &mut Game<'_>, id: Ent, v: [f64; 3], add: bool) {
     let Some(e) = handle(game, id) else { return };
     let v = if add {
         let now = game.entity_velocity(e).unwrap_or([0.0; 3]);
@@ -124,19 +124,19 @@ fn motion(game: &mut Game<'static>, id: Ent, v: [f64; 3], add: bool) {
     }
 }
 
-fn place(game: &mut Game<'static>, id: Ent, at: [f64; 3], facing: Option<[f32; 2]>) {
+fn place(game: &mut Game<'_>, id: Ent, at: [f64; 3], facing: Option<[f32; 2]>) {
     if game.java_set_position(id.0, at, facing) {
         after(game, id, POSITION);
     }
 }
 
-fn teleport(game: &mut Game<'static>, id: Ent, at: [f64; 3], facing: Option<[f32; 2]>) {
+fn teleport(game: &mut Game<'_>, id: Ent, at: [f64; 3], facing: Option<[f32; 2]>) {
     if handle(game, id).is_some_and(|e| game.entity_teleport_to(e, at, facing)) {
         after(game, id, POSITION | RIDING);
     }
 }
 
-fn fire(game: &mut Game<'static>, id: Ent, ticks: i32, raise_only: bool) {
+fn fire(game: &mut Game<'_>, id: Ent, ticks: i32, raise_only: bool) {
     let Some(e) = handle(game, id) else { return };
     if raise_only && game.entity_fire_ticks(e).is_some_and(|now| now >= ticks) {
         return;
@@ -146,7 +146,7 @@ fn fire(game: &mut Game<'static>, id: Ent, ticks: i32, raise_only: bool) {
     }
 }
 
-fn rotate(game: &mut Game<'static>, id: Ent, yaw: Option<f32>, pitch: Option<f32>) {
+fn rotate(game: &mut Game<'_>, id: Ent, yaw: Option<f32>, pitch: Option<f32>) {
     let Some(e) = handle(game, id) else { return };
     let now = game.entity_rotation(e).unwrap_or([0.0; 2]);
     if game.entity_set_rotation(e, yaw.unwrap_or(now[0]), pitch.unwrap_or(now[1])) {
@@ -154,7 +154,20 @@ fn rotate(game: &mut Game<'static>, id: Ent, yaw: Option<f32>, pitch: Option<f32
     }
 }
 
-fn patch(game: &mut Game<'static>, id: Ent, groups: u32, f: impl FnOnce(&mut Compound)) -> bool {
+/// The saved-form write of `key`, which `FIELD_WRITES` must list as an `Nbt` row.
+fn patch(
+    game: &mut Game<'_>,
+    id: Ent,
+    key: &str,
+    groups: u32,
+    f: impl FnOnce(&mut Compound),
+) -> bool {
+    debug_assert!(
+        FIELD_WRITES
+            .iter()
+            .any(|(k, via)| *k == key && matches!(via, Via::Nbt(_))),
+        "{key} has an ari setter"
+    );
     let done = game.java_patch(id.0, f);
     if done {
         after(game, id, groups);
@@ -162,7 +175,28 @@ fn patch(game: &mut Game<'static>, id: Ent, groups: u32, f: impl FnOnce(&mut Com
     done
 }
 
-fn stop_riding(game: &mut Game<'static>, id: Ent) {
+/// `Entity.setCustomName` through ari's setter, from the component Java's `Flat` saved.
+fn set_custom_name(game: &mut Game<'_>, id: Ent, name: Option<&Tag>) -> bool {
+    let name = name.map(horizon_client::component::name_text);
+    let named = handle(game, id).is_some_and(|e| game.entity_set_custom_name(e, name));
+    if named {
+        game.java_refresh_entity(id.0, NAME);
+    }
+    named
+}
+
+/// `ItemEntity.makeFakeItem`: `setNeverPickUp`, then the age, which ari has no setter for.
+fn make_fake_item(game: &mut Game<'_>, id: Ent) -> bool {
+    let Some(item) = handle(game, id).and_then(|e| game.item_entity(e)) else {
+        return false;
+    };
+    game.item_entity_set_never_pickup(item)
+        && patch(game, id, "Age", ITEM, |map| {
+            map.insert("Age".into(), Tag::Short(5999));
+        })
+}
+
+fn stop_riding(game: &mut Game<'_>, id: Ent) {
     let Some(e) = handle(game, id) else { return };
     let vehicle = game.entity_vehicle(e);
     if game.entity_stop_riding(e) {
@@ -174,7 +208,7 @@ fn stop_riding(game: &mut Game<'static>, id: Ent) {
 }
 
 /// `Entity.thunderHit`: one more fire tick, eight seconds of fire on an entity not burning, then the bolt's damage.
-fn thunder_hit(game: &mut Game<'static>, id: Ent, bolt: &[u8]) {
+fn thunder_hit(game: &mut Game<'_>, id: Ent, bolt: &[u8]) {
     let (Some((damage, _)), Some(e)) = (Game::java_bolt_hit(bolt), handle(game, id)) else {
         return;
     };
@@ -195,6 +229,12 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     "(I)[B" =>
     fn entities_query_id(game, id: i32) -> Bytes {
         Bytes(game.java_entity_by_id(id as u32))
+    }
+
+    "dev/horizonlab/javamods/boot/EntityViews".settled
+    "()[B" =>
+    fn entities_settled(_game) -> Bytes {
+        Bytes(take_settled())
     }
 
     "dev/horizonlab/javamods/boot/EntityViews".spawn
@@ -564,10 +604,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     "net/minecraft/world/entity/item/ItemEntity".makeFakeItem
     "()V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
     fn item_make_fake(game, id: Ent) -> () {
-        patch(game, id, ITEM, |map| {
-            map.insert("PickupDelay".into(), Tag::Short(32767));
-            map.insert("Age".into(), Tag::Short(5999));
-        });
+        make_fake_item(game, id);
     }
 
     "net/minecraft/world/entity/item/ItemEntity".setTarget
@@ -687,7 +724,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     "net/minecraft/world/entity/animal/sheep/Sheep".setColor
     "(Lnet/minecraft/world/item/DyeColor;)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
     fn sheep_set_color(game, id: Ent, color: i32) -> () {
-        patch(game, id, FLAGS, |map| {
+        patch(game, id, "Color", FLAGS, |map| {
             map.insert("Color".into(), Tag::Byte(color as i8));
         });
     }
@@ -696,14 +733,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     "(Lnet/minecraft/network/chat/Component;)V" if "@dev/horizonlab/javamods/boot/EntityViews.backed" =>
     fn entity_set_custom_name(game, id: Ent, name: Bytes) -> () {
         let name = java_mods::read_tag(&name.0).and_then(|t| t.get("text").cloned());
-        patch(game, id, NAME, |map| match name {
-            Some(name) => {
-                map.insert("CustomName".into(), name);
-            }
-            None => {
-                map.remove(&"CustomName".into());
-            }
-        });
+        set_custom_name(game, id, name.as_ref());
     }
 
     "net/minecraft/world/entity/Entity".setCustomNameVisible
@@ -737,7 +767,121 @@ horizon_java_host::java_bridges! { table for Game<'static> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::java_entities::take_nbt_counts;
     use super::*;
+    use crate::game::native_entity_refs::tests::with_game;
+    use horizon_client::mobs::Mob;
+
+    fn push_mob(game: &mut Game<'_>, id: u32, kind: &str) {
+        let kind = game.res.mob_types().get(kind).unwrap().clone();
+        game.mobs
+            .push(Mob::new(id, kind, Vec3::new(0.5, 70.0, 0.5), 0.0));
+    }
+
+    /// What a tracker and a save see of an entity: its saved form without its UUID, and a mob's synched data and sync flag.
+    fn seen(game: &mut Game<'_>, id: u32, hub: &horizon_client::lan::hub::Hub) -> String {
+        let t = game.java_target(id).unwrap();
+        let mut tag = game.command_target_nbt(t).unwrap();
+        if let Tag::Compound(map) = &mut tag {
+            map.remove(&"UUID".into());
+        }
+        let mob = game.mobs.iter().find(|m| m.id == id).map(|m| {
+            let (mut meta, mut defaults) = (Vec::new(), Vec::new());
+            crate::game::lan::mob_meta(m, hub, None, 0, &mut meta, &mut defaults);
+            format!("{meta:?} {defaults:?} sync {}", m.needs_sync)
+        });
+        format!("{tag:?} {mob:?}")
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn java_entity_setters_write_what_the_nbt_patch_wrote() {
+        with_game(|game| {
+            game.options.dedicated = Some(Vec::new());
+            let hub = crate::game::lan::tests::meta_hub("JavaEntitySetters");
+            let name = Tag::compound([
+                ("text", Tag::String("Bob".into())),
+                ("color", Tag::String("red".into())),
+            ]);
+            for (key, via) in FIELD_WRITES {
+                let Via::Setter(_) = via else { continue };
+                match key {
+                    "CustomName" => {
+                        for (a, b, name) in [(12, 13, Some(&name)), (14, 15, None)] {
+                            push_mob(game, a, "minecraft:zombie");
+                            push_mob(game, b, "minecraft:zombie");
+                            for id in [a, b] {
+                                set_custom_name(game, Ent(id), Some(&Tag::String("old".into())));
+                                game.mobs.iter_mut().for_each(|m| m.needs_sync = false);
+                            }
+                            assert!(game.java_patch(a, |map| match name {
+                                Some(n) => {
+                                    map.insert("CustomName".into(), n.clone());
+                                }
+                                None => {
+                                    map.remove(&"CustomName".into());
+                                }
+                            }));
+                            assert!(set_custom_name(game, Ent(b), name));
+                            assert_eq!(seen(game, a, &hub), seen(game, b, &hub), "{key}");
+                        }
+                    }
+                    "PickupDelay" => {
+                        let stack = horizon_client::items::ItemStack::new("minecraft:stone", 3);
+                        game.spawn_item(stack.clone(), [0.0, 70.0, 0.0], [0.0; 3], 0);
+                        game.spawn_item(stack, [0.0, 70.0, 0.0], [0.0; 3], 0);
+                        let [a, b] = [game.dropped[0].id, game.dropped[1].id];
+                        game.dropped[1].rotation = game.dropped[0].rotation;
+                        assert!(game.java_patch(a, |map| {
+                            map.insert("PickupDelay".into(), Tag::Short(32767));
+                            map.insert("Age".into(), Tag::Short(5999));
+                        }));
+                        assert!(make_fake_item(game, Ent(b)));
+                        assert_eq!(seen(game, a, &hub), seen(game, b, &hub), "{key}");
+                    }
+                    other => panic!("no differential write for {other}"),
+                }
+            }
+        });
+    }
+
+    /// Position, motion, health, air and a flag on 50 mobs every tick for 100 ticks: no saved form is built or loaded.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn java_entity_setters_build_no_saved_form() {
+        with_game(|game| {
+            game.options.dedicated = Some(Vec::new());
+            for id in 100..150 {
+                push_mob(game, id, "minecraft:zombie");
+            }
+            take_nbt_counts();
+            take_settled();
+            let mut settled = 0;
+            for tick in 0..100 {
+                let v = f64::from(tick);
+                for id in 100..150 {
+                    place(game, Ent(id), [v, 70.0, 0.5], None);
+                    motion(game, Ent(id), [0.0, 0.1, v], false);
+                    if let Some(l) = handle(game, Ent(id)).and_then(|e| game.living(e))
+                        && game.living_set_health(l, 10.0 + (tick % 10) as f32)
+                    {
+                        after(game, Ent(id), HEALTH);
+                    }
+                    if let Some(e) = handle(game, Ent(id)) {
+                        game.entity_set_air_supply(e, 300 - tick);
+                    }
+                    after(game, Ent(id), AIR);
+                    if handle(game, Ent(id)).is_some_and(|e| game.entity_set_silent(e, tick % 2 == 0)) {
+                        after(game, Ent(id), FLAGS);
+                    }
+                }
+                let bytes = take_settled();
+                settled += horizon_java_host::wire::In(&bytes).int().unwrap_or(0);
+            }
+            assert_eq!(settled, 5 * 50 * 100);
+            assert_eq!(take_nbt_counts(), (0, 0));
+        });
+    }
 
     #[test]
     fn a_java_path_type_ordinal_names_the_same_kind() {

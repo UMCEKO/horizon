@@ -132,7 +132,6 @@ public final class GameBridge {
         Crossing.game("entity_added", GameBridge::entityAdded);
         Crossing.game("entity_left", GameBridge::entityLeft);
         Crossing.game("player_level", GameBridge::playerLevel);
-        Crossing.game("entity_refresh", GameBridge::entityRefresh);
         Crossing.game("entities_save", GameBridge::entitiesSave);
         Crossing.game("block_entities_save", GameBridge::blockEntitiesSave);
         Crossing.game("chunks_changed", GameBridge::chunksChanged);
@@ -1010,15 +1009,6 @@ public final class GameBridge {
         EntityViews.debug(player, "left " + reason);
         // A player view lives on through a change of level or a respawn; only a logout ends it.
         if (reason != Entity.RemovalReason.UNLOADED_WITH_PLAYER) ((dev.horizonlab.javamods.boot.mixin.EntityAccess) player).horizon$removal(null);
-    }
-
-    /** A bridge changed a native entity: the group bytes of what it wrote reach its view. */
-    private static byte[] entityRefresh(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
-        var level = levelOf(in);
-        int id = in.readInt();
-        EntityViews.refresh(level, id, in.readInt(), in);
-        return effects();
     }
 
     /** The Java-owned keys of the listed entities' views, at native's save of them. */
