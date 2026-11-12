@@ -41,14 +41,14 @@ public final class NativeSoundsCheck {
         var bus = BusBuilder.builder().build();
         bus.start();
         check(!EventPosts.listened(bus, PlaySoundEvent.class), "an empty bus has no listener");
-        bus.addListener(PlaySoundEvent.class, event -> {});
-        EventPosts.own(PlaySoundEvent.class);
-        check(!EventPosts.listened(bus, PlaySoundEvent.class), "Horizon's own listener does not count");
         bus.addListener(PlaySoundEvent.class, event -> {
             String path = event.getSound().getIdentifier().getPath();
             if (path.equals("cancel")) event.setSound(null);
             else if (path.equals("louder")) event.setSound(new SimpleSoundInstance(event.getSound().getIdentifier(), SoundSource.BLOCKS, 0.75F, 2.0F, RandomSource.create(), false, 0, SoundInstance.Attenuation.LINEAR, 9, 8, 7, false));
         });
+        check(!EventPosts.listened(bus, PlaySoundEvent.class), "a listener of Horizon's own package does not count");
+        // A consumer whose class is outside Horizon stands in for a mod's listener.
+        bus.addListener(PlaySoundEvent.class, java.util.stream.Stream.<PlaySoundEvent>builder());
         check(EventPosts.listened(bus, PlaySoundEvent.class), "a mod's PlaySoundEvent listener is found");
         java.util.function.UnaryOperator<SoundInstance> post = sound -> {
             var event = new PlaySoundEvent(null, sound);
