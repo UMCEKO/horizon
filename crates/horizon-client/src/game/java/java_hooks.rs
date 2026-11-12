@@ -461,6 +461,39 @@ impl Game<'_> {
         let _ = (stack, claimed);
     }
 
+    /// Whether a Java mod registered this particle type, which `/particle` then runs in Java.
+    pub(super) fn java_hook_particle_owned(&self, name: &str) -> bool {
+        #[cfg(feature = "java-mods")]
+        return super::java_particles::java_particle_owned(name);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = name;
+            false
+        }
+    }
+
+    /// `/particle` of a Java mod's type: vanilla's codec and sends in Java; the players reached, or the codec's error.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn java_hook_server_particles(
+        &mut self,
+        dim: &str,
+        spec: &str,
+        pos: [f64; 3],
+        delta: [f32; 3],
+        speed: f32,
+        count: i32,
+        force: bool,
+        viewers: &[u128],
+    ) -> Result<i32, String> {
+        #[cfg(feature = "java-mods")]
+        return self.java_server_particles(dim, spec, pos, delta, speed, count, force, viewers);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (dim, spec, pos, delta, speed, count, force, viewers);
+            Err("no Java".into())
+        }
+    }
+
     /// `LevelTickEvent` before (`post` false) and after a level's tick.
     pub(super) fn java_hook_level_tick(&mut self, post: bool) {
         #[cfg(feature = "java-mods")]

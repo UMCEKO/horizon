@@ -553,6 +553,12 @@ def bridges(args):
         send('wait 5')
         send('key escape tap')
         send('wait 3')
+        ok = 'Displaying particle' in send('command particle horizon_java_test:spark ~ ~1 ~ 0 0 0 0 3')
+        print(f"  particle_mod_type: {'ok' if ok else 'WRONG'}", flush=True)
+        wrong.extend([] if ok else ['particle_mod_type'])
+        ok = 'Unknown particle' in send('command particle horizon_java_test:nope ~ ~1 ~')
+        print(f"  particle_unknown: {'ok' if ok else 'WRONG'}", flush=True)
+        wrong.extend([] if ok else ['particle_unknown'])
         positions.append((x, y, z, base))
 
     def again(send):
