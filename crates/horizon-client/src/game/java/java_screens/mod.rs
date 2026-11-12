@@ -142,6 +142,8 @@ enum Input<'a> {
     Toasts(&'a [(i32, bool, i64)]),
     /// The window's Notification Time option.
     NotificationTime(f64),
+    /// The window's crosshair target for the block outline, told when it changes.
+    Hit(&'a super::java_world_renders::OutlineHit),
 }
 
 impl Input<'_> {
@@ -167,6 +169,7 @@ impl Input<'_> {
             Input::ShellLayout(_) => 16,
             Input::Toasts(_) => 26,
             Input::NotificationTime(_) => 27,
+            Input::Hit(_) => 28,
         };
         out.0.push(kind);
         match *self {
@@ -230,6 +233,7 @@ impl Input<'_> {
                 }
             }
             Input::NotificationTime(time) => out.double(time),
+            Input::Hit(hit) => super::java_world_renders::write_hit(out, hit),
         }
     }
 }
@@ -268,6 +272,7 @@ struct Sent {
     motion: Option<Motion>,
     particles: Option<i32>,
     notification_time: Option<f64>,
+    hit: Option<super::java_world_renders::OutlineHit>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1109,6 +1114,7 @@ impl Game<'_> {
         let layout = (kind != 0).then(|| self.java_shell_layout());
         let camera = self.java_world_camera();
         let camera_type = self.camera_type as u8;
+        let hit = self.java_outline_hit();
         self.java_publish_client_world();
         let (left, arrived) = self.java_client_chunk_changes();
         CLIENT.with_borrow_mut(|c| {
@@ -1160,6 +1166,11 @@ impl Game<'_> {
             {
                 c.sent.camera = Some((block, view, camera_type));
                 Input::Camera(at, view, camera_type).write(&mut events);
+                count += 1;
+            }
+            if c.sent.hit != Some(hit) {
+                c.sent.hit = Some(hit);
+                Input::Hit(&hit).write(&mut events);
                 count += 1;
             }
             for group in c.animate.drain(..) {
@@ -1297,7 +1308,7 @@ fn trimmed_advances(mut advances: Vec<f32>, missing: f32) -> Vec<f32> {
 }
 
 /// `Direction.get3DDataValue` of a face's normal.
-fn face_index(face: [i32; 3]) -> i32 {
+pub(super) fn face_index(face: [i32; 3]) -> i32 {
     match face {
         [0, -1, 0] => 0,
         [0, 1, 0] => 1,
@@ -1375,6 +1386,26 @@ mod tests {
         assert_eq!(out.0[0], 13);
         assert_eq!(out.0.len(), 1 + 3 * 8 + 4 * 4 + 1);
         assert_eq!(out.0[41], 2);
+    }
+
+    #[test]
+    fn a_hit_input_is_its_kind_then_the_block_and_the_outline_gate() {
+        let hit = super::super::java_world_renders::OutlineHit {
+            block: Some(([1, 64, -2], [0, 1, 0], [1.5, 65.0, -1.5])),
+            render: true,
+            high_contrast: false,
+        };
+        let mut out = Out::default();
+        Input::Hit(&hit).write(&mut out);
+        let mut expected = vec![28u8, 1];
+        // `BlockPos.asLong` of (1, 64, -2): x << 38 | (z & 0x3FFFFFF) << 12 | y.
+        expected.extend(((1i64 << 38) | ((-2i64 & 0x3FF_FFFF) << 12) | 64).to_be_bytes());
+        expected.extend(1i32.to_be_bytes());
+        for v in [1.5f64, 65.0, -1.5] {
+            expected.extend(v.to_be_bytes());
+        }
+        expected.extend([1, 0]);
+        assert_eq!(out.0, expected);
     }
 
     fn segments_of(sizes: &[(usize, u8)]) -> Out {

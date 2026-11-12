@@ -30,7 +30,7 @@ impl Game<'_> {
             light: &light,
             visible: &visible,
         };
-        world_renders::draw(&frame, world);
+        world_renders::draw(&frame, world, false);
         out.append(&mut world.entities);
     }
 }

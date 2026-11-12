@@ -217,6 +217,8 @@ public final class BlockRenders {
         Matrix3f normals;
         /** `ItemStackRenderState.FoilType` ordinal, for a recorded item. */
         int foil;
+        /** Submitted by a mod's block outline renderer. */
+        boolean outline;
     }
 
     record Quad(String texture, float[] xyzuv, int[] color, int[] light, float[] normal, boolean blended) {}

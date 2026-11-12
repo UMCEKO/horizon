@@ -17,7 +17,9 @@ import dev.horizonlab.javamods.boot.BlockRenders.Line;
 import dev.horizonlab.javamods.boot.BlockRenders.Quad;
 import dev.horizonlab.javamods.boot.RecordingDevice.RecordedDraw;
 import dev.horizonlab.javamods.boot.mixin.CameraAccess;
+import dev.horizonlab.javamods.boot.mixin.LevelExtractorAccess;
 import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -41,15 +43,21 @@ import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.client.renderer.oit.OitStage;
+import net.minecraft.client.renderer.state.level.BlockOutlineRenderState;
 import net.minecraft.client.renderer.state.OptionsRenderState;
 import net.minecraft.client.renderer.state.level.LevelRenderState;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.level.dimension.DimensionType;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.Event;
+import net.neoforged.bus.api.EventPriority;
 import net.neoforged.neoforge.client.IRenderableSection;
+import net.neoforged.neoforge.client.event.ExtractBlockOutlineRenderStateEvent;
 import net.neoforged.neoforge.client.event.ExtractLevelRenderStateEvent;
 import net.neoforged.neoforge.client.event.PrepareRenderBuffersEvent;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
@@ -71,6 +79,8 @@ public final class WorldFrame {
     static final byte OPAQUE = 0, TRANSLUCENT = 1, AFTER_TRANSLUCENT = 2, ADDITIVE = 3, SEE_THROUGH = 4, LINES = 5, LINES_ON_TOP = 6, SKY = 7, CLOUDS = 8, WEATHER = 9;
     /** A piece's flag for positions relative to the camera, not the world. */
     static final int ANCHORED = 4;
+    /** A piece's flag for what a mod's block outline renderer submitted or drew. */
+    static final int OUTLINE = 8;
 
     /** The recording device is the GPU while this is set, on the render thread only. */
     public static volatile boolean recording;
@@ -140,21 +150,127 @@ public final class WorldFrame {
         camera = cam;
     }
 
+    // --- The window's hit
+
+    /** The window's crosshair target as the outline sees it: no block when `pos` is null; whether `shouldRenderBlockOutline` holds, and the high contrast option. */
+    public record Hit(BlockPos pos, Direction face, Vec3 point, boolean render, boolean highContrast) {}
+
+    static final Hit NONE = new Hit(null, null, null, false, false);
+    private static Hit hit = NONE;
+
+    static Hit readHit(DataInputStream in) throws IOException {
+        BlockPos pos = null;
+        Direction face = null;
+        Vec3 point = null;
+        if (in.readBoolean()) {
+            pos = BlockPos.of(in.readLong());
+            face = Direction.from3DDataValue(in.readInt());
+            point = new Vec3(in.readDouble(), in.readDouble(), in.readDouble());
+        }
+        return new Hit(pos, face, point, in.readBoolean(), in.readBoolean());
+    }
+
+    static void writeHit(DataOutputStream out, Hit h) throws IOException {
+        out.writeBoolean(h.pos() != null);
+        if (h.pos() != null) {
+            out.writeLong(h.pos().asLong());
+            out.writeInt(h.face().get3DDataValue());
+            out.writeDouble(h.point().x);
+            out.writeDouble(h.point().y);
+            out.writeDouble(h.point().z);
+        }
+        out.writeBoolean(h.render());
+        out.writeBoolean(h.highContrast());
+    }
+
+    /** The window's hit, as the input events tell it; the high contrast option follows it as `PARTICLES` sets its own. */
+    static void hit(Hit h) {
+        hit = h;
+        var option = Minecraft.getInstance().options.highContrastBlockOutline();
+        if (option.get() != h.highContrast()) option.set(h.highContrast());
+    }
+
+    /** `Minecraft.hitResult` for the hit: a miss without a block, made as `ClientBridge.click` makes one. */
+    static HitResult result(Hit h, net.minecraft.client.player.LocalPlayer player) {
+        if (h.pos() != null) return new BlockHitResult(h.point(), h.face(), h.pos(), false);
+        return BlockHitResult.miss(player.getEyePosition(), Direction.getApproximateNearest(player.getLookAngle()), player.blockPosition());
+    }
+
     // --- Events, in the real client's order
 
     /** Everything an event of the frame is built from. */
     record Frame(LevelRenderer renderer, net.minecraft.client.renderer.extract.LevelExtractor extractor, LevelRenderState state, OptionsRenderState options, ClientLevel level, Camera camera,
-            Frustum frustum, DeltaTracker delta, SubmitNodeCollector collector, Matrix4fc viewRotation, Iterable<IRenderableSection> sections, RenderPass pass, boolean sky, boolean oit) {}
+            Frustum frustum, DeltaTracker delta, SubmitNodeCollector collector, Matrix4fc viewRotation, Iterable<IRenderableSection> sections, RenderPass pass, boolean sky, boolean oit,
+            boolean renderOutline) {}
 
     interface Sink {
         void post(String what, Event event);
     }
 
-    /** `ExtractLevelRenderStateEvent`, `SubmitCustomGeometryEvent`, `PrepareRenderBuffersEvent`, then the stages' events; `FrameGraphSetupEvent` needs a frame graph and its targets, which this client has none of. */
-    static void fire(Frame f, Sink sink, Runnable particles) {
+    /** The block outline's two steps: `LevelExtractor.extractBlockOutline`, and NeoForge's renderer loop in `LevelRenderer.submitBlockOutline`, which answers whether a renderer replaced vanilla's lines. */
+    interface Outline {
+        void extract(Frame f);
+
+        boolean submit(Frame f);
+    }
+
+    /** Whether a mod's renderer replaced vanilla's lines in the last recording. */
+    private static boolean replaced;
+    /** The last `ExtractBlockOutlineRenderStateEvent` the bus posted, as Horizon's lowest listener saw it. */
+    private static ExtractBlockOutlineRenderStateEvent lastOutline;
+    /** True only inside the mods' outline renderers: what they submit or draw is tagged `OUTLINE`. */
+    public static volatile boolean outlining;
+
+    static final Outline REAL = new Outline() {
+        @Override
+        public void extract(Frame f) {
+            if (!outlineNeeded) {
+                f.state().blockOutlineRenderState = null;
+                return;
+            }
+            lastOutline = null;
+            long start = Profile.ON ? System.nanoTime() : 0;
+            try {
+                ((LevelExtractorAccess) f.extractor()).horizon$extractBlockOutline(f.camera(), f.state());
+            } catch (Throwable t) {
+                System.err.println("Horizon: a Java mod threw during ExtractBlockOutlineRenderStateEvent");
+                t.printStackTrace();
+                f.state().blockOutlineRenderState = null;
+            }
+            if (Profile.ON) Profile.event("ExtractBlockOutlineRenderStateEvent", System.nanoTime() - start);
+        }
+
+        @Override
+        public boolean submit(Frame f) {
+            var st = f.state().blockOutlineRenderState;
+            if (st == null) return false;
+            outlining = true;
+            try {
+                return customOutline(st, f.collector(), new PoseStack(), f.state());
+            } catch (Throwable t) {
+                System.err.println("Horizon: a Java mod's block outline renderer threw");
+                t.printStackTrace();
+                return false;
+            } finally {
+                outlining = false;
+            }
+        }
+    };
+
+    /** NeoForge's loop at `submitBlockOutline`: every renderer runs; any true skips vanilla's lines. */
+    static boolean customOutline(BlockOutlineRenderState st, SubmitNodeCollector collector, PoseStack pose, LevelRenderState level) {
+        boolean replaced = false;
+        for (var r : st.customRenderers()) replaced |= r.render(st, collector, pose, level);
+        return replaced;
+    }
+
+    /** The block outline's extraction, `ExtractLevelRenderStateEvent`, the outline's renderers, `SubmitCustomGeometryEvent`, `PrepareRenderBuffersEvent`, then the stages' events; `FrameGraphSetupEvent` needs a frame graph and its targets, which this client has none of. */
+    static void fire(Frame f, Sink sink, Runnable particles, Outline outline) {
         stage = SUBMIT;
+        outline.extract(f);
         sink.post("ExtractLevelRenderStateEvent", new ExtractLevelRenderStateEvent(f.extractor(), f.state(), f.options(), f.level(), f.camera(), f.frustum(), f.delta()));
         stage = SUBMIT;
+        replaced = f.renderOutline() && outline.submit(f);
         sink.post("SubmitCustomGeometryEvent", new SubmitCustomGeometryEvent(f.state(), f.collector(), new PoseStack(), f.sections()));
         particles.run();
         sink.post("PrepareRenderBuffersEvent", new PrepareRenderBuffersEvent(f.renderer(), f.state(), f.options()));
@@ -339,7 +455,7 @@ public final class WorldFrame {
         return (float) (Math.round(v * 65536.0) / 65536.0);
     }
 
-    /** A piece's flags: 1 no cull, 2 writes depth, 4 anchored to the camera. */
+    /** A piece's flags: 1 no cull, 2 writes depth, 4 anchored to the camera, 8 outline. */
     static int flags(RenderPipeline pipeline) {
         return flags(pipeline.isCull(), pipeline.getDepthStencilState());
     }
@@ -357,13 +473,28 @@ public final class WorldFrame {
 
     // --- Recording
 
-    /** A recording's pieces, the meshes they name and what it costs on the wire. */
-    record Recording(List<Piece> pieces, Map<Long, Mesh> meshes) {}
+    /** A recording's pieces, the meshes they name, and the outline's answer (null when no mod changes outlines). */
+    record Recording(List<Piece> pieces, Map<Long, Mesh> meshes, Answer outline) {
+        Recording(List<Piece> pieces, Map<Long, Mesh> meshes) {
+            this(pieces, meshes, null);
+        }
+    }
+
+    static final byte NONE_KIND = 0, CANCELED = 1, VANILLA = 2, REPLACED = 3;
+
+    /** What the outline came to for the hit: no outline, a listener's cancel, vanilla's lines or a mod's renderer; `state` is the block's, 0 without one. */
+    record Answer(byte kind, Hit hit, int state) {}
+
+    static byte answerKind(BlockOutlineRenderState st, ExtractBlockOutlineRenderStateEvent last, boolean replaced) {
+        if (st == null) return last != null && last.isCanceled() ? CANCELED : NONE_KIND;
+        return replaced ? REPLACED : VANILLA;
+    }
 
     private static final Map<Long, Mesh> DECODED = new HashMap<>();
     private static final Map<Long, long[]> MESH_BUFFERS = new HashMap<>();
     private static final Set<Long> SENT = new HashSet<>();
     private static byte[] lastPieces = new byte[0];
+    private static Answer lastAnswer;
     private static int generation;
 
     private static long hash(long h, long v) {
@@ -417,6 +548,7 @@ public final class WorldFrame {
             } else {
                 pass = draw.quads.stream().anyMatch(Quad::blended) ? TRANSLUCENT : OPAQUE;
             }
+            if (draw.outline) flags |= OUTLINE;
             groups.computeIfAbsent(pass | flags << 8, k -> new ArrayList<>()).add(draw);
         }
         for (var group : groups.entrySet()) {
@@ -490,7 +622,7 @@ public final class WorldFrame {
             var t = d.transform();
             var c = t.colorModulator();
             var at = anchored ? toWorld(t, viewRotation, 0, 0, 0) : toWorld(t, viewRotation, cam.x(), cam.y(), cam.z());
-            pieces.add(placed(id, pass, flags(pipeline) | (anchored ? ANCHORED : 0), at, new float[] {c.x(), c.y(), c.z(), c.w()}));
+            pieces.add(placed(id, pass, flags(pipeline) | (anchored ? ANCHORED : 0) | (d.outline() ? OUTLINE : 0), at, new float[] {c.x(), c.y(), c.z(), c.w()}));
         }
     }
 
@@ -522,7 +654,10 @@ public final class WorldFrame {
     private static final List<Class<? extends Event>> EVENTS = List.of(ExtractLevelRenderStateEvent.class, SubmitCustomGeometryEvent.class, PrepareRenderBuffersEvent.class,
             RenderLevelStageEvent.AfterSky.class, RenderLevelStageEvent.AfterOpaqueBlocks.class, RenderLevelStageEvent.AfterOpaqueFeatures.class,
             RenderLevelStageEvent.AfterTranslucentFeatures.class, RenderLevelStageEvent.AfterTranslucentBlocks.class, RenderLevelStageEvent.AfterTranslucentParticles.class,
-            RenderLevelStageEvent.AfterWeather.class, RenderLevelStageEvent.AfterLevel.class, RenderLevelStageEvent.OitTranslucent.class);
+            RenderLevelStageEvent.AfterWeather.class, RenderLevelStageEvent.AfterLevel.class, RenderLevelStageEvent.OitTranslucent.class, ExtractBlockOutlineRenderStateEvent.class);
+
+    /** Whether a mod changes block outlines: a listener of their event, or a mod's handler merged into `extractBlockOutline`. */
+    static volatile boolean outlineNeeded;
 
     /** Whether the bus has a listener for any of the frame's events. */
     static boolean listened(net.neoforged.bus.api.IEventBus bus) {
@@ -531,8 +666,21 @@ public final class WorldFrame {
 
     /** Called once the mods have loaded. */
     static void decide() {
-        needed = listened(NeoForge.EVENT_BUS);
+        outlineNeeded = Listeners.listened(NeoForge.EVENT_BUS, ExtractBlockOutlineRenderStateEvent.class) || outlineMixed();
+        needed = listened(NeoForge.EVENT_BUS) || outlineNeeded;
         System.err.println("Horizon: " + (needed ? "a mod listens to the level frame's events; the world is recorded" : "no mod listens to the level frame's events; the world is not recorded"));
+        System.err.println("Horizon: " + (outlineNeeded ? "a mod changes block outlines; outlines are recorded" : "no mod changes block outlines"));
+        // Only when outlines are recorded: the listener census then lists the event, so the native hook hears the answer.
+        if (outlineNeeded) NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, true, ExtractBlockOutlineRenderStateEvent.class, e -> lastOutline = e);
+    }
+
+    /** Whether a mod's handler (not Horizon's) is merged into `LevelExtractor.extractBlockOutline`. */
+    private static boolean outlineMixed() {
+        for (var a : Routing.shapes(net.minecraft.client.renderer.extract.LevelExtractor.class)) {
+            if (a.mixin().startsWith("dev.horizonlab.")) continue;
+            if (a.targets().stream().anyMatch(t -> t.startsWith("extractBlockOutline"))) return true;
+        }
+        return false;
     }
 
     // --- Taking a recording
@@ -586,6 +734,7 @@ public final class WorldFrame {
         var frustum = new Frustum(viewRotation, projection);
         frustum.prepare(cam.x(), cam.y(), cam.z());
         access.horizon$frustum(frustum);
+        ((LevelExtractorAccess) minecraft.levelExtractor).horizon$setLevel(level);
         var game = renderer.gameRenderState();
         var state = game.levelRenderState;
         camera.extractRenderState(state.cameraRenderState, delta);
@@ -600,12 +749,13 @@ public final class WorldFrame {
         var windowState = game.windowRenderState;
         windowState.width = width;
         windowState.height = height;
+        windowState.appropriateLineWidth = Math.max(2.5F, width / 1920.0F * 2.5F);
         var options = game.optionsRenderState;
         var camState = state.cameraRenderState;
         boolean sky = level.dimensionType().skybox() != DimensionType.Skybox.NONE && camState.fogType != net.minecraft.world.level.material.FogType.POWDER_SNOW
                 && camState.fogType != net.minecraft.world.level.material.FogType.LAVA && !camState.entityRenderState.doesMobEffectBlockSky;
         return new Frame(levelRenderer(minecraft), minecraft.levelExtractor, state, options, level, camera, frustum, delta, capture, viewRotation, sections(frustum),
-                new RecordingRenderPass(DEVICE), sky, options.improvedTransparency && !state.renderWireframeTerrain);
+                new RecordingRenderPass(DEVICE), sky, options.improvedTransparency && !state.renderWireframeTerrain, hit.render());
     }
 
     private static LevelRenderer levelRenderer(Minecraft minecraft) throws ReflectiveOperationException {
@@ -688,19 +838,24 @@ public final class WorldFrame {
         recording = true;
         var stack = RenderSystem.getModelViewStack();
         stack.pushMatrix();
+        var previous = minecraft.hitResult;
+        minecraft.hitResult = result(hit, minecraft.player);
         try {
             var frame = frame(minecraft, level, cam, partial, delta, capture);
             stack.mul(frame.viewRotation());
             var out = new Recording(new ArrayList<>(), new LinkedHashMap<>());
             var pieces = new ArrayList<Piece>();
+            Answer answer = null;
             if (needed || ParticleRecorder.groupsLive()) {
-                fire(frame, WorldFrame::safely, () -> ParticleRecorder.submitGroups(frame.frustum(), frame.camera(), frame.state().worldPartialTicks, frame.collector(), frame.state().cameraRenderState));
+                fire(frame, WorldFrame::safely, () -> ParticleRecorder.submitGroups(frame.frustum(), frame.camera(), frame.state().worldPartialTicks, frame.collector(), frame.state().cameraRenderState), REAL);
+                if (outlineNeeded) answer = new Answer(answerKind(frame.state().blockOutlineRenderState, lastOutline, replaced), hit, hit.pos() == null ? 0 : Flat.raw(level.getBlockState(hit.pos())));
                 submitted(capture, cam, out, pieces);
                 drawn(cam, frame.viewRotation(), out, pieces);
             }
             Environments.record(frame, cam, partial, tick, out, pieces);
-            return new Recording(capped(pieces, out.meshes()), out.meshes());
+            return new Recording(capped(pieces, out.meshes()), out.meshes(), answer);
         } finally {
+            minecraft.hitResult = previous;
             stack.popMatrix();
             recording = false;
             stage = SUBMIT;
@@ -752,8 +907,36 @@ public final class WorldFrame {
     }
 
     /** The blob for a recording that differs from the last sent; null when it equals it and nothing is owed. Meshes Rust has and no longer needs are dropped, new ones sent up to the tick's budget. */
+    /** The outline's answer after the pieces: `0` without one, else `1`, its kind, its hit and the block's state. */
+    static byte[] trailer(Answer answer) throws IOException {
+        var bytes = new ByteArrayOutputStream();
+        var out = new DataOutputStream(bytes);
+        if (answer == null) {
+            out.writeByte(0);
+        } else {
+            out.writeByte(1);
+            out.writeByte(answer.kind());
+            writeHit(out, answer.hit());
+            out.writeInt(answer.state());
+        }
+        return bytes.toByteArray();
+    }
+
+    private static final String[] KINDS = {"none", "canceled", "vanilla", "replaced"};
+
+    /** With `HORIZON_JAVA_DEBUG`, one line when the answer's kind or block changes. */
+    private static void told(Answer answer) {
+        if (answer == null || System.getenv("HORIZON_JAVA_DEBUG") == null) return;
+        var pos = answer.hit().pos();
+        if (lastAnswer != null && lastAnswer.kind() == answer.kind() && java.util.Objects.equals(lastAnswer.hit().pos(), pos)) return;
+        System.err.println("Horizon: outline " + KINDS[answer.kind()] + " at " + (pos == null ? "-" : pos.getX() + " " + pos.getY() + " " + pos.getZ()));
+    }
+
     static byte[] blob(Recording recording) throws IOException {
-        byte[] pieces = bytes(recording.pieces());
+        byte[] trailer = trailer(recording.outline());
+        byte[] bare = bytes(recording.pieces());
+        byte[] pieces = Arrays.copyOf(bare, bare.length + trailer.length);
+        System.arraycopy(trailer, 0, pieces, bare.length, trailer.length);
         boolean same = Arrays.equals(pieces, lastPieces);
         // Buffers closed since: what was decoded from them is stale.
         for (long closed : DEVICE.closed) {
@@ -802,6 +985,9 @@ public final class WorldFrame {
         out.writeInt(fresh.size());
         for (var mesh : fresh) write(out, mesh);
         out.write(bytes(visible));
+        out.write(trailer);
+        told(recording.outline());
+        if (recording.outline() != null) lastAnswer = recording.outline();
         lastPieces = pendingMeshes ? new byte[0] : pieces;
         return bytes.toByteArray();
     }
@@ -812,6 +998,8 @@ public final class WorldFrame {
         MESH_BUFFERS.clear();
         SENT.clear();
         lastPieces = new byte[0];
+        lastAnswer = null;
+        hit = NONE;
         pendingMeshes = false;
         animating = false;
         ticksSinceFrame = 0;
