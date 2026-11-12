@@ -214,6 +214,7 @@ impl Game<'_> {
             fence,
         });
         self.uuid_for(id);
+        self.native_joins_flush(false, 0);
     }
     /// The authoritative fence of an active natural knot, until a last-holder
     /// notification or the tracking cleanup retires its physical owner.
