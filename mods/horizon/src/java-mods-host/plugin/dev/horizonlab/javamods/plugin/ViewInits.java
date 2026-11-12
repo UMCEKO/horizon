@@ -49,7 +49,8 @@ final class ViewInits implements ClassProcessor {
             "net/minecraft/server/level/ServerPlayer",
             "net/minecraft/server/network/ServerGamePacketListenerImpl",
             "net/minecraft/server/players/PlayerList");
-    private static final String CALLBACK = "org/spongepowered/asm/mixin/injection/callback/CallbackInfo";
+    private static final String LOOP = "net/minecraft/client/Minecraft";
+    private static final String CALLBACK ="org/spongepowered/asm/mixin/injection/callback/CallbackInfo";
     private static final Map<String, Set<String>> ORIGINAL_FIELDS = new HashMap<>();
 
     private final boolean before;
@@ -104,6 +105,30 @@ final class ViewInits implements ClassProcessor {
         return false;
     }
 
+    /** Whether the handler is an `@Inject` at `RETURN` or `TAIL` only: on `Minecraft`, `LoopEdges` runs those where the constructor returns. */
+    static boolean atEnd(MethodNode method) {
+        for (var list : List.of(nonNull(method.visibleAnnotations), nonNull(method.invisibleAnnotations))) {
+            for (AnnotationNode annotation : list) {
+                if (!annotation.desc.equals("Lorg/spongepowered/asm/mixin/injection/Inject;")) continue;
+                var ats = value(annotation, "at");
+                if (!(ats instanceof List<?> many) || many.isEmpty()) return false;
+                for (Object at : many) {
+                    if (!(at instanceof AnnotationNode one) || !(value(one, "value") instanceof String where) || !(where.equals("RETURN") || where.equals("TAIL"))) return false;
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static Object value(AnnotationNode annotation, String name) {
+        var values = nonNull(annotation.values);
+        for (int i = 0; i + 1 < values.size(); i += 2) {
+            if (name.equals(values.get(i))) return values.get(i + 1);
+        }
+        return null;
+    }
+
     private static <T> List<T> nonNull(List<T> list) {
         return list == null ? List.of() : list;
     }
@@ -122,7 +147,7 @@ final class ViewInits implements ClassProcessor {
             MethodNode kept = null;
             if (code[i] instanceof MethodInsnNode call && call.owner.equals(node.name)) {
                 MethodNode target = node.methods.stream().filter(m -> m.name.equals(call.name) && m.desc.equals(call.desc)).findFirst().orElse(null);
-                if (target != null && merged(target) && Type.getReturnType(call.desc) == Type.VOID_TYPE) {
+                if (target != null && merged(target) && Type.getReturnType(call.desc) == Type.VOID_TYPE && !(node.name.equals(LOOP) && atEnd(target))) {
                     kept = handler(node, constructor, call, out.size());
                 }
             } else if (code[i] instanceof FieldInsnNode put && put.getOpcode() == Opcodes.PUTFIELD && put.owner.equals(node.name) && !original.contains(put.name)) {

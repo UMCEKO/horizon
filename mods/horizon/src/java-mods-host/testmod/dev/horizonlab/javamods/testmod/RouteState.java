@@ -10,6 +10,9 @@ public final class RouteState {
     public static boolean canceled;
     public static int tails;
     public static int returns;
+    public static boolean initRan;
+    public static boolean runRan;
+    public static boolean initBeforeRun;
 
     /** The Java client's own inventory runs the same handlers; only the server's is routed. */
     public static boolean server(Inventory inventory) {

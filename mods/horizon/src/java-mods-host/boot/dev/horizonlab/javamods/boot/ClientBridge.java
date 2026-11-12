@@ -214,6 +214,7 @@ public final class ClientBridge {
             Lockstep.release(point, in.readNBytes(in.readInt()));
             return new byte[] {1};
         });
+        OPS.put("client_pause_sources", in -> LoopEdges.pauseSources());
     }
 
     private static Lockstep.Point point(int ordinal) {

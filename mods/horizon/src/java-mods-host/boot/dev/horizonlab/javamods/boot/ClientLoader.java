@@ -356,12 +356,12 @@ final class ClientLoader {
         Inits.run(gui, minecraft);
         ClientHooks.initClientHooks(minecraft, resources);
         ClientModLoader.finish();
-        reload(minecraft, resources, repository);
+        reload(minecraft, config, resources, repository);
         ClientBridge.install();
     }
 
     /** `createReload` over the selected packs with `Minecraft` as the reload's main executor, as its constructor starts it; `run` starting meanwhile says the client has started, and the end is `onResourceLoadFinished`'s. */
-    private static void reload(Minecraft minecraft, ReloadableResourceManager resources, PackRepository repository) throws Exception {
+    private static void reload(Minecraft minecraft, GameConfig config, ReloadableResourceManager resources, PackRepository repository) throws Exception {
         // The reload's main-thread steps run on the thread that builds the client, as on a real one; the render thread takes the client over after.
         set(minecraft, "gameThread", Thread.currentThread());
         var initial = Minecraft.class.getDeclaredField("RESOURCE_RELOAD_INITIAL_TASK");
@@ -369,6 +369,8 @@ final class ClientLoader {
         @SuppressWarnings("unchecked")
         var task = (CompletableFuture<Unit>) initial.get(null);
         var reload = resources.createReload(Util.backgroundExecutor().forName("resourceLoad"), minecraft, task, repository.openAllSelected());
+        // The constructor returns here with the reload running, and `Main` calls `run()` next.
+        LoopEdges.start(minecraft, config);
         ClientLifecycleHooks.handleClientStarted(minecraft);
         minecraft.managedBlock(reload::isDone);
         reload.checkExceptions();

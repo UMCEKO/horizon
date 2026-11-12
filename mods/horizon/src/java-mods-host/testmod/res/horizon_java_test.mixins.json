@@ -4,6 +4,6 @@
   "package": "dev.horizonlab.javamods.testmod.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": ["InventoryRouteMixin", "InventoryFreeSlotMixin"],
-  "client": ["ShadowRouteMixin"],
+  "client": ["ShadowRouteMixin", "MinecraftLoopMixin"],
   "injectors": {"defaultRequire": 1}
 }

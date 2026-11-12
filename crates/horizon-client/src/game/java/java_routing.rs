@@ -57,6 +57,42 @@ impl crate::game::Game<'_> {
     pub(in crate::game) fn java_player_arg(&mut self) -> PlayerArg {
         PlayerArg(self.java_use_request())
     }
+
+    /// `runTick`'s `pauseAllExcept(MUSIC, UI)` through the mods' `@ModifyArg`s: the engine's sources to keep, None while the route is off.
+    pub(in crate::game) fn java_pause_sources(&mut self) -> Option<Vec<usize>> {
+        const KEY: &str = "net/minecraft/client/Minecraft#runTick(Z)V";
+        gui_route!("net/minecraft/client/Minecraft#runTick(Z)V");
+        let routes = horizon_java_host::routes::get()?;
+        if !routes.get(routes.id(KEY)?).on {
+            return None;
+        }
+        let host = horizon_java_host::get()?;
+        let reply = horizon_java_host::bridge::with_active(self, || {
+            host.request("client_pause_sources", &[])
+        });
+        let kept = reply.as_deref().and_then(pause_sources);
+        if kept.is_none() {
+            log::error!("Horizon: the Java client gave no pause sources; pausing vanilla's");
+        }
+        kept
+    }
+}
+
+/// The `client_pause_sources` reply (`int n`, n `SoundSource` names) as the engine's source indices, matched by name.
+#[cfg(feature = "java-mods")]
+fn pause_sources(reply: &[u8]) -> Option<Vec<usize>> {
+    use horizon_client::settings::SOUND_SOURCES;
+    let mut r = horizon_java_host::wire::In(reply);
+    let n = r.int()?;
+    let mut kept = Vec::with_capacity(usize::try_from(n).ok()?);
+    for _ in 0..n {
+        let name = r.text()?;
+        match SOUND_SOURCES.iter().position(|s| *s == name) {
+            Some(index) => kept.push(index),
+            None => log::error!("Horizon: a mod kept an unknown sound source {name} playing through the pause"),
+        }
+    }
+    Some(kept)
 }
 
 #[cfg(feature = "java-mods")]

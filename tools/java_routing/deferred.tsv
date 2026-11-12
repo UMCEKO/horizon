@@ -3,8 +3,7 @@ net/minecraft/client/KeyboardHandler#handleDebugKeys(Lnet/minecraft/client/input
 net/minecraft/client/Minecraft#continueAttack(Z)V	spec: w12-coverage SPEC-22
 net/minecraft/client/Minecraft#handleKeybinds()V	spec: w12-coverage SPEC-22
 net/minecraft/client/Minecraft#resizeGui()V	spec: w12-coverage SPEC-22
-net/minecraft/client/Minecraft#run()V	spec: w12-coverage SPEC-22
-net/minecraft/client/Minecraft#runTick(Z)V	spec: w12-coverage SPEC-22
+net/minecraft/client/Minecraft#run()V	special: loop
 net/minecraft/client/gui/BundleMouseActions#onMouseScrolled(DDILnet/minecraft/world/item/ItemStack;)Z	owner: W5
 net/minecraft/client/gui/GuiGraphicsExtractor#containsPointInScissor(II)Z	owner: W5
 net/minecraft/client/gui/GuiGraphicsExtractor#item(Lnet/minecraft/world/entity/LivingEntity;Lnet/minecraft/world/level/Level;Lnet/minecraft/world/item/ItemStack;III)V	owner: W5
