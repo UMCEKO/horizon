@@ -1134,6 +1134,7 @@ impl Game<'_> {
         };
         let picked = self.as_guest(conn, |g| {
             let stack = stack(g)?;
+            #[cfg(not(feature = "java-mods"))]
             let infinite = g.creative;
             let mut cancel = false;
             g.native_player_pick_item(uuid, &name, from_entity, pos, entity_id, &mut cancel);
@@ -1141,7 +1142,7 @@ impl Game<'_> {
                 return None;
             }
             #[cfg(feature = "java-mods")]
-            g.pick_item_routed(&stack, infinite);
+            g.try_pick_item(&stack);
             #[cfg(not(feature = "java-mods"))]
             horizon_client::pick_item::pick(
                 &mut g.inventory[..36],
@@ -1151,6 +1152,8 @@ impl Game<'_> {
             );
             Some(())
         });
+        // With mods, `try_pick_item` sends the held slot itself, as `tryPickItem` does.
+        #[cfg(not(feature = "java-mods"))]
         if picked.flatten().is_some()
             && let Some(host) = self.lan.as_ref()
             && let Some(g) = host.hub.guests.iter().find(|g| g.conn == conn)
@@ -1162,6 +1165,8 @@ impl Game<'_> {
                 }),
             );
         }
+        #[cfg(feature = "java-mods")]
+        let _ = picked;
     }
 
     /// Whether the mods let a creative player set `slot` to `stack`

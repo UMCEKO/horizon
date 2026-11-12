@@ -94,6 +94,44 @@ pub(in crate::game) struct InputArg<'a>(pub &'a horizon_core::nbt::Tag);
 #[allow(dead_code)] // gated routes construct it
 pub(in crate::game) struct OutputArg;
 
+/// A `ServerboundPickItemFromBlockPacket`: its position and `includeData`.
+#[allow(dead_code)] // the pick handlers' gates construct it
+pub(in crate::game) struct PickBlockArg {
+    pub pos: horizon_core::position::BlockPos,
+    pub include_data: bool,
+}
+
+/// A `ServerboundPickItemFromEntityPacket`: the entity's id and `includeData`.
+#[allow(dead_code)] // the pick handlers' gates construct it
+pub(in crate::game) struct PickEntityArg {
+    pub id: i32,
+    pub include_data: bool,
+}
+
+/// A `ServerboundUseItemOnPacket`: the hand's ordinal, the hit and the sequence.
+#[allow(dead_code)] // the use-on handler's gate constructs it
+pub(in crate::game) struct UseOnArg {
+    pub hand: i32,
+    pub point: [f64; 3],
+    pub face: [i32; 3],
+    pub inside: bool,
+    pub pos: [i32; 3],
+    pub sequence: i32,
+}
+
+/// `Direction`'s ordinal (`Direction.from3DDataValue`) of a face's unit vector.
+#[allow(dead_code)] // the use-on handler's gate constructs it
+fn face_ordinal(face: [i32; 3]) -> f64 {
+    match face {
+        [0, -1, 0] => 0.0,
+        [0, 1, 0] => 1.0,
+        [0, 0, -1] => 2.0,
+        [0, 0, 1] => 3.0,
+        [-1, 0, 0] => 4.0,
+        _ => 5.0,
+    }
+}
+
 /// `InteractionResult` as a routed use method answers it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)] // the use paths read it as their specs gate them
@@ -360,6 +398,33 @@ mod gate {
         fn put(&self, out: &mut Out) {
             let tag = crate::game::java_mods::write_tag(self.0.clone());
             out.bytes(&tag.expect("a compound tag encodes as NBT"));
+        }
+    }
+    impl RouteArg for super::PickBlockArg {
+        fn put(&self, out: &mut Out) {
+            out.long(self.pos.pack());
+            out.bool(self.include_data);
+        }
+    }
+    impl RouteArg for super::PickEntityArg {
+        fn put(&self, out: &mut Out) {
+            out.int(self.id);
+            out.bool(self.include_data);
+        }
+    }
+    /// The hand, then the eight doubles `Flat.toBlockHitResult` reads, then the sequence.
+    impl RouteArg for super::UseOnArg {
+        fn put(&self, out: &mut Out) {
+            out.int(self.hand);
+            for v in self.point {
+                out.double(v);
+            }
+            out.double(super::face_ordinal(self.face));
+            out.double(f64::from(u8::from(self.inside)));
+            for v in self.pos {
+                out.double(f64::from(v));
+            }
+            out.int(self.sequence);
         }
     }
     impl RouteArg for super::OutputArg {
@@ -741,6 +806,44 @@ mod gate {
             RouteArg::put(&&source, &mut out);
             let bytes = In(&out.0).bytes().unwrap();
             assert_eq!(horizon_java_host::bridge::Source::read(bytes), Some(source));
+        }
+
+        #[test]
+        fn packet_args_write_the_fields_java_rebuilds_them_from() {
+            let mut out = Out::default();
+            RouteArg::put(
+                &super::super::PickBlockArg {
+                    pos: BlockPos::new(1, 2, 3),
+                    include_data: true,
+                },
+                &mut out,
+            );
+            RouteArg::put(
+                &super::super::PickEntityArg {
+                    id: 7,
+                    include_data: false,
+                },
+                &mut out,
+            );
+            RouteArg::put(
+                &super::super::UseOnArg {
+                    hand: 1,
+                    point: [1.5, 65.0, 4.5],
+                    face: [0, 1, 0],
+                    inside: true,
+                    pos: [1, 64, 4],
+                    sequence: 9,
+                },
+                &mut out,
+            );
+            let mut r = In(&out.0);
+            assert_eq!(r.long(), Some(BlockPos::new(1, 2, 3).pack()));
+            assert_eq!((r.bool(), r.int(), r.bool()), (Some(true), Some(7), Some(false)));
+            assert_eq!(r.int(), Some(1));
+            let hit: Vec<f64> = (0..8).filter_map(|_| r.double()).collect();
+            assert_eq!(hit, [1.5, 65.0, 4.5, 1.0, 1.0, 1.0, 64.0, 4.0]);
+            assert_eq!(r.int(), Some(9));
+            assert!(r.int().is_none());
         }
 
         #[test]

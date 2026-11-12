@@ -27,6 +27,10 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.NbtIo;
+import net.minecraft.network.protocol.game.ServerboundPickItemFromBlockPacket;
+import net.minecraft.network.protocol.game.ServerboundPickItemFromEntityPacket;
+import net.minecraft.network.protocol.game.ServerboundUseItemOnPacket;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
@@ -522,6 +526,9 @@ public final class Routing {
         if (type == ResourceKey.class) return (in, c) -> ResourceKey.create(ResourceKey.createRegistryKey(Identifier.parse(in.text())), Identifier.parse(in.text()));
         if (LEVELS.contains(type)) return (in, c) -> GameBridge.level(in.text());
         if (type == TeleportTransition.class) return (in, c) -> Flat.toTeleportTransition(in.readNBytes(in.readInt()));
+        if (type == ServerboundPickItemFromBlockPacket.class) return (in, c) -> new ServerboundPickItemFromBlockPacket(BlockPos.of(in.readLong()), in.readBoolean());
+        if (type == ServerboundPickItemFromEntityPacket.class) return (in, c) -> new ServerboundPickItemFromEntityPacket(in.readInt(), in.readBoolean());
+        if (type == ServerboundUseItemOnPacket.class) return (in, c) -> useItemOn(in);
         if (type == ValueInput.class) {
             return (in, c) -> {
                 var tag = NbtIo.read(new java.io.DataInputStream(new java.io.ByteArrayInputStream(in.readNBytes(in.readInt()))), NbtAccounter.unlimitedHeap());
@@ -536,6 +543,14 @@ public final class Routing {
             };
         }
         return null;
+    }
+
+    /** A `ServerboundUseItemOnPacket` as Rust writes it: the hand's ordinal, `Flat.toBlockHitResult`'s eight doubles, the sequence. */
+    static ServerboundUseItemOnPacket useItemOn(Crossing.In in) throws IOException {
+        var hand = in.readInt() == 0 ? InteractionHand.MAIN_HAND : InteractionHand.OFF_HAND;
+        var hit = new double[8];
+        for (int i = 0; i < hit.length; i++) hit[i] = in.readDouble();
+        return new ServerboundUseItemOnPacket(hand, Flat.toBlockHitResult(hit), in.readInt());
     }
 
     /** The writer for a return type, or null when there is none. */

@@ -83,6 +83,17 @@ horizon_java_host::java_bridges! { table for Game<'static> {
         game.java_refresh_player();
     }
 
+    route "net/minecraft/server/network/ServerGamePacketListenerImpl".tryPickItem
+    "(Lnet/minecraft/world/item/ItemStack;)V" =>
+    fn route_connection_try_pick_item(game, stack: Bytes) -> () {
+        if let Some(stack) = java_mods::read_tag(&stack.0)
+            .and_then(|tag| horizon_client::save::item_from_nbt(&tag))
+        {
+            game.try_pick_item_body(&stack);
+        }
+        game.java_refresh_player();
+    }
+
     "net/minecraft/server/level/ServerPlayer".teleportTo
     "(DDD)V" =>
     fn player_teleport_to(game, x: f64, y: f64, z: f64) -> () {

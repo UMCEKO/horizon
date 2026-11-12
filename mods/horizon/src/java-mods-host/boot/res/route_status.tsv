@@ -63,7 +63,6 @@ net/minecraft/client/renderer/fog/FogRenderer#setupFog(Lnet/minecraft/client/Cam
 net/minecraft/client/resources/language/LanguageManager#onResourceManagerReload(Lnet/minecraft/server/packs/resources/ResourceManager;)V	verdict: java-client
 net/minecraft/client/resources/model/BlockStateDefinitions#<clinit>	verdict: java-client
 net/minecraft/client/server/IntegratedServer#initServer()Z	spec: w12-coverage SPEC-20
-net/minecraft/client/sounds/MusicManager#tick()V	owner: W8
 net/minecraft/client/sounds/SoundEngine#refreshCategoryVolume(Lnet/minecraft/sounds/SoundSource;)V	special: sounds
 net/minecraft/client/sounds/SoundEngine#reload()V	special: sounds
 net/minecraft/core/component/BlockTransformer#transformBlock(Lnet/minecraft/world/item/context/UseOnContext;)Lnet/minecraft/world/InteractionResult;	spec: w12-coverage SPEC-13
@@ -90,7 +89,6 @@ net/minecraft/server/network/ServerConfigurationPacketListenerImpl#startConfigur
 net/minecraft/server/network/ServerGamePacketListenerImpl#handlePickItemFromBlock(Lnet/minecraft/network/protocol/game/ServerboundPickItemFromBlockPacket;)V	spec: w12-coverage SPEC-15
 net/minecraft/server/network/ServerGamePacketListenerImpl#handlePickItemFromEntity(Lnet/minecraft/network/protocol/game/ServerboundPickItemFromEntityPacket;)V	spec: w12-coverage SPEC-15
 net/minecraft/server/network/ServerGamePacketListenerImpl#handleUseItemOn(Lnet/minecraft/network/protocol/game/ServerboundUseItemOnPacket;)V	spec: w12-coverage SPEC-15
-net/minecraft/server/network/ServerGamePacketListenerImpl#tryPickItem(Lnet/minecraft/world/item/ItemStack;)V	spec: w12-coverage SPEC-15
 net/minecraft/server/players/PlayerList#placeNewPlayer(Lnet/minecraft/network/Connection;Lnet/minecraft/server/level/ServerPlayer;Lnet/minecraft/server/network/CommonListenerCookie;)V	spec: w12-coverage SPEC-21
 net/minecraft/util/filefix/fixes/DimensionStorageFileFix#makeFixer	verdict: out-of-scope
 net/minecraft/world/RandomizableContainer#setLootTable(Lnet/minecraft/resources/ResourceKey;J)V	spec: w12-coverage SPEC-19

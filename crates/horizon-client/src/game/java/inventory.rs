@@ -4,6 +4,7 @@
 use super::java_routing::{Recv, route};
 use super::*;
 use horizon_client::pick_item;
+use horizon_protocol::packets::play::{self, Clientbound as C};
 
 impl Game<'_> {
     /// `Inventory.setSelectedSlot`: the acting player's hotbar selection.
@@ -24,6 +25,31 @@ impl Game<'_> {
         {
             self.selected = slot;
         }
+    }
+
+    /// `ServerGamePacketListenerImpl.tryPickItem` for the acting guest.
+    pub(in crate::game) fn try_pick_item(&mut self, stack: &ItemStack) {
+        route!(
+            self,
+            "net/minecraft/server/network/ServerGamePacketListenerImpl#tryPickItem(Lnet/minecraft/world/item/ItemStack;)V",
+            Recv::Player,
+            (stack)
+        );
+        self.try_pick_item_body(stack);
+    }
+
+    /// `ServerGamePacketListenerImpl.tryPickItem`'s body: the pick, then the held slot goes back to the client.
+    pub(in crate::game) fn try_pick_item_body(&mut self, stack: &ItemStack) {
+        self.pick_item_routed(stack, self.creative);
+        let (Some(conn), Some(host)) = (self.lan_acting, self.lan.as_ref()) else {
+            return;
+        };
+        host.hub.send_to(
+            conn,
+            &C::SetHeldSlot(play::SetHeldSlot {
+                slot: self.selected as i32,
+            }),
+        );
     }
 
     /// `ServerGamePacketListenerImpl.tryPickItem`'s inventory part through the methods mods patch.
