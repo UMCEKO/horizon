@@ -1599,6 +1599,93 @@ mod tests {
         out.bool(false);
     }
 
+    fn glyph_entry(glyphs: &[(u32, i32, u8)], effects: &[(bool, i32)]) -> Vec<u8> {
+        let mut out = Out::default();
+        out.int(1);
+        out.0.push(GLYPHS);
+        for f in [0.0, 0.0, 1.0, 1.0] {
+            out.float(f);
+        }
+        out.int(glyphs.len() as i32);
+        for (n, &(code, shadow, flags)) in glyphs.iter().enumerate() {
+            out.int(code as i32);
+            out.text("minecraft:default");
+            out.float(6.0 * n as f32);
+            out.float(2.0);
+            out.int(0xffff_0000u32 as i32);
+            out.int(shadow);
+            out.0.push(flags);
+            out.float(1.0);
+            out.float(1.0);
+        }
+        out.int(effects.len() as i32);
+        for &(behind, color) in effects {
+            out.bool(behind);
+            for f in [0.0, 8.0, 6.0, 9.0] {
+                out.float(f);
+            }
+            out.int(color);
+            out.int(0);
+            out.float(0.0);
+        }
+        out.bool(false);
+        out.0
+    }
+
+    fn glyph_vertices(glyphs: &[(u32, i32, u8)], effects: &[(bool, i32)]) -> usize {
+        painted(&glyph_entry(glyphs, effects)).0.len()
+    }
+
+    #[test]
+    fn a_glyph_entry_draws_its_shadow_and_bold_copies() {
+        let plain = glyph_vertices(&[(0x41, 0, 0)], &[]);
+        assert!(plain > 0);
+        assert_eq!(glyph_vertices(&[(0x41, 0, 1)], &[]), plain * 2);
+        let shadowed = glyph_vertices(&[(0x41, 0xff3f_0000u32 as i32, 0)], &[]);
+        assert_eq!(shadowed, plain * 2);
+        assert_eq!(
+            glyph_vertices(&[(0x41, 0xff3f_0000u32 as i32, 1)], &[]),
+            plain * 4
+        );
+    }
+
+    #[test]
+    fn a_glyph_entry_draws_each_effect_once_and_a_clear_shadow_not_at_all() {
+        let none = glyph_vertices(&[], &[]);
+        assert_eq!(none, 0);
+        let one = glyph_vertices(&[], &[(false, 0xffff_0000u32 as i32)]);
+        assert!(one > 0);
+        assert_eq!(
+            glyph_vertices(&[], &[(false, 0xffff_0000u32 as i32), (true, 0x8000_0000u32 as i32)]),
+            one * 2
+        );
+        assert_eq!(glyph_vertices(&[], &[(false, 0)]), 0);
+    }
+
+    #[test]
+    fn a_text_run_with_its_own_shadow_colour_draws_that_shadow() {
+        let mut out = Out::default();
+        out.int(1);
+        out.0.push(TEXT);
+        for f in [0.0, 0.0, 1.0, 1.0] {
+            out.float(f);
+        }
+        out.int(0xffff_ffffu32 as i32);
+        out.bool(false);
+        out.int(0);
+        out.int(1);
+        out.text("A");
+        out.int(-1);
+        out.0.push(0);
+        out.text("");
+        out.bool(true);
+        out.int(0xff00_ff00u32 as i32);
+        out.bool(false);
+        let (vertices, _) = painted(&out.0);
+        let green = horizon_client::hud_layout::abgr(0xff00_ff00);
+        assert!(vertices.iter().any(|v| v.color == green));
+    }
+
     #[test]
     fn one_frame_request_is_in_flight_and_none_while_a_tick_runs() {
         let mut q = Sequence::default();

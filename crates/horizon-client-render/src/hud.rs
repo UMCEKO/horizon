@@ -2175,6 +2175,55 @@ impl HudBatch {
             front,
         )
     }
+    /// One glyph's quad at `(px + ox, py)`: sheared when italic, grown a little when bold; a glyph with no image as the missing outline.
+    #[allow(clippy::too_many_arguments)]
+    pub fn glyph_quad(
+        &mut self,
+        white: Rect,
+        g: &crate::font::Glyph,
+        px: f32,
+        py: f32,
+        ox: f32,
+        italic: bool,
+        bold: bool,
+        col: u32,
+    ) {
+        let shear = |v: f32| if italic { 1.0 - 0.25 * v } else { 0.0 };
+        let thick = if bold { 0.1 } else { 0.0 };
+        match g.rect {
+            Some(r) => {
+                let (x0, x1, y0, y1) = (
+                    px + ox + g.left,
+                    px + ox + g.right,
+                    py + g.top,
+                    py + g.bottom,
+                );
+                self.quad(
+                    [
+                        [x0 + shear(g.top) - thick, y0 - thick],
+                        [x1 + shear(g.top) + thick, y0 - thick],
+                        [x1 + shear(g.bottom) + thick, y1 + thick],
+                        [x0 + shear(g.bottom) - thick, y1 + thick],
+                    ],
+                    [[r.u0, r.v0], [r.u1, r.v0], [r.u1, r.v1], [r.u0, r.v1]],
+                    col,
+                );
+            }
+            None if g.right > 0.0 => {
+                // SpecialGlyphs.MISSING: a 5x8 outline.
+                let (bx, by) = (px + ox, py);
+                for (fx, fy, fw, fh) in [
+                    (0.0, 0.0, 5.0, 1.0),
+                    (0.0, 7.0, 5.0, 1.0),
+                    (0.0, 1.0, 1.0, 6.0),
+                    (4.0, 1.0, 1.0, 6.0),
+                ] {
+                    self.rect_uv(bx + fx, by + fy, fw, fh, white, col);
+                }
+            }
+            None => {}
+        }
+    }
     #[allow(clippy::too_many_arguments)]
     fn styled_text(
         &mut self,
@@ -2321,41 +2370,6 @@ impl HudBatch {
                     }
                     continue;
                 }
-                let shear = |v: f32| if *italic { 1.0 - 0.25 * v } else { 0.0 };
-                let thick = if *bold { 0.1 } else { 0.0 };
-                let draw = |batch: &mut Self, ox: f32| match g.rect {
-                    Some(r) => {
-                        let (x0, x1, y0, y1) = (
-                            px + ox + g.left,
-                            px + ox + g.right,
-                            py + g.top,
-                            py + g.bottom,
-                        );
-                        batch.quad(
-                            [
-                                [x0 + shear(g.top) - thick, y0 - thick],
-                                [x1 + shear(g.top) + thick, y0 - thick],
-                                [x1 + shear(g.bottom) + thick, y1 + thick],
-                                [x0 + shear(g.bottom) - thick, y1 + thick],
-                            ],
-                            [[r.u0, r.v0], [r.u1, r.v0], [r.u1, r.v1], [r.u0, r.v1]],
-                            col,
-                        );
-                    }
-                    None if g.right > 0.0 => {
-                        // SpecialGlyphs.MISSING: a 5x8 outline.
-                        let (bx, by) = (px + ox, py);
-                        for (fx, fy, fw, fh) in [
-                            (0.0, 0.0, 5.0, 1.0),
-                            (0.0, 7.0, 5.0, 1.0),
-                            (0.0, 1.0, 1.0, 6.0),
-                            (4.0, 1.0, 1.0, 6.0),
-                        ] {
-                            batch.rect_uv(bx + fx, by + fy, fw, fh, white, col);
-                        }
-                    }
-                    None => {}
-                };
                 let base = if has_shadow && !is_shadow { 0.03 } else { 0.0 };
                 let lift = |batch: &mut Self, start: usize, z: f32| {
                     if world {
@@ -2366,11 +2380,11 @@ impl HudBatch {
                 };
                 let glyph = self.vertices.len();
                 let start = self.vertices.len();
-                draw(self, 0.0);
+                self.glyph_quad(white, g, px, py, 0.0, *italic, *bold, col);
                 lift(self, start, base);
                 if *bold {
                     let start = self.vertices.len();
-                    draw(self, g.offset);
+                    self.glyph_quad(white, g, px, py, g.offset, *italic, *bold, col);
                     lift(self, start, base + 0.001);
                 }
                 let x0 = if *first { px - 1.0 } else { px };

@@ -190,6 +190,7 @@ public final class Routing {
         Routing.live = liveFlags;
         edges = edgeFlags;
         bin = bytes.toByteArray();
+        Glyphs.decide();
         System.err.println("Horizon: routes: " + on + " on (" + inert + " inert by guard), " + (ordered.size() - on) + " off, " + dropped + " changes dropped, confirmed in " + (System.nanoTime() - began) / 1_000_000 + " ms");
     }
 

@@ -9,6 +9,8 @@ import java.nio.charset.StandardCharsets;
 import com.mojang.renderpearl.api.pipeline.BlendFunction;
 import com.mojang.renderpearl.api.pipeline.PrimitiveTopology;
 import com.mojang.renderpearl.api.pipeline.RenderPipeline;
+import net.minecraft.client.gui.Font;
+import net.minecraft.client.gui.font.TextRenderable;
 import net.minecraft.client.gui.navigation.ScreenRectangle;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.renderer.state.gui.BlitRenderState;
@@ -27,7 +29,7 @@ import org.joml.Matrix3x2fc;
 
 /** A frame's GUI as the extractor submits it, in call order: quads with their texture's id, text with its styles, items; Rust draws them. */
 public final class Recorder extends GuiRenderState {
-    private static final int QUAD = 0, TEXT = 1, ITEM = 2, BLUR = 3;
+    private static final int QUAD = 0, TEXT = 1, ITEM = 2, BLUR = 3, GLYPHS = 5;
     private static final Field TEXT_TEXT = field("text"), TEXT_X = field("x"), TEXT_Y = field("y"), TEXT_COLOR = field("color"),
             TEXT_BACKGROUND = field("backgroundColor"), TEXT_SHADOW = field("dropShadow");
 
@@ -255,6 +257,10 @@ public final class Recorder extends GuiRenderState {
     public void addText(GuiTextRenderState state) {
         if (discard) return;
         try {
+            if (Glyphs.routed) {
+                glyphs(state);
+                return;
+            }
             var sequence = (FormattedCharSequence) TEXT_TEXT.get(state);
             out.writeByte(TEXT);
             pose(state.pose, TEXT_X.getInt(state), TEXT_Y.getInt(state));
@@ -281,12 +287,64 @@ public final class Recorder extends GuiRenderState {
                 out.writeInt(style.getColor() == null ? -1 : style.getColor().getValue() & 0xFFFFFF);
                 out.writeByte((style.isBold() ? 1 : 0) | (style.isItalic() ? 2 : 0) | (style.isUnderlined() ? 4 : 0) | (style.isStrikethrough() ? 8 : 0) | (style.isObfuscated() ? 16 : 0));
                 text(out, style.getFont() instanceof FontDescription.Resource resource ? resource.id().toString() : "");
+                Integer shadow = style.getShadowColor();
+                out.writeBoolean(shadow != null);
+                out.writeInt(shadow == null ? 0 : shadow);
             }
             scissor(state.scissor);
             count++;
         } catch (IOException | IllegalAccessException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    /** The text as vanilla's own `prepareText` made it, glyph by glyph, for a build whose mods patch the builder. */
+    private void glyphs(GuiTextRenderState state) throws IOException {
+        var glyphs = new java.util.ArrayList<Glyphs.Glyph>();
+        var effects = new java.util.ArrayList<Glyphs.Effect>();
+        var behind = new java.util.ArrayList<Boolean>();
+        state.ensurePrepared().visit(new Font.GlyphVisitor() {
+            @Override
+            public void acceptGlyph(TextRenderable.Styled glyph) {
+                if (glyph instanceof Glyphs.Glyph g) glyphs.add(g);
+            }
+
+            @Override
+            public void acceptEffect(TextRenderable effect) {
+                if (effect instanceof Glyphs.Effect e) {
+                    effects.add(e);
+                    behind.add(glyphs.isEmpty());
+                }
+            }
+        });
+        out.writeByte(GLYPHS);
+        pose(state.pose, 0, 0);
+        out.writeInt(glyphs.size());
+        for (var g : glyphs) {
+            out.writeInt(g.codepoint());
+            text(out, g.font().toString());
+            out.writeFloat(g.x());
+            out.writeFloat(g.y());
+            out.writeInt(g.color());
+            out.writeInt(g.shadowColor());
+            out.writeByte((g.style().isBold() ? 1 : 0) | (g.style().isItalic() ? 2 : 0));
+            out.writeFloat(g.boldOffset());
+            out.writeFloat(g.shadowOffset());
+        }
+        out.writeInt(effects.size());
+        for (int i = 0; i < effects.size(); i++) {
+            var e = effects.get(i);
+            out.writeBoolean(behind.get(i));
+            out.writeFloat(e.x0());
+            out.writeFloat(e.y0());
+            out.writeFloat(e.x1());
+            out.writeFloat(e.y1());
+            out.writeInt(e.color());
+            out.writeInt(e.shadowColor());
+            out.writeFloat(e.shadowOffset());
+        }
+        scissor(state.scissor);
+        count++;
     }
 
     /** `GuiGraphicsExtractor.item`, before it asks for a model Java doesn't have. */

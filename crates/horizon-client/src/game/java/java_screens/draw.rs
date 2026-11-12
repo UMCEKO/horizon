@@ -4,6 +4,7 @@ pub(super) const QUAD: u8 = 0;
 pub(super) const TEXT: u8 = 1;
 pub(super) const ITEM: u8 = 2;
 pub(super) const BLUR: u8 = 3;
+pub(super) const GLYPHS: u8 = 5;
 
 pub(super) type Corner = ([f32; 2], [f32; 2], u32);
 
@@ -180,6 +181,8 @@ pub(super) fn text(batch: &mut HudBatch, atlas: &HudAtlas, reply: &mut In) -> Op
         let rgb = reply.int()?;
         let flags = reply.byte()?;
         let font = reply.text()?;
+        let has_shadow = reply.bool()?;
+        let shadow_color = reply.int()? as u32;
         let on = |bit: u8| (flags & bit != 0).then_some(true);
         let style = Style {
             color: (rgb >= 0).then_some(rgb as u32),
@@ -189,6 +192,7 @@ pub(super) fn text(batch: &mut HudBatch, atlas: &HudAtlas, reply: &mut In) -> Op
             strikethrough: on(8),
             obfuscated: on(16),
             font: (!font.is_empty() && font != "minecraft:default").then(|| font.to_owned()),
+            shadow_color: has_shadow.then_some(shadow_color),
             ..Style::default()
         };
         text = text.append(Text::styled(run, style));
@@ -215,6 +219,151 @@ pub(super) fn text(batch: &mut HudBatch, atlas: &HudAtlas, reply: &mut In) -> Op
     Some(())
 }
 
+/// One recorded glyph: its code point's quad in `font` at `(x, y)` in text space, with the pose's origin and scale.
+pub(super) fn glyph_quads(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    pose: [f32; 4],
+    glyph: &RecordedGlyph,
+    at: [f32; 2],
+    color: u32,
+) {
+    let [ox, oy, sx, sy] = pose;
+    let (px, py) = (ox + sx * at[0], oy + sy * at[1]);
+    let g = atlas.font.glyph_in(&glyph.font, glyph.character);
+    let start = batch.vertices.len();
+    let white = atlas.font.white();
+    batch.glyph_quad(white, &g, px, py, 0.0, glyph.italic, glyph.bold, color);
+    if glyph.bold {
+        batch.glyph_quad(white, &g, px, py, glyph.bold_offset, glyph.italic, glyph.bold, color);
+    }
+    for v in &mut batch.vertices[start..] {
+        v.text = 1;
+    }
+    if sx != 1.0 || sy != 1.0 {
+        batch.scale_since(start, px, py, sx, sy);
+    }
+}
+
+/// One recorded effect rectangle (underline, strikethrough, background) in text space.
+pub(super) fn effect_rect(batch: &mut HudBatch, atlas: &HudAtlas, pose: [f32; 4], rect: [f32; 4], color: u32) {
+    let [ox, oy, sx, sy] = pose;
+    let start = batch.vertices.len();
+    let (x0, y0) = (ox + sx * rect[0], oy + sy * rect[1]);
+    let (x1, y1) = (ox + sx * rect[2], oy + sy * rect[3]);
+    batch.rect_uv(x0, y0, x1 - x0, y1 - y0, atlas.font.white(), color);
+    for v in &mut batch.vertices[start..] {
+        v.text = 1;
+    }
+}
+
+struct RecordedGlyph {
+    character: char,
+    font: String,
+    x: f32,
+    y: f32,
+    color: u32,
+    shadow: u32,
+    bold: bool,
+    italic: bool,
+    bold_offset: f32,
+    shadow_offset: f32,
+}
+
+struct RecordedEffect {
+    behind: bool,
+    rect: [f32; 4],
+    color: u32,
+    shadow: u32,
+    shadow_offset: f32,
+}
+
+/// A `GLYPHS` entry: text as a patched `PreparedTextBuilder` laid it out, drawn glyph by glyph.
+pub(super) fn glyphs(batch: &mut HudBatch, atlas: &HudAtlas, reply: &mut In) -> Option<()> {
+    crate::game::java_routing::gui_route!("net/minecraft/client/gui/Font$PreparedTextBuilder#accept(ILnet/minecraft/network/chat/Style;Lnet/minecraft/client/gui/font/glyphs/BakedGlyph;)Z");
+    crate::game::java_routing::gui_route!("net/minecraft/client/gui/Font$PreparedTextBuilder#getShadowColor(Lnet/minecraft/network/chat/Style;I)I");
+    let pose = [
+        reply.float()?,
+        reply.float()?,
+        reply.float()?,
+        reply.float()?,
+    ];
+    let mut glyphs = Vec::new();
+    for _ in 0..reply.int()? {
+        let code = reply.int()? as u32;
+        let font = reply.text()?.to_owned();
+        let (x, y) = (reply.float()?, reply.float()?);
+        let color = reply.int()? as u32;
+        let shadow = reply.int()? as u32;
+        let flags = reply.byte()?;
+        glyphs.push(RecordedGlyph {
+            character: char::from_u32(code).unwrap_or('\u{fffd}'),
+            font: if font.is_empty() {
+                "minecraft:default".to_owned()
+            } else {
+                font
+            },
+            x,
+            y,
+            color,
+            shadow,
+            bold: flags & 1 != 0,
+            italic: flags & 2 != 0,
+            bold_offset: reply.float()?,
+            shadow_offset: reply.float()?,
+        });
+    }
+    let mut effects = Vec::new();
+    for _ in 0..reply.int()? {
+        effects.push(RecordedEffect {
+            behind: reply.bool()?,
+            rect: [reply.float()?, reply.float()?, reply.float()?, reply.float()?],
+            color: reply.int()? as u32,
+            shadow: reply.int()? as u32,
+            shadow_offset: reply.float()?,
+        });
+    }
+    let clip = scissor(reply)?;
+    let start = batch.vertices.len();
+    let abgr = horizon_client::hud_layout::abgr;
+    let visible = |argb: u32| argb >> 24 != 0;
+    let rect = |batch: &mut HudBatch, e: &RecordedEffect, shadow: bool| {
+        let (color, d) = if shadow {
+            (e.shadow, e.shadow_offset)
+        } else {
+            (e.color, 0.0)
+        };
+        if visible(color) {
+            let [x0, y0, x1, y1] = e.rect;
+            effect_rect(batch, atlas, pose, [x0 + d, y0 + d, x1 + d, y1 + d], abgr(color));
+        }
+    };
+    for e in effects.iter().filter(|e| e.behind) {
+        rect(batch, e, true);
+        rect(batch, e, false);
+    }
+    for g in &glyphs {
+        if visible(g.shadow) {
+            let d = g.shadow_offset;
+            glyph_quads(batch, atlas, pose, g, [g.x + d, g.y + d], abgr(g.shadow));
+        }
+    }
+    for e in effects.iter().filter(|e| !e.behind) {
+        rect(batch, e, true);
+    }
+    for g in glyphs.iter().filter(|g| visible(g.color)) {
+        glyph_quads(batch, atlas, pose, g, [g.x, g.y], abgr(g.color));
+    }
+    for e in effects.iter().filter(|e| !e.behind) {
+        rect(batch, e, false);
+    }
+    batch.patches.extend(atlas.font.take_patches());
+    if let Some([x0, y0, x1, y1]) = clip {
+        batch.clip_since(start, x0, y0, x1, y1);
+    }
+    Some(())
+}
+
 /// A recorded frame's pieces in call order; `item` paints an item entry. None when it ended in pieces.
 pub(super) fn paint_frame(
     batch: &mut HudBatch,
@@ -234,6 +383,7 @@ pub(super) fn paint_frame(
                 Some(())
             }
             Some(TEXT) => text(batch, atlas, &mut reply),
+            Some(GLYPHS) => glyphs(batch, atlas, &mut reply),
             Some(ITEM) => item(batch, &mut reply),
             _ => None,
         };
@@ -269,6 +419,7 @@ impl Game<'_> {
             let ok = match reply.byte() {
                 Some(QUAD) => quad(batch, &self.gui.atlas, &mut reply),
                 Some(TEXT) => text(batch, &self.gui.atlas, &mut reply),
+                Some(GLYPHS) => glyphs(batch, &self.gui.atlas, &mut reply),
                 Some(ITEM) => self.java_screen_item(batch, &mut reply),
                 _ => None,
             };
