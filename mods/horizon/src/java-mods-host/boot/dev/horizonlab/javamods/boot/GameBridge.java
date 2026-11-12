@@ -154,6 +154,7 @@ public final class GameBridge {
         Crossing.game("event_click_block", (in, out) -> use(in, out, 3));
         Crossing.game("event_use_item", (in, out) -> use(in, out, 4));
         Crossing.game("post_event", EventPosts::server);
+        Crossing.game("post_level_event", EventPosts::level);
         Crossing.game("destroy_progress", GameBridge::destroyProgress);
         Crossing.game("correct_tool", GameBridge::correctTool);
         Crossing.game("mine_block", (in, out) -> use(in, out, 12));
@@ -492,7 +493,7 @@ public final class GameBridge {
         if (Clients.joining(player.getUUID())) safely("the client's login", () -> Menus.login(player));
         if (joined) {
             // `placeNewPlayer` adds the player to its level (`addNewPlayer`) before PlayerLoggedIn.
-            if (!playerJoins(player, level)) System.err.println("Horizon: a Java mod canceled player " + name + " joining " + level.dimension() + "; it joins anyway, as vanilla ignores it");
+            if (!playerJoins(player, level)) System.err.println("Horizon: a Java mod canceled player " + g.name + " joining " + level.dimension() + "; it joins anyway, as vanilla ignores it");
             safely("PlayerLoggedIn", () -> EventHooks.firePlayerLoggedIn(player));
             safely("chunks sent before the player's view", () -> Tracking.joined(player, level));
         }
@@ -572,14 +573,6 @@ public final class GameBridge {
                 var answer = CommonHooks.onItemRightClick(player, hand);
                 if (answer != null) result = answer;
             }
-            case 5 -> {
-                var pos = BlockPos.of(in.readLong());
-                if (CommonHooks.fireBlockBreak(level, type(player), player, pos, level.getBlockState(pos)).isCanceled()) result = InteractionResult.FAIL;
-            }
-            case 6 -> {
-                var target = level.getEntity(in.readInt());
-                if (target != null && !CommonHooks.onPlayerAttackTarget(player, target)) result = InteractionResult.FAIL;
-            }
             default -> {
                 PlayerSync.sendAttributes(player);
                 Menus.serverTick(player);
@@ -597,6 +590,11 @@ public final class GameBridge {
         out.writeBoolean(result != InteractionResult.PASS && result != InteractionResult.TRY_WITH_EMPTY_HAND);
         out.writeBoolean(player.isUsingItem());
         out.writeInt(player.isUsingItem() ? player.getTicksUsingItem() : 0);
+        writeUseTail(player, out);
+    }
+
+    /** The end of every reply that filled a player's view: its experience and changed slots, then the call's effects. */
+    static void writeUseTail(ServerPlayer player, DataOutputStream out) throws IOException {
         PlayerSync.writeChanges(player, out);
         writeEffects(out);
     }
@@ -655,7 +653,7 @@ public final class GameBridge {
         return bytes.toByteArray();
     }
 
-    private static GameType type(ServerPlayer player) {
+    static GameType type(ServerPlayer player) {
         return player.gameMode.getGameModeForPlayer();
     }
 
@@ -833,7 +831,7 @@ public final class GameBridge {
     }
 
     /** The level a call acts on, with the time it arrived at. */
-    private static ServerLevel levelOf(Crossing.In in) throws Exception {
+    static ServerLevel levelOf(Crossing.In in) throws Exception {
         return invalidated(level(in.readInt()), in.readLong());
     }
 

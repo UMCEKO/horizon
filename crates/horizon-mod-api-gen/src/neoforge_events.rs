@@ -10,6 +10,18 @@ fn is_class(name: &str) -> bool {
     })
 }
 
+/// The classes a counterpart names: `A, B` lists several and `A (note)` annotates one; prose such as `none (...)` names none.
+fn classes(counterpart: &str) -> Vec<&str> {
+    if counterpart.starts_with("none") {
+        return Vec::new();
+    }
+    counterpart
+        .split(", ")
+        .map(|part| part.split_once(" (").map_or(part, |(name, _)| name))
+        .filter(|name| is_class(name))
+        .collect()
+}
+
 /// `pub const EVENTS`, sorted by event name: an event with more hooks than one has an entry per hook.
 pub(super) fn table<'a>(hooks: impl Iterator<Item = &'a Hook>) -> String {
     let mut pairs: Vec<(String, String)> = hooks
@@ -17,8 +29,8 @@ pub(super) fn table<'a>(hooks: impl Iterator<Item = &'a Hook>) -> String {
             hook.counterparts
                 .neoforge
                 .iter()
-                .filter(|name| is_class(name))
-                .map(|name| (name.clone(), hook_id(&hook.name)))
+                .flat_map(|counterpart| classes(counterpart))
+                .map(|name| (name.to_owned(), hook_id(&hook.name)))
         })
         .collect();
     pairs.sort();
@@ -95,6 +107,23 @@ mod tests {
                 "(\"RenderGuiLayerEvent.Pre\", super::HookId::GuiLayerPre),",
                 "(\"RenderGuiLayerEvent.Pre\", super::HookId::ModLayerPre),",
             ]
+        );
+    }
+
+    #[test]
+    fn counterparts_name_listed_and_annotated_classes_but_not_prose() {
+        assert_eq!(
+            classes("PlayerEvent.Clone (not cancellable)"),
+            ["PlayerEvent.Clone"]
+        );
+        assert_eq!(
+            classes("LivingDropsEvent, BlockDropsEvent"),
+            ["LivingDropsEvent", "BlockDropsEvent"]
+        );
+        assert!(classes("none (BaseFlowingFluid.getTickDelay, GetDropOff, Other)").is_empty());
+        assert!(
+            classes("IBlockExtension.getFlammability, IBlockExtension.getFireSpreadSpeed")
+                .is_empty()
         );
     }
 

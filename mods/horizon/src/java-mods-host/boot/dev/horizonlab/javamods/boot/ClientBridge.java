@@ -104,10 +104,8 @@ public final class ClientBridge {
         CreativeTabs.install();
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.LOWEST, true,
                 net.neoforged.neoforge.client.event.InputEvent.MouseScrollingEvent.class, event -> scrollCanceled = event.isCanceled());
-        EventPosts.own(net.neoforged.neoforge.client.event.InputEvent.MouseScrollingEvent.class);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.LOWEST, true,
                 net.neoforged.neoforge.client.event.InputEvent.InteractionKeyMappingTriggered.class, ClientBridge::clicked);
-        EventPosts.own(net.neoforged.neoforge.client.event.InputEvent.InteractionKeyMappingTriggered.class);
         Clients.dynamic = state -> ClientModels.dynamic(state) || BlockRenders.has(state);
         Clients.clientEntities = chunk -> {
             var here = new HashMap<BlockPos, BlockEntity>();
