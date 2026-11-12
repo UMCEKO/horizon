@@ -11,12 +11,14 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.neoforged.bus.ListenerList;
 import net.neoforged.bus.api.Event;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.common.CommonHooks;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.EventHooks;
 
 /** NeoForge events Rust posts where its hook fires (`game/java/java_listener.rs`): which ones a mod listens to, and the post ops. */
 public final class EventPosts {
@@ -46,7 +48,7 @@ public final class EventPosts {
     private static final Map<String, PlayerPost> PLAYER = Map.of("BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity);
 
     /** The server events Rust posts through `post_level_event`. */
-    private static final Map<String, LevelPost> LEVEL = Map.of();
+    private static final Map<String, LevelPost> LEVEL = Map.of("PistonEvent.Pre", EventPosts::pistonPre, "PistonEvent.Post", EventPosts::pistonPost);
 
     /** The client events Rust posts through `client_post_event`. */
     private static final Map<String, ClientPost> CLIENT = Map.of("PlaySoundEvent", NativeSounds::ask);
@@ -207,6 +209,24 @@ public final class EventPosts {
     private static Posted attackEntity(GameBridge.Call call) {
         var target = call.level().getEntity(call.in().readInt());
         return new Posted(target != null && !CommonHooks.onPlayerAttackTarget(call.player(), target), Posted.NONE.result());
+    }
+
+    private static Posted pistonPre(ServerLevel level, Crossing.In in) {
+        var pos = BlockPos.of(in.readLong());
+        var direction = Direction.from3DDataValue(in.readByte());
+        boolean extend = in.readBoolean();
+        boolean canceled = EventHooks.onPistonMovePre(level, pos, direction, extend);
+        if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: server event PistonEvent.Pre " + pos + " " + direction + " extend=" + extend + " canceled=" + canceled);
+        return new Posted(canceled, Posted.NONE.result());
+    }
+
+    private static Posted pistonPost(ServerLevel level, Crossing.In in) {
+        var pos = BlockPos.of(in.readLong());
+        var direction = Direction.from3DDataValue(in.readByte());
+        boolean extend = in.readBoolean();
+        EventHooks.onPistonMovePost(level, pos, direction, extend);
+        if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: server event PistonEvent.Post " + pos + " " + direction + " extend=" + extend);
+        return Posted.NONE;
     }
 
     /** `client_post_event`: the event's name, then its fields, posted on the Java client's thread. */

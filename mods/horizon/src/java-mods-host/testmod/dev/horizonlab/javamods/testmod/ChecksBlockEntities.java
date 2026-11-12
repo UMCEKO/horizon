@@ -185,6 +185,7 @@ final class ChecksBlockEntities {
         BlockPos at = areaOf(context);
         boolean reloaded = area == null;
         ChecksChunks.later(reloaded);
+        ChecksServerEvents.later(level);
         BlockPos entities = context.getClickedPos().offset(8 + 5 * 4, 0, -2);
         if (reloaded) ChecksEntities.afterChange(context, entities);
         chestLater(level, at.above(4), reloaded);
