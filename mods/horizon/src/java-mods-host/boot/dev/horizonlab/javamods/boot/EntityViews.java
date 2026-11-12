@@ -196,7 +196,7 @@ public final class EntityViews implements LevelEntityGetter<Entity> {
                 Entity view = live(level).get(id);
                 if (view != null) apply(view, mask, new DataInputStream(new ByteArrayInputStream(groups)));
             }
-        } catch (IOException | ReflectiveOperationException e) {
+        } catch (IOException e) {
             throw new IllegalStateException(e);
         }
     }
