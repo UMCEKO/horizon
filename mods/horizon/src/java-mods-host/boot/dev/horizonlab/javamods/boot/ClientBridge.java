@@ -205,6 +205,7 @@ public final class ClientBridge {
         OPS.put("client_post_event", in -> EventPosts.client(in));
         OPS.put("client_chat_send", in -> ChatSend.send(in));
         OPS.put("client_command_names", in -> ChatSend.names());
+        OPS.put("client_debug_entries", in -> DebugLines.export());
         OPS.put("client_shell_frame", in -> shellFrame(in));
         OPS.put("client_shell_input", in -> shellInput(in));
         OPS.put("client_lockstep_announce", in -> {
@@ -572,6 +573,7 @@ public final class ClientBridge {
                 minecraft.tick();
             }
             windowTicks++;
+            DebugLines.record(minecraft);
             if (HUD_DEBUG && minecraft.particleEngine != null) ClientParticles.debug(minecraft);
             timer(minecraft).updatePauseState(minecraft.isPaused());
             timer(minecraft).updateFrozenState(!((dev.horizonlab.javamods.boot.mixin.MinecraftActions) minecraft).horizon$runningNormally());
@@ -843,6 +845,7 @@ public final class ClientBridge {
     private static final byte NOTIFICATION_TIME = 27;
     private static final byte MUSIC = 40;
     private static final byte VIEW_INPUTS = 36;
+    private static final byte DEBUG_LINES = 42;
 
     private static double cursorX, cursorY;
     private static BlockPos cameraBlock;
@@ -889,6 +892,7 @@ public final class ClientBridge {
                 case NOTIFICATION_TIME -> minecraft.options.notificationDisplayTime().set(in.readDouble());
                 case BLOCK_EFFECT -> BlockEffects.run(in);
                 case VIEW_INPUTS -> ViewFrame.last = ViewFrame.read(in);
+                case DEBUG_LINES -> DebugLines.wanted(in);
                 case SHELL_LAYOUT -> Shells.layout(new int[] {in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readInt()});
                 case SHELL_CREATIVE -> Shells.creative(text(in), in.readInt(), in.readInt(), in.readNBytes(in.readInt()));
                 case FOCUS -> set(Window.class, minecraft.getWindow(), "focused", in.readBoolean());
@@ -1153,6 +1157,7 @@ public final class ClientBridge {
         out.writeBoolean(view != null);
         if (view != null) out.write(view);
         out.writeBoolean(ViewFrame.animating);
+        DebugLines.write(out);
         shellSegments = null;
         shellChanged = false;
         return bytes.toByteArray();

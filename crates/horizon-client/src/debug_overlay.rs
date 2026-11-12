@@ -56,7 +56,7 @@ pub struct Displayer {
     left: Vec<String>,
     right: Vec<String>,
     lines: Vec<String>,
-    groups: Vec<(&'static str, Vec<String>)>,
+    groups: Vec<(String, Vec<String>)>,
 }
 
 impl Displayer {
@@ -72,8 +72,13 @@ impl Displayer {
     pub fn line(&mut self, line: impl Into<String>) {
         self.lines.push(line.into());
     }
-    /// `addToGroup`: lines kept together, groups in the order first added.
-    pub fn group(&mut self, group: &'static str, lines: impl IntoIterator<Item = String>) {
+    /// `addToGroup`: lines kept together, groups in the order first added; a key without `:` is
+    /// in the `minecraft` namespace, as an `Identifier`'s.
+    pub fn group(&mut self, group: impl Into<String>, lines: impl IntoIterator<Item = String>) {
+        let mut group = group.into();
+        if !group.contains(':') {
+            group.insert_str(0, "minecraft:");
+        }
         let index = match self.groups.iter().position(|(g, _)| *g == group) {
             Some(i) => i,
             None => {
@@ -116,6 +121,31 @@ impl Displayer {
             left.extend_from_slice(footer);
         }
         (left, right)
+    }
+}
+
+/// What a Java mod's F3 entry added to the displayer in one tick, in the order it called
+/// `addPriorityLine`, `addLine` and `addToGroup`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Recorded {
+    pub id: String,
+    pub priority: Vec<String>,
+    pub lines: Vec<String>,
+    pub groups: Vec<(String, Vec<String>)>,
+}
+
+impl Recorded {
+    /// The entry's calls, made on `d` as the entry's `display` made them.
+    pub fn replay(&self, d: &mut Displayer) {
+        for line in &self.priority {
+            d.priority(line.as_str());
+        }
+        for line in &self.lines {
+            d.line(line.as_str());
+        }
+        for (group, lines) in &self.groups {
+            d.group(group.as_str(), lines.iter().cloned());
+        }
     }
 }
 
@@ -754,6 +784,35 @@ mod tests {
                 "",
             ])
         );
+    }
+
+    #[test]
+    fn a_replayed_entry_lands_where_vanillas_displayer_puts_it() {
+        let mut d = Displayer::default();
+        d.priority("fps");
+        d.group("memory", lines(&["Mem"]));
+        let entry = Recorded {
+            id: "appleskin:food_stats".into(),
+            priority: lines(&["hunger"]),
+            lines: lines(&["a", "b"]),
+            groups: vec![("appleskin:food".into(), lines(&["g1", "g2"]))],
+        };
+        entry.replay(&mut d);
+        // `extractRenderState`: the priority line goes to the shorter column, the two regular
+        // lines split after them, and the two groups (memory, then the mod's) split too.
+        let (left, right) = d.columns(&[]);
+        assert_eq!(left, lines(&["fps", "", "a", "", "Mem", ""]));
+        assert_eq!(right, lines(&["hunger", "", "b", "", "g1", "g2", ""]));
+    }
+
+    #[test]
+    fn a_group_key_without_a_namespace_is_vanillas() {
+        let mut d = Displayer::default();
+        d.group("position", lines(&["XYZ"]));
+        d.group("minecraft:position", lines(&["Block"]));
+        let (left, right) = d.columns(&[]);
+        assert_eq!(left, lines(&["XYZ", "Block", ""]));
+        assert!(right.is_empty());
     }
 
     #[test]

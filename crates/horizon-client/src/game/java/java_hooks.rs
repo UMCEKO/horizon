@@ -23,6 +23,14 @@ pub(super) struct JavaItemText {
 }
 
 impl Game<'_> {
+    /// What the Java mods' F3 entries added to the displayer in the Java client's last tick.
+    pub(super) fn java_hook_debug_recorded(&self) -> Vec<horizon_client::debug_overlay::Recorded> {
+        #[cfg(feature = "java-mods")]
+        return super::java_debug::recorded();
+        #[cfg(not(feature = "java-mods"))]
+        Vec::new()
+    }
+
     /// The slot bits of the toasts mods added to the Java client, shown in the window's column.
     pub(super) fn java_hook_toast_slots(&self) -> u32 {
         #[cfg(feature = "java-mods")]

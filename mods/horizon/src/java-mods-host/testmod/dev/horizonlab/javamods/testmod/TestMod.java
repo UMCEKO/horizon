@@ -77,6 +77,7 @@ public final class TestMod {
             ClientMusicProbe.register();
             ClientChat.register();
             ClientView.register();
+            ClientDebug.register(bus);
         }
     }
 
