@@ -125,3 +125,62 @@ fn natural_knot_last_boat_notification_excludes_its_old_resident_payload() {
         assert_eq!(game.resident_entities.table.get_mut().end_tick(), Ok(()));
     });
 }
+
+#[test]
+#[ignore = "needs prepared resources and an isolated process for native mods"]
+fn a_knot_joins_when_tied_and_leaves_with_its_last_lead() {
+    use mod_api::{EntityJoinLevelEvent, EntityLeaveLevelEvent, Hooks, ServerHost};
+    use std::sync::{Arc, Mutex};
+
+    type Log = Arc<Mutex<Vec<(&'static str, u32, String)>>>;
+    struct Observer(Log);
+    #[mod_api::__subscriptions]
+    impl Hooks for Observer {
+        fn entity_join_level(
+            &self,
+            _: &mut dyn ServerHost,
+            event: &mut EntityJoinLevelEvent<'_>,
+        ) -> mod_api::Flow {
+            self.0
+                .lock()
+                .unwrap()
+                .push(("join", event.entity, event.kind.into()));
+            mod_api::Flow::Continue
+        }
+        fn entity_leave_level(
+            &self,
+            _: &mut dyn ServerHost,
+            event: &mut EntityLeaveLevelEvent<'_>,
+        ) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(("leave", event.entity, event.kind.into()));
+        }
+    }
+    let log = Log::default();
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "knot-observer",
+        Box::new(Observer(log.clone())),
+    )]
+    .into();
+    mod_api::testing::with_mods(mods, || {
+        with_game(|game| {
+            game.reset_entity_residency();
+            let (mob, knot) = tie_player_mob(game, [1, 70, 1]);
+            let told = |what: &str| {
+                log.lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|e| e.0 == what && e.1 == knot)
+                    .map(|e| e.2.clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(told("join"), ["minecraft:leash_knot"]);
+            assert!(told("leave").is_empty());
+            assert!(game.detach_leash(Target::Mob(mob), false));
+            game.native_leaves_flush();
+            assert_eq!(told("leave"), ["minecraft:leash_knot"]);
+        });
+    });
+}

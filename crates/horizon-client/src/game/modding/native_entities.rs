@@ -177,6 +177,8 @@ enum Apart {
     Painting(usize),
     Frame(usize),
     Dragon,
+    Hook(u32),
+    Knot(usize),
 }
 
 /// One entity a mod is told of: in the walk, or apart from it.
@@ -188,7 +190,7 @@ enum Slot {
 
 /// Entities joining and leaving the level (`native_entity_join_level`,
 /// `native_entity_leave_level`), for every kind in the entity walk and the
-/// five kept apart from it. Kept out of `native_hooks.rs`, whose lines may not hold macros.
+/// kinds kept apart from it. Kept out of `native_hooks.rs`, whose lines may not hold macros.
 impl Game<'_> {
     /// Whether an entity may have joined since the last announcement. A join
     /// in another level may cause one harmless walk of this level.
@@ -307,6 +309,12 @@ impl Game<'_> {
         if let Some(d) = self.dragon.as_ref() {
             offer(Slot::Apart(Apart::Dragon), d.id, d.join);
         }
+        for (hook, _) in self.fishing_hooks_here() {
+            offer(Slot::Apart(Apart::Hook(hook.id())), hook.id(), hook.join_seq());
+        }
+        for (i, k) in self.resident_entities.knots.iter().enumerate() {
+            offer(Slot::Apart(Apart::Knot(i)), k.id, k.join);
+        }
         best
     }
 
@@ -354,6 +362,16 @@ impl Game<'_> {
                 "minecraft:ender_dragon".into(),
                 self.dragon.as_ref().map_or(Vec3::ZERO, |d| d.position),
             ),
+            Slot::Apart(Apart::Hook(id)) => (
+                "minecraft:fishing_bobber".into(),
+                self.fishing_hook_by_id(id)
+                    .map_or(Vec3::ZERO, |(hook, _)| hook.position),
+            ),
+            Slot::Apart(Apart::Knot(i)) => (
+                "minecraft:leash_knot".into(),
+                horizon_client::mobs::leash::knot_state(self.resident_entities.knots[i].fence)
+                    .position,
+            ),
         }
     }
     /// Takes the entity out of the level, before it ever ticked.
@@ -365,6 +383,11 @@ impl Game<'_> {
             Slot::Apart(Apart::Painting(i)) => drop(self.paintings.remove(i)),
             Slot::Apart(Apart::Frame(i)) => drop(self.item_frames.remove(i)),
             Slot::Apart(Apart::Dragon) => self.dragon.discard(),
+            Slot::Apart(Apart::Hook(id)) => self.remove_fishing_hook(id),
+            Slot::Apart(Apart::Knot(i)) => {
+                let fence = self.resident_entities.knots.remove(i).fence;
+                self.knot_ids.remove(&fence);
+            }
         }
     }
     /// Entities that were moved, not added (a portal's arrival keeps being
@@ -454,6 +477,17 @@ impl Game<'_> {
         if let Some(d) = self.dragon.as_ref() {
             seen(d.id);
         }
+        // A guest's turn parks the host's hook in the guest's play state: still in the level.
+        self.hook.iter().for_each(|hook| seen(hook.id()));
+        if let Some(host) = &self.lan {
+            for g in host.hub.guests.iter() {
+                let swapped = self.lan_acting == Some(g.conn) || self.lan_guest_swaps.contains(&g.conn);
+                if let Some(play) = host.play.get(&g.conn).filter(|_| swapped || host.hub.here(g)) {
+                    play.hook.iter().for_each(|hook| seen(hook.id()));
+                }
+            }
+        }
+        self.resident_entities.knots.iter().for_each(|k| seen(k.id));
         while let Some(i) = self.persist.live.iter().position(|l| !l.2) {
             let (id, kind, _) = self.persist.live.remove(i);
             let why = self.leave_reason(id, fallback);
