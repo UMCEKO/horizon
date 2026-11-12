@@ -804,12 +804,12 @@ def boot_one(name, jars, opts, timeout):
     return False, 'no answer, exit ' + str(p.returncode), took
 
 
-def libraries(args):
-    """Boots the most used 26.3 NeoForge library mods one by one, each with its required dependencies; `--top` picks how many."""
+def library_sets(top):
+    """{slug: jars}: the `top` most downloaded 26.3 NeoForge library mods, each with its required dependencies, fetched into LIBRARIES (those with no such jar are left out)."""
     facets = urllib.parse.quote(json.dumps([['categories:library'], ['categories:neoforge'], ['versions:26.3'], ['project_type:mod']]))
     hits = []
-    for offset in range(0, args.top, 100):
-        hits += modrinth(f'search?limit={min(100, args.top - offset)}&offset={offset}&index=downloads&facets={facets}')['hits']
+    for offset in range(0, top, 100):
+        hits += modrinth(f'search?limit={min(100, top - offset)}&offset={offset}&index=downloads&facets={facets}')['hits']
     seen, sets = {}, {}
     for hit in hits:
         try:
@@ -820,6 +820,27 @@ def libraries(args):
         if jars:
             sets[hit['slug']] = jars
     print(f'{len(sets)} of {len(hits)} libraries have a 26.3 NeoForge jar', flush=True)
+    return sets
+
+
+def link_jars(jars, folder):
+    """Links the jars into a folder, made if missing."""
+    folder.mkdir(parents=True, exist_ok=True)
+    for jar in jars:
+        if not (folder / jar.name).exists():
+            (folder / jar.name).symlink_to(jar.resolve())
+
+
+def fetch_top(top, out):
+    """OUT/<slug>/ holds each top library mod's jars, linked."""
+    for slug, jars in library_sets(top).items():
+        link_jars(jars, out / slug)
+        print(slug, len(jars), flush=True)
+
+
+def libraries(args):
+    """Boots the most used 26.3 NeoForge library mods one by one, each with its required dependencies; `--top` picks how many."""
+    sets = library_sets(args.top)
     results = {}
 
     def one(item):
@@ -1302,7 +1323,8 @@ def main():
     l.add_argument('--opts', default='--enable-native-access=ALL-UNNAMED -Xmx2g')
     l.add_argument('--out', default=str(LOCAL / 'libraries.json'))
     f = sub.add_parser('fetch', help='a Modrinth project and its required dependencies, linked into a folder')
-    f.add_argument('project')
+    f.add_argument('project', nargs='?', help='omit with --top')
+    f.add_argument('--top', type=int, help='instead: the most downloaded library mods, one folder of linked jars per mod under --out (what hz_scenario.py matrix reads)')
     f.add_argument('--out', required=True)
     c = sub.add_parser('surface')
     c.add_argument('--jars', required=True)
@@ -1366,7 +1388,11 @@ def main():
         bridges(args)
     elif args.command == 'libraries':
         libraries(args)
+    elif args.command == 'fetch' and args.top:
+        fetch_top(args.top, Path(args.out))
     elif args.command == 'fetch':
+        if not args.project:
+            sys.exit('fetch needs a project or --top N')
         folder = Path(args.out)
         folder.mkdir(parents=True, exist_ok=True)
         for jar in fetch_mod(args.project, {}) or []:
