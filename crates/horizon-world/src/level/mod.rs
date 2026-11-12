@@ -168,7 +168,7 @@ pub enum LandingWrite {
 }
 pub use interact::{InteractionResult, PlayerContext, PlayerEffect, UseBranch, hit_slot};
 pub use pistons::{BlockEventData, MovingPiston};
-pub use place::{PlaceContext, PlaceOutcome, PlacementContext, PlacementPreview};
+pub use place::{PlaceContext, PlaceOutcome, PlacementContext, PlacementPreview, Snapshot};
 pub use portal::PortalShape;
 pub use states::{BlockId, PropKey, StateTable};
 pub use tick::{Precipitation, PrecipitationKind, RandomTickMask};
@@ -1657,6 +1657,10 @@ pub(crate) struct Sim<'a, L: LevelAccess + ?Sized> {
     /// `RedstoneWireBlock.shouldSignal` is false while a wire samples its
     /// neighbours (`getBlockSignal`).
     pub wire_signal_off: std::cell::Cell<bool>,
+    /// NeoForge's `captureBlockSnapshots`: each write recorded, with no `onPlace` and no updates.
+    pub capture: Option<Vec<Snapshot>>,
+    /// NeoForge's `restoringBlockSnapshots`: removals drop nothing.
+    pub restoring: bool,
 }
 /// A read-only view of a level for the queries that change nothing: `SignalGetter`,
 /// and the block, shape and moving-piston reads its wire connections ask. `Sim`
@@ -1705,6 +1709,8 @@ impl Behaviours {
             level,
             ticks,
             wire_signal_off: std::cell::Cell::new(false),
+            capture: None,
+            restoring: false,
         }
     }
 }

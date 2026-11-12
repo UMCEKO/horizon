@@ -5,18 +5,24 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import dev.horizonlab.javamods.boot.mixin.BlockSnapshotAccess;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.block.Block;
 import net.neoforged.bus.ListenerList;
 import net.neoforged.bus.api.Event;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.common.CommonHooks;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.common.util.BlockSnapshot;
+import net.neoforged.neoforge.event.EventHooks;
 
 /** NeoForge events Rust posts where its hook fires (`game/java/java_listener.rs`): which ones a mod listens to, and the post ops. */
 public final class EventPosts {
@@ -43,7 +49,7 @@ public final class EventPosts {
     }
 
     /** The server events Rust posts through `post_event`, each with the acting player's view filled. */
-    private static final Map<String, PlayerPost> PLAYER = Map.of("BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity);
+    private static final Map<String, PlayerPost> PLAYER = Map.of("BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity, "BlockEvent.EntityPlaceEvent", EventPosts::place);
 
     /** The server events Rust posts through `post_level_event`. */
     private static final Map<String, LevelPost> LEVEL = Map.of();
@@ -207,6 +213,23 @@ public final class EventPosts {
     private static Posted attackEntity(GameBridge.Call call) {
         var target = call.level().getEntity(call.in().readInt());
         return new Posted(target != null && !CommonHooks.onPlayerAttackTarget(call.player(), target), Posted.NONE.result());
+    }
+
+    /** `CommonHooks.onPlaceItemIntoWorld`'s event over Rust's captured writes: `byte face`, `int n` x (`long pos`, `int oldState`, `int flags`). */
+    private static Posted place(GameBridge.Call call) {
+        var in = call.in();
+        var face = Direction.from3DDataValue(in.readByte());
+        int n = in.readInt();
+        var level = call.level();
+        var snapshots = new ArrayList<BlockSnapshot>(n);
+        for (int i = 0; i < n; i++) {
+            var pos = BlockPos.of(in.readLong());
+            var old = Block.stateById(in.readInt());
+            snapshots.add(BlockSnapshotAccess.horizon$create(level.dimension(), level, pos, old, null, in.readInt()));
+        }
+        boolean canceled = n > 1 ? EventHooks.onMultiBlockPlace(call.player(), snapshots, face) : n == 1 && EventHooks.onBlockPlace(call.player(), snapshots.get(0), face);
+        if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: server event BlockEvent.EntityPlaceEvent n=" + n + " canceled=" + canceled);
+        return new Posted(canceled, Posted.NONE.result());
     }
 
     /** `client_post_event`: the event's name, then its fields, posted on the Java client's thread. */

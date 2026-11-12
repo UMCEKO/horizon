@@ -135,6 +135,29 @@ impl Game<'_> {
         }
     }
 
+    /// Whether a Java mod listens to `BlockEvent.EntityPlaceEvent`: a player's placement then runs under NeoForge's capture.
+    pub(super) fn java_hook_place_listened(&self) -> bool {
+        #[cfg(feature = "java-mods")]
+        return self.java_place_listened();
+        #[cfg(not(feature = "java-mods"))]
+        false
+    }
+
+    /// `EntityPlaceEvent` (one snapshot) or `EntityMultiPlaceEvent` over a captured placement: whether it was cancelled.
+    pub(super) fn java_hook_place(
+        &mut self,
+        face: horizon_core::geometry::Direction,
+        snapshots: &[horizon_world::level::Snapshot],
+    ) -> bool {
+        #[cfg(feature = "java-mods")]
+        return self.java_post_place(face, snapshots);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (face, snapshots);
+            false
+        }
+    }
+
     /// `ServerStartedEvent`: the Java server starts with the world.
     pub(super) fn java_hook_server_started(&mut self) {
         #[cfg(feature = "java-mods")]
