@@ -115,7 +115,9 @@ public final class Routing {
         var edgeFlags = new boolean[ordered.size()];
         boolean server = !net.neoforged.fml.loading.FMLEnvironment.getDist().isClient();
         var gates = gates(Routing.class.getResourceAsStream("/route_gates.tsv"));
+        var statuses = statuses(Routing.class.getResourceAsStream("/route_status.tsv"));
         var ungated = new ArrayList<String>();
+        var waiting = new ArrayList<String>();
         int id = 0, on = 0, dropped = 0, inert = 0, constructors = 0;
         var modOf = new java.util.HashMap<String, String>();
         for (var r : ordered.values()) {
@@ -177,11 +179,16 @@ public final class Routing {
             boolean none = admission != null && admission.inert();
             write(out, admission, family);
             if (none) inert++;
-            System.err.println(built ? constructorLine(key, route.getAsJsonObject("construct"), applied > 0, mods) : line(key, body, live, none, gates.get(key), mods));
-            if (live && !none && !gates.containsKey(key)) for (String mod : mods) ungated.add(mod + ": " + simple(owner) + "." + name);
+            String status = statuses.get(key);
+            System.err.println(built ? constructorLine(key, route.getAsJsonObject("construct"), applied > 0, mods) : line(key, body, live, none, gates.get(key), status, mods));
+            if (live && !none && !gates.containsKey(key)) {
+                if (status == null) for (String mod : mods) ungated.add(mod + ": " + simple(owner) + "." + name);
+                else if (!status.startsWith("verdict: ")) waiting.add(status);
+            }
             id++;
         }
         if (!ungated.isEmpty()) System.err.println(summary(ungated));
+        if (!waiting.isEmpty()) System.err.println(waiting(waiting));
         HANDLES = handles;
         KEYS = keys;
         DESCS = descs;
@@ -210,9 +217,24 @@ public final class Routing {
         return out;
     }
 
-    /** One route's boot line; `partial` is null for a route without a gate. */
-    static String line(String key, boolean body, boolean live, boolean inert, Integer partial, java.util.Collection<String> mods) {
-        String gate = inert ? "inert (guard)" : partial == null ? "UNGATED" : partial == 0 ? "gated" : "gated (partial: " + partial + " sites)";
+    /** Each route's deferral reason or `verdict: <verdict>`, from `route_status.tsv`; empty when the stream is null. */
+    static java.util.Map<String, String> statuses(java.io.InputStream stream) throws IOException {
+        var out = new java.util.HashMap<String, String>();
+        if (stream == null) return out;
+        try (stream) {
+            for (String row : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\n")) {
+                if (row.isBlank() || row.startsWith("#")) continue;
+                String[] cells = row.split("\t");
+                if (cells.length > 1) out.put(cells[0], cells[1]);
+            }
+        }
+        return out;
+    }
+
+    /** One route's boot line; `partial` is null for a route without a gate, `status` null for one with no deferral or verdict. */
+    static String line(String key, boolean body, boolean live, boolean inert, Integer partial, String status, java.util.Collection<String> mods) {
+        String open = status == null ? "UNGATED" : status.startsWith("verdict: ") ? status.substring("verdict: ".length()) : "deferred (" + status + ")";
+        String gate = inert ? "inert (guard)" : partial == null ? open : partial == 0 ? "gated" : "gated (partial: " + partial + " sites)";
         return "Horizon: route " + key + " " + (body ? "body" : "edge") + " " + (live ? "on" : "off") + " " + gate + " (" + String.join(", ", mods) + ")";
     }
 
@@ -230,6 +252,27 @@ public final class Routing {
     /** The loud line for patches that are on but have no gate; the items are `mod: Class.method`. */
     static String summary(List<String> ungated) {
         return "Horizon: " + ungated.size() + " behaviours mods change won't take effect (native runs them without the mods' patches): " + String.join(", ", ungated);
+    }
+
+    /** The quiet line for patches whose native gate another workstream owns; the items are deferral reasons, counted by owner. */
+    static String waiting(List<String> reasons) {
+        var counts = new TreeMap<String, Integer>(java.util.Comparator.comparingInt(Routing::ownerOrder).thenComparing(s -> s));
+        for (String reason : reasons) counts.merge(ownerOf(reason), 1, Integer::sum);
+        var parts = new ArrayList<String>();
+        counts.forEach((who, n) -> parts.add(who + " " + n));
+        return "Horizon: " + reasons.size() + " routes wait for their owner: " + String.join(", ", parts);
+    }
+
+    /** `W9` for `owner: W9 3-2`, `w12-coverage` for `spec: w12-coverage SPEC-6`, else the reason's kind; as tools/java_routing.py groups them. */
+    static String ownerOf(String reason) {
+        if (reason.startsWith("owner: ")) return reason.substring("owner: ".length()).split(" ")[0];
+        if (reason.startsWith("spec: w12-coverage ")) return "w12-coverage";
+        int colon = reason.indexOf(':');
+        return colon < 0 ? reason : reason.substring(0, colon);
+    }
+
+    private static int ownerOrder(String who) {
+        return who.matches("W\\d+") ? Integer.parseInt(who.substring(1)) : Integer.MAX_VALUE;
     }
 
     private static String simple(String owner) {

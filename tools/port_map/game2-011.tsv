@@ -142,3 +142,5 @@ BeehiveBlock.trySpawnDripParticles	port	crates/horizon-client/src/animate_tick.r
 BeehiveBlock.createBlockStateDefinition	skip:data		state definition comes from the block data tables
 BeehiveBlock.playerWillDestroy	port	crates/horizon-client/src/game.rs::Game::break_block_as_player	a creative break drops the hive with its bees and honey level
 BeehiveBlock.rotate	port	crates/horizon-world/src/worldgen/structure.rs::StateTransforms::rotate	rotation through the state transform table
+Biome.<clinit>	inline	crates/horizon-world/src/worldgen/biome_temperature.rs::BiomeTemperatureSettings::from_json	w12-coverage: W10; the biome codec's fields are decoded from the exported JSON
+MultiNoiseBiomeSource.<clinit>	inline	crates/horizon-world/src/worldgen/biome.rs::MultiNoiseBiomeSource::from_quantized_json	w12-coverage: W10

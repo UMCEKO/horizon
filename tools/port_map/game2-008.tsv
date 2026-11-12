@@ -152,3 +152,7 @@ ProjectileItem.DispenseConfig.Builder.build	inline	crates/horizon-client/src/gam
 ProjectileWeaponItem.getHeldProjectile	port	crates/horizon-client/src/game/items/crossbow.rs::Game::projectile_slot	offhand first, then the held slot
 ProjectileWeaponItem.createProjectile	inline	crates/horizon-client/src/game/items/crossbow.rs::Game::shoot_crossbow	the arrow from the ammo, with the weapon's piercing
 ShieldItem.getName	port	crates/horizon-client/src/game/administration/commands/mod.rs::Game::stack_display_name	
+Item.<init>	skip:java		w12-coverage: java-boot
+ItemStack.addDetailsToTooltip	inline	crates/horizon-client/src/item_tooltip.rs::detail_lines	w12-coverage: W5
+ItemStack.finishUsingItem	inline	crates/horizon-client/src/game/items/item_use.rs::Game::complete_using_item	w12-coverage: SPEC-13
+ItemStack.overrideOtherStackedOnMe	inline	crates/horizon-client/src/menu/bundle.rs::Menu::carried_bundle_click	w12-coverage: SPEC-17

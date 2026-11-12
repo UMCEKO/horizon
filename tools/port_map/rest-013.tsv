@@ -140,3 +140,4 @@ ServerFunctionManager.executeTagFunctions	port	crates/horizon-client/src/game/ad
 ServerFunctionManager.execute	port	crates/horizon-client/src/game/administration/functions.rs::Game::run_function	runs one function as the sender
 ServerLinks.findKnownType	missing		minor: no lookup by known link type; only the bug-report link is sent (dedicated.rs)
 ServerLinks.untrust	inline	crates/horizon-client/src/game/interface/dedicated/mod.rs::Game::run_dedicated	links are built as ServerLink entries for the net config, after valid_untrusted_uri
+ReloadableServerResources.updateComponentsAndStaticRegistryTags	skip:java		w12-coverage: java-boot

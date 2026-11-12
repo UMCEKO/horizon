@@ -151,3 +151,4 @@ EnchantmentPredicate.matchesEnchantment	inline	crates/horizon-client/src/advance
 FluidPredicate.matches	port	crates/horizon-client/src/advancements.rs::location	gap: minor: the fluid id and tags only; fluid state properties are not checked; no vanilla advancement uses fluid
 FluidPredicate.Builder.of	skip:data		datagen builder
 FoodPredicate.matches	inline	crates/horizon-client/src/advancements.rs::player_facts	the food key of a player predicate: the level, then the saturation as a double
+BlockPredicate.<clinit>	inline	crates/horizon-world/src/worldgen/block_predicate.rs::BlockPredicate::from_json	w12-coverage: W10; the predicate codec

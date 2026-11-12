@@ -102,3 +102,4 @@ DropChances.filterDefaultValues	port	crates/horizon-client/src/entity_nbt.rs::mo
 DropChances.toEnumMap	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	the saved drop_chances compound read back by slot name, missing slots keeping the default
 DropChances.withEquipmentChance	port	crates/horizon-client/src/mobs/finalize.rs::set_drop_chance	stored per slot in extra.drop_chances
 ElytraAnimationState.tick	port	crates/horizon-client/src/mobs.rs::ElytraAnimation::tick	
+MobEffectInstance.onEffectAdded	inline	crates/horizon-client/src/game/network/lan_attributes.rs::Game::mob_attributes	w12-coverage: SPEC-10

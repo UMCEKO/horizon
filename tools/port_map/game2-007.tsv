@@ -147,3 +147,4 @@ ItemCombinerMenu.createInputSlots	inline	crates/horizon-client/src/menu.rs::Menu
 ItemCombinerMenu.createResultSlot	inline	crates/horizon-client/src/menu.rs::Menu::new	the result slot is set up when the menu is made and takes no placed items
 ItemCombinerMenu.removed	inline	crates/horizon-client/src/game/blocks/stations.rs::Game::close_station	the input items go back when the station closes
 ItemCombinerMenu.stillValid	port	crates/horizon-client/src/lan/menu.rs::Slots::still_valid	the station's block is still there and within 4 blocks of the player
+AnvilMenu.createResultInternal	inline	crates/horizon-client/src/menu.rs::Menu::anvil_result	w12-coverage: SPEC-17; NeoForge's name for the body of AnvilMenu.createResult

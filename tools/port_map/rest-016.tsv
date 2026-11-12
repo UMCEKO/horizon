@@ -126,3 +126,4 @@ DedicatedPlayerList.saveOps	port	crates/horizon-server-files/src/user_lists.rs::
 DedicatedPlayerList.loadWhiteList	port	crates/horizon-server-files/src/user_lists.rs::UserList::load	startup and console reload
 DedicatedPlayerList.saveWhiteList	port	crates/horizon-server-files/src/user_lists.rs::UserList::save	
 DedicatedPlayerList.isWhiteListed	port	crates/horizon-client/src/game/interface/dedicated/mod.rs::Lists::whitelisted	
+DataCommands.<clinit>	inline	crates/horizon-client/src/game/administration/commands/data.rs::Game::cmd_data	w12-coverage: W13; the /data targets and errors it builds

@@ -231,3 +231,4 @@ RegionFileStorage.getRegionFile	port	crates/horizon-client/src/save.rs::cached_r
 RegionFileStorage.read	port	crates/horizon-world/src/region.rs::RegionFile::read	
 RegionFileStorage.scanChunk	port	crates/horizon-client/src/save.rs::read_region_record	
 RegionFileStorage.write	port	crates/horizon-world/src/region.rs::RegionFile::write	
+StemBlock.mayPlaceOn	inline	crates/horizon-world/src/level/survive.rs::may_place_on	w12-coverage: SPEC-14

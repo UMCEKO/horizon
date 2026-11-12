@@ -146,3 +146,4 @@ HangingMossBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim:
 HangingMossBlock.tick	port	crates/horizon-world/src/level/tick.rs::Sim::tick_block	HangingMoss arm breaks the moss when it cannot stay
 HangingMossBlock.isValidBonemealTarget	port	crates/horizon-world/src/level/bonemeal.rs::Sim::bonemeal_valid	HangingMoss arm: air below the tip inside build height
 HangingMossBlock.performBonemeal	port	crates/horizon-world/src/level/bonemeal.rs::Sim::perform_bonemeal	HangingMoss arm sets the tip on the air below the tip
+CropBlock.mayPlaceOn	inline	crates/horizon-world/src/level/survive.rs::may_place_on	w12-coverage: SPEC-14

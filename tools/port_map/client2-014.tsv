@@ -148,3 +148,4 @@ TitleScreen.checkDemoWorldPresence	skip:other		demo world only
 TitleScreen.extractRenderState	port	crates/horizon-client/src/title.rs::Title::draw	version line and buttons
 TitleScreen.mouseClicked	port	crates/horizon-client/src/title.rs::Title::click	gap: minor: no Realms notification popup to click
 TitleScreen.confirmDemo	skip:other		demo world reset only
+Screen.onClose	inline	crates/horizon-client/src/game/interface/debug_options.rs::Game::close_debug_options	w12-coverage: W5

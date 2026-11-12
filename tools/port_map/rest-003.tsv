@@ -141,3 +141,6 @@ OptionInstance.OptionInstanceSliderButton.applyUnsavedValue	port	crates/horizon-
 OptionInstance.OptionInstanceSliderButton.resetValue	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::slider_shown	
 OptionInstance.OptionInstanceSliderButton.extractWidgetRenderState	port	crates/horizon-client-render/src/options_ui.rs::slider_unsnapped	gap: minor: no deferred apply after 600 ms; only the handle display
 OptionInstance.OptionInstanceSliderButton.keyPressed	port	crates/horizon-client/src/game/interface/key_focus.rs::slider_edit_on_focus	Tab focus on a slider starts its arrow-key editing
+KeyboardHandler.handleDebugKeys	inline	crates/horizon-client/src/debug_keys.rs::handle_debug_keys	w12-coverage: SPEC-22
+KeyMapping.set	skip:java		w12-coverage: java-client
+Minecraft.pickBlockOrEntity	skip:java		w12-coverage: java-client
