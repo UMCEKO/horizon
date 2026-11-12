@@ -883,8 +883,8 @@ impl Game<'_> {
             .map(|t| t.name.clone());
         if let Some(team) = team {
             let new_name = uuid_text(self.uuid_for(to));
-            self.score.board.add_to_team(&new_name, &team);
-            self.score.board.remove_from_team(&old_name);
+            self.server_team_join(&new_name, &team);
+            self.server_team_leave_member(&old_name);
         }
     }
     /// Finalize a converted frog or witch before it joins the level.

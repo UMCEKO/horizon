@@ -516,6 +516,18 @@ impl Arg for EntUuid {
     }
 }
 
+/// A `PlayerTeam`, by its name (`Flat.rawTeam`).
+pub struct TeamName(pub String);
+impl Arg for TeamName {
+    type Raw = jstring;
+    const RAW: &'static str = "Ljava/lang/String;";
+    const FLAT: &'static str = "rawTeam";
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    fn from_raw(env: &mut JNIEnv, raw: jstring) -> TeamName {
+        TeamName(Text::from_raw(env, raw).0)
+    }
+}
+
 /// `BlockPos`, by `BlockPos.asLong`.
 pub struct Pos(pub BlockPos);
 impl Arg for Pos {

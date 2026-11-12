@@ -56,6 +56,7 @@ import net.minecraft.world.level.storage.TagValueOutput;
 import net.minecraft.world.level.storage.ValueInput;
 import net.minecraft.world.level.storage.ValueOutput;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.scores.PlayerTeam;
 
 /** The install's routing (`routing.json`) confirmed against the mixins merged at boot, as `routes.bin`; see docs/java-mods-map.md. */
 public final class Routing {
@@ -104,6 +105,12 @@ public final class Routing {
     /** Whether a call's receiver is a server player's inventory, which is all Horizon's native serves; the Java client's own is not. */
     public static boolean serverInventory(Object receiver) {
         return receiver instanceof net.minecraft.world.entity.player.Inventory inventory && inventory.player instanceof net.minecraft.server.level.ServerPlayer;
+    }
+
+    /** Whether a call's receiver is the server's scoreboard, which Horizon's native serves; the Java client's own is not. */
+    public static boolean serverScoreboard(Object receiver) {
+        var server = GameBridge.server();
+        return server != null && receiver == server.getScoreboard();
     }
 
     /** The route's id, -1 when the key is unknown or the route is off. */
@@ -509,6 +516,7 @@ public final class Routing {
             };
         }
         if (type == Vec3.class) return (in, c) -> new Vec3(in.readDouble(), in.readDouble(), in.readDouble());
+        if (type == PlayerTeam.class) return (in, c) -> ScoreboardView.team(in.text(), in.readNBytes(in.readInt()));
         if (Entity.class.isAssignableFrom(type)) return entity(type);
         if (type == DamageSource.class) return (in, c) -> Flat.toDamageSource(in.readNBytes(in.readInt()), c.level());
         if (type == MobEffectInstance.class) {
@@ -656,7 +664,10 @@ public final class Routing {
                 receiver = level;
             }
             case 3 -> receiver = GameBridge.server();
-            case 4 -> receiver = GameBridge.server().getScoreboard();
+            case 4 -> {
+                ScoreboardView.read(in);
+                receiver = GameBridge.server().getScoreboard();
+            }
             case 5 -> {
                 var level = GameBridge.level(in.text());
                 ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();

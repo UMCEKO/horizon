@@ -60,6 +60,11 @@ public final class Flat {
         return entity == null ? "" : entity.getUUID().toString();
     }
 
+    /** A team by its name. */
+    public static String rawTeam(net.minecraft.world.scores.PlayerTeam team) {
+        return team.getName();
+    }
+
     /** A UUID as text, empty for none. */
     public static String raw(java.util.UUID id) {
         return id == null ? "" : id.toString();

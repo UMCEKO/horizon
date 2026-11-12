@@ -523,6 +523,57 @@ impl Team {
             players: HashSetOrder::default(),
         }
     }
+    /// `PlayerTeam.Packed.CODEC` encoding: fields equal to their codec default are left out.
+    pub fn pack(&self) -> Tag {
+        let t = self;
+        let mut c = vec![
+            ("Name", Tag::String(t.name.as_str().into())),
+            ("DisplayName", component_tag(&t.display_name)),
+        ];
+        if let Some(color) = &t.color {
+            c.push(("TeamColor", Tag::String(color.as_str().into())));
+        }
+        if !t.allow_friendly_fire {
+            c.push(("AllowFriendlyFire", Tag::Byte(0)));
+        }
+        if !t.see_friendly_invisibles {
+            c.push(("SeeFriendlyInvisibles", Tag::Byte(0)));
+        }
+        let empty = Value::String(String::new());
+        if canonical_component(&t.prefix) != empty {
+            c.push(("MemberNamePrefix", component_tag(&t.prefix)));
+        }
+        if canonical_component(&t.suffix) != empty {
+            c.push(("MemberNameSuffix", component_tag(&t.suffix)));
+        }
+        if t.nametag_visibility != Visibility::Always {
+            c.push((
+                "NameTagVisibility",
+                Tag::String(t.nametag_visibility.name().into()),
+            ));
+        }
+        if t.death_message_visibility != Visibility::Always {
+            c.push((
+                "DeathMessageVisibility",
+                Tag::String(t.death_message_visibility.name().into()),
+            ));
+        }
+        if t.collision_rule != CollisionRule::Always {
+            c.push(("CollisionRule", Tag::String(t.collision_rule.name().into())));
+        }
+        if !t.players.is_empty() {
+            c.push((
+                "Players",
+                Tag::List(
+                    t.players
+                        .iter()
+                        .map(|p| Tag::String(p.as_str().into()))
+                        .collect(),
+                ),
+            ));
+        }
+        Tag::compound(c)
+    }
     fn apply_color(&self, t: Text) -> Text {
         match self.color.as_deref().and_then(team_color_rgb) {
             Some(c) => t.with_color(c),
@@ -762,6 +813,24 @@ pub struct Scoreboard {
     pub teams: Vec<Team>,
     team_order: OpenOrder,
     team_of: BTreeMap<String, String>,
+    team_revision: Revision,
+}
+/// Moves, process-wide unique, with every change to the teams or their members; boards compare equal whatever it reads.
+#[derive(Clone, Copy, Debug)]
+struct Revision(u64);
+impl PartialEq for Revision {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Revision {
+    fn fresh() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+    fn bump(&mut self) {
+        *self = Self::fresh();
+    }
 }
 impl Default for Scoreboard {
     fn default() -> Self {
@@ -775,6 +844,7 @@ impl Default for Scoreboard {
             teams: Vec::new(),
             team_order: OpenOrder::default(),
             team_of: BTreeMap::new(),
+            team_revision: Revision::fresh(),
         }
     }
 }
@@ -974,15 +1044,24 @@ impl Scoreboard {
         self.teams.iter().find(|t| t.name == name)
     }
     pub fn team_mut(&mut self, name: &str) -> Option<&mut Team> {
+        self.team_revision.bump();
         self.teams.iter_mut().find(|t| t.name == name)
+    }
+    /// A number that differs after any change to a team or its members.
+    pub fn team_revision(&self) -> u64 {
+        self.team_revision.0
     }
     pub fn add_team(&mut self, name: &str) -> &mut Team {
         if self.team(name).is_none() {
+            self.team_revision.bump();
             self.teams.push(Team::new(name));
             self.team_order.insert(name);
             self.reorder();
         }
-        self.team_mut(name).expect("just added")
+        self.teams
+            .iter_mut()
+            .find(|t| t.name == name)
+            .expect("just added")
     }
     /// `getPlayerTeams().stream()` (what saving uses).
     pub fn teams_streamed(&self) -> Vec<&Team> {
@@ -996,6 +1075,7 @@ impl Scoreboard {
         let Some(at) = self.teams.iter().position(|t| t.name == name) else {
             return;
         };
+        self.team_revision.bump();
         let team = self.teams.remove(at);
         for p in team.players.iter() {
             self.team_of.remove(p);
@@ -1010,6 +1090,7 @@ impl Scoreboard {
     /// same one); false when the team already listed the player.
     pub fn add_to_team(&mut self, player: &str, team: &str) -> bool {
         self.remove_from_team(player);
+        self.team_revision.bump();
         self.team_of.insert(player.to_owned(), team.to_owned());
         match self.team_mut(team) {
             Some(t) => t.players.insert(player),
@@ -1020,6 +1101,7 @@ impl Scoreboard {
         let Some(team) = self.team_of.remove(player) else {
             return false;
         };
+        self.team_revision.bump();
         if let Some(t) = self.team_mut(&team) {
             t.players.remove(player);
         }
@@ -1100,59 +1182,7 @@ impl Scoreboard {
             })
             .collect::<Vec<_>>();
         let slots: Vec<(&str, Tag)> = slots.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
-        let teams: Vec<Tag> = self
-            .teams_streamed()
-            .into_iter()
-            .map(|t| {
-                let mut c = vec![
-                    ("Name", Tag::String(t.name.as_str().into())),
-                    ("DisplayName", component_tag(&t.display_name)),
-                ];
-                if let Some(color) = &t.color {
-                    c.push(("TeamColor", Tag::String(color.as_str().into())));
-                }
-                if !t.allow_friendly_fire {
-                    c.push(("AllowFriendlyFire", Tag::Byte(0)));
-                }
-                if !t.see_friendly_invisibles {
-                    c.push(("SeeFriendlyInvisibles", Tag::Byte(0)));
-                }
-                let empty = Value::String(String::new());
-                if canonical_component(&t.prefix) != empty {
-                    c.push(("MemberNamePrefix", component_tag(&t.prefix)));
-                }
-                if canonical_component(&t.suffix) != empty {
-                    c.push(("MemberNameSuffix", component_tag(&t.suffix)));
-                }
-                if t.nametag_visibility != Visibility::Always {
-                    c.push((
-                        "NameTagVisibility",
-                        Tag::String(t.nametag_visibility.name().into()),
-                    ));
-                }
-                if t.death_message_visibility != Visibility::Always {
-                    c.push((
-                        "DeathMessageVisibility",
-                        Tag::String(t.death_message_visibility.name().into()),
-                    ));
-                }
-                if t.collision_rule != CollisionRule::Always {
-                    c.push(("CollisionRule", Tag::String(t.collision_rule.name().into())));
-                }
-                if !t.players.is_empty() {
-                    c.push((
-                        "Players",
-                        Tag::List(
-                            t.players
-                                .iter()
-                                .map(|p| Tag::String(p.as_str().into()))
-                                .collect(),
-                        ),
-                    ));
-                }
-                Tag::compound(c)
-            })
-            .collect();
+        let teams: Vec<Tag> = self.teams_streamed().into_iter().map(Team::pack).collect();
         // The codec leaves out empty parts.
         let mut entries: Vec<(&str, Tag)> = Vec::new();
         if !objectives.is_empty() {
@@ -1609,5 +1639,45 @@ mod death_message_tests {
         let (key, args) = death_message_args("death.attack.arrow", &victim, &cause, None);
         assert_eq!(key, "death.attack.arrow");
         assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn revision_moves_on_join_and_leave() {
+        let mut board = Scoreboard::default();
+        let mut seen = vec![board.team_revision()];
+        let mut step = |board: &Scoreboard| {
+            let now = board.team_revision();
+            assert!(!seen.contains(&now));
+            seen.push(now);
+        };
+        board.add_team("red");
+        step(&board);
+        board.add_to_team("Steve", "red");
+        step(&board);
+        board.remove_from_team("Steve");
+        step(&board);
+        board.remove_team("red");
+        step(&board);
+        // Nothing changed: the same revision, and equal boards.
+        let before = board.team_revision();
+        assert!(!board.remove_from_team("Steve"));
+        board.remove_team("blue");
+        assert_eq!(board.team_revision(), before);
+        assert_eq!(board, Scoreboard::default());
+    }
+
+    #[test]
+    fn a_team_packs_with_its_members() {
+        let mut board = Scoreboard::default();
+        board.add_team("red").allow_friendly_fire = false;
+        board.add_to_team("Steve", "red");
+        let tag = board.team("red").unwrap().pack();
+        assert_eq!(tag.get("Name"), Some(&Tag::String("red".into())));
+        assert_eq!(tag.get("AllowFriendlyFire"), Some(&Tag::Byte(0)));
+        assert_eq!(
+            tag.get("Players"),
+            Some(&Tag::List(vec![Tag::String("Steve".into())]))
+        );
+        assert_eq!(tag.get("TeamColor"), None);
     }
 }
