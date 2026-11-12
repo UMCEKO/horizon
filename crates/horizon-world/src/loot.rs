@@ -192,6 +192,8 @@ pub struct LootPlace {
     pub this_entity: Option<(i32, u128)>,
     /// `LAST_DAMAGE_PLAYER`: the UUID of the player who killed the mob.
     pub killer: Option<u128>,
+    /// `BLOCK_STATE`: the broken block's state.
+    pub block_state: Option<crate::registry::BlockStateId>,
 }
 
 /// The level a loot roll is in, as a mod's own loot kinds see it.

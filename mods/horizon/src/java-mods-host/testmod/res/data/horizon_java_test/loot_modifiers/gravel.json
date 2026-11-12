@@ -1,0 +1,17 @@
+{
+  "type": "horizon_java_test:add_item",
+  "condition": {
+    "type": "minecraft:all_of",
+    "terms": [
+      {
+        "type": "neoforge:loot_table_id",
+        "loot_table_id": "minecraft:blocks/gravel"
+      },
+      {
+        "type": "minecraft:random_chance",
+        "chance": 0.5
+      }
+    ]
+  },
+  "item": "minecraft:flint"
+}
