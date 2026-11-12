@@ -6,17 +6,21 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.block.Block;
 import net.neoforged.bus.ListenerList;
 import net.neoforged.bus.api.Event;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.common.CommonHooks;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.EventHooks;
 
 /** NeoForge events Rust posts where its hook fires (`game/java/java_listener.rs`): which ones a mod listens to, and the post ops. */
 public final class EventPosts {
@@ -47,6 +51,9 @@ public final class EventPosts {
 
     /** The server events Rust posts through `post_level_event`. */
     private static final Map<String, LevelPost> LEVEL = Map.of();
+
+    /** The server events Rust posts from inside a level cascade (`post_cascade_event`): their listeners may only read the level. */
+    private static final Map<String, LevelPost> CASCADE = Map.of("BlockEvent.NeighborNotifyEvent", EventPosts::neighborNotify);
 
     /** The client events Rust posts through `client_post_event`. */
     private static final Map<String, ClientPost> CLIENT = Map.of("PlaySoundEvent", NativeSounds::ask);
@@ -171,6 +178,28 @@ public final class EventPosts {
         if (post == null) throw new IllegalArgumentException("no level post for " + name);
         write(out, posted(name, () -> post.post(level, in)));
         GameBridge.writeEffects(out);
+    }
+
+    /** `post_cascade_event`: the level's key, the event's name and its fields; the reply is the posted result alone. */
+    static void cascade(Crossing.In in, Crossing.Out out) throws Exception {
+        var level = GameBridge.level(in.readInt());
+        String name = in.text();
+        LevelPost post = CASCADE.get(name);
+        if (post == null) throw new IllegalArgumentException("no cascade post for " + name);
+        // A listener's sounds stay queued: the next level call's effects carry them to the game, which a cascade can't reach.
+        write(out, posted(name, () -> post.post(level, in)));
+    }
+
+    private static Posted neighborNotify(ServerLevel level, Crossing.In in) {
+        var pos = BlockPos.of(in.readLong());
+        int id = in.readInt();
+        int bits = in.readByte();
+        var state = id >= 0 ? Block.stateById(id) : level.getBlockState(pos);
+        var sides = EnumSet.noneOf(Direction.class);
+        for (var side : Direction.values()) if ((bits >> side.ordinal() & 1) != 0) sides.add(side);
+        boolean canceled = EventHooks.onNeighborNotify(level, pos, state, sides, false).isCanceled();
+        if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: server event BlockEvent.NeighborNotifyEvent " + pos + " sides=" + sides.size() + " canceled=" + canceled);
+        return new Posted(canceled, Posted.NONE.result());
     }
 
     private interface Step {

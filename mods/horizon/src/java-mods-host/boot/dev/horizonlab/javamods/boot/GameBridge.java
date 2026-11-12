@@ -166,6 +166,7 @@ public final class GameBridge {
         Crossing.game("post_event", EventPosts::server);
         Crossing.game("server_chat", ServerChat::run);
         Crossing.game("post_level_event", EventPosts::level);
+        Crossing.game("post_cascade_event", EventPosts::cascade);
         Crossing.game("destroy_progress", GameBridge::destroyProgress);
         Crossing.game("correct_tool", GameBridge::correctTool);
         Crossing.game("tool_enchantments", Loot::toolEnchantments);

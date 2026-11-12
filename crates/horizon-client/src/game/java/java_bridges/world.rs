@@ -2,6 +2,13 @@
 //! The level's blocks, signals and events, each on the `ServerLevel` Java called it on.
 
 use super::*;
+use super::super::java_cascade::GameCascade as Cascade;
+use crate::game::api_values::TryIntoEngine;
+
+/// A bridged position as `LevelHost` reads one.
+fn at(pos: &Pos) -> [i32; 3] {
+    [pos.0.x, pos.0.y, pos.0.z]
+}
 
 horizon_java_host::java_bridges! { table for Game<'static> {
     "net/minecraft/world/level/Level".getBlockState
@@ -9,11 +16,18 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     fn level_get_block_state(game, on: LevelOn, pos: Pos) -> BlockStateId {
         game.on_level(&on, |game| game.world.block(pos.0.x, pos.0.y, pos.0.z))
     }
+    @cascade(cx: Cascade<'static>) {
+        let state = cx.level(&on)?.block_state(at(&pos))?;
+        TryIntoEngine::try_into_engine(&state, &()).ok()
+    }
 
     "net/minecraft/world/level/Level".isLoaded
     "(Lnet/minecraft/core/BlockPos;)Z" if "net/minecraft/server/level/ServerLevel" =>
     fn level_is_loaded(game, on: LevelOn, pos: Pos) -> bool {
         game.on_level(&on, |game| game.java_column_loaded(pos.0.x >> 4, pos.0.z >> 4))
+    }
+    @cascade(cx: Cascade<'static>) {
+        Some(cx.level(&on)?.is_loaded(at(&pos)))
     }
 
     "net/minecraft/server/level/ServerLevel".shouldTickBlocksAt
@@ -131,6 +145,9 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     "(Lnet/minecraft/core/BlockPos;I)I" if "net/minecraft/server/level/ServerLevel" =>
     fn level_raw_brightness(game, on: LevelOn, pos: Pos, darken: i32) -> i32 {
         game.on_level(&on, |game| game.with_level(|_, level, _| horizon_world::level::raw_brightness(level, pos.0, darken)))
+    }
+    @cascade(cx: Cascade<'static>) {
+        Some(cx.level(&on)?.raw_brightness(at(&pos), darken))
     }
 
     "net/minecraft/world/level/Level".getSkyDarken

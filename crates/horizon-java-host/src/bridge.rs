@@ -159,6 +159,88 @@ pub fn has_active() -> bool {
     !ACTIVE.get().is_null()
 }
 
+/// The level cascade a crossing runs inside: what cascade bodies act on, and the event that crossed.
+#[derive(Clone, Copy)]
+struct Cascade {
+    cx: *mut (),
+    event: &'static str,
+}
+
+thread_local! {
+    static CASCADE: Cell<Cascade> = const { Cell::new(Cascade { cx: std::ptr::null_mut(), event: "" }) };
+}
+
+/// Runs `f`, a call into Java from inside a level cascade: bridges with a cascade body act on `cx`, the others throw.
+pub fn with_cascade<C, R>(cx: &mut C, event: &'static str, f: impl FnOnce() -> R) -> R {
+    struct Restore(*mut (), Cascade);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ACTIVE.set(self.0);
+            CASCADE.set(self.1);
+        }
+    }
+    let cascade = Cascade {
+        cx: std::ptr::from_mut(cx).cast(),
+        event,
+    };
+    let _restore = Restore(
+        ACTIVE.replace(std::ptr::null_mut()),
+        CASCADE.replace(cascade),
+    );
+    f()
+}
+
+/// The event of the cascade a native entered now would run inside, if any.
+pub fn cascade_event() -> Option<&'static str> {
+    let cascade = CASCADE.get();
+    (!cascade.cx.is_null() && !has_active()).then_some(cascade.event)
+}
+
+/// The exception a native throws when the cascade it was called in doesn't serve it; logged once per native.
+fn not_served(env: &mut JNIEnv, name: &str, event: &str) {
+    static LOGGED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let message = format!("Horizon: {name} isn't served inside a block update ({event})");
+    let mut logged = LOGGED.lock().unwrap_or_else(|e| e.into_inner());
+    if !logged.iter().any(|n| n == name) {
+        logged.push(name.to_owned());
+        eprintln!("{message}");
+    }
+    drop(logged);
+    let _ = env.throw_new("java/lang/IllegalStateException", message);
+}
+
+/// A native with a cascade body: inside a cascade crossing `c` runs on its context (`None` throws), else `f` as [`enter`] runs it.
+pub fn enter_or_cascade<G: 'static, C, R: Ret>(
+    mut env: JNIEnv,
+    name: &str,
+    f: impl FnOnce(&mut JNIEnv, &mut G) -> R,
+    c: impl FnOnce(&mut JNIEnv, &mut C) -> Option<R>,
+) -> R::Raw {
+    let cascade = CASCADE.get();
+    if cascade.cx.is_null() || has_active() {
+        return enter(env, name, f);
+    }
+    let out = catch_unwind(AssertUnwindSafe(|| {
+        let _node = crate::profile::cross(crate::profile::Way::Native, name);
+        // SAFETY: `with_cascade` holds the only `&mut C` for the crossing until it returns.
+        c(&mut env, unsafe { &mut *cascade.cx.cast::<C>() }).map(|out| out.into_raw_in(&mut env))
+    }));
+    match out {
+        Ok(Some(raw)) => raw,
+        Ok(None) => {
+            not_served(&mut env, name, cascade.event);
+            R::Raw::default()
+        }
+        Err(_) => {
+            let _ = env.throw_new(
+                "java/lang/IllegalStateException",
+                format!("{name}: panicked"),
+            );
+            R::Raw::default()
+        }
+    }
+}
+
 /// What the game runs on the thread of a native that just returned to Java, with the game it acted on; it may call back into Java.
 static AFTER_NATIVE: OnceLock<After> = OnceLock::new();
 type After = (std::any::TypeId, Box<dyn Fn(*mut ()) + Send + Sync>);
@@ -218,8 +300,12 @@ pub fn enter<G: 'static, R: Ret>(
     match out {
         Ok(Some(raw)) => raw,
         Ok(None) => {
-            let message = format!("{name}: outside a call from the game");
-            let _ = env.throw_new("java/lang/IllegalStateException", message);
+            if let Some(event) = cascade_event() {
+                not_served(&mut env, name, event);
+            } else {
+                let message = format!("{name}: outside a call from the game");
+                let _ = env.throw_new("java/lang/IllegalStateException", message);
+            }
             R::Raw::default()
         }
         Err(_) => {
@@ -681,24 +767,48 @@ impl Ret for BlockStateId {
     }
 }
 
-/// One entry serves one Java method from Rust: the class, the method and its descriptor, then a body on `&mut Game`; a leading `route` makes it the method's body for a route stub; a guard `@owner.method+` also receives the method's own parameters.
+/// One entry serves one Java method from Rust: the class, the method and its descriptor, then a body on `&mut Game`; a leading `route` makes it the method's body for a route stub; a guard `@owner.method+` also receives the method's own parameters; a trailing `@cascade(cx: C) { .. }` serves it inside a [`with_cascade`](crate::bridge::with_cascade) crossing, its `None` throwing.
 #[macro_export]
 macro_rules! java_bridges {
+    (@native $game:ty, $name:ident, $g:ident, [$($arg:ident: $ty:ty),*], $ret:ty, $body:block) => {
+        extern "system" fn $name(
+            env: $crate::jni::JNIEnv,
+            _class: $crate::jni::objects::JClass
+            $(, $arg: <$ty as $crate::bridge::Arg>::Raw)*
+        ) -> <$ret as $crate::bridge::Ret>::Raw {
+            $crate::bridge::enter::<$game, $ret>(env, stringify!($name), move |java, $g| {
+                $(let $arg = <$ty as $crate::bridge::Arg>::from_raw(java, $arg);)*
+                $body
+            })
+        }
+    };
+    (@native $game:ty, $name:ident, $g:ident, [$($arg:ident: $ty:ty),*], $ret:ty, $body:block, $cx:ident: $cty:ty, $cbody:block) => {
+        extern "system" fn $name(
+            env: $crate::jni::JNIEnv,
+            _class: $crate::jni::objects::JClass
+            $(, $arg: <$ty as $crate::bridge::Arg>::Raw)*
+        ) -> <$ret as $crate::bridge::Ret>::Raw {
+            $crate::bridge::enter_or_cascade::<$game, $cty, $ret>(
+                env,
+                stringify!($name),
+                move |java, $g| {
+                    $(let $arg = <$ty as $crate::bridge::Arg>::from_raw(java, $arg);)*
+                    $body
+                },
+                move |java, $cx| -> Option<$ret> {
+                    $(let $arg = <$ty as $crate::bridge::Arg>::from_raw(java, $arg);)*
+                    $cbody
+                },
+            )
+        }
+    };
     ($table:ident for $game:ty { $(
         $($route:ident)? $class:literal . $method:ident $desc:literal $(if $guard:literal)? =>
         fn $name:ident($g:ident $(, $arg:ident: $ty:ty)* $(,)?) -> $ret:ty $body:block
+        $(@cascade($cx:ident: $cty:ty) $cbody:block)?
     )* }) => {
         $(
-            extern "system" fn $name(
-                env: $crate::jni::JNIEnv,
-                _class: $crate::jni::objects::JClass
-                $(, $arg: <$ty as $crate::bridge::Arg>::Raw)*
-            ) -> <$ret as $crate::bridge::Ret>::Raw {
-                $crate::bridge::enter::<$game, $ret>(env, stringify!($name), move |java, $g| {
-                    $(let $arg = <$ty as $crate::bridge::Arg>::from_raw(java, $arg);)*
-                    $body
-                })
-            }
+            $crate::java_bridges!(@native $game, $name, $g, [$($arg: $ty),*], $ret, $body $(, $cx: $cty, $cbody)?);
         )*
         pub(super) fn $table() -> Vec<$crate::bridge::Bridge> {
             vec![$($crate::bridge::Bridge {
@@ -897,6 +1007,8 @@ mod tests {
             route "a/B".m "(I)I" if "a/G" => fn route_m(g, x: i32) -> i32 { x }
             "a/C".n "()V" => fn plain_n(g) -> () {}
             "a/L".get "(J)I" if "a/S" => fn level_get(g, on: super::super::LevelOn, pos: super::super::Pos) -> i32 { 0 }
+            "a/L".read "(J)I" => fn level_read(g, pos: super::super::Pos) -> i32 { 1 }
+            @cascade(cx: u64) { Some(*cx as i32 + pos.0.x) }
         } }
         pub fn lines() -> Vec<String> {
             table().iter().map(super::super::Bridge::line).collect()
@@ -919,6 +1031,50 @@ mod tests {
             table::lines()[2],
             "a/L\tget\t(J)I\ta/S\thorizon$bridge$level_get\tlevel:I,J\tI\t"
         );
+    }
+
+    #[test]
+    fn a_cascade_entry_keeps_its_line() {
+        assert_eq!(
+            table::lines()[3],
+            "a/L\tread\t(J)I\t\thorizon$bridge$level_read\tJ\tI\t"
+        );
+    }
+
+    #[test]
+    fn a_cascade_inside_a_game_call_hides_the_game_and_gives_both_back() {
+        let mut game = 7u64;
+        let mut cx = 3u32;
+        let at = std::ptr::from_mut(&mut game).cast::<()>();
+        let (inside, event, after) = with_active(&mut game, || {
+            let (inside, event) = with_cascade(&mut cx, "BlockEvent.NeighborNotifyEvent", || {
+                (has_active(), cascade_event())
+            });
+            (inside, event, ACTIVE.get())
+        });
+        assert!(!inside);
+        assert_eq!(event, Some("BlockEvent.NeighborNotifyEvent"));
+        assert_eq!(after, at);
+        assert_eq!(cascade_event(), None);
+        assert!(CASCADE.get().cx.is_null());
+    }
+
+    #[test]
+    fn a_game_call_inside_a_cascade_is_no_cascade_call_and_a_panic_restores_both() {
+        let mut game = 7u64;
+        let mut cx = 3u32;
+        let (nested, outer_back) = with_cascade(&mut cx, "BlockEvent.NeighborNotifyEvent", || {
+            let nested = with_active(&mut game, cascade_event);
+            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                with_cascade(&mut 0u8, "inner", || panic!("a listener failed"))
+            }));
+            let back = cascade_event() == Some("BlockEvent.NeighborNotifyEvent");
+            (nested, panicked.is_err() && back)
+        });
+        assert_eq!(nested, None);
+        assert!(outer_back);
+        assert!(!has_active());
+        assert_eq!(cascade_event(), None);
     }
 
     #[test]
