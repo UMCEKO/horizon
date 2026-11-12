@@ -1,6 +1,7 @@
 //! Real NeoForge and real mod jars in a JVM embedded in this process (`docs/java-mods.md`).
 
 pub mod bridge;
+pub mod bulk;
 pub mod entity_facts;
 pub mod profile;
 pub mod routes;
