@@ -60,6 +60,7 @@ public final class TestMod {
         EntityLife.register();
         PlayerView.register();
         WorldStart.register();
+        ChatEvents.register();
         if (net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) {
             ClientKeys.register(bus);
             ClientMotion.register();
