@@ -223,3 +223,7 @@ The JVM's memory is set in `create_vm` (`MEMORY` in `crates/horizon-java-host/sr
 live heap, 140 MB of metaspace and 1.0 GB for the whole JVM. Without a cap G1 grew the heap to 2.4 GB while the server's
 data packs loaded: mods' jars are zip packs, and vanilla's `FilePackResources.listResources` walks every entry of the jar on
 each call, about 27 GB of short-lived garbage in 5 s.
+
+## A release-shaped build
+
+`python3 tools/java_mods.py release --out DIR [--keep-target] [--no-smoke] [--install INSTALL]` makes the Linux client and server folders and `.tar.gz` archives with Java mods compiled in and the three host jars in `java-mods/`, from a clean commit. The Java side and the exporters are built on the host; the game is built and checked in an `ubuntu:22.04` container (the release's glibc). It runs the release job's import, CPU-baseline and start checks, that neither program links libjvm and both carry the support mark, then smoke runs with no Java installed (a world; a dedicated server) and with the Java mods of `INSTALL` (a Java mods install, default the RS pack's). `DIR` gets `SHA256SUMS` and `release.json`. Signing and a CI job are the upstream PR's. The analysis check (`Java mods analysed`) waits for the Java analysis CLI.
