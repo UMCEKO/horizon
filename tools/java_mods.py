@@ -528,6 +528,11 @@ def bridges(args):
         ok = 'horizon_java_test:anchor' in send(f'block {x + 2} {y} {z + 3}')
         print(f"  mod_block_refuses_removal: {'ok' if ok else 'WRONG'}", flush=True)
         wrong.extend([] if ok else ['mod_block_refuses_removal'])
+        # A named pig the server summons: the Java client's level finds it by id, then loses it once it is removed.
+        send(f'command summon minecraft:pig {x + 2} {y} {z + 4} {{CustomName:"horizon_pig",NoAI:1b}}')
+        send('wait 10')
+        send('command kill @e[type=minecraft:pig,name=horizon_pig]')
+        send('wait 40')
         send('command gamemode creative')
         # Pausing asks Java which sources keep playing: the test mod's runTick handler drops UI from vanilla's [MUSIC, UI].
         send('key escape tap')
@@ -558,7 +563,7 @@ def bridges(args):
     shutil.copy(Path(args.scratch) / 'ctl.log', Path(args.scratch) / 'first-session.log')
     paused = re.findall(r'^Horizon: pause sources: \[(.*)\]$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks.append(('pause_sources_from_handler', 'ok' if paused == ['music'] else f'FAILED {paused}'))
-    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'player_stack_keeps_identity', 'player_view_sees_native_give', 'play_sound_posted_from_native', 'gui_layer_pre_cancel', 'lockstep_order', 'lockstep_post_sees_this_tick', 'glyph_shadow_from_patch', 'loop_init_then_run', 'mod_command_registered', 'commands_selection_follows_dist', 'server_chat_event_player', 'client_commands_registered', 'client_command_runs') if (name, 'ok') not in checks)
+    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'player_stack_keeps_identity', 'player_view_sees_native_give', 'play_sound_posted_from_native', 'gui_layer_pre_cancel', 'lockstep_order', 'lockstep_post_sees_this_tick', 'glyph_shadow_from_patch', 'loop_init_then_run', 'mod_command_registered', 'commands_selection_follows_dist', 'server_chat_event_player', 'client_commands_registered', 'client_command_runs', 'client_level_sees_the_pig', 'client_level_finds_the_pig_in_its_box', 'client_level_loses_the_removed_pig') if (name, 'ok') not in checks)
     session(args, again)
     second = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks += [(name + ' (second session)', result) for name, result in second]

@@ -17,7 +17,8 @@ use self::hud::*;
 /// The Java client's liveness, where `super::java_screens::live::` paths expect it.
 pub(in crate::game) mod live {
     pub(in crate::game) use super::{
-        java_client_joined, java_client_running, java_hud_layer_cancelled, java_shape_generation,
+        java_client_joined, java_client_remote, java_client_running, java_hud_layer_cancelled,
+        java_seen, java_shape_generation,
     };
 }
 
@@ -63,6 +64,8 @@ pub(in crate::game) struct Client {
     states: bool,
     /// Input the world took since the last tick, in order, as `events` reads it.
     queue: Vec<u8>,
+    /// The place among the play packets of the last one the window applied.
+    seen: u64,
     queued: i32,
     focused: Option<bool>,
     /// The Java client's playing sounds by its handle.
@@ -154,8 +157,8 @@ enum Input<'a> {
     Hotbar(i32),
     /// A column of the window's arrived (true) or left.
     Chunk(i32, i32, bool),
-    /// A frame of the server's Java side, for the Java client's connection.
-    Wire(&'a [u8]),
+    /// A frame of the server's Java side, for the Java client's connection, and its place among the play packets.
+    Wire(u64, &'a [u8]),
     /// The positions native picked this tick that Java runs `animateTick` at.
     Animate(&'a [[i32; 3]]),
     /// The window's Particles option.
@@ -170,6 +173,10 @@ enum Input<'a> {
     Music(Option<&'a horizon_client::music::Music>, f32, bool, u8),
     /// The window's Notification Time option.
     NotificationTime(f64),
+    /// An entity change the window applied from a play packet, and that packet's place among them.
+    Entity(u64, &'a [u8]),
+    /// The place of the last play packet the window applied.
+    Seen(u64),
 }
 
 impl Input<'_> {
@@ -187,7 +194,7 @@ impl Input<'_> {
             Input::SwapHands => 9,
             Input::Hotbar(_) => 10,
             Input::Chunk(..) => 11,
-            Input::Wire(_) => 12,
+            Input::Wire(..) => 12,
             Input::Camera(..) => 13,
             Input::Animate(_) => 14,
             Input::Particles(_) => 15,
@@ -196,6 +203,8 @@ impl Input<'_> {
             Input::Toasts(_) => 26,
             Input::NotificationTime(_) => 27,
             Input::Music(..) => 40,
+            Input::Entity(..) => 17,
+            Input::Seen(_) => 18,
         };
         out.0.push(kind);
         match *self {
@@ -232,7 +241,11 @@ impl Input<'_> {
                 out.int(z);
                 out.bool(arrived);
             }
-            Input::Wire(frame) => out.bytes(frame),
+            Input::Wire(seq, frame) | Input::Entity(seq, frame) => {
+                out.long(seq as i64);
+                out.bytes(frame);
+            }
+            Input::Seen(seq) => out.long(seq as i64),
             Input::Camera(at, view, camera_type) => {
                 at.iter().for_each(|v| out.double(*v));
                 view.iter().for_each(|v| out.float(*v));
@@ -309,6 +322,7 @@ struct Sent {
     motion: Option<Motion>,
     particles: Option<i32>,
     notification_time: Option<f64>,
+    seen: Option<u64>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -717,6 +731,16 @@ pub(in crate::game) fn java_client_joined() -> bool {
     CLIENT.with_borrow(|c| c.joined)
 }
 
+/// The window's server is in another process and has a Java side the Java client connected to.
+pub(in crate::game) fn java_client_remote() -> bool {
+    CLIENT.with_borrow(|c| c.remote)
+}
+
+/// The window applied the play packet at `seq`: the Java client's packets sent before it may now apply.
+pub(in crate::game) fn java_seen(seq: u64) {
+    CLIENT.with_borrow_mut(|c| c.seen = c.seen.max(seq));
+}
+
 /// Whether a background client tick is running, during which the window doesn't wait on Java.
 pub(in crate::game) fn java_client_running() -> bool {
     RUNNING.load(std::sync::atomic::Ordering::Acquire) > 0
@@ -950,10 +974,16 @@ impl Game<'_> {
     }
 
     /// A frame of the server's Java side, which the Java client reads at its next tick.
-    pub(in crate::game) fn java_wire_in(&mut self, frame: &[u8]) {
+    pub(in crate::game) fn java_wire_in(&mut self, frame: &[u8], seq: u64) {
         if CLIENT.with_borrow(|c| c.remote) {
-            self.java_queue(Input::Wire(frame));
+            self.java_queue(Input::Wire(seq, frame));
         }
+        java_seen(seq);
+    }
+
+    /// An entity change the window applied, for the Java client's level at its next tick.
+    pub(in crate::game) fn java_entity_entry(&mut self, seq: u64, entry: &[u8]) {
+        self.java_queue(Input::Entity(seq, entry));
     }
 
     /// Every font's advances, which the Java client measures text with, ready for its start.
@@ -1045,12 +1075,14 @@ impl Game<'_> {
             c.queue.clear();
             c.queued = 0;
             c.music = MusicState::default();
+            c.seen = 0;
         });
         for (_, id) in CLIENT.with_borrow_mut(|c| std::mem::take(&mut c.sounds)) {
             super::java_listen_sound::external_stopped(id);
             self.audio.stop_and_release(id);
         }
         super::java_bridges::client_world::java_forget_client_world();
+        super::java_client_entities::java_client_entities_left();
     }
 
     /// Whether the Java client's `MusicManager.tick` runs the music.
@@ -1263,6 +1295,11 @@ impl Game<'_> {
             let toasts = super::java_toasts::java_toasts_turns();
             if !toasts.is_empty() {
                 Input::Toasts(&toasts).write(&mut events);
+                count += 1;
+            }
+            if c.sent.seen != Some(c.seen) {
+                c.sent.seen = Some(c.seen);
+                Input::Seen(c.seen).write(&mut events);
                 count += 1;
             }
             out.int(count);

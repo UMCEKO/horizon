@@ -64,6 +64,7 @@ public final class TestMod {
         if (net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) {
             ClientKeys.register(bus);
             ClientMotion.register();
+            ClientChecks.register();
             ClientTextures.register(bus);
             Goo.registerClient(bus);
             ClientWorldBox.register();

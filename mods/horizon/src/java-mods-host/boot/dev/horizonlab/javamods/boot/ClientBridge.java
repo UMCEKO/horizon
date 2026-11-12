@@ -378,6 +378,7 @@ public final class ClientBridge {
         STATES.clear();
         CHUNKS.clear();
         HELD.clear();
+        ClientEntities.levelChanged();
     }
 
     /** `LevelChunk.updateBlockEntityTicker`: one ticker a block entity keeps, its `getTicker` asked again when its state changes. */
@@ -491,10 +492,18 @@ public final class ClientBridge {
 
     private static final Map<Long, ArrayList<net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket>> HELD = new HashMap<>();
 
+    /** The server's packets to this client the window hasn't caught up with: those sent before them are still on its way. */
+    private static final java.util.ArrayDeque<Clients.Stamped> WAITING = new java.util.ArrayDeque<>();
+
     @SuppressWarnings("unchecked")
-    private static void receive() throws ReflectiveOperationException {
+    private static void receive() throws ReflectiveOperationException, IOException {
         var updated = new ArrayList<BlockPos>();
-        for (Packet<?> packet : Clients.takeForClient(player)) {
+        WAITING.addAll(Clients.takeForClient(player));
+        // The window's entity changes and this client's packets apply in the order the server sent them.
+        while (!WAITING.isEmpty() && ClientEntities.FEED.ready(WAITING.peekFirst().seq())) {
+            var stamped = WAITING.pollFirst();
+            ClientEntities.applyUpTo(stamped.seq());
+            Packet<?> packet = stamped.packet();
             if (packet instanceof net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket update) {
                 var at = update.getPos();
                 // A chunk's block entities travel with its data: until the window has the chunk, this client has no block entity to give theirs to.
@@ -507,12 +516,14 @@ public final class ClientBridge {
             try {
                 ((Packet<PacketListener>) packet).handle(listener);
             } catch (RunningOnDifferentThreadException e) {
-                // Queued on the client's loop; its tasks run below.
+                // Queued on the client's loop: it runs before the window's later entity changes apply; its tasks run below.
+                Minecraft.getInstance().packetProcessor().processQueuedPackets();
             } catch (Throwable t) {
                 System.err.println("Horizon: the Java client's " + packet.getClass().getSimpleName() + " failed");
                 t.printStackTrace();
             }
         }
+        ClientEntities.applyAll();
         // `Minecraft.tick`: packets that came in off the client's thread wait on its packet processor, then queued tasks run.
         Minecraft.getInstance().packetProcessor().processQueuedPackets();
         var tasks = BlockableEventLoop.class.getDeclaredMethod("runAllTasks");
@@ -814,6 +825,8 @@ public final class ClientBridge {
     private static final byte PARTICLES = 15;
     private static final byte SHELL_LAYOUT = 16;
     private static final byte BLOCK_EFFECT = 30;
+    private static final byte ENTITY = 17;
+    private static final byte SEEN = 18;
     private static final byte TOASTS = 26;
     private static final byte NOTIFICATION_TIME = 27;
     private static final byte MUSIC = 40;
@@ -885,7 +898,9 @@ public final class ClientBridge {
                         BlockRenders.camera(cam.x(), cam.y(), cam.z());
                     }
                 }
-                case WIRE -> RemoteClient.inbound(in.readNBytes(in.readInt()));
+                case WIRE -> RemoteClient.inbound(in.readLong(), in.readNBytes(in.readInt()));
+                case ENTITY -> ClientEntities.FEED.feed(in.readLong(), in.readNBytes(in.readInt()));
+                case SEEN -> ClientEntities.FEED.seen(in.readLong());
                 case CHUNK -> CHUNK_EVENTS.add(new int[] {in.readInt(), in.readInt(), in.readBoolean() ? 1 : 0});
                 case HOTBAR -> {
                     int slot = in.readInt();
@@ -1241,6 +1256,8 @@ public final class ClientBridge {
         WorldFrame.forget();
         cameraBlock = null;
         if (player != null) Clients.leave(player);
+        ClientEntities.left();
+        WAITING.clear();
         player = null;
         listener = null;
         moved = null;
