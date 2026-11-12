@@ -51,8 +51,8 @@ fn facts_file() -> PathBuf {
 
 /// Starts the Java mods' boot, once the configs it starts from are in the fingerprint.
 pub(super) fn start(bridges: Vec<horizon_java_host::bridge::Bridge>, window: bool) {
-    if let Some(run) = std::env::var_os("HORIZON_JAVA_RUN").map(PathBuf::from) {
-        let _ = CONFIGS.set(configs(&run));
+    if let Some(run) = horizon_java_host::run_dir() {
+        let _ = CONFIGS.set(configs(run));
         horizon_client::mod_keys::expect_mod_keys();
     }
     horizon_java_host::start(bridges, facts_file(), window);
@@ -62,10 +62,10 @@ pub(super) fn start(bridges: Vec<horizon_java_host::bridge::Bridge>, window: boo
 pub(super) fn carried(resources: &Path) -> Vec<PathBuf> {
     CARRIED
         .get_or_init(|| {
-            let Some(run) = std::env::var_os("HORIZON_JAVA_RUN").map(PathBuf::from) else {
+            let Some(run) = horizon_java_host::run_dir() else {
                 return Vec::new();
             };
-            content(&run, resources).unwrap_or_else(|e| {
+            content(run, resources).unwrap_or_else(|e| {
                 log::error!("Horizon: Java mods' content not built: {e}");
                 Vec::new()
             })

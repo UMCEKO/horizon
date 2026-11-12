@@ -103,6 +103,20 @@ public API that mods, desktop-class ports and the Horizon layer build on.
   a Horizon crate, cosmetics, the shop, official or partner servers, uploads to playhorizon.dev.
 - **Network:** allowed, but never to a built-in address.
 
+### Java mods
+
+The JVM that runs Java mods unchanged is a mod host, so it is platform: `horizon-java-host` (the embedded JVM and its
+bridges) and `horizon-java-analysis` (what a run folder's jars change). The engine reaches it only through
+`horizon-client`'s optional `java-mods` feature, from `game/java/`'s hooks; a build without the feature has none of it.
+
+- **Loading phase.** The run folder is decided once, in the mod host's loading phase (phase 1 of
+  [the mod host map](layering/mod-host-map.md)): `--java-mods DIR`, else `HORIZON_JAVA_RUN`, and only when `DIR/mods`
+  holds a jar that isn't Horizon's own. Then the JVM starts, before any package is selected, so its carried content
+  joins the content mods. Without a run folder no JVM starts, no hook is installed and nothing crosses to Java. A
+  dedicated server checks its EULA first. When phase 1 moves loading to `horizon-mod-host`, this step moves with it.
+- **Dependencies.** Java mods are not a third dependency model: they never appear in `horizon-mod.toml`'s
+  `[dependencies]`, and native and wasm mods can't depend on them. NeoForge orders the Java mods among themselves.
+
 ### Controllers, splitscreen, replays and UI pages
 
 Vanilla has none of these, and the engine stays 1:1 vanilla, so they are platform features on hooks the engine

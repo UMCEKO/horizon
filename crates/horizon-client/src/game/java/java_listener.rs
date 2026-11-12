@@ -64,7 +64,7 @@ pub(super) fn listens(hook: HookId) -> bool {
 
 /// The families with a hook to listen to, as trait mods ahead of the native ones; none without Java mods.
 pub(crate) fn entries(game_dir: &Path) -> Vec<ModEntry> {
-    let Some(run) = std::env::var_os("HORIZON_JAVA_RUN").map(PathBuf::from) else {
+    let Some(run) = horizon_java_host::run_dir().map(Path::to_path_buf) else {
         return Vec::new();
     };
     let cache = std::path::absolute(game_dir)
@@ -118,7 +118,7 @@ fn read_census(path: &Path, key: &str) -> Option<BTreeSet<String>> {
 
 /// Asks the booted mods which events they listen to, once their boot is done, and keeps the answer for the next launch.
 pub(super) fn take_census() {
-    let Some(run) = std::env::var_os("HORIZON_JAVA_RUN").map(PathBuf::from) else {
+    let Some(run) = horizon_java_host::run_dir().map(Path::to_path_buf) else {
         return;
     };
     let spawned = std::thread::Builder::new()

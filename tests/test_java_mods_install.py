@@ -97,7 +97,7 @@ class Launch(unittest.TestCase):
 
     def test_env_has_what_the_game_needs_and_homes_inside_the_install(self):
         env = java_mods.launch_env(Path('/i'), self.record, False, {'PATH': '/bin'})
-        self.assertEqual(env['HORIZON_JAVA_RUN'], '/i/client')
+        self.assertNotIn('HORIZON_JAVA_RUN', env)
         self.assertNotIn('JAVA_HOME', env)
         self.assertNotIn('HORIZON_JAVA_HOST_JAR', env)
         self.assertEqual(env['HORIZON_NEOFORGE'], '9.9')
@@ -105,15 +105,16 @@ class Launch(unittest.TestCase):
         self.assertNotIn('/i/jdk', env.get('LD_LIBRARY_PATH', env.get('DYLD_LIBRARY_PATH', '')))
         self.assertEqual(env['PATH'], '/bin')
 
-    def test_homes_the_caller_set_stay_and_the_server_has_its_own_run(self):
+    def test_homes_the_caller_set_stay(self):
         env = java_mods.launch_env(Path('/i'), self.record, True, {'HORIZON_HOME': '/mine', 'LD_LIBRARY_PATH': '/x'})
         self.assertEqual(env['HORIZON_HOME'], '/mine')
         self.assertEqual(env['XDG_DATA_HOME'], '/i/home/xdg-data')
-        self.assertEqual(env['HORIZON_JAVA_RUN'], '/i/server')
 
     def test_command_adds_resources_unless_given(self):
-        self.assertEqual(java_mods.launch_command('g', self.record, ['--world', 'W']), ['g', '--resources', '/r', '--world', 'W'])
-        self.assertEqual(java_mods.launch_command('g', self.record, ['--resources', '/mine']), ['g', '--resources', '/mine'])
+        self.assertEqual(java_mods.launch_command('g', self.record, '/i/client', ['--world', 'W']),
+                         ['g', '--java-mods', '/i/client', '--resources', '/r', '--world', 'W'])
+        self.assertEqual(java_mods.launch_command('g', self.record, '/i/server', ['--resources', '/mine', '--dedicated']),
+                         ['g', '--java-mods', '/i/server', '--resources', '/mine', '--dedicated'])
 
 
 class Sync(unittest.TestCase):

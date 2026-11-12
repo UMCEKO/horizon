@@ -29,8 +29,6 @@
     "horizon-command": "engine",
     "horizon-core": "engine",
     "horizon-items": "engine",
-    "horizon-java-analysis": "engine",
-    "horizon-java-host": "engine",
     "horizon-narrator": "engine",
     "horizon-prepare": "engine",
     "horizon-protocol": "engine",
@@ -43,6 +41,8 @@
     "horizon-chat-filter": "platform",
     "horizon-dualsense": "platform",
     "horizon-hdr": "platform",
+    "horizon-java-analysis": "platform",
+    "horizon-java-host": "platform",
     "horizon-mcp": "platform",
     "horizon-mod-api-gen": "platform",
     "horizon-mod-deps": "platform",
@@ -111,6 +111,10 @@
     ]
   },
   "optional": [
+    {
+      "edge": "horizon-client -> horizon-java-host",
+      "reason": "Feature java-mods only: the JVM mod host, started in the mod host's loading phase when the game is given a run folder (docs/layers.md#java-mods)."
+    },
     {
       "edge": "horizon-client -> horizon-port-pack",
       "reason": "Feature java-mods only: the Java boot capture is carried into content packs in-process (game/java/java_content.rs)."

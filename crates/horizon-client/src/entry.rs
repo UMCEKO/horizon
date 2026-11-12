@@ -139,6 +139,11 @@ pub fn main_with(
     let ids: Vec<_> = mods.iter().map(|entry| entry.fields().id).collect();
     // Java's families go first: at equal priority Java mods hear an event before native ones, as the shims they replace did.
     #[cfg(feature = "java-mods")]
+    if let Err(error) = game::java_hook_resolve(options.java_mods.as_deref()) {
+        eprintln!("Horizon: {error}");
+        std::process::exit(game::exit_code::ERROR);
+    }
+    #[cfg(feature = "java-mods")]
     let mods: Vec<_> = game::java_listener::entries(&launch.context.game_dir)
         .into_iter()
         .chain(mods)

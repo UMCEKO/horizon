@@ -880,7 +880,7 @@ impl Game<'_> {
 
     /// Every font's advances, which the Java client measures text with, ready for its start.
     pub(in crate::game) fn java_client_font(&self) {
-        if std::env::var_os("HORIZON_JAVA_RUN").is_none()
+        if !horizon_java_host::configured()
             || CLIENT.with_borrow(|c| c.font_sent.is_some())
         {
             return;

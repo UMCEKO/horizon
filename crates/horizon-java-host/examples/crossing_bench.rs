@@ -174,6 +174,11 @@ fn main() {
     let options = options();
     let facts =
         std::env::temp_dir().join(format!("crossing-bench-{}/facts.json", std::process::id()));
+    horizon_java_host::set_run(horizon_java_host::resolve_run(
+        None,
+        std::env::var_os("HORIZON_JAVA_RUN").as_deref(),
+        &std::env::current_dir().unwrap(),
+    ));
     start(Vec::new(), facts.clone(), false);
     if let Err(e) = ready() {
         panic!("the host didn't boot: {e}");

@@ -1987,8 +1987,9 @@ fn java_mods(action: JavaModsCmd, as_json: bool) -> Result<i32, String> {
             let tag = java_mods_version(version.as_deref())?;
             let mut cmd = if dedicated {
                 let dir = backend::server_dir(dir);
-                let mut cmd = backend::server(&tag, &dir, accept_eula)?;
+                let mut cmd = backend::server_before_dedicated(&tag, &dir, accept_eula)?;
                 mods::apply(&mut cmd, &tag, true, Some(&dir))?;
+                cmd.args(["--dedicated", "--nogui"]);
                 cmd
             } else {
                 let mut cmd = backend::client(&tag)?;
