@@ -68,13 +68,13 @@ impl Game<'_> {
     pub(super) fn java_hook_world_opening(
         &mut self,
         opening: &super::world_loading::WorldOpening,
-    ) -> super::world_loading::JavaWorldgen {
+    ) -> super::world_loading::JavaWorldStart {
         #[cfg(feature = "java-mods")]
         return self.java_world_opening(opening);
         #[cfg(not(feature = "java-mods"))]
         {
             let _ = opening;
-            None
+            Ok(None)
         }
     }
 

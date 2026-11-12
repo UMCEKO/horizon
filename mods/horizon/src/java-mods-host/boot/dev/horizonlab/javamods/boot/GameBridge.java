@@ -118,6 +118,7 @@ public final class GameBridge {
         Crossing.free("profile_dump", GameBridge::profileDump);
         Crossing.free("bench_echo_free", input -> input);
         Crossing.free("listener_census", EventPosts::census);
+        Crossing.free("wg_probe", WorldgenLevels::probe);
         Crossing.game("prepare", input -> prepare());
         Crossing.game("worldgen_export", GameBridge::worldgenExport);
         Crossing.game("items", input -> items());
@@ -693,6 +694,12 @@ public final class GameBridge {
         long seed = in.readLong();
         ServerView.openWorld(server, allLevels(), worldFolder, seed, dimensions);
         safely("ServerAboutToStart", () -> ServerLifecycleHooks.handleServerAboutToStart(server));
+        // After `ServerAboutToStart`: TerraBlender's init changes the level stems' biome sources there.
+        try {
+            WorldgenLevels.open(server, allLevels(), worldFolder);
+        } catch (WorldgenLevels.Failed e) {
+            return new byte[] {2};
+        }
         return new byte[] {1};
     }
 
@@ -750,6 +757,7 @@ public final class GameBridge {
         SOUNDS.clear();
         nextEntityId = -1;
         ServerView.closeWorld(server);
+        WorldgenLevels.close();
         BlockEntities.reset();
         ChunkViews.reset();
         ChunkEvents.reset();

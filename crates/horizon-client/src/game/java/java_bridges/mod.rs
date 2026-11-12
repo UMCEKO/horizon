@@ -15,6 +15,7 @@ mod rules;
 mod server;
 mod values;
 mod world;
+mod worldgen;
 
 /// Every family's table, for the class processor.
 pub(super) fn bridges() -> Vec<horizon_java_host::bridge::Bridge> {
@@ -31,6 +32,7 @@ pub(super) fn bridges() -> Vec<horizon_java_host::bridge::Bridge> {
         server::table(),
         values::table(),
         world::table(),
+        worldgen::table(),
     ]
     .into_iter()
     .flatten()
@@ -52,6 +54,7 @@ pub(super) fn ends_run(native: &str) -> bool {
         | "level_should_tick_blocks_at"
         | "chunk_cache_is_position_ticking"
         | "level_has_chunk"
+        | "chunk_scan_structures"
         | "level_has_neighbor_signal"
         | "level_best_neighbor_signal"
         | "level_signal"
