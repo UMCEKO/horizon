@@ -219,6 +219,7 @@ One process: the game, with the JVM inside it (JNI). No second process, except a
   `bool world` (+ blob) and `bool worldAnimating`; while animating the window asks `client_world_frame`
   (`G/java_world_renders.rs` `java_world_frame_request`, `java_world_frame_apply`, gated like `hud_frame_wanted`). Rust: `R/world_renders.rs` (`apply`, `draw`),
   drawn by `A/interface/recorded_world_geometry.rs`; the pieces after translucent terrain go through ari's `AfterTranslucentBlocks` stage.
+- `java_outline_frame` (`G/java_world_renders.rs`, from `java_client_frame`): once per frame decides the outline's lines and pieces from the recorded answer, waiting once per new aimed key (`java_outline_wait` span).
 
 ### Models, renders, items, text, sounds
 

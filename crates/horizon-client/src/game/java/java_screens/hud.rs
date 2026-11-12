@@ -43,6 +43,7 @@ impl Game<'_> {
 
     /// A window frame's collection of the Java client's finished work, without waiting for it, and the next frame recording's request while the HUD or the world animates; a frame that took a tick's status, or a tick still running, asks for none, so the window never waits on Java.
     pub(in crate::game) fn java_client_frame(&mut self) {
+        self.java_outline_frame();
         if CLIENT.with_borrow_mut(|c| std::mem::take(&mut c.shell.opening)) {
             self.java_client_collect(true);
         } else {

@@ -412,7 +412,7 @@ impl Game<'_> {
                     let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
                     let mut canceled = false;
                     self.native_block_highlight(h.pos, state, alpha as f32, &mut canceled);
-                    !canceled
+                    self.java_hook_outline_draw(canceled).0
                 })
                 .map(|h| {
                     let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);

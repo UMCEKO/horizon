@@ -30,7 +30,7 @@ impl Game<'_> {
             light: &light,
             visible: &visible,
         };
-        world_renders::draw(&frame, world, false);
+        world_renders::draw(&frame, world, self.java_hook_outline_draw(false).1);
         out.append(&mut world.entities);
     }
 }

@@ -617,6 +617,18 @@ struct FrameJob {
     view: Option<Vec<u8>>,
 }
 
+/// One world frame recording, asked for outside the frame's own requests.
+pub(in crate::game) fn send_world_frame(request: Vec<u8>) {
+    WORKER.with_borrow_mut(|w| {
+        w.get_or_insert_with(Worker::start).send_frame(FrameJob {
+            hud: None,
+            world: Some(request),
+            toasts: None,
+            view: None,
+        });
+    });
+}
+
 /// A frame request's replies, each with what the request took.
 #[derive(Default)]
 struct FrameDone {
@@ -1449,7 +1461,7 @@ impl Game<'_> {
     }
 
     /// The background tick's results, once it finished; `wait` blocks until it has.
-    fn java_client_collect(&mut self, wait: bool) {
+    pub(in crate::game) fn java_client_collect(&mut self, wait: bool) {
         let found = WORKER.with_borrow_mut(|w| w.as_mut().map(|w| w.collect(wait)));
         let Some(found) = found else {
             return;

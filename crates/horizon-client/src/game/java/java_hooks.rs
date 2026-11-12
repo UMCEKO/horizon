@@ -23,6 +23,20 @@ pub(super) struct JavaItemText {
 }
 
 impl Game<'_> {
+    /// Whether the block outline draws vanilla's lines and the mods' outline pieces this frame, after `native_canceled`.
+    pub(super) fn java_hook_outline_draw(&self, native_canceled: bool) -> (bool, bool) {
+        #[cfg(feature = "java-mods")]
+        {
+            if native_canceled {
+                super::java_world_renders::java_outline_native_canceled();
+            }
+            let draw = super::java_world_renders::java_outline_draw();
+            (draw.lines, draw.pieces)
+        }
+        #[cfg(not(feature = "java-mods"))]
+        (!native_canceled, false)
+    }
+
     /// What the Java mods' F3 entries added to the displayer in the Java client's last tick.
     pub(super) fn java_hook_debug_recorded(&self) -> Vec<horizon_client::debug_overlay::Recorded> {
         #[cfg(feature = "java-mods")]
