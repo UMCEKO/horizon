@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// The NeoForge release Horizon's host runs (docs/java-mods.md).
 pub const NEOFORGE: &str = "26.3.0.101";
@@ -706,55 +706,70 @@ pub fn refresh(tag: &str, install: &Path) -> Result<(), String> {
 
 // ----- Servers hosted with horizon-server ----------------------------------------------------------
 
+/// The old marker file, from before `[engine] java_mods` in server.toml.
 fn server_mark(dir: &Path) -> PathBuf {
     dir.join("java-mods.enabled")
 }
 
-/// Whether the server in `dir` runs with the Java mods.
-pub fn server_enabled(dir: &Path) -> bool {
-    server_mark(dir).is_file()
+#[derive(serde::Deserialize, Default)]
+struct ServerToml {
+    #[serde(default)]
+    engine: ServerEngine,
 }
 
+#[derive(serde::Deserialize, Default)]
+struct ServerEngine {
+    #[serde(default)]
+    java_mods: String,
+}
+
+/// Whether the server in `dir` runs with the Java mods (`[engine] java_mods` in its server.toml).
+pub fn server_enabled(dir: &Path) -> bool {
+    fs::read_to_string(dir.join("server.toml"))
+        .ok()
+        .and_then(|text| toml::from_str::<ServerToml>(&text).ok())
+        .is_some_and(|t| !t.engine.java_mods.is_empty())
+}
+
+/// Sets `[engine] java_mods` in the server's server.toml through `horizon-server config set`.
 pub fn set_server(dir: &Path, on: bool) -> Result<(), String> {
-    if on {
-        fs::write(server_mark(dir), "").map_err(|e| e.to_string())
+    let program = crate::servers::program().ok_or(tr(
+        "The server programs aren't set up yet: create a server, or press Prepare on its page.",
+    ))?;
+    let value = if on {
+        "engine.java_mods=java"
     } else {
-        let _ = fs::remove_file(server_mark(dir));
+        "engine.java_mods="
+    };
+    let output = crate::process::command(program)
+        .arg("--dir")
+        .arg(dir)
+        .args(["config", "set", value])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| e.to_string())?;
+    if output.status.success() {
         Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
     }
 }
 
-/// The environment `horizon-server` and its game get for the server in `dir`, with its run folder
-/// `dir/java` made ready; the game version is the one the server programs were set up from.
-pub fn server_env(tag: &str, dir: &Path) -> Result<Vec<(String, String)>, String> {
-    let run = dir.join("java");
-    let mut probe = Command::new("unused");
-    apply(&mut probe, tag, true, Some(&run))?;
-    // horizon-server hands its game its environment, not arguments: the variable means `--java-mods`.
-    Ok(probe
-        .get_envs()
-        .filter_map(|(k, v)| {
-            Some((
-                k.to_string_lossy().into_owned(),
-                v?.to_string_lossy().into_owned(),
-            ))
-        })
-        .chain([("HORIZON_JAVA_RUN".to_string(), run.display().to_string())])
-        .collect())
+/// A server marked with `java-mods.enabled` moves its setting into server.toml; the file goes after.
+pub fn convert_server_mark(
+    dir: &Path,
+    set: &dyn Fn(&Path, bool) -> Result<(), String>,
+) -> Result<(), String> {
+    let mark = server_mark(dir);
+    if mark.is_file() {
+        set(dir, true)?;
+        fs::remove_file(mark).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
-// ----- Launch ------------------------------------------------------------------------------------
-
-/// Gives the game command what the Java mods need: the run folder brought up to date, named by
-/// `--java-mods`, and the environment. `run` is the server's own folder for a dedicated server, else
-/// the install's `client/`. Refused with a plain reason when the install isn't ready or the game
-/// lacks support. Call it before `--dedicated` is added: the server's own parser takes what follows.
-pub fn apply(
-    cmd: &mut Command,
-    tag: &str,
-    dedicated: bool,
-    run: Option<&Path>,
-) -> Result<(), String> {
+/// The install folder when it is ready to run game version `tag`; refused in words when it isn't.
+fn ready_install(tag: &str) -> Result<PathBuf, String> {
     let config = Config::load();
     let install = install_dir();
     let status = Status::of(&config, &install);
@@ -773,6 +788,28 @@ pub fn apply(
         }
     }
     support(tag)?;
+    Ok(install)
+}
+
+/// Makes the server's run folder `dir/java` ready for game version `tag`; refused in words when the install isn't.
+pub fn prepare_server(tag: &str, dir: &Path) -> Result<(), String> {
+    let install = ready_install(tag)?;
+    prepare_run(tag, &install, &dir.join("java"), true)
+}
+
+// ----- Launch ------------------------------------------------------------------------------------
+
+/// Gives the game command what the Java mods need: the run folder brought up to date, named by
+/// `--java-mods`, and the environment. `run` is the server's own folder for a dedicated server, else
+/// the install's `client/`. Refused with a plain reason when the install isn't ready or the game
+/// lacks support. Call it before `--dedicated` is added: the server's own parser takes what follows.
+pub fn apply(
+    cmd: &mut Command,
+    tag: &str,
+    dedicated: bool,
+    run: Option<&Path>,
+) -> Result<(), String> {
+    let install = ready_install(tag)?;
     read_record(&install).ok_or(tr("The Java mods are not installed."))?;
     let run = match run {
         Some(run) => run.to_path_buf(),

@@ -304,6 +304,8 @@ pub struct State {
     pub phase: Phase,
     pub engine_pid: Option<u32>,
     pub engine_started: Option<Instant>,
+    /// The Java mods run folder the game was last started with (absolute).
+    pub java_mods: Option<std::path::PathBuf>,
     pub crashes: u32,
     pub last_crash: Option<String>,
     /// The latest sample (`sample`): the game's status, RAM and CPU.
@@ -393,6 +395,7 @@ impl Shared {
                 phase: Phase::Starting,
                 engine_pid: None,
                 engine_started: None,
+                java_mods: None,
                 crashes: 0,
                 last_crash: None,
                 sample: Value::Null,
@@ -549,6 +552,7 @@ fn status(shared: &Shared) -> Value {
         "uptime_seconds": shared.started.elapsed().as_secs(),
         "engine_pid": state.engine_pid,
         "engine_uptime_seconds": state.engine_started.map(|t| t.elapsed().as_secs()),
+        "engine": { "java_mods": state.java_mods },
         "crashes": state.crashes,
         "last_crash": state.last_crash,
         "sample": state.sample,

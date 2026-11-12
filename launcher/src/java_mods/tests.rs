@@ -415,3 +415,34 @@ fn the_game_is_given_its_run_folder_by_argument() {
     assert_eq!(args, ["--world", "w", "--java-mods", "/i/client"]);
     assert!(!cmd.get_envs().any(|(k, _)| k == "HORIZON_JAVA_RUN"));
 }
+
+#[test]
+fn a_server_runs_java_mods_when_its_toml_names_a_run_folder() {
+    let root = dir("server-toml");
+    assert!(!server_enabled(&root));
+    fs::write(root.join("server.toml"), "[engine]\njava_mods = \"\"\n").unwrap();
+    assert!(!server_enabled(&root));
+    fs::write(root.join("server.toml"), "[engine]\njava_mods = \"java\"\n").unwrap();
+    assert!(server_enabled(&root));
+}
+
+#[test]
+fn the_old_mark_moves_into_the_toml_once() {
+    let root = dir("server-mark");
+    let calls = std::cell::RefCell::new(Vec::new());
+    let set = |d: &Path, on: bool| {
+        calls.borrow_mut().push((d.to_path_buf(), on));
+        Ok(())
+    };
+    convert_server_mark(&root, &set).unwrap();
+    assert!(calls.borrow().is_empty());
+    fs::write(root.join("java-mods.enabled"), "").unwrap();
+    convert_server_mark(&root, &set).unwrap();
+    assert_eq!(*calls.borrow(), [(root.clone(), true)]);
+    assert!(!root.join("java-mods.enabled").exists());
+    convert_server_mark(&root, &set).unwrap();
+    assert_eq!(calls.borrow().len(), 1);
+    fs::write(root.join("java-mods.enabled"), "").unwrap();
+    assert!(convert_server_mark(&root, &|_, _| Err("no".into())).is_err());
+    assert!(root.join("java-mods.enabled").exists());
+}
