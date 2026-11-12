@@ -133,6 +133,7 @@ One process: the game, with the JVM inside it (JNI). No second process, except a
   family's `HOOKS`; `build.rs` finds the families (`G/java_listener_families.rs`).
 - Mixed-in vanilla methods: `G/java_routing.rs` (`route_gate!`) runs a vanilla method a loaded mod's mixin patches as Java's
   merged method; the routes are listed in `T/java_routing/` and `J/boot/res/route_gates.tsv`.
+  `special: world_frame` in `deferred.tsv`: a client method the world recording calls itself (W1).
 - Acting-player ops go through `java_call_use` (one request shape: `java_use_request` header plus a tail) into
   `GameBridge.use(input, kind)`; kinds: 0 `use_item`, 1 `use_item_on`, 2 `click_block`, 3 `event_click_block`,
   4 `event_use_item`, 5 `BreakBlockEvent`, 6 `AttackEntityEvent` (both through `post_event`), 7 `player_tick`, 8 `use_tick`, 9 `release_using`,

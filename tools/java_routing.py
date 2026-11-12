@@ -35,7 +35,7 @@ GUI_ROUTE = re.compile(r'(?<![\w!])gui_route!\(\s*"([^"]+)"')
 FN = re.compile(r'\bfn\s+(\w+)')
 IMPL = re.compile(r'^[ \t]*(?:unsafe\s+)?impl\b[^\n{]*', re.M)
 BODY_CALL = re.compile(r'\s*(?:return\s+)?self\.(\w+)\(')
-REASON = re.compile(r'^(owner: (W1|W2|W4|W5|W6|W7|W8|W10|W13|W9 \d+-\d+)|spec: w12-coverage SPEC-\d+|seam: \S+:\d+|special: (animate|item_code|sounds|screens|loop|reload))$')
+REASON = re.compile(r'^(owner: (W1|W2|W4|W5|W6|W7|W8|W10|W13|W9 \d+-\d+)|spec: w12-coverage SPEC-\d+|seam: \S+:\d+|special: (animate|item_code|sounds|screens|loop|reload|world_frame))$')
 VERDICT_KINDS = ('java-client', 'java-boot', 'java-already', 'java-view', 'java-served', 'inert', 'out-of-scope')
 EVIDENCE = {'java-client': 'trace: java_client_routes.jfr', 'java-boot': 'trace: java_client_routes.jfr',
             'java-already': 'Java runs the whole method already', 'java-view': 'the method makes Java\'s view at vanilla\'s moment',
