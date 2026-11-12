@@ -1353,6 +1353,7 @@ impl Game<'_> {
         if open {
             super::java_worldgen::recheck_export();
         }
+        super::java_listen_item_attributes::forget();
         JAVA_SERVER.with_borrow_mut(|s| {
             s.started = open;
             s.levels.clear();
