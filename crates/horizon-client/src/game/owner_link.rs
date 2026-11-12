@@ -1,10 +1,22 @@
 //! The owner link: the closed set of requests the window sends its integrated server thread.
-use super::{Dim, Game, integrated::ServerOptions, lan::LanSettings, lan_screen::Snapshot};
+use super::{
+    Dim, Game,
+    integrated::{
+        ServerOptions,
+        capture::{Live, Target},
+    },
+    lan::LanSettings,
+    lan_screen::Snapshot,
+};
+use horizon_perf_format::v1::StopReason;
 use horizon_protocol::connection::Pipe;
 use std::{
     collections::BTreeSet,
     path::PathBuf,
-    sync::{Arc, mpsc::SyncSender},
+    sync::{
+        Arc,
+        mpsc::{Sender, SyncSender},
+    },
 };
 
 /// Where the server puts the answer to a request the window waits for.
@@ -45,6 +57,12 @@ pub(super) enum OwnerRequest {
     SetPregen(bool),
     /// A live content mod switch: the data packs reload from the new root.
     ReloadMods(ModsReload),
+    /// The server thread's side of a capture starts, for `target`.
+    StartServerCapture(Target, Arc<Live>),
+    /// The server thread's capture stops; the saved path goes to the reply when one waits.
+    StopServerCapture(StopReason, Option<Sender<String>>),
+    /// `/profiler mark`: a named moment in the server thread's capture.
+    MarkServerCapture(String),
     /// Transitional: the requests not typed yet.
     Closure(Box<dyn FnOnce(&mut Game<'_>) + Send>),
 }
@@ -101,6 +119,15 @@ impl Game<'_> {
             }
             OwnerRequest::SetPregen(enabled) => self.set_pregen_commands(enabled),
             OwnerRequest::ReloadMods(reload) => self.apply_mods_reload(reload),
+            OwnerRequest::StartServerCapture(target, live) => {
+                if let Err(e) = self.start_server_capture(target, live) {
+                    log::warn!("Horizon: the server thread is not captured: {e}");
+                }
+            }
+            OwnerRequest::StopServerCapture(reason, reply) => {
+                self.stop_server_capture(reason, reply)
+            }
+            OwnerRequest::MarkServerCapture(name) => self.mark_server_capture(&name),
             OwnerRequest::Closure(task) => task(self),
         }
     }

@@ -21,7 +21,7 @@ use super::owner_link::OwnerRequest;
 use super::{Game, Screen};
 use horizon_client::{Result, gamepad::Button, keybinds, text::Text, title::world_management};
 use horizon_core::geometry::Vec3;
-use horizon_telemetry::scrub::Scrubber;
+use horizon_system::scrub::Scrubber;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
