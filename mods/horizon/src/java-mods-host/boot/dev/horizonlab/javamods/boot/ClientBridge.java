@@ -686,6 +686,7 @@ public final class ClientBridge {
         size(in);
         float partial = in.readFloat();
         var cam = new WorldFrame.Cam(in.readDouble(), in.readDouble(), in.readDouble(), in.readFloat(), in.readFloat(), in.readFloat(), in.readFloat());
+        WorldFrame.hit(WorldFrame.readHit(in));
         Minecraft minecraft = Minecraft.getInstance();
         WorldFrame.camera(cam);
         advance(minecraft, partial);
@@ -846,6 +847,7 @@ public final class ClientBridge {
     private static final byte MUSIC = 40;
     private static final byte VIEW_INPUTS = 36;
     private static final byte DEBUG_LINES = 42;
+    private static final byte HIT = 28;
 
     private static double cursorX, cursorY;
     private static BlockPos cameraBlock;
@@ -905,6 +907,7 @@ public final class ClientBridge {
                             net.minecraft.network.protocol.game.ServerboundPlayerActionPacket.Action.SWAP_ITEM_WITH_OFFHAND, BlockPos.ZERO, net.minecraft.core.Direction.DOWN));
                 }
                 case ANIMATE -> Animate.group(in);
+                case HIT -> WorldFrame.hit(WorldFrame.readHit(in));
                 case PARTICLES -> minecraft.options.particles().set(net.minecraft.server.level.ParticleStatus.values()[Math.max(0, Math.min(2, in.readInt()))]);
                 case CAMERA -> {
                     var cam = new WorldFrame.Cam(in.readDouble(), in.readDouble(), in.readDouble(), in.readFloat(), in.readFloat(), in.readFloat(), in.readFloat());

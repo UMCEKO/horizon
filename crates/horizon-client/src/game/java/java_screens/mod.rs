@@ -184,6 +184,8 @@ enum Input<'a> {
     View(&'a super::java_view::ViewInputs),
     /// Whether debug info is reduced, and the Java mods' F3 entries native has enabled now.
     DebugLines(bool, &'a [String]),
+    /// The window's crosshair target for the block outline, told when it changes.
+    Hit(&'a super::java_world_renders::OutlineHit),
 }
 
 impl Input<'_> {
@@ -215,6 +217,7 @@ impl Input<'_> {
             Input::Seen(_) => 18,
             Input::View(_) => 36,
             Input::DebugLines(..) => 42,
+            Input::Hit(_) => 28,
         };
         out.0.push(kind);
         match *self {
@@ -306,6 +309,7 @@ impl Input<'_> {
                 out.int(ids.len() as i32);
                 ids.iter().for_each(|id| out.text(id));
             }
+            Input::Hit(hit) => super::java_world_renders::write_hit(out, hit),
         }
     }
 }
@@ -349,6 +353,7 @@ struct Sent {
     particles: Option<i32>,
     notification_time: Option<f64>,
     seen: Option<u64>,
+    hit: Option<super::java_world_renders::OutlineHit>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1314,6 +1319,7 @@ impl Game<'_> {
         let camera = self.java_world_camera();
         let camera_type = self.camera_type as u8;
         let (debug_reduced, debug_wanted) = self.java_debug_wanted();
+        let hit = self.java_outline_hit();
         self.java_publish_client_world();
         let (left, arrived) = self.java_client_chunk_changes();
         CLIENT.with_borrow_mut(|c| {
@@ -1372,6 +1378,11 @@ impl Game<'_> {
             {
                 c.sent.camera = Some((block, view, camera_type));
                 Input::Camera(at, view, camera_type).write(&mut events);
+                count += 1;
+            }
+            if c.sent.hit != Some(hit) {
+                c.sent.hit = Some(hit);
+                Input::Hit(&hit).write(&mut events);
                 count += 1;
             }
             for group in c.animate.drain(..) {
@@ -1526,7 +1537,7 @@ fn trimmed_advances(mut advances: Vec<f32>, missing: f32) -> Vec<f32> {
 }
 
 /// `Direction.get3DDataValue` of a face's normal.
-fn face_index(face: [i32; 3]) -> i32 {
+pub(super) fn face_index(face: [i32; 3]) -> i32 {
     match face {
         [0, -1, 0] => 0,
         [0, 1, 0] => 1,
@@ -1656,6 +1667,26 @@ mod tests {
         assert_eq!(out.0[0], 13);
         assert_eq!(out.0.len(), 1 + 3 * 8 + 4 * 4 + 1);
         assert_eq!(out.0[41], 2);
+    }
+
+    #[test]
+    fn a_hit_input_is_its_kind_then_the_block_and_the_outline_gate() {
+        let hit = super::super::java_world_renders::OutlineHit {
+            block: Some(([1, 64, -2], [0, 1, 0], [1.5, 65.0, -1.5])),
+            render: true,
+            high_contrast: false,
+        };
+        let mut out = Out::default();
+        Input::Hit(&hit).write(&mut out);
+        let mut expected = vec![28u8, 1];
+        // `BlockPos.asLong` of (1, 64, -2): x << 38 | (z & 0x3FFFFFF) << 12 | y.
+        expected.extend(((1i64 << 38) | ((-2i64 & 0x3FF_FFFF) << 12) | 64).to_be_bytes());
+        expected.extend(1i32.to_be_bytes());
+        for v in [1.5f64, 65.0, -1.5] {
+            expected.extend(v.to_be_bytes());
+        }
+        expected.extend([1, 0]);
+        assert_eq!(out.0, expected);
     }
 
     fn segments_of(sizes: &[(usize, u8)]) -> Out {
