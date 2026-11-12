@@ -1,15 +1,23 @@
 //! The owner link: the closed set of requests the window sends its integrated server thread.
-use super::{Dim, Game, integrated::ServerOptions, lan::LanSettings, lan_screen::Snapshot};
-use horizon_client::chunk::ColumnCensus;
-use horizon_client::fast_hash::FxHashSet;
+use super::{
+    Dim, Game,
+    integrated::{
+        ServerOptions,
+        capture::{Live, Target},
+    },
+    lan::LanSettings,
+    lan_screen::Snapshot,
+    memory::ServerSide,
+};
 use horizon_core::geometry::Vec3;
+use horizon_perf_format::v1::StopReason;
 use horizon_protocol::connection::Pipe;
 use std::{
     collections::BTreeSet,
     path::PathBuf,
     sync::{
         Arc,
-        mpsc::{Receiver, SyncSender},
+        mpsc::{Receiver, Sender, SyncSender},
     },
 };
 
@@ -51,6 +59,12 @@ pub(super) enum OwnerRequest {
     SetPregen(bool),
     /// A live content mod switch: the data packs reload from the new root.
     ReloadMods(ModsReload),
+    /// The server thread's side of a capture starts, for `target`; the reply, when one waits, gets its path.
+    StartServerCapture(Target, Arc<Live>, Option<Reply<Result<PathBuf, String>>>),
+    /// The server thread's capture stops; the saved path goes to the reply when one waits.
+    StopServerCapture(StopReason, Option<Sender<String>>),
+    /// `/profiler mark`: a named moment in the server thread's capture.
+    MarkServerCapture(String),
     /// What agent control asks of the world.
     Control(ControlRequest),
 }
@@ -99,10 +113,14 @@ pub(super) enum ControlRequest {
         words: Vec<String>,
         reply: Reply<Result<Option<serde_json::Value>, String>>,
     },
-    /// The memory report: the server's levels and the addresses of their sections.
-    LevelCensus(Reply<(ColumnCensus, FxHashSet<usize>)>),
-    /// The memory report: the server's chunk generation.
-    ProtoCensus(Reply<serde_json::Value>),
+    /// The memory report: the server's own parts.
+    ServerSide(Reply<ServerSide>),
+    /// `lan op NAME LEVEL`: whether a guest of that name was found.
+    SetOp {
+        name: String,
+        level: u8,
+        reply: Reply<bool>,
+    },
     /// The save folder of the server's world.
     WorldRoot(Reply<PathBuf>),
     /// The recording's copy: save, then hold the server thread until `copied` is dropped.
@@ -164,6 +182,23 @@ impl Game<'_> {
             }
             OwnerRequest::SetPregen(enabled) => self.set_pregen_commands(enabled),
             OwnerRequest::ReloadMods(reload) => self.apply_mods_reload(reload),
+            OwnerRequest::StartServerCapture(target, live, reply) => {
+                let started = self.start_server_capture(target, live);
+                match reply {
+                    Some(reply) => {
+                        let _ = reply.send(started);
+                    }
+                    None => {
+                        if let Err(e) = started {
+                            log::warn!("Horizon: the server thread is not captured: {e}");
+                        }
+                    }
+                }
+            }
+            OwnerRequest::StopServerCapture(reason, reply) => {
+                self.stop_server_capture(reason, reply)
+            }
+            OwnerRequest::MarkServerCapture(name) => self.mark_server_capture(&name),
             OwnerRequest::Control(request) => self.serve_control_request(request),
         }
     }
@@ -217,11 +252,11 @@ impl Game<'_> {
                     self.in_owner_level(|g| g.block_command(&words).map_err(|e| e.to_string()));
                 let _ = reply.send(out);
             }
-            ControlRequest::LevelCensus(reply) => {
-                let _ = reply.send((self.level_census(), self.section_addresses()));
+            ControlRequest::ServerSide(reply) => {
+                let _ = reply.send(self.server_side());
             }
-            ControlRequest::ProtoCensus(reply) => {
-                let _ = reply.send(self.proto_census_json());
+            ControlRequest::SetOp { name, level, reply } => {
+                let _ = reply.send(self.lan_set_op(&name, level));
             }
             ControlRequest::WorldRoot(reply) => {
                 let _ = reply.send(self.world_root.clone());
