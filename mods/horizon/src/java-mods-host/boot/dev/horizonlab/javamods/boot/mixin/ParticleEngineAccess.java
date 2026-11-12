@@ -1,5 +1,6 @@
 package dev.horizonlab.javamods.boot.mixin;
 
+import java.util.List;
 import java.util.Map;
 import net.minecraft.client.particle.ParticleEngine;
 import net.minecraft.client.particle.ParticleGroup;
@@ -15,4 +16,7 @@ public interface ParticleEngineAccess {
 
     @Accessor("particles")
     Map<ParticleRenderType, ParticleGroup<?>> horizon$groups();
+
+    @Accessor("particleRenderOrder")
+    List<ParticleRenderType> horizon$order();
 }
