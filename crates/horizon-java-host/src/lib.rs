@@ -719,7 +719,12 @@ impl Host {
 
     /// One call into `GameBridge`; None when it threw, which its own stack trace explains.
     pub fn request(&self, op: &str, input: &[u8]) -> Option<Vec<u8>> {
-        self.timed(op, || self.cross(op, input, |reply| Some(reply.to_vec())))
+        self.timed(op, || {
+            self.cross(op, input, |reply| {
+                profile::note_copy(reply.len());
+                Some(reply.to_vec())
+            })
+        })
     }
 
     /// [`request`](Self::request) without the copies: `write` fills the request in this thread's buffer and `read` parses the reply where it lies.
@@ -738,8 +743,19 @@ impl Host {
                     .unwrap_or_default()
             }));
             out.0.clear();
+            let started = profile::dir().map(|_| std::time::Instant::now());
             write(&mut out);
-            let reply = self.cross(op, &out.0, |bytes| read(&mut wire::In(bytes)));
+            if let Some(started) = started {
+                profile::note_ser(started.elapsed());
+            }
+            let reply = self.cross(op, &out.0, |bytes| {
+                let started = profile::dir().map(|_| std::time::Instant::now());
+                let reply = read(&mut wire::In(bytes));
+                if let Some(started) = started {
+                    profile::note_ser(started.elapsed());
+                }
+                reply
+            });
             CROSSING.with_borrow_mut(|c| {
                 if c.scratch.len() <= level {
                     c.scratch.resize_with(level + 1, Vec::new);
@@ -752,6 +768,7 @@ impl Host {
 
     fn timed<R>(&self, op: &str, f: impl FnOnce() -> R) -> R {
         let started = profile::dir().map(|_| std::time::Instant::now());
+        let _node = profile::cross(profile::Way::Request, op);
         let out = f();
         if let Some(started) = started {
             profile::record_call(op, started.elapsed());
@@ -838,11 +855,21 @@ impl Host {
             let _ = env.exception_clear();
             return None;
         }
+        if profile::dir().is_some() {
+            profile::note_bytes(input.len(), n.max(0) as usize);
+            profile::note_copy(input.len());
+            profile::note_scratch(CROSSING.with_borrow(|c| {
+                c.arenas.iter().map(|a| a.capacity).sum::<usize>()
+                    + c.scratch.iter().map(Vec::capacity).sum::<usize>()
+            }));
+        }
         let result = match n {
             // SAFETY: Java wrote `n` bytes to the arena's start, and a request nested in `read` uses the next level's.
             1.. => read(unsafe { std::slice::from_raw_parts(address, n as usize) }),
             OVERFLOW => {
                 let reply = self.entry.overflow(&mut env)?;
+                profile::note_bytes(0, reply.len());
+                profile::note_copy(reply.len());
                 if reply.len() <= ARENA_CAP {
                     self.arena(&mut env, level, reply.len());
                 }

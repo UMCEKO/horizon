@@ -171,7 +171,8 @@ impl Game<'_> {
             let calls = horizon_java_host::profile::take_calls();
             let dims = horizon_java_host::profile::take_dimension_names();
             let runs = horizon_java_host::profile::take_runs();
-            let line = horizon_java_host::profile::java_line(unix_ms, calls, dims, &runs, &java);
+            let tree = horizon_java_host::profile::take_tree();
+            let line = horizon_java_host::profile::java_tree_line(unix_ms, calls, dims, &runs, &java, tree);
             horizon_java_host::profile::append(dir, "java-ticks.log", &line);
         }
     }

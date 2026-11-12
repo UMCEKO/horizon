@@ -311,6 +311,12 @@ public final class GameBridge {
         throw new IllegalStateException("no level named " + id);
     }
 
+    /** The key `level_add` gave a level, -1 for one it never named. */
+    static int keyOf(ServerLevel level) {
+        for (int key = 0; level != null && key < levels.length; key++) if (levels[key] == level) return key;
+        return -1;
+    }
+
     /** Every level, in key order. */
     private static List<ServerLevel> allLevels() {
         var out = new ArrayList<ServerLevel>();

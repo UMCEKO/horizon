@@ -22,6 +22,43 @@ def parse_rows(text):
     return rows
 
 
+TREE_FIELDS = ("count", "incl_us", "excl_us", "max_us", "callbacks", "nested", "depth", "bytes_in", "bytes_out", "copied", "ser_us")
+
+
+def parse_tree(text):
+    """`tree=` rows (`name|` then TREE_FIELDS, comma separated, `-` for none) as {name: {field: int}}."""
+    rows = {}
+    for row in text.split(","):
+        f = row.split("|")
+        if len(f) != len(TREE_FIELDS) + 1:
+            continue
+        try:
+            rows[f[0]] = dict(zip(TREE_FIELDS, map(int, f[1:])))
+        except ValueError:
+            continue
+    return rows
+
+
+def merge_tree(into, rows):
+    for name, row in rows.items():
+        have = into.setdefault(name, dict.fromkeys(TREE_FIELDS, 0))
+        for key, value in row.items():
+            have[key] = max(have[key], value) if key in ("max_us", "depth") else have[key] + value
+
+
+def tree_lines(rows, top):
+    """The call tree's nodes by exclusive time: a `native:` row is a Java to Rust callback, the rest Rust to Java requests."""
+    return [
+        f"{name[:40]:<40} {r['count']:>8} {r['incl_us'] / 1000:>9.1f} {r['excl_us'] / 1000:>9.1f} {r['ser_us'] / 1000:>7.1f} "
+        f"{r['callbacks']:>8} {r['nested']:>7} {r['depth']:>5} {r['bytes_in'] / 1024:>9.1f} {r['bytes_out'] / 1024:>9.1f} {r['copied'] / 1024:>9.1f}"
+        for name, r in sorted(rows.items(), key=lambda kv: -kv[1]["excl_us"])[:top]
+    ]
+
+
+TREE_HEADER = (f"{'node':<40} {'count':>8} {'incl ms':>9} {'excl ms':>9} {'ser ms':>7} {'callbks':>8} {'nested':>7} {'depth':>5} "
+               f"{'in KiB':>9} {'out KiB':>9} {'copy KiB':>9}")
+
+
 def parse_line(line):
     """`key=value` fields of a log line, split on spaces; None when it has no time."""
     fields = dict(p.split("=", 1) for p in line.split() if "=" in p)
@@ -97,14 +134,25 @@ def report(folder, top=15, jfr=True):
         )
     else:
         out.append("no server-ticks.log")
-    be, calls, locks, spans, events = {}, {}, {}, {}, {}
+    be, calls, locks, holds, spans, events, tree, chains = {}, {}, {}, {}, {}, {}, {}, {}
     for j in java:
         merge(be, parse_rows(j.get("be", "-")))
         merge(calls, parse_rows(j.get("calls", "-")))
         merge(locks, parse_rows(j.get("lock", "-")))
+        merge(holds, parse_rows(j.get("hold", "-")))
         merge(events, parse_rows(j.get("ev", "-")))
+        merge(chains, parse_rows(j.get("chains", "-")))
+        merge_tree(tree, parse_tree(j.get("tree", "-")))
     dims = int(sum(num(j, "dims") for j in java))
     out.append(f"dimension names sent to Java: {dims}")
+    if tree:
+        requests = sum(r["count"] for n, r in tree.items() if not n.startswith("native:"))
+        natives = sum(r["count"] for n, r in tree.items() if n.startswith("native:"))
+        moved = sum(r["bytes_in"] + r["bytes_out"] for r in tree.values())
+        copied = sum(r["copied"] for r in tree.values())
+        scratch = int(max(num(j, "scratch_kb") for j in java))
+        out.append(f"crossings: {requests} Rust to Java, {natives} Java to Rust; {moved / 1024:.1f} KiB on the wire, "
+                   f"{copied / 1024:.1f} KiB copied; scratch high-water {scratch} KiB (top rows of each second only)")
     for s in server:
         merge(spans, parse_rows(s.get("spans", "-")))
     out += table("Java block entity types (ticker time)", STAT_HEADER, stat_lines(be, top))
@@ -112,6 +160,9 @@ def report(folder, top=15, jfr=True):
     out += table("Native spans (server tick)", STAT_HEADER, stat_lines(spans, top))
     out += table("Java calls from Rust, by kind (includes turn wait)", STAT_HEADER, stat_lines(calls, top))
     out += table("Server-side turn wait (another server-side caller, never the window), by call kind", STAT_HEADER, stat_lines(locks, top))
+    out += table("Server-side turn held, by outermost call kind", STAT_HEADER, stat_lines(holds, top))
+    out += table("Crossing call tree, by exclusive time (nested crossings not counted twice)", TREE_HEADER, tree_lines(tree, top))
+    out += table("Dominant call chains (root>...>call, inclusive)", STAT_HEADER, stat_lines(chains, top))
     worst = sorted(server, key=lambda s: -num(s, "max_ms"))[:top]
     lines = []
     for s in worst:

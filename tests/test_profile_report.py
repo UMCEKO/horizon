@@ -28,6 +28,19 @@ class Report(unittest.TestCase):
         self.assertIn("span mobs", text)
         self.assertLess(text.index("ServerTickEvent.Post"), text.index("LevelTickEvent.Pre"))
 
+    def test_the_call_tree_ranks_by_exclusive_time_and_sums_both_directions(self):
+        line = (JAVA + " hold=block_entity_tick|400|50000|800"
+                " tree=block_entity_tick|400|60000|20000|900|800|0|1|8000|2000|8000|300,native:level_get_block|800|40000|40000|90|0|0|2|0|0|0|0"
+                " chains=block_entity_tick>native:level_get_block|800|40000|90,block_entity_tick|400|60000|900 scratch_kb=128")
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "java-ticks.log"), "w").write(line + "\n")
+            text = pr.report(d, jfr=False)
+        self.assertIn("crossings: 400 Rust to Java, 800 Java to Rust; 9.8 KiB on the wire, 7.8 KiB copied; scratch high-water 128 KiB", text)
+        tree = text[text.index("Crossing call tree"):]
+        self.assertLess(tree.index("native:level_get_block"), tree.index("block_entity_tick"))
+        self.assertIn("block_entity_tick>native:level_get_block", text)
+        self.assertIn("Server-side turn held", text)
+
     def test_an_empty_folder_reports_nothing_recorded(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertIn("no server-ticks.log", pr.report(d, jfr=False))
