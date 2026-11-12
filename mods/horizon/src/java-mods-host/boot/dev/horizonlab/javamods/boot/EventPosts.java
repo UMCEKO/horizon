@@ -43,7 +43,14 @@ public final class EventPosts {
     }
 
     /** The server events Rust posts through `post_event`, each with the acting player's view filled. */
-    private static final Map<String, PlayerPost> PLAYER = Map.of("BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity);
+    private static final Map<String, PlayerPost> PLAYER = Map.of(
+            "BreakBlockEvent", EventPosts::breakBlock,
+            "AttackEntityEvent", EventPosts::attackEntity,
+            "AnvilUpdateEvent", StationEvents::anvilUpdate,
+            "AnvilCraftEvent.Pre", StationEvents::anvilCraftPre,
+            "AnvilCraftEvent.Post", StationEvents::anvilCraftPost,
+            "GrindstoneEvent.OnPlaceItem", StationEvents::grindstonePlace,
+            "GrindstoneEvent.OnTakeItem", StationEvents::grindstoneTake);
 
     /** The server events Rust posts through `post_level_event`. */
     private static final Map<String, LevelPost> LEVEL = Map.of();
