@@ -42,10 +42,8 @@ pub(super) fn bridges() -> Vec<horizon_java_host::bridge::Bridge> {
 pub(super) fn ends_run(native: &str) -> bool {
     !matches!(
         native,
-        // The run's own question before each entry.
-        "block_entity_run_entry"
         // Does nothing in Horizon.
-        | "level_send_block_updated"
+        "level_send_block_updated"
         // Reads of blocks, chunks, signals, height and light.
         | "level_get_block_state"
         | "level_is_loaded"

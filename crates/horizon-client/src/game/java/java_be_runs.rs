@@ -39,14 +39,56 @@ fn java_be_run_reply(bytes: &[u8], sent: usize) -> std::result::Result<RunReply,
     ))
 }
 
-/// A run's entries while its crossing is out: which one Java ticks, and the first write back into Horizon.
-struct Run {
+/// A run's entries while its crossing is out, and the first write back into Horizon.
+pub(super) struct Run {
     positions: Vec<Pos>,
-    current: usize,
     /// Entries before this one are back in the world.
     done: usize,
     /// The entry that wrote, taken out of the world before its first write, as the scalar path has it for its whole tick.
     wrote: Option<(usize, Option<TakenModBlockEntity>)>,
+}
+
+impl Run {
+    pub(super) fn new(positions: Vec<Pos>) -> Run {
+        Run {
+            positions,
+            done: 0,
+            wrote: None,
+        }
+    }
+
+    /// Whether a native that `ends` runs, called now, is the first write back into Horizon.
+    pub(super) fn stops_at(&self, ends: bool) -> bool {
+        ends && self.wrote.is_none()
+    }
+
+    /// The entry that wrote back into Horizon, if one did.
+    #[cfg(test)]
+    pub(super) fn wrote_at(&self) -> Option<usize> {
+        self.wrote.as_ref().map(|(k, _)| *k)
+    }
+
+    /// Entries before this one are back in the world already.
+    #[cfg(test)]
+    pub(super) fn done(&self) -> usize {
+        self.done
+    }
+
+    /// The first write, made while Java is on `item`: the entries to put back into the world now, and the one that wrote.
+    pub(super) fn stop(&mut self, item: usize) -> (std::ops::Range<usize>, usize) {
+        let item = item
+            .min(self.positions.len().saturating_sub(1))
+            .max(self.done);
+        let finish = self.done..item;
+        self.done = item;
+        self.wrote = Some((item, None));
+        (finish, item)
+    }
+}
+
+/// How many entries a run of `len` ticked: those Java replied for, at least the first (a failed crossing is its failed scalar call), and the one that wrote whatever the reply says.
+pub(super) fn java_be_run_processed(replied: usize, wrote_at: Option<usize>, len: usize) -> usize {
+    replied.max(1).max(wrote_at.map_or(0, |k| k + 1)).min(len)
 }
 
 thread_local! {
@@ -57,17 +99,6 @@ thread_local! {
 /// The entry `java_block_entity_tick` is about to tick was ticked by its run: whether Java held it.
 pub(super) fn take_preticked() -> Option<bool> {
     PRETICKED.take()
-}
-
-/// `BlockEntities.runEntry`: whether entry `index` may tick, which it may until an earlier one wrote into Horizon.
-pub(super) fn run_entry(index: i32) -> bool {
-    RUN.with_borrow_mut(|run| match run {
-        Some(run) if run.wrote.is_none() => {
-            run.current = usize::try_from(index).unwrap_or(0);
-            true
-        }
-        _ => false,
-    })
 }
 
 /// The cap of a run: `HORIZON_JAVA_BE_RUN_CAP` when set (1 is the scalar path), else `RUN_CAP`.
@@ -157,12 +188,7 @@ impl Game<'_> {
         let (level, time) = (self.java_level_key(), self.world.game_time);
         // As `java_request` does before each scalar tick.
         self.java_push_stale();
-        RUN.set(Some(Run {
-            positions: positions.clone(),
-            current: 0,
-            done: 0,
-            wrote: None,
-        }));
+        RUN.set(Some(Run::new(positions.clone())));
         let reply = horizon_java_host::bridge::with_active(self, || {
             host.call_with(
                 "block_entity_tick_run",
@@ -189,12 +215,7 @@ impl Game<'_> {
             None => Vec::new(),
         }
         .into_iter();
-        // The entry that wrote was ticked, whatever the reply says.
-        let processed = entries
-            .len()
-            .max(1)
-            .max(wrote_at.map_or(0, |k| k + 1))
-            .min(len);
+        let processed = java_be_run_processed(entries.len(), wrote_at, len);
         for (j, &pos) in positions.iter().enumerate().take(processed) {
             let (held, sounds) = entries.next().unwrap_or((true, Vec::new()));
             self.java_play_effects(sounds);
@@ -204,7 +225,11 @@ impl Game<'_> {
                 }
                 continue;
             }
-            let taken = if Some(j) == wrote_at { taken.take() } else { None };
+            let taken = if Some(j) == wrote_at {
+                taken.take()
+            } else {
+                None
+            };
             self.java_finish_preticked(pos, held, taken);
         }
         if profile_on() {
@@ -227,21 +252,27 @@ impl Game<'_> {
         PRETICKED.set(None);
     }
 
-    /// Before each native Java calls: the first that `ends_run` during a run puts the entries before its own back and takes its own out, as the scalar path has them.
+    /// Before each native Java calls: the first that `ends_run` during a run stops Java before its next entry, puts the entries before its own back and takes its own out, as the scalar path has them.
     pub(super) fn java_run_native(&mut self, native: &str) {
-        let start = RUN.with_borrow_mut(|run| {
-            let run = run.as_mut()?;
-            if run.wrote.is_some() || !java_bridges::ends_run(native) {
-                return None;
-            }
-            run.wrote = Some((run.current, None));
-            Some((run.done, run.current, run.positions.clone()))
+        let stops = RUN.with_borrow(|run| {
+            run.as_ref()
+                .is_some_and(|run| run.stops_at(java_bridges::ends_run(native)))
         });
-        let Some((done, current, positions)) = start else {
+        if !stops {
+            return;
+        }
+        // Java names the entry it is on only now, so entries that don't write cost no callback.
+        let item = horizon_java_host::get()
+            .and_then(horizon_java_host::Host::bulk_stop)
+            .unwrap_or(0);
+        let Some(((finish, current), positions)) = RUN.with_borrow_mut(|run| {
+            let run = run.as_mut()?;
+            Some((run.stop(item), run.positions.clone()))
+        }) else {
             return;
         };
         // Held is the reply's to say; one not held warns when the reply comes.
-        for &pos in positions.iter().take(current).skip(done) {
+        for &pos in &positions[finish] {
             self.java_finish_preticked(pos, true, None);
         }
         let taken = positions
@@ -249,7 +280,6 @@ impl Game<'_> {
             .and_then(|&pos| self.take_ticking_mod_block_entity(pos));
         RUN.with_borrow_mut(|run| {
             if let Some(run) = run {
-                run.done = current;
                 run.wrote = Some((current, taken));
             }
         });
@@ -353,7 +383,9 @@ mod java_be_run_tests {
 
     fn ticked(bytes: &[u8], sent: usize) -> Vec<(bool, usize)> {
         match java_be_run_reply(bytes, sent) {
-            Ok(RunReply::Ticked(entries)) => entries.into_iter().map(|(h, s)| (h, s.len())).collect(),
+            Ok(RunReply::Ticked(entries)) => {
+                entries.into_iter().map(|(h, s)| (h, s.len())).collect()
+            }
             Ok(RunReply::Rejected) => panic!("rejected"),
             Err(e) => panic!("{e}"),
         }
@@ -380,7 +412,10 @@ mod java_be_run_tests {
         let mut out = horizon_java_host::wire::Out::default();
         bulk::write_reply(
             &mut out,
-            &[(bulk::Status::Done, one.as_slice()), (bulk::Status::Threw, &[])],
+            &[
+                (bulk::Status::Done, one.as_slice()),
+                (bulk::Status::Threw, &[]),
+            ],
         );
         assert_eq!(ticked(&out.0, 4), [(true, 1), (true, 0)]);
     }
@@ -389,11 +424,20 @@ mod java_be_run_tests {
     fn java_be_run_reply_refused_or_malformed_runs_nothing() {
         let mut out = horizon_java_host::wire::Out::default();
         bulk::write_rejected(&mut out);
-        assert!(matches!(java_be_run_reply(&out.0, 3), Ok(RunReply::Rejected)));
+        assert!(matches!(
+            java_be_run_reply(&out.0, 3),
+            Ok(RunReply::Rejected)
+        ));
         let mut out = horizon_java_host::wire::Out::default();
         let none = effects(0);
         bulk::write_reply(&mut out, &[(bulk::Status::Done, none.as_slice()); 3]);
-        assert!(java_be_run_reply(&out.0, 2).is_err(), "more entries than were sent");
-        assert!(java_be_run_reply(&out.0[..out.0.len() - 1], 3).is_err(), "a cut reply");
+        assert!(
+            java_be_run_reply(&out.0, 2).is_err(),
+            "more entries than were sent"
+        );
+        assert!(
+            java_be_run_reply(&out.0[..out.0.len() - 1], 3).is_err(),
+            "a cut reply"
+        );
     }
 }

@@ -1,5 +1,6 @@
 package dev.horizonlab.javamods.boot;
 
+import dev.horizonlab.javamods.host.Host;
 import java.io.IOException;
 
 /** #262: the bounded typed bulk envelope, read whole before any item runs (`horizon_java_host::bulk`); it rides the op it is registered under. */
@@ -69,6 +70,26 @@ final class Bulk {
         long need = expected.context + (long) count * expected.record;
         if (in.available() != need) throw new Rejected(in.available() + " bytes for " + need);
         return new Request(expected, budget * 1000L, count, started);
+    }
+
+    /** Starts this thread's items with none stopped and item 0 current; returns the cell as it was, for `close`. */
+    static long open() {
+        long saved = ((long) Host.bulkItem << 1) | (Host.bulkStop ? 1 : 0);
+        Host.bulkItem = 0;
+        Host.bulkStop = false;
+        return saved;
+    }
+
+    /** Whether item `i` may start, which it may until Rust stopped the call at a callback (no crossing to ask). */
+    static boolean enter(int i) {
+        if (Host.bulkStop) return false;
+        Host.bulkItem = i;
+        return true;
+    }
+
+    static void close(long saved) {
+        Host.bulkItem = (int) (saved >> 1);
+        Host.bulkStop = (saved & 1) != 0;
     }
 
     /** Writes the reply to an envelope that was refused, so Rust knows nothing ran. */

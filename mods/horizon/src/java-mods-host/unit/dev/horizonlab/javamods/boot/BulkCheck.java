@@ -1,5 +1,6 @@
 package dev.horizonlab.javamods.boot;
 
+import dev.horizonlab.javamods.host.Host;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.nio.ByteBuffer;
@@ -194,6 +195,18 @@ public final class BulkCheck {
         check(nested.processed == 3 && nested.results[1] == 2, "the outer run goes on after the nested one");
         check(LOG.equals(List.of("1:30", "1:" + NESTS, "2:1", "2:2", "1:31")), "nested items run once each, inside their outer item: " + LOG);
         check(nested.results[2] == nested.results[0] + 3, "the outer run reads what the nested run wrote");
+
+        long outer = Bulk.open();
+        check(Bulk.enter(0) && Bulk.enter(1) && Host.bulkItem == 1, "items start while no callback stopped the call");
+        // What `Host::bulk_stop` does at the first callback that writes into Horizon.
+        Host.bulkStop = true;
+        check(!Bulk.enter(2) && Host.bulkItem == 1, "no item starts once Rust stopped the call, which names the item that wrote");
+        long inner = Bulk.open();
+        check(Bulk.enter(0) && Host.bulkItem == 0, "a nested call starts unstopped");
+        Bulk.close(inner);
+        check(Host.bulkStop && Host.bulkItem == 1, "closing a nested call gives the outer one its cell back");
+        Bulk.close(outer);
+        check(!Host.bulkStop && Host.bulkItem == 0, "closing the outer call leaves the cell as it found it");
 
         System.out.println("BulkCheck ok");
     }

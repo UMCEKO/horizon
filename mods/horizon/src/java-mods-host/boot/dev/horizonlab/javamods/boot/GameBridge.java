@@ -912,7 +912,7 @@ public final class GameBridge {
         writeEffects(out);
     }
 
-    /** #268 on #262's envelope: adjacent held block entities ticked in order until one wrote into Horizon (`runEntry`), threw, or the work budget ran out. */
+    /** #268 on #262's envelope: adjacent held block entities ticked in order until one wrote into Horizon (`Bulk.enter`), made a sound, threw, or the work budget ran out. */
     private static void blockEntityTickRun(Crossing.In in, Crossing.Out out) throws Exception {
         Bulk.Request request;
         ServerLevel level;
@@ -933,24 +933,32 @@ public final class GameBridge {
             Bulk.reject(out, why);
             return;
         }
-        ticking(level, gameTime);
-        var reply = new Bulk.Reply(out);
-        for (int i = 0; i < positions.length; i++) {
-            if (i > 0 && (request.spent() || !BlockEntities.runEntry(i))) break;
-            boolean held;
-            try {
-                held = BlockEntities.tick(level, BlockPos.of(positions[i]));
-            } catch (Throwable t) {
-                // As `game` reports a scalar tick that threw: its own effects go, the entries before keep theirs.
-                t.printStackTrace();
-                if (outermost()) abandonCall();
-                reply.begin(Bulk.THREW);
+        long cell = Bulk.open();
+        try {
+            ticking(level, gameTime);
+            var reply = new Bulk.Reply(out);
+            for (int i = 0; i < positions.length; i++) {
+                if (i > 0 && (request.spent() || !Bulk.enter(i))) break;
+                boolean held;
+                try {
+                    held = BlockEntities.tick(level, BlockPos.of(positions[i]));
+                } catch (Throwable t) {
+                    // As `game` reports a scalar tick that threw: its own effects go, the entries before keep theirs.
+                    t.printStackTrace();
+                    if (outermost()) abandonCall();
+                    reply.begin(Bulk.THREW);
+                    reply.end();
+                    break;
+                }
+                // Rust plays an entry's sounds when the reply comes, so one that made any ends the run before a later entry's callback.
+                boolean sounded = !SOUNDS.isEmpty();
+                reply.begin(held ? Bulk.DONE : Bulk.GONE);
+                writeEffects(out);
                 reply.end();
-                break;
+                if (sounded) break;
             }
-            reply.begin(held ? Bulk.DONE : Bulk.GONE);
-            writeEffects(out);
-            reply.end();
+        } finally {
+            Bulk.close(cell);
         }
     }
 
