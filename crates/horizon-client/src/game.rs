@@ -167,6 +167,28 @@ use horizon_core::{
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use horizon_mod_package::selection::{Argument, LaunchArguments};
+
+/// The vanilla `stopSleepInBed` caller a wake-up mirrors, by the flags it passes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WakeKind {
+    /// `ServerLevel.wakeUpAllPlayers`.
+    Morning,
+    /// A player leaving the bed.
+    LeaveBed,
+    /// `Player.tick`: the bed is gone, or it is day.
+    BedGone,
+}
+
+impl WakeKind {
+    /// `wakeImmediately` and `updateLevelForSleepingPlayers`.
+    pub(crate) fn flags(self) -> (bool, bool) {
+        match self {
+            Self::Morning => (false, false),
+            Self::LeaveBed => (false, true),
+            Self::BedGone => (true, true),
+        }
+    }
+}
 pub(crate) use java_hooks::{
     java_hook_loot_condition, java_hook_loot_function, java_hook_loot_rolled, java_hook_loot_wanted,
 };
@@ -12516,6 +12538,10 @@ impl Game<'_> {
         true
     }
     fn wake_up(&mut self) {
+        self.wake_up_as(WakeKind::LeaveBed);
+    }
+    /// `wake_up` for the vanilla `stopSleepInBed` caller `kind` names.
+    fn wake_up_as(&mut self, kind: WakeKind) {
         if self.remote.is_some() {
             // InBedChatScreen.sendWakeUp: the server wakes the player.
             self.remote_stop_sleeping();
@@ -12564,7 +12590,8 @@ impl Game<'_> {
             }
         }
         if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
-            self.native_player_bed_leave(player, &name, head);
+            let (wake_immediately, update_level) = kind.flags();
+            self.native_player_bed_leave(player, &name, head, wake_immediately, update_level);
         }
     }
     fn tick_sleep(&mut self) {
@@ -12583,7 +12610,11 @@ impl Game<'_> {
                     .as_ref()
                     .is_none_or(|p| p.health.dead_or_dying())
             {
-                self.wake_up();
+                self.wake_up_as(if bed_gone {
+                    WakeKind::BedGone
+                } else {
+                    WakeKind::LeaveBed
+                });
                 return;
             }
             // setPosToBed: the bed's top (`getSleepHeight`) and 0.125 above
@@ -12639,7 +12670,7 @@ impl Game<'_> {
                 self.world.weather.thunder_time = 0;
             }
             if self.sleeping.is_some() {
-                self.wake_up();
+                self.wake_up_as(WakeKind::Morning);
             }
             self.wake_guests();
             // SleepStatus.removeAllSleepers: waking everyone is not announced.

@@ -5,7 +5,11 @@ import java.util.Map;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.item.context.UseOnContext;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.entity.player.AdvancementEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerSetSpawnEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerWakeUpEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
+import net.neoforged.neoforge.event.level.GameRuleChangedEvent;
 import net.neoforged.neoforge.event.level.ExplosionEvent;
 
 /** The server census: what the test mod listens to is listened, a subclass through its supertype's listener, and Horizon's own listeners never count. */
@@ -16,6 +20,11 @@ final class ChecksServerEvents {
     static void listen() {
         NeoForge.EVENT_BUS.addListener((BlockEvent.EntityPlaceEvent event) -> {});
         NeoForge.EVENT_BUS.addListener((ExplosionEvent.Start event) -> {});
+        NeoForge.EVENT_BUS.addListener((PlayerSetSpawnEvent event) -> {});
+        NeoForge.EVENT_BUS.addListener((PlayerWakeUpEvent event) -> {});
+        NeoForge.EVENT_BUS.addListener((AdvancementEvent.AdvancementEarnEvent event) -> {});
+        NeoForge.EVENT_BUS.addListener((AdvancementEvent.AdvancementProgressEvent event) -> {});
+        NeoForge.EVENT_BUS.addListener((GameRuleChangedEvent event) -> {});
     }
 
     static void run(UseOnContext context, BlockPos area) {

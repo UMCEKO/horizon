@@ -493,7 +493,6 @@ impl Game<'_> {
     }
 
     /// A server event posted on this level with no acting player (`post_level_event`): `fields` follow its name.
-    #[allow(dead_code)] // The level events' sites post through it (W13 SPEC-3 onward).
     pub(super) fn java_post_level_event(
         &mut self,
         event: &str,
