@@ -66,6 +66,7 @@ public final class TestMod {
             ClientProfiles.register();
             ClientEvents.register();
             ClientGlyphs.register();
+            ClientDebug.register(bus);
         }
     }
 

@@ -142,6 +142,8 @@ enum Input<'a> {
     Toasts(&'a [(i32, bool, i64)]),
     /// The window's Notification Time option.
     NotificationTime(f64),
+    /// Whether debug info is reduced, and the Java mods' F3 entries native has enabled now.
+    DebugLines(bool, &'a [String]),
 }
 
 impl Input<'_> {
@@ -167,6 +169,7 @@ impl Input<'_> {
             Input::ShellLayout(_) => 16,
             Input::Toasts(_) => 26,
             Input::NotificationTime(_) => 27,
+            Input::DebugLines(..) => 42,
         };
         out.0.push(kind);
         match *self {
@@ -230,6 +233,11 @@ impl Input<'_> {
                 }
             }
             Input::NotificationTime(time) => out.double(time),
+            Input::DebugLines(reduced, ids) => {
+                out.bool(reduced);
+                out.int(ids.len() as i32);
+                ids.iter().for_each(|id| out.text(id));
+            }
         }
     }
 }
@@ -751,6 +759,9 @@ impl Game<'_> {
             log::info!("Horizon: client tick status lockstep {lockstep}");
         }
         super::java_lockstep::set_lockstep_next(lockstep);
+        if super::java_debug::java_debug_status(reply).is_none() {
+            log::warn!("Horizon: a status's F3 entry lines ended in pieces");
+        }
         super::java_world_renders::java_world_status(
             world.as_deref(),
             world_animating,
@@ -1109,6 +1120,7 @@ impl Game<'_> {
         let layout = (kind != 0).then(|| self.java_shell_layout());
         let camera = self.java_world_camera();
         let camera_type = self.camera_type as u8;
+        let (debug_reduced, debug_wanted) = self.java_debug_wanted();
         self.java_publish_client_world();
         let (left, arrived) = self.java_client_chunk_changes();
         CLIENT.with_borrow_mut(|c| {
@@ -1170,6 +1182,10 @@ impl Game<'_> {
             if c.sent.notification_time != Some(notification_time) {
                 c.sent.notification_time = Some(notification_time);
                 Input::NotificationTime(notification_time).write(&mut events);
+                count += 1;
+            }
+            if super::java_debug::should_send(&debug_wanted) {
+                Input::DebugLines(debug_reduced, &debug_wanted).write(&mut events);
                 count += 1;
             }
             let toasts = super::java_toasts::java_toasts_turns();
@@ -1255,6 +1271,7 @@ impl Game<'_> {
         };
         if !CLIENT.with_borrow_mut(|c| std::mem::replace(&mut c.joined, true)) {
             self.java_apply_mod_keys();
+            self.java_debug_entries_take();
         }
         // A status answers once the Java client's login is done: until then nothing is held for it.
         if !tick.is_empty() && !CLIENT.with_borrow(|c| c.armed) {
