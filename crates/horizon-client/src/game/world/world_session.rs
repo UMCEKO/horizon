@@ -195,14 +195,24 @@ impl Game<'_> {
         })?;
         self.join_world_rest()?;
         self.perf.world_opening();
-        let prepared = request.prepare(
-            &self.res,
-            &self.pack,
-            &self.options,
-            &self.settings,
-            &horizon_world::datafix::progress::UpgradeProgress::new(),
+        let upgrade = horizon_world::datafix::progress::UpgradeProgress::new();
+        if !java_hooks::java_hook_wants_world_opening() {
+            let prepared =
+                request.prepare(&self.res, &self.pack, &self.options, &self.settings, &upgrade)?;
+            return self.finish_open_world(prepared);
+        }
+        // The worker prepares while this thread answers its `ServerAboutToStart`, as the server thread does.
+        let (ask, answer) = world_loading::worldgen_exchange();
+        let loader = world_loading::WorldLoader::start(
+            request.with_java_worldgen(Some(ask)),
+            self.res.clone(),
+            self.pack.clone(),
+            self.options.clone(),
+            self.settings.clone(),
+            Arc::new(upgrade),
         )?;
-        self.finish_open_world(prepared)
+        self.answer_world_opening(answer);
+        self.finish_open_world(loader.finish()?)
     }
 
     /// Leaving the game with a world open (window closed, Quit, `quit`):

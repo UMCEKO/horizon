@@ -14,6 +14,63 @@ pub(super) struct WorldRequest {
     /// The account the world opens under, for an integrated server
     /// (`IntegratedServer.getSingleplayerProfile`): its name and UUID.
     owner: Option<(String, u128)>,
+    /// Asks the server thread for the Java mods' worldgen before any level is built.
+    java_worldgen: Option<WorldgenAsk>,
+}
+
+/// The Java mods' worldgen export, parsed; None without Java mods or when it couldn't be had.
+pub(super) type JavaWorldgen = Option<Arc<horizon_world::worldgen::overrides::WorldgenOverrides>>;
+
+/// The world a server is about to start, as its worker read it.
+#[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+pub(super) struct WorldOpening {
+    pub root: PathBuf,
+    pub seed: i64,
+    /// The world's enabled data packs, sorted.
+    pub packs: Vec<String>,
+}
+
+/// The worker's side of the world start's exchange: it tells the world, then waits for the export.
+pub(super) struct WorldgenAsk {
+    opening: std::sync::mpsc::Sender<WorldOpening>,
+    export: std::sync::mpsc::Receiver<JavaWorldgen>,
+}
+
+/// The server thread's side: it fires `ServerAboutToStart` for the world, then answers with the export.
+pub(super) struct WorldgenAnswer {
+    opening: std::sync::mpsc::Receiver<WorldOpening>,
+    export: std::sync::mpsc::Sender<JavaWorldgen>,
+}
+
+pub(super) fn worldgen_exchange() -> (WorldgenAsk, WorldgenAnswer) {
+    let (opening, opened) = std::sync::mpsc::channel();
+    let (exported, export) = std::sync::mpsc::channel();
+    (
+        WorldgenAsk { opening, export },
+        WorldgenAnswer {
+            opening: opened,
+            export: exported,
+        },
+    )
+}
+
+impl WorldgenAsk {
+    /// None when the server thread let go of its side.
+    fn ask(self, opening: WorldOpening) -> JavaWorldgen {
+        self.opening.send(opening).ok()?;
+        self.export.recv().ok().flatten()
+    }
+}
+
+impl Game<'_> {
+    /// Waits for the worker's world, then answers with what `ServerAboutToStart` and the export gave; nothing when the worker failed first.
+    pub(super) fn answer_world_opening(&mut self, answer: WorldgenAnswer) {
+        let Ok(opening) = answer.opening.recv() else {
+            return;
+        };
+        let export = self.java_hook_world_opening(&opening);
+        let _ = answer.export.send(export);
+    }
 }
 
 pub(super) struct PreparedWorld {
@@ -31,6 +88,7 @@ pub(super) struct PreparedWorld {
     /// The owner's offline UUID and the account's, when an older world moved its
     /// owner at open (`playerdata::migrate_owner`): entities migrate as they load.
     pub owner_migration: Option<(u128, u128)>,
+    pub java_worldgen: JavaWorldgen,
 }
 
 impl WorldRequest {
@@ -51,7 +109,14 @@ impl WorldRequest {
             create: create.cloned(),
             rule_registry,
             owner: None,
+            java_worldgen: None,
         })
+    }
+
+    /// The world's worker waits on the server thread's `ServerAboutToStart` and the Java mods' export before it builds a level.
+    pub fn with_java_worldgen(mut self, ask: Option<WorldgenAsk>) -> Self {
+        self.java_worldgen = ask;
+        self
     }
 
     /// The account this world opens under (`IntegratedServer.getSingleplayerProfile`):
@@ -115,6 +180,7 @@ impl WorldRequest {
             create,
             rule_registry,
             owner,
+            java_worldgen,
         } = self;
         let name = name.as_deref();
         let create = create.map(|mut create| {
@@ -282,6 +348,19 @@ impl WorldRequest {
             &pack.additional_data,
         );
         Dim::set_extra(shapes.extra.iter().map(|level| level.id));
+        // `MinecraftServer.runServer`: `ServerAboutToStart` comes before the levels are created.
+        let java_worldgen = java_worldgen.and_then(|ask| {
+            ask.ask(WorldOpening {
+                root: save_root.clone(),
+                seed: level.seed,
+                packs: enabled_pack_ids(
+                    &save_root,
+                    &options.resources,
+                    &level.enabled_features,
+                    &pack.additional_data,
+                ),
+            })
+        });
         // The bounded registry-loader leaf slice: fail world preparation before streaming,
         // rather than letting the flat-generator fallback swallow a selected pack's codec error.
         let (overrides, _) = worldgen_overrides_of(
@@ -307,6 +386,7 @@ impl WorldRequest {
             level.seed,
             &level.enabled_features,
             loot.clone(),
+            java_worldgen.as_deref(),
         )?;
         drop(streaming_step);
         streaming.radius = settings.render_distance;
@@ -351,6 +431,7 @@ impl WorldRequest {
             locator,
             loot,
             owner_migration,
+            java_worldgen,
         })
     }
 }
@@ -651,15 +732,30 @@ pub(super) fn creation_worldgen_overrides(
         horizon_client::datapack::worldgen_overrides(&enabled, |b| biomes.contains(b));
     overrides
 }
+/// The ids of the world's enabled data packs, sorted.
+fn enabled_pack_ids(
+    world_root: &std::path::Path,
+    resources: &std::path::Path,
+    enabled_features: &[String],
+    additional: &[Arc<horizon_client::datapack::DataPack>],
+) -> Vec<String> {
+    let packs = super::pack_finders::data_repository(world_root, resources, additional);
+    let mut ids = horizon_client::datapack::enabled_ids(world_root, &packs, enabled_features);
+    ids.sort();
+    ids
+}
+
 /// The worldgen entries of the world's enabled data packs, logging what
-/// the generator leaves out of them.
+/// the generator leaves out of them. `java` is the Java mods' export, which SPEC-4 stacks under the packs.
 fn world_worldgen_overrides(
     world_root: &std::path::Path,
     resources: &std::path::Path,
     biomes: &horizon_client::biome::Biomes,
     enabled_features: &[String],
     additional: &[Arc<horizon_client::datapack::DataPack>],
+    java: Option<&horizon_world::worldgen::overrides::WorldgenOverrides>,
 ) -> horizon_world::worldgen::overrides::WorldgenOverrides {
+    let _ = java;
     let (overrides, warnings) =
         worldgen_overrides_of(world_root, resources, biomes, enabled_features, additional);
     for warning in warnings {
@@ -944,6 +1040,7 @@ pub(super) fn make_streaming(
     seed: i64,
     enabled_features: &[String],
     loot: horizon_client::structure_blocks::LootSnapshot,
+    java_worldgen: Option<&horizon_world::worldgen::overrides::WorldgenOverrides>,
 ) -> Result<(Streaming, Arc<SaveDir>, Option<Arc<VanillaTerrain>>)> {
     let mut save = SaveDir::new(
         horizon_client::save::dimension_dir(world_root, dim.id()),
@@ -1022,6 +1119,7 @@ pub(super) fn make_streaming(
             &biomes,
             enabled_features,
             &pack.additional_data,
+            java_worldgen,
         );
         match VanillaTerrain::for_flat(
             terrain_resources,
@@ -1150,6 +1248,7 @@ pub(super) fn make_streaming(
             &biomes,
             enabled_features,
             &pack.additional_data,
+            java_worldgen,
         );
         let saved_stem = horizon_client::save::world_gen_settings(world_root)
             .and_then(|s| s.get("dimensions")?.get(dim.id()).cloned())
@@ -1297,6 +1396,7 @@ mod tests {
         with_game(|game| {
             let request = WorldRequest {
                 owner: None,
+                java_worldgen: None,
                 save_root: dir.clone(),
                 folder: "test".into(),
                 name: Some("test".into()),
@@ -1510,6 +1610,7 @@ mod unused_feature_startup_tests {
                 creative: false,
                 create: None,
                 owner: None,
+                java_worldgen: None,
                 rule_registry: Level::default().rule_registry,
             };
             let result = request.prepare(
@@ -1625,6 +1726,7 @@ mod unused_feature_preservation_tests {
             creative: false,
             create: None,
             owner: None,
+            java_worldgen: None,
             rule_registry: Level::default().rule_registry,
         };
         assert!(

@@ -44,6 +44,11 @@ fn cache_dir() -> PathBuf {
         .join(".horizon-cache/java-mods")
 }
 
+/// The folder of this run's content cache entry, which the Java mods' other cached exports share.
+pub(super) fn cache_at() -> Option<PathBuf> {
+    CACHE_AT.get().cloned()
+}
+
 /// Where this run's boot writes its facts.
 fn facts_file() -> PathBuf {
     cache_dir().join(format!("boot-facts-{}.json", std::process::id()))

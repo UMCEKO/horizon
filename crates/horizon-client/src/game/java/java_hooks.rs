@@ -64,6 +64,20 @@ impl Game<'_> {
         let _ = phase;
     }
 
+    /// `ServerAboutToStartEvent`, before native builds the world's levels: the Java mods' worldgen export, parsed.
+    pub(super) fn java_hook_world_opening(
+        &mut self,
+        opening: &super::world_loading::WorldOpening,
+    ) -> super::world_loading::JavaWorldgen {
+        #[cfg(feature = "java-mods")]
+        return self.java_world_opening(opening);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = opening;
+            None
+        }
+    }
+
     /// `ServerStartedEvent`: the Java server starts with the world.
     pub(super) fn java_hook_server_started(&mut self) {
         #[cfg(feature = "java-mods")]
@@ -555,6 +569,14 @@ pub(crate) fn java_hook_loot_rolled(
     items: &mut Vec<horizon_world::loot::LootStack>,
 ) {
     let _ = (table, ctx, tool, random, items);
+}
+
+/// Whether a world's start waits for the Java mods' `ServerAboutToStart` and worldgen export before it builds a level.
+pub(super) fn java_hook_wants_world_opening() -> bool {
+    #[cfg(feature = "java-mods")]
+    return horizon_java_host::configured();
+    #[cfg(not(feature = "java-mods"))]
+    false
 }
 
 /// Opening a world waits on the Java mods' start: Err when they failed to start.
