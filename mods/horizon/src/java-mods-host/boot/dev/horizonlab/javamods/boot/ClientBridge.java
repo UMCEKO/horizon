@@ -99,6 +99,7 @@ public final class ClientBridge {
         Lockstep.ops = ClientBridge::run;
         for (String name : OPS.keySet()) Crossing.client(name);
         WorldFrame.decide();
+        ViewFrame.decide();
         Shells.install();
         HudLayers.install(net.neoforged.neoforge.common.NeoForge.EVENT_BUS);
         CreativeTabs.install();
@@ -182,6 +183,7 @@ public final class ClientBridge {
         OPS.put("client_hud_frame", in -> hudFrame(in));
         OPS.put("client_world_frame", in -> worldFrame(in));
         OPS.put("client_toast_frame", in -> toastFrame(in));
+        OPS.put("client_view_frame", in -> ViewFrame.frame(in, timer(Minecraft.getInstance()).getRealtimeDeltaTicks()));
         OPS.put("client_input", in -> input(in));
         OPS.put("client_scroll", in -> scroll(in));
         OPS.put("client_font", in -> font(in));
@@ -536,6 +538,7 @@ public final class ClientBridge {
         byte[] particles;
         byte[] hud;
         byte[] world;
+        byte[] view;
         try {
             if (in.readBoolean()) size(in);
             Minecraft minecraft = Minecraft.getInstance();
@@ -563,21 +566,29 @@ public final class ClientBridge {
             hud = hud();
             Toasts.applyPending(minecraft, timer(minecraft).getRealtimeDeltaTicks());
             world = WorldFrame.take(WorldFrame.camera(), partial, timer(minecraft), windowWidth, windowHeight, false);
+            view = ViewFrame.tick(timer(minecraft).getRealtimeDeltaTicks());
             recordShell(minecraft, minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(false));
         } finally {
             if (lockstep) Lockstep.end();
         }
-        return status(hud, world, particles);
+        return status(hud, world, particles, view);
     }
 
     private static byte[] lastHud;
 
-    /** The frame after a tick, in `runTick`'s order: the camera aligns with the player (mods aim from it), then the crosshair target is picked. `Camera.update` also builds the culling frustum on the GPU device, so only its alignment step runs. */
+    /** The frame after a tick, in `runTick`'s order: the camera holds the window's last frame (mods aim from it), then the crosshair target is picked. No view event fires here: the view job runs them on the window's values. */
     private static void cameraAndPick(Minecraft minecraft) {
         if (minecraft.player == null || minecraft.level == null) return;
         var camera = minecraft.gameRenderer.mainCamera();
         if (camera.entity() == null) camera.setEntity(minecraft.player);
-        ((dev.horizonlab.javamods.boot.mixin.CameraAccess) camera).horizon$align(1.0F);
+        var inputs = ViewFrame.last;
+        if (inputs != null) ViewFrame.fillCamera(inputs);
+        else {
+            var access = (dev.horizonlab.javamods.boot.mixin.CameraAccess) camera;
+            access.horizon$position(minecraft.player.getEyePosition(1.0F));
+            access.horizon$rotation3(minecraft.player.getYRot(), minecraft.player.getXRot(), 0.0F);
+            access.horizon$initialized(true);
+        }
         ((dev.horizonlab.javamods.boot.mixin.MinecraftActions) minecraft).horizon$pick(1.0F);
     }
 
@@ -812,6 +823,7 @@ public final class ClientBridge {
     private static final byte BLOCK_EFFECT = 30;
     private static final byte TOASTS = 26;
     private static final byte NOTIFICATION_TIME = 27;
+    private static final byte VIEW_INPUTS = 36;
 
     private static double cursorX, cursorY;
     private static BlockPos cameraBlock;
@@ -856,6 +868,7 @@ public final class ClientBridge {
                 case TOASTS -> Toasts.input(in);
                 case NOTIFICATION_TIME -> minecraft.options.notificationDisplayTime().set(in.readDouble());
                 case BLOCK_EFFECT -> BlockEffects.run(in);
+                case VIEW_INPUTS -> ViewFrame.last = ViewFrame.read(in);
                 case SHELL_LAYOUT -> Shells.layout(new int[] {in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readInt()});
                 case FOCUS -> set(Window.class, minecraft.getWindow(), "focused", in.readBoolean());
                 case DROP -> {
@@ -1067,7 +1080,7 @@ public final class ClientBridge {
         return new byte[] {(byte) (scrollCanceled ? 1 : 0)};
     }
 
-    private static byte[] status(byte[] hud, byte[] world, byte[] particles) throws IOException {
+    private static byte[] status(byte[] hud, byte[] world, byte[] particles, byte[] view) throws IOException {
         Screen screen = javaScreen();
         if (screen != null && screen != lastScreen) opened++;
         lastScreen = screen;
@@ -1112,6 +1125,9 @@ public final class ClientBridge {
         Toasts.writeStatus(out);
         out.writeInt(Environments.bits);
         out.writeBoolean(Lockstep.wanted());
+        out.writeBoolean(view != null);
+        if (view != null) out.write(view);
+        out.writeBoolean(ViewFrame.animating);
         shellSegments = null;
         shellChanged = false;
         return bytes.toByteArray();

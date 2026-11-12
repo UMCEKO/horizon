@@ -1,7 +1,7 @@
 use super::*;
 
 /// Whether this frame records the HUD: only while it animates, and not on the frame that took a tick's status or while a tick runs.
-pub(super) fn hud_frame_wanted(animating: bool, recorded: bool, busy: bool) -> bool {
+pub(in crate::game) fn hud_frame_wanted(animating: bool, recorded: bool, busy: bool) -> bool {
     animating && !recorded && !busy
 }
 
@@ -61,12 +61,18 @@ impl Game<'_> {
             hud_frame_wanted(animating, recorded, busy).then(|| self.java_hud_frame_request());
         let world = self.java_world_frame_request(busy);
         let toasts = self.java_toasts_frame_request(busy);
-        if (hud.is_some() || world.is_some() || toasts.is_some())
+        let view = super::java_view::java_view_frame_request(busy);
+        if (hud.is_some() || world.is_some() || toasts.is_some() || view.is_some())
             && horizon_java_host::get().is_some()
         {
             WORKER.with_borrow_mut(|w| {
                 w.get_or_insert_with(Worker::start)
-                    .send_frame(FrameJob { hud, world, toasts });
+                    .send_frame(FrameJob {
+                        hud,
+                        world,
+                        toasts,
+                        view,
+                    });
             });
         }
     }

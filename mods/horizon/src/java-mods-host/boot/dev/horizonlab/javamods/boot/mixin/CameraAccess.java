@@ -9,8 +9,11 @@ import org.spongepowered.asm.mixin.gen.Invoker;
 
 @Mixin(Camera.class)
 public interface CameraAccess {
-    @Invoker("alignWithEntity")
-    void horizon$align(float partialTicks);
+    @Invoker("setRotation")
+    void horizon$rotation3(float yRot, float xRot, float roll);
+
+    @Accessor("detached")
+    void horizon$detached(boolean detached);
 
     @Invoker("setPosition")
     void horizon$position(Vec3 position);

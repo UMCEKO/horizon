@@ -185,12 +185,13 @@ impl Game<'_> {
     }
     /// `Camera.calculateHudFov`: the first-person hand's field of view.
     pub(super) fn hud_fov_degrees(&self, partial: f32, camera: [f64; 3]) -> f32 {
-        self.view.calculate_hud_fov(
+        let fov = self.view.calculate_hud_fov(
             partial,
             self.fov_effect_scale(),
             self.death_time(),
             self.camera_fluid(camera),
-        )
+        );
+        self.java_hook_view_hud_fov(fov)
     }
     /// The pose `GameRenderer.renderLevel` multiplies into the projection:
     /// `bobHurt`, then `bobView` with the View Bobbing option.
@@ -214,6 +215,10 @@ impl Game<'_> {
         let tilt = self.settings.file.double("damageTiltStrength");
         glam::Mat4::from_cols_array(&bob_matrix(&state, tilt, self.settings.view_bobbing).m)
             * self.native_shake_matrix(partial)
+            * glam::Mat4::from_rotation_z(
+                self.java_hook_view_roll(self.camera_type.is_mirrored())
+                    .to_radians(),
+            )
     }
     /// `AbstractClientPlayer.tick` and `aiStep` (`ClientAvatarState.tick`,
     /// `updateBob`), `rideTick`'s `resetBob` and `LocalPlayer.move`'s walked
