@@ -1,0 +1,1 @@
+package net.minecraft.world.level; import net.minecraft.core.BlockPos; public interface LevelReader { net.minecraft.world.level.block.state.BlockState getBlockState(BlockPos p); net.minecraft.world.level.block.entity.BlockEntity getBlockEntity(BlockPos p); }
