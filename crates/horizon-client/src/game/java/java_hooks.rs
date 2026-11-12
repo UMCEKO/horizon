@@ -57,6 +57,55 @@ impl Game<'_> {
         }
     }
 
+    /// The camera `camera_view` aligned: its eye, the entity's view rotation and the camera type's ordinal, for the Java client's view events.
+    pub(super) fn java_hook_view_camera(
+        &self,
+        partial: f32,
+        eye: [f64; 3],
+        rotation: [f32; 2],
+        mode: u8,
+    ) {
+        #[cfg(feature = "java-mods")]
+        super::java_view::record_camera(partial, eye, rotation[0], rotation[1], mode);
+        let _ = (partial, eye, rotation, mode);
+    }
+
+    /// The yaw and pitch the mods' camera angle listeners left for `Camera.alignWithEntity`.
+    pub(super) fn java_hook_view_angles(&self) -> Option<[f32; 2]> {
+        #[cfg(feature = "java-mods")]
+        return super::java_view::angles().map(|[yaw, pitch, _]| [yaw, pitch]);
+        #[cfg(not(feature = "java-mods"))]
+        None
+    }
+
+    /// The roll the mods' camera angle listeners left, as the pose turns the view about its forward axis; the front view turns it the other way.
+    pub(super) fn java_hook_view_roll(&self, mirrored: bool) -> f32 {
+        #[cfg(feature = "java-mods")]
+        return super::java_view::angles().map_or(0.0, |[_, _, roll]| {
+            if mirrored { -roll } else { roll }
+        });
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = mirrored;
+            0.0
+        }
+    }
+
+    /// The first-person hand's field of view, as the mods' listeners leave it.
+    pub(super) fn java_hook_view_hud_fov(&self, fov: f32) -> f32 {
+        #[cfg(feature = "java-mods")]
+        return super::java_view::hud_fov(fov);
+        #[cfg(not(feature = "java-mods"))]
+        fov
+    }
+
+    /// What this frame's mouse turn reads: the options, and whether the pointer is grabbed.
+    pub(super) fn java_hook_view_look(&self, sensitivity: f64, smooth: bool, grabbed: bool) {
+        #[cfg(feature = "java-mods")]
+        super::java_view::record_look(sensitivity, smooth, grabbed);
+        let _ = (sensitivity, smooth, grabbed);
+    }
+
     /// A world's end, failed open or close: the Java server stops.
     pub(super) fn java_hook_world(&mut self, phase: &WorldPhase) {
         #[cfg(feature = "java-mods")]

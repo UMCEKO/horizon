@@ -7,7 +7,7 @@ use super::java_hooks_client::{HudLayer, JavaClick, JavaKeyAction, Leaf};
 use super::*;
 
 mod draw;
-mod hud;
+pub(in crate::game) mod hud;
 mod input;
 mod shell;
 
@@ -180,6 +180,8 @@ enum Input<'a> {
     Entity(u64, &'a [u8]),
     /// The place of the last play packet the window applied.
     Seen(u64),
+    /// The window's camera values the view events read.
+    View(&'a super::java_view::ViewInputs),
 }
 
 impl Input<'_> {
@@ -209,6 +211,7 @@ impl Input<'_> {
             Input::Music(..) => 40,
             Input::Entity(..) => 17,
             Input::Seen(_) => 18,
+            Input::View(_) => 36,
         };
         out.0.push(kind);
         match *self {
@@ -294,6 +297,7 @@ impl Input<'_> {
                 out.bool(loading);
                 out.0.push(frequency);
             }
+            Input::View(inputs) => inputs.write(out),
         }
     }
 }
@@ -597,6 +601,7 @@ struct FrameJob {
     hud: Option<Vec<u8>>,
     world: Option<Vec<u8>>,
     toasts: Option<Vec<u8>>,
+    view: Option<Vec<u8>>,
 }
 
 /// A frame request's replies, each with what the request took.
@@ -605,6 +610,7 @@ struct FrameDone {
     hud: Option<(Vec<u8>, u128)>,
     world: Option<(Vec<u8>, u128)>,
     toasts: Option<(Vec<u8>, u128)>,
+    view: Option<(Vec<u8>, u128)>,
 }
 
 impl FrameJob {
@@ -619,6 +625,7 @@ impl FrameJob {
             hud: record("client_hud_frame", self.hud),
             world: record("client_world_frame", self.world),
             toasts: record("client_toast_frame", self.toasts),
+            view: record("client_view_frame", self.view),
         }
     }
 }
@@ -880,6 +887,12 @@ impl Game<'_> {
             c.music.toasts.extend(music.toasts);
         });
         let chat = super::java_chat::read_lines(reply)?;
+        let view = if reply.bool()? {
+            Some(super::java_view::read_view_effects(reply)?)
+        } else {
+            None
+        };
+        super::java_view::java_view_status(view, reply.bool()?);
         super::java_world_renders::java_world_status(
             world.as_deref(),
             world_animating,
@@ -1114,6 +1127,7 @@ impl Game<'_> {
         horizon_client::dynamic_models::clear();
         horizon_client::dynamic_renders::clear();
         super::java_world_renders::java_world_left();
+        super::java_view::java_view_left();
         super::java_toasts::java_toasts_left();
         self.particles.set_java(Default::default());
         CLIENT.with_borrow_mut(|c| {
@@ -1352,6 +1366,10 @@ impl Game<'_> {
                 Input::Animate(&group).write(&mut events);
                 count += 1;
             }
+            if let Some(view) = super::java_view::batch_input() {
+                Input::View(&view).write(&mut events);
+                count += 1;
+            }
             let notification_time = f64::from(self.settings.notification_display_time);
             if c.sent.notification_time != Some(notification_time) {
                 c.sent.notification_time = Some(notification_time);
@@ -1421,6 +1439,9 @@ impl Game<'_> {
             }
             if let Some((reply, _)) = frame.toasts {
                 super::java_toasts::java_toasts_frame_apply(&reply);
+            }
+            if let Some((reply, _)) = frame.view {
+                super::java_view::java_view_frame_apply(&reply);
             }
         }
     }

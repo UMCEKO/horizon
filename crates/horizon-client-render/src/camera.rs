@@ -639,20 +639,31 @@ impl Camera {
         camera_type: CameraType,
         clip: impl FnMut([f64; 3], [f64; 3]) -> Option<[f64; 3]>,
     ) {
-        self.align_with_entity_distance(entity, partial, camera_type, |distance| distance, clip);
+        self.align_with_entity_distance(
+            entity,
+            partial,
+            camera_type,
+            None,
+            |distance| distance,
+            clip,
+        );
     }
     /// Adjust the detached distance after entity/mount scaling, before collision clipping.
     /// Only finite overrides in 0..=1024 blocks are accepted (within the game's ray budget).
-    /// First-person views do not call `adjust_distance`.
+    /// First-person views do not call `adjust_distance`. `angles` are the yaw and pitch
+    /// the camera takes instead of the entity's view rotation (`ComputeCameraAngles`).
     pub fn align_with_entity_distance(
         &mut self,
         entity: &CameraEntity,
         partial: f32,
         camera_type: CameraType,
+        angles: Option<[f32; 2]>,
         adjust_distance: impl FnOnce(f32) -> f32,
         mut clip: impl FnMut([f64; 3], [f64; 3]) -> Option<[f64; 3]>,
     ) {
-        self.set_rotation(entity.view_y_rot(partial), entity.view_x_rot(partial));
+        let [view_y, view_x] = [entity.view_y_rot(partial), entity.view_x_rot(partial)];
+        let [y_rot, x_rot] = angles.unwrap_or([view_y, view_x]);
+        self.set_rotation(y_rot, x_rot);
         let p = f64::from(partial);
         self.position = [
             lerp_d(p, entity.previous[0], entity.position[0]),
@@ -661,7 +672,7 @@ impl Camera {
             lerp_d(p, entity.previous[2], entity.position[2]),
         ];
         self.eye = self.position;
-        self.eye_rotation = [self.y_rot, self.x_rot];
+        self.eye_rotation = [view_y, view_x];
         self.detached = !camera_type.is_first_person();
         if self.detached {
             if camera_type.is_mirrored() {
@@ -1148,6 +1159,7 @@ mod tests {
                 &entity,
                 1.0,
                 kind,
+                None,
                 |distance| {
                     assert_eq!(distance, 12.0);
                     8.0
@@ -1159,6 +1171,7 @@ mod tests {
                 &entity,
                 1.0,
                 kind,
+                None,
                 |distance| {
                     calls += 1;
                     assert_eq!(distance, 12.0);
@@ -1192,6 +1205,7 @@ mod tests {
                 &entity,
                 1.0,
                 CameraType::ThirdPersonBack,
+                None,
                 |_| distance,
                 |_, _| None,
             );
@@ -1202,6 +1216,7 @@ mod tests {
             &entity,
             1.0,
             CameraType::ThirdPersonBack,
+            None,
             |_| 0.0,
             |_, _| None,
         );
@@ -1210,10 +1225,46 @@ mod tests {
             &entity,
             1.0,
             CameraType::FirstPerson,
+            None,
             |_| panic!("first person has no detached distance"),
             |_, _| None,
         );
         assert_eq!(camera.position, camera.eye);
+    }
+    #[test]
+    fn a_mods_angles_replace_the_entitys_view_rotation_but_not_its_eye_rotation() {
+        let entity = CameraEntity {
+            position: [0.0; 3],
+            previous: [0.0; 3],
+            x_rot: 10.0,
+            y_rot: 30.0,
+            x_rot_o: 10.0,
+            y_rot_o: 30.0,
+            eye_height: 1.62,
+            living: None,
+            mount: None,
+        };
+        let mut camera = Camera::default();
+        camera.align_with_entity_distance(
+            &entity,
+            1.0,
+            CameraType::FirstPerson,
+            Some([100.0, -20.0]),
+            |d| d,
+            |_, _| None,
+        );
+        assert_eq!((camera.y_rot, camera.x_rot), (100.0, -20.0));
+        assert_eq!(camera.eye_rotation, [30.0, 10.0]);
+        let mut mirrored = Camera::default();
+        mirrored.align_with_entity_distance(
+            &entity,
+            1.0,
+            CameraType::ThirdPersonFront,
+            Some([100.0, -20.0]),
+            |d| d,
+            |_, _| None,
+        );
+        assert_eq!((mirrored.y_rot, mirrored.x_rot), (280.0, 20.0));
     }
     #[test]
     fn fov_modifier_combines_speed_flight_and_bow() {
