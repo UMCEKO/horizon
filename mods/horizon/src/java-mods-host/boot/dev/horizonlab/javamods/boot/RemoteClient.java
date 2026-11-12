@@ -52,16 +52,16 @@ final class RemoteClient {
 
     /** A configuration frame, which arrives in the connection's own configuration phase. */
     static byte[] configure(DataInputStream in) throws Exception {
-        inbound(in.readNBytes(in.readInt()));
+        inbound(0, in.readNBytes(in.readInt()));
         return new byte[] {1};
     }
 
-    /** One frame from the server: a configuration packet until it finishes, then play packets for the listener's tick. */
-    static void inbound(byte[] frame) throws Exception {
+    /** One frame from the server, at `seq` among the window's play packets: a configuration packet until it finishes, then play packets for the listener's tick. */
+    static void inbound(long seq, byte[] frame) throws Exception {
         if (id == null) return;
         Packet<?> packet = Wire.fromServer(frame);
         if (collector == null) {
-            Clients.deliver(id, packet);
+            Clients.deliver(id, seq, packet);
             return;
         }
         switch (packet) {

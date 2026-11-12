@@ -210,7 +210,16 @@ impl Game<'_> {
     pub(super) fn java_client_font(&self) {}
     pub(super) fn java_remote_joined(&mut self, _java: bool) {}
     pub(super) fn java_apply_mod_keys(&self) {}
-    pub(super) fn java_wire_in(&mut self, _frame: &[u8]) {}
+    pub(super) fn java_wire_in(&mut self, _frame: &[u8], _seq: u64) {}
+    pub(super) fn java_feeds(&self, _packet: &horizon_protocol::packets::play::Clientbound) -> bool {
+        false
+    }
+    pub(super) fn java_feed(
+        &mut self,
+        _packet: Option<&horizon_protocol::packets::play::Clientbound>,
+        _seq: u64,
+    ) {
+    }
     pub(super) fn java_shell_open(&self) -> bool {
         false
     }

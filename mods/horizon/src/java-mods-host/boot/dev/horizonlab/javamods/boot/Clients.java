@@ -12,7 +12,10 @@ import net.minecraft.network.protocol.Packet;
 public final class Clients {
     private Clients() {}
 
-    private static final Map<UUID, ArrayDeque<Packet<?>>> TO_CLIENT = new HashMap<>();
+    /** A packet for a client, after the count of play packets the window's connection had sent it. */
+    record Stamped(long seq, Packet<?> packet) {}
+
+    private static final Map<UUID, ArrayDeque<Stamped>> TO_CLIENT = new HashMap<>();
     private static final Map<UUID, ArrayDeque<Packet<?>>> TO_SERVER = new HashMap<>();
     /** The server's side of a client's configuration: its first packets, then its answer to the client's known packs. */
     record Configuration(java.util.function.Supplier<List<Packet<?>>> start, java.util.function.Function<net.minecraft.network.protocol.configuration.ServerboundSelectKnownPacks, List<Packet<?>>> knownPacks) {}
@@ -58,10 +61,10 @@ public final class Clients {
         TO_CLIENT.computeIfAbsent(player, id -> new ArrayDeque<>());
     }
 
-    /** A packet that came over the connection for the client of this JVM. */
-    static synchronized void deliver(UUID player, Packet<?> packet) {
+    /** A packet that came over the connection for the client of this JVM, at `seq` among its play packets. */
+    static synchronized void deliver(UUID player, long seq, Packet<?> packet) {
         var queue = TO_CLIENT.get(player);
-        if (queue != null) queue.add(packet);
+        if (queue != null) queue.add(new Stamped(seq, packet));
     }
 
     /** True once for a client that just joined, which the server then sends what a login sends. */
@@ -84,8 +87,13 @@ public final class Clients {
         // Still in configuration: play packets start with its login, which sends what it missed.
         if (JOINING.contains(player)) return true;
         if (REMOTE.contains(player)) Wire.toClient(player, packet);
-        else queue.add(packet);
+        else queue.add(new Stamped(sent(player.getMostSignificantBits(), player.getLeastSignificantBits()), packet));
         return true;
+    }
+
+    /** Bridged: the play packets the server has sent the player's window so far, which the window applies before this client's next packet. */
+    private static long sent(long most, long least) {
+        throw new IllegalStateException("not bridged");
     }
 
     static synchronized void toServer(UUID player, Packet<?> packet) {
@@ -93,10 +101,10 @@ public final class Clients {
         if (queue != null) queue.add(packet);
     }
 
-    static synchronized List<Packet<?>> takeForClient(UUID player) {
+    static synchronized List<Stamped> takeForClient(UUID player) {
         var queue = TO_CLIENT.get(player);
         if (queue == null || queue.isEmpty()) return List.of();
-        var out = new ArrayList<Packet<?>>(queue);
+        var out = new ArrayList<Stamped>(queue);
         queue.clear();
         return out;
     }

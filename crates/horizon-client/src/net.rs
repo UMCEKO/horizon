@@ -80,8 +80,8 @@ pub enum Event {
     Brand(String),
     /// The server runs mods' quiet commands (`horizon_protocol::quiet`).
     QuietCommands,
-    /// A frame of the server's Java mods for this client's Java client (`horizon_protocol::java`).
-    Java(Vec<u8>),
+    /// A frame of the server's Java mods for this client's Java client (`horizon_protocol::java`), and its place among the play packets.
+    Java(Vec<u8>, u64),
     /// The server carries mod messages (`horizon_protocol::mod_net`).
     ModNet,
     /// The server samples far terrain for this client (`lod_net`).
@@ -96,7 +96,8 @@ pub enum Event {
         /// The server's Java side asked, and this client has Java mods to answer with.
         java: bool,
     },
-    Packet(Box<play::Clientbound>),
+    /// A play packet and its place among them: the count of play packets received so far, keep-alives aside.
+    Packet(Box<play::Clientbound>, u64),
     /// A packet that failed to decode (skipped, like vanilla's skippable packets).
     DecodeError(String),
     /// The server sent us back to configuration (`ClientboundStartConfigurationPacket`):
@@ -1024,11 +1025,17 @@ fn receive_play(
     resources: &ItemData,
     recorder: &RecorderSlot,
 ) -> Result<Reason, Reason> {
+    let mut received = 0u64;
     loop {
         let (id, payload) = reader
             .recv()
             .map_err(|e| Reason::plain(connection_lost(e, lang)))?;
-        let packet = match play::Clientbound::decode(id, &payload) {
+        let decoded = play::Clientbound::decode(id, &payload);
+        // A server's keep-alives come from its network thread, outside the count its game thread keeps.
+        if !matches!(decoded, Ok(play::Clientbound::KeepAlive(_))) {
+            received += 1;
+        }
+        let packet = match decoded {
             Ok(p) => p,
             Err(err) => {
                 let name = horizon_protocol::ids::name(
@@ -1107,14 +1114,14 @@ fn receive_play(
                 receive_brand(&p, send);
             }
             play::Clientbound::CustomPayload(p) if p.channel == horizon_protocol::java::CHANNEL => {
-                let _ = send.send(Event::Java(p.data));
+                let _ = send.send(Event::Java(p.data, received));
             }
             // A far tile, straight to the sampler waiting for it.
             play::Clientbound::CustomPayload(p) if p.channel == crate::lod_net::CHANNEL => {
                 far.deliver(p.data);
             }
             other => {
-                if send.send(Event::Packet(Box::new(other))).is_err() {
+                if send.send(Event::Packet(Box::new(other), received)).is_err() {
                     return Ok(Reason::plain("Disconnected"));
                 }
             }
@@ -2193,10 +2200,10 @@ mod tests {
         );
         let timeout = Duration::from_secs(5);
         assert!(
-            matches!(events.recv_timeout(timeout).unwrap(), Event::Packet(p) if *p == teleport)
+            matches!(events.recv_timeout(timeout).unwrap(), Event::Packet(p, _) if *p == teleport)
         );
         assert!(
-            matches!(events.recv_timeout(timeout).unwrap(), Event::Packet(p) if *p == play::Clientbound::Ping(cfg::Ping { id: 7 }))
+            matches!(events.recv_timeout(timeout).unwrap(), Event::Packet(p, _) if *p == play::Clientbound::Ping(cfg::Ping { id: 7 }))
         );
         writer.lock().unwrap().take().unwrap().shutdown();
         assert!(thread.join().unwrap().is_err());
