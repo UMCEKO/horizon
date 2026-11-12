@@ -306,6 +306,10 @@ public final class GameBridge {
     }
 
     /** The level of a dimension's id. */
+    static ServerLevel level(String id) {
+        return levelNamed(id);
+    }
+
     private static ServerLevel levelNamed(String id) {
         for (var level : allLevels()) if (level.dimension().identifier().toString().equals(id)) return level;
         throw new IllegalStateException("no level named " + id);
@@ -492,7 +496,7 @@ public final class GameBridge {
         if (Clients.joining(player.getUUID())) safely("the client's login", () -> Menus.login(player));
         if (joined) {
             // `placeNewPlayer` adds the player to its level (`addNewPlayer`) before PlayerLoggedIn.
-            if (!playerJoins(player, level)) System.err.println("Horizon: a Java mod canceled player " + name + " joining " + level.dimension() + "; it joins anyway, as vanilla ignores it");
+            if (!playerJoins(player, level)) System.err.println("Horizon: a Java mod canceled player " + g.name + " joining " + level.dimension() + "; it joins anyway, as vanilla ignores it");
             safely("PlayerLoggedIn", () -> EventHooks.firePlayerLoggedIn(player));
             safely("chunks sent before the player's view", () -> Tracking.joined(player, level));
         }

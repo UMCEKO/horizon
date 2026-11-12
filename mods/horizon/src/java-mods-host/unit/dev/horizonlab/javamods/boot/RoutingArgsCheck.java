@@ -43,6 +43,42 @@ public final class RoutingArgsCheck {
         byte[] bytes = reply.toByteArray();
         var read = Crossing.In.of(bytes);
         if (read.readByte() != 0 || read.readInt() != -1 || read.readInt() != 0 || read.available() != 0) throw new AssertionError("status 0, -1, then an empty sound count: " + bytes.length);
+        values();
         System.out.println("RoutingArgsCheck ok");
+    }
+
+    static java.util.Optional<net.minecraft.world.phys.Vec3> optional() {
+        return java.util.Optional.empty();
+    }
+
+    static void unreadable(java.util.List<String> list) {}
+
+    /** `vec3_and_effect_args_write_as_java_reads_them` and `optional_vec3_reads_both_cases`, byte for byte. */
+    private static void values() throws Exception {
+        var bytes = java.util.HexFormat.of().parseHex("3ff8000000000000c0000000000000003fd00000000000000000000f6d696e6563726166743a73706565640000006400000001000101000000000000000f6d696e6563726166743a626c6f636b0000000f6d696e6563726166743a73746f6e65000000136d696e6563726166743a6f766572776f726c64");
+        var in = Crossing.In.of(bytes);
+        var call = new Routing.Args("k");
+        var vec = (net.minecraft.world.phys.Vec3) Routing.reader(net.minecraft.world.phys.Vec3.class).read(in, call);
+        if (vec.x != 1.5 || vec.y != -2.0 || vec.z != 0.25) throw new AssertionError("a Vec3 is three doubles");
+        if (!in.text().equals("minecraft:speed") || in.readInt() != 100 || in.readInt() != 1 || in.readBoolean() || !in.readBoolean() || !in.readBoolean()) throw new AssertionError("an effect: id, duration, amplifier, ambient, visible, icon");
+        if (Routing.reader(net.minecraft.world.entity.Entity.class).read(in, call) != null) throw new AssertionError("entity id 0 is null");
+        var key = (net.minecraft.resources.ResourceKey<?>) Routing.reader(net.minecraft.resources.ResourceKey.class).read(in, call);
+        if (!key.toString().contains("minecraft:block") || !key.toString().contains("minecraft:stone")) throw new AssertionError("a key is its registry, then its id: " + key);
+        if (!in.text().equals("minecraft:overworld") || in.available() != 0) throw new AssertionError("a level is its dimension's text");
+        var writer = Routing.writer(RoutingArgsCheck.class.getDeclaredMethod("optional").getGenericReturnType());
+        var absent = new Crossing.Out();
+        writer.write(java.util.Optional.empty(), absent);
+        var present = new Crossing.Out();
+        writer.write(java.util.Optional.of(new net.minecraft.world.phys.Vec3(1, 2, 3)), present);
+        var hex = java.util.HexFormat.of();
+        if (!hex.formatHex(absent.toByteArray()).equals("00") || !hex.formatHex(present.toByteArray()).equals("01" + "3ff0000000000000" + "4000000000000000" + "4008000000000000")) throw new AssertionError("an Optional<Vec3> is a flag, then three doubles");
+        var method = RoutingArgsCheck.class.getDeclaredMethod("unreadable", java.util.List.class);
+        if (Routing.plan("k", method, false).unreadable() == null) throw new AssertionError("a type with no reader is reported");
+        try {
+            Routing.plan("k", method, true);
+            throw new AssertionError("a gated route with no reader must fail the boot");
+        } catch (IllegalStateException expected) {
+            if (!expected.getMessage().equals("route k: no argument reader for java.util.List")) throw new AssertionError(expected.getMessage());
+        }
     }
 }

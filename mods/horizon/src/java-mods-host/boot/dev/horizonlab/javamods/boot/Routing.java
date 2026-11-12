@@ -12,14 +12,50 @@ import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.lang.reflect.Method;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
+import net.minecraft.nbt.NbtAccounter;
+import net.minecraft.nbt.NbtIo;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.network.ServerCommonPacketListenerImpl;
+import net.minecraft.server.network.ServerGamePacketListenerImpl;
+import net.minecraft.util.ProblemReporter;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.food.FoodData;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.item.ItemInstance;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LevelAccessor;
+import net.minecraft.world.level.LevelReader;
+import net.minecraft.world.level.ServerLevelAccessor;
+import net.minecraft.world.level.portal.TeleportTransition;
+import net.minecraft.world.level.storage.TagValueInput;
+import net.minecraft.world.level.storage.TagValueOutput;
+import net.minecraft.world.level.storage.ValueInput;
+import net.minecraft.world.level.storage.ValueOutput;
+import net.minecraft.world.phys.Vec3;
 
 /** The install's routing (`routing.json`) confirmed against the mixins merged at boot, as `routes.bin`; see docs/java-mods-map.md. */
 public final class Routing {
@@ -34,6 +70,7 @@ public final class Routing {
     private static volatile String[] DESCS = new String[0];
     private static volatile String[] OWNERS = new String[0];
     private static volatile boolean[] STATICS = new boolean[0];
+    private static volatile Plan[] PLANS = new Plan[0];
     private static volatile java.util.Map<String, String> MODS = java.util.Map.of();
     private static final java.util.Set<String> TOLD = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
@@ -109,6 +146,7 @@ public final class Routing {
         var keys = new String[ordered.size()];
         var descs = new String[ordered.size()];
         var statics = new boolean[ordered.size()];
+        var plans = new Plan[ordered.size()];
         var owners = new String[ordered.size()];
         var idOf = new java.util.HashMap<String, Integer>();
         var liveFlags = new boolean[ordered.size()];
@@ -160,6 +198,11 @@ public final class Routing {
             if (live) {
                 on++;
                 handles[id] = handle(type, key, name, desc, route.get("static").getAsBoolean(), loader);
+                var method = declared(type, name, desc);
+                if (method != null) {
+                    plans[id] = plan(key, method, gates.containsKey(key));
+                    if (plans[id].unreadable() != null && TOLD.add(key)) System.err.println("Horizon: route " + key + ": no argument reader for " + plans[id].unreadable());
+                }
             }
             keys[id] = key;
             descs[id] = desc;
@@ -193,6 +236,7 @@ public final class Routing {
         KEYS = keys;
         DESCS = descs;
         STATICS = statics;
+        PLANS = plans;
         OWNERS = owners;
         MODS = modOf;
         ids = idOf;
@@ -388,7 +432,7 @@ public final class Routing {
     /** The `route` op: Rust's call of a vanilla method as Java's merged method. A throw is the reply, not caught here: Rust panics with it, as an exception ends a vanilla tick. */
     static void call(Crossing.In in, Crossing.Out out) throws Exception {
         int id = in.readInt();
-        run(KEYS[id], OWNERS[id], DESCS[id], STATICS[id], HANDLES[id], in, out);
+        run(KEYS[id], PLANS[id], STATICS[id], HANDLES[id], in, out);
     }
 
     private static MethodHandle noop;
@@ -399,60 +443,233 @@ public final class Routing {
     static void benchCall(Crossing.In in, Crossing.Out out) throws Exception {
         in.readInt();
         if (noop == null) noop = MethodHandles.lookup().findStatic(Routing.class, "noop", MethodType.methodType(void.class));
-        run("bench#noop()V", "dev/horizonlab/javamods/boot/Routing", "()V", true, noop, in, out);
+        run("bench#noop()V", plan("bench#noop()V", Routing.class.getDeclaredMethod("noop"), false), true, noop, in, out);
     }
 
-    private static final String SUPPORTED_RETURNS = "VZIJFD";
-    /** The object arguments native writes: a `Player` is the acting player, filled as for a player receiver. */
-    private static final java.util.Set<Class<?>> READABLE = java.util.Set.of(net.minecraft.core.BlockPos.class, String.class, net.minecraft.world.item.ItemStack.class,
-            net.minecraft.world.phys.Vec3.class, net.minecraft.network.chat.Component.class, net.minecraft.world.entity.player.Player.class);
+    /** What one argument's bytes build: the call's state is for the readers that need the acting player or a level. */
+    @FunctionalInterface
+    interface ArgReader {
+        Object read(Crossing.In in, Args call) throws Exception;
+    }
 
-    private static void run(String key, String owner, String desc, boolean isStatic, MethodHandle handle, Crossing.In in, Crossing.Out out) throws Exception {
-        byte recv = in.readByte();
-        var types = MethodType.fromMethodDescriptorString(desc, Boot.class.getClassLoader()).parameterArray();
-        char ret = desc.charAt(desc.indexOf(')') + 1);
-        String unreadable = SUPPORTED_RETURNS.indexOf(ret) < 0 ? "return type " + desc.substring(desc.indexOf(')') + 1) : null;
-        for (var type : types) {
-            if (unreadable == null && !type.isPrimitive() && !READABLE.contains(type)) unreadable = type.getName();
-            if (unreadable == null && type == void.class || type == byte.class || type == short.class || type == char.class) unreadable = type.getName();
+    /** What a return value writes. */
+    @FunctionalInterface
+    interface RetWriter {
+        void write(Object value, Crossing.Out out) throws Exception;
+    }
+
+    /** One call's state while its arguments are read. */
+    static final class Args {
+        final String key;
+        ServerPlayer filled;
+        ServerLevel level;
+        final List<TagValueOutput> outputs = new ArrayList<>();
+
+        Args(String key) {
+            this.key = key;
         }
-        if (unreadable != null || handle == null) {
-            if (TOLD.add(key)) System.err.println("Horizon: route " + key + ": no argument reader for " + unreadable);
+
+        ServerLevel level() {
+            return level != null ? level : GameBridge.level(0);
+        }
+    }
+
+    /** Where a player receiver's owner class takes its receiver from. */
+    enum Proj { PLAYER, INVENTORY, MENU, CONNECTION, FOOD }
+
+    /** A route's readers and writer, built once at confirm; `unreadable` names the first type with none. */
+    record Plan(ArgReader[] args, RetWriter ret, Proj proj, Class<?> owner, int outputs, String unreadable) {}
+
+    private static final java.util.Set<Class<?>> LEVELS = java.util.Set.of(Level.class, ServerLevel.class, LevelReader.class, LevelAccessor.class, ServerLevelAccessor.class, BlockGetter.class);
+
+    private static ArgReader entity(Class<?> type) {
+        return (in, c) -> {
+            var e = Flat.toEntity(in.readInt());
+            if (e != null && !type.isInstance(e)) throw new ClassCastException("route " + c.key + ": entity " + e.getId() + " is a " + e.getClass().getName() + ", not a " + type.getName());
+            return e;
+        };
+    }
+
+    /** The reader for a parameter of this class, or null when there is none. */
+    static ArgReader reader(Class<?> type) {
+        if (type == int.class) return (in, c) -> in.readInt();
+        if (type == long.class) return (in, c) -> in.readLong();
+        if (type == float.class) return (in, c) -> in.readFloat();
+        if (type == double.class) return (in, c) -> in.readDouble();
+        if (type == boolean.class) return (in, c) -> in.readBoolean();
+        if (type == BlockPos.class) return (in, c) -> BlockPos.of(in.readLong());
+        if (type == String.class) return (in, c) -> in.text();
+        if (type == ItemStack.class || type == ItemInstance.class) return (in, c) -> GameBridge.decode(in.readNBytes(in.readInt()));
+        if (type == Component.class) return (in, c) -> Flat.toComponent(in.readNBytes(in.readInt()));
+        if (type == Player.class || type == ServerPlayer.class) {
+            return (in, c) -> {
+                var call = GameBridge.fill(in, false);
+                c.level = call.level();
+                return c.filled = call.player();
+            };
+        }
+        if (type == Vec3.class) return (in, c) -> new Vec3(in.readDouble(), in.readDouble(), in.readDouble());
+        if (Entity.class.isAssignableFrom(type)) return entity(type);
+        if (type == DamageSource.class) return (in, c) -> Flat.toDamageSource(in.readNBytes(in.readInt()), c.level());
+        if (type == MobEffectInstance.class) {
+            return (in, c) -> {
+                var id = in.text();
+                var holder = BuiltInRegistries.MOB_EFFECT.get(Identifier.parse(id)).orElseThrow(() -> new IllegalStateException("route " + c.key + ": no effect " + id));
+                return new MobEffectInstance(holder, in.readInt(), in.readInt(), in.readBoolean(), in.readBoolean(), in.readBoolean());
+            };
+        }
+        if (type == Holder.class) return (in, c) -> Flat.toHolder(in.text());
+        if (type == ResourceKey.class) return (in, c) -> ResourceKey.create(ResourceKey.createRegistryKey(Identifier.parse(in.text())), Identifier.parse(in.text()));
+        if (LEVELS.contains(type)) return (in, c) -> GameBridge.level(in.text());
+        if (type == TeleportTransition.class) return (in, c) -> Flat.toTeleportTransition(in.readNBytes(in.readInt()));
+        if (type == ValueInput.class) {
+            return (in, c) -> {
+                var tag = NbtIo.read(new java.io.DataInputStream(new java.io.ByteArrayInputStream(in.readNBytes(in.readInt()))), NbtAccounter.unlimitedHeap());
+                return TagValueInput.create(ProblemReporter.DISCARDING, GameBridge.registries(), tag);
+            };
+        }
+        if (type == ValueOutput.class) {
+            return (in, c) -> {
+                var output = TagValueOutput.createWithContext(ProblemReporter.DISCARDING, GameBridge.registries());
+                c.outputs.add(output);
+                return output;
+            };
+        }
+        return null;
+    }
+
+    /** The writer for a return type, or null when there is none. */
+    static RetWriter writer(Type type) {
+        if (type == void.class) return (v, o) -> {};
+        if (type == boolean.class || type == Boolean.class) return (v, o) -> o.writeBoolean((Boolean) v);
+        if (type == int.class || type == Integer.class) return (v, o) -> o.writeInt((Integer) v);
+        if (type == long.class || type == Long.class) return (v, o) -> o.writeLong((Long) v);
+        if (type == float.class || type == Float.class) return (v, o) -> o.writeFloat((Float) v);
+        if (type == double.class || type == Double.class) return (v, o) -> o.writeDouble((Double) v);
+        if (type == Vec3.class) {
+            return (v, o) -> {
+                var p = (Vec3) v;
+                o.writeDouble(p.x);
+                o.writeDouble(p.y);
+                o.writeDouble(p.z);
+            };
+        }
+        if (type == ItemStack.class) {
+            return (v, o) -> {
+                byte[] bytes = Flat.raw((ItemStack) v);
+                o.writeInt(bytes.length);
+                o.write(bytes);
+            };
+        }
+        if (type == String.class) return (v, o) -> GameBridge.writeText(o, (String) v);
+        if (type == ResourceKey.class) return (v, o) -> GameBridge.writeText(o, ((ResourceKey<?>) v).identifier().toString());
+        if (type == InteractionResult.class) {
+            return (v, o) -> {
+                int kind = v instanceof InteractionResult.Success ? 0 : v instanceof InteractionResult.Fail ? 1 : v instanceof InteractionResult.Pass ? 2 : 3;
+                o.writeInt(kind);
+                o.writeInt(v instanceof InteractionResult.Success s ? s.swingSource().ordinal() : 0);
+            };
+        }
+        if (type instanceof ParameterizedType p && p.getRawType() == Optional.class) {
+            var inner = writer(p.getActualTypeArguments()[0]);
+            if (inner == null) return null;
+            return (v, o) -> {
+                var present = (Optional<?>) v;
+                o.writeBoolean(present.isPresent());
+                if (present.isPresent()) inner.write(present.get(), o);
+            };
+        }
+        return null;
+    }
+
+    /** Which part of the player a player-filled call hands the method: the owner's class picks it. */
+    static Proj projection(Class<?> owner) {
+        if (owner == Inventory.class) return Proj.INVENTORY;
+        if (AbstractContainerMenu.class.isAssignableFrom(owner)) return Proj.MENU;
+        if (owner == ServerGamePacketListenerImpl.class || owner == ServerCommonPacketListenerImpl.class) return Proj.CONNECTION;
+        if (owner == FoodData.class) return Proj.FOOD;
+        return Proj.PLAYER;
+    }
+
+    static Object project(Proj proj, Class<?> owner, ServerPlayer player, String key) {
+        return switch (proj) {
+            case INVENTORY -> player.getInventory();
+            case MENU -> {
+                var menu = player.containerMenu;
+                if (!owner.isInstance(menu)) throw new IllegalStateException("route " + key + ": the open menu is a " + (menu == null ? "null" : menu.getClass().getName()) + ", not a " + owner.getName());
+                yield menu;
+            }
+            case CONNECTION -> player.connection;
+            case FOOD -> player.getFoodData();
+            case PLAYER -> player;
+        };
+    }
+
+    private static Method declared(Class<?> type, String name, String desc) {
+        for (Method m : type.getDeclaredMethods()) {
+            if (m.getName().equals(name) && MethodType.methodType(m.getReturnType(), m.getParameterTypes()).toMethodDescriptorString().equals(desc)) return m;
+        }
+        return null;
+    }
+
+    /** The table of one route: a gated route that has no reader for a type fails here, at boot. */
+    static Plan plan(String key, Method method, boolean gated) {
+        var types = method.getParameterTypes();
+        var readers = new ArgReader[types.length];
+        String unreadable = null;
+        int outputs = 0;
+        for (int i = 0; i < types.length; i++) {
+            readers[i] = reader(types[i]);
+            if (readers[i] == null && unreadable == null) unreadable = types[i].getName();
+            if (types[i] == ValueOutput.class) outputs++;
+        }
+        var ret = writer(method.getGenericReturnType());
+        if (ret == null && unreadable == null) unreadable = "return type " + method.getGenericReturnType().getTypeName();
+        if (unreadable != null && gated) throw new IllegalStateException("route " + key + ": no argument reader for " + unreadable);
+        var owner = method.getDeclaringClass();
+        return new Plan(readers, ret, projection(owner), owner, outputs, unreadable);
+    }
+
+    private static void run(String key, Plan plan, boolean isStatic, MethodHandle handle, Crossing.In in, Crossing.Out out) throws Exception {
+        byte recv = in.readByte();
+        if (plan == null || plan.unreadable() != null || handle == null) {
+            String why = plan == null ? "its method" : plan.unreadable();
+            if (TOLD.add(key)) System.err.println("Horizon: route " + key + ": no argument reader for " + why);
             out.writeByte(1);
             GameBridge.writeText(out, "unknown");
-            GameBridge.writeText(out, "no argument reader for " + unreadable);
+            GameBridge.writeText(out, "no argument reader for " + why);
             return;
         }
         Object receiver = null;
-        net.minecraft.server.level.ServerPlayer filled = null;
+        var call = new Args(key);
         switch (recv) {
             case 0 -> {
-                var player = filled = GameBridge.fill(in, false).player();
-                receiver = owner.equals("net/minecraft/world/entity/player/Inventory") ? player.getInventory()
-                        : owner.equals("net/minecraft/world/inventory/AbstractContainerMenu") ? player.containerMenu : player;
+                var filled = GameBridge.fill(in, false);
+                call.filled = filled.player();
+                call.level = filled.level();
+                receiver = project(plan.proj(), plan.owner(), call.filled, key);
             }
             case 1 -> {
                 var level = GameBridge.level(in.readInt());
                 ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
+                call.level = level;
                 receiver = level;
+            }
+            case 3 -> receiver = GameBridge.server();
+            case 4 -> receiver = GameBridge.server().getScoreboard();
+            case 5 -> {
+                var level = GameBridge.level(in.text());
+                ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
+                call.level = level;
+                var at = BlockPos.of(in.readLong());
+                receiver = level.getBlockEntity(at);
+                if (receiver == null || !plan.owner().isInstance(receiver)) throw new IllegalStateException("route " + key + ": no " + plan.owner().getName() + " at " + at + (receiver == null ? "" : ", found a " + receiver.getClass().getName()));
             }
             default -> {}
         }
         var args = new ArrayList<Object>();
         if (!isStatic) args.add(receiver);
-        for (var type : types) {
-            if (type == int.class) args.add(in.readInt());
-            else if (type == long.class) args.add(in.readLong());
-            else if (type == float.class) args.add(in.readFloat());
-            else if (type == double.class) args.add(in.readDouble());
-            else if (type == boolean.class) args.add(in.readBoolean());
-            else if (type == String.class) args.add(in.text());
-            else if (type == net.minecraft.world.item.ItemStack.class) args.add(GameBridge.decode(in.readNBytes(in.readInt())));
-            else if (type == net.minecraft.world.phys.Vec3.class) args.add(new net.minecraft.world.phys.Vec3(in.readDouble(), in.readDouble(), in.readDouble()));
-            else if (type == net.minecraft.network.chat.Component.class) args.add(GameBridge.component(in.readNBytes(in.readInt())));
-            else if (type == net.minecraft.world.entity.player.Player.class) args.add(filled = GameBridge.fill(in, false).player());
-            else args.add(net.minecraft.core.BlockPos.of(in.readLong()));
-        }
+        for (var reader : plan.args()) args.add(reader.read(in, call));
         long started = Profile.ON ? System.nanoTime() : 0;
         Object result;
         try {
@@ -467,17 +684,16 @@ public final class Routing {
         }
         if (Profile.ON) Profile.event("route:" + key, System.nanoTime() - started);
         out.writeByte(0);
-        switch (ret) {
-            case 'Z' -> out.writeBoolean((Boolean) result);
-            case 'I' -> out.writeInt((Integer) result);
-            case 'J' -> out.writeLong((Long) result);
-            case 'F' -> out.writeFloat((Float) result);
-            case 'D' -> out.writeDouble((Double) result);
-            default -> {}
-        }
-        if (filled != null) PlayerSync.writeChanges(filled, out);
+        plan.ret().write(result, out);
+        for (var output : call.outputs) GameBridge.writeTag(out, output.buildResult());
+        if (call.filled != null) PlayerSync.writeChanges(call.filled, out);
         else out.writeInt(-1);
         GameBridge.writeEffects(out);
+    }
+
+    /** Whether a mod's mixin changes this method and the route is on; W10's seams ask. */
+    public static boolean patched(String key) {
+        return route(key) >= 0;
     }
 
     /** The mod of the first frame that runs a merged mixin handler, else "unknown". */

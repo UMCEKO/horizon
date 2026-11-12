@@ -3,9 +3,16 @@
 
 /// Who a routed method's receiver is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // the specs that gate these families construct them
 pub(in crate::game) enum Recv {
     Player,
     Static,
+    /// `GameBridge.server`.
+    Server,
+    /// The server's scoreboard.
+    Scoreboard,
+    /// The block entity at this position of the current level.
+    BlockEntity(horizon_core::position::BlockPos),
 }
 
 #[cfg(feature = "java-mods")]
@@ -47,6 +54,56 @@ pub(in crate::game) struct ComponentArg<'a>(pub &'a horizon_core::nbt::Tag);
 
 /// A routed `Player` argument: the acting player, as a call fills its view.
 pub(in crate::game) struct PlayerArg(pub Option<Vec<u8>>);
+
+/// A routed `MobEffectInstance` argument.
+#[allow(dead_code)] // gated routes construct it
+pub(in crate::game) struct EffectArg {
+    pub id: String,
+    pub duration: i32,
+    pub amplifier: i32,
+    pub ambient: bool,
+    pub visible: bool,
+    pub icon: bool,
+}
+
+/// A routed `Entity` argument: its id, `None` for null.
+#[allow(dead_code)] // gated routes construct it
+pub(in crate::game) struct EntityArg(pub Option<u32>);
+
+/// A routed `Holder`: the registry's path, a tab, and the entry's id.
+#[allow(dead_code)] // gated routes construct it
+pub(in crate::game) struct HolderArg<'a>(pub &'a str);
+
+/// A routed `ResourceKey`: the registry's id, then the key's.
+#[allow(dead_code)] // gated routes construct it
+pub(in crate::game) struct KeyArg<'a>(pub &'a str, pub &'a str);
+
+/// A routed `Level`: its dimension's id.
+#[allow(dead_code)] // gated routes construct it
+pub(in crate::game) struct LevelArg<'a>(pub &'a str);
+
+/// A routed `TeleportTransition`: the bytes `Flat.raw(TeleportTransition)` writes.
+#[allow(dead_code)] // gated routes construct it
+pub(in crate::game) struct TransitionArg(pub Vec<u8>);
+
+/// A routed `ValueInput`: a compound tag.
+#[allow(dead_code)] // gated routes construct it
+pub(in crate::game) struct InputArg<'a>(pub &'a horizon_core::nbt::Tag);
+
+/// A routed `ValueOutput`: nothing crosses in; the reply carries what Java wrote.
+#[allow(dead_code)] // gated routes construct it
+pub(in crate::game) struct OutputArg;
+
+/// `InteractionResult` as a routed use method answers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // the use paths read it as their specs gate them
+pub(in crate::game) enum UseResult {
+    /// With whether its `SwingSource` is not `NONE`.
+    Success(bool),
+    Fail,
+    Pass,
+    TryEmptyHand,
+}
 
 #[cfg(feature = "java-mods")]
 pub(in crate::game) use gate::{Gate, RouteArg};
@@ -99,6 +156,7 @@ fn pause_sources(reply: &[u8]) -> Option<Vec<usize>> {
 mod gate {
     use super::Recv;
     use crate::game::Game;
+    use horizon_core::nbt::Tag;
     use horizon_core::position::BlockPos;
     use horizon_java_host::routes::{self, Admitted, Route, RouteId, Routes};
     use horizon_world::registry::BlockStateId;
@@ -255,6 +313,58 @@ mod gate {
             out.0.extend_from_slice(fill);
         }
     }
+    impl RouteArg for &horizon_java_host::bridge::Source {
+        fn put(&self, out: &mut Out) {
+            let mut bytes = Out::default();
+            self.write(&mut bytes);
+            out.bytes(&bytes.0);
+        }
+    }
+    impl RouteArg for &super::EffectArg {
+        fn put(&self, out: &mut Out) {
+            out.text(&self.id);
+            out.int(self.duration);
+            out.int(self.amplifier);
+            out.bool(self.ambient);
+            out.bool(self.visible);
+            out.bool(self.icon);
+        }
+    }
+    impl RouteArg for super::EntityArg {
+        fn put(&self, out: &mut Out) {
+            out.int(self.0.map_or(0, |id| id as i32));
+        }
+    }
+    impl RouteArg for super::HolderArg<'_> {
+        fn put(&self, out: &mut Out) {
+            out.text(self.0);
+        }
+    }
+    impl RouteArg for super::KeyArg<'_> {
+        fn put(&self, out: &mut Out) {
+            out.text(self.0);
+            out.text(self.1);
+        }
+    }
+    impl RouteArg for super::LevelArg<'_> {
+        fn put(&self, out: &mut Out) {
+            out.text(self.0);
+        }
+    }
+    impl RouteArg for super::TransitionArg {
+        fn put(&self, out: &mut Out) {
+            out.bytes(&self.0);
+        }
+    }
+    impl RouteArg for super::InputArg<'_> {
+        fn put(&self, out: &mut Out) {
+            let tag = crate::game::java_mods::write_tag(self.0.clone());
+            out.bytes(&tag.expect("a compound tag encodes as NBT"));
+        }
+    }
+    impl RouteArg for super::OutputArg {
+        fn put(&self, _out: &mut Out) {}
+    }
     impl RouteArg for &horizon_client::items::ItemStack {
         fn put(&self, out: &mut Out) {
             let tag = crate::game::java_mods::write_tag(horizon_client::save::item_to_nbt(self));
@@ -297,6 +407,52 @@ mod gate {
         }
     }
 
+    impl RouteRet for String {
+        fn read(reply: &mut In<'_>) -> Option<Self> {
+            reply.text().map(str::to_owned)
+        }
+    }
+    /// A `Vec3`.
+    impl RouteRet for [f64; 3] {
+        fn read(reply: &mut In<'_>) -> Option<Self> {
+            Some([reply.double()?, reply.double()?, reply.double()?])
+        }
+    }
+    /// An `Optional<Vec3>`.
+    impl RouteRet for Option<[f64; 3]> {
+        fn read(reply: &mut In<'_>) -> Option<Self> {
+            if reply.bool()? {
+                <[f64; 3]>::read(reply).map(Some)
+            } else {
+                Some(None)
+            }
+        }
+    }
+    /// An `ItemStack`: its saved tag, empty bytes for the empty stack.
+    impl RouteRet for Option<horizon_client::items::ItemStack> {
+        fn read(reply: &mut In<'_>) -> Option<Self> {
+            let bytes = reply.bytes()?;
+            if bytes.is_empty() {
+                return Some(None);
+            }
+            let tag = crate::game::java_mods::read_tag(bytes)?;
+            horizon_client::save::item_from_nbt(&tag).map(Some)
+        }
+    }
+    /// An `InteractionResult`: the kind, then the `SwingSource`'s ordinal.
+    impl RouteRet for super::UseResult {
+        fn read(reply: &mut In<'_>) -> Option<Self> {
+            let (kind, swing) = (reply.int()?, reply.int()?);
+            match kind {
+                0 => Some(Self::Success(swing != 0)),
+                1 => Some(Self::Fail),
+                2 => Some(Self::Pass),
+                3 => Some(Self::TryEmptyHand),
+                _ => None,
+            }
+        }
+    }
+
     /// The reply's status and value; a throw in Java panics here, as an exception unwinds a vanilla tick.
     pub(super) fn read_value<R: RouteRet>(key: &str, reply: &mut In<'_>) -> R {
         fn pieces<T>(key: &str) -> T {
@@ -320,6 +476,18 @@ mod gate {
             recv: Recv,
             args: impl FnOnce(&mut Out),
         ) -> Option<R> {
+            self.route_call_out(id, recv, 0, args)
+                .map(|(value, _)| value)
+        }
+
+        /// [`Game::route_call`] for a method with `outputs` `ValueOutput` parameters: the value, then what Java wrote into each.
+        pub(in crate::game) fn route_call_out<R: RouteRet>(
+            &mut self,
+            id: RouteId,
+            recv: Recv,
+            outputs: usize,
+            args: impl FnOnce(&mut Out),
+        ) -> Option<(R, Vec<Tag>)> {
             horizon_java_host::get()?;
             let key = &*routes::get()?.get(id).key;
             self.java_bind_states();
@@ -331,6 +499,15 @@ mod gate {
                     out.0.extend(self.java_use_request()?);
                 }
                 Recv::Static => out.0.push(2),
+                Recv::Server => out.0.push(3),
+                Recv::Scoreboard => out.0.push(4),
+                Recv::BlockEntity(pos) => {
+                    self.java_level_key();
+                    out.0.push(5);
+                    out.text(self.dim.id());
+                    out.long(self.world.game_time);
+                    out.long(pos.pack());
+                }
             }
             args(&mut out);
             let Some(reply) = self.java_request("route", &out.0) else {
@@ -338,6 +515,8 @@ mod gate {
             };
             let mut reply = In(&reply);
             let value = read_value::<R>(key, &mut reply);
+            let written = read_outputs(&mut reply, outputs)
+                .unwrap_or_else(|| panic!("Horizon: route {key} answered in pieces"));
             let level = reply
                 .int()
                 .unwrap_or_else(|| panic!("Horizon: route {key} answered in pieces"));
@@ -349,8 +528,15 @@ mod gate {
                 panic!("Horizon: route {key} answered in pieces");
             }
             self.java_drain_block_events();
-            Some(value)
+            Some((value, written))
         }
+    }
+
+    /// What Java wrote into each `ValueOutput`, which follows the value.
+    pub(super) fn read_outputs(reply: &mut In<'_>, count: usize) -> Option<Vec<Tag>> {
+        (0..count)
+            .map(|_| reply.bytes().and_then(crate::game::java_mods::read_tag))
+            .collect()
     }
 
     #[cfg(test)]
@@ -504,6 +690,143 @@ mod gate {
             let tag = crate::game::java_mods::read_tag(reply.bytes().unwrap()).unwrap();
             assert_eq!(tag.get("text"), Some(&name));
             assert!(reply.bytes().is_none());
+        }
+
+        #[test]
+        fn vec3_and_effect_args_write_as_java_reads_them() {
+            let effect = super::super::EffectArg {
+                id: "minecraft:speed".into(),
+                duration: 100,
+                amplifier: 1,
+                ambient: false,
+                visible: true,
+                icon: true,
+            };
+            let mut out = Out::default();
+            RouteArg::put(&[1.5, -2.0, 0.25], &mut out);
+            RouteArg::put(&&effect, &mut out);
+            RouteArg::put(&super::super::EntityArg(None), &mut out);
+            RouteArg::put(
+                &super::super::KeyArg("minecraft:block", "minecraft:stone"),
+                &mut out,
+            );
+            RouteArg::put(&super::super::LevelArg("minecraft:overworld"), &mut out);
+            let mut want = Vec::new();
+            for v in [1.5f64, -2.0, 0.25] {
+                want.extend(v.to_be_bytes());
+            }
+            want.extend([0, 0, 0, 15]);
+            want.extend(b"minecraft:speed");
+            want.extend([0, 0, 0, 100, 0, 0, 0, 1, 0, 1, 1]);
+            want.extend([0, 0, 0, 0]);
+            for text in ["minecraft:block", "minecraft:stone", "minecraft:overworld"] {
+                want.extend((text.len() as i32).to_be_bytes());
+                want.extend(text.as_bytes());
+            }
+            assert_eq!(out.0, want);
+            let hex: String = out.0.iter().map(|b| format!("{b:02x}")).collect();
+            println!("ROUTE_ARGS_2 {hex}");
+        }
+
+        #[test]
+        fn a_damage_source_goes_as_the_bytes_java_reads() {
+            let source = horizon_java_host::bridge::Source {
+                kind: "minecraft:arrow".into(),
+                causing: 4,
+                direct: 9,
+                creative: false,
+                at: Some([1.0, 2.0, 3.0]),
+            };
+            let mut out = Out::default();
+            RouteArg::put(&&source, &mut out);
+            let bytes = In(&out.0).bytes().unwrap();
+            assert_eq!(horizon_java_host::bridge::Source::read(bytes), Some(source));
+        }
+
+        #[test]
+        fn optional_vec3_reads_both_cases() {
+            let mut absent = Out::default();
+            absent.bool(false);
+            assert_eq!(
+                <Option<[f64; 3]>>::read(&mut In(&absent.0)),
+                Some(None)
+            );
+            let mut present = Out::default();
+            present.bool(true);
+            for v in [1.0f64, 2.0, 3.0] {
+                present.double(v);
+            }
+            assert_eq!(
+                <Option<[f64; 3]>>::read(&mut In(&present.0)),
+                Some(Some([1.0, 2.0, 3.0]))
+            );
+            // present without its three doubles is a broken reply
+            assert_eq!(<Option<[f64; 3]>>::read(&mut In(&present.0[..9])), None);
+        }
+
+        #[test]
+        fn item_stack_return_round_trips() {
+            let mut components = horizon_core::nbt::Compound::new();
+            components.insert("minecraft:custom_name".into(), Tag::String("Rock".into()));
+            let mut saved = horizon_core::nbt::Compound::new();
+            saved.insert("id".into(), Tag::String("minecraft:stone".into()));
+            saved.insert("count".into(), Tag::Int(3));
+            saved.insert("components".into(), Tag::Compound(components));
+            let stack = horizon_client::save::item_from_nbt(&Tag::Compound(saved)).unwrap();
+            assert!(stack.count == 3 && stack.extra.is_some());
+            let tag = crate::game::java_mods::write_tag(horizon_client::save::item_to_nbt(&stack));
+            let mut reply = Out::default();
+            reply.bytes(&tag.unwrap());
+            reply.bytes(&[]);
+            let mut reply = In(&reply.0);
+            let back = <Option<horizon_client::items::ItemStack>>::read(&mut reply);
+            assert_eq!(back, Some(Some(stack)));
+            // the empty stack is no bytes at all
+            let empty = <Option<horizon_client::items::ItemStack>>::read(&mut reply);
+            assert_eq!(empty, Some(None));
+        }
+
+        #[test]
+        fn written_outputs_follow_the_value() {
+            let mut compound = horizon_core::nbt::Compound::new();
+            compound.insert("a".into(), Tag::Byte(1));
+            let saved = crate::game::java_mods::write_tag(Tag::Compound(compound.clone()));
+            let mut reply = Out::default();
+            reply.0.push(0);
+            reply.int(7);
+            reply.bytes(&saved.unwrap());
+            reply.int(-1);
+            reply.int(0);
+            let mut reply = In(&reply.0);
+            assert_eq!(read_value::<i32>("k", &mut reply), 7);
+            assert_eq!(read_outputs(&mut reply, 1), Some(vec![Tag::Compound(compound)]));
+            // then no player's changes (-1) and no sounds
+            assert_eq!((reply.int(), reply.int()), (Some(-1), Some(0)));
+            assert_eq!(read_outputs(&mut In(&[]), 1), None);
+        }
+
+        #[test]
+        fn use_results_read_their_kind_and_swing() {
+            let read = |kind: i32, swing: i32| {
+                let mut out = Out::default();
+                out.int(kind);
+                out.int(swing);
+                super::super::UseResult::read(&mut In(&out.0))
+            };
+            assert_eq!(read(0, 1), Some(super::super::UseResult::Success(true)));
+            assert_eq!(read(0, 0), Some(super::super::UseResult::Success(false)));
+            assert_eq!(read(3, 0), Some(super::super::UseResult::TryEmptyHand));
+            assert_eq!(read(4, 0), None);
+        }
+
+        #[test]
+        fn a_scoreboard_route_that_is_pending_never_crosses() {
+            let gate = Gate::new("a/B#m(I)V");
+            assert_eq!(gate.resolve_with(&routes(true, -2)), None);
+            assert_eq!(gate.admitted(&Recv::Scoreboard), None);
+            let open = Gate::new("a/B#m(I)V");
+            assert_eq!(open.resolve_with(&routes(true, -1)), Some(RouteId(0)));
+            assert_eq!(open.admitted(&Recv::Server), Some(RouteId(0)));
         }
 
         #[test]

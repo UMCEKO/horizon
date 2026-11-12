@@ -465,6 +465,19 @@ impl Source {
         })
     }
 }
+impl Source {
+    /// The bytes `Flat.toDamageSource` reads: what [`Source::read`] reads.
+    pub fn write(&self, out: &mut crate::wire::Out) {
+        out.text(&self.kind);
+        out.int(self.causing);
+        out.int(self.direct);
+        out.bool(self.creative);
+        out.bool(self.at.is_some());
+        for v in self.at.iter().flatten() {
+            out.double(*v);
+        }
+    }
+}
 impl Arg for Source {
     type Raw = jbyteArray;
     const RAW: &'static str = "[B";
