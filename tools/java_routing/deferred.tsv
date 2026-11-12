@@ -54,7 +54,6 @@ net/minecraft/client/renderer/entity/player/AvatarRenderer#<init>(Lnet/minecraft
 net/minecraft/client/renderer/fog/FogRenderer#setupFog(Lnet/minecraft/client/Camera;ILnet/minecraft/client/DeltaTracker;FLnet/minecraft/client/multiplayer/ClientLevel;)Lnet/minecraft/client/renderer/fog/FogData;	client: phase C
 net/minecraft/client/resources/language/LanguageManager#onResourceManagerReload(Lnet/minecraft/server/packs/resources/ResourceManager;)V	client: phase C
 net/minecraft/client/server/IntegratedServer#initServer()Z	client: phase C
-net/minecraft/client/sounds/MusicManager#tick()V	client: phase C
 net/minecraft/client/sounds/SoundEngine#refreshCategoryVolume(Lnet/minecraft/sounds/SoundSource;)V	client: phase C
 net/minecraft/client/sounds/SoundEngine#reload()V	client: phase C
 net/minecraft/core/component/BlockTransformer#transformBlock(Lnet/minecraft/world/item/context/UseOnContext;)Lnet/minecraft/world/InteractionResult;	seam: crates/horizon-client/src/block_transform.rs:226

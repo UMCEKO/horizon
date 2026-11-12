@@ -16,12 +16,29 @@ impl Game<'_> {
         if self.options.split_guest {
             return;
         }
-        let (mut music, mut volume) = self.situational_music();
-        // A native mod's own choice of track and volume, then its layers.
-        self.native_music(&mut music, &mut volume);
+        #[cfg(feature = "java-mods")]
+        crate::game::java_routing::gui_route!("net/minecraft/client/sounds/MusicManager#tick()V");
+        let owned = self.java_music_owned();
+        let (mut music, mut volume) = if owned {
+            (None, 1.0)
+        } else {
+            self.situational_music()
+        };
+        // A native mod's own choice of track and volume (the Java client asks it through `java_music_input`), then its layers.
+        if !owned {
+            self.native_music(&mut music, &mut volume);
+        }
         let mut layers = Vec::new();
         self.native_music_layers(&mut layers);
         self.music_layers.tick(&layers, &mut self.audio);
+        if owned {
+            // The Java client's manager plays the music; only its toasts and the toast option stay here.
+            self.tick_music_toast_state();
+            for show in self.java_music_toasts() {
+                self.apply_music_toast(show);
+            }
+            return;
+        }
         // Options.musicFrequency's listener: MusicManager.setMinutesBetweenSongs.
         let frequency = MusicFrequency::parse(&self.settings.file.name("musicFrequency"));
         if frequency != self.music.frequency {
@@ -38,28 +55,51 @@ impl Game<'_> {
         // LevelLoadingScreen: no new track before the player is in the world.
         // A reconfiguration's ServerReconfigScreen is a plain Screen, not a
         // LevelLoadingScreen: its menu music starts as on any other screen.
-        let loading = self.title.is_none()
+        let loading = self.music_loading();
+        self.music
+            .tick(music.as_ref(), volume, loading, &mut self.audio);
+        self.tick_music_toast_state();
+        // MusicManager's showNowPlayingToast and hideNowPlayingToast calls.
+        for show in std::mem::take(&mut self.music.toast_requests) {
+            self.apply_music_toast(show);
+        }
+    }
+    /// The Java client's music tick asks the game, right before it ticks: `getSituationalMusic`, `getMusicVolume` and the loading screen.
+    pub(super) fn java_music_input(&mut self) {
+        if self.options.split_guest || !self.java_music_owned() {
+            return;
+        }
+        let (mut music, mut volume) = self.situational_music();
+        self.native_music(&mut music, &mut volume);
+        let frequency = MusicFrequency::parse(&self.settings.file.name("musicFrequency"));
+        let loading = self.music_loading();
+        self.java_music_send(music.as_ref(), volume, loading, frequency);
+    }
+    /// `LevelLoadingScreen`: no new track before the player is in the world.
+    /// A reconfiguration's ServerReconfigScreen is a plain Screen, not a
+    /// LevelLoadingScreen: its menu music starts as on any other screen.
+    fn music_loading(&self) -> bool {
+        self.title.is_none()
             && self.player.is_none()
             && self.win.is_none()
             && !self
                 .remote
                 .as_ref()
-                .is_some_and(|r| r.reconfiguring.is_some());
-        self.music
-            .tick(music.as_ref(), volume, loading, &mut self.audio);
-        // Options.musicToast's listener: ToastManager.setMusicToastDisplayState.
+                .is_some_and(|r| r.reconfiguring.is_some())
+    }
+    /// Options.musicToast's listener: ToastManager.setMusicToastDisplayState.
+    fn tick_music_toast_state(&mut self) {
         let state = self.settings.file.int("musicToast").clamp(0, 2) as u8;
         if state != self.music_toast_state {
             self.music_toast_state = state;
             self.set_music_toast_state(state);
         }
-        // MusicManager's showNowPlayingToast and hideNowPlayingToast calls.
-        for show in std::mem::take(&mut self.music.toast_requests) {
-            if show {
-                self.show_music_toast();
-            } else if let Some(toast) = &mut self.now_playing {
-                toast.hide();
-            }
+    }
+    fn apply_music_toast(&mut self, show: bool) {
+        if show {
+            self.show_music_toast();
+        } else if let Some(toast) = &mut self.now_playing {
+            toast.hide();
         }
     }
     /// The Music page's groups: every track the loaded `sounds.json` can play,
@@ -105,7 +145,11 @@ impl Game<'_> {
     /// `NowPlayingToast.getNowPlayingString` of the song the music manager
     /// plays: its file's short language key, slashes as dots.
     fn now_playing_song(&self) -> Option<horizon_client::text::Text> {
-        let id = self.music.current_instance()?;
+        let id = if self.java_music_owned() {
+            self.java_music_instance()?
+        } else {
+            self.music.current_instance()?
+        };
         let location = self
             .audio
             .engine

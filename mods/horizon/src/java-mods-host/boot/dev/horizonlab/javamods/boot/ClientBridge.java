@@ -312,6 +312,7 @@ public final class ClientBridge {
         }
         begin(id, name, registries, features, null);
         Clients.join(id);
+        ClientMusic.decide();
         return new byte[] {1};
     }
 
@@ -721,6 +722,7 @@ public final class ClientBridge {
     private static final byte SHELL_LAYOUT = 16;
     private static final byte TOASTS = 26;
     private static final byte NOTIFICATION_TIME = 27;
+    private static final byte MUSIC = 40;
 
     private static double cursorX, cursorY;
     private static BlockPos cameraBlock;
@@ -763,6 +765,7 @@ public final class ClientBridge {
                 }
                 case SCREEN -> nativeScreen(in.readBoolean(), in.readBoolean(), in.readByte());
                 case TOASTS -> Toasts.input(in);
+                case MUSIC -> ClientMusic.read(in);
                 case NOTIFICATION_TIME -> minecraft.options.notificationDisplayTime().set(in.readDouble());
                 case SHELL_LAYOUT -> Shells.layout(new int[] {in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readInt()});
                 case FOCUS -> set(Window.class, minecraft.getWindow(), "focused", in.readBoolean());
@@ -1014,6 +1017,7 @@ public final class ClientBridge {
         out.writeBoolean(Shells.animating);
         Toasts.writeStatus(out);
         out.writeInt(Environments.bits);
+        ClientMusic.writeStatus(out);
         shellSegments = null;
         shellChanged = false;
         return bytes.toByteArray();
@@ -1143,6 +1147,7 @@ public final class ClientBridge {
         lastRecorded = null;
         animating = false;
         ClientSounds.forget();
+        ClientMusic.forget();
         ClientParticles.forget();
         Animate.forget();
         Clients.registries = null;

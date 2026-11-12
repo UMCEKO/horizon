@@ -61,6 +61,7 @@ public final class TestMod {
             ClientSpark.register(bus);
             ClientProfiles.register();
             ClientEvents.register();
+            ClientMusicProbe.register();
         }
     }
 

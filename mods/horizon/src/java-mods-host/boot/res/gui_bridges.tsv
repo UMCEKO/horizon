@@ -1,0 +1,2 @@
+# key, where the Java client runs it
+net/minecraft/client/sounds/MusicManager#tick()V	ClientMusic.java: the tick runs in Java while a mod changes it
