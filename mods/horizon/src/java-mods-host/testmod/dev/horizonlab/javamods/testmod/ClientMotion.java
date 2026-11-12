@@ -8,6 +8,8 @@ import java.util.List;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 import net.minecraft.client.Minecraft;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.player.Player;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.common.NeoForge;
@@ -23,6 +25,10 @@ final class ClientMotion {
     private static int k, m, checked;
     private static boolean orderDone, orderOk = true, postDone;
     private static String firstWrong;
+    private static final Identifier ROCKET = Identifier.fromNamespaceAndPath("horizon_java_test", "rocket");
+    private static int rocketTicks, heldTicks;
+    private static boolean rocketThisTick;
+    private static double startY, preY, preVy;
 
     private static int parks(String point) {
         return System.getProperties().get("horizon.lockstep.parks." + point) instanceof IntSupplier parks ? parks.getAsInt() : 0;
@@ -42,19 +48,32 @@ final class ClientMotion {
         return player.level().isClientSide() && player == Minecraft.getInstance().player;
     }
 
+    private static boolean holdsRocket(Player player) {
+        return BuiltInRegistries.ITEM.getKey(player.getMainHandItem().getItem()).equals(ROCKET);
+    }
+
     static void register() {
         NeoForge.EVENT_BUS.addListener((ClientTickEvent.Pre event) -> {
             markers.clear();
             mark("ClientTick.Pre");
+            rocket(Minecraft.getInstance().player);
         });
         NeoForge.EVENT_BUS.addListener((PlayerTickEvent.Pre event) -> {
-            if (local(event.getEntity())) mark("PlayerTick.Pre");
+            if (!local(event.getEntity())) return;
+            mark("PlayerTick.Pre");
+            Player player = event.getEntity();
+            if (heldTicks == 12 && holdsRocket(player)) {
+                preY = player.getY();
+                preVy = player.getDeltaMovement().y;
+                player.setPos(player.getX(), preY + 1, player.getZ());
+            }
         });
         NeoForge.EVENT_BUS.addListener((PlayerTickEvent.Post event) -> {
             if (!local(event.getEntity())) return;
             boolean stepped = parks("M") > m;
             mark("PlayerTick.Post");
             if (stepped && !postDone) postSees(event.getEntity());
+            rocketSees(event.getEntity());
         });
         NeoForge.EVENT_BUS.addListener((ClientTickEvent.Post event) -> {
             mark("ClientTick.Post");
@@ -70,6 +89,39 @@ final class ClientMotion {
                 Checks.check("lockstep_order", () -> orderOk);
             }
         });
+    }
+
+    /** A mod's `setDeltaMovement` from `ClientTickEvent.Pre`, as Mekanism's jetpack writes: native's step this tick moves by it. */
+    private static void rocket(Player player) {
+        if (player == null || !holdsRocket(player)) return;
+        heldTicks++;
+        if (rocketTicks >= 10) return;
+        if (rocketTicks == 0) startY = player.getY();
+        player.setDeltaMovement(0, 0.5, 0);
+        rocketTicks++;
+        rocketThisTick = true;
+    }
+
+    /** Vanilla's `travelInAir` moves by the delta as set, then applies gravity to the rest: tick k ends 0.5·k above the start. */
+    private static void rocketSees(Player player) {
+        if (rocketThisTick) {
+            rocketThisTick = false;
+            if (rocketTicks == 1) Checks.check("rocket_moves_in_its_own_tick", () -> Math.abs(player.getY() - startY - 0.5) < 1e-9);
+            if (rocketTicks == 10) Checks.check("rocket_lifts_five_blocks", () -> Math.abs(player.getY() - startY - 5.0) < 1e-9);
+        }
+        if (heldTicks == 12 && holdsRocket(player)) {
+            Checks.check("pre_write_moves_without_lerp_start", () -> {
+                if (!(System.getProperties().get("horizon.lockstep.lastFill") instanceof Supplier<?> fill)) return false;
+                try {
+                    var in = new DataInputStream(new ByteArrayInputStream((byte[]) fill.get()));
+                    if (!in.readBoolean()) return false;
+                    in.readDouble();
+                    return Math.abs(in.readDouble() - (preY + 1 + preVy)) < 1e-9 && player.yo == preY;
+                } catch (IOException e) {
+                    return false;
+                }
+            });
+        }
     }
 
     /** While walking, `Post` sees the position the window's step reached this tick. */

@@ -550,6 +550,9 @@ public final class ClientBridge {
         }
         if (lockstep) Lockstep.begin();
         byte[] particles;
+        MotionLog.watching = lockstep ? Minecraft.getInstance().player : null;
+        // Writes left from a lockstep tick that never reached its step.
+        if (!lockstep) MotionLog.take();
         byte[] hud;
         byte[] world;
         byte[] view;
@@ -754,8 +757,13 @@ public final class ClientBridge {
         if (motion == null || local == null) return;
         float dy = motion.yaw - local.getYRot();
         float dx = motion.pitch - local.getXRot();
-        local.setYRot(motion.yaw);
-        local.setXRot(motion.pitch);
+        MotionLog.filling = true;
+        try {
+            local.setYRot(motion.yaw);
+            local.setXRot(motion.pitch);
+        } finally {
+            MotionLog.filling = false;
+        }
         local.yRotO += dy;
         local.xRotO += dx;
         if (HUD_DEBUG && (motion.yaw != lookYaw || motion.pitch != lookPitch)) {
@@ -775,13 +783,19 @@ public final class ClientBridge {
         Motion motion = moved;
         if (motion == null) return;
         moved = null;
-        local.setPos(motion.x, motion.y, motion.z);
-        local.setDeltaMovement(motion.dx, motion.dy, motion.dz);
-        local.setOnGround(motion.ground);
+        MotionLog.filling = true;
+        try {
+            local.setPos(motion.x, motion.y, motion.z);
+            local.setDeltaMovement(motion.dx, motion.dy, motion.dz);
+            local.setOnGround(motion.ground);
+        } finally {
+            MotionLog.filling = false;
+        }
     }
 
     /** The window's player step at `aiStep`, in a lockstep tick: what it left, set as vanilla's `aiStep` would, then this tick's `animateTick` picks. */
     public static void fill(LocalPlayer local, byte[] payload) {
+        MotionLog.filling = true;
         try {
             var in = new DataInputStream(new ByteArrayInputStream(payload));
             if (in.readBoolean()) {
@@ -816,6 +830,8 @@ public final class ClientBridge {
         } catch (IOException e) {
             System.err.println("Horizon: the window's player step did not read");
             e.printStackTrace();
+        } finally {
+            MotionLog.filling = false;
         }
     }
 
@@ -1286,6 +1302,8 @@ public final class ClientBridge {
         player = null;
         listener = null;
         moved = null;
+        MotionLog.watching = null;
+        MotionLog.take();
         lastScreen = null;
         lastHud = null;
         lastRecorded = null;

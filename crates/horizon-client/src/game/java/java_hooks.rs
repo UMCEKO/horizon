@@ -231,6 +231,17 @@ impl Game<'_> {
         None
     }
 
+    /// Mods' writes to the local player in the park's record, applied before the step; where vanilla took `xo/yo/zo`, when the record marked it.
+    pub(super) fn java_hook_motion_writes(&mut self, record: Option<&[u8]>) -> Option<horizon_core::geometry::Vec3> {
+        #[cfg(feature = "java-mods")]
+        return self.java_lockstep_motion_writes(record?);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = record;
+            None
+        }
+    }
+
     /// The window's player step ran, with the tick's `Input` bits: the Java tick goes on from `aiStep` with its result.
     pub(super) fn java_hook_player_end(&mut self, moved: bool, keys: u8) {
         #[cfg(feature = "java-mods")]

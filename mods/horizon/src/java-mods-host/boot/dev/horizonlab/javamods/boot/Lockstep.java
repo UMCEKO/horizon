@@ -81,9 +81,9 @@ public final class Lockstep {
         return lastFill;
     }
 
-    /** Whether the window's next tick runs in lockstep: a mod listens to a movement event of the local player's tick. */
+    /** Whether the window's next tick runs in lockstep: a mod listens to a movement event of the local player's tick, or writes a player's motion. */
     static boolean wanted() {
-        return Listeners.modListens(NeoForge.EVENT_BUS, EVENTS, HEARD, "movement events");
+        return Listeners.modListens(NeoForge.EVENT_BUS, EVENTS, HEARD, "movement events") || EntityFacts.playerMotionWriters;
     }
 
     static void handler(byte kind, Function<byte[], byte[]> run) {
