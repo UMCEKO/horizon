@@ -889,6 +889,7 @@ public final class ClientBridge {
     private static final byte DEBUG_LINES = 42;
     private static final byte HIT = 28;
     private static final byte VOLUMES = 41;
+    private static final byte FOV_BASE = 35;
 
     /** The player's sound volumes through each option's own setter, whose listener is vanilla's `refreshCategoryVolume`. */
     private static void volumes(DataInputStream in, Minecraft minecraft) throws IOException {
@@ -974,6 +975,7 @@ public final class ClientBridge {
                     }
                 }
                 case WIRE -> RemoteClient.inbound(in.readLong(), in.readNBytes(in.readInt()));
+                case FOV_BASE -> FovHook.base(in);
                 case ENTITY -> ClientEntities.FEED.feed(in.readLong(), in.readNBytes(in.readInt()));
                 case SEEN -> ClientEntities.FEED.seen(in.readLong());
                 case CHUNK -> CHUNK_EVENTS.add(new int[] {in.readInt(), in.readInt(), in.readBoolean() ? 1 : 0});

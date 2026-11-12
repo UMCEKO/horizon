@@ -242,6 +242,21 @@ impl Game<'_> {
         }
     }
 
+    /// What `tick_fov` computed: the Java camera tick's event reads it on the next lockstep tick.
+    pub(super) fn java_hook_fov_base(&self, base: f32, scoping: bool, scale: f32) {
+        #[cfg(feature = "java-mods")]
+        super::java_screens::CLIENT.with_borrow_mut(|c| c.fov_base = Some((base, scoping, scale)));
+        let _ = (base, scoping, scale);
+    }
+
+    /// The modifier the Java camera tick's event left for this tick; none outside lockstep.
+    pub(super) fn java_hook_fov_target(&self) -> Option<f32> {
+        #[cfg(feature = "java-mods")]
+        return super::java_lockstep::take_fov_target();
+        #[cfg(not(feature = "java-mods"))]
+        None
+    }
+
     /// The window's player step ran, with the tick's `Input` bits: the Java tick goes on from `aiStep` with its result.
     pub(super) fn java_hook_player_end(&mut self, moved: bool, keys: u8) {
         #[cfg(feature = "java-mods")]

@@ -12,6 +12,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.player.Player;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.neoforge.client.event.ComputeFovModifierEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.tick.PlayerTickEvent;
 
@@ -52,7 +53,44 @@ final class ClientMotion {
         return BuiltInRegistries.ITEM.getKey(player.getMainHandItem().getItem()).equals(ROCKET);
     }
 
+    private static final List<Float> fovs = new ArrayList<>();
+    private static int ticks, lastEventTick = -1, sprintTick = -1;
+    private static boolean everyTick = true, fovChecked, sprintChecked;
+
+    /** Vanilla's modifier for a sprinting player: speed 0.1 with the +30 % multiplied total, over the walking speed 0.1. */
+    private static float sprintModifier() {
+        float speed = (float) (0.1 * 1.3);
+        return (speed / 0.1f + 1.0f) / 2.0f;
+    }
+
+    private static boolean holdsLens(Player player) {
+        return BuiltInRegistries.ITEM.getKey(player.getMainHandItem().getItem()).toString().equals("horizon_java_test:lens");
+    }
+
+    private static void onFov(ComputeFovModifierEvent event) {
+        Player player = Minecraft.getInstance().player;
+        if (player == null) return;
+        float seen = event.getFovModifier();
+        if (lastEventTick >= 0 && ticks != lastEventTick + 1) everyTick = false;
+        lastEventTick = ticks;
+        if (fovs.size() < 20) fovs.add(seen);
+        if (fovs.size() == 20 && !fovChecked) {
+            fovChecked = true;
+            Checks.check("fov_event_every_tick", () -> everyTick);
+            Checks.check("fov_base_standing", () -> fovs.stream().allMatch(v -> v == 1.0f));
+        }
+        // The first changed modifier after sprinting starts comes one tick after the Post that first saw it.
+        if (sprintTick >= 0 && !sprintChecked && seen != 1.0f) {
+            sprintChecked = true;
+            int at = ticks;
+            Checks.check("fov_base_sprinting", () -> at == sprintTick + 1 && seen == sprintModifier());
+        }
+        if (holdsLens(player)) event.setNewFovModifier(0.5f);
+    }
+
     static void register() {
+        NeoForge.EVENT_BUS.addListener(ClientMotion::onFov);
+        NeoForge.EVENT_BUS.addListener((ClientTickEvent.Post event) -> ticks++);
         NeoForge.EVENT_BUS.addListener((ClientTickEvent.Pre event) -> {
             markers.clear();
             mark("ClientTick.Pre");
@@ -70,6 +108,7 @@ final class ClientMotion {
         });
         NeoForge.EVENT_BUS.addListener((PlayerTickEvent.Post event) -> {
             if (!local(event.getEntity())) return;
+            if (sprintTick < 0 && event.getEntity().isSprinting()) sprintTick = ticks;
             boolean stepped = parks("M") > m;
             mark("PlayerTick.Post");
             if (stepped && !postDone) postSees(event.getEntity());

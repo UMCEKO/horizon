@@ -37,6 +37,8 @@ use std::sync::mpsc::TryRecvError;
 #[derive(Default)]
 pub(in crate::game) struct Client {
     joined: bool,
+    /// What the window's last `tick_fov` computed: the base modifier, whether a spyglass scopes, the effect scale.
+    pub(in crate::game) fov_base: Option<(f32, bool, f32)>,
     /// What the Java client's `useItemOn` answered for the last click: 0 none, 1 passed, 2 success, 3 consumed.
     block_use: u8,
     /// Columns holding block entity models wait for the Java client's answer.
@@ -190,6 +192,8 @@ enum Input<'a> {
     Hit(&'a super::java_world_renders::OutlineHit),
     /// Each sound source's volume by its vanilla name, master first.
     Volumes(Vec<(&'static str, f32)>),
+    /// `Camera.tickFov`'s inputs: the base modifier, whether the player scopes, the effect scale.
+    FovBase(f32, bool, f32),
 }
 
 impl Input<'_> {
@@ -223,6 +227,7 @@ impl Input<'_> {
             Input::DebugLines(..) => 42,
             Input::Hit(_) => 28,
             Input::Volumes(_) => 41,
+            Input::FovBase(..) => 35,
         };
         out.0.push(kind);
         match *self {
@@ -322,6 +327,11 @@ impl Input<'_> {
                     out.float(*value);
                 }
             }
+            Input::FovBase(base, scoping, scale) => {
+                out.float(base);
+                out.bool(scoping);
+                out.float(scale);
+            }
         }
     }
 }
@@ -367,6 +377,7 @@ struct Sent {
     seen: Option<u64>,
     hit: Option<super::java_world_renders::OutlineHit>,
     volumes: Option<Vec<(&'static str, f32)>>,
+    fov_base: Option<(f32, bool, f32)>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1442,6 +1453,13 @@ impl Game<'_> {
                 Input::Volumes(volumes).write(&mut events);
                 count += 1;
             }
+            if let Some((base, scoping, scale)) = c.fov_base
+                && c.sent.fov_base != c.fov_base
+            {
+                c.sent.fov_base = c.fov_base;
+                Input::FovBase(base, scoping, scale).write(&mut events);
+                count += 1;
+            }
             let toasts = super::java_toasts::java_toasts_turns();
             if !toasts.is_empty() {
                 Input::Toasts(&toasts).write(&mut events);
@@ -1641,7 +1659,14 @@ mod tests {
         assert_eq!(super::read_music(&mut In(&[1, 0, 0])), None);
     }
 
-        #[test]
+    #[test]
+    fn fov_base_is_kind_35_then_the_float_the_bool_and_the_float() {
+        let mut out = Out::default();
+        super::Input::FovBase(1.0, true, 0.5).write(&mut out);
+        assert_eq!(out.0, [35, 0x3f, 0x80, 0, 0, 1, 0x3f, 0, 0, 0]);
+    }
+
+    #[test]
     fn the_font_table_ends_at_the_last_code_point_java_cannot_guess() {
         let mut table = vec![6.0; 0x11_0000];
         table[0x41] = 5.0;
