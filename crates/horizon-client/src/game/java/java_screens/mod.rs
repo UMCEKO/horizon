@@ -17,7 +17,7 @@ use self::hud::*;
 /// The Java client's liveness, where `super::java_screens::live::` paths expect it.
 pub(in crate::game) mod live {
     pub(in crate::game) use super::{
-        java_client_running, java_hud_layer_cancelled, java_shape_generation,
+        java_client_joined, java_client_running, java_hud_layer_cancelled, java_shape_generation,
     };
 }
 
@@ -671,6 +671,11 @@ impl Worker {
     }
 }
 
+/// Whether the Java client has joined: its chat and commands can run.
+pub(in crate::game) fn java_client_joined() -> bool {
+    CLIENT.with_borrow(|c| c.joined)
+}
+
 /// Whether a background client tick is running, during which the window doesn't wait on Java.
 pub(in crate::game) fn java_client_running() -> bool {
     RUNNING.load(std::sync::atomic::Ordering::Acquire) > 0
@@ -751,6 +756,7 @@ impl Game<'_> {
             log::info!("Horizon: client tick status lockstep {lockstep}");
         }
         super::java_lockstep::set_lockstep_next(lockstep);
+        let chat = super::java_chat::read_lines(reply)?;
         super::java_world_renders::java_world_status(
             world.as_deref(),
             world_animating,
@@ -784,6 +790,7 @@ impl Game<'_> {
         if tabs_ready {
             self.java_creative_tabs_built();
         }
+        self.java_chat_lines(chat);
         if open && self.screen != Screen::Java {
             self.screen = Screen::Java;
             self.capture(false);

@@ -219,6 +219,17 @@ pub(super) fn with_game<R>(
     })
 }
 
+/// Runs `f` on the game behind a client hook's host, lent as a Java call lends it: only `Game` gives a host a backend.
+pub(super) fn with_client_game<R>(
+    host: &mut dyn mod_api::ClientHost,
+    f: impl FnOnce(&mut Game<'static>) -> R,
+) -> Option<R> {
+    let backend = mod_api::client_backend_mut_of(host)?;
+    horizon_java_host::bridge::with_active(backend, || {
+        horizon_java_host::bridge::on_active::<Game<'static>, _>(f)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
