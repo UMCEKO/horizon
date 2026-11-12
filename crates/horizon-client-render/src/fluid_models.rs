@@ -37,6 +37,29 @@ pub fn set_world_looks<'a>(looks: impl IntoIterator<Item = &'a FluidLook>) {
         .collect();
 }
 
+/// The GUI atlas name of a screen overlay's texture id, as the atlas names a pack's textures.
+pub fn screen_overlay_sprite(texture: &str) -> String {
+    texture
+        .strip_prefix("minecraft:")
+        .unwrap_or(texture)
+        .to_owned()
+}
+
+/// The texture files (`assets/<ns>/textures/<path>.png`) of the world fluids' screen overlays.
+pub fn screen_overlay_files() -> Vec<String> {
+    let looks = LOOKS.read().unwrap_or_else(|e| e.into_inner());
+    let mut files: Vec<String> = looks
+        .iter()
+        .filter_map(|look| {
+            let (namespace, path) = look.screen_overlay.as_deref()?.split_once(':')?;
+            Some(format!("assets/{namespace}/textures/{path}.png"))
+        })
+        .collect();
+    files.sort();
+    files.dedup();
+    files
+}
+
 /// Replaces the models recollected before each resource bake, including reloads.
 pub fn register(models: Vec<FluidModel>) {
     *REGISTERED.write().unwrap_or_else(|e| e.into_inner()) = models;
@@ -108,6 +131,7 @@ mod tests {
             id: id.into(),
             sprite: sprite.map(Into::into),
             tint,
+            screen_overlay: None,
             world: Some(WorldFluid::default()),
         }
     }

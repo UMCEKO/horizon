@@ -1770,6 +1770,14 @@ fn fluid_declaration(
         {
             v["tint"] = json!(tint);
         }
+        let texture = |path: &str| {
+            let (ns, rest) = path.split_once(':')?;
+            let name = rest.strip_prefix("textures/")?.strip_suffix(".png")?;
+            Some(format!("{ns}:{name}"))
+        };
+        if let Some(overlay) = model.overlay_texture.as_deref().and_then(texture) {
+            v["screen_overlay"] = json!(overlay);
+        }
     }
     if let Some(bucket) = bucket {
         // Java's tick delay, drop-off and slope distance are not in the facts: water's defaults stand.
@@ -3774,6 +3782,7 @@ mod tests {
         })).unwrap();
         let baked: BakedModels = serde_json::from_value(json!({"version": 2, "blocks": {},
             "fluids": {"gem:blood": {"layer": "TRANSLUCENT", "still": "gem:block/blood_still", "flowing": "gem:block/blood_flow",
+                "overlay_texture": "gem:textures/misc/under_blood.png",
                 "tint": {"kind": "constant", "states": {"amount=8,falling=false": 4286643968u32}}}}})).unwrap();
         let out = dir.join("work/mods/gem");
         let pack = Pack {
@@ -3798,6 +3807,7 @@ mod tests {
         assert_eq!(
             file,
             json!({"sprite": "gem:block/blood_still", "tint": 0xFF80FF00u32,
+            "screen_overlay": "gem:misc/under_blood",
             "world": {"source_conversion": true, "bucket": true}})
         );
         assert!(read("fluid", "flowing_blood").is_err());

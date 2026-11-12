@@ -536,6 +536,7 @@ struct CreativeTabFile {
 struct FluidFile {
     sprite: Option<String>,
     tint: Option<u32>,
+    screen_overlay: Option<String>,
     world: Option<WorldFluid>,
 }
 
@@ -595,6 +596,8 @@ pub struct FluidLook {
     pub sprite: Option<String>,
     /// `0xAARRGGBB`.
     pub tint: Option<u32>,
+    /// A GUI texture id (`namespace:path` of `textures/<path>.png`) drawn over the view with the eyes in it.
+    pub screen_overlay: Option<String>,
     /// How it exists in the world; none for a fluid only a tank holds.
     pub world: Option<WorldFluid>,
 }
@@ -1405,10 +1408,20 @@ impl Content {
             if let Some(world) = &file.world {
                 world.check().map_err(|e| format!("{name}: world: {e}"))?;
             }
+            if file
+                .screen_overlay
+                .as_deref()
+                .is_some_and(|s| !namespaced_id(s))
+            {
+                return Err(format!(
+                    "{name}: screen_overlay is a texture id (namespace:path)"
+                ));
+            }
             let look = FluidLook {
                 id: fluid,
                 sprite: file.sprite,
                 tint: file.tint,
+                screen_overlay: file.screen_overlay,
                 world: file.world,
             };
             if self.fluids.iter().any(|known| {
@@ -3451,12 +3464,14 @@ capabilities = ["registries"]
                     id: "ruby:bare".into(),
                     sprite: None,
                     tint: None,
+                    screen_overlay: None,
                     world: None,
                 },
                 FluidLook {
                     id: "ruby:steam".into(),
                     sprite: Some("ruby:gui/fluids/steam".into()),
                     tint: Some(4291343520),
+                    screen_overlay: None,
                     world: None,
                 },
             ]
