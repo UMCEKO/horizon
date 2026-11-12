@@ -2,15 +2,16 @@
 // java-listener-family
 //! `PlaySoundEvent` from `play_sound`: Java mods change or drop a sound native is about to play.
 
-use super::java_listener::{Family, post_client};
+use super::java_listener::{Family, Subscriptions, post_client};
 use horizon_java_host::wire::{In, Out};
-use mod_api::{HookId, LoopContext, PlaySoundEvent, SoundAttenuation, SoundPlay, SoundSource};
+use mod_api::{
+    HookId, Listener, LoopContext, PlaySoundEvent, SoundAttenuation, SoundPlay, SoundSource,
+};
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
-use std::sync::OnceLock;
 
 const HOOKS: &[HookId] = &[HookId::PlaySound];
-static SUBSCRIBED: OnceLock<Vec<Option<HookId>>> = OnceLock::new();
+static SUBSCRIBED: Subscriptions = Subscriptions::new();
 
 /// What the Java client's answer says of a sound: `NativeSounds.java`'s bytes.
 const CANCEL: u8 = 0;
@@ -53,21 +54,23 @@ struct Sounds;
 
 impl mod_api::Hooks for Sounds {
     fn subscribed(&self) -> &'static [Option<HookId>] {
-        super::java_listener::subscribed(HOOKS, &SUBSCRIBED)
+        super::java_listener::subscribed(HOOKS, &SUBSCRIBED, false)
+    }
+
+    fn listeners(&self) -> &'static [Listener] {
+        super::java_listener::listeners(HOOKS, &SUBSCRIBED, false)
     }
 
     fn play_sound(&self, _: &dyn LoopContext, event: &mut PlaySoundEvent<'_>) {
         // Vanilla posts once per `SoundEngine.play`, not when a playing sound's volume or pitch refresh.
-        if !event.starting
-            || is_external(event.instance)
-            || !super::java_listener::listens(HookId::PlaySound)
-        {
+        if !event.starting || is_external(event.instance) {
             return;
         }
         let Some(sound) = event.sound.as_ref() else {
             return;
         };
         let answer = post_client(
+            HookId::PlaySound,
             "PlaySoundEvent",
             |out| write_sound(out, sound),
             |reply| read_answer(reply, sound),

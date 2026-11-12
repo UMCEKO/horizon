@@ -469,15 +469,17 @@ impl Game<'_> {
         using.flatten()
     }
 
-    /// A server event posted on the acting player's view (`post_event`): whether a listener cancelled it, and what its site reads back.
+    /// A server event posted on the acting player's view (`post_event`), cancelled from the start when `arrives_cancelled`: whether it ends cancelled, and what its site reads back.
     pub(super) fn java_post_player_event(
         &mut self,
         event: &str,
+        arrives_cancelled: bool,
         fields: Vec<u8>,
     ) -> Option<(bool, Vec<u8>)> {
         self.java_bind_states();
         let mut head = Out::default();
         head.text(event);
+        head.bool(arrives_cancelled);
         let mut request = head.0;
         request.extend(self.java_use_request()?);
         request.extend(fields);
@@ -492,17 +494,19 @@ impl Game<'_> {
         applied
     }
 
-    /// A server event posted on this level with no acting player (`post_level_event`): `fields` follow its name.
+    /// A server event posted on this level with no acting player (`post_level_event`), cancelled from the start when `arrives_cancelled`: `fields` follow its name.
     #[allow(dead_code)] // The level events' sites post through it (W13 SPEC-3 onward).
     pub(super) fn java_post_level_event(
         &mut self,
         event: &str,
+        arrives_cancelled: bool,
         fields: impl FnOnce(&mut Out),
     ) -> Option<(bool, Vec<u8>)> {
         let posted = self.java_level_reply(
             "post_level_event",
             |out| {
                 out.text(event);
+                out.bool(arrives_cancelled);
                 fields(out);
             },
             java_read_posted,

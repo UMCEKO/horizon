@@ -88,9 +88,10 @@ def build(java_only=False):
             sources += [str(SOURCES / 'parity' / 'scan' / 'dev' / 'horizonlab' / 'javamods' / 'parity' / 'MixinScanner.java')]
         subprocess.run(['javac', '--release', '25', '-proc:none', '-nowarn', '-cp', f'{cp}:{extra}', '-d', str(classes), *sources], check=True)
         jar_args = ['jar', 'cf', str(jar), '-C', str(classes), '.']
-        if name == 'plugin':
-            manifest = JARS / 'plugin.manifest'
-            manifest.write_text('FMLModType: LIBRARY\n')
+        if name in ('plugin', 'host'):
+            manifest = JARS / f'{name}.manifest'
+            # The host jar is also the JVM's `-javaagent` (`BusAgent`): Rust starts every JVM with it.
+            manifest.write_text('FMLModType: LIBRARY\n' if name == 'plugin' else 'Premain-Class: dev.horizonlab.javamods.host.BusAgent\n')
             jar_args = ['jar', 'cfm', str(jar), str(manifest), '-C', str(classes), '.']
         if (SOURCES / name / 'res').exists():
             jar_args += ['-C', str(SOURCES / name / 'res'), '.']
@@ -119,7 +120,7 @@ def unit():
     for source in sources:
         if source.stem.endswith('Check'):
             name = '.'.join(source.relative_to(SOURCES / 'unit').with_suffix('').parts)
-            failed += subprocess.run(['java', '-cp', f'{cp}:{built}:{classes}', name]).returncode != 0
+            failed += subprocess.run(['java', f'-javaagent:{HOST_JAR}', '-cp', f'{cp}:{built}:{classes}', name]).returncode != 0
     sys.exit(1 if failed else 0)
 
 
