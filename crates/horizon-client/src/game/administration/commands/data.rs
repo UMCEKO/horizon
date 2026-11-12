@@ -355,6 +355,35 @@ impl Game<'_> {
                 }
                 tag
             }
+            Target::Potion(id) => {
+                let uuid = self.uuid_for(id);
+                let t = self.potions.thrown.iter().find(|t| t.id == id)?;
+                let owner = t
+                    .thrower
+                    .filter(|_| t.guest.is_none())
+                    .and_then(|who| self.save_who_uuid(who));
+                entity_nbt::thrown_potion_to_nbt(
+                    &entity_nbt::ThrownPotionSave {
+                        item: &t.stack,
+                        position: t.position,
+                        motion: t.velocity,
+                        owner,
+                        left_owner: t.left_owner,
+                        has_been_shot: t.age > 0,
+                    },
+                    uuid,
+                    self.persist.raw.get(&id),
+                )
+            }
+            Target::Eye(id) => {
+                let uuid = self.uuid_for(id);
+                let e = self.end.eyes.iter().find(|e| e.id == id)?;
+                let at =
+                    horizon_core::geometry::Vec3::new(e.position.x, e.position.y, e.position.z);
+                let motion =
+                    horizon_core::geometry::Vec3::new(e.velocity.x, e.velocity.y, e.velocity.z);
+                entity_nbt::eye_of_ender_to_nbt(at, motion, uuid, self.persist.raw.get(&id))
+            }
             Target::Trident(id) => {
                 let uuid = self.uuid_for(id);
                 let t = self.tridents.iter().find(|t| t.id == id)?;
@@ -894,6 +923,8 @@ impl Game<'_> {
             | Target::Dragon(id)
             | Target::Other(id)
             | Target::Fangs(id)
+            | Target::Potion(id)
+            | Target::Eye(id)
             | Target::Cloud(id) => Some(self.persist.raw.entry(id).or_insert_with(empty)),
             // `tags_of` reads these two from the same map and a falling
             // block from its saved compound; without these arms `/tag`
@@ -1661,6 +1692,10 @@ impl Game<'_> {
             Some(Target::Trident(id))
         } else if self.ominous_spawners.iter().any(|s| s.id == id) {
             Some(Target::Spawner(id))
+        } else if self.potions.thrown.iter().any(|t| t.id == id) {
+            Some(Target::Potion(id))
+        } else if self.end.eyes.iter().any(|e| e.id == id) {
+            Some(Target::Eye(id))
         } else if self.creatures.projectiles.iter().any(|p| p.id == id) {
             Some(Target::Projectile(id))
         } else {

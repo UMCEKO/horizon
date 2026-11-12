@@ -55,31 +55,37 @@ impl CloudSettings {
 
 /// A thrown splash or lingering potion in flight.
 #[derive(Clone, Debug)]
-pub(super) struct ThrownPotion {
-    /// Its entity id once a server's clients track it (0 until then).
-    id: u32,
-    stack: ItemStack,
+pub(in crate::game) struct ThrownPotion {
+    /// Entity-owned registration metadata; content clones are detached.
+    pub(in crate::game) attachment_lifetime: horizon_mod_runtime::attachments::AttachmentLifetime,
+    /// When it joined its list (`horizon_client::join_seq`); set by the list.
+    pub(in crate::game) join: horizon_client::join_seq::JoinSeq,
+    /// Its entity id: from the entity counter on the server, the server's on a client.
+    pub(in crate::game) id: u32,
+    pub(in crate::game) stack: ItemStack,
     /// The position before the last tick, for drawing between ticks.
-    previous: Vec3,
-    position: Vec3,
-    velocity: Vec3,
-    age: u32,
+    pub(in crate::game) previous: Vec3,
+    pub(in crate::game) position: Vec3,
+    pub(in crate::game) velocity: Vec3,
+    pub(in crate::game) age: u32,
     /// `Projectile.getOwner`'s display name: the player who threw it (none
     /// for a dispenser's).
     owner: Option<Text>,
     /// `Projectile.getOwner` as a target: the thrower (`Who::Player`, a
     /// guest's with `guest` set), none for a dispenser's or a server's.
-    thrower: Option<Who>,
+    pub(in crate::game) thrower: Option<Who>,
     /// On a server, the guest (by connection) who threw it.
-    guest: Option<u32>,
+    pub(in crate::game) guest: Option<u32>,
     /// `Projectile.leftOwner`: until then it can't hit its thrower.
-    left_owner: bool,
+    pub(in crate::game) left_owner: bool,
     /// `Projectile.lastDeflectedBy`: a mob deflects it once in a row.
     last_deflected_by: Option<u32>,
     /// `Entity.random`: `ProjectileDeflection.REVERSE` draws from the
     /// projectile's own source, not the level's.
     random: LegacyRandom,
 }
+horizon_client::impl_joined!(ThrownPotion);
+horizon_mod_runtime::impl_attachment_lifetime!(ThrownPotion);
 /// The player (not one of `skip`, the thrower and who rides with them before
 /// it has left them) whose box, grown by `margin` (`ProjectileUtil.computeMargin`),
 /// holds `p` (`Projectile.canHitEntity`).
@@ -581,6 +587,8 @@ impl Game<'_> {
     ) {
         let id = self.take_entity_id();
         self.potions.thrown.push(ThrownPotion {
+            attachment_lifetime: Default::default(),
+            join: Default::default(),
             id,
             stack,
             previous: position,
@@ -608,7 +616,7 @@ pub(super) struct BodyPotions {
 #[derive(Default)]
 pub(super) struct PotionState {
     pub(super) effects: PlayerEffects,
-    thrown: Vec<ThrownPotion>,
+    pub(in crate::game) thrown: horizon_client::join_seq::JoinList<ThrownPotion>,
     /// The area effect clouds a server tracks (game/network/remote_projectiles.rs).
     pub(super) clouds: Vec<super::remote_projectiles::RemoteCloud>,
     applied: Vec<(&'static str, &'static str, f64, &'static str)>,
@@ -639,16 +647,12 @@ impl PotionState {
     pub(super) fn clear_thrown(&mut self) {
         self.thrown.clear();
     }
-    /// Their entity ids, for a server to number them.
-    pub(super) fn thrown_ids(&mut self) -> impl Iterator<Item = &mut u32> {
-        self.thrown.iter_mut().map(|t| &mut t.id)
-    }
     /// The numbered ones as a server's clients track them: (id, entity
     /// type, item, position, motion).
     pub(super) fn thrown_tracked(
         &self,
     ) -> impl Iterator<Item = (u32, &'static str, &ItemStack, Vec3, Vec3)> {
-        self.thrown.iter().filter(|t| t.id != 0).map(|t| {
+        self.thrown.iter().map(|t| {
             (
                 t.id,
                 thrown_kind(&t.stack),
@@ -667,6 +671,8 @@ impl PotionState {
             _ => "minecraft:splash_potion",
         };
         self.thrown.push(ThrownPotion {
+            attachment_lifetime: Default::default(),
+            join: Default::default(),
             id,
             stack: ItemStack::new(item, 1),
             previous: at,
@@ -1721,7 +1727,8 @@ impl Game<'_> {
     /// (`Projectile.leftOwner`, checked before the move like `Projectile.tick`),
     /// nor anything else in their vehicle tree.
     fn tick_thrown_potions(&mut self) {
-        let mut thrown = std::mem::take(&mut self.potions.thrown);
+        let _save_lease = horizon_client::join_seq::visibility::PassLease::enter();
+        let mut thrown = self.potions.thrown.lift();
         let players = if thrown.is_empty() {
             Vec::new()
         } else {
@@ -1844,7 +1851,10 @@ impl Game<'_> {
             self.entity_powder_snow_particles(t.previous, next, bounds, t.velocity, false);
             t.age < 1200 && t.position.y > -128.0
         });
-        self.potions.thrown = thrown;
+        self.potions.thrown.restore(
+            thrown,
+            horizon_client::join_seq::RestoreOrder::SurvivorsFirst,
+        );
         for id in deflected {
             if let Some(index) = self.mobs.iter().position(|m| m.id == id) {
                 self.play_mob_bound_sound(
@@ -2193,8 +2203,9 @@ impl Game<'_> {
     /// by itself between the server's updates and stops at a block; only
     /// the server breaks it.
     pub(super) fn step_remote_thrown(&mut self) {
-        let mut thrown = std::mem::take(&mut self.potions.thrown);
-        for t in &mut thrown {
+        let _save_lease = horizon_client::join_seq::visibility::PassLease::enter();
+        let mut thrown = self.potions.thrown.lift();
+        for t in thrown.iter_mut() {
             t.previous = t.position;
             t.age += 1;
             self.thrown_potion_motion(t);
@@ -2214,7 +2225,10 @@ impl Game<'_> {
                 t.position = next;
             }
         }
-        self.potions.thrown = thrown;
+        self.potions.thrown.restore(
+            thrown,
+            horizon_client::join_seq::RestoreOrder::SurvivorsFirst,
+        );
     }
     /// `ThrownItemRenderer` for thrown splash and lingering potions and
     /// experience bottles: the item (GROUND) facing the camera at scale 1,

@@ -129,7 +129,7 @@ pub(super) struct EndState {
     /// The Overworld generator, for stronghold positions (ServerLevel.findNearestMapStructure).
     locator: std::sync::Mutex<Option<Arc<VanillaTerrain>>>,
     /// Thrown eyes of ender in flight.
-    eyes: Vec<EyeOfEnder>,
+    pub(in crate::game) eyes: horizon_client::join_seq::JoinList<EyeOfEnder>,
     flash: EndFlash,
 }
 
@@ -195,15 +195,10 @@ impl EndState {
 }
 
 impl EndState {
-    /// The eyes' entity ids, for a server to number them.
-    pub(super) fn eye_ids(&mut self) -> impl Iterator<Item = &mut u32> {
-        self.eyes.iter_mut().map(|e| &mut e.id)
-    }
     /// The numbered eyes as a server's clients track them: (id, position, motion).
     pub(super) fn eyes_tracked(&self) -> impl Iterator<Item = (u32, [f64; 3], [f64; 3])> {
         self.eyes
             .iter()
-            .filter(|e| e.id != 0)
             .map(|e| (e.id, e.position.to_array(), e.velocity.to_array()))
     }
     /// `handleAddEntity` for an eye of ender on a server's client: it flies
@@ -212,6 +207,8 @@ impl EndState {
         self.eyes.retain(|e| e.id != id);
         let at = glam::DVec3::from_array(at);
         self.eyes.push(EyeOfEnder {
+            attachment_lifetime: Default::default(),
+            join: Default::default(),
             id,
             position: at,
             previous: at,
@@ -228,7 +225,7 @@ impl EndState {
     /// `EyeOfEnder.tick` on a server's client: it moves by its last known
     /// motion; only the server steers it.
     pub(super) fn step_remote_eyes(&mut self) {
-        for e in &mut self.eyes {
+        for e in self.eyes.iter_mut() {
             e.previous = e.position;
             e.life += 1;
             e.position += e.velocity;
@@ -334,16 +331,22 @@ impl Game<'_> {
 }
 
 /// The EyeOfEnder entity.
-struct EyeOfEnder {
-    /// Its entity id once a server's clients track it (0 until then).
-    id: u32,
-    position: glam::DVec3,
-    previous: glam::DVec3,
-    velocity: glam::DVec3,
+pub(in crate::game) struct EyeOfEnder {
+    /// Entity-owned registration metadata; content clones are detached.
+    pub(in crate::game) attachment_lifetime: horizon_mod_runtime::attachments::AttachmentLifetime,
+    /// When it joined its list (`horizon_client::join_seq`); set by the list.
+    pub(in crate::game) join: horizon_client::join_seq::JoinSeq,
+    /// Its entity id: from the entity counter on the server, the server's on a client.
+    pub(in crate::game) id: u32,
+    pub(in crate::game) position: glam::DVec3,
+    pub(in crate::game) previous: glam::DVec3,
+    pub(in crate::game) velocity: glam::DVec3,
     target: glam::DVec3,
     life: u32,
     survive: bool,
 }
+horizon_client::impl_joined!(EyeOfEnder);
+horizon_mod_runtime::impl_attachment_lifetime!(EyeOfEnder);
 impl EyeOfEnder {
     /// EyeOfEnder.updateDeltaMovement.
     fn update_delta(old: glam::DVec3, position: glam::DVec3, target: glam::DVec3) -> glam::DVec3 {
@@ -1320,6 +1323,8 @@ impl Game<'_> {
         );
         let id = self.take_entity_id();
         self.end.eyes.push(EyeOfEnder {
+            attachment_lifetime: Default::default(),
+            join: Default::default(),
             id,
             position: start,
             previous: start,
@@ -1346,7 +1351,7 @@ impl Game<'_> {
     /// EyeOfEnder.tick: fly, then drop (4 in 5) or shatter after 80 ticks.
     fn tick_eyes(&mut self) {
         let _save_lease = horizon_client::join_seq::visibility::PassLease::enter();
-        let mut eyes = std::mem::take(&mut self.end.eyes);
+        let mut eyes = self.end.eyes.lift();
         let mut shattered = Vec::new();
         eyes.retain_mut(|eye| {
             eye.previous = eye.position;
@@ -1376,7 +1381,9 @@ impl Game<'_> {
             }
             false
         });
-        self.end.eyes = eyes;
+        self.end
+            .eyes
+            .restore(eyes, horizon_client::join_seq::RestoreOrder::SurvivorsFirst);
         for pos in shattered {
             self.level_event_at(2003, pos, 0);
         }

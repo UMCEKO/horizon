@@ -603,6 +603,8 @@ impl Game<'_> {
             | Target::Trident(id)
             | Target::Spawner(id)
             | Target::Cloud(id)
+            | Target::Potion(id)
+            | Target::Eye(id)
             | Target::DragonPart(id)
             | Target::Cushion(id)
             | Target::Hook(id)
