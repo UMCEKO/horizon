@@ -15,7 +15,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import com.mojang.brigadier.StringReader;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.commands.Commands;
+import net.minecraft.commands.arguments.ParticleArgument;
+import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.Holder;
@@ -170,6 +174,7 @@ public final class GameBridge {
         Crossing.game("players_removed", GameBridge::playersRemoved);
         Crossing.game("server_tick", GameBridge::serverTick);
         Crossing.game("level_tick", GameBridge::levelTick);
+        Crossing.game("server_particles", GameBridge::serverParticles);
         Crossing.game("use_item", (in, out) -> use(in, out, 0));
         Crossing.game("use_item_on", (in, out) -> use(in, out, 1));
         Crossing.game("use_tick", (in, out) -> use(in, out, 8));
@@ -781,6 +786,34 @@ public final class GameBridge {
             safely("sending block entities' shapes", () -> Clients.sendShapes(level));
         }
         writeEffects(out);
+    }
+
+    /** `ParticleCommand.sendParticles` for players Horizon chose: the options by vanilla's `ParticleArgument`, each sent through the per-player `sendParticles`. */
+    private static void serverParticles(Crossing.In in, Crossing.Out out) throws Exception {
+        var level = levelNamed(text(in));
+        var spec = text(in);
+        double x = in.readDouble(), y = in.readDouble(), z = in.readDouble();
+        float dx = in.readFloat(), dy = in.readFloat(), dz = in.readFloat();
+        float speed = in.readFloat();
+        int count = in.readInt();
+        boolean force = in.readBoolean();
+        int viewers = in.readInt();
+        var uuids = new UUID[viewers];
+        for (int i = 0; i < viewers; i++) uuids[i] = new UUID(in.readLong(), in.readLong());
+        ParticleOptions options;
+        try {
+            options = ParticleArgument.readParticle(new StringReader(spec), level.registryAccess());
+        } catch (CommandSyntaxException e) {
+            out.writeInt(-1);
+            text(out, e.getMessage());
+            return;
+        }
+        int reached = 0;
+        for (var uuid : uuids) {
+            ServerPlayer player = level.getServer().getPlayerList().getPlayer(uuid);
+            if (player != null && level.sendParticles(player, options, force, false, x, y, z, count, dx, dy, dz, speed)) reached++;
+        }
+        out.writeInt(reached);
     }
 
     /** A player connected from another process with a Java client of its own: its login reaches it over its connection. */
