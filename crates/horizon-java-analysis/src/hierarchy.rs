@@ -4,7 +4,10 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
+use crate::class::is_vanilla;
 use crate::libraries::LibClass;
+
+const ACC_INTERFACE: u16 = 0x200;
 
 const CANCELLABLE: &str = "net/neoforged/bus/api/ICancellableEvent";
 const MOD_BUS_EVENT: &str = "net/neoforged/fml/event/IModBusEvent";
@@ -21,6 +24,7 @@ pub struct Hierarchy {
     pub libs: BTreeMap<String, LibClass>,
     pub jars: Vec<PathBuf>,
     heads: HashMap<String, (Option<String>, Vec<String>)>,
+    mod_interfaces: HashMap<String, bool>,
     memo: RefCell<HashMap<String, Vec<String>>>,
 }
 
@@ -35,13 +39,29 @@ impl Hierarchy {
             libs,
             jars: Vec::new(),
             heads,
+            mod_interfaces: HashMap::new(),
             memo: RefCell::new(HashMap::new()),
         }
     }
 
     /// Port of mod_replaces.Hierarchy.add.
-    pub fn add(&mut self, name: &str, sup: Option<String>, ifaces: Vec<String>) {
+    pub fn add(
+        &mut self,
+        name: &str,
+        sup: Option<String>,
+        ifaces: Vec<String>,
+        access: Option<u16>,
+    ) {
         self.heads.insert(name.to_owned(), (sup, ifaces));
+        if let Some(access) = access {
+            self.mod_interfaces
+                .insert(name.to_owned(), access & ACC_INTERFACE != 0);
+        }
+    }
+
+    /// Port of mod_replaces.Hierarchy.mod_class.
+    pub fn mod_class(&self, name: &str) -> bool {
+        self.mod_interfaces.get(name) == Some(&false) && !is_vanilla(name)
     }
 
     /// The names of every class the hierarchy knows (Python's `heads` keys), in no order.
@@ -169,11 +189,17 @@ mod tests {
     #[test]
     fn added_classes_extend_the_chain_and_event_facts_follow() {
         let mut h = sample();
-        h.add("Ev", Some("Base".to_owned()), vec![]);
-        h.add("Base", None, vec![CANCELLABLE.to_owned()]);
+        h.add("Ev", Some("Base".to_owned()), vec![], None);
+        h.add("Base", None, vec![CANCELLABLE.to_owned()], Some(0x201));
         let facts = h.event_facts("Ev");
         assert_eq!(facts.cancellable, Some(true));
         assert_eq!(facts.bus, Some("game"));
         assert_eq!(h.event_facts("Nope").cancellable, None);
+        h.add("Impl", None, vec![], Some(0x1));
+        assert!(h.mod_class("Impl"));
+        assert!(!h.mod_class("Base"));
+        assert!(!h.mod_class("Ev"));
+        h.add("net/minecraft/X", None, vec![], Some(0x1));
+        assert!(!h.mod_class("net/minecraft/X"));
     }
 }
