@@ -365,6 +365,11 @@ impl Levels {
             .map(|(_, level)| &mut level.world)
     }
 
+    /// The save of the level not in place whose dimension is `dimension`.
+    pub(super) fn parked_save_of(&self, dimension: &str) -> Option<&Arc<SaveDir>> {
+        self.parked_of(dimension).map(|level| &level.save)
+    }
+
     /// The streaming of the level not in place whose dimension is `dimension`.
     pub(super) fn parked_streaming_of(&self, dimension: &str) -> Option<&Streaming> {
         self.parked
