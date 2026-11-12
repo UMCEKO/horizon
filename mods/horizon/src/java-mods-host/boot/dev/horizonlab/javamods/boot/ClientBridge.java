@@ -256,6 +256,8 @@ public final class ClientBridge {
     public static void send(Packet<?> packet) {
         if (ChatSend.capture(packet)) return;
         if (player == null || sentByWindow(packet)) return;
+        // Native already sent this click; its replay only keeps the Java menu right.
+        if (Shells.echo && packet instanceof net.minecraft.network.protocol.game.ServerboundContainerClickPacket) return;
         if (RemoteClient.active()) RemoteClient.outbound(Wire.toServer(packet));
         else Clients.toServer(player, packet);
     }
@@ -828,6 +830,9 @@ public final class ClientBridge {
     private static final byte ENTITY = 17;
     private static final byte SEEN = 18;
     private static final byte SHELL_CREATIVE = 19;
+    private static final byte PACKET = 20;
+    private static final byte MENU_CLICK = 21;
+    private static final byte SHELL_BOOK = 22;
     private static final byte TOASTS = 26;
     private static final byte NOTIFICATION_TIME = 27;
     private static final byte MUSIC = 40;
@@ -878,6 +883,9 @@ public final class ClientBridge {
                 case BLOCK_EFFECT -> BlockEffects.run(in);
                 case SHELL_LAYOUT -> Shells.layout(new int[] {in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readInt()});
                 case SHELL_CREATIVE -> Shells.creative(text(in), in.readInt(), in.readInt(), in.readNBytes(in.readInt()));
+                case PACKET -> forward(in.readNBytes(in.readInt()));
+                case MENU_CLICK -> menuClick(in.readInt(), in.readInt(), in.readInt(), in.readInt());
+                case SHELL_BOOK -> Shells.book(in.readBoolean());
                 case FOCUS -> set(Window.class, minecraft.getWindow(), "focused", in.readBoolean());
                 case DROP -> {
                     boolean all = in.readBoolean();
@@ -1002,10 +1010,46 @@ public final class ClientBridge {
         }
     }
 
+    /** The window's stand-in for a screen native shows. */
+    public static void standIn() {
+        Minecraft.getInstance().gui.setScreen(new NativeScreen(false));
+    }
+
     /** The screen a Java mod could see: the window's own are stand-ins, not its screens. */
     private static Screen javaScreen() {
         Screen screen = Minecraft.getInstance().gui.screen();
         return screen instanceof NativeScreen || Shells.is(screen) ? null : screen;
+    }
+
+    /** A play packet of the window's server, handled as the client's connection would: native forwards the menu ones when a mod needs the Java client's copy of the menu. */
+    @SuppressWarnings("unchecked")
+    private static void forward(byte[] bytes) {
+        if (listener == null) return;
+        Packet<?> packet = null;
+        Shells.forwarding = true;
+        try {
+            packet = Wire.forwarded(Clients.registries, bytes);
+            ((Packet<PacketListener>) packet).handle(listener);
+        } catch (RunningOnDifferentThreadException e) {
+            // Queued on the client's loop; its tasks run with the tick.
+        } catch (Throwable t) {
+            System.err.println("Horizon: a forwarded " + (packet == null ? "packet" : packet.getClass().getSimpleName()) + " failed");
+            t.printStackTrace();
+        } finally {
+            Shells.forwarding = false;
+        }
+    }
+
+    /** `MultiPlayerGameMode.handleContainerInput` for a click native made, so the Java menu follows and a patch of the method sees it. */
+    private static void menuClick(int container, int slot, int button, int input) {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.player == null || minecraft.gameMode == null || minecraft.player.containerMenu.containerId != container) return;
+        Shells.echo = true;
+        try {
+            minecraft.gameMode.handleContainerInput(container, slot, button, net.minecraft.world.inventory.ContainerInput.values()[input], minecraft.player);
+        } finally {
+            Shells.echo = false;
+        }
     }
 
     /** A screen of the window's own opened over the world or closed, as `Gui.setScreen` does for one of vanilla's. */
@@ -1018,7 +1062,11 @@ public final class ClientBridge {
             if (Shells.current == null && !replaced) minecraft.gui.setScreen(new NativeScreen(pauses));
         } else {
             Shells.close(minecraft);
-            if (minecraft.gui.screen() instanceof NativeScreen) minecraft.gui.setScreen(null);
+            if (minecraft.gui.screen() instanceof NativeScreen) {
+                // A forwarded menu native closed: vanilla's `clientSideCloseContainer` puts the inventory menu back.
+                if (minecraft.player != null && minecraft.player.containerMenu != minecraft.player.inventoryMenu) minecraft.player.clientSideCloseContainer();
+                else minecraft.gui.setScreen(null);
+            }
         }
         // `runTick` sets it from the open screen: the window's pause screen pauses this client.
         set(Minecraft.class, minecraft, "pause", open && pauses);
@@ -1132,6 +1180,7 @@ public final class ClientBridge {
         out.writeInt(Shells.is(Minecraft.getInstance().gui.screen()) ? Shells.kind : 0);
         Shells.write(out, shellSegments, shellChanged, true);
         out.writeBoolean(Shells.animating);
+        out.writeBoolean(Shells.wantedNow());
         Toasts.writeStatus(out);
         out.writeInt(Environments.bits);
         out.writeBoolean(Lockstep.wanted());

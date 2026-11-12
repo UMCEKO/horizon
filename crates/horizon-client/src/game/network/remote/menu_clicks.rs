@@ -31,6 +31,7 @@ impl Game<'_> {
                 changed,
                 carried,
             }));
+            self.java_menu_click(container, i32::from(slot), button, input_ordinal(input));
         }
     }
     /// A click outside a server's window (slot -999): predicted like
@@ -55,17 +56,20 @@ impl Game<'_> {
         }
         let carried = self.hashed_stack(&self.carried);
         let state = self.remote.as_ref().map_or(0, |r| r.state_id);
+        let input = if input == Input::Throw { 4 } else { 0 };
         self.send(S::ContainerClick(play::ContainerClick {
             container,
             state,
             slot: -999,
             button: i8::from(right),
-            input: if input == Input::Throw { 4 } else { 0 },
+            input,
             changed: Vec::new(),
             carried,
         }));
+        self.java_menu_click(container, -999, i32::from(right), input);
     }
     pub(super) fn remote_close_local(&mut self) {
+        self.java_menu_closed();
         // `Gui.setScreen` clears the focus of the screen it takes down: the
         // container's keyboard focus must not outlive it (a Tab bound to the
         // inventory moves the focus and closes the container in one press).

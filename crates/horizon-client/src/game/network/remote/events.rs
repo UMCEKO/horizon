@@ -236,6 +236,7 @@ impl Game<'_> {
                 }
                 Event::Packet(packet, seq) => {
                     let fed = self.java_feeds(&packet).then(|| packet.clone());
+                    self.java_menu_packet(&packet);
                     self.handle_packet(*packet)?;
                     self.java_feed(fed.as_deref(), seq);
                 }

@@ -1,6 +1,8 @@
 package dev.horizonlab.javamods.boot;
 
 import dev.horizonlab.javamods.boot.mixin.CreativeShellAccess;
+import dev.horizonlab.javamods.boot.mixin.RecipeBookComponentAccess;
+import dev.horizonlab.javamods.boot.mixin.RecipeBookScreenAccess;
 import dev.horizonlab.javamods.boot.mixin.ShellAccess;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -13,6 +15,7 @@ import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.client.gui.screens.inventory.AbstractRecipeBookScreen;
 import net.minecraft.client.gui.screens.inventory.CreativeModeInventoryScreen;
 import net.minecraft.client.gui.screens.inventory.InventoryScreen;
 import net.minecraft.client.input.CharacterEvent;
@@ -38,7 +41,7 @@ public final class Shells {
 
     /** The open shell, kept while a mod's screen covers it: a mod returns to the same object. */
     static Screen current;
-    /** What the open shell stands for: 1 the survival inventory, 2 the creative screen. */
+    /** What the open shell stands for: 1 the survival inventory, 2 the creative screen, 3 the screen of a container menu the server opened. */
     static int kind;
     /** The widgets vanilla's `init()` made, which native draws and handles. */
     static final Set<Object> vanilla = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -59,7 +62,13 @@ public final class Shells {
     private static int written = -1;
     private static final Slot DESTROY = new Slot(new SimpleContainer(1), 0, 173, 112);
     private static final Set<String> HEARD = new java.util.HashSet<>();
-    private static boolean cancelledLogged, notCreative, unknownTab;
+    private static boolean cancelledLogged, notCreative, unknownTab, modScreenLogged;
+    /** A packet native forwarded is being handled: the screen it opens is vanilla's own for the menu. */
+    public static boolean forwarding;
+    /** A click native made is being replayed; its packet is native's already. */
+    public static boolean echo;
+    /** Whether native's recipe book is showing, as the shell's component says. */
+    private static boolean bookVisible;
 
     public static boolean is(Object screen) {
         return screen != null && screen == current;
@@ -75,7 +84,7 @@ public final class Shells {
             ScreenEvent.CharacterTyped.Pre.class, ScreenEvent.CharacterTyped.Post.class, ScreenEvent.Closing.class);
 
     /** Whether a class is a mod's: not NeoForge's, Minecraft's, Horizon's or the JDK's. */
-    static boolean isMods(Class<?> owner) {
+    public static boolean isMods(Class<?> owner) {
         String module = owner.getModule().getName();
         if (module != null) return !(module.equals("neoforge") || module.equals("minecraft") || module.equals(Shells.class.getModule().getName()) || module.startsWith("java.") || module.startsWith("jdk."));
         String name = owner.getName();
@@ -87,7 +96,46 @@ public final class Shells {
         return Listeners.modListens(bus, EVENTS, HEARD, "screen events");
     }
 
+    public static boolean wantedNow() {
+        return wanted(NeoForge.EVENT_BUS);
+    }
+
     // --- Opening and closing
+
+    /** The vanilla screen of a forwarded menu is the shell, as `MenuScreens.create` built it: `Gui.setScreen` goes on to fire `Opening` and run `init`. */
+    public static void adopt(Screen screen) {
+        current = screen;
+        kind = 3;
+        last = new byte[SEGMENTS][];
+        lastRouted = 0;
+        animating = false;
+        written = -1;
+    }
+
+    /** The forwarded menu's screen is not a shell: the displayed shell, if any, is given up before the stand-in replaces it. */
+    public static void retire(Minecraft minecraft) {
+        if (!is(minecraft.gui.screen())) return;
+        current = null;
+        kind = 0;
+    }
+
+    /** A mod's own screen class opened for a vanilla menu type: SPEC-6 shows it, until then the window's screen does. */
+    public static void modScreen(Class<?> screen, net.minecraft.world.inventory.AbstractContainerMenu menu) {
+        if (modScreenLogged) return;
+        modScreenLogged = true;
+        String type;
+        try {
+            type = String.valueOf(BuiltInRegistries.MENU.getKey(menu.getType()));
+        } catch (UnsupportedOperationException e) {
+            type = "a menu with no type";
+        }
+        System.err.println("Horizon: " + screen.getName() + " stands for the vanilla screen of " + type + "; SPEC-6 opens it");
+    }
+
+    /** `Input::ShellBook`: whether native's recipe book is showing. */
+    static void book(boolean visible) {
+        bookVisible = visible;
+    }
 
     /** Native opened one of its vanilla screens: with a mod listening, the Java client opens the real class as a shell. */
     static void open(int which, Minecraft minecraft) {
@@ -141,7 +189,9 @@ public final class Shells {
     /** Native closed its screen. A mod's screen over the shell keeps it: the mod sets the same object back. */
     static void close(Minecraft minecraft) {
         if (!is(minecraft.gui.screen())) return;
-        minecraft.gui.setScreen(null);
+        // A menu's shell: native already told the server, vanilla's `clientSideCloseContainer` brings the inventory menu back.
+        if (kind == 3 && minecraft.player != null) minecraft.player.clientSideCloseContainer();
+        else minecraft.gui.setScreen(null);
         release(minecraft);
         current = null;
         kind = 0;
@@ -180,6 +230,7 @@ public final class Shells {
             return;
         }
         var access = (ShellAccess) container;
+        if (screen instanceof AbstractRecipeBookScreen<?> book) ((RecipeBookComponentAccess) ((RecipeBookScreenAccess) book).horizon$component()).horizon$visible(bookVisible);
         int[] l = layout;
         access.horizon$leftPos(l[0]);
         access.horizon$topPos(l[1]);

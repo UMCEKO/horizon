@@ -237,6 +237,9 @@ impl Game<'_> {
         _seq: u64,
     ) {
     }
+    pub(super) fn java_menu_packet(&mut self, _packet: &horizon_protocol::packets::play::Clientbound) {}
+    pub(super) fn java_menu_click(&mut self, _container: i32, _slot: i32, _button: i32, _input: i32) {}
+    pub(super) fn java_menu_closed(&mut self) {}
     pub(super) fn java_shell_open(&self) -> bool {
         false
     }

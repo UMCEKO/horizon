@@ -9,6 +9,7 @@ use super::*;
 mod draw;
 mod hud;
 mod input;
+mod menus;
 mod shell;
 
 use self::draw::*;
@@ -81,6 +82,10 @@ pub(in crate::game) struct Client {
     blurred: bool,
     shell: Shell,
     music: MusicState,
+    /// A mod listens to screen events, as the last status said.
+    screens_heard: bool,
+    /// The container id of the menu whose packets go to the Java client, while one does.
+    mirrored: Option<i32>,
 }
 
 /// What the Java client's music tick last said: whether it runs the music, its track's handle and the Now Playing toasts it asked for.
@@ -170,6 +175,12 @@ enum Input<'a> {
     ShellLayout([i32; 5]),
     /// The creative screen's selected tab id, what is hovered (0 none, 1 grid, 2 hotbar, 3 inventory tab, 4 destroy slot), its index, and the hovered grid stack's saved form.
     ShellCreative(&'a str, i32, i32, &'a [u8]),
+    /// A play packet of the window's server for the Java client's connection: its id (VarInt) and body.
+    Packet(&'a [u8]),
+    /// A click native made on the open menu, for the Java client's `handleContainerInput`: the container, the menu slot (-999 outside), the button, the `ContainerInput` ordinal.
+    MenuClick(i32, i32, i32, i32),
+    /// Whether native's recipe book is open, for the shell's book component.
+    ShellBook(bool),
     /// Each shown mod toast's `(id, finished, fully visible for)`.
     Toasts(&'a [(i32, bool, i64)]),
     /// The music the game answers this tick (`getSituationalMusic`), `getMusicVolume`, whether native shows its level loading screen, and the Music Frequency option.
@@ -204,6 +215,9 @@ impl Input<'_> {
             Input::BlockEffect(..) => 30,
             Input::ShellLayout(_) => 16,
             Input::ShellCreative(..) => 19,
+            Input::Packet(_) => 20,
+            Input::MenuClick(..) => 21,
+            Input::ShellBook(_) => 22,
             Input::Toasts(_) => 26,
             Input::NotificationTime(_) => 27,
             Input::Music(..) => 40,
@@ -273,6 +287,14 @@ impl Input<'_> {
                 out.int(index);
                 out.bytes(stack);
             }
+            Input::Packet(bytes) => out.bytes(bytes),
+            Input::MenuClick(container, slot, button, input) => {
+                out.int(container);
+                out.int(slot);
+                out.int(button);
+                out.int(input);
+            }
+            Input::ShellBook(visible) => out.bool(visible),
             Input::Toasts(turns) => {
                 out.int(turns.len() as i32);
                 for (id, finished, fully_for) in turns {
@@ -330,6 +352,7 @@ struct Sent {
     native_screen: Option<(bool, bool, u8)>,
     layout: Option<[i32; 5]>,
     creative: Option<CreativeState>,
+    book: Option<bool>,
     focused: Option<bool>,
     camera: Option<([i32; 3], [f32; 4], u8)>,
     cursor: Option<(f64, f64)>,
@@ -507,10 +530,10 @@ fn creative_hover(
     (0, 0, None)
 }
 
-/// The native screen a shell kind stands for.
+/// The native screen a shell kind stands for; 3 is the vanilla menu screen of the menu native has open.
 fn shell_screen(kind: i32) -> Option<Screen> {
     match kind {
-        1 => Some(Screen::Inventory),
+        1 | 3 => Some(Screen::Inventory),
         2 => Some(Screen::Creative),
         _ => None,
     }
@@ -531,8 +554,8 @@ fn read_segments(reply: &mut In, counted: bool) -> Option<[Vec<u8>; SEGMENTS]> {
     Some(segments)
 }
 
-/// A status's end: whether the creative tabs wait, the open shell kind, its fresh recording if any, the steps Java drew, whether it animates.
-fn read_shell_tail(reply: &mut In) -> Option<(bool, i32, Option<Recording>, bool)> {
+/// A status's end: whether the creative tabs wait, the open shell kind, its fresh recording if any, the steps Java drew, whether it animates, whether a mod listens to screen events.
+fn read_shell_tail(reply: &mut In) -> Option<(bool, i32, Option<Recording>, bool, bool)> {
     let tabs_ready = reply.bool()?;
     let shell = reply.int()?;
     let segments = if reply.bool()? {
@@ -545,6 +568,7 @@ fn read_shell_tail(reply: &mut In) -> Option<(bool, i32, Option<Recording>, bool
         tabs_ready,
         shell,
         segments.map(|segments| (segments, routed)),
+        reply.bool()?,
         reply.bool()?,
     ))
 }
@@ -861,7 +885,7 @@ impl Game<'_> {
             .flatten()
             .map(<[u8]>::to_vec);
         let world_animating = reply.bool()?;
-        let (tabs_ready, shell, segments, shell_animating) = read_shell_tail(reply)?;
+        let (tabs_ready, shell, segments, shell_animating, heard) = read_shell_tail(reply)?;
         if super::java_toasts::java_toasts_status(reply).is_none() {
             log::warn!("Horizon: a status's toasts ended in pieces");
         }
@@ -906,6 +930,7 @@ impl Game<'_> {
             c.shell.kind = kind;
             c.shell.opening = false;
             c.shell.animating = shell_animating;
+            c.screens_heard = heard;
             if let Some((segments, routed)) = segments {
                 c.shell.segments = segments;
                 c.shell.routed = routed;
@@ -1286,6 +1311,7 @@ impl Game<'_> {
         let native_screen = (open, open && self.pause, kind);
         let layout = (kind != 0).then(|| self.java_shell_layout());
         let creative = (kind == 2).then(|| self.java_creative_state());
+        let book = matches!(kind, 1 | 3).then(|| self.recipe_book_visible());
         let camera = self.java_world_camera();
         let camera_type = self.camera_type as u8;
         self.java_publish_client_world();
@@ -1306,6 +1332,16 @@ impl Game<'_> {
             {
                 c.sent.layout = Some(layout);
                 Input::ShellLayout(layout).write(&mut events);
+                count += 1;
+            }
+            if c.sent.native_screen.is_none_or(|sent| sent.2 != kind) {
+                c.sent.book = None;
+            }
+            if let Some(book) = book
+                && c.sent.book != Some(book)
+            {
+                c.sent.book = Some(book);
+                Input::ShellBook(book).write(&mut events);
                 count += 1;
             }
             if let Some((tab, hovered, index, stack)) = creative
@@ -1641,8 +1677,9 @@ mod tests {
         out.0.extend(segments_of(&[(1, 2), (7, 1)]).0);
         out.int(1 << 10);
         out.bool(true);
-        let (tabs, shell, recording, animating) = read_shell_tail(&mut In(&out.0)).unwrap();
-        assert!(tabs && animating);
+        out.bool(true);
+        let (tabs, shell, recording, animating, heard) = read_shell_tail(&mut In(&out.0)).unwrap();
+        assert!(tabs && animating && heard);
         assert_eq!(shell, 1);
         let (segments, routed) = recording.unwrap();
         assert_eq!(routed, 1 << Leaf::Tooltip as u32);
@@ -1654,8 +1691,9 @@ mod tests {
         none.bool(false);
         none.int(0);
         none.bool(false);
-        let (_, shell, recording, animating) = read_shell_tail(&mut In(&none.0)).unwrap();
-        assert!(shell == 0 && recording.is_none() && !animating);
+        none.bool(false);
+        let (_, shell, recording, animating, heard) = read_shell_tail(&mut In(&none.0)).unwrap();
+        assert!(shell == 0 && recording.is_none() && !animating && !heard);
     }
 
     #[test]
@@ -1786,7 +1824,8 @@ mod tests {
         out.bool(false);
         out.int(0);
         out.bool(false);
-        let (_, kind, recording, _) = read_shell_tail(&mut In(&out.0)).unwrap();
+        out.bool(false);
+        let (_, kind, recording, ..) = read_shell_tail(&mut In(&out.0)).unwrap();
         assert!(kind == 2 && recording.is_none());
         assert!(matches!(shell_screen(kind), Some(Screen::Creative)));
         assert!(shell_screen(0).is_none());

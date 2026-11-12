@@ -12287,6 +12287,24 @@ mod tests {
     use super::super::api_values::TryIntoApi;
 
     #[test]
+    fn a_click_kind_goes_out_as_the_ordinal_vanilla_declares() {
+        use super::input_ordinal;
+        use horizon_client::menu::Input;
+        // ContainerInput: PICKUP, QUICK_MOVE, SWAP, CLONE, THROW, QUICK_CRAFT, PICKUP_ALL.
+        for (name, ordinal) in [
+            ("PICKUP", 0),
+            ("QUICK_MOVE", 1),
+            ("SWAP", 2),
+            ("CLONE", 3),
+            ("THROW", 4),
+            ("QUICK_CRAFT", 5),
+            ("PICKUP_ALL", 6),
+        ] {
+            assert_eq!(input_ordinal(Input::parse(name).unwrap()), ordinal, "{name}");
+        }
+    }
+
+    #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn menu_title_snapshot_tracks_open_replacement_and_close() {
         super::super::native_entity_refs::tests::with_client_game(|game| {
