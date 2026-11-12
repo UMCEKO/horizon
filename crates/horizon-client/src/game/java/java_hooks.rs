@@ -677,6 +677,49 @@ pub(super) fn java_note_block_tick(pos: BlockPos, state: BlockStateId, random: b
     let _ = (pos, state, random);
 }
 
+/// Whether Java has block events of this level to run.
+pub(super) fn java_has_block_events() -> bool {
+    #[cfg(feature = "java-mods")]
+    return super::java_mods::has_block_events();
+    #[cfg(not(feature = "java-mods"))]
+    false
+}
+
+/// Whether a Java mod's code runs this fluid: the block that holds its source is a Java one.
+pub(super) fn java_owns_fluid(
+    behaviours: &horizon_world::level::Behaviours,
+    fluid: horizon_world::fluid::ModFluid,
+) -> bool {
+    #[cfg(feature = "java-mods")]
+    return super::java_mods::owns_fluid(behaviours, fluid);
+    #[cfg(not(feature = "java-mods"))]
+    {
+        let _ = (behaviours, fluid);
+        false
+    }
+}
+
+/// `LevelAccess::allow_fluid_tick` of a Java mod's fluid: its `FluidState.tick` runs in Java instead.
+pub(super) fn java_note_fluid_tick(pos: BlockPos, state: BlockStateId) {
+    #[cfg(feature = "java-mods")]
+    super::java_mods::note_fluid_tick(pos, state);
+    let _ = (pos, state);
+}
+
+/// What a Java mod's fluid answers in this dimension for `FlowingFluid`'s getters, once Java was asked.
+pub(super) fn java_fluid_rules(
+    dimension: horizon_core::dimension::Dimension,
+    fluid: horizon_world::fluid::ModFluid,
+) -> Option<horizon_world::fluid::ModFluidRules> {
+    #[cfg(feature = "java-mods")]
+    return super::java_mods::fluid_rules(dimension, fluid);
+    #[cfg(not(feature = "java-mods"))]
+    {
+        let _ = (dimension, fluid);
+        None
+    }
+}
+
 /// `LevelAccess::observe_block_changed`: a mod's block, or one with a block entity, changed.
 pub(super) fn java_note_block_changed(
     pos: BlockPos,
