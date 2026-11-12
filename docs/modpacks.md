@@ -245,6 +245,12 @@ implements and the harnesses already check. Items work the same way (`"template"
 "minecraft:diamond"`, overriding `max_stack_size`, `rarity`, `crafting_remainder` and any
 data component in `components`; a block's item takes `components` too).
 
+A Java mod's data component types are declared as `data/<mod>/horizon/data_component_type/<name>.json`, holding
+`{"persistent": true}` when the type has a codec (`carry` writes them from the oracle's `data_component_types`). They join
+`minecraft:data_component_type` in `registries.json` after vanilla's, and the persistent ones join the types commands
+accept. Item definitions decode `has_component` and the `component` select against that registry, as vanilla's
+`byNameCodec` does, so a mod's `items/*.json` naming its own component loads and an unknown id is still refused.
+
 How the game loads them, without touching vanilla's path:
 
 - `packs::startup_root` keeps prepared tables, disposable caches and resolved resource reads separate.
@@ -503,7 +509,7 @@ block's name breaking ties (`_pane`, `_gate`, `_trapdoor`). Walls and vines have
 property names; sides tested as `true` / `false` make a vine (Chipped's 11 vines, which the game
 refused as walls: their blockstates did not load).
 
-The oracle can also export `<work>/oracle/baked-models.json` for blocks whose geometry a mod's code builds. Carry writes
+A game built with `--features java-mods` takes these facts from its own Java boot instead of an oracle run, and carries them in the game's process ([java-mods.md](java-mods.md), "Blocks and items from the boot"). The oracle can also export `<work>/oracle/baked-models.json` for blocks whose geometry a mod's code builds. Carry writes
 each as `horizon:baked` models (one file per distinct geometry) with a blockstate pointing at them, and counts them as `baked_blocks`.
 
 ### 1. Import

@@ -35,6 +35,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [The modding book](modding/src/introduction.md): content mods (data) and native mods (Rust), how to make, install and publish them. [Native mods](modding/src/how-to/native-mods.md): how the launcher builds them. [Hook counterparts](https://arismoko.github.io/horizon/reference/hook-notes.html#counterparts): the NeoForge and Fabric catalog conventions.
 - [Upgrading a 26.2 data pack](datapack-upgrade.md): `horizon-port-pack upgrade-datapack` rewrites a 26.2 worldgen pack in 26.3's formats, and how the rewrite is checked against vanilla.
 - [Modpacks](modpacks.md): porting whole packs (ATM10 and smaller): import, inventory, carry-over, an agent per mod with a harness against the Java original, coverage, and how "10x" is measured.
+- [Java mods in an embedded JVM](java-mods.md): the experimental `java-mods` feature that runs real NeoForge mod jars inside the game's process: what runs in Rust and what in Java, boot facts, playing with it. [Its map for agents](java-mods-map.md): where each piece lives, the wire formats, how to add an event, a bridge or a check.
 - [Launcher](../launcher/README.md): installs, updates and starts builds; its CLI and MCP server; releasing it.
 - [Versioning](versioning.md): how releases are numbered from 0.2 (`v0.2.x`, `launcher@0.2.x`), and how installs from before 0.2 get there.
 - [Resource packs](resource-packs.md): everything a 26.3 resource pack can change, whether Horizon honours it, and the proof.
