@@ -163,7 +163,13 @@ pub fn parse_stats(text: &str) -> HashMap<String, Stat> {
 }
 
 /// One line of `java-ticks.log`; `dims` the dimension names sent, `runs` is `take_runs`'s text, `java` the JVM's `be=... lock=...` text.
-pub fn java_line(unix_ms: u128, calls: Vec<(String, Stat)>, dims: u64, runs: &str, java: &str) -> String {
+pub fn java_line(
+    unix_ms: u128,
+    calls: Vec<(String, Stat)>,
+    dims: u64,
+    runs: &str,
+    java: &str,
+) -> String {
     format!(
         "t={unix_ms} calls={} dims={dims} runs={runs} {java}",
         format_stats(calls)
