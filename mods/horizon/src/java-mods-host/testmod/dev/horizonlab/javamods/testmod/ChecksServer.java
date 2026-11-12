@@ -34,6 +34,24 @@ final class ChecksServer {
             return net.neoforged.neoforge.common.util.FakePlayerFactory.get((net.minecraft.server.level.ServerLevel) level, profile).getUUID().equals(profile.id());
         });
         Checks.check("craft_facts", () -> craftFacts(server));
+        Checks.check("tool_enchantments", () -> toolEnchantments(level));
+    }
+
+    /** What the loot roll's tool copy holds: a charm's code answers fortune 3 and silk touch 1, a plain pickaxe nothing. */
+    private static boolean toolEnchantments(net.minecraft.world.level.Level level) {
+        try {
+            var type = Class.forName("dev.horizonlab.javamods.boot.Loot", true, ClassLoader.getSystemClassLoader());
+            var effective = type.getMethod("effective", net.minecraft.world.item.ItemStack.class, net.minecraft.core.RegistryAccess.class);
+            var charm = new net.minecraft.world.item.ItemStack(net.minecraft.core.registries.BuiltInRegistries.ITEM.getValue(net.minecraft.resources.Identifier.parse("horizon_java_test:charm")));
+            var charmed = (net.minecraft.world.item.ItemStack) effective.invoke(null, charm, level.registryAccess());
+            var plain = (net.minecraft.world.item.ItemStack) effective.invoke(null, new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.DIAMOND_PICKAXE), level.registryAccess());
+            var levels = charmed.get(net.minecraft.core.component.DataComponents.ENCHANTMENTS);
+            var fortune = level.registryAccess().lookupOrThrow(net.minecraft.core.registries.Registries.ENCHANTMENT).getOrThrow(net.minecraft.world.item.enchantment.Enchantments.FORTUNE);
+            var silk = level.registryAccess().lookupOrThrow(net.minecraft.core.registries.Registries.ENCHANTMENT).getOrThrow(net.minecraft.world.item.enchantment.Enchantments.SILK_TOUCH);
+            return levels.getLevel(fortune) == 3 && levels.getLevel(silk) == 1 && levels.size() == 2 && plain.get(net.minecraft.core.component.DataComponents.ENCHANTMENTS).isEmpty();
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private static String text(java.io.DataInputStream in) throws java.io.IOException {

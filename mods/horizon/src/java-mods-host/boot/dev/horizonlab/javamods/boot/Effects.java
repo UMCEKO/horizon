@@ -175,7 +175,7 @@ final class Effects {
             Float radius = params.getOptionalParameter(LootContextParams.EXPLOSION_RADIUS);
             var bytes = new ByteArrayOutputStream();
             var out = new DataOutputStream(bytes);
-            byte[] stack = stack(held);
+            byte[] stack = stack(Loot.needsEffective(held) ? Loot.effective(held, GameBridge.registries()) : held);
             out.writeInt(stack.length);
             out.write(stack);
             out.writeBoolean(origin != null);

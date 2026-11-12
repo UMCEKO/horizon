@@ -43,6 +43,21 @@ import net.neoforged.neoforge.resource.NeoForgeReloadListeners;
 public final class CraftFacts {
     private CraftFacts() {}
 
+    /** Bits of `getEnchantmentLevel` and `getAllEnchantments` in an item's bits. */
+    private static final int ENCHANT_BITS = 0b1100;
+    private static final java.util.Set<Item> ENCHANT_CODE = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static volatile boolean enchantmentEvent;
+
+    /** Whether the item's class overrides how its enchantment levels are answered; false until the facts are built. */
+    static boolean enchantCode(Item item) {
+        return ENCHANT_CODE.contains(item);
+    }
+
+    /** Whether a mod listens to `GetEnchantmentLevelEvent`; false until the facts are built. */
+    static boolean enchantmentEventHeard() {
+        return enchantmentEvent;
+    }
+
     /** Bit i of the recipe type bits is STATIONS[i]. */
     static final String[] STATIONS = {"crafting", "smithing", "smelting", "blasting", "smoking", "campfire_cooking", "stonecutting"};
 
@@ -142,12 +157,14 @@ public final class CraftFacts {
         int events = 0;
         for (int i = 0; i < EVENTS.size(); i++) if (Listeners.listened(bus, EVENTS.get(i))) events |= 1 << i;
         out.writeInt(events);
+        enchantmentEvent = (events >> EVENTS.indexOf(net.neoforged.neoforge.event.enchanting.GetEnchantmentLevelEvent.class) & 1) != 0;
         var items = new ArrayList<String>();
         var bits = new ArrayList<Integer>();
         for (Identifier id : new TreeSet<>(BuiltInRegistries.ITEM.keySet())) {
             Item item = BuiltInRegistries.ITEM.getValue(id);
             if (!BootFacts.ownsItem(item)) continue;
             int b = itemBits(item.getClass());
+            if ((b & ENCHANT_BITS) != 0) ENCHANT_CODE.add(item);
             if (b != 0) {
                 items.add(id.toString());
                 bits.add(b);

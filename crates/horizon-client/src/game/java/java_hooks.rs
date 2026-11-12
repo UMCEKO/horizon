@@ -214,6 +214,17 @@ impl Game<'_> {
         }
     }
 
+    /// The tool of a loot roll with the enchantment levels Java gives it; None leaves the tool as it is.
+    pub(super) fn java_hook_tool_for_loot(&mut self, tool: Option<&ItemStack>) -> Option<ItemStack> {
+        #[cfg(feature = "java-mods")]
+        return self.java_tool_for_loot(tool?);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = tool;
+            None
+        }
+    }
+
     /// Whether the held item harvests the block, from Java's `hasCorrectToolForDrops`; None leaves it to Horizon.
     pub(super) fn java_hook_correct_tool(&mut self, pos: [i32; 3]) -> Option<bool> {
         #[cfg(feature = "java-mods")]
