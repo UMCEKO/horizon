@@ -1319,7 +1319,11 @@ pub(super) fn make_streaming(
         .leaf_culling_effective(&settings.resource_packs);
     streaming.biome_zoom = BiomeZoom::new(obfuscate_seed(seed));
     streaming.sky_light = dim != Dim::Nether;
-    streaming.nether_shading = dim == Dim::Nether;
+    streaming.nether_shading = horizon_world::dimension_type::DimensionFacts::of_level(
+        horizon_core::LevelKey::parse(dim.id()).unwrap_or(horizon_core::LevelKey::OVERWORLD),
+    )
+    .cardinal_light
+        == horizon_world::dimension_type::CardinalLight::Nether;
     // A server draws nothing: neither the integrated server nor the
     // dedicated one meshes sections.
     streaming.mesh = options.execution_role.is_client();

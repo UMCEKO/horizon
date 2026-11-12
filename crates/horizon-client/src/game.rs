@@ -10109,7 +10109,8 @@ impl Game<'_> {
         }
         self.apply_settings();
         self.streaming.sky_light = dim != Dim::Nether;
-        self.streaming.nether_shading = dim == Dim::Nether;
+        self.streaming.nether_shading = self.dimension_type_of(dim).cardinal_light
+            == horizon_world::dimension_type::CardinalLight::Nether;
         self.load_world_state();
         // The level the world opens in, before any of its chunks.
         self.native_level_opened(dim);

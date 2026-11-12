@@ -576,7 +576,7 @@ impl Game<'_> {
         self.dimension_type().skybox == kind
     }
     /// `CardinalLighting.Type.NETHER` from the level's dimension type.
-    pub(super) fn nether_cardinal_light(&self) -> bool {
+    pub(in crate::game) fn nether_cardinal_light(&self) -> bool {
         self.dimension_type().cardinal_light == horizon_world::dimension_type::CardinalLight::Nether
     }
     /// `Lightmap.getBrightness(getMaxLocalRawBrightness(eye))`.
