@@ -189,6 +189,8 @@ pub enum FallEvent {
         from: BlockStateId,
         state: BlockStateId,
         flags: u32,
+        /// The fall distance when the write is a farmland trample, which a Java mod may cancel.
+        trample: Option<f64>,
     },
     Destroy {
         position: BlockPos,
@@ -564,6 +566,7 @@ impl BlockLandingWorld for MotionWorld<'_, '_, '_> {
             distance,
             &mut cancel,
         );
+        self.player.trample = (!cancel).then_some(distance);
         cancel
     }
     fn suppressing_bounce(&mut self) -> Result<bool> {
@@ -641,11 +644,13 @@ impl BlockLandingWorld for MotionWorld<'_, '_, '_> {
     fn set_block(&mut self, position: BlockPos, state: BlockStateId, flags: u32) -> Result<bool> {
         let from = self.scene.block(position.x, position.y, position.z);
         self.scene.set(position.x, position.y, position.z, state)?;
+        let trample = self.player.trample.take();
         self.fall_event(FallEvent::Write {
             position,
             from,
             state,
             flags,
+            trample,
         });
         Ok(true)
     }

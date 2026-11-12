@@ -167,11 +167,12 @@ use horizon_core::{
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use horizon_mod_package::selection::{Argument, LaunchArguments};
+use java_hooks::TrampleBy;
+#[cfg(feature = "java-mods")]
+pub(crate) use java_hooks::java_hook_resolve;
 pub(crate) use java_hooks::{
     java_hook_loot_condition, java_hook_loot_function, java_hook_loot_rolled, java_hook_loot_wanted,
 };
-#[cfg(feature = "java-mods")]
-pub(crate) use java_hooks::java_hook_resolve;
 pub use native_block_entity_draw::BlockEntityDraw;
 pub use native_claimed_items::{HeldItemSlot, ModEvent};
 pub use native_components::NativeComponentError;
@@ -7300,19 +7301,25 @@ impl Game<'_> {
     fn landing_block_updates(
         &mut self,
         player: Option<u128>,
+        conn: Option<u32>,
         event: &horizon_client::landing::FallEvent,
     ) -> Option<LandingVibration> {
         use horizon_client::landing::FallEvent;
         use horizon_world::block_landing::LandingEvent;
         let mut vibration = None;
         // The block the landing changed, what it replaced, and what it became.
+        let mut trample = None;
         let (position, from, to, flags) = match *event {
             FallEvent::Write {
                 position,
                 from,
                 state,
                 flags,
-            } => (position, from, state, flags as i32),
+                trample: distance,
+            } => {
+                trample = distance;
+                (position, from, state, flags as i32)
+            }
             FallEvent::Destroy {
                 position, state, ..
             } => {
@@ -7364,7 +7371,9 @@ impl Game<'_> {
             }
             _ => return None,
         };
-        if self.landing_change_cancelled(player, position, from, to) {
+        if self.landing_change_cancelled(player, position, from, to)
+            || self.landing_trample_cancelled(conn, position, trample)
+        {
             self.world
                 .set(position.x, position.y, position.z, from)
                 .ok();
@@ -7398,6 +7407,24 @@ impl Game<'_> {
             .registry
             .default_state("minecraft:air")
             .unwrap_or(BlockStateId(0))
+    }
+    /// Whether a Java mod cancelled the farmland trample a player's landing recorded
+    /// (`BlockEvent.FarmlandTrampleEvent`), posted as that player.
+    fn landing_trample_cancelled(
+        &mut self,
+        conn: Option<u32>,
+        position: BlockPos,
+        trample: Option<f64>,
+    ) -> bool {
+        let Some(distance) = trample else {
+            return false;
+        };
+        let at = [position.x, position.y, position.z];
+        let post = |game: &mut Self| game.java_hook_trample(at, distance, TrampleBy::Player);
+        match conn {
+            Some(conn) => self.as_guest(conn, post).unwrap_or(false),
+            None => post(self),
+        }
     }
     /// Whether a mod cancelled a landing's block change
     /// (`native_entity_change_block_pre`): asked with the two blocks' names and

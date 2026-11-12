@@ -1234,6 +1234,7 @@ impl Mob {
                 level,
                 events,
                 pos,
+                trample: None,
             },
             state,
             BlockPos::new(pos[0], pos[1], pos[2]),

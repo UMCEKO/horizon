@@ -100,11 +100,13 @@ fn cancelled_landing_restores_farmland_before_its_crop_is_notified() {
                 game.world.set(1, 65, 1, wheat).unwrap();
                 game.landing_block_updates(
                     Some(7),
+                    None,
                     &horizon_client::landing::FallEvent::Write {
                         position: horizon_core::position::BlockPos::new(1, 64, 1),
                         from: farmland,
                         state: dirt,
                         flags: 3,
+                        trample: None,
                     },
                 );
                 assert_eq!(game.world.block(1, 64, 1), farmland);

@@ -28,6 +28,8 @@ pub(super) struct MobLanding<'a, 'w, 'l> {
     pub level: &'a mut DamageLevel<'l>,
     pub events: &'a mut Vec<MobEvent>,
     pub pos: [i32; 3],
+    /// The fall distance of a trample whose block write is next.
+    pub trample: Option<f64>,
 }
 impl MobLanding<'_, '_, '_> {
     fn at(&self) -> [f64; 3] {
@@ -111,6 +113,7 @@ impl BlockLandingWorld for MobLanding<'_, '_, '_> {
             distance,
             &mut cancel,
         );
+        self.trample = (!cancel).then_some(distance);
         cancel
     }
     // A mob never sneaks, so nothing suppresses a slime block's bounce.
@@ -228,9 +231,15 @@ impl BlockLandingWorld for MobLanding<'_, '_, '_> {
         state: BlockStateId,
         _: u32,
     ) -> Result<bool, String> {
-        self.events.push(MobEvent::SetBlock {
-            pos: [position.x, position.y, position.z],
-            state,
+        let pos = [position.x, position.y, position.z];
+        self.events.push(match self.trample.take() {
+            Some(distance) => MobEvent::Trample {
+                pos,
+                state,
+                mob: self.mob.id,
+                distance,
+            },
+            None => MobEvent::SetBlock { pos, state },
         });
         Ok(true)
     }

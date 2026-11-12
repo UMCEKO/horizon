@@ -12,11 +12,17 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.BonemealSource;
 import net.neoforged.bus.ListenerList;
 import net.neoforged.bus.api.Event;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.common.CommonHooks;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.EventHooks;
+import net.neoforged.neoforge.event.level.BlockEvent;
 
 /** NeoForge events Rust posts where its hook fires (`game/java/java_listener.rs`): which ones a mod listens to, and the post ops. */
 public final class EventPosts {
@@ -43,10 +49,10 @@ public final class EventPosts {
     }
 
     /** The server events Rust posts through `post_event`, each with the acting player's view filled. */
-    private static final Map<String, PlayerPost> PLAYER = Map.of("BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity);
+    private static final Map<String, PlayerPost> PLAYER = Map.of("BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity, "BlockEvent.FarmlandTrampleEvent", EventPosts::playerTrample, "BonemealEvent", EventPosts::playerBonemeal);
 
     /** The server events Rust posts through `post_level_event`. */
-    private static final Map<String, LevelPost> LEVEL = Map.of();
+    private static final Map<String, LevelPost> LEVEL = Map.of("BlockEvent.FarmlandTrampleEvent", EventPosts::mobTrample, "BonemealEvent", EventPosts::levelBonemeal);
 
     /** The client events Rust posts through `client_post_event`. */
     private static final Map<String, ClientPost> CLIENT = Map.of("PlaySoundEvent", NativeSounds::ask);
@@ -207,6 +213,43 @@ public final class EventPosts {
     private static Posted attackEntity(GameBridge.Call call) {
         var target = call.level().getEntity(call.in().readInt());
         return new Posted(target != null && !CommonHooks.onPlayerAttackTarget(call.player(), target), Posted.NONE.result());
+    }
+
+    private static Posted trample(ServerLevel level, BlockPos pos, double distance, Entity entity) {
+        boolean canceled = NeoForge.EVENT_BUS.post(new BlockEvent.FarmlandTrampleEvent(level, pos, level.getBlockState(pos), distance, entity)).isCanceled();
+        if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: server event BlockEvent.FarmlandTrampleEvent " + pos.toShortString() + " canceled=" + canceled);
+        return new Posted(canceled, Posted.NONE.result());
+    }
+
+    /** Posted, not `CommonHooks.onFarmlandTrample`: its `canTrample` draw already happened natively. */
+    private static Posted playerTrample(GameBridge.Call call) {
+        var pos = BlockPos.of(call.in().readLong());
+        return trample(call.level(), pos, call.in().readDouble(), call.player());
+    }
+
+    private static Posted mobTrample(ServerLevel level, Crossing.In in) {
+        var pos = BlockPos.of(in.readLong());
+        double distance = in.readDouble();
+        var mob = EntityViews.byId(in.readInt());
+        if (mob == null) throw new IllegalStateException("no Java view of the mob that trampled " + pos);
+        return trample(level, pos, distance, mob);
+    }
+
+    private static Posted bonemeal(Player player, ServerLevel level, BlockPos pos, ItemStack stack) {
+        var event = EventHooks.fireBonemealEvent(player, level, pos, level.getBlockState(pos), BonemealSource.INTERACTION, stack);
+        if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: server event BonemealEvent " + pos.toShortString() + " canceled=" + event.isCanceled() + " successful=" + event.isSuccessful());
+        return new Posted(event.isCanceled(), new byte[] {(byte) (event.isSuccessful() ? 1 : 0)});
+    }
+
+    private static Posted playerBonemeal(GameBridge.Call call) {
+        var pos = BlockPos.of(call.in().readLong());
+        return bonemeal(call.player(), call.level(), pos, call.player().getItemInHand(call.hand()));
+    }
+
+    private static Posted levelBonemeal(ServerLevel level, Crossing.In in) throws IOException {
+        var pos = BlockPos.of(in.readLong());
+        byte[] tag = in.readNBytes(in.readInt());
+        return bonemeal(null, level, pos, tag.length == 0 ? ItemStack.EMPTY : GameBridge.decode(tag));
     }
 
     /** `client_post_event`: the event's name, then its fields, posted on the Java client's thread. */
