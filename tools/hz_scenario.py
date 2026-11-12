@@ -20,7 +20,8 @@ The install is only read: its home/ and client config are copied into OUT. Steps
     {"output": "regex", "present": true}                                     the chat lines the last command returned
     {"log": "regex", "present": true}  {"no_exceptions": true, "ignore": "regex"}   the log since the last step started
     {"java_heap": {"max_live_mb": 450, "max_metaspace_mb": 260}}             the game JVM's live heap after a full GC, and its Metaspace
-  Every check takes "within" (seconds to keep trying, default 3) and the log checks take "since": "start".
+  {"respawn": true} presses the death screen's button. A script may be {"env": {"NAME": "value"}, "steps": [...]}: the env is added to the game's.
+  Every check takes "within" (seconds to keep trying, default 3) and the log checks take "since": "start" or a step's name.
 """
 import argparse
 import collections
@@ -88,6 +89,8 @@ def ctl_commands(kind, arg):
         return [['key', KEYS.get(arg, arg), 'down' if kind == 'press' else 'up']]
     if kind == 'close':
         return [['close']]
+    if kind == 'respawn':
+        return [['respawn']]
     if kind == 'pick':
         return [['mouse', 'middle', 'click']]
     if kind == 'tp':
@@ -107,7 +110,7 @@ def ctl_commands(kind, arg):
 class Log:
     """Reads a growing log by offset; its text is only ever matched, never returned to the caller's output."""
     def __init__(self, path):
-        self.path, self.mark_at = Path(path), 0
+        self.path, self.mark_at, self.named = Path(path), 0, {}
 
     def size(self):
         try:
@@ -115,11 +118,16 @@ class Log:
         except OSError:
             return 0
 
-    def mark(self):
+    def mark(self, name=None):
         self.mark_at = self.size()
+        if name is not None:
+            self.named[name] = self.mark_at
 
     def text(self, since='step'):
-        start = 0 if since == 'start' or self.size() < self.mark_at else self.mark_at
+        if since not in ('step', 'start'):
+            start = self.named.get(since, 0)
+        else:
+            start = 0 if since == 'start' or self.size() < self.mark_at else self.mark_at
         try:
             with open(self.path, 'rb') as f:
                 f.seek(start)
@@ -134,9 +142,9 @@ class Logs:
         self.logs = [Log(p) for p in paths]
         self.path = self.logs[0].path
 
-    def mark(self):
+    def mark(self, name=None):
         for log in self.logs:
-            log.mark()
+            log.mark(name)
 
     def text(self, since='step'):
         return '\n'.join(log.text(since) for log in self.logs)
@@ -345,7 +353,7 @@ def run_steps(ctl, steps, out, log, deadline, step_timeout=120, sleep=time.sleep
                 else:
                     entry['path'] = str(path)
             else:
-                log.mark()
+                log.mark(name)
                 for command in ctl_commands(kind, arg):
                     wait = max(step_timeout, int(command[1]) / 20 * 4 + 30) if command[0] == 'wait' else step_timeout
                     code, data = ctl(*command, timeout=max(0.5, min(wait, deadline - time.monotonic())))
@@ -446,8 +454,9 @@ def run(args):
     out = Path(args.out).resolve()
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
-    steps = flatten(json.loads(Path(args.script).read_text()))
-    game = Path(args.game or ROOT / 'target' / 'fast' / 'horizon-client').resolve()
+    script = json.loads(Path(args.script).read_text())
+    steps = flatten(script)
+    game =Path(args.game or ROOT / 'target' / 'fast' / 'horizon-client').resolve()
     if not game.is_file():
         sys.exit(f'{game} is not a file: pass --game')
     try:
@@ -459,6 +468,7 @@ def run(args):
     saves = homes / 'horizon' / 'saves'
     world = args.world or next((p.name for p in sorted(saves.glob('*')) if (p / 'level.dat').is_file()), 'scenario')
     extra = {'HORIZON_JAVA_MODS_DIR': str(args.jars)} if args.jars else {}
+    extra.update(script.get('env', {}) if isinstance(script, dict) else {})
     base = lab.game_env({**os.environ, **gfx_env()}, TMPDIR=out, HZ_SCENARIO_MARKER=out, HORIZON_HOME=homes / 'horizon', HORIZON_LAUNCHER_HOME=homes / 'launcher',
                         XDG_DATA_HOME=homes / 'xdg-data', XDG_CONFIG_HOME=homes / 'xdg-config', **extra)
     env = jm.launch_env(scratch, record, False, base)

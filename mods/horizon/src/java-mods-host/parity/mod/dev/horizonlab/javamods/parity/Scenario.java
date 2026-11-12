@@ -131,6 +131,7 @@ final class Scenario {
                 }
             }
             case "close" -> player.closeContainer();
+            case "respawn" -> player.respawn();
             case "press", "release" -> {
                 String name = step.arg.getAsString();
                 boolean down = step.kind.equals("press");
