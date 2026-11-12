@@ -73,6 +73,7 @@ public final class TestMod {
             ClientEvents.register();
             ClientGlyphs.register();
             ClientMusicProbe.register();
+            ClientChat.register();
         }
     }
 

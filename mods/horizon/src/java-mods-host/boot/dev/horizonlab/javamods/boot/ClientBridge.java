@@ -201,6 +201,8 @@ public final class ClientBridge {
         OPS.put("client_collisions_take", in -> collisions());
         OPS.put("client_creative_tabs", in -> CreativeTabs.take());
         OPS.put("client_post_event", in -> EventPosts.client(in));
+        OPS.put("client_chat_send", in -> ChatSend.send(in));
+        OPS.put("client_command_names", in -> ChatSend.names());
         OPS.put("client_shell_frame", in -> shellFrame(in));
         OPS.put("client_shell_input", in -> shellInput(in));
         OPS.put("client_lockstep_announce", in -> {
@@ -252,6 +254,7 @@ public final class ClientBridge {
     }
 
     public static void send(Packet<?> packet) {
+        if (ChatSend.capture(packet)) return;
         if (player == null || sentByWindow(packet)) return;
         if (RemoteClient.active()) RemoteClient.outbound(Wire.toServer(packet));
         else Clients.toServer(player, packet);
@@ -1116,6 +1119,7 @@ public final class ClientBridge {
         out.writeInt(Environments.bits);
         out.writeBoolean(Lockstep.wanted());
         ClientMusic.writeStatus(out);
+        ChatLines.write(out);
         shellSegments = null;
         shellChanged = false;
         return bytes.toByteArray();
