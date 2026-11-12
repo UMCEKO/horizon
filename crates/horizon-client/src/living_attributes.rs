@@ -137,9 +137,7 @@ pub fn take_modifier(attributes: &mut Live, attribute: &str, id: &str) -> Result
         return Ok(false);
     };
     attributes
-        .edit(&handle, |value, observer| {
-            value.remove(id, observer).map(drop)
-        })
+        .edit(&handle, |value, observer| value.remove(id, observer).map(drop))
         .map_err(attribute_error)?;
     Ok(true)
 }
@@ -150,23 +148,16 @@ pub fn put_base(attributes: &mut Live, attribute: &str, value: f64) -> Result<bo
         return Ok(false);
     };
     attributes
-        .edit(&handle, |instance, observer| {
-            instance.set_base_value(value, observer)
-        })
+        .edit(&handle, |instance, observer| instance.set_base_value(value, observer))
         .map_err(attribute_error)?;
     Ok(true)
 }
 
-fn instance(
-    attributes: &mut Live,
-    attribute: &str,
-) -> Result<Option<horizon_world::attributes::live::Handle>> {
+fn instance(attributes: &mut Live, attribute: &str) -> Result<Option<horizon_world::attributes::live::Handle>> {
     let Some(key) = attributes.key(attribute) else {
         return Ok(None);
     };
-    Ok(attributes
-        .get_instance(Some(key))
-        .map_err(attribute_error)?)
+    Ok(attributes.get_instance(Some(key)).map_err(attribute_error)?)
 }
 
 /// `AttributeMap.pack` in `AttributeInstance.Packed.LIST_CODEC`'s form: each

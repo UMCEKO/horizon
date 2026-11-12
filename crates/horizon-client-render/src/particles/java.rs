@@ -203,10 +203,7 @@ mod tests {
         assert_eq!(first.b.light, 0x0050_0000);
         let second = parsed.quads[1];
         assert!(!second.translucent);
-        assert_eq!(
-            (second.facing, second.span),
-            (Facing::Fixed, Span::SecondHalf)
-        );
+        assert_eq!((second.facing, second.span), (Facing::Fixed, Span::SecondHalf));
         assert_eq!(second.sprite, 1);
     }
 
