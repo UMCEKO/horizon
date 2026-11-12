@@ -435,6 +435,21 @@ def bridges(args):
                          ('client_chat_event_cancel', not any('horizon chat cancel' in row for row in lines.splitlines()))):
             print(f"  {name}: {'ok' if ok else 'WRONG ' + lines[:200]}", flush=True)
             wrong.extend([] if ok else [name])
+        # Commands through the window's chat: Java's own run in Java, native ones post CommandEvent once.
+        def diamonds():
+            held = json.loads(send('inventory'))
+            counts = held.get('inventory', held).get('counts', {})
+            return sum(n for item, n in counts.items() if item.split(':')[-1] == 'diamond')
+        before = diamonds()
+        for line in ('horizon_java_test ping', 'horizon_java_test op', 'horizon_java_test refuse', 'time horizon_java_test_sub', 'time query daytime', 'horizon_java_test give_probe'):
+            send(f'command {line}')
+        send('wait 5')
+        said = send('messages 20')
+        for name, ok in (('mod_command_feedback', re.search(r'pong \S', said) is not None), ('mod_command_permission', 'op ok' in said),
+                         ('command_event_cancels', 'refuse ran' not in said), ('mixed_root_sub_runs', 'sub ran' in said),
+                         ('mixed_root_native_runs', re.search(r'The time is \d', said) is not None), ('mod_command_gives', diamonds() == before + 1)):
+            print(f"  {name}: {'ok' if ok else 'WRONG'}", flush=True)
+            wrong.extend([] if ok else [name])
         # A real click on a mod's block, then the machine after it has run.
         send(f'command tp @s {machine - 2} {y} {z}')
         send('wait 40')
@@ -583,7 +598,7 @@ def bridges(args):
     shutil.copy(Path(args.scratch) / 'ctl.log', Path(args.scratch) / 'first-session.log')
     paused = re.findall(r'^Horizon: pause sources: \[(.*)\]$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks.append(('pause_sources_from_handler', 'ok' if paused == ['music'] else f'FAILED {paused}'))
-    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'player_stack_keeps_identity', 'player_view_sees_native_give', 'play_sound_posted_from_native', 'gui_layer_pre_cancel', 'lockstep_order', 'lockstep_post_sees_this_tick', 'glyph_shadow_from_patch', 'loop_init_then_run', 'mod_command_registered', 'commands_selection_follows_dist', 'server_chat_event_player', 'client_commands_registered', 'client_command_runs', 'client_level_sees_the_pig', 'client_level_finds_the_pig_in_its_box', 'client_level_loses_the_removed_pig', 'debug_entry_lines_recorded', 'rocket_moves_in_its_own_tick', 'rocket_lifts_five_blocks', 'pre_write_moves_without_lerp_start','window_resize_fired', 'render_frame_paired', 'master_volume_follows') if (name, 'ok') not in checks)
+    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'player_stack_keeps_identity', 'player_view_sees_native_give', 'play_sound_posted_from_native', 'gui_layer_pre_cancel', 'lockstep_order', 'lockstep_post_sees_this_tick', 'glyph_shadow_from_patch', 'loop_init_then_run', 'mod_command_registered', 'commands_selection_follows_dist', 'server_chat_event_player', 'client_commands_registered', 'client_command_runs', 'client_level_sees_the_pig', 'client_level_finds_the_pig_in_its_box', 'client_level_loses_the_removed_pig', 'debug_entry_lines_recorded', 'rocket_moves_in_its_own_tick', 'rocket_lifts_five_blocks', 'pre_write_moves_without_lerp_start','window_resize_fired', 'render_frame_paired', 'master_volume_follows', 'mod_command_runs_in_java', 'command_event_for_native', 'command_event_once') if (name, 'ok') not in checks)
     session(args, again)
     second = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks += [(name + ' (second session)', result) for name, result in second]

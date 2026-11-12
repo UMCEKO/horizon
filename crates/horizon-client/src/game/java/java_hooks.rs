@@ -643,6 +643,45 @@ impl Game<'_> {
         let _ = (wall_ms, spans);
     }
 
+    /// A Java mod's command, or `CommandEvent` for a native one: `Some(ok)` when Java ran or stopped it, `Err` a replaced line.
+    pub(super) fn java_hook_command(
+        &mut self,
+        command: &str,
+        quiet: bool,
+    ) -> Result<Option<bool>, String> {
+        #[cfg(feature = "java-mods")]
+        return match self.java_command(command, quiet) {
+            None => Ok(None),
+            Some(super::java_commands::JavaVerdict::Ran) => Ok(Some(true)),
+            Some(super::java_commands::JavaVerdict::Stopped) => Ok(Some(false)),
+            Some(super::java_commands::JavaVerdict::Replaced(text)) => Err(text),
+        };
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (command, quiet);
+            Ok(None)
+        }
+    }
+
+    /// The line a `CommandEvent` listener put in place of the player's command `player_command` just heard.
+    pub(super) fn java_hook_replaced_command() -> Option<String> {
+        #[cfg(feature = "java-mods")]
+        return super::java_commands::java_take_replaced_command();
+        #[cfg(not(feature = "java-mods"))]
+        None
+    }
+
+    /// Whether a Java mod owns `line`'s root command, which any player may send whatever the world allows.
+    pub(super) fn java_hook_owns_command(line: &str) -> bool {
+        #[cfg(feature = "java-mods")]
+        return Self::java_owns_command(line);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = line;
+            false
+        }
+    }
+
     /// The JVM's flight recording written now, named by the time (`profile dump`).
     pub(super) fn java_hook_profile_dump(&mut self) -> Result<std::path::PathBuf, String> {
         #[cfg(feature = "java-mods")]
@@ -770,6 +809,11 @@ pub(crate) fn java_hook_resolve(java_mods: Option<&Path>) -> std::io::Result<()>
         });
         horizon_java_host::set_run(run);
     }
+    Ok(())
+}
+
+#[cfg(not(feature = "java-mods"))]
+pub(crate) fn java_hook_resolve(_java_mods: Option<&Path>) -> std::io::Result<()> {
     Ok(())
 }
 

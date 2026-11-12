@@ -128,6 +128,8 @@ public final class GameBridge {
         Crossing.game("items", input -> items());
         Crossing.game("states", input -> states());
         Crossing.game("commands_roots", (in, out) -> commandsRoots(out));
+        Crossing.game("command", ModCommands::command);
+        Crossing.game("console_command", ModCommands::console);
         Crossing.game("refresh", GameBridge::refresh);
         Crossing.game("clear_use", GameBridge::clearUse);
         Crossing.game("block_events", GameBridge::blockEvents);
