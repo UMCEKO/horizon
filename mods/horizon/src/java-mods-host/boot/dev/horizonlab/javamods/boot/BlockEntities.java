@@ -1,5 +1,6 @@
 package dev.horizonlab.javamods.boot;
 
+import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import java.util.ArrayList;
@@ -17,7 +18,6 @@ import net.minecraft.world.level.block.BaseRailBlock;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.EntityBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
-import net.minecraft.world.level.block.entity.BlockEntityTicker;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.storage.TagValueInput;
 import net.minecraft.util.ProblemReporter;
@@ -28,6 +28,10 @@ public final class BlockEntities {
 
     private static final org.slf4j.Logger LOGGER = com.mojang.logging.LogUtils.getLogger();
     private static final Map<ServerLevel, Long2ObjectOpenHashMap<BlockEntity>> HELD = new IdentityHashMap<>();
+    /** `LevelChunk.tickersInLevel`: each held block entity's ticker, bound at its first tick and again when its state changes. */
+    private static final Map<ServerLevel, Long2ObjectOpenHashMap<BoundTicker<BlockEntity>>> TICKERS = new IdentityHashMap<>();
+    /** The generation Horizon gave each held object's position when Java bound it; 0 when it hasn't been told. */
+    private static final Map<ServerLevel, Long2LongOpenHashMap> GENERATIONS = new IdentityHashMap<>();
     private static final Set<BlockEntity> VANILLA = Collections.newSetFromMap(new IdentityHashMap<>());
     private static final List<BlockEntity> FRESH = new ArrayList<>();
     private static boolean refreshing;
@@ -40,17 +44,22 @@ public final class BlockEntities {
     }
 
     /** Bridged: Horizon keeps a place for a new block entity Java made. */
-    private static void adopt(long pos, String id) {
+    private static long adopt(long pos, String id) {
         throw new IllegalStateException("not bridged");
     }
 
     /** Bridged: Horizon's record of a vanilla block entity becomes this saved form. */
-    private static void store(long pos, byte[] tag) {
+    private static long store(long pos, long generation, byte[] tag) {
+        throw new IllegalStateException("not bridged");
+    }
+
+    /** Bridged: whether a run's entry `index` may tick: not once an earlier entry wrote into Horizon. */
+    static boolean runEntry(int index) {
         throw new IllegalStateException("not bridged");
     }
 
     /** Bridged: the block entity at this position is gone. */
-    private static void forget(long pos) {
+    private static void forget(long pos, long generation) {
         throw new IllegalStateException("not bridged");
     }
 
@@ -58,8 +67,14 @@ public final class BlockEntities {
         return HELD.computeIfAbsent(level, l -> new Long2ObjectOpenHashMap<>());
     }
 
+    static Long2LongOpenHashMap generations(ServerLevel level) {
+        return GENERATIONS.computeIfAbsent(level, l -> new Long2LongOpenHashMap());
+    }
+
     static void reset() {
         HELD.clear();
+        TICKERS.clear();
+        GENERATIONS.clear();
         VANILLA.clear();
         FRESH.clear();
         UNSAVED.clear();
@@ -77,6 +92,7 @@ public final class BlockEntities {
         if (previous != null && previous != entity) {
             previous.setRemoved();
             VANILLA.remove(previous);
+            unbind(level, previous.getBlockPos().asLong());
         }
         if (previous != entity) level.invalidateCapabilities(entity.getBlockPos());
         Clients.joined(level, entity);
@@ -90,7 +106,9 @@ public final class BlockEntities {
         if (entity != null) {
             if (!entity.isRemoved()) return entity;
             held.remove(key);
+            generations(level).remove(key);
             VANILLA.remove(entity);
+            unbind(level, key);
             return null;
         }
         BlockState state = level.getBlockState(pos);
@@ -102,7 +120,7 @@ public final class BlockEntities {
             if (entity != null) {
                 join(level, entity);
                 if (ours(state)) {
-                    adopt(key, BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(entity.getType()).toString());
+                    generations(level).put(key, adopt(key, BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(entity.getType()).toString()));
                     FRESH.add(entity);
                 } else VANILLA.add(entity);
             }
@@ -110,10 +128,21 @@ public final class BlockEntities {
         return entity;
     }
 
+    /** Horizon's record at this position as it is now: the object held keeps its generation, a new one has none until told. */
     public static void load(ServerLevel level, BlockPos pos, CompoundTag tag) {
+        load(level, pos, generations(level).get(pos.asLong()), tag);
+    }
+
+    /** The record of `generation` reaches Java: the object bound to that generation reads it in place, any other is replaced by one built from it. */
+    public static void load(ServerLevel level, BlockPos pos, long generation, CompoundTag tag) {
         if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: loading a block entity: " + tag);
         BlockState state = level.getBlockState(pos);
-        BlockEntity held = held(level).get(pos.asLong());
+        long key = pos.asLong();
+        BlockEntity held = held(level).get(key);
+        if (held != null && generation != 0 && generations(level).get(key) != generation) {
+            drop(level, pos);
+            held = null;
+        }
         if (held != null && !held.isRemoved() && BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(held.getType()).toString().equals(tag.getStringOr("id", ""))) {
             refresh(level, held, tag);
             return;
@@ -121,6 +150,7 @@ public final class BlockEntities {
         BlockEntity entity = BlockEntity.loadStatic(pos.immutable(), state, tag, level.registryAccess());
         if (entity == null) return;
         join(level, entity);
+        generations(level).put(key, generation);
         if (!ours(state)) VANILLA.add(entity);
         else FRESH.add(entity);
     }
@@ -165,7 +195,7 @@ public final class BlockEntities {
         boolean fresh = held(level).get(key) == null;
         join(level, entity);
         if (fresh && ours(entity.getBlockState())) {
-            adopt(key, BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(entity.getType()).toString());
+            generations(level).put(key, adopt(key, BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(entity.getType()).toString()));
             FRESH.add(entity);
         }
         if (ours(entity.getBlockState())) markUnsaved(level, entity.getBlockPos());
@@ -183,7 +213,9 @@ public final class BlockEntities {
         } catch (java.io.IOException e) {
             throw new java.io.UncheckedIOException(e);
         }
-        store(entity.getBlockPos().asLong(), bytes.toByteArray());
+        long key = entity.getBlockPos().asLong();
+        long generation = store(key, generations(level).get(key), bytes.toByteArray());
+        if (generation != 0) generations(level).put(key, generation);
     }
 
     private static void markUnsaved(ServerLevel level, BlockPos pos) {
@@ -191,15 +223,18 @@ public final class BlockEntities {
     }
 
     public static void remove(ServerLevel level, BlockPos pos) {
-        if (drop(level, pos)) forget(pos.asLong());
+        long generation = generations(level).get(pos.asLong());
+        if (drop(level, pos)) forget(pos.asLong(), generation);
     }
 
     /** `LevelChunk.removeBlockEntity` without telling Horizon, for a block entity it already lost. */
     static boolean drop(ServerLevel level, BlockPos pos) {
         BlockEntity entity = held(level).remove(pos.asLong());
+        generations(level).remove(pos.asLong());
         if (entity == null) return false;
         entity.setRemoved();
         VANILLA.remove(entity);
+        unbind(level, pos.asLong());
         level.invalidateCapabilities(pos);
         return true;
     }
@@ -236,7 +271,10 @@ public final class BlockEntities {
         for (BlockEntity entity : here) entity.setRemoved();
         for (BlockEntity entity : here) {
             VANILLA.remove(entity);
-            held.remove(entity.getBlockPos().asLong(), entity);
+            if (held.remove(entity.getBlockPos().asLong(), entity)) {
+                unbind(level, entity.getBlockPos().asLong());
+                generations(level).remove(entity.getBlockPos().asLong());
+            }
         }
     }
 
@@ -275,22 +313,27 @@ public final class BlockEntities {
     /** `BlockEntityTicker.tick`, as vanilla's list does it; false when this one's saved form hasn't reached Java. */
     static boolean tick(ServerLevel level, BlockPos pos) {
         loadFresh();
-        BlockEntity entity = held(level).get(pos.asLong());
+        long key = pos.asLong();
+        BlockEntity entity = held(level).get(key);
         if (entity == null) return false;
         if (entity.isRemoved()) return true;
+        var tickers = TICKERS.computeIfAbsent(level, l -> new Long2ObjectOpenHashMap<>());
+        var bound = tickers.get(key);
+        if (bound == null || bound.entity != entity) {
+            bound = new BoundTicker<>(entity);
+            tickers.put(key, bound);
+        }
         BlockState state = level.getBlockState(pos);
-        if (state.getBlock() instanceof EntityBlock block) tickWith(block, level, state, entity);
+        // `LevelChunk.setBlockState` rebinds as it sets the state; here a native or Java change shows as a state other than the bound one.
+        if (state != bound.bound() && entity.getType().isValid(state)) bound.bind(level, state);
+        long started = Profile.ON ? System.nanoTime() : 0;
+        if (bound.run(level, pos, state) && Profile.ON) Profile.tick(entity.getType(), System.nanoTime() - started);
         return true;
     }
 
-    private static <T extends BlockEntity> void tickWith(EntityBlock block, ServerLevel level, BlockState state, T entity) {
-        @SuppressWarnings("unchecked")
-        var type = (net.minecraft.world.level.block.entity.BlockEntityType<T>) entity.getType();
-        BlockEntityTicker<T> ticker = block.getTicker(level, state, type);
-        if (ticker == null) return;
-        long started = Profile.ON ? System.nanoTime() : 0;
-        ticker.tick(level, entity.getBlockPos(), state, entity);
-        if (Profile.ON) Profile.tick(type, System.nanoTime() - started);
+    private static void unbind(ServerLevel level, long key) {
+        var tickers = TICKERS.get(level);
+        if (tickers != null) tickers.remove(key);
     }
 
     /** `LevelChunk.getBlockEntity(pos, CHECK)`: the one held, or the saved form Horizon keeps for it, never a new one. */
@@ -303,6 +346,8 @@ public final class BlockEntities {
         }
         if (entity != null && entity.isRemoved()) {
             held(level).remove(key);
+            unbind(level, key);
+            generations(level).remove(key);
             return null;
         }
         return entity;
@@ -324,7 +369,7 @@ public final class BlockEntities {
             } else {
                 // Horizon's chunk let its record go with the old block, which only vanilla's kept-entity blocks keep.
                 BlockEntity entity = held(level).get(pos.asLong());
-                if (entity != null && !entity.isRemoved()) adopt(pos.asLong(), BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(entity.getType()).toString());
+                if (entity != null && !entity.isRemoved()) generations(level).put(pos.asLong(), adopt(pos.asLong(), BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(entity.getType()).toString()));
             }
         }
         if ((blockChanged || newBlock instanceof BaseRailBlock) && ((flags & 1) != 0 || movedByPiston) && ours(old)) {

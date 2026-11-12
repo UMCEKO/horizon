@@ -122,3 +122,4 @@ ServerConnectionListener.addPendingConnections	skip:java		queue of accepted sock
 ServerConnectionListener.getSessionId	missing		vanilla sends one random session id per server run in login finished; lan/conn.rs sends the player's own uuid as `session`
 ServerConnectionListener.LatencySimulator.delayDownstream	skip:debug		dev latency simulator behind SharedConstants.DEBUG_FAKE_LATENCY_MS
 ServerConnectionListener.LatencySimulator.onTimeout	skip:debug		dev latency simulator behind SharedConstants.DEBUG_FAKE_LATENCY_MS
+ServerConfigurationPacketListenerImpl.startConfiguration	inline	crates/horizon-client/src/lan/conn.rs::login_and_configure	w12-coverage: W13

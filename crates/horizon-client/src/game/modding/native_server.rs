@@ -1092,18 +1092,23 @@ impl Game<'_> {
         }
         let mut stored_here = false;
         self.native_as_player_handle(player, |game| {
-            let Some(slot) = game.acting_abilities.as_mut() else {
-                return;
-            };
-            *slot = stored;
-            if let Some(body) = game.player.as_mut() {
-                body.invulnerable = stored.invulnerable;
-                body.may_fly = stored.may_fly;
-                body.flying = stored.flying;
-                body.flying_speed = stored.flying_speed;
-            }
-            stored_here = true;
+            stored_here = game.store_acting_abilities(stored);
         }) && stored_here
+    }
+
+    /// The acting player's abilities as a mod wrote them; the turn's end tells the client.
+    pub(in crate::game) fn store_acting_abilities(&mut self, stored: PlayerAbilities) -> bool {
+        let Some(slot) = self.acting_abilities.as_mut() else {
+            return false;
+        };
+        *slot = stored;
+        if let Some(body) = self.player.as_mut() {
+            body.invulnerable = stored.invulnerable;
+            body.may_fly = stored.may_fly;
+            body.flying = stored.flying;
+            body.flying_speed = stored.flying_speed;
+        }
+        true
     }
 
     /// `Player.isCreative`; Paper `HumanEntity#getGameMode`.
@@ -1117,6 +1122,16 @@ impl Game<'_> {
             PlayerRead::Acting { .. } => self.selected,
             PlayerRead::Guest(guest) => guest.selected,
         })
+    }
+
+    /// `Inventory.setSelectedSlot` on the acting player, through the route a Java mod may take.
+    fn select_hotbar_slot(&mut self, slot: usize) {
+        #[cfg(feature = "java-mods")]
+        self.set_selected_slot(slot as i32);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            self.selected = slot;
+        }
     }
 
     /// `Inventory.setSelectedSlot` for a server write: `slot` (0 to 8) becomes the hotbar slot the
@@ -1143,10 +1158,12 @@ impl Game<'_> {
             }),
             None => None,
         };
-        let changed = self.player_selected_slot(player) != Some(slot);
+        let before = self.player_selected_slot(player);
+        let mut now = slot;
         if !self.native_as_player_handle(player, |game| {
-            game.selected = slot;
-            if changed
+            game.select_hotbar_slot(slot);
+            now = game.selected;
+            if before != Some(now)
                 && game
                     .using
                     .is_some_and(|(held, _)| held != crate::game::shield::OFFHAND_SLOT)
@@ -1159,7 +1176,7 @@ impl Game<'_> {
         if let (Some(conn), Some(host)) = (conn, self.lan.as_ref()) {
             host.hub.send_to(
                 conn,
-                &C::SetHeldSlot(play::SetHeldSlot { slot: slot as i32 }),
+                &C::SetHeldSlot(play::SetHeldSlot { slot: now as i32 }),
             );
         }
         true

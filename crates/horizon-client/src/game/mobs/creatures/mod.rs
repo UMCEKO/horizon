@@ -1609,6 +1609,8 @@ impl Game<'_> {
         // 🤖 Agent: the split follows the poof, as `LivingEntity.tickDeath`
         // broadcasts event 60 before it calls `remove`.
         for (id, at, width, height, split) in gone {
+            // `LivingEntity.tickDeath` removes the body with KILLED.
+            self.stamp_leave(id, super::native_entities::Removal::Killed);
             let at = [at.x, at.y, at.z];
             self.lan_entity_event(id as i32, 60, at);
             self.death_poof(at, width, height);
@@ -2136,7 +2138,10 @@ impl Game<'_> {
             }
         };
         // LootContextParams.ORIGIN of a death: the mob's position.
-        let place = self.loot_place_at([m.position.x, m.position.y, m.position.z], None);
+        let mut place = self.loot_place_at([m.position.x, m.position.y, m.position.z], None);
+        place.this_entity = (self.persist.uuids.get(&m.id))
+            .map(|uuid| (m.id as i32, horizon_client::lan::playerdata::ints_uuid(*uuid)));
+        place.killer = player_uuid;
         let hurt = source.map(|(damage_type, causing)| death_hurt_source(damage_type, causing));
         let enchanted_loot = hurt
             .as_ref()

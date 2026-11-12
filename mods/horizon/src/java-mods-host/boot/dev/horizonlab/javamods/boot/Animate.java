@@ -130,6 +130,13 @@ public final class Animate {
         while (GROUPS.size() > 10) GROUPS.poll();
     }
 
+    /** This tick's picks, sent at its player step in a lockstep tick: the group the tick's `animateTick` runs. */
+    static void current(DataInputStream in) throws IOException {
+        long[] positions = new long[in.readInt()];
+        for (int i = 0; i < positions.length; i++) positions[i] = BlockPos.asLong(in.readInt(), in.readInt(), in.readInt());
+        if (positions.length > 0) current = positions;
+    }
+
     /** The group of the tick about to run: the oldest queued, or none. */
     static void next() {
         current = GROUPS.isEmpty() ? NONE : GROUPS.poll();

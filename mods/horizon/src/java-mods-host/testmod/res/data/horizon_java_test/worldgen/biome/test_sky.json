@@ -1,0 +1,17 @@
+{
+  "attributes": {
+    "minecraft:visual/sky_color": "#000000",
+    "minecraft:visual/fog_color": "#000000",
+    "neoforge:custom_skybox": "horizon_java_test:test",
+    "neoforge:custom_clouds": "horizon_java_test:test",
+    "neoforge:custom_weather_effects": "horizon_java_test:test"
+  },
+  "carvers": [],
+  "downfall": 0.5,
+  "effects": {
+    "water_color": "#3f76e4"
+  },
+  "features": [[], [], [], [], [], [], [], [], [], [], []],
+  "has_precipitation": true,
+  "temperature": 0.5
+}

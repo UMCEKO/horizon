@@ -15,7 +15,7 @@ pub struct Bridge {
     pub class: &'static str,
     pub method: &'static str,
     pub desc: &'static str,
-    /// The method runs in Java when the receiver isn't this class; `@owner.method` names a static `(Object)Z` that must hold instead, and the native then goes on `owner`.
+    /// The method runs in Java when the receiver isn't this class; `@owner.method` names a static `(Object)Z` that must hold instead (`@owner.method+`: `(Object, the method's parameters)Z`), and the native then goes on `owner`.
     pub guard: &'static str,
     pub native: &'static str,
     pub args: Vec<&'static str>,
@@ -125,20 +125,38 @@ thread_local! {
     static ACTIVE: Cell<*mut ()> = const { Cell::new(std::ptr::null_mut()) };
 }
 
-/// Runs `f`, a call into Java, with `game` as what bridges on this thread act on.
-pub fn with_active<G, R>(game: &mut G, f: impl FnOnce() -> R) -> R {
+/// Runs `f`, a call into Java, with `game` as what bridges on this thread act on; a trait object lends the value behind it.
+pub fn with_active<G: ?Sized, R>(game: &mut G, f: impl FnOnce() -> R) -> R {
     let prior = ACTIVE.replace(std::ptr::from_mut(game).cast());
     let out = f();
     ACTIVE.set(prior);
     out
 }
 
+/// Runs `f` on the game the innermost `with_active` lent, as a native does; nothing else on this thread reaches it meanwhile, and `None` outside one.
+pub fn on_active<G: 'static, R>(f: impl FnOnce(&mut G) -> R) -> Option<R> {
+    let game = ACTIVE.replace(std::ptr::null_mut()).cast::<G>();
+    // SAFETY: as in `enter`: `with_active` holds the only `&mut G` for this call, and the pointer is taken out until `f` returns.
+    let out = (!game.is_null()).then(|| f(unsafe { &mut *game }));
+    ACTIVE.set(game.cast());
+    out
+}
+
 /// Runs `f`, a call into Java made where no `&mut` game is in reach: a native it reaches finds no game.
 pub fn without_active<R>(f: impl FnOnce() -> R) -> R {
-    let prior = ACTIVE.replace(std::ptr::null_mut());
-    let out = f();
-    ACTIVE.set(prior);
-    out
+    struct Restore(*mut ());
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ACTIVE.set(self.0);
+        }
+    }
+    let _restore = Restore(ACTIVE.replace(std::ptr::null_mut()));
+    f()
+}
+
+/// Whether a native entered now would find a game.
+pub fn has_active() -> bool {
+    !ACTIVE.get().is_null()
 }
 
 /// What the game runs on the thread of a native that just returned to Java, with the game it acted on; it may call back into Java.
@@ -154,6 +172,19 @@ pub fn after_native<G: 'static>(hook: fn(&mut G)) {
     let _ = AFTER_NATIVE.set((std::any::TypeId::of::<G>(), Box::new(run)));
 }
 
+/// What the game runs before each native acting on it, told the native's name; it may call back into Java.
+static BEFORE_NATIVE: OnceLock<Before> = OnceLock::new();
+type Before = (std::any::TypeId, Box<dyn Fn(*mut (), &str) + Send + Sync>);
+
+/// Registers what runs before each native acting on a `G`, once.
+pub fn before_native<G: 'static>(hook: fn(&mut G, &str)) {
+    let run = move |game: *mut (), name: &str| {
+        // SAFETY: `enter` passes the `G` its native is about to act on, which no one else uses until it returns.
+        hook(unsafe { &mut *game.cast::<G>() }, name);
+    };
+    let _ = BEFORE_NATIVE.set((std::any::TypeId::of::<G>(), Box::new(run)));
+}
+
 /// The body of a native: a Rust panic, or a call with no game behind it, becomes a Java exception.
 pub fn enter<G: 'static, R: Ret>(
     mut env: JNIEnv,
@@ -161,6 +192,7 @@ pub fn enter<G: 'static, R: Ret>(
     f: impl FnOnce(&mut JNIEnv, &mut G) -> R,
 ) -> R::Raw {
     let out = catch_unwind(AssertUnwindSafe(|| {
+        let _node = crate::profile::cross(crate::profile::Way::Native, name);
         // A table for `()` is pure: it answers on any thread, with no game behind it.
         let game = if std::mem::size_of::<G>() == 0 {
             std::ptr::NonNull::<G>::dangling().as_ptr()
@@ -169,6 +201,11 @@ pub fn enter<G: 'static, R: Ret>(
         };
         // SAFETY: `with_active` holds the only `&mut G` for this call, and no one uses it until the call returns.
         (!game.is_null()).then(|| {
+            if let Some((kind, before)) = BEFORE_NATIVE.get()
+                && *kind == std::any::TypeId::of::<G>()
+            {
+                before(game.cast(), name);
+            }
             let out = f(&mut env, unsafe { &mut *game });
             if let Some((kind, after)) = AFTER_NATIVE.get()
                 && *kind == std::any::TypeId::of::<G>()
@@ -476,6 +513,38 @@ impl Arg for Pos {
     }
 }
 
+/// The `ServerLevel` a level bridge was called on, by `Flat.level`: vanilla's three by index, another by its id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LevelOn {
+    Overworld,
+    Nether,
+    End,
+    Named(String),
+}
+impl Arg for LevelOn {
+    type Raw = jint;
+    const RAW: &'static str = "I";
+    const FLAT: &'static str = "level";
+    fn from_raw(env: &mut JNIEnv, raw: jint) -> LevelOn {
+        match raw {
+            0 => LevelOn::Overworld,
+            1 => LevelOn::Nether,
+            2 => LevelOn::End,
+            other => LevelOn::Named(
+                env.call_static_method(
+                    "dev/horizonlab/javamods/boot/Flat",
+                    "levelName",
+                    "(I)Ljava/lang/String;",
+                    &[jni::objects::JValue::Int(other)],
+                )
+                .and_then(|name| name.l())
+                .map(|name| crate::js(env, &JString::from(name)))
+                .unwrap_or_default(),
+            ),
+        }
+    }
+}
+
 /// `Direction`, by ordinal.
 pub struct Dir(pub Direction);
 impl Arg for Dir {
@@ -504,6 +573,28 @@ pub struct StateMap {
     pub animate_any: bool,
 }
 pub static STATES: OnceLock<StateMap> = OnceLock::new();
+
+/// Vanilla's five fluids keep their `BuiltInRegistries.FLUID` ids as tick ids; mods' fluids have no map yet.
+const VANILLA_FLUIDS: u32 = 5;
+
+impl horizon_world::worldgen::mirror::StateMapping for StateMap {
+    fn to_java(&self, state: BlockStateId) -> Option<u32> {
+        let java = *self.to_java.get(state.0 as usize)?;
+        u32::try_from(java).ok()
+    }
+    fn to_native(&self, java: u32) -> Option<BlockStateId> {
+        self.to_horizon.get(java as usize).copied().flatten()
+    }
+    fn java_states(&self) -> usize {
+        self.to_horizon.len()
+    }
+    fn fluid_to_java(&self, fluid: u32) -> Option<u32> {
+        (fluid < VANILLA_FLUIDS).then_some(fluid)
+    }
+    fn fluid_to_native(&self, java: u32) -> Option<u32> {
+        (java < VANILLA_FLUIDS).then_some(java)
+    }
+}
 
 /// Whether Java runs any `animateTick`, of a picked state or the whole loop.
 #[inline]
@@ -577,7 +668,7 @@ impl Ret for BlockStateId {
     }
 }
 
-/// One entry serves one Java method from Rust: the class, the method and its descriptor, then a body on `&mut Game`; a leading `route` makes it the method's body for a route stub.
+/// One entry serves one Java method from Rust: the class, the method and its descriptor, then a body on `&mut Game`; a leading `route` makes it the method's body for a route stub; a guard `@owner.method+` also receives the method's own parameters.
 #[macro_export]
 macro_rules! java_bridges {
     ($table:ident for $game:ty { $(
@@ -618,6 +709,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_mirror_write_log_on_the_wire_carries_javas_state_ids() {
+        use horizon_world::worldgen::mirror::{MirrorError, Write, WriteLog};
+        // A mod's block sits between vanilla's in Java's registry: Horizon's 2 is Java's 3.
+        let map = StateMap {
+            to_horizon: vec![
+                Some(BlockStateId(0)),
+                Some(BlockStateId(1)),
+                None,
+                Some(BlockStateId(2)),
+            ],
+            to_java: vec![0, 1, 3, UNMAPPED],
+            java_air: 0,
+            owned: vec![false; 4],
+            entity: vec![false; 4],
+            animate: vec![0; 4],
+            animate_whole: false,
+            animate_any: false,
+        };
+        let pos = BlockPos::new(1, 2, 3);
+        let mut log = WriteLog::default();
+        log.record(Write::Block {
+            pos,
+            state: BlockStateId(2),
+            flags: 3,
+        });
+        let bytes = log.encode(&map).unwrap();
+        let mut expected = 1i32.to_be_bytes().to_vec();
+        expected.push(0);
+        expected.extend(pos.pack().to_be_bytes());
+        expected.extend(3i32.to_be_bytes());
+        expected.extend(3i32.to_be_bytes());
+        assert_eq!(bytes, expected);
+        assert_eq!(WriteLog::decode(&bytes, &map).unwrap(), log);
+        let mut unmapped = WriteLog::default();
+        unmapped.record(Write::Block {
+            pos,
+            state: BlockStateId(3),
+            flags: 3,
+        });
+        assert!(matches!(
+            unmapped.encode(&map),
+            Err(MirrorError::NoJavaState(_))
+        ));
+        let mut stray = bytes.clone();
+        stray[13..17].copy_from_slice(&2i32.to_be_bytes());
+        assert!(matches!(
+            WriteLog::decode(&stray, &map),
+            Err(MirrorError::NoNativeState(2))
+        ));
+    }
+
+    #[test]
     fn a_call_without_a_game_hides_the_active_one_and_gives_it_back() {
         let mut game = 7u64;
         let at = std::ptr::from_mut(&mut game).cast::<()>();
@@ -630,6 +773,50 @@ mod tests {
         assert!(hidden.is_null());
         assert_eq!(after, at);
         assert!(ACTIVE.get().is_null());
+    }
+
+    trait Counter {
+        fn count(&self) -> u64;
+    }
+    impl Counter for u64 {
+        fn count(&self) -> u64 {
+            *self
+        }
+    }
+
+    #[test]
+    fn a_lent_trait_object_is_reached_once_and_given_back() {
+        let mut game = 7u64;
+        let lent: &mut dyn Counter = &mut game;
+        let (first, nested, again) = with_active(lent, || {
+            let first = on_active::<u64, _>(|game| {
+                *game += 1;
+                on_active::<u64, _>(|_| ()).is_none()
+            });
+            (
+                first,
+                ACTIVE.get().is_null(),
+                on_active::<u64, _>(|game| *game),
+            )
+        });
+        assert_eq!((first, nested, again), (Some(true), false, Some(8)));
+        assert_eq!(on_active::<u64, _>(|game| *game), None);
+        assert_eq!(game.count(), 8);
+    }
+
+    #[test]
+    fn a_roll_isolated_from_java_finds_no_game_and_gives_it_back_after_a_panic() {
+        let mut game = 7u64;
+        let (isolated, after, unwound) = with_active(&mut game, || {
+            let isolated = without_active(has_active);
+            let after = has_active();
+            let panicked = std::panic::catch_unwind(|| without_active(|| panic!("a roll failed")));
+            (isolated, after, panicked.is_err() && has_active())
+        });
+        assert!(!isolated);
+        assert!(after);
+        assert!(unwound);
+        assert!(!has_active());
     }
 
     fn entry(guard: &'static str) -> Bridge {
@@ -680,6 +867,12 @@ mod tests {
     }
 
     #[test]
+    fn an_arguments_guard_keeps_its_holder() {
+        let bridge = entry("@dev/horizonlab/javamods/boot/Effects.nativeParticles+");
+        assert_eq!(bridge.holder(), "dev/horizonlab/javamods/boot/Effects");
+    }
+
+    #[test]
     fn a_class_guard_and_no_guard_keep_their_holders() {
         assert_eq!(entry("").holder(), "net/minecraft/world/entity/Entity");
         assert_eq!(entry("a/B").holder(), "a/B");
@@ -690,6 +883,7 @@ mod tests {
         crate::java_bridges! { table for () {
             route "a/B".m "(I)I" if "a/G" => fn route_m(g, x: i32) -> i32 { x }
             "a/C".n "()V" => fn plain_n(g) -> () {}
+            "a/L".get "(J)I" if "a/S" => fn level_get(g, on: super::super::LevelOn, pos: super::super::Pos) -> i32 { 0 }
         } }
         pub fn lines() -> Vec<String> {
             table().iter().map(super::super::Bridge::line).collect()
@@ -704,6 +898,14 @@ mod tests {
             "a/B\tm\t(I)I\ta/G\thorizon$bridge$route_m\tI\tI\troute"
         );
         assert_eq!(lines[1], "a/C\tn\t()V\t\thorizon$bridge$plain_n\t\tV\t");
+    }
+
+    #[test]
+    fn a_level_receiver_goes_first_through_flat_level() {
+        assert_eq!(
+            table::lines()[2],
+            "a/L\tget\t(J)I\ta/S\thorizon$bridge$level_get\tlevel:I,J\tI\t"
+        );
     }
 
     #[test]

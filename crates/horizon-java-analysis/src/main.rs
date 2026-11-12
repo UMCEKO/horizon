@@ -235,7 +235,7 @@ fn write_mixins(args: &[String]) -> Result<(), String> {
     mixins::write_mixins(&out, &entries, classes, &warnings)
 }
 
-/// `replaces --install DIR --boot-jar JAR --out OUT [--cache C]`: writes `replaces.json` and `mixins/`.
+/// `replaces --install DIR --boot-jar JAR --out OUT [--cache C]`: writes `replaces.json`, `entity-facts.json` and `mixins/`; fails after writing on unclassified entity methods.
 fn write_replaces(args: &[String]) -> Result<(), String> {
     let (mut install, mut boot, mut out, mut cache) = (None, None, None, None);
     let mut it = args.iter();
@@ -254,9 +254,11 @@ fn write_replaces(args: &[String]) -> Result<(), String> {
     let out = out.ok_or("--out OUT is required")?;
     let started = std::time::Instant::now();
     let knowledge = Knowledge::from_boot_jar(&boot)?;
-    let result = replaces::analyse(&install, &knowledge, cache.as_deref(), &mut |line| {
+    let mut result = replaces::analyse(&install, &knowledge, cache.as_deref(), &mut |line| {
         eprintln!("{line}");
     })?;
+    let facts = entity_facts::facts::analyse(&mut result)?;
+    entity_facts::facts::write_boot_files(&out, &facts)?;
     mixins::write_mixins(
         &out.join("mixins"),
         &result.entries,
@@ -272,5 +274,8 @@ fn write_replaces(args: &[String]) -> Result<(), String> {
         result.methods.len(),
         result.events.len()
     );
-    Ok(())
+    match entity_facts::facts::unclassified_error(&facts) {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }

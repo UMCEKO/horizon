@@ -83,8 +83,12 @@ public final class GameBridge {
     private record Sound(String id, double x, double y, double z, float volume, float pitch) {}
 
     private static final int SLOTS = 41;
-    private static final Map<String, ServerLevel> LEVELS = new HashMap<>();
+    /** Horizon's level keys: `DimensionKey` slots, the three vanilla dimensions first. */
+    static final int OVERWORLD = 0;
+    private static ServerLevel[] levels = new ServerLevel[3];
     private static final Map<UUID, ServerPlayer> PLAYERS = new HashMap<>();
+    // The level each player's view last joined, so a join or leave a second site tells is not posted twice.
+    private static final Map<UUID, ServerLevel> JOINED = new HashMap<>();
     private static final List<Sound> SOUNDS = new ArrayList<>();
     // Volatile: the Java client reads both from its own thread, as the integrated server's registries and server.
     private static volatile RegistryAccess.Frozen registries;
@@ -113,18 +117,22 @@ public final class GameBridge {
         Crossing.free("profile_take", input -> Profile.take().getBytes(java.nio.charset.StandardCharsets.UTF_8));
         Crossing.free("profile_dump", GameBridge::profileDump);
         Crossing.free("bench_echo_free", input -> input);
+        Crossing.free("listener_census", EventPosts::census);
         Crossing.game("prepare", input -> prepare());
+        Crossing.game("worldgen_export", GameBridge::worldgenExport);
         Crossing.game("items", input -> items());
         Crossing.game("states", input -> states());
         Crossing.game("refresh", GameBridge::refresh);
         Crossing.game("clear_use", GameBridge::clearUse);
         Crossing.game("block_events", GameBridge::blockEvents);
         Crossing.game("block_entity_tick", GameBridge::blockEntityTick);
+        Crossing.game("block_entity_tick_run", GameBridge::blockEntityTickRun);
         Crossing.game("block_entity_load", GameBridge::blockEntityLoad);
         Crossing.game("block_entity_drop", GameBridge::blockEntityDrop);
         Crossing.game("entity_view", GameBridge::entityView);
+        Crossing.game("entity_added", GameBridge::entityAdded);
         Crossing.game("entity_left", GameBridge::entityLeft);
-        Crossing.game("entity_refresh", GameBridge::entityRefresh);
+        Crossing.game("player_level", GameBridge::playerLevel);
         Crossing.game("entities_save", GameBridge::entitiesSave);
         Crossing.game("block_entities_save", GameBridge::blockEntitiesSave);
         Crossing.game("chunks_changed", GameBridge::chunksChanged);
@@ -139,21 +147,23 @@ public final class GameBridge {
         Crossing.game("routes_bin", input -> Routing.bin());
         Crossing.game("route", Routing::call);
         Crossing.game("bench_route", Routing::benchCall);
-        Crossing.game("entity_types", input -> EntityFacts.types(level("minecraft:overworld")));
+        Crossing.game("entity_types", input -> EntityFacts.types(level(OVERWORLD)));
+        Crossing.game("level_add", GameBridge::levelAdd);
+        Crossing.game("craft_facts", input -> CraftFacts.bin(server()));
         Crossing.game("click_block", (in, out) -> use(in, out, 2));
         Crossing.game("event_click_block", (in, out) -> use(in, out, 3));
         Crossing.game("event_use_item", (in, out) -> use(in, out, 4));
-        Crossing.game("event_break", (in, out) -> use(in, out, 5));
+        Crossing.game("post_event", EventPosts::server);
         Crossing.game("destroy_progress", GameBridge::destroyProgress);
         Crossing.game("correct_tool", GameBridge::correctTool);
         Crossing.game("mine_block", (in, out) -> use(in, out, 12));
         Crossing.game("destroy_block", (in, out) -> use(in, out, 13));
-        Crossing.game("event_attack", (in, out) -> use(in, out, 6));
         Crossing.game("player_tick", (in, out) -> use(in, out, 7));
         Crossing.game("player_left", GameBridge::playerLeft);
         Crossing.game("remote_join", GameBridge::remoteJoin);
         Crossing.game("remote_in", GameBridge::remoteIn);
         Crossing.game("remote_config", input -> remoteConfig());
+        Crossing.game("server_about_to_start", GameBridge::serverAboutToStart);
         Crossing.game("server_start", input -> lifecycle(input, true));
         Crossing.game("server_stop", input -> lifecycle(input, false));
         Crossing.game("server_stopping", GameBridge::serverStopping);
@@ -207,6 +217,12 @@ public final class GameBridge {
     }
 
     private static ReloadableServerResources resources;
+
+    /** Writes the final worldgen registries to the file the input names. */
+    private static byte[] worldgenExport(byte[] input) throws IOException {
+        WorldgenExport.write(new String(input, java.nio.charset.StandardCharsets.UTF_8));
+        return new byte[] {1};
+    }
 
     static byte[] prepare() throws Exception {
         if (registries != null) return new byte[] {1};
@@ -283,26 +299,56 @@ public final class GameBridge {
         return type.cast(ReflectionFactory.getReflectionFactory().newConstructorForSerialization(type, parent).newInstance(args));
     }
 
-    static ServerLevel level(String id) throws ReflectiveOperationException {
-        var level = LEVELS.get(id);
-        if (level != null) return level;
+    /** The level of a key Horizon sent with `level_add`: any other key is an error. */
+    static ServerLevel level(int key) {
+        if (key < 0 || key >= levels.length || levels[key] == null) throw new IllegalStateException("no level for key " + key);
+        return levels[key];
+    }
+
+    /** The level of a dimension's id. */
+    private static ServerLevel levelNamed(String id) {
+        for (var level : allLevels()) if (level.dimension().identifier().toString().equals(id)) return level;
+        throw new IllegalStateException("no level named " + id);
+    }
+
+    /** The key `level_add` gave a level, -1 for one it never named. */
+    static int keyOf(ServerLevel level) {
+        for (int key = 0; level != null && key < levels.length; key++) if (levels[key] == level) return key;
+        return -1;
+    }
+
+    /** Every level, in key order. */
+    private static List<ServerLevel> allLevels() {
+        var out = new ArrayList<ServerLevel>();
+        for (var level : levels) if (level != null) out.add(level);
+        return out;
+    }
+
+    /** `level_add`: Horizon names the dimension of a key once, and its `ServerLevel` is made. */
+    private static byte[] levelAdd(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        int slot = in.readInt();
+        add(slot, text(in));
+        return new byte[0];
+    }
+
+    static ServerLevel add(int slot, String id) throws ReflectiveOperationException {
+        if (slot < 0) throw new IllegalArgumentException("level key " + slot);
+        if (slot < levels.length && levels[slot] != null) return levels[slot];
         var key = ResourceKey.create(Registries.DIMENSION, Identifier.parse(id));
         ResourceKey<DimensionType> type = key == Level.NETHER ? BuiltinDimensionTypes.NETHER : key == Level.END ? BuiltinDimensionTypes.END : BuiltinDimensionTypes.OVERWORLD;
         Holder<DimensionType> holder = registries.lookupOrThrow(Registries.DIMENSION_TYPE).getOrThrow(type);
         var parent = Level.class.getDeclaredConstructor(WritableLevelData.class, ResourceKey.class, RegistryAccess.class, Holder.class, boolean.class, boolean.class, long.class, int.class);
-        level = construct(ServerLevel.class, parent, new ViewLevelData(), key, registries, holder, false, false, 0L, 1000000);
+        var level = construct(ServerLevel.class, parent, new ViewLevelData(), key, registries, holder, false, false, 0L, 1000000);
         ServerView.attach(server, level);
         Inits.run(level, server, key, holder, level.getLevelData());
-        LEVELS.put(id, level);
+        if (slot >= levels.length) levels = java.util.Arrays.copyOf(levels, slot + 1);
+        levels[slot] = level;
         return level;
     }
 
     static ServerPlayer playerView(UUID id) {
         return PLAYERS.get(id);
-    }
-
-    static ServerLevel levelOrNull(String id) {
-        return LEVELS.get(id);
     }
 
     private static ServerPlayer player(UUID id, String name, ServerLevel level) throws ReflectiveOperationException {
@@ -382,60 +428,76 @@ public final class GameBridge {
         return out.toByteArray();
     }
 
-    record Call(Crossing.In in, ServerLevel level, ServerPlayer player, InteractionHand hand, ItemStack[] before) {}
+    record Call(Crossing.In in, ServerLevel level, ServerPlayer player, InteractionHand hand) {}
 
-    /** Fills the views from what Horizon holds now. */
+    /** Fills the acting player's view with what changed in Horizon since it last heard (`PlayerGroups`). */
     static Call fill(Crossing.In in, boolean refresh) throws Exception {
-        var id = new UUID(in.readLong(), in.readLong());
-        String name = text(in);
-        var level = level(text(in));
-        ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
-        boolean joined = !PLAYERS.containsKey(id);
-        var player = player(id, name, level);
-        player.setPose(net.minecraft.world.entity.Pose.valueOf(text(in)));
-        double x = in.readDouble(), y = in.readDouble(), z = in.readDouble();
-        float yRot = in.readFloat(), xRot = in.readFloat();
-        // absSnapTo sets the previous tick's position, rotation and the box too: rays from pick(range, partialTick) start here
-        player.absSnapTo(x, y, z, yRot, xRot);
-        player.setYHeadRot(yRot);
-        player.yHeadRotO = yRot;
-        player.setShiftKeyDown(in.readBoolean());
-        var type = GameType.byId(in.readInt());
-        boolean modeChanged = player.gameMode.getGameModeForPlayer() != type;
-        ((GameModeAccessor) player.gameMode).horizon$type(type);
-        if (modeChanged) Menus.gameModeChanged(player, type);
-        type.updatePlayerAbilities(player.getAbilities());
-        var hand = in.readInt() == 0 ? InteractionHand.MAIN_HAND : InteractionHand.OFF_HAND;
+        long started = Profile.ON ? System.nanoTime() : 0;
+        var g = PlayerGroups.read(in);
+        var level = level(g.key);
+        ((ViewLevelData) level.getLevelData()).gameTime = g.gameTime;
+        boolean joined = !PLAYERS.containsKey(g.id);
+        boolean full = g.has(PlayerGroups.FULL);
+        if (joined && !full) throw new IllegalStateException("Horizon: the player view of " + g.name + " got a delta before its full fill");
+        var player = player(g.id, g.name, level);
+        if (g.has(PlayerGroups.POSE)) {
+            player.setPose(net.minecraft.world.entity.Pose.valueOf(g.pose));
+            // absSnapTo sets the previous tick's position, rotation and the box too: rays from pick(range, partialTick) start here
+            player.absSnapTo(g.x, g.y, g.z, g.yaw, g.pitch);
+            player.setYHeadRot(g.yaw);
+            player.yHeadRotO = g.yaw;
+            player.setShiftKeyDown(g.shift);
+        }
+        if (g.has(PlayerGroups.MODE)) {
+            var type = GameType.byId(g.mode);
+            boolean modeChanged = player.gameMode.getGameModeForPlayer() != type;
+            ((GameModeAccessor) player.gameMode).horizon$type(type);
+            if (modeChanged) Menus.gameModeChanged(player, type);
+            type.updatePlayerAbilities(player.getAbilities());
+        }
+        PlayerSync.fillAbilities(player, g);
+        var hand = g.hand == 0 ? InteractionHand.MAIN_HAND : InteractionHand.OFF_HAND;
         Inventory inventory = player.getInventory();
-        ((dev.horizonlab.javamods.boot.mixin.InventoryAccessor) inventory).horizon$selected(in.readInt());
-        int experienceLevel = in.readInt();
-        float experienceProgress = in.readFloat();
-        int totalExperience = in.readInt();
-        PlayerSync.fill(player, in);
-        ServerView.setMotion(player, new Vec3(in.readDouble(), in.readDouble(), in.readDouble()), in.readBoolean());
-        var before = new ItemStack[SLOTS];
-        java.util.Arrays.fill(before, ItemStack.EMPTY);
-        // A refresh mid-call leaves what Java itself holds until the call's end: experience and stacks.
-        if (!refresh) {
-            player.experienceLevel = experienceLevel;
-            player.experienceProgress = experienceProgress;
-            player.totalExperience = totalExperience;
+        if (g.has(PlayerGroups.SELECTED)) ((dev.horizonlab.javamods.boot.mixin.InventoryAccessor) inventory).horizon$selected(g.selected);
+        if (g.has(PlayerGroups.XP)) {
+            player.experienceLevel = g.xpLevel;
+            player.experienceProgress = g.xpProgress;
+            player.totalExperience = g.xpTotal;
+        }
+        if (g.has(PlayerGroups.VITALS)) PlayerSync.fillVitals(player, g);
+        if (g.has(PlayerGroups.EFFECTS)) PlayerSync.fillEffects(player, g);
+        if (g.has(PlayerGroups.MOTION)) ServerView.setMotion(player, new Vec3(g.vx, g.vy, g.vz), g.onGround);
+        var synced = PlayerSync.synced(g.id);
+        if (full) {
             inventory.clearContent();
-            for (int n = in.readInt(); n > 0; n--) {
-                int slot = in.readInt();
-                ItemStack stack = decode(in.readNBytes(in.readInt()));
-                before[slot] = stack.copy();
-                inventory.setItem(slot, stack);
+            java.util.Arrays.fill(synced, ItemStack.EMPTY);
+        } else if (!refresh && outermost()) {
+            // A view changed outside any call (decision C2): native's copy wins, as the next full fill once did.
+            var listed = new boolean[SLOTS];
+            for (int slot : g.slots) listed[slot] = true;
+            for (int slot = 0; slot < SLOTS; slot++) {
+                if (!listed[slot] && !ItemStack.matches(inventory.getItem(slot), synced[slot])) {
+                    inventory.setItem(slot, synced[slot].copy());
+                    if (Profile.ON) Profile.event("player view drift", 0);
+                }
             }
+        }
+        for (int i = 0; i < g.slots.length; i++) {
+            ItemStack stack = g.tags[i].length == 0 ? ItemStack.EMPTY : decode(g.tags[i]);
+            inventory.setItem(g.slots[i], stack);
+            synced[g.slots[i]] = stack.copy();
         }
         PlayerSync.acting(player);
         // `PlayerList.placeNewPlayer`: a connected client gets its login once the player is in place.
         if (Clients.joining(player.getUUID())) safely("the client's login", () -> Menus.login(player));
         if (joined) {
+            // `placeNewPlayer` adds the player to its level (`addNewPlayer`) before PlayerLoggedIn.
+            if (!playerJoins(player, level)) System.err.println("Horizon: a Java mod canceled player " + name + " joining " + level.dimension() + "; it joins anyway, as vanilla ignores it");
             safely("PlayerLoggedIn", () -> EventHooks.firePlayerLoggedIn(player));
             safely("chunks sent before the player's view", () -> Tracking.joined(player, level));
         }
-        return new Call(in, level, player, hand, before);
+        if (Profile.ON) Profile.event("fill", System.nanoTime() - started);
+        return new Call(in, level, player, hand);
     }
 
     private static byte[] refresh(byte[] input) throws Exception {
@@ -451,12 +513,11 @@ public final class GameBridge {
         return new byte[] {1};
     }
 
-    private static void use(Crossing.In in, Crossing.Out out, int kind) throws Exception {
+    static void use(Crossing.In in, Crossing.Out out, int kind) throws Exception {
         var call = fill(in, false);
         var level = call.level;
         var player = call.player;
         var hand = call.hand;
-        var before = call.before;
         var inventory = player.getInventory();
         InteractionResult result = InteractionResult.PASS;
         // A view keeps no use between calls: Horizon's player holds it, and a call that continues one restores it.
@@ -536,21 +597,7 @@ public final class GameBridge {
         out.writeBoolean(result != InteractionResult.PASS && result != InteractionResult.TRY_WITH_EMPTY_HAND);
         out.writeBoolean(player.isUsingItem());
         out.writeInt(player.isUsingItem() ? player.getTicksUsingItem() : 0);
-        out.writeInt(player.experienceLevel);
-        out.writeFloat(player.experienceProgress);
-        out.writeInt(player.totalExperience);
-        var ops = registries.createSerializationContext(NbtOps.INSTANCE);
-        var changed = new ArrayList<Integer>();
-        for (int slot = 0; slot < SLOTS; slot++) {
-            if (!ItemStack.matches(before[slot], inventory.getItem(slot))) changed.add(slot);
-        }
-        out.writeInt(changed.size());
-        for (int slot : changed) {
-            out.writeInt(slot);
-            ItemStack stack = inventory.getItem(slot);
-            if (stack.isEmpty()) out.writeInt(0);
-            else writeTag(out, (CompoundTag) ItemStack.CODEC.encodeStart(ops, stack).getOrThrow());
-        }
+        PlayerSync.writeChanges(player, out);
         writeEffects(out);
     }
 
@@ -612,7 +659,7 @@ public final class GameBridge {
         return player.gameMode.getGameModeForPlayer();
     }
 
-    private static void safely(String what, Runnable step) {
+    static void safely(String what, Runnable step) {
         long start = Profile.ON ? System.nanoTime() : 0;
         try {
             step.run();
@@ -630,29 +677,46 @@ public final class GameBridge {
         return worldFolder;
     }
 
+    /** Whether `server_start` ran since `server_about_to_start`. */
+    private static boolean levelsLoaded;
+
+    /** `MinecraftServer.runServer`'s start, before native builds its levels: the world's folder and seed, then `ServerAboutToStart`. */
+    private static byte[] serverAboutToStart(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        if (serverStarted) {
+            System.err.println("Horizon: server_about_to_start while a Java server runs; ignored");
+            return new byte[0];
+        }
+        serverStarted = true;
+        if (!net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) ParticleFacts.report(false);
+        worldFolder = Path.of(text(in));
+        long seed = in.readLong();
+        ServerView.openWorld(server, allLevels(), worldFolder, seed, dimensions);
+        safely("ServerAboutToStart", () -> ServerLifecycleHooks.handleServerAboutToStart(server));
+        return new byte[] {1};
+    }
+
     private static byte[] lifecycle(byte[] input, boolean start) throws Exception {
         var in = new DataInputStream(new ByteArrayInputStream(input));
-        var here = levelOf(in);
+        levelOf(in);
         if (start && !serverStarted) {
-            serverStarted = true;
-            if (!net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) ParticleFacts.report(false);
-            worldFolder = Path.of(text(in));
-            for (String id : List.of("minecraft:overworld", "minecraft:the_nether", "minecraft:the_end")) level(id);
-            ServerView.openWorld(server, LEVELS.values(), worldFolder, here.getSeed(), dimensions);
-            safely("ServerAboutToStart", () -> ServerLifecycleHooks.handleServerAboutToStart(server));
+            System.err.println("Horizon: server_start without server_about_to_start; the Java server is not started");
+        } else if (start && !levelsLoaded) {
+            levelsLoaded = true;
             safely("ServerStarting", () -> ServerLifecycleHooks.handleServerStarting(server));
-            for (ServerLevel level : LEVELS.values()) {
+            for (ServerLevel level : allLevels()) {
                 ChunkEvents.customSpawners(level);
                 safely("LevelEvent.Load", () -> NeoForge.EVENT_BUS.post(new LevelEvent.Load(level)));
             }
             safely("ServerStarted", () -> ServerLifecycleHooks.handleServerStarted(server));
         } else if (!start && serverStarted) {
             serverStarted = false;
+            levelsLoaded = false;
             if (!stopping) safely("ServerStopping", () -> ServerLifecycleHooks.handleServerStopping(server));
             stopping = false;
-            for (ServerLevel level : LEVELS.values()) safely("LevelEvent.Unload", () -> NeoForge.EVENT_BUS.post(new LevelEvent.Unload(level)));
+            for (ServerLevel level : allLevels()) safely("LevelEvent.Unload", () -> NeoForge.EVENT_BUS.post(new LevelEvent.Unload(level)));
             safely("ServerStopped", () -> ServerLifecycleHooks.handleServerStopped(server));
-            safely("saving saved data", () -> ServerView.saveWorld(server, LEVELS.values()));
+            safely("saving saved data", () -> ServerView.saveWorld(server, allLevels()));
             closeWorld();
         }
         return effects();
@@ -679,8 +743,10 @@ public final class GameBridge {
 
     /** A server's levels, players and block entities are its own: the next world's start builds new ones. */
     private static void closeWorld() {
-        LEVELS.clear();
+        levels = new ServerLevel[3];
         PLAYERS.clear();
+        JOINED.clear();
+        PlayerSync.forgetAll();
         SOUNDS.clear();
         nextEntityId = -1;
         ServerView.closeWorld(server);
@@ -755,9 +821,12 @@ public final class GameBridge {
 
     private static void removePlayer(UUID left) throws ReflectiveOperationException {
         var player = PLAYERS.remove(left);
+        PlayerSync.forget(left);
         if (player != null) {
             safely("closing the open menu", () -> Menus.close(player));
             safely("PlayerLoggedOut", () -> EventHooks.firePlayerLoggedOut(player));
+            var in = JOINED.remove(left);
+            if (in != null) playerLeaves(player, in, Entity.RemovalReason.UNLOADED_WITH_PLAYER);
             ServerView.detach(server, player);
         }
         if (Clients.remote(left)) Clients.leave(left);
@@ -765,16 +834,28 @@ public final class GameBridge {
 
     /** The level a call acts on, with the time it arrived at. */
     private static ServerLevel levelOf(Crossing.In in) throws Exception {
-        var level = level(in.name());
-        ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
+        return invalidated(level(in.readInt()), in.readLong());
+    }
+
+    private static ServerLevel levelOf(DataInputStream in) throws Exception {
+        return invalidated(level(in.readInt()), in.readLong());
+    }
+
+    private static ServerLevel invalidated(ServerLevel level, long gameTime) {
+        var data = (ViewLevelData) level.getLevelData();
+        data.gameTime = gameTime;
+        data.invalidatedAt = gameTime;
         level.environmentAttributes().invalidateTickCache();
         return level;
     }
 
-    private static ServerLevel levelOf(DataInputStream in) throws Exception {
-        var level = level(text(in));
-        ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
-        level.environmentAttributes().invalidateTickCache();
+    /** `levelOf` for a block entity's tick: the tick cache goes once per game tick, as at `ServerLevel.tick`'s start. */
+    private static ServerLevel tickingLevelOf(Crossing.In in) throws Exception {
+        var level = level(in.readInt());
+        long gameTime = in.readLong();
+        var data = (ViewLevelData) level.getLevelData();
+        if (data.invalidatedAt != gameTime) return invalidated(level, gameTime);
+        data.gameTime = gameTime;
         return level;
     }
 
@@ -823,10 +904,37 @@ public final class GameBridge {
     }
 
     private static void blockEntityTick(Crossing.In in, Crossing.Out out) throws Exception {
-        var level = levelOf(in);
+        var level = tickingLevelOf(in);
         boolean held = BlockEntities.tick(level, BlockPos.of(in.readLong()));
         out.writeBoolean(held);
         writeEffects(out);
+    }
+
+    /** #268: a run of adjacent held block entities in one crossing, ticked in order until one wrote into Horizon (`runEntry` says so) or threw. */
+    private static void blockEntityTickRun(Crossing.In in, Crossing.Out out) throws Exception {
+        var level = tickingLevelOf(in);
+        int count = in.readInt();
+        out.writeInt(0);
+        int processed = 0;
+        while (processed < count) {
+            var pos = BlockPos.of(in.readLong());
+            if (processed > 0 && !BlockEntities.runEntry(processed)) break;
+            processed++;
+            boolean held;
+            try {
+                held = BlockEntities.tick(level, pos);
+            } catch (Throwable t) {
+                // As `game` reports a scalar tick that threw: its own effects go, the entries before keep theirs.
+                t.printStackTrace();
+                if (outermost()) abandonCall();
+                out.writeByte(2);
+                out.writeInt(0);
+                break;
+            }
+            out.writeByte(held ? 1 : 0);
+            writeEffects(out);
+        }
+        out.patchInt(0, processed);
     }
 
     private static byte[] tracking(byte[] input) throws Exception {
@@ -835,16 +943,20 @@ public final class GameBridge {
         return effects();
     }
 
+    private static CompoundTag readTag(Crossing.In in) throws IOException {
+        return NbtIo.read(new DataInputStream(new ByteArrayInputStream(in.readNBytes(in.readInt()))), NbtAccounter.unlimitedHeap());
+    }
+
     /** The chunks that joined and left this level, in one call: the first's block entities, then the second's going. */
-    private static byte[] chunksChanged(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static void chunksChanged(Crossing.In in, Crossing.Out out) throws Exception {
         var level = levelOf(in);
         for (int n = in.readInt(); n > 0; n--) {
             var pos = BlockPos.of(in.readLong());
-            var tag = NbtIo.read(new DataInputStream(new ByteArrayInputStream(in.readNBytes(in.readInt()))), NbtAccounter.unlimitedHeap());
+            long generation = in.readLong();
+            var tag = readTag(in);
             try {
                 // A mod's getChunk may have promoted this one already, as `LevelChunk.getBlockEntity` promotes a pending tag.
-                if (BlockEntities.held(level).get(pos.asLong()) == null) BlockEntities.load(level, pos, tag);
+                if (BlockEntities.held(level).get(pos.asLong()) == null) BlockEntities.load(level, pos, generation, tag);
             } catch (Throwable t) {
                 t.printStackTrace();
             }
@@ -856,12 +968,9 @@ public final class GameBridge {
             ChunkViews.forget(level, x, z);
             BlockEntities.unload(level, x, z, saved);
         }
-        var bytes = new ByteArrayOutputStream();
-        var out = new DataOutputStream(bytes);
         out.writeInt(saved.size());
         for (CompoundTag tag : saved) writeTag(out, tag);
         writeEffects(out);
-        return bytes.toByteArray();
     }
 
     /** A chunk event of `ChunkEvents` for this level, with the effects of mods' listeners. */
@@ -875,69 +984,106 @@ public final class GameBridge {
         return bytes.toByteArray();
     }
 
-    private static byte[] blockEntityLoad(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static void blockEntityLoad(Crossing.In in, Crossing.Out out) throws Exception {
         var level = levelOf(in);
         var pos = BlockPos.of(in.readLong());
-        var tag = NbtIo.read(new DataInputStream(new ByteArrayInputStream(in.readNBytes(in.readInt()))), NbtAccounter.unlimitedHeap());
-        BlockEntities.load(level, pos, tag);
-        return effects();
+        long generation = in.readLong();
+        BlockEntities.load(level, pos, generation, readTag(in));
+        writeEffects(out);
     }
 
     /** A native entity joined: its live view exists from here; the reply is the join's verdict, then the call's effects. */
-    private static byte[] entityView(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static void entityView(Crossing.In in, Crossing.Out out) throws Exception {
         var level = levelOf(in);
         int id = in.readInt();
-        in.readBoolean();
+        boolean fromDisk = in.readBoolean();
         byte[] tag = in.readNBytes(in.readInt());
-        EntityViews.join(level, id, tag);
+        in.readInt();
+        boolean joined = EntityViews.join(level, id, tag, fromDisk, in.readBoolean());
+        out.writeBoolean(joined);
+        writeEffects(out);
+    }
+
+    /** A joined native entity is in its level for good: `onAddedToLevel`. */
+    private static void entityAdded(Crossing.In in, Crossing.Out out) throws Exception {
+        var level = levelOf(in);
+        EntityViews.added(level, in.readInt());
+        writeEffects(out);
+    }
+
+    /** A native entity left, for the reason (`Entity.RemovalReason` ordinal); the leave is posted when a listener hears its type. */
+    private static void entityLeft(Crossing.In in, Crossing.Out out) throws Exception {
+        var level = levelOf(in);
+        int id = in.readInt();
+        int reason = in.readByte();
+        EntityViews.left(level, id, reason, in.readBoolean());
+        writeEffects(out);
+    }
+
+    /** A player's view joins (`addPlayer`) or leaves (`removePlayerImmediately`) a level; the reply is the join's result, then the call's effects. */
+    private static byte[] playerLevel(byte[] input) throws Exception {
+        var in = new DataInputStream(new ByteArrayInputStream(input));
+        var player = PLAYERS.get(new UUID(in.readLong(), in.readLong()));
+        var level = levelNamed(text(in));
+        boolean leave = in.readByte() != 0;
+        var reason = Entity.RemovalReason.values()[in.readByte()];
+        boolean joined = true;
+        if (player != null && leave) {
+            if (JOINED.get(player.getUUID()) == level) {
+                playerLeaves(player, level, reason);
+                JOINED.remove(player.getUUID());
+            }
+        } else if (player != null && JOINED.get(player.getUUID()) != level) {
+            if (player.level() != level) ServerView.moved(player, level);
+            joined = playerJoins(player, level);
+        }
         var bytes = new ByteArrayOutputStream();
         var out = new DataOutputStream(bytes);
-        out.writeBoolean(true);
+        out.writeBoolean(joined);
         writeEffects(out);
         return bytes.toByteArray();
     }
 
-    /** A native entity left, for the reason (`Entity.RemovalReason` ordinal). */
-    private static byte[] entityLeft(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
-        var level = levelOf(in);
-        int id = in.readInt();
-        EntityViews.left(level, id, in.readByte());
-        return effects();
+    /** `ServerLevel.addPlayer`'s join, then `onAddedToLevel`; the event's result, which vanilla ignores. */
+    private static boolean playerJoins(ServerPlayer player, ServerLevel level) {
+        var event = new net.neoforged.neoforge.event.entity.EntityJoinLevelEvent(player, level, false);
+        safely("EntityJoinLevelEvent", () -> NeoForge.EVENT_BUS.post(event));
+        JOINED.put(player.getUUID(), level);
+        safely("onAddedToLevel", player::onAddedToLevel);
+        EntityViews.debug(player, event.isCanceled() ? "refused" : "joined");
+        return !event.isCanceled();
     }
 
-    /** A bridge changed a native entity: the group bytes of what it wrote reach its view. */
-    private static byte[] entityRefresh(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
-        var level = levelOf(in);
-        int id = in.readInt();
-        EntityViews.refresh(level, id, in.readInt(), in);
-        return effects();
+    /** `removePlayerImmediately`: the reason set raw, `onRemovedFromLevel`, then the leave. */
+    private static void playerLeaves(ServerPlayer player, ServerLevel level, Entity.RemovalReason reason) {
+        ((dev.horizonlab.javamods.boot.mixin.EntityAccess) player).horizon$removal(reason);
+        safely("onRemovedFromLevel", player::onRemovedFromLevel);
+        safely("EntityLeaveLevelEvent", () -> NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent(player, level)));
+        EntityViews.debug(player, "left " + reason);
+        // A player view lives on through a change of level or a respawn; only a logout ends it.
+        if (reason != Entity.RemovalReason.UNLOADED_WITH_PLAYER) ((dev.horizonlab.javamods.boot.mixin.EntityAccess) player).horizon$removal(null);
     }
 
     /** The Java-owned keys of the listed entities' views, at native's save of them. */
     private static byte[] entitiesSave(byte[] input) throws Exception {
         var in = new DataInputStream(new ByteArrayInputStream(input));
-        var level = level(text(in));
+        var level = level(in.readInt());
         var bytes = new ByteArrayOutputStream();
         EntityViews.save(level, in, new DataOutputStream(bytes));
         return bytes.toByteArray();
     }
 
     /** A block entity Horizon lost on its own: the object Java held goes, as `LevelChunk.removeBlockEntity` would. */
-    private static byte[] blockEntityDrop(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static void blockEntityDrop(Crossing.In in, Crossing.Out out) throws Exception {
         var level = levelOf(in);
         BlockEntities.drop(level, BlockPos.of(in.readLong()));
-        return effects();
+        writeEffects(out);
     }
 
     private static byte[] blockEntitiesSave(byte[] input) throws Exception {
         var in = new DataInputStream(new ByteArrayInputStream(input));
-        safely("saving saved data", () -> ServerView.saveWorld(server, LEVELS.values()));
-        var saved = BlockEntities.saveAll(level(text(in)));
+        safely("saving saved data", () -> ServerView.saveWorld(server, allLevels()));
+        var saved = BlockEntities.saveAll(level(in.readInt()));
         var bytes = new ByteArrayOutputStream();
         var out = new DataOutputStream(bytes);
         out.writeInt(saved.size());
@@ -946,28 +1092,22 @@ public final class GameBridge {
     }
 
     /** `BlockDataAccessor.getData` of a block entity Java holds; an empty reply when it holds none. */
-    private static byte[] blockEntityData(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static void blockEntityData(Crossing.In in, Crossing.Out out) throws Exception {
         var tag = BlockEntities.data(levelOf(in), BlockPos.of(in.readLong()));
-        if (tag == null) return new byte[0];
-        var bytes = new ByteArrayOutputStream();
-        writeTag(new DataOutputStream(bytes), tag);
-        return bytes.toByteArray();
+        if (tag != null) writeTag(out, tag);
     }
 
     /** `BlockDataAccessor.setData`: the block entity Java holds reads the tag, or one is made from it. */
-    private static byte[] blockEntitySet(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static void blockEntitySet(Crossing.In in, Crossing.Out out) throws Exception {
         var level = levelOf(in);
         var pos = BlockPos.of(in.readLong());
-        var tag = NbtIo.read(new DataInputStream(new ByteArrayInputStream(in.readNBytes(in.readInt()))), NbtAccounter.unlimitedHeap());
+        var tag = readTag(in);
         if (!BlockEntities.setData(level, pos, tag)) BlockEntities.load(level, pos, tag);
-        return effects();
+        writeEffects(out);
     }
 
     /** NeoForge's hopper past vanilla containers: `VanillaInventoryCodeHooks` with the item handler at the target, if there is one. */
-    private static byte[] hopperTransfer(byte[] input) throws Exception {
-        var in = new DataInputStream(new ByteArrayInputStream(input));
+    private static void hopperTransfer(Crossing.In in, Crossing.Out out) throws Exception {
         var level = levelOf(in);
         var hopperPos = BlockPos.of(in.readLong());
         var target = BlockPos.of(in.readLong());
@@ -981,34 +1121,31 @@ public final class GameBridge {
                     : net.neoforged.neoforge.transfer.item.VanillaInventoryCodeHooks.extractHook(hopper, handler);
             if (moved) BlockEntities.changed(level, hopperPos);
         }
-        var bytes = new ByteArrayOutputStream();
-        var out = new DataOutputStream(bytes);
         out.writeBoolean(handler != null);
         out.writeBoolean(moved);
         writeEffects(out);
-        return bytes.toByteArray();
     }
 
     /** Whether a block's block entity ticks; an empty reply says no. */
     private static byte[] blockTicks(byte[] input) throws Exception {
         var id = Identifier.tryParse(new String(input, java.nio.charset.StandardCharsets.UTF_8));
         if (id == null || !BuiltInRegistries.BLOCK.containsKey(id)) return new byte[0];
-        return BlockEntities.ticks(BuiltInRegistries.BLOCK.getValue(id), level("minecraft:overworld")) ? new byte[] {1} : new byte[0];
+        return BlockEntities.ticks(BuiltInRegistries.BLOCK.getValue(id), level(OVERWORLD)) ? new byte[] {1} : new byte[0];
     }
 
     /** A dev run without the game: real data packs, then a level and a player view of each dimension; a mod's reload listener or a mixin on these classes shows here. */
     static String worldProbe() throws Exception {
         prepare();
         var ids = List.of("minecraft:overworld", "minecraft:the_nether", "minecraft:the_end");
-        for (String id : ids) level(id);
-        ServerView.openWorld(server, LEVELS.values(), Path.of("world").toAbsolutePath(), 1L, dimensions);
+        for (int slot = 0; slot < ids.size(); slot++) add(slot, ids.get(slot));
+        ServerView.openWorld(server, allLevels(), Path.of("world").toAbsolutePath(), 1L, dimensions);
         worldFolder = Path.of("world").toAbsolutePath();
         ServerLifecycleHooks.handleServerAboutToStart(server);
         ServerLifecycleHooks.handleServerStarting(server);
-        for (ServerLevel level : LEVELS.values()) NeoForge.EVENT_BUS.post(new LevelEvent.Load(level));
+        for (ServerLevel level : allLevels()) NeoForge.EVENT_BUS.post(new LevelEvent.Load(level));
         ServerLifecycleHooks.handleServerStarted(server);
         int views = 0;
-        for (String id : ids) player(new UUID(1, views++), "Probe", level(id));
+        for (int slot = 0; slot < ids.size(); slot++) player(new UUID(1, views++), "Probe", level(slot));
         ServerView.tick(server);
         EventHooks.fireServerTickPre(() -> true, server);
         EventHooks.fireServerTickPost(() -> true, server);

@@ -27,7 +27,12 @@ import net.minecraft.world.level.storage.loot.LootTable;
 public final class BootFacts {
     private BootFacts() {}
 
-    private static final List<Registry<?>> REGISTRIES = List.of(BuiltInRegistries.BLOCK, BuiltInRegistries.ITEM, BuiltInRegistries.BLOCK_ENTITY_TYPE, BuiltInRegistries.DATA_COMPONENT_TYPE, BuiltInRegistries.FLUID, BuiltInRegistries.PARTICLE_TYPE);
+    /** The registries whose mod entries are kept: content, and the worldgen type registries `WorldgenExport` names owners by. */
+    private static List<Registry<?>> registries() {
+        var all = new java.util.ArrayList<Registry<?>>(List.of(BuiltInRegistries.BLOCK, BuiltInRegistries.ITEM, BuiltInRegistries.BLOCK_ENTITY_TYPE, BuiltInRegistries.DATA_COMPONENT_TYPE, BuiltInRegistries.FLUID, BuiltInRegistries.PARTICLE_TYPE, BuiltInRegistries.RECIPE_SERIALIZER, BuiltInRegistries.LOOT_FUNCTION_TYPE, BuiltInRegistries.LOOT_CONDITION_TYPE));
+        all.addAll(WorldgenExport.typeRegistries());
+        return List.copyOf(all);
+    }
     private static final String[] CLIENT_MAPPERS = {
         "net.minecraft.client.renderer.item.ItemModels",
         "net.minecraft.client.renderer.special.SpecialModelRenderers",
@@ -48,7 +53,7 @@ public final class BootFacts {
     /** Vanilla's entries, once its bootstrap ran and before any mod is constructed. */
     static void snapshot(boolean client) {
         BootFacts.client = client;
-        for (Registry<?> registry : REGISTRIES) {
+        for (Registry<?> registry : registries()) {
             Map<Identifier, Object> entries = new HashMap<>();
             for (Identifier id : registry.keySet()) entries.put(id, registry.getValue(id));
             VANILLA.put(registry, entries);
@@ -79,7 +84,7 @@ public final class BootFacts {
     /** The mods' entries: added since the snapshot, or put in place of a vanilla one. */
     static void seal() {
         if (VANILLA.isEmpty()) throw new IllegalStateException("no snapshot of vanilla's registries was taken");
-        for (Registry<?> registry : REGISTRIES) {
+        for (Registry<?> registry : registries()) {
             Map<Identifier, Object> vanilla = VANILLA.get(registry);
             Set<Identifier> ids = new HashSet<>();
             for (Identifier id : registry.keySet()) {
@@ -103,6 +108,11 @@ public final class BootFacts {
     static boolean ownsBlock(Block block) {
         check();
         return OWNED.contains(block);
+    }
+
+    static boolean ownsFluid(net.minecraft.world.level.material.Fluid fluid) {
+        check();
+        return OWNED.contains(fluid);
     }
 
     static boolean ownsItem(Item item) {
@@ -172,9 +182,31 @@ public final class BootFacts {
                     }
                 }
 
+                void recipes() throws IOException {
+                    var holders = new java.util.ArrayList<net.minecraft.world.item.crafting.RecipeHolder<?>>(GameBridge.server().getRecipeManager().getRecipes());
+                    holders.removeIf(h -> h.id().identifier().getNamespace().equals("minecraft"));
+                    holders.sort(java.util.Comparator.comparing((net.minecraft.world.item.crafting.RecipeHolder<?> h) -> h.id().identifier().toString()));
+                    json.name("recipes").beginObject();
+                    for (var holder : holders) {
+                        var recipe = holder.value();
+                        json.name(holder.id().identifier().toString()).beginObject();
+                        json.name("type").value(BuiltInRegistries.RECIPE_TYPE.getKey(recipe.getType()).toString());
+                        json.name("serializer").value(BuiltInRegistries.RECIPE_SERIALIZER.getKey(recipe.getSerializer()).toString());
+                        var encoded = net.minecraft.world.item.crafting.Recipe.DIRECT_CODEC.encodeStart(ops, (net.minecraft.world.item.crafting.Recipe<?>) recipe);
+                        if (encoded.result().isPresent()) {
+                            json.name("json");
+                            json.jsonValue(encoded.result().get().toString());
+                        } else {
+                            json.name("error").value(encoded.error().map(e -> e.message()).orElse(""));
+                        }
+                        json.endObject();
+                    }
+                    json.endObject();
+                }
+
                 void run() throws IOException {
                     json.beginObject();
-                    json.name("schema").value(4);
+                    json.name("schema").value(5);
                     json.name("minecraft").value(net.minecraft.SharedConstants.getCurrentVersion().name());
                     owned();
                     blocks();
@@ -183,6 +215,7 @@ public final class BootFacts {
                     items();
                     dataComponentTypes();
                     tags();
+                    recipes();
                     json.endObject();
                 }
             }.run();

@@ -1,0 +1,34 @@
+# key, verdict, evidence (tools/java_routing.py owners)
+net/minecraft/client/KeyMapping#click(Lcom/mojang/blaze3d/platform/InputConstants$Key;)V	java-client	trace: java_client_routes.jfr
+net/minecraft/client/KeyMapping#consumeClick()Z	java-client	trace: java_client_routes.jfr
+net/minecraft/client/KeyMapping#isDefault()Z	java-client	trace: java_client_routes.jfr
+net/minecraft/client/KeyMapping#isDown()Z	java-client	trace: java_client_routes.jfr
+net/minecraft/client/KeyMapping#matches(Lnet/minecraft/client/input/KeyEvent;)Z	java-client	trace: java_client_routes.jfr
+net/minecraft/client/KeyMapping#matchesMouse(Lnet/minecraft/client/input/MouseButtonEvent;)Z	java-client	trace: java_client_routes.jfr
+net/minecraft/client/KeyMapping#same(Lnet/minecraft/client/KeyMapping;)Z	java-client	trace: java_client_routes.jfr
+net/minecraft/client/KeyMapping#set	java-client	trace: java_client_routes.jfr
+net/minecraft/client/KeyMapping#setAll()V	java-client	trace: java_client_routes.jfr
+net/minecraft/client/KeyboardHandler#keyPress(JILnet/minecraft/client/input/KeyEvent;)V	java-client	trace: java_client_routes.jfr
+net/minecraft/client/Minecraft#<init>(Lnet/minecraft/client/main/GameConfig;)V	java-client	trace: java_client_routes.jfr
+net/minecraft/client/Minecraft#pickBlockOrEntity	java-client	trace: java_client_routes.jfr
+net/minecraft/client/Minecraft#startAttack()Z	java-client	trace: java_client_routes.jfr
+net/minecraft/client/Minecraft#startUseItem()V	java-client	trace: java_client_routes.jfr
+net/minecraft/client/Minecraft#tick()V	java-client	trace: java_client_routes.jfr
+net/minecraft/client/MouseHandler#onButton(JLnet/minecraft/client/input/MouseButtonInfo;I)V	java-client	trace: java_client_routes.jfr
+net/minecraft/client/gui/Gui#setScreen(Lnet/minecraft/client/gui/screens/Screen;)V	java-client	trace: java_client_routes.jfr
+net/minecraft/client/multiplayer/ClientConfigurationPacketListenerImpl#handleConfigurationFinished(Lnet/minecraft/network/protocol/configuration/ClientboundFinishConfigurationPacket;)V	java-client	trace: java_client_routes.jfr
+net/minecraft/client/multiplayer/ClientLevel#tickEntities()V	java-client	trace: java_client_routes.jfr
+net/minecraft/client/multiplayer/ClientPacketListener#handleRecipeBookAdd(Lnet/minecraft/network/protocol/game/ClientboundRecipeBookAddPacket;)V	java-client	trace: java_client_routes.jfr
+net/minecraft/client/multiplayer/ClientPacketListener#handleRecipeBookRemove(Lnet/minecraft/network/protocol/game/ClientboundRecipeBookRemovePacket;)V	java-client	trace: java_client_routes.jfr
+net/minecraft/client/resources/language/LanguageManager#onResourceManagerReload(Lnet/minecraft/server/packs/resources/ResourceManager;)V	java-client	trace: java_client_routes.jfr
+net/minecraft/client/resources/model/BlockStateDefinitions#<clinit>	java-client	trace: java_client_routes.jfr
+net/minecraft/data/tags/TagsProvider#run	inert	gametest or datagen only
+net/minecraft/gametest/framework/GameTestServer#initServer	inert	gametest or datagen only
+net/minecraft/gametest/framework/TestCommand#verifyStructureExists	inert	gametest or datagen only
+net/minecraft/network/chat/ComponentSerialization#bootstrap	java-boot	trace: java_client_routes.jfr
+net/minecraft/server/ReloadableServerResources#updateComponentsAndStaticRegistryTags	java-boot	trace: java_client_routes.jfr
+net/minecraft/util/filefix/fixes/DimensionStorageFileFix#makeFixer	out-of-scope	upgrading pre-26.3 worlds only
+net/minecraft/world/entity/Entity#syncData	java-already	Java runs the whole method already
+net/minecraft/world/item/Item#<init>	java-boot	trace: java_client_routes.jfr
+net/minecraft/world/level/block/entity/TestInstanceBlockEntity#getStructureTemplate	inert	gametest or datagen only
+net/minecraft/world/level/block/entity/TestInstanceBlockEntity#placeStructure	inert	gametest or datagen only

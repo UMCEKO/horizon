@@ -63,11 +63,15 @@ import net.minecraft.world.level.storage.TagValueInput;
 import net.minecraft.world.level.storage.TagValueOutput;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
+import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
 
 /** One live Java object per native entity from its join to its leave: refreshed raw where native says, and written through by bridges. */
 public final class EntityViews implements LevelEntityGetter<Entity> {
     private static final int POSITION = 2, MOTION = 4, HEALTH = 8, EFFECTS = 16, EQUIPMENT = 32, FIRE = 64, AIR = 128, FLAGS = 256, NAME = 512, ITEM = 1024, RIDING = 2048, REMOVAL = 4096, SPECIES = 8192, AI = 32768;
     private static final Map<ServerLevel, Int2ObjectOpenHashMap<Entity>> LIVE = new IdentityHashMap<>();
+    private static final boolean DEBUG = System.getenv("HORIZON_JAVA_DEBUG") != null;
     private static Entity spawning;
     private static boolean unknownLogged;
 
@@ -127,29 +131,74 @@ public final class EntityViews implements LevelEntityGetter<Entity> {
         return entity;
     }
 
-    /** `entity_view`: native made the entity `id`; Java's object for it exists from here to its leave. */
-    static void join(ServerLevel level, int id, byte[] tag) throws IOException {
-        Entity adopted = spawning;
-        if (adopted != null) {
+    /** `entity_view`: native made the entity `id`; `PersistentEntitySectionManager.addEntity` posts the join before the entity is in the level, and a cancel keeps it out. */
+    static boolean join(ServerLevel level, int id, byte[] tag, boolean fromDisk, boolean posted) throws IOException {
+        Entity view = spawning;
+        if (view != null) {
             spawning = null;
-            adopted.setId(id);
-            ((Backed) adopted).horizon$backed(true);
-            live(level).put(id, adopted);
-            return;
+            view.setId(id);
+            ((Backed) view).horizon$backed(true);
+        } else {
+            view = create(level, id, decode(tag));
+            if (view == null) return true;
+            live(level).remove(id);
         }
-        create(level, id, decode(tag));
+        if (posted) {
+            var event = new EntityJoinLevelEvent(view, level, fromDisk);
+            GameBridge.safely("EntityJoinLevelEvent", () -> NeoForge.EVENT_BUS.post(event));
+            if (event.isCanceled()) {
+                ((EntityAccess) view).horizon$removal(Entity.RemovalReason.DISCARDED);
+                debug(view, "refused");
+                return false;
+            }
+        }
+        live(level).put(id, view);
+        debug(view, "joined");
+        return true;
     }
 
-    /** `entity_left`: the view goes with its removal reason set raw; it stays backed, so a mod keeping it runs no vanilla body. */
-    static void left(ServerLevel level, int id, int reason) {
-        Entity view = live(level).remove(id);
-        if (view != null) ((EntityAccess) view).horizon$removal(Entity.RemovalReason.values()[reason]);
-    }
-
-    /** `entity_refresh`: the groups native sends for a view a bridge just changed. */
-    static void refresh(ServerLevel level, int id, int mask, DataInputStream in) throws IOException {
+    /** `entity_added`: `onAddedToLevel`, as the joined entity starts being tracked. */
+    static void added(ServerLevel level, int id) {
         Entity view = live(level).get(id);
-        if (view != null) apply(view, mask, in);
+        if (view != null) GameBridge.safely("onAddedToLevel", view::onAddedToLevel);
+    }
+
+    /** `entity_left`: the removal reason set raw, then `onRemovedFromLevel` and the leave; the view stays backed, so a mod keeping it runs no vanilla body. */
+    static void left(ServerLevel level, int id, int reason, boolean posted) {
+        Entity view = live(level).remove(id);
+        if (view == null) return;
+        ((EntityAccess) view).horizon$removal(Entity.RemovalReason.values()[reason]);
+        GameBridge.safely("onRemovedFromLevel", view::onRemovedFromLevel);
+        if (posted) GameBridge.safely("EntityLeaveLevelEvent", () -> NeoForge.EVENT_BUS.post(new EntityLeaveLevelEvent(view, level)));
+        debug(view, "left " + Entity.RemovalReason.values()[reason]);
+    }
+
+    /** With `HORIZON_JAVA_DEBUG`, one line per join, refusal or leave. */
+    static void debug(Entity view, String what) {
+        if (DEBUG) System.err.println("Horizon: entity " + view.getId() + " " + EntityType.getKey(view.getType()) + " " + what);
+    }
+
+    /** Bridged: the groups bridges wrote since the last settle, as count then level, id, mask and group bytes; empty for none. */
+    private static byte[] settled() {
+        throw new IllegalStateException("not bridged");
+    }
+
+    /** Every backed view's bridge ends here: what native wrote reaches the views raw, with no request back to native. */
+    public static void settle() {
+        byte[] pending = settled();
+        if (pending.length == 0) return;
+        try {
+            var in = new DataInputStream(new ByteArrayInputStream(pending));
+            for (int n = in.readInt(); n > 0; n--) {
+                ServerLevel level = GameBridge.level(in.readInt());
+                int id = in.readInt(), mask = in.readInt();
+                byte[] groups = in.readNBytes(in.readInt());
+                Entity view = live(level).get(id);
+                if (view != null) apply(view, mask, new DataInputStream(new ByteArrayInputStream(groups)));
+            }
+        } catch (IOException | ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     /** `Entity.save` of a view the spawning mod built, for native to take as a new entity. */

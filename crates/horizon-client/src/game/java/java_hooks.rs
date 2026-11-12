@@ -10,6 +10,12 @@ use horizon_world::registry::BlockStateId;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(feature = "java-mods")]
+pub(super) type LockstepTick = super::java_lockstep::LockstepTick;
+/// No Java client, no lockstep tick.
+#[cfg(not(feature = "java-mods"))]
+pub(super) enum LockstepTick {}
+
 /// A mod item's name (`getHoverName`) and tooltip lines (`getTooltipLines`) as its code computes them.
 pub(super) struct JavaItemText {
     pub name: horizon_client::text::Text,
@@ -17,6 +23,25 @@ pub(super) struct JavaItemText {
 }
 
 impl Game<'_> {
+    /// The slot bits of the toasts mods added to the Java client, shown in the window's column.
+    pub(super) fn java_hook_toast_slots(&self) -> u32 {
+        #[cfg(feature = "java-mods")]
+        return self.java_toast_slots();
+        #[cfg(not(feature = "java-mods"))]
+        0
+    }
+
+    /// The mods' toasts take the slots native's kinds left free, then draw.
+    pub(super) fn java_hook_draw_toasts(
+        &mut self,
+        batch: &mut horizon_client::hud::HudBatch,
+        hidden: bool,
+    ) {
+        #[cfg(feature = "java-mods")]
+        self.java_draw_toasts(batch, hidden);
+        let _ = (batch, hidden);
+    }
+
     /// The Java client's text for a mod item's stack; None for any other item and until it has answered.
     pub(super) fn java_hook_item_text(
         &self,
@@ -39,6 +64,20 @@ impl Game<'_> {
         let _ = phase;
     }
 
+    /// `ServerAboutToStartEvent`, before native builds the world's levels: the Java mods' worldgen export, parsed.
+    pub(super) fn java_hook_world_opening(
+        &mut self,
+        opening: &super::world_loading::WorldOpening,
+    ) -> super::world_loading::JavaWorldgen {
+        #[cfg(feature = "java-mods")]
+        return self.java_world_opening(opening);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = opening;
+            None
+        }
+    }
+
     /// `ServerStartedEvent`: the Java server starts with the world.
     pub(super) fn java_hook_server_started(&mut self) {
         #[cfg(feature = "java-mods")]
@@ -54,6 +93,7 @@ impl Game<'_> {
     pub(super) fn java_hook_block_ticks(&self, block: &str, ticks: &mut bool) {
         #[cfg(feature = "java-mods")]
         if let Some(host) = horizon_java_host::get() {
+            super::java_mods::register_level(host, super::Dim::Overworld);
             *ticks |= host.request("block_ticks", block.as_bytes()).is_some();
         }
         let _ = (block, ticks);
@@ -63,6 +103,21 @@ impl Game<'_> {
         #[cfg(feature = "java-mods")]
         self.java_block_entity_tick(pos);
         let _ = pos;
+    }
+
+    /// The ticks of the mod block entities from `slots[0]` on, as one Java run: how many slots it ticked, 0 to tick the first alone.
+    pub(super) fn java_hook_block_entity_run(
+        &mut self,
+        slots: &[(horizon_client::block_entities::Pos, u32)],
+        ticking: &dyn Fn(i32, i32) -> bool,
+    ) -> usize {
+        #[cfg(feature = "java-mods")]
+        return self.java_block_entity_run(slots, ticking);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (slots, ticking);
+            0
+        }
     }
 
     /// Before a command reads a block entity: a mod's live form, from Java.
@@ -92,6 +147,40 @@ impl Game<'_> {
         let _ = (pos, tag);
     }
 
+    /// The window's tick starts; in lockstep the guard settles the Java tick's parks on every exit.
+    pub(super) fn java_hook_tick_begin(&mut self) -> Option<LockstepTick> {
+        #[cfg(feature = "java-mods")]
+        return self.java_client_tick_begin();
+        #[cfg(not(feature = "java-mods"))]
+        None
+    }
+
+    /// `handleKeybinds`' moment: in lockstep the Java tick waits there while the window serves its clicks.
+    pub(super) fn java_hook_keys_begin(&mut self) {
+        #[cfg(feature = "java-mods")]
+        self.java_lockstep_keys_begin();
+    }
+
+    pub(super) fn java_hook_keys_end(&mut self) {
+        #[cfg(feature = "java-mods")]
+        self.java_lockstep_keys_end();
+    }
+
+    /// `LocalPlayer.aiStep`'s moment: in lockstep the Java tick waits there for the window's player step; its record.
+    pub(super) fn java_hook_player_begin(&mut self) -> Option<Vec<u8>> {
+        #[cfg(feature = "java-mods")]
+        return self.java_lockstep_player_begin();
+        #[cfg(not(feature = "java-mods"))]
+        None
+    }
+
+    /// The window's player step ran, with the tick's `Input` bits: the Java tick goes on from `aiStep` with its result.
+    pub(super) fn java_hook_player_end(&mut self, moved: bool, keys: u8) {
+        #[cfg(feature = "java-mods")]
+        self.java_lockstep_player_end(moved, keys);
+        let _ = (moved, keys);
+    }
+
     #[cfg(feature = "java-mods")]
     fn is_java_block_entity(&self, pos: [i32; 3]) -> bool {
         matches!(self.world.block_entities.get(&(pos[0], pos[1], pos[2])), Some(horizon_client::containers::BlockEntity::Mod(m)) if !m.id().is_empty())
@@ -112,12 +201,6 @@ impl Game<'_> {
             let _ = (hopper, target, side, insert);
             None
         }
-    }
-
-    pub(super) fn java_hook_break(&mut self, pos: [i32; 3], canceled: &mut bool) {
-        #[cfg(feature = "java-mods")]
-        self.java_break_event(pos, canceled);
-        let _ = (pos, canceled);
     }
 
     /// The progress of a break from Java's `getDestroyProgress`; None leaves it to Horizon.
@@ -153,6 +236,23 @@ impl Game<'_> {
         #[cfg(not(feature = "java-mods"))]
         {
             let _ = (pos, state);
+            false
+        }
+    }
+
+    /// Hands a block's destroy (0) or hit (1) particles to the Java client when its mod makes them; true when it took them.
+    pub(super) fn java_hook_block_effect(
+        &mut self,
+        kind: u8,
+        pos: [i32; 3],
+        state: BlockStateId,
+        face: [i32; 3],
+    ) -> bool {
+        #[cfg(feature = "java-mods")]
+        return self.java_block_effect(kind, pos, state, face);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (kind, pos, state, face);
             false
         }
     }
@@ -240,12 +340,6 @@ impl Game<'_> {
             let _ = state;
             0
         }
-    }
-
-    pub(super) fn java_hook_attack(&mut self, entity: i32, canceled: &mut bool) {
-        #[cfg(feature = "java-mods")]
-        self.java_attack_event(entity, canceled);
-        let _ = (entity, canceled);
     }
 
     /// Java's queued block events of this level, before native answers its own.
@@ -460,6 +554,31 @@ pub(super) fn java_frames() -> Option<std::sync::Arc<dyn Fn() -> Vec<Vec<u8>> + 
     None
 }
 
+/// Whether a Java mod modifies the loot of a top-level roll of `table` (NeoForge's `modifyLoot`).
+pub(crate) fn java_hook_loot_wanted(table: &str) -> bool {
+    let _ = table;
+    false
+}
+
+/// NeoForge's `CommonHooks.modifyLoot` for a roll [`java_hook_loot_wanted`] took.
+pub(crate) fn java_hook_loot_rolled(
+    table: &str,
+    ctx: &horizon_world::loot::LootContext<'_>,
+    tool: Option<&horizon_world::loot::LootStack>,
+    random: &mut Option<horizon_core::random::RandomState>,
+    items: &mut Vec<horizon_world::loot::LootStack>,
+) {
+    let _ = (table, ctx, tool, random, items);
+}
+
+/// Whether a world's start waits for the Java mods' `ServerAboutToStart` and worldgen export before it builds a level.
+pub(super) fn java_hook_wants_world_opening() -> bool {
+    #[cfg(feature = "java-mods")]
+    return horizon_java_host::configured();
+    #[cfg(not(feature = "java-mods"))]
+    false
+}
+
 /// Opening a world waits on the Java mods' start: Err when they failed to start.
 pub(super) fn java_hook_ready() -> Result<(), &'static str> {
     #[cfg(feature = "java-mods")]
@@ -468,15 +587,46 @@ pub(super) fn java_hook_ready() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// The game's start: the JVM boots with the bridge table, and the protocol learns the mods' components; `window` when this process draws.
-pub(super) fn java_hook_start(window: bool) {
+/// Decides the Java run folder once, before the listener families are read; later calls change nothing.
+pub(crate) fn java_hook_resolve(java_mods: Option<&Path>) -> std::io::Result<()> {
     #[cfg(feature = "java-mods")]
-    {
-        super::java_content::start(super::java_bridges::bridges(), window);
-        super::java_components::install();
+    if !horizon_java_host::run_decided() {
+        let run = horizon_java_host::resolve_run(
+            java_mods,
+            std::env::var_os("HORIZON_JAVA_RUN").as_deref(),
+            &std::env::current_dir()?,
+        )
+        .filter(|run| {
+            let has = horizon_java_host::has_mods(run);
+            if !has {
+                log::info!(
+                    "Horizon: no Java mods in {}: starting without Java",
+                    run.join("mods").display()
+                );
+            }
+            has
+        });
+        horizon_java_host::set_run(run);
     }
     #[cfg(not(feature = "java-mods"))]
-    let _ = window;
+    let _ = java_mods;
+    Ok(())
+}
+
+/// The game's start: the JVM boots with the bridge table, and the protocol learns the mods' components; `window` when this process draws.
+pub(super) fn java_hook_start(java_mods: Option<&Path>, window: bool) -> std::io::Result<()> {
+    #[cfg(feature = "java-mods")]
+    {
+        java_hook_resolve(java_mods)?;
+        if horizon_java_host::configured() {
+            super::java_content::start(super::java_bridges::bridges(), window);
+            super::java_components::install();
+            super::java_listener::take_census();
+        }
+    }
+    #[cfg(not(feature = "java-mods"))]
+    let _ = (java_mods, window);
+    Ok(())
 }
 
 /// The loading screen's line while the Java mods boot.

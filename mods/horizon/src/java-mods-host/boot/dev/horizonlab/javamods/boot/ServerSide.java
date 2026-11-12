@@ -19,10 +19,12 @@ final class ServerSide {
             TURN.lock();
             if (Profile.ON) Profile.wait(handler.name(), System.nanoTime() - queued);
         }
+        long held = Profile.ON && TURN.getHoldCount() == 1 ? System.nanoTime() : 0;
         try {
             GameBridge.game(handler, frame);
         } finally {
             TURN.unlock();
+            if (held != 0) Profile.hold(handler.name(), System.nanoTime() - held);
         }
     }
 }

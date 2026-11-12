@@ -151,3 +151,4 @@ SignText.Mutable.asImmutable	skip:java		copy into the immutable record
 SignText.Mutable.setLine	port	crates/horizon-client/src/game/interface/sign_edit.rs::Game::sign_write	writes the edited lines to the side
 SignText.Mutable.modifyLine	missing		the component resolution of one line; see SignBlockEntity.resolveLines
 SignText.Mutable.modifyLines	missing		the component resolution of every line; see SignBlockEntity.resolveLines
+HopperBlockEntity.getContainerOrHandlerAt	inline	crates/horizon-client/src/game/blocks/machines/mod.rs::Game::suck_from_part	w12-coverage: SPEC-17; NeoForge's getContainerAt with item handlers

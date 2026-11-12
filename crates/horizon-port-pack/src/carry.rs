@@ -118,6 +118,12 @@ pub struct Report {
     pub recipes_unregistered: Vec<String>,
     /// Recipes whose NeoForge conditions don't pass (the oracle didn't load them), in `outside/`.
     pub recipes_off: Vec<String>,
+    /// Recipes written in the form Java's codec gave them, instead of the jar's file.
+    pub recipes_from_java: usize,
+    /// Jar recipes Java's data load dropped (`recipe/` paths), in `outside/`.
+    pub recipes_unloaded: Vec<String>,
+    /// Recipes Java kept but couldn't encode: the jar's file is carried as it is.
+    pub recipes_java_errors: BTreeMap<String, String>,
     pub item_definitions_added: usize,
     /// Templates and properties came from the NeoForge oracle's facts, not
     /// from guesses.
@@ -131,6 +137,9 @@ pub struct Report {
     /// Blocks left out, and why.
     pub blocks_unknown: BTreeMap<String, String>,
     pub items: usize,
+    /// Fluids declared in `data/<id>/horizon/fluid/`, by id with whether they exist in the world.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub fluids: BTreeMap<String, bool>,
     /// Equipment assets written from 1.21.1 armour materials.
     pub equipment: usize,
     /// Items left out, and why (oracle only).
@@ -1043,6 +1052,8 @@ pub fn carry(
     let owned: Vec<&str> = std::iter::once(id.as_str())
         .chain(report.namespaces.iter().map(String::as_str))
         .collect();
+    let java = facts.filter(|f| f.recipes_from_boot()).map(|f| &f.recipes);
+    let mut jar_recipes = BTreeSet::new();
     let mut budget = crate::entry::Budget::archive();
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
@@ -1069,11 +1080,20 @@ pub fn carry(
         } else {
             None
         };
-        let off = keep && recipe_off(&name, &bytes, facts, loaded);
+        let rid = java.and(recipe_id(&name, &owned));
+        let by_java = rid.as_ref().and_then(|r| java.and_then(|j| j.get(r)));
+        if let Some(r) = &rid {
+            jar_recipes.insert(r.clone());
+        }
+        let unloaded = keep && rid.is_some() && by_java.is_none();
+        if unloaded && let Some((_, file)) = name.split_once("/recipe/") {
+            report.recipes_unloaded.push(file.to_owned());
+        }
+        let off = keep && !unloaded && recipe_off(&name, &bytes, facts, loaded);
         if off {
             report.recipes_off.push(name.clone());
         }
-        let keep = keep && unreadable.is_none() && !off;
+        let keep = keep && unreadable.is_none() && !off && !unloaded;
         if let Some(why) = unreadable {
             report.unreadable.insert(name.clone(), why);
         }
@@ -1109,28 +1129,42 @@ pub fn carry(
                 .strip_prefix("recipe/")
                 .filter(|_| name.starts_with("data/"))
             {
+                let from_java = by_java.and_then(|r| r.json.as_ref());
+                if let (Some(rid), Some(e)) = (&rid, by_java.and_then(|r| r.error.as_ref())) {
+                    report.recipes_java_errors.insert(rid.clone(), e.clone());
+                }
+                if let Some(j) = from_java {
+                    bytes = serde_json::to_vec_pretty(j).unwrap_or(bytes);
+                    report.recipes_from_java += 1;
+                }
                 if let Ok(mut recipe) = serde_json::from_slice::<Value>(&bytes) {
                     tags_used(&recipe, &mut convention);
                     let renamed = renamed_ids(&mut recipe);
-                    // Kept, so its conditions passed (`recipe_off`): 26.3 has no use for them.
-                    if recipe["type"]
-                        .as_str()
-                        .is_some_and(|t| t.starts_with("minecraft:"))
-                    {
-                        recipe
-                            .as_object_mut()
-                            .map(|o| o.remove("neoforge:conditions"));
-                    }
-                    let old_result = result_before_1_20_5(&recipe);
-                    let upgraded = !old_result && upgrade_recipe(&mut recipe);
-                    if upgraded {
-                        report.recipes_upgraded += 1;
+                    if from_java.is_some() {
+                        if renamed {
+                            bytes = serde_json::to_vec_pretty(&recipe).unwrap_or(bytes);
+                        }
                     } else {
-                        report.recipes_old_result += usize::from(old_result);
-                        report.recipes_kept.push(file.to_owned());
-                    }
-                    if upgraded || renamed {
-                        bytes = serde_json::to_vec_pretty(&recipe).unwrap_or(bytes);
+                        // Kept, so its conditions passed (`recipe_off`): 26.3 has no use for them.
+                        if recipe["type"]
+                            .as_str()
+                            .is_some_and(|t| t.starts_with("minecraft:"))
+                        {
+                            recipe
+                                .as_object_mut()
+                                .map(|o| o.remove("neoforge:conditions"));
+                        }
+                        let old_result = result_before_1_20_5(&recipe);
+                        let upgraded = !old_result && upgrade_recipe(&mut recipe);
+                        if upgraded {
+                            report.recipes_upgraded += 1;
+                        } else {
+                            report.recipes_old_result += usize::from(old_result);
+                            report.recipes_kept.push(file.to_owned());
+                        }
+                        if upgraded || renamed {
+                            bytes = serde_json::to_vec_pretty(&recipe).unwrap_or(bytes);
+                        }
                     }
                 }
             } else if let Some(kind) = rel
@@ -1273,6 +1307,25 @@ pub fn carry(
         }
         write(&dest, &bytes)?;
     }
+    // Recipes a mod's code provides: no jar file names them.
+    for (rid, r) in java.into_iter().flatten() {
+        let Some((ns, path)) = rid.split_once(':') else {
+            continue;
+        };
+        let Some(json) = r
+            .json
+            .as_ref()
+            .filter(|_| owned.contains(&ns) && !jar_recipes.contains(rid))
+        else {
+            continue;
+        };
+        let mut recipe = json.clone();
+        tags_used(&recipe, &mut convention);
+        renamed_ids(&mut recipe);
+        let to = inside.join(format!("data/{ns}/recipe/{path}.json"));
+        write(&to, &serde_json::to_vec_pretty(&recipe).unwrap_or_default())?;
+        report.recipes_from_java += 1;
+    }
     // Entries the mod adds to other structure sets in Java code, for the
     // structures it has.
     for (file, set, entries) in crate::legacy_structure_mods::ctov::code_set_entries(id) {
@@ -1336,11 +1389,37 @@ pub fn carry(
         report.oracle = true;
         let prefix = format!("{id}:");
         let mut declared = BTreeSet::new();
+        let world = world_fluids(facts, &prefix);
+        let world_buckets: BTreeSet<String> = world
+            .iter()
+            .filter(|(_, bucket)| **bucket)
+            .map(|(id, _)| format!("{id}_bucket"))
+            .collect();
+        for (full, fluid) in &facts.fluids {
+            let Some(name) = full.strip_prefix(&prefix) else {
+                continue;
+            };
+            if !facts.owns_fluid(full) || fluid.source != *full {
+                continue;
+            }
+            let v = fluid_declaration(
+                fluid,
+                baked.and_then(|b| b.fluids.get(full)),
+                world.get(full).copied(),
+            );
+            write_decl("fluid", name, &v)?;
+            report.fluids.insert(full.clone(), world.contains_key(full));
+            if world.contains_key(full) {
+                report
+                    .blocks
+                    .insert(name.to_owned(), "minecraft:water".into());
+            }
+        }
         for (full, block) in facts.blocks.range(prefix.clone()..) {
             let Some(b) = full.strip_prefix(&prefix) else {
                 break;
             };
-            if !facts.owns_block(full) {
+            if !facts.owns_block(full) || world.contains_key(full) {
                 continue;
             }
             let Some(choice) = facts.template(full, allowed) else {
@@ -1448,7 +1527,11 @@ pub fn carry(
             let Some(name) = full.strip_prefix(&prefix) else {
                 break;
             };
-            if declared.contains(full) || !facts.owns_item(full) {
+            if declared.contains(full)
+                || !facts.owns_item(full)
+                || world_buckets.contains(full)
+                || world.contains_key(full)
+            {
                 continue;
             }
             // The block it places must be carried: a vanilla one or one of this mod's declared ones.
@@ -1593,6 +1676,15 @@ pub fn carry(
     Ok(report)
 }
 
+/// `ns:path` of a file `data/<ns>/recipe/<path>.json` of an owned namespace.
+fn recipe_id(name: &str, owned: &[&str]) -> Option<String> {
+    let Some(("data", ns, rest)) = split(name) else {
+        return None;
+    };
+    let path = rest.strip_prefix("recipe/")?.strip_suffix(".json")?;
+    owned.contains(&ns).then(|| format!("{ns}:{path}"))
+}
+
 /// A recipe of the mod's whose `neoforge:conditions` fail, so NeoForge never loads it: with the
 /// oracle, one it didn't load (a mod's own conditions, such as config flags, are only known
 /// there); without, NeoForge's own conditions read as the pack ports mods along.
@@ -1642,6 +1734,52 @@ fn state_properties(states: &BTreeMap<String, Vec<String>>) -> Value {
         out.insert(name.clone(), property);
     }
     Value::Object(out)
+}
+
+/// The mod's fluids Horizon can hold in the world, with whether their bucket is the one it makes (`<id>_bucket`): a still fluid, its flowing partner named as Horizon names it, and the block of the same id.
+fn world_fluids(facts: &Facts, prefix: &str) -> BTreeMap<String, bool> {
+    let mut world = BTreeMap::new();
+    for (full, fluid) in &facts.fluids {
+        let Some(path) = full.strip_prefix(prefix) else {
+            continue;
+        };
+        let flowing = format!("{prefix}flowing_{path}");
+        if facts.owns_fluid(full)
+            && fluid.source == *full
+            && fluid.flowing == flowing
+            && facts.owns_block(full)
+            && facts.blocks.contains_key(full)
+        {
+            world.insert(full.clone(), fluid.bucket == format!("{full}_bucket"));
+        }
+    }
+    world
+}
+
+/// A fluid's content file: its look from the baked client model, and how it flows when it is in the world.
+fn fluid_declaration(
+    fluid: &crate::oracle::Fluid,
+    model: Option<&crate::oracle::FluidModelFacts>,
+    bucket: Option<bool>,
+) -> Value {
+    let mut v = json!({});
+    if let Some(model) = model {
+        v["sprite"] = json!(model.still);
+        if let crate::oracle::TintFacts::Constant { states } = &model.tint
+            && let Some(tint) = states.get("amount=8,falling=false")
+        {
+            v["tint"] = json!(tint);
+        }
+    }
+    if let Some(bucket) = bucket {
+        // Java's tick delay, drop-off and slope distance are not in the facts: water's defaults stand.
+        let converts = fluid
+            .fluid_type
+            .as_ref()
+            .is_some_and(|t| t.can_convert_to_source);
+        v["world"] = json!({"source_conversion": converts, "bucket": bucket});
+    }
+    v
 }
 
 /// Writes the oracle's baked models of the blocks in `owned` namespaces as `horizon:baked` models,
@@ -2087,6 +2225,82 @@ mod tests {
             &pack,
             &BTreeMap::new(),
         )
+    }
+
+    fn mymod_jar(dir: &Path) -> std::path::PathBuf {
+        let jar = dir.join("mymod.jar");
+        let shapeless = r#"{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:stick"],"result":{"id":"minecraft:stone"}}"#;
+        let a = r#"{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:stick"],"result":{"id":"minecraft:stone"},"neoforge:conditions":[{"type":"mymod:flag"}]}"#;
+        write_jar(
+            &jar,
+            &[
+                ("data/mymod/recipe/a.json", a.as_bytes()),
+                ("data/mymod/recipe/b.json", shapeless.as_bytes()),
+            ],
+        );
+        jar
+    }
+
+    fn carry_mymod(jar: &Path, out: &Path, facts: Option<&Facts>) -> Report {
+        let info = crate::jar::JarInfo {
+            mod_id: "mymod".into(),
+            ..Default::default()
+        };
+        let pack = Pack {
+            loaded: &|_| true,
+            mods: &|_| false,
+        };
+        carry(
+            jar,
+            &info,
+            out,
+            facts,
+            None,
+            &|_| true,
+            &pack,
+            &BTreeMap::new(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn java_recipes_replace_the_jars() {
+        let dir = temp_dir("java-recipes");
+        let jar = mymod_jar(&dir);
+        let a = json!({"type":"minecraft:crafting_shapeless","category":"misc",
+            "ingredients":["minecraft:stick"],"result":{"id":"minecraft:stone","count":1}});
+        let c = json!({"type":"minecraft:crafting_shaped","pattern":["#"],
+            "key":{"#":"minecraft:stick"},"result":{"id":"minecraft:stone","count":2}});
+        let facts: Facts = serde_json::from_value(json!({"schema": 5, "blocks": {}, "items": {},
+            "recipes": {
+                "mymod:a": {"type":"minecraft:crafting_shapeless","serializer":"minecraft:crafting_shapeless","json": a},
+                "mymod:c": {"type":"minecraft:crafting_shaped","serializer":"minecraft:crafting_shaped","json": c},
+            }}))
+        .unwrap();
+        let out = dir.join("work/mods/mymod");
+        let report = carry_mymod(&jar, &out, Some(&facts));
+        let read =
+            |p: &str| -> Value { serde_json::from_slice(&fs::read(out.join(p)).unwrap()).unwrap() };
+        assert_eq!(read("carry/data/mymod/recipe/a.json"), a);
+        assert_eq!(read("carry/data/mymod/recipe/c.json"), c);
+        assert!(!out.join("carry/data/mymod/recipe/b.json").exists());
+        assert!(out.join("outside/data/mymod/recipe/b.json").exists());
+        assert_eq!(report.recipes_from_java, 2);
+        assert_eq!(report.recipes_unloaded, ["b.json"]);
+    }
+
+    #[test]
+    fn without_java_recipes_the_jars_are_carried_as_before() {
+        let dir = temp_dir("no-java-recipes");
+        let jar = mymod_jar(&dir);
+        let out = dir.join("work/mods/mymod");
+        let report = carry_mymod(&jar, &out, None);
+        assert!(out.join("carry/data/mymod/recipe/b.json").exists());
+        assert_eq!(report.recipes_off, ["data/mymod/recipe/a.json"]);
+        assert_eq!(
+            (report.recipes_from_java, report.recipes_unloaded.len()),
+            (0, 0)
+        );
     }
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
@@ -3513,6 +3727,85 @@ mod tests {
         assert!(decl("item")["template"].is_string());
         assert_eq!(decl("item")["block"], "gem:blood");
         assert_eq!(report.items, 1);
+        assert!(report.items_unknown.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_mod_fluid_is_declared_as_a_world_fluid_with_its_block_and_bucket_left_to_it() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-port-pack-world-fluid-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let jar = dir.join("gem-1.0.jar");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&jar).unwrap());
+        zip.start_file(
+            "META-INF/neoforge.mods.toml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"license = \"MIT\"\n[[mods]]\nmodId = \"gem\"\nversion = \"1.0\"\n")
+            .unwrap();
+        zip.finish().unwrap();
+        let info = crate::jar::read(&jar).unwrap();
+        let state = json!({"hardness": 100.0, "emission": 0, "requires_tool": false, "map_color_id": 4,
+            "sound": {"break": "empty"}, "outline": [], "collision": []});
+        let liquid = json!({"class": ["gem.BloodBlock", "net.minecraft.world.level.block.LiquidBlock", "net.minecraft.world.level.block.Block"],
+            "properties": {"level": ["0", "1"]}, "default": "level=0", "item": "minecraft:air",
+            "explosion_resistance": 100.0, "friction": 0.6, "speed_factor": 1.0, "jump_factor": 1.0,
+            "states": {"level=0": state.clone(), "level=1": state.clone()}});
+        let fluid = |source: &str, flowing: &str| {
+            json!({
+            "class": ["gem.Blood", "net.minecraft.world.level.material.FlowingFluid"],
+            "source": source, "flowing": flowing, "bucket": "gem:blood_bucket",
+            "states": {"amount=8,falling=false": {"amount": 8, "falling": false, "source": true, "random": false, "block": "gem:blood[level=0]"}},
+            "fluid_type": {"id": "gem:blood", "motionScale": 0.014, "canPushEntity": true, "canSwim": true,
+                "canDrown": true, "fallDistanceModifier": 0.5, "canExtinguish": false,
+                "canConvertToSource": true, "supportsBoating": false, "canHydrate": false,
+                "lightLevel": 0, "density": 1000, "temperature": 300, "viscosity": 1000, "isWaterLike": false}})
+        };
+        let facts: Facts = serde_json::from_value(json!({
+            "blocks": {"minecraft:lava": liquid.clone(), "gem:blood": liquid},
+            "items": {"gem:blood_bucket": {"class": "net.minecraft.world.item.BucketItem", "max_stack_size": 1, "rarity": "common"}},
+            "owned": {"block": ["gem:blood"], "item": ["gem:blood_bucket"], "fluid": ["gem:blood", "gem:flowing_blood"]},
+            "fluids": {"gem:blood": fluid("gem:blood", "gem:flowing_blood"), "gem:flowing_blood": fluid("gem:blood", "gem:flowing_blood")},
+        })).unwrap();
+        let baked: BakedModels = serde_json::from_value(json!({"version": 2, "blocks": {},
+            "fluids": {"gem:blood": {"layer": "TRANSLUCENT", "still": "gem:block/blood_still", "flowing": "gem:block/blood_flow",
+                "tint": {"kind": "constant", "states": {"amount=8,falling=false": 4286643968u32}}}}})).unwrap();
+        let out = dir.join("work/mods/gem");
+        let pack = Pack {
+            loaded: &|_| true,
+            mods: &|_| false,
+        };
+        let report = carry(
+            &jar,
+            &info,
+            &out,
+            Some(&facts),
+            Some(&baked),
+            &|_| true,
+            &pack,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let read = |kind: &str, name: &str| {
+            fs::read(out.join(format!("carry/data/gem/horizon/{kind}/{name}.json")))
+        };
+        let file: Value = serde_json::from_slice(&read("fluid", "blood").unwrap()).unwrap();
+        assert_eq!(
+            file,
+            json!({"sprite": "gem:block/blood_still", "tint": 0xFF80FF00u32,
+            "world": {"source_conversion": true, "bucket": true}})
+        );
+        assert!(read("fluid", "flowing_blood").is_err());
+        assert!(read("block", "blood").is_err() && read("item", "blood_bucket").is_err());
+        assert_eq!(
+            report.fluids,
+            BTreeMap::from([("gem:blood".to_string(), true)])
+        );
         assert!(report.items_unknown.is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }

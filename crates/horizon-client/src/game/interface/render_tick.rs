@@ -571,6 +571,14 @@ impl Game<'_> {
         }
         !canceled
     }
+    /// The level's dimension type draws the Overworld sky (sun, moon, stars).
+    pub(super) fn type_skybox(&self, kind: horizon_world::dimension_type::Skybox) -> bool {
+        self.dimension_type().skybox == kind
+    }
+    /// `CardinalLighting.Type.NETHER` from the level's dimension type.
+    pub(super) fn nether_cardinal_light(&self) -> bool {
+        self.dimension_type().cardinal_light == horizon_world::dimension_type::CardinalLight::Nether
+    }
     /// `Lightmap.getBrightness(getMaxLocalRawBrightness(eye))`.
     fn eye_brightness(&self, eye: [f64; 3]) -> f32 {
         let b = [
@@ -581,7 +589,7 @@ impl Game<'_> {
         let packed = self.world.light(b[0], b[1], b[2]);
         let sky = i32::from(packed >> 4) - self.sky_darken();
         let raw = sky.max(i32::from(packed & 15)).clamp(0, 15) as u8;
-        lightmap_brightness(if self.dim == Dim::Nether { 0.1 } else { 0.0 }, raw)
+        lightmap_brightness(self.dimension_type().ambient_light, raw)
     }
     /// What `Minecraft` ticks outside the level's own tick: `GameRenderer.tick` runs the light
     /// flicker whenever the game is not paused, frozen or not, while `TextureManager.tick`
@@ -742,7 +750,10 @@ impl Game<'_> {
             }
             laps.lap("tp_animate");
             // The Horizon Weather option off means no rain visuals or sounds at all.
-            if rain > 0.0 && self.settings.horizon.weather {
+            if rain > 0.0
+                && self.settings.horizon.weather
+                && !horizon_client::world_renders::environment().rain_tick
+            {
                 // ClientLevel.tickWeatherEffects: rain splashes within the weather
                 // radius, and the rain sound.
                 let mut random = LegacyRandom::new(self.world.game_time.wrapping_mul(312_987_231));

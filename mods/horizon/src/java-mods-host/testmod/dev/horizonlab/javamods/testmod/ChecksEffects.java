@@ -11,6 +11,7 @@ import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.core.particles.DustParticleOptions;
 import net.minecraft.core.particles.ItemParticleOption;
 import net.minecraft.core.particles.ParticleTypes;
+import net.minecraft.core.particles.SimpleParticleType;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -42,6 +43,15 @@ import net.minecraft.world.phys.Vec3;
 /** Drops, particles and explosions in a column of their own; items dropped are counted by the item entities around the spot. */
 final class ChecksEffects {
     private ChecksEffects() {}
+
+    /** Vanilla's audience for sendParticles without the limiter override, re-stated. */
+    private static int near(ServerLevel server, Vec3 at) {
+        int n = 0;
+        for (ServerPlayer p : server.getServer().getPlayerList().getPlayers()) {
+            if (p.level() == server && p.blockPosition().closerToCenterThan(at, 32.0)) n++;
+        }
+        return n;
+    }
 
     private static int items(Level level, BlockPos at) {
         return level.getEntitiesOfClass(ItemEntity.class, new AABB(at).inflate(0.6)).size();
@@ -112,7 +122,9 @@ final class ChecksEffects {
             int axes = server.sendParticles(ParticleTypes.CLOUD, true, false, particleAt.x, particleAt.y, particleAt.z, 1, 0, 0, 0, 0.1, 0.2, 0.3, net.minecraft.network.protocol.game.ClientboundLevelParticlesPacket.RandomizationType.DEFAULT);
             return plain >= 0 && dust == plain && block == plain && axes >= plain;
         });
-        Checks.check("sendParticles of an item sends none", () -> server.sendParticles(new ItemParticleOption(ParticleTypes.ITEM, Items.DIAMOND), particleAt.x, particleAt.y, particleAt.z, 3, 0.1, 0.1, 0.1, 0.02) == 0);
+        Checks.check("sendParticles of an item reaches the players near it", () -> server.sendParticles(new ItemParticleOption(ParticleTypes.ITEM, Items.DIAMOND), particleAt.x, particleAt.y, particleAt.z, 3, 0.1, 0.1, 0.1, 0.02) == near(server, particleAt));
+        Checks.check("sendParticles of a mod's type reaches the players near it", () -> server.sendParticles((SimpleParticleType) TestMod.SPARK.get(), particleAt.x, particleAt.y, particleAt.z, 3, 0.1, 0.1, 0.1, 0.02) == near(server, particleAt));
+        Checks.check("sendParticles of a vanilla type still goes through Horizon", () -> server.sendParticles(ParticleTypes.CLOUD, particleAt.x, particleAt.y, particleAt.z, 3, 0.1, 0.1, 0.1, 0.02) >= 0);
 
         BlockPos blast = area.offset(1, 5, 0);
         Checks.check("explode destroys", () -> {

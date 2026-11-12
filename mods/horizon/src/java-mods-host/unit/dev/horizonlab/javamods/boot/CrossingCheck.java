@@ -156,6 +156,23 @@ public final class CrossingCheck {
             check(failed.getMessage().contains("t_throw"), "the failure names the op");
         }
         check(Arrays.equals(Crossing.call("t_echo", new byte[] {9}), new byte[] {9}), "the next request succeeds after a throw");
+
+        int inner = Arrays.asList(Crossing.seal()).indexOf("t_inner");
+        ByteBuffer arena = ByteBuffer.allocateDirect(64);
+        var threads = (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
+        long sum = 0;
+        for (int round = 0; round < 2; round++) {
+            long before = threads.getCurrentThreadAllocatedBytes();
+            check(before > 0, "this JVM counts allocated bytes");
+            for (int i = 0; i < 20_000; i++) {
+                arena.putInt(0, i);
+                check(Crossing.dispatch(inner, arena, 4) == 4, "a direct reply's length");
+                sum += arena.getInt(0);
+            }
+            long allocated = threads.getCurrentThreadAllocatedBytes() - before;
+            if (round == 1) check(allocated < 20_000, "a warm direct request allocates nothing per call: " + allocated + " bytes over 20000");
+        }
+        check(sum > 0, "the replies were read");
         System.out.println("CrossingCheck ok");
     }
 }

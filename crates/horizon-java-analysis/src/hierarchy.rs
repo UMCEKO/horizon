@@ -44,6 +44,11 @@ impl Hierarchy {
         self.heads.insert(name.to_owned(), (sup, ifaces));
     }
 
+    /// The names of every class the hierarchy knows (Python's `heads` keys), in no order.
+    pub fn heads(&self) -> impl Iterator<Item = &str> {
+        self.heads.keys().map(String::as_str)
+    }
+
     /// Port of mod_replaces.Hierarchy.ancestors.
     pub fn ancestors(&self, name: &str) -> Vec<String> {
         if let Some(found) = self.memo.borrow().get(name) {

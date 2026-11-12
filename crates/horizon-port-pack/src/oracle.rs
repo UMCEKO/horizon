@@ -34,7 +34,10 @@ pub struct Facts {
     pub fluids: BTreeMap<String, Fluid>,
     /// The mods' recipes NeoForge loaded: those whose `neoforge:conditions` passed.
     #[serde(default)]
-    pub recipes: BTreeMap<String, serde::de::IgnoredAny>,
+    pub recipes: BTreeMap<String, FactRecipe>,
+    /// The facts format: 1 from the oracle, 5 and later from the boot, which writes each recipe's codec form.
+    #[serde(default)]
+    pub schema: u32,
     /// The game's items' default components (`items.json`), so item ports leave out what their template has.
     #[serde(skip)]
     pub vanilla_items: BTreeMap<String, Value>,
@@ -56,6 +59,19 @@ pub struct Owned {
     pub data_component_type: BTreeSet<String>,
     #[serde(default)]
     pub fluid: BTreeSet<String>,
+}
+
+/// A recipe Java's data load kept; the boot's carry its codec form in `json`.
+#[derive(Debug, Default, Deserialize)]
+pub struct FactRecipe {
+    #[serde(rename = "type", default)]
+    pub kind: String,
+    #[serde(default)]
+    pub serializer: String,
+    #[serde(default)]
+    pub json: Option<Value>,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// A fluid as the game's registry holds it (facts of schema 4 and later).
@@ -183,6 +199,39 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Ordered<T> {
 #[derive(Debug, Deserialize)]
 pub struct BakedModels {
     pub blocks: Ordered<Ordered<BakedState>>,
+    /// Each owned fluid's client model, by fluid id (version 2 files).
+    #[serde(default)]
+    pub fluids: BTreeMap<String, FluidModelFacts>,
+    /// Block id to the state keys whose side shows the fluid overlay (version 2 files).
+    #[serde(default)]
+    pub fluid_overlay: BTreeMap<String, Vec<String>>,
+}
+
+/// What the Java client baked for one fluid and what its client extension says.
+#[derive(Debug, Deserialize)]
+pub struct FluidModelFacts {
+    pub layer: String,
+    pub still: String,
+    pub flowing: String,
+    #[serde(default)]
+    pub overlay: Option<String>,
+    pub tint: TintFacts,
+    #[serde(default)]
+    pub overlay_texture: Option<String>,
+    #[serde(default)]
+    pub fog_code: bool,
+    #[serde(default)]
+    pub overlay_code: bool,
+}
+
+/// How a fluid is tinted; `Constant` holds the ARGB per fluid state key.
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum TintFacts {
+    None,
+    Water,
+    Constant { states: BTreeMap<String, u32> },
+    Code,
 }
 
 #[derive(Debug, Deserialize)]
@@ -684,6 +733,11 @@ fn same(a: &Value, b: &Value) -> bool {
 }
 
 impl Facts {
+    /// Whether `recipes` is the boot's full list of the mods' loaded recipes in codec form.
+    pub fn recipes_from_boot(&self) -> bool {
+        self.schema >= 5
+    }
+
     pub fn read(path: &Path) -> Result<Facts, String> {
         let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))
@@ -1789,5 +1843,49 @@ mod tests {
             "facing=north,half=lower"
         );
         assert_eq!(state_key(""), "");
+    }
+
+    fn fluid(tint: Value) -> Value {
+        json!({"layer": "TRANSLUCENT", "still": "minecraft:block/water_still", "flowing": "minecraft:block/water_flow",
+            "overlay": null, "force_translucent": {"still": false, "flowing": false, "overlay": false},
+            "tint": tint, "overlay_texture": "minecraft:textures/block/slime_block.png",
+            "fog_code": true, "overlay_code": false})
+    }
+
+    #[test]
+    fn baked_fluids_parse_each_tint_kind() {
+        let models: BakedModels = serde_json::from_value(json!({"version": 2, "blocks": {},
+            "fluids": {
+                "m:none": fluid(json!({"kind": "none"})),
+                "m:water": fluid(json!({"kind": "water"})),
+                "m:goo": fluid(json!({"kind": "constant", "states": {"amount=8,falling=false": 4286643968u32}})),
+                "m:code": fluid(json!({"kind": "code"})),
+            },
+            "fluid_overlay": {"m:glass": ["a=true"]}}))
+        .unwrap();
+        assert_eq!(models.fluids["m:none"].tint, TintFacts::None);
+        assert_eq!(models.fluids["m:water"].tint, TintFacts::Water);
+        assert_eq!(models.fluids["m:code"].tint, TintFacts::Code);
+        assert_eq!(
+            models.fluids["m:goo"].tint,
+            TintFacts::Constant {
+                states: BTreeMap::from([("amount=8,falling=false".to_string(), 0xFF80FF00)])
+            }
+        );
+        let goo = &models.fluids["m:goo"];
+        assert_eq!(goo.overlay, None);
+        assert_eq!(
+            goo.overlay_texture.as_deref(),
+            Some("minecraft:textures/block/slime_block.png")
+        );
+        assert!(goo.fog_code && !goo.overlay_code);
+        assert_eq!(models.fluid_overlay["m:glass"], ["a=true"]);
+    }
+
+    #[test]
+    fn version_one_baked_models_have_no_fluids() {
+        let models: BakedModels =
+            serde_json::from_value(json!({"version": 1, "blocks": {}})).unwrap();
+        assert!(models.fluids.is_empty() && models.fluid_overlay.is_empty());
     }
 }

@@ -22,9 +22,13 @@ final class ChecksBlockEntities {
 
     private static BlockPos area;
     private static ChestBlockEntity chest;
+    private static ChestBlockEntity replacedChest;
+    private static ChestBlockEntity mergedChest;
+    private static ChestBlockEntity removedChest;
     private static BlockCapabilityCache<ResourceHandler<ItemResource>, Direction> cache;
     private static BlockCapabilityCache<ResourceHandler<ItemResource>, Direction> placedCache;
     private static BlockCapabilityCache<ResourceHandler<ItemResource>, Direction> brokenCache;
+    private static int switcherAsks;
 
     private static int cobblestone(ResourceHandler<ItemResource> handler) {
         ItemResource cobblestone = ItemResource.of(Items.COBBLESTONE);
@@ -74,6 +78,8 @@ final class ChecksBlockEntities {
             }
             return handler.getAmountAsInt() == 100000;
         });
+        switcherAsks = Switcher.asks;
+        level.setBlock(at.north(4), Switcher.BLOCK.get().defaultBlockState(), 3);
         level.setBlock(at.above(2), Blocks.CHEST.defaultBlockState(), 3);
         Checks.check("vanilla_be_copy", () -> {
             if (!(level.getBlockEntity(at.above(2)) instanceof ChestBlockEntity chest)) return false;
@@ -81,6 +87,20 @@ final class ChecksBlockEntities {
             chest.setChanged();
             return true;
         });
+        for (int up : new int[] {6, 7, 9}) {
+            level.setBlock(at.above(up), Blocks.CHEST.defaultBlockState(), 3);
+            Checks.check("chest_made_" + up, () -> {
+                if (!(level.getBlockEntity(at.above(up)) instanceof ChestBlockEntity found)) return false;
+                found.setItem(0, new ItemStack(Items.DIAMOND, 1));
+                found.setChanged();
+                switch (up) {
+                    case 6 -> replacedChest = found;
+                    case 7 -> mergedChest = found;
+                    default -> removedChest = found;
+                }
+                return true;
+            });
+        }
         BlockPos chestAt = at.above(4);
         level.setBlock(chestAt, Blocks.CHEST.defaultBlockState(), 3);
         Checks.check("chest_cache_made", () -> {
@@ -129,6 +149,9 @@ final class ChecksBlockEntities {
                 move(cache.getCapability(), true, 3, true);
                 return cobblestone(cache.getCapability()) == 18 && chest.getItem(0).getCount() == 18;
             });
+            Checks.check("be_replaced_natively_is_new_object", () -> level.getBlockEntity(chestAt.above(2)) instanceof ChestBlockEntity fresh && fresh != replacedChest && fresh.getItem(0).isEmpty());
+            Checks.check("be_data_merge_keeps_object", () -> level.getBlockEntity(chestAt.above(3)) == mergedChest && mergedChest.getItem(0).is(Items.DIAMOND) && mergedChest.getItem(0).getCount() == 5);
+            Checks.check("be_removed_natively_is_dropped", () -> level.getBlockEntity(chestAt.above(5)) == null && removedChest.isRemoved());
             Checks.check("cache_sees_chest_placed_natively", () -> placedCache.getCapability() != null);
             Checks.check("cache_sees_chest_broken_natively", () -> brokenCache.getCapability() == null);
             return;
@@ -145,6 +168,15 @@ final class ChecksBlockEntities {
             fresh.setChanged();
             return cobblestone(cache.getCapability()) == 7;
         });
+    }
+
+    /** The switcher flipped itself A to B and B to tickerless by Java `setBlock`, then the harness set it back to A natively. */
+    private static void switcherLater() {
+        String trace = Switcher.trace.toString();
+        Checks.check("ticker_java_flip_runs_new_ticker_next_tick", () -> trace.startsWith("AAAB") && Switcher.firstB == Switcher.thirdA + 1);
+        Checks.check("ticker_none_ticks_nothing", () -> trace.matches("AAABBBA*"));
+        Checks.check("ticker_native_flip_runs_new_ticker", () -> trace.matches("AAABBBA+"));
+        Checks.check("ticker_asked_once_per_bind", () -> Switcher.asks - switcherAsks == 4);
     }
 
     /** After the world has run: the same machine, saved and loaded if this JVM didn't make it. */
@@ -164,6 +196,7 @@ final class ChecksBlockEntities {
         Checks.check("block_scheduled_tick", () -> level.getBlockState(at.south()).is(Blocks.EMERALD_BLOCK));
         Checks.check("block_neighbor_changed", () -> level.getBlockState(at.north()).is(Blocks.LAPIS_BLOCK));
         Checks.check("chest_written_back", () -> level.getBlockEntity(at.above(2)) instanceof ChestBlockEntity chest && chest.getItem(0).is(Items.DIAMOND) && chest.getItem(0).getCount() == 3);
+        if (!reloaded) switcherLater();
         if (reloaded) Checks.check("be_persisted", () -> second.energy.getAmountAsInt() > 0 && first.ticks > 0);
     }
 }

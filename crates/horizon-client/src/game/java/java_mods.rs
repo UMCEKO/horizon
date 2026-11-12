@@ -26,6 +26,218 @@ pub(super) fn read_tag(bytes: &[u8]) -> Option<Tag> {
         .map(|(root, _)| root.tag)
 }
 
+/// A sound Java played during a call (`GameBridge.writeEffects`), owned so the reply's buffer can go back to the host.
+#[derive(Debug, PartialEq)]
+pub(super) struct JavaSound {
+    id: Box<str>,
+    at: [f64; 3],
+    volume: f32,
+    pitch: f32,
+}
+
+/// The effects that end a reply; a reply with none allocates nothing.
+pub(super) fn java_read_effects(reply: &mut In<'_>) -> Option<Vec<JavaSound>> {
+    let n = reply.int()?;
+    let mut sounds = Vec::new();
+    for _ in 0..n {
+        sounds.push(JavaSound {
+            id: reply.text()?.into(),
+            at: [reply.double()?, reply.double()?, reply.double()?],
+            volume: reply.float()?,
+            pitch: reply.float()?,
+        });
+    }
+    Some(sounds)
+}
+
+use horizon_client::lan::abilities::PlayerAbilities;
+
+/// The player groups before STACKS, in mask order: pose, mode, selected, experience, vitals, effects, motion.
+const GROUPS: usize = 7;
+const XP_GROUP: usize = 3;
+const STACKS: u32 = 1 << GROUPS;
+/// Every group is present and the view takes them as its whole state.
+const FULL: u32 = 1 << 30;
+
+type Effect = (String, i32, i32, bool, bool);
+
+/// What the acting player's Java view is filled from.
+pub(super) struct PlayerSnapshot {
+    pose: String,
+    at: [f64; 3],
+    yaw: f32,
+    pitch: f32,
+    shift: bool,
+    mode: i32,
+    selected: i32,
+    xp: (i32, f32, i32),
+    vitals: (f32, i32, f32, f32, f32),
+    effects: Vec<Effect>,
+    motion: ([f64; 3], bool),
+    stacks: Vec<Option<ItemStack>>,
+}
+
+impl PlayerSnapshot {
+    fn write_group(&self, group: usize, out: &mut Out) {
+        match group {
+            0 => {
+                out.text(&self.pose);
+                self.at.iter().for_each(|v| out.double(*v));
+                out.float(self.yaw);
+                out.float(self.pitch);
+                out.bool(self.shift);
+            }
+            1 => out.int(self.mode),
+            2 => out.int(self.selected),
+            XP_GROUP => write_xp(self.xp, out),
+            4 => {
+                let (health, food, saturation, exhaustion, absorption) = self.vitals;
+                out.float(health);
+                out.int(food);
+                out.float(saturation);
+                out.float(exhaustion);
+                out.float(absorption);
+            }
+            5 => {
+                out.int(self.effects.len() as i32);
+                for (id, duration, amplifier, ambient, visible) in &self.effects {
+                    out.text(id);
+                    out.int(*duration);
+                    out.int(*amplifier);
+                    out.bool(*ambient);
+                    out.bool(*visible);
+                }
+            }
+            _ => {
+                self.motion.0.iter().for_each(|v| out.double(*v));
+                out.bool(self.motion.1);
+            }
+        }
+    }
+}
+
+fn write_xp((level, progress, total): (i32, f32, i32), out: &mut Out) {
+    out.int(level);
+    out.float(progress);
+    out.int(total);
+}
+
+/// What the acting player's view last heard; groups as their wire bytes, so floats compare by bits.
+#[derive(Default)]
+pub(super) struct Sent {
+    primed: bool,
+    groups: [Option<Vec<u8>>; GROUPS],
+    stacks: Vec<Option<ItemStack>>,
+}
+
+impl Sent {
+    fn applied_slot(&mut self, slot: usize, stack: Option<ItemStack>) {
+        if self.stacks.len() <= slot {
+            self.stacks.resize(slot + 1, None);
+        }
+        self.stacks[slot] = stack;
+    }
+
+    fn applied_xp(&mut self, xp: (i32, f32, i32)) {
+        let mut out = Out::default();
+        write_xp(xp, &mut out);
+        self.groups[XP_GROUP] = Some(out.0);
+    }
+}
+
+thread_local! {
+    /// Per acting player's uuid; the server thread owns the views.
+    static SENT: std::cell::RefCell<std::collections::HashMap<[i32; 4], Sent>> = Default::default();
+}
+
+/// Forgets what one player's view (or every view) heard, so its next request is full.
+pub(super) fn java_player_view_reset(uuid: Option<[i32; 4]>) {
+    SENT.with_borrow_mut(|sent| match uuid {
+        Some(uuid) => {
+            sent.remove(&uuid);
+        }
+        None => sent.clear(),
+    });
+}
+
+fn write_player_header(
+    out: &mut Out,
+    uuid: [i32; 4],
+    name: &str,
+    key: u32,
+    time: i64,
+    off: bool,
+    abilities: Option<PlayerAbilities>,
+) {
+    let [a, b, c, d] = uuid;
+    out.long(((a as i64) << 32) | (b as u32 as i64));
+    out.long(((c as i64) << 32) | (d as u32 as i64));
+    out.text(name);
+    out.int(key as i32);
+    out.long(time);
+    out.int(off as i32);
+    out.bool(abilities.is_some());
+    let abilities = abilities.unwrap_or_default();
+    for flag in [
+        abilities.invulnerable,
+        abilities.flying,
+        abilities.may_fly,
+        abilities.instabuild,
+        abilities.may_build,
+    ] {
+        out.bool(flag);
+    }
+    out.float(abilities.flying_speed);
+    out.float(abilities.walking_speed);
+}
+
+/// The mask and the groups that differ from `sent`, which then holds `now`; None when a stack can't be encoded.
+pub(super) fn encode_player_groups(
+    now: &PlayerSnapshot,
+    sent: &mut Sent,
+    out: &mut Out,
+) -> Option<u32> {
+    let full = !sent.primed;
+    let at = out.0.len();
+    out.int(0);
+    let mut mask = if full { FULL } else { 0 };
+    let mut group = Out::default();
+    for (i, last) in sent.groups.iter_mut().enumerate() {
+        group.0.clear();
+        now.write_group(i, &mut group);
+        if full || last.as_deref() != Some(&group.0[..]) {
+            mask |= 1 << i;
+            out.0.extend_from_slice(&group.0);
+            *last = Some(group.0.clone());
+        }
+    }
+    sent.stacks.resize(now.stacks.len(), None);
+    let changed: Vec<usize> = (0..now.stacks.len())
+        .filter(|&slot| full || sent.stacks[slot] != now.stacks[slot])
+        .collect();
+    if !changed.is_empty() {
+        mask |= STACKS;
+        out.int(changed.len() as i32);
+        for slot in changed {
+            out.int(slot as i32);
+            match &now.stacks[slot] {
+                Some(stack) => {
+                    let Some(tag) = write_tag(horizon_client::save::item_to_nbt(stack)) else {
+                        *sent = Sent::default();
+                        return None;
+                    };
+                    out.bytes(&tag);
+                }
+                None => out.int(0),
+            }
+            sent.stacks[slot] = now.stacks[slot].clone();
+        }
+    }
+    sent.primed = true;
+    out.0[at..at + 4].copy_from_slice(&(mask as i32).to_be_bytes());
+    Some(mask)
+}
+
 impl Game<'_> {
     /// The slots of `Inventory.getItem`: main, boots to helmet, off hand.
     fn java_slot(&mut self, slot: usize) -> Option<&mut Option<ItemStack>> {
@@ -184,10 +396,35 @@ impl Game<'_> {
         tail: Vec<u8>,
         claimed: &mut bool,
     ) -> Option<u32> {
+        self.java_call_use_after(what, op, Vec::new(), tail, claimed)
+    }
+
+    /// A server event posted on the acting player's view (`post_event`): `cancelled` is what its listeners left.
+    pub(super) fn java_post_server_event(
+        &mut self,
+        event: &str,
+        fields: Vec<u8>,
+        cancelled: &mut bool,
+    ) {
+        let mut head = Out::default();
+        head.text(event);
+        self.java_call_use_after(event, "post_event", head.0, fields, cancelled);
+    }
+
+    /// [`Self::java_call_use`] with `head` before the player's view.
+    fn java_call_use_after(
+        &mut self,
+        what: &str,
+        op: &str,
+        head: Vec<u8>,
+        tail: Vec<u8>,
+        claimed: &mut bool,
+    ) -> Option<u32> {
         self.java_bind_states();
-        let mut request = self.java_use_request()?;
+        let mut request = head;
+        request.extend(self.java_use_request()?);
         request.extend(tail);
-        let reply = self.java_request(op, &request)?;
+        let reply = self.java_player_request(op, &request)?;
         let using = self.java_apply_use(&reply, claimed);
         if using.is_none() {
             log::warn!("Horizon: a Java mod's use of {what} answered in pieces");
@@ -198,9 +435,26 @@ impl Game<'_> {
 
     /// Fills the acting player's view again, for a bridge that changed something its getters read.
     pub(super) fn java_refresh_player(&mut self) {
-        if let (Some(host), Some(request)) = (horizon_java_host::get(), self.java_use_request()) {
-            horizon_java_host::bridge::with_active(self, || host.request("refresh", &request));
+        let Some(host) = horizon_java_host::get() else {
+            return;
+        };
+        let Some(request) = self.java_use_request() else {
+            return;
+        };
+        if horizon_java_host::bridge::with_active(self, || host.request("refresh", &request))
+            .is_none()
+        {
+            java_player_view_reset(Some(self.acting_uuid()));
         }
+    }
+
+    /// Has Java write its final worldgen registries to `path` (`WorldgenOverrides::from_java_export` reads them); whether it did.
+    pub(in crate::game) fn java_worldgen_export(&mut self, path: &std::path::Path) -> bool {
+        let Some(path) = path.to_str() else {
+            return false;
+        };
+        self.java_request("worldgen_export", path.as_bytes())
+            .is_some_and(|reply| reply == [1])
     }
 
     /// Java's block state ids against this game's, once.
@@ -209,12 +463,17 @@ impl Game<'_> {
         let Some(host) = horizon_java_host::get() else {
             return;
         };
-        if STATES.get().is_some() {
+        static FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if STATES.get().is_some() || FAILED.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
         let Some(listed) =
             horizon_java_host::bridge::with_active(self, || host.request("states", &[]))
         else {
+            FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+            log::error!(
+                "Horizon: Java's `states` request threw (see its stack trace above); Java mods' blocks stay unbound and it is not retried"
+            );
             return;
         };
         let registry = &self.pack.assets.registry;
@@ -231,6 +490,8 @@ impl Game<'_> {
         let mut listed = In(&listed);
         let (Some(count), Some(air), Some(whole)) = (listed.int(), listed.int(), listed.bool())
         else {
+            FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+            log::error!("Horizon: Java's block state list has no header; Java mods' blocks are unbound");
             return;
         };
         map.java_air = air;
@@ -258,6 +519,7 @@ impl Game<'_> {
                 log::error!(
                     "Horizon: Java's block state list ended early; Java mods' blocks are unbound"
                 );
+                FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
                 return;
             };
             let state = horizon_world::chunk::BlockState {
@@ -318,65 +580,84 @@ impl Game<'_> {
         let _ = STATES.set(map);
     }
 
-    pub(in crate::game) fn java_use_request(&mut self) -> Option<Vec<u8>> {
-        let position = self.player.as_ref()?.position;
-        let [a, b, c, d] = self.acting_uuid();
-        let mut out = Out::default();
-        out.long(((a as i64) << 32) | (b as u32 as i64));
-        out.long(((c as i64) << 32) | (d as u32 as i64));
-        out.text(
-            &self
-                .lan_acting_name
-                .clone()
-                .unwrap_or_else(|| self.options.player_name()),
-        );
-        out.text(self.dim.id());
-        out.long(self.world.game_time);
-        out.text(self.player.as_ref()?.pose.name());
-        out.double(position.x);
-        out.double(position.y);
-        out.double(position.z);
-        out.float(self.yaw);
-        out.float(self.pitch);
-        out.bool(self.keys.held(horizon_client::actions::Action::Sneak));
-        out.int(self.mode as i32);
-        out.int(matches!(self.hand, Hand::Off) as i32);
-        out.int(self.selected as i32);
-        out.int(self.experience.level);
-        out.float(self.experience.progress);
-        out.int(self.experience.total);
+    /// The acting player as its view's fill needs it.
+    fn java_player_snapshot(&mut self) -> Option<PlayerSnapshot> {
         let player = self.player.as_ref()?;
-        out.float(player.health.health());
-        out.int(player.health.food.food);
-        out.float(player.health.food.saturation);
-        out.float(player.health.food.exhaustion);
-        out.float(player.health.absorption());
-        let effects = &self.potions.effects.list;
-        out.int(effects.len() as i32);
-        for effect in effects {
-            out.text(&format!("minecraft:{}", effect.id));
-            out.int(effect.duration);
-            out.int(effect.amplifier);
-            out.bool(effect.ambient);
-            out.bool(effect.visible);
-        }
-        out.double(player.velocity.x);
-        out.double(player.velocity.y);
-        out.double(player.velocity.z);
-        out.bool(player.ground.on_ground);
-        let mut stacks = Vec::new();
-        for slot in 0..=OFFHAND {
-            if let Some(Some(stack)) = self.java_slot(slot).map(|s| s.clone()) {
-                let tag = horizon_client::save::item_to_nbt(&stack);
-                stacks.push((slot, write_tag(tag)?));
-            }
-        }
-        out.int(stacks.len() as i32);
-        for (slot, bytes) in stacks {
-            out.int(slot as i32);
-            out.bytes(&bytes);
-        }
+        let (pose, at) = (player.pose.name().to_string(), player.position);
+        let (velocity, on_ground) = (player.velocity, player.ground.on_ground);
+        let vitals = (
+            player.health.health(),
+            player.health.food.food,
+            player.health.food.saturation,
+            player.health.food.exhaustion,
+            player.health.absorption(),
+        );
+        let effects = self
+            .potions
+            .effects
+            .list
+            .iter()
+            .map(|e| {
+                let id = format!("minecraft:{}", e.id);
+                (id, e.duration, e.amplifier, e.ambient, e.visible)
+            })
+            .collect();
+        let stacks = (0..=OFFHAND)
+            .map(|slot| self.java_slot(slot).and_then(|s| s.clone()))
+            .collect();
+        Some(PlayerSnapshot {
+            pose,
+            at: [at.x, at.y, at.z],
+            yaw: self.yaw,
+            pitch: self.pitch,
+            shift: self.keys.held(horizon_client::actions::Action::Sneak),
+            mode: self.mode as i32,
+            selected: self.selected as i32,
+            xp: (
+                self.experience.level,
+                self.experience.progress,
+                self.experience.total,
+            ),
+            vitals,
+            effects,
+            motion: ([velocity.x, velocity.y, velocity.z], on_ground),
+            stacks,
+        })
+    }
+
+    /// A player request's head and what changed in the acting player since its view last heard.
+    pub(in crate::game) fn java_use_request(&mut self) -> Option<Vec<u8>> {
+        let now = self.java_player_snapshot()?;
+        let uuid = self.acting_uuid();
+        let name = self
+            .lan_acting_name
+            .clone()
+            .unwrap_or_else(|| self.options.player_name());
+        let mut out = Out::default();
+        let off = matches!(self.hand, Hand::Off);
+        let key = self.java_level_key();
+        write_player_header(
+            &mut out,
+            uuid,
+            &name,
+            key,
+            self.world.game_time,
+            off,
+            self.acting_abilities,
+        );
+        SENT.with_borrow_mut(|sent| {
+            encode_player_groups(&now, sent.entry(uuid).or_default(), &mut out)
+        })?;
         Some(out.0)
+    }
+
+    /// A request that fills the acting player's view; a failed one leaves that view unknown, so the next is full.
+    fn java_player_request(&mut self, op: &str, input: &[u8]) -> Option<Vec<u8>> {
+        let reply = self.java_request(op, input);
+        if reply.is_none() {
+            java_player_view_reset(Some(self.acting_uuid()));
+        }
+        reply
     }
 
     fn java_apply_use(&mut self, reply: &[u8], claimed: &mut bool) -> Option<Option<u32>> {
@@ -384,11 +665,28 @@ impl Game<'_> {
         *claimed = reply.bool()?;
         let using = reply.bool()?;
         let ticks = reply.int()?;
+        let level = reply.int()?;
+        self.java_apply_changes(level, &mut reply)?;
+        self.java_apply_effects(&mut reply)?;
+        Some(using.then_some(ticks.max(0) as u32))
+    }
+
+    /// The acting player's experience and changed slots from a reply, after its `level`; its view holds them already.
+    pub(super) fn java_apply_changes(&mut self, level: i32, reply: &mut In<'_>) -> Option<()> {
         self.experience = horizon_client::entities::Experience {
-            level: reply.int()?,
+            level,
             progress: reply.float()?,
             total: reply.int()?,
         };
+        let xp = (level, self.experience.progress, self.experience.total);
+        let uuid = self.acting_uuid();
+        SENT.with_borrow_mut(|sent| sent.entry(uuid).or_default().applied_xp(xp));
+        self.java_apply_slots(reply)
+    }
+
+    /// `int n, n x (int slot, bytes tag)` into the acting player's slots.
+    pub(super) fn java_apply_slots(&mut self, reply: &mut In<'_>) -> Option<()> {
+        let uuid = self.acting_uuid();
         for _ in 0..reply.int()? {
             let slot = reply.int()? as usize;
             let bytes = reply.bytes()?;
@@ -397,50 +695,67 @@ impl Game<'_> {
             } else {
                 horizon_client::save::item_from_nbt(&read_tag(bytes)?)
             };
-            *self.java_slot(slot)? = stack;
+            *self.java_slot(slot)? = stack.clone();
+            SENT.with_borrow_mut(|sent| sent.entry(uuid).or_default().applied_slot(slot, stack));
             self.hand_stack_replaced(if slot == OFFHAND {
                 shield::OFFHAND_SLOT
             } else {
                 slot
             });
         }
-        self.java_apply_effects(&mut reply)?;
-        Some(using.then_some(ticks.max(0) as u32))
+        Some(())
     }
 
     /// What Java did to the world on a call: the sounds it played.
     pub(super) fn java_apply_effects(&mut self, reply: &mut In<'_>) -> Option<()> {
-        for _ in 0..reply.int()? {
-            let sound = reply.text()?;
-            let at = [reply.double()?, reply.double()?, reply.double()?];
-            let (volume, pitch) = (reply.float()?, reply.float()?);
-            self.audio.play(sound, Some(at), volume, pitch);
-        }
+        let sounds = java_read_effects(reply)?;
+        self.java_play_effects(sounds);
         Some(())
+    }
+
+    /// This level's key in Java's table of levels: Java is told the level's name once, when it first needs it.
+    pub(super) fn java_level_key(&mut self) -> u32 {
+        self.java_register_level(self.dim);
+        self.dim.key().slot()
+    }
+
+    pub(super) fn java_register_level(&mut self, dim: Dim) {
+        let key = dim.key().slot();
+        if JAVA_SERVER.with_borrow(|s| s.known.contains(&key)) {
+            return;
+        }
+        let Some(host) = horizon_java_host::get() else {
+            return;
+        };
+        horizon_java_host::bridge::with_active(self, || register_level(host, dim));
+    }
+
+    /// Plays the sounds [`java_read_effects`] took out of a reply.
+    pub(super) fn java_play_effects(&mut self, sounds: Vec<JavaSound>) {
+        for sound in sounds {
+            self.audio
+                .play(&sound.id, Some(sound.at), sound.volume, sound.pitch);
+        }
     }
 
     /// Calls `GameBridge`'s `op` for this level, with what it does to the world applied after.
     fn java_level_call(&mut self, op: &str, body: impl FnOnce(&mut Out)) {
-        let Some(host) = horizon_java_host::get() else {
+        if horizon_java_host::get().is_none() {
             return;
-        };
+        }
         self.java_bind_states();
-        self.java_push_stale();
-        let (dim, time) = (self.dim.id(), self.world.game_time);
-        let effects = horizon_java_host::bridge::with_active(self, || {
-            host.call_with(
-                op,
-                |out| {
-                    out.text(dim);
-                    out.long(time);
-                    body(out);
-                },
-                // Nothing changed is the common reply: no sounds.
-                |reply| Some((reply.0 != [0u8; 4]).then(|| reply.0.to_vec())),
-            )
-        });
-        if let Some(Some(reply)) = effects {
-            self.java_apply_effects(&mut In(&reply));
+        let (key, time) = (self.java_level_key(), self.world.game_time);
+        let sounds = self.java_call_with(
+            op,
+            |out| {
+                out.int(key as i32);
+                out.long(time);
+                body(out);
+            },
+            java_read_effects,
+        );
+        if let Some(sounds) = sounds {
+            self.java_play_effects(sounds);
         }
     }
 
@@ -451,17 +766,39 @@ impl Game<'_> {
         horizon_java_host::bridge::with_active(self, || host.request(op, input))
     }
 
-    /// What Java holds of a block entity Horizon changed on its own: the new saved form, or its removal.
+    /// [`java_request`](Self::java_request) through the host's reused buffers: `write` fills the request and `read` parses the reply in place.
+    pub(super) fn java_call_with<R>(
+        &mut self,
+        op: &str,
+        write: impl FnOnce(&mut Out),
+        read: impl FnOnce(&mut In<'_>) -> Option<R>,
+    ) -> Option<R> {
+        let host = horizon_java_host::get()?;
+        self.java_push_stale();
+        horizon_java_host::bridge::with_active(self, || host.call_with(op, write, read))
+    }
+
+    /// What Java holds of a block entity Horizon changed on its own, by generation: a replacement or removal, or the saved form read into the object it keeps.
     pub(in crate::game) fn java_push_stale(&mut self) {
-        for key in self.world.block_entities.take_java_stale() {
+        for (key, rewritten) in self.world.block_entities.take_java_stale() {
+            let Some(held) = self.world.block_entities.java_held_generation(&key) else {
+                continue;
+            };
             let pos = BlockPos::new(key.0, key.1, key.2);
-            match self.world.block_entities.get(&key) {
-                Some(BlockEntity::Mod(_)) => self.world.block_entities.release_for_java(&key),
-                Some(_) => self.java_send_block_entity(pos),
-                None => {
+            let Some(entity) = self.world.block_entities.get(&key) else {
+                // Out of the map for its tick: `put` logs it again.
+                if self.world.block_entities.generation(&key).is_none() {
                     self.world.block_entities.release_for_java(&key);
                     self.java_level_call("block_entity_drop", |out| out.long(pos.pack()));
                 }
+                continue;
+            };
+            let is_mod = matches!(entity, BlockEntity::Mod(_));
+            let replaced = self.world.block_entities.generation(&key) != Some(held);
+            // A mod's object is newer than its saved form: only a whole-record write reaches it.
+            if (replaced || rewritten || !is_mod) && !self.java_load_block_entity(pos) && replaced {
+                self.world.block_entities.release_for_java(&key);
+                self.java_level_call("block_entity_drop", |out| out.long(pos.pack()));
             }
         }
     }
@@ -548,12 +885,20 @@ impl Game<'_> {
 
     /// `level.getBlockEntity` found nothing in Java: the saved form Horizon holds, if any, goes there now.
     pub(in crate::game) fn java_send_block_entity(&mut self, pos: BlockPos) {
+        self.java_load_block_entity(pos);
+    }
+
+    /// Sends the saved form at `pos` with its generation, which Java holds from then on; false when there is nothing to send.
+    fn java_load_block_entity(&mut self, pos: BlockPos) -> bool {
         let key = (pos.x, pos.y, pos.z);
         let Some(entity) = self.world.block_entities.get(&key) else {
-            return;
+            return false;
+        };
+        let Some(generation) = self.world.block_entities.generation(&key) else {
+            return false;
         };
         if matches!(entity, BlockEntity::Mod(m) if m.id().is_empty()) {
-            return;
+            return false;
         }
         let name = self
             .res
@@ -563,39 +908,60 @@ impl Game<'_> {
             .clone();
         let tag = horizon_client::save::encode_block_entity(key, entity, &name);
         let Some(bytes) = write_tag(tag) else {
-            return;
+            return false;
         };
-        self.world.block_entities.hold_for_java(key);
+        self.world.block_entities.hold_for_java(key, generation);
         self.java_level_call("block_entity_load", |out| {
             out.long(pos.pack());
+            out.long(generation as i64);
             out.bytes(&bytes);
         });
+        true
     }
 
-    /// `BlockEntities.store`: a vanilla block entity Java changed, written through to Horizon's chunk.
-    pub(in crate::game) fn java_store_block_entity(&mut self, pos: BlockPos, tag: &[u8]) {
+    /// Whether a Java object bound to `generation` (0: not told yet) is still the one Horizon's record at `key` goes with.
+    pub(in crate::game) fn java_generation_current(
+        &self,
+        key: (i32, i32, i32),
+        generation: i64,
+    ) -> bool {
+        generation == 0 || self.world.block_entities.generation(&key) == Some(generation as u64)
+    }
+
+    /// `BlockEntities.store`: a vanilla block entity Java changed, written through to Horizon's chunk; the generation it now holds, 0 if the object was replaced.
+    pub(in crate::game) fn java_store_block_entity(
+        &mut self,
+        pos: BlockPos,
+        generation: i64,
+        tag: &[u8],
+    ) -> i64 {
         let Some((key, entity)) =
             read_tag(tag).and_then(|t| horizon_client::save::decode_block_entity(&t))
         else {
             log::warn!("Horizon: a Java mod's block entity at {pos:?} didn't decode");
-            return;
+            return generation;
         };
-        self.world.block_entities.insert_from_java(key, entity);
+        if !self.java_generation_current(key, generation) {
+            return 0;
+        }
+        let (_, held) = self.world.block_entities.insert_from_java(key, entity);
         self.world.modified.insert((key.0 >> 4, key.2 >> 4));
+        held as i64
     }
 
     /// `data get block` of a block entity Java holds: its live saved form replaces the chunk's copy first.
     pub(in crate::game) fn java_refresh_block_entity(&mut self, pos: BlockPos) {
         self.java_bind_states();
-        let mut out = Out::default();
-        out.text(self.dim.id());
-        out.long(self.world.game_time);
-        out.long(pos.pack());
-        let reply = self.java_request("block_entity_data", &out.0);
-        let Some(tag) = reply
-            .filter(|r| !r.is_empty())
-            .and_then(|r| In(&r).bytes().and_then(read_tag))
-        else {
+        let (key, time) = (self.java_level_key(), self.world.game_time);
+        let Some(tag) = self.java_call_with(
+            "block_entity_data",
+            |out| {
+                out.int(key as i32);
+                out.long(time);
+                out.long(pos.pack());
+            },
+            |reply| reply.bytes().and_then(read_tag),
+        ) else {
             return;
         };
         if let Some((key, entity)) = horizon_client::save::decode_block_entity(&tag) {
@@ -637,22 +1003,28 @@ impl Game<'_> {
             return None;
         }
         let pos = |p: (i32, i32, i32)| BlockPos::new(p.0, p.1, p.2).pack();
-        let mut out = Out::default();
-        out.text(self.dim.id());
-        out.long(self.world.game_time);
-        out.long(pos(hopper));
-        out.long(pos(target));
-        out.int(side as i32);
-        out.bool(insert);
-        let reply = self.java_request("hopper_transfer", &out.0)?;
-        let mut reply = In(&reply);
-        let (found, moved) = (reply.bool()?, reply.bool()?);
-        self.java_apply_effects(&mut reply);
+        let (key, time) = (self.java_level_key(), self.world.game_time);
+        let (found, moved, sounds) = self.java_call_with(
+            "hopper_transfer",
+            |out| {
+                out.int(key as i32);
+                out.long(time);
+                out.long(pos(hopper));
+                out.long(pos(target));
+                out.int(side as i32);
+                out.bool(insert);
+            },
+            |reply| {
+                let (found, moved) = (reply.bool()?, reply.bool()?);
+                Some((found, moved, java_read_effects(reply).unwrap_or_default()))
+            },
+        )?;
+        self.java_play_effects(sounds);
         found.then_some(moved)
     }
 
     /// Java made a block entity: its place in the chunk, which saves it and gives it its turn to tick.
-    pub(in crate::game) fn java_adopt_block_entity(&mut self, pos: BlockPos, id: String) {
+    pub(in crate::game) fn java_adopt_block_entity(&mut self, pos: BlockPos, id: String) -> i64 {
         let entity = BlockEntity::Mod(Box::new(horizon_client::containers::ModBlockEntity::new(
             id,
             horizon_client::containers::ModBlockEntityFields::default(),
@@ -660,20 +1032,21 @@ impl Game<'_> {
         let key = (pos.x, pos.y, pos.z);
         self.world.block_entities.release_for_java(&key);
         self.world.block_entities.insert(key, entity);
+        let generation = self.world.block_entities.generation(&key).unwrap_or(0);
+        self.world.block_entities.hold_for_java(key, generation);
+        generation as i64
     }
 
     /// `BlockEntityTicker.tick` of a block entity Java holds, which it took when its chunk loaded.
     pub(super) fn java_block_entity_tick(&mut self, pos: [i32; 3]) {
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
-        if !self.java_tick_once(at) {
-            thread_local! {
-                static WARNED: std::cell::RefCell<std::collections::HashSet<BlockPos>> = Default::default();
-            }
-            if WARNED.with_borrow_mut(|w| w.insert(at)) {
-                log::warn!(
-                    "Horizon: no Java block entity at {pos:?} for Horizon's record of one, so it doesn't tick"
-                );
-            }
+        // An entry of a run Java already ticked; its reply said whether Java held it.
+        let held = match java_be_runs::take_preticked() {
+            Some(held) => held,
+            None => self.java_tick_once(at),
+        };
+        if !held {
+            java_warn_unheld(at);
         }
         self.java_drain_block_events();
     }
@@ -691,7 +1064,7 @@ impl Game<'_> {
         if self.remote.is_some() || !JAVA_SERVER.with_borrow(|s| s.started) {
             return;
         }
-        let behind = JAVA_SERVER.with_borrow_mut(|s| s.levels.insert(self.dim.id().to_owned()));
+        let behind = JAVA_SERVER.with_borrow_mut(|s| s.levels.insert(self.dim.key().slot()));
         if loaded.is_empty() && unloaded.is_empty() && !behind {
             return;
         }
@@ -708,7 +1081,7 @@ impl Game<'_> {
         };
         self.java_chunks_leaving(unloaded);
         self.java_chunks_read(&joined);
-        let mut entities: Vec<(BlockPos, Vec<u8>)> = Vec::new();
+        let mut entities: Vec<(BlockPos, u64, Vec<u8>)> = Vec::new();
         if !joined.is_empty() {
             for (&key, entity) in self.world.block_entities.iter() {
                 let BlockEntity::Mod(m) = entity else {
@@ -723,17 +1096,20 @@ impl Game<'_> {
                 }
                 let name = &self.res.facts().get(state).name;
                 let tag = horizon_client::save::encode_block_entity(key, entity, name);
-                if let Some(bytes) = write_tag(tag) {
-                    entities.push((BlockPos::new(key.0, key.1, key.2), bytes));
+                let generation = self.world.block_entities.generation(&key);
+                if let (Some(bytes), Some(generation)) = (write_tag(tag), generation) {
+                    entities.push((BlockPos::new(key.0, key.1, key.2), generation, bytes));
                 }
             }
         }
+        let key = self.java_level_key();
         let mut out = Out::default();
-        out.text(self.dim.id());
+        out.int(key as i32);
         out.long(self.world.game_time);
         out.int(entities.len() as i32);
-        for (pos, bytes) in &entities {
+        for (pos, generation, bytes) in &entities {
             out.long(pos.pack());
+            out.long(*generation as i64);
             out.bytes(bytes);
         }
         out.int(unloaded.len() as i32);
@@ -743,6 +1119,10 @@ impl Game<'_> {
         }
         let reply = self.java_request("chunks_changed", &out.0);
         UNLOADING.take();
+        for (pos, generation, _) in &entities {
+            let key = (pos.x, pos.y, pos.z);
+            self.world.block_entities.hold_for_java(key, *generation);
+        }
         let Some(reply) = reply else {
             return;
         };
@@ -759,6 +1139,10 @@ impl Game<'_> {
         self.java_apply_effects(&mut reply);
         self.java_drain_block_events();
         self.java_chunks_full(&joined);
+        // A level's entities load after the server's start: the ones native loaded earlier join now.
+        if behind {
+            self.java_entities_catch_up();
+        }
     }
 
     /// `MinecraftServer.stopServer`'s first step: `ServerStopping`, before the players leave.
@@ -771,6 +1155,7 @@ impl Game<'_> {
     /// `PlayerList.removeAll`: the players still in Java's server log out.
     pub(super) fn java_players_removed(&mut self) {
         if self.remote.is_none() && JAVA_SERVER.with_borrow(|s| s.started) {
+            java_player_view_reset(None);
             self.java_level_call("players_removed", |_| {});
         }
     }
@@ -788,7 +1173,7 @@ impl Game<'_> {
     /// Whether this level's chunks are the Java server's: it started, and the level caught up on its chunks.
     pub(super) fn java_level_running(&self) -> bool {
         self.remote.is_none()
-            && JAVA_SERVER.with_borrow(|s| s.started && s.levels.contains(self.dim.id()))
+            && JAVA_SERVER.with_borrow(|s| s.started && s.levels.contains(&self.dim.key().slot()))
     }
 
     /// What changed in the players' views, chunks and pairings, for the `ChunkMap` in Java: views and resets, then the chunks watched and unwatched, then pairings and departures.
@@ -869,17 +1254,22 @@ impl Game<'_> {
         if horizon_java_host::get().is_none() {
             return true;
         }
-        let mut out = Out::default();
-        out.text(self.dim.id());
-        out.long(self.world.game_time);
-        out.long(at.pack());
-        let reply = self.java_request("block_entity_tick", &out.0);
-        let Some(reply) = reply else {
+        let (key, time) = (self.java_level_key(), self.world.game_time);
+        let Some((held, sounds)) = self.java_call_with(
+            "block_entity_tick",
+            |out| {
+                out.int(key as i32);
+                out.long(time);
+                out.long(at.pack());
+            },
+            |reply| {
+                let held = reply.bool().unwrap_or(true);
+                Some((held, java_read_effects(reply).unwrap_or_default()))
+            },
+        ) else {
             return true;
         };
-        let mut reply = In(&reply);
-        let held = reply.bool().unwrap_or(true);
-        self.java_apply_effects(&mut reply);
+        self.java_play_effects(sounds);
         held
     }
 
@@ -896,15 +1286,6 @@ impl Game<'_> {
         claimed.then_some(false)
     }
 
-    /// `BreakBlockEvent`, where a player's break starts.
-    pub(super) fn java_break_event(&mut self, pos: [i32; 3], canceled: &mut bool) {
-        if horizon_java_host::get().is_some() {
-            let mut out = Out::default();
-            out.long(BlockPos::new(pos[0], pos[1], pos[2]).pack());
-            self.java_call_use("a break", "event_break", out.0, canceled);
-        }
-    }
-
     /// `BlockState.getDestroyProgress` on the player's view, so its tool's and mods' break speeds run; the window asks its Java client.
     pub(super) fn java_destroy_progress(&mut self, pos: [i32; 3]) -> Option<f32> {
         if self.remote.is_some() {
@@ -915,7 +1296,7 @@ impl Game<'_> {
         let mut request = self.java_use_request()?;
         let mut out = Out(std::mem::take(&mut request));
         out.long(BlockPos::new(pos[0], pos[1], pos[2]).pack());
-        let reply = self.java_request("destroy_progress", &out.0)?;
+        let reply = self.java_player_request("destroy_progress", &out.0)?;
         In(&reply).float()
     }
 
@@ -928,7 +1309,7 @@ impl Game<'_> {
         self.java_bind_states();
         let mut out = Out(self.java_use_request()?);
         out.long(BlockPos::new(pos[0], pos[1], pos[2]).pack());
-        let reply = self.java_request("correct_tool", &out.0)?;
+        let reply = self.java_player_request("correct_tool", &out.0)?;
         In(&reply).byte().map(|b| b != 0)
     }
 
@@ -981,38 +1362,32 @@ impl Game<'_> {
         true
     }
 
-    /// `AttackEntityEvent`, where a player's attack starts.
-    pub(super) fn java_attack_event(&mut self, entity: i32, canceled: &mut bool) {
-        if horizon_java_host::get().is_some() {
-            let mut out = Out::default();
-            out.int(entity);
-            self.java_call_use("an attack", "event_attack", out.0, canceled);
-        }
-    }
 
-    /// The server's start and end, with NeoForge's real hooks.
+    /// The server's start, after `server_about_to_start` and native's levels, and its end, with NeoForge's real hooks.
     pub(super) fn java_world_phase(&mut self, open: bool) {
-        let root = self.save.root.clone();
-        let world = root
-            .ancestors()
-            .find(|dir| dir.join("level.dat").exists())
-            .unwrap_or(&root)
-            .to_string_lossy()
-            .into_owned();
-        self.java_level_call(if open { "server_start" } else { "server_stop" }, |out| {
-            out.text(&world);
-        });
+        java_player_view_reset(None);
+        if open {
+            for dim in Dim::all() {
+                self.java_register_level(dim);
+            }
+        }
+        self.java_level_call(if open { "server_start" } else { "server_stop" }, |_| {});
+        if open {
+            super::java_worldgen::recheck_export();
+        }
         JAVA_SERVER.with_borrow_mut(|s| {
             s.started = open;
             s.levels.clear();
+            if !open {
+                s.known.clear();
+            }
         });
-        horizon_client::lan::chunk_watch::set_java_side(
-            open && horizon_java_host::get().is_some(),
-        );
+        horizon_client::lan::chunk_watch::set_java_side(open && horizon_java_host::get().is_some());
         super::java_entities::reset_views();
         // Building every entity type reads the level through bridged natives (`getDifficulty`), so the game must be active.
         if open {
             horizon_java_host::bridge::with_active(self, super::java_content::entity_types);
+            horizon_java_host::bridge::with_active(self, super::java_crafting::load);
         }
     }
 
@@ -1035,6 +1410,7 @@ impl Game<'_> {
         if horizon_java_host::get().is_none() {
             return;
         }
+        java_player_view_reset(Some(horizon_client::lan::playerdata::uuid_ints(uuid)));
         let mut out = Out::default();
         out.long((uuid >> 64) as i64);
         out.long(uuid as i64);
@@ -1056,8 +1432,9 @@ impl Game<'_> {
         if horizon_java_host::get().is_none() {
             return;
         }
+        let key = self.java_level_key();
         let mut out = Out::default();
-        out.text(self.dim.id());
+        out.int(key as i32);
         let reply = self.java_request("block_entities_save", &out.0);
         let Some(reply) = reply else {
             return;
@@ -1083,11 +1460,33 @@ pub(super) struct BlockEvent {
     c: i32,
 }
 
+/// Tells Java the name of a level's key, once: its `ServerLevel` is made then.
+pub(super) fn register_level(host: &horizon_java_host::Host, dim: Dim) {
+    let key = dim.key().slot();
+    if JAVA_SERVER.with_borrow(|s| s.known.contains(&key)) {
+        return;
+    }
+    let mut out = Out::default();
+    out.int(key as i32);
+    out.text(dim.id());
+    horizon_java_host::profile::record_dimension_name();
+    if host.request("level_add", &out.0).is_some() {
+        JAVA_SERVER.with_borrow_mut(|s| s.known.insert(key));
+    }
+}
+
 /// Whether Java's server started, and the levels whose loaded chunks Java has taken since.
 #[derive(Default)]
 struct JavaServer {
     started: bool,
-    levels: std::collections::HashSet<String>,
+    levels: std::collections::HashSet<u32>,
+    /// The keys of the levels Java holds a `ServerLevel` for.
+    known: std::collections::HashSet<u32>,
+}
+
+/// Whether Java's server has started on this thread.
+pub(super) fn java_server_started() -> bool {
+    JAVA_SERVER.with_borrow(|s| s.started)
 }
 
 thread_local! {
@@ -1113,6 +1512,39 @@ pub(super) fn take_pumped_unloads() -> Vec<Arc<horizon_client::chunk::Chunk>> {
 fn java_id(state: BlockStateId) -> i32 {
     use horizon_java_host::bridge::Ret;
     state.into_raw()
+}
+
+/// The block events queued for the level in place, kept out of the queue while another level is.
+pub(super) struct BlockEventsAside(Vec<BlockEvent>);
+
+pub(super) fn set_block_events_aside() -> BlockEventsAside {
+    BlockEventsAside(BLOCK_EVENTS.take())
+}
+
+pub(super) fn has_block_events() -> bool {
+    BLOCK_EVENTS.with_borrow(|e| !e.is_empty())
+}
+
+impl BlockEventsAside {
+    /// Puts them back, dropping what the other level left undrained.
+    pub(super) fn restore(self) {
+        let dropped = BLOCK_EVENTS.replace(self.0).len();
+        if dropped > 0 {
+            log::warn!("Horizon: {dropped} block events of another level were left undrained");
+        }
+    }
+}
+
+/// Logs once per position that Java had no block entity where Horizon ticked one.
+pub(super) fn java_warn_unheld(at: BlockPos) {
+    thread_local! {
+        static WARNED: std::cell::RefCell<std::collections::HashSet<BlockPos>> = Default::default();
+    }
+    if WARNED.with_borrow_mut(|w| w.insert(at)) {
+        log::warn!(
+            "Horizon: no Java block entity at {at:?} for Horizon's record of one, so it doesn't tick"
+        );
+    }
 }
 
 fn push_event(kind: u8, pos: BlockPos, a: i32, b: i32, c: i32) {
@@ -1295,7 +1727,7 @@ impl TrackRecord {
             }) => {
                 head(out, 0, *uuid);
                 out.int(*entity_id);
-                out.text(dimension);
+                out.int(mod_api::__private::dimension_key(dimension).slot() as i32);
                 out.int(center.0);
                 out.int(center.1);
                 out.int(*radius);
@@ -1403,5 +1835,216 @@ mod tracking_tests {
             })
             .collect();
         assert_eq!(kinds, [0, 1, 2, 5, 4]);
+    }
+
+    #[test]
+    fn a_view_names_its_level_by_the_key_level_add_gave_it() {
+        let view = TrackRecord::Tracking(Tracking::View {
+            uuid: 7,
+            entity_id: 1,
+            dimension: "minecraft:the_nether".into(),
+            center: (3, -4),
+            radius: 2,
+        });
+        let mut out = Out::default();
+        view.write(&mut out);
+        let int = |at: usize| i32::from_be_bytes(out.0[at..at + 4].try_into().unwrap());
+        assert_eq!(out.0.len(), 4 + 16 + 4 * 5);
+        assert_eq!([int(20), int(24), int(28), int(32), int(36)], [1, 1, 3, -4, 2]);
+    }
+}
+
+#[cfg(test)]
+mod effects_tests {
+    use super::*;
+
+    #[test]
+    fn effects_read_as_java_writes_them() {
+        let mut bytes = 1i32.to_be_bytes().to_vec();
+        bytes.extend(13i32.to_be_bytes());
+        bytes.extend(b"block.anvil.x");
+        for v in [1.5f64, -2.0, 64.25] {
+            bytes.extend(v.to_be_bytes());
+        }
+        bytes.extend(0.5f32.to_be_bytes());
+        bytes.extend(1.25f32.to_be_bytes());
+        bytes.push(9);
+        let mut reply = In(&bytes);
+        let sounds = java_read_effects(&mut reply).unwrap();
+        let want = JavaSound {
+            id: "block.anvil.x".into(),
+            at: [1.5, -2.0, 64.25],
+            volume: 0.5,
+            pitch: 1.25,
+        };
+        assert_eq!(sounds, [want]);
+        assert_eq!(reply.byte(), Some(9), "the reply goes on after its effects");
+
+        let none = java_read_effects(&mut In(&[0, 0, 0, 0])).unwrap();
+        assert!(none.is_empty() && none.capacity() == 0);
+        assert_eq!(java_read_effects(&mut In(&bytes[..20])), None);
+    }
+}
+
+#[cfg(test)]
+mod player_group_tests {
+    use super::*;
+
+    const ALL: u32 = FULL | 0xff;
+
+    fn stone() -> ItemStack {
+        ItemStack {
+            item: "minecraft:stone".into(),
+            count: 1,
+            damage: 0,
+            extra: None,
+        }
+    }
+
+    fn tag(stack: &ItemStack) -> Vec<u8> {
+        write_tag(horizon_client::save::item_to_nbt(stack)).unwrap()
+    }
+
+    fn snapshot() -> PlayerSnapshot {
+        let mut stacks = vec![None; OFFHAND + 1];
+        stacks[0] = Some(stone());
+        PlayerSnapshot {
+            pose: "STANDING".into(),
+            at: [1.5, 64.0, -2.25],
+            yaw: 90.0,
+            pitch: 0.0,
+            shift: false,
+            mode: 0,
+            selected: 0,
+            xp: (1, 0.5, 9),
+            vitals: (20.0, 20, 5.0, 0.0, 0.0),
+            effects: vec![("minecraft:speed".into(), 100, 1, false, true)],
+            motion: ([0.0, -0.0784, 0.0], true),
+            stacks,
+        }
+    }
+
+    fn encode(now: &PlayerSnapshot, sent: &mut Sent) -> (u32, Vec<u8>) {
+        let mut out = Out::default();
+        let mask = encode_player_groups(now, sent, &mut out).unwrap();
+        (mask, out.0)
+    }
+
+    #[test]
+    fn first_request_is_full() {
+        let (mask, bytes) = encode(&snapshot(), &mut Sent::default());
+        assert_eq!(mask, ALL);
+        let mut want = Out::default();
+        want.int(ALL as i32);
+        want.text("STANDING");
+        [1.5, 64.0, -2.25].iter().for_each(|v| want.double(*v));
+        want.float(90.0);
+        want.float(0.0);
+        want.bool(false);
+        want.int(0);
+        want.int(0);
+        want.int(1);
+        want.float(0.5);
+        want.int(9);
+        want.float(20.0);
+        want.int(20);
+        want.float(5.0);
+        want.float(0.0);
+        want.float(0.0);
+        want.int(1);
+        want.text("minecraft:speed");
+        want.int(100);
+        want.int(1);
+        want.bool(false);
+        want.bool(true);
+        [0.0, -0.0784, 0.0].iter().for_each(|v| want.double(*v));
+        want.bool(true);
+        want.int(41);
+        want.int(0);
+        want.bytes(&tag(&stone()));
+        for slot in 1..41 {
+            want.int(slot);
+            want.int(0);
+        }
+        assert_eq!(bytes, want.0);
+        let mut head = Out::default();
+        write_player_header(
+            &mut head,
+            [1, 2, 3, 4],
+            "Steve",
+            0,
+            77,
+            true,
+            None,
+        );
+        head.0.extend(bytes);
+        println!("PLAYER_FULL {:02x?}", head.0);
+    }
+
+    #[test]
+    fn unchanged_player_sends_no_group() {
+        let mut sent = Sent::default();
+        encode(&snapshot(), &mut sent);
+        assert_eq!(encode(&snapshot(), &mut sent), (0, vec![0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn one_moved_stack_sends_two_slots() {
+        let mut sent = Sent::default();
+        let mut now = snapshot();
+        encode(&now, &mut sent);
+        now.stacks.swap(0, 5);
+        let (mask, bytes) = encode(&now, &mut sent);
+        assert_eq!(mask, STACKS);
+        let mut want = Out::default();
+        want.int(128);
+        want.int(2);
+        want.int(0);
+        want.int(0);
+        want.int(5);
+        want.bytes(&tag(&stone()));
+        assert_eq!(bytes, want.0);
+    }
+
+    #[test]
+    fn selected_slot_only() {
+        let mut sent = Sent::default();
+        let mut now = snapshot();
+        encode(&now, &mut sent);
+        now.selected = 3;
+        assert_eq!(encode(&now, &mut sent), (4, vec![0, 0, 0, 4, 0, 0, 0, 3]));
+    }
+
+    #[test]
+    fn reset_makes_the_next_request_full() {
+        let uuid = [9, 8, 7, 6];
+        let now = snapshot();
+        let first = SENT.with_borrow_mut(|s| encode(&now, s.entry(uuid).or_default()).0);
+        java_player_view_reset(Some(uuid));
+        let again = SENT.with_borrow_mut(|s| encode(&now, s.entry(uuid).or_default()).0);
+        java_player_view_reset(None);
+        assert_eq!((first, again), (ALL, ALL));
+    }
+
+    #[test]
+    fn applied_reply_is_not_sent_back() {
+        let mut sent = Sent::default();
+        let mut now = snapshot();
+        encode(&now, &mut sent);
+        sent.applied_slot(2, Some(stone()));
+        sent.applied_xp((2, 0.25, 20));
+        now.stacks[2] = Some(stone());
+        now.xp = (2, 0.25, 20);
+        assert_eq!(encode(&now, &mut sent), (0, vec![0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn negative_zero_is_a_change() {
+        let mut sent = Sent::default();
+        let mut now = snapshot();
+        now.yaw = 0.0;
+        encode(&now, &mut sent);
+        now.yaw = -0.0;
+        assert_eq!(encode(&now, &mut sent).0, 1);
     }
 }

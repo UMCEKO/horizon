@@ -1500,7 +1500,7 @@ impl Items {
             location: None,
             keep_empty,
         };
-        ctx.evaluate(table, random)
+        ctx.evaluate_top("", table, random)
     }
     /// The id of the block's loot table (`minecraft:blocks/stone`), when it
     /// has one. `Blocks.wallVariant`: wall signs, banners, heads, fans and
@@ -1596,8 +1596,10 @@ impl Items {
         let Some(block) = registry.state(state) else {
             return vec![];
         };
-        let table = self.block_loot_table(registry, state);
-        let Some(table) = table.and_then(|id| self.loot.get(&id)) else {
+        let Some(id) = self.block_loot_table(registry, state) else {
+            return vec![];
+        };
+        let Some(table) = self.loot.get(&id) else {
             return vec![];
         };
         // LootTable.getRandomItems draws from the table's random sequence.
@@ -1606,22 +1608,25 @@ impl Items {
             sequences,
         ) {
             let random = sequences.0.get(seq, sequences.1);
-            return self.roll_block_table(table, &block.name, &block.properties, roll, random);
+            return self.roll_block_table(&id, table, &block.name, &block.properties, roll, random);
         }
-        self.roll_block_table(table, &block.name, &block.properties, roll, random)
+        self.roll_block_table(&id, table, &block.name, &block.properties, roll, random)
     }
     fn roll_block_table<R: RandomSource>(
         &self,
+        id: &str,
         table: &Value,
         block: &str,
         properties: &horizon_world::chunk::BlockProperties,
         roll: BlockLootRoll<'_>,
         random: &mut R,
     ) -> Vec<ItemStack> {
-        self.roll_block_table_at(table, block, properties, roll, random, roll.location)
+        self.roll_block_table_at(id, table, block, properties, roll, random, roll.location)
     }
+    #[allow(clippy::too_many_arguments)]
     fn roll_block_table_at<R: RandomSource>(
         &self,
+        id: &str,
         table: &Value,
         block: &str,
         properties: &horizon_world::chunk::BlockProperties,
@@ -1644,7 +1649,7 @@ impl Items {
             location,
             keep_empty: roll.keep_empty,
         };
-        ctx.evaluate(table, random)
+        ctx.evaluate_top(id, table, random)
     }
     /// Evaluate an entity's loot table (`minecraft:entities/<name>`).
     /// Evaluate any loot table by id (e.g. `minecraft:gameplay/chicken_lay`).
@@ -1686,7 +1691,7 @@ impl Items {
         };
         // LootTable.getRandomItemsRaw visits the table itself first.
         NESTED_ROLLS.with(|v| v.borrow_mut().push(id.to_owned()));
-        let out = ctx.evaluate(table, random);
+        let out = ctx.evaluate_top(id, table, random);
         NESTED_ROLLS.with(|v| v.borrow_mut().pop());
         out
     }
@@ -1715,13 +1720,14 @@ impl Items {
         match table.get("random_sequence").and_then(Value::as_str) {
             Some(sequence) => {
                 let random = sequences.get(sequence, seed);
-                self.interact_roll(table, &block.name, &block.properties, random)
+                self.interact_roll(id, table, &block.name, &block.properties, random)
             }
-            None => self.interact_roll(table, &block.name, &block.properties, random),
+            None => self.interact_roll(id, table, &block.name, &block.properties, random),
         }
     }
     fn interact_roll<R: RandomSource>(
         &self,
+        id: &str,
         table: &Value,
         block: &str,
         properties: &horizon_world::chunk::BlockProperties,
@@ -1741,7 +1747,7 @@ impl Items {
             location: None,
             keep_empty: false,
         };
-        ctx.evaluate(table, random)
+        ctx.evaluate_top(id, table, random)
     }
     /// `loot_table` drawing from any random (a random sequence).
     pub fn loot_table_from(
@@ -1769,7 +1775,7 @@ impl Items {
             location: None,
             keep_empty: false,
         };
-        ctx.evaluate(table, random)
+        ctx.evaluate_top(id, table, random)
     }
     pub fn entity_drops<R: RandomSource>(
         &self,
@@ -1887,7 +1893,8 @@ impl Items {
         keep_empty: bool,
     ) -> Vec<ItemStack> {
         let name = entity.trim_start_matches("minecraft:");
-        let Some(table) = self.loot.get(&format!("minecraft:entities/{name}")) else {
+        let id = format!("minecraft:entities/{name}");
+        let Some(table) = self.loot.get(&id) else {
             return vec![];
         };
         let empty = horizon_world::chunk::BlockProperties::new();
@@ -1905,7 +1912,7 @@ impl Items {
             location: None,
             keep_empty,
         };
-        ctx.evaluate(table, random)
+        ctx.evaluate_top(&id, table, random)
     }
 }
 /// `DataComponents.BLOCK_STATE`.
@@ -1936,6 +1943,23 @@ impl<R: RandomSource> LootContext<'_, R> {
                 }
             }
         }
+        out
+    }
+    /// The loot hook after a top-level roll of `table` (`""` for an inline one).
+    fn rolled(&self, table: &str, random: &mut R, out: &mut Vec<ItemStack>) {
+        if !horizon_world::native_load_hooks::loot_wanted(table) {
+            return;
+        }
+        let tool = self.held.map(loot_of);
+        let ctx = || self.loot_context_seeded(0);
+        hooked_stacks(out, |stacks| {
+            horizon_world::loot::rolled(table, ctx, tool.as_ref(), random, stacks);
+        });
+    }
+    /// [`Self::evaluate`] of a top-level table, then the loot hook.
+    fn evaluate_top(&self, id: &str, table: &Value, random: &mut R) -> Vec<ItemStack> {
+        let mut out = self.evaluate(table, random);
+        self.rolled(id, random, &mut out);
         out
     }
 }
@@ -2027,6 +2051,10 @@ impl<R: RandomSource> LootContext<'_, R> {
     /// damage, the player and the biome belong to the main loot engine's
     /// rolls; they are None here (docs/modding/src/how-to/native-mods.md).
     fn native_loot_context(&self, random: &mut R) -> horizon_world::loot::LootContext<'_> {
+        self.loot_context_seeded(random.next_long())
+    }
+    /// [`Self::native_loot_context`] with its seed given, so the loot hook's context draws nothing.
+    fn loot_context_seeded(&self, seed: i64) -> horizon_world::loot::LootContext<'_> {
         horizon_world::loot::LootContext {
             entity: None,
             damage: None,
@@ -2042,7 +2070,7 @@ impl<R: RandomSource> LootContext<'_, R> {
             }),
             luck: 0.0,
             biome: None,
-            seed: random.next_long(),
+            seed,
             place: horizon_world::loot::current_native_loot_place(),
         }
     }
@@ -2648,23 +2676,29 @@ fn apply_components(stack: &mut ItemStack, patch: &Value) {
     stack.tidy();
 }
 
-/// The items engine's stack as the loot engine's (`LootStack`), for a mod's
-/// function hook: the parts of it the hook can change and the engine takes
-/// back. Saved components retain their exact NBT types.
+/// The stack as the loot engine's, every untyped component kept with its NBT type: `stack_from_loot` inverts it.
 fn loot_of(stack: &ItemStack) -> horizon_world::loot::LootStack {
-    let mut components: Vec<(String, Option<horizon_core::nbt::Tag>)> = Vec::new();
-    if let Some(data) = stack.data() {
-        for (id, value) in &data.other {
-            components.push((id.clone(), Some(value.clone())));
-        }
-        if let Some(name) = &data.custom_name {
-            components.push(("minecraft:custom_name".to_owned(), Some(name.clone())));
-        }
-        if let Some(trim) = &data.trim {
-            components.push((
-                "minecraft:trim".to_owned(),
-                Some(crate::item_data::trim::to_nbt(trim)),
-            ));
+    use horizon_core::nbt::Tag;
+    let typed_enchantments = if &*stack.item == "minecraft:enchanted_book" {
+        "minecraft:stored_enchantments"
+    } else {
+        "minecraft:enchantments"
+    };
+    let mut components: Vec<(String, Option<Tag>)> = Vec::new();
+    if let Some(Tag::Compound(saved)) = crate::item_data::encode_components(stack) {
+        for (id, value) in saved.iter() {
+            let id = id.to_string_lossy();
+            let typed = match id.as_str() {
+                "minecraft:damage" => stack.damage != 0,
+                "minecraft:ominous_bottle_amplifier" | "minecraft:suspicious_stew_effects" => true,
+                "minecraft:potion_contents" => {
+                    matches!(value, Tag::Compound(c) if c.keys().all(|k| k.to_string_lossy() == "potion"))
+                }
+                id => id == typed_enchantments,
+            };
+            if !typed {
+                components.push((id, Some(value.clone())));
+            }
         }
     }
     horizon_world::loot::LootStack {
@@ -2695,6 +2729,35 @@ fn loot_of(stack: &ItemStack) -> horizon_world::loot::LootStack {
         names: Vec::new(),
         components,
     }
+}
+
+/// `out` through `hook` as loot stacks: one left as it was at its index stays the engine's own.
+fn hooked_stacks(
+    out: &mut Vec<ItemStack>,
+    hook: impl FnOnce(&mut Vec<horizon_world::loot::LootStack>),
+) {
+    let before: Vec<_> = out.iter().map(loot_of).collect();
+    let mut after = before.clone();
+    hook(&mut after);
+    if after == before {
+        return;
+    }
+    let mut own: Vec<Option<ItemStack>> = std::mem::take(out).into_iter().map(Some).collect();
+    *out = after
+        .iter()
+        .enumerate()
+        .map(|(i, stack)| match before.get(i) {
+            Some(was) if was == stack => own[i].take().unwrap_or_else(|| stack_from_loot(stack)),
+            _ => stack_from_loot(stack),
+        })
+        .collect();
+}
+
+/// A stack the loot hook made or changed: `item` with nothing on it, then what the hook gave.
+fn stack_from_loot(loot: &horizon_world::loot::LootStack) -> ItemStack {
+    let mut stack = ItemStack::new(&loot.item, 1);
+    apply_loot(&loot_of(&stack), loot, &mut stack);
+    stack
 }
 
 /// What a mod's loot function left in its stack, applied to the engine's.
@@ -3919,6 +3982,66 @@ mod tests {
         );
     }
 
+    fn with_components(item: &str, components: &str) -> ItemStack {
+        let mut stack = ItemStack::new(item, 1);
+        let saved = crate::item_data::command_components(components).unwrap();
+        (stack.damage, stack.extra) = crate::item_data::decode_components(Some(&saved));
+        stack
+    }
+
+    /// A stack the loot hook leaves stays the engine's, one it replaces is rebuilt, and none loses data.
+    #[test]
+    fn the_loot_hook_keeps_what_it_leaves_and_builds_what_it_returns() {
+        let marked = with_components(
+            "minecraft:diamond_sword",
+            r#"[damage=3,enchantments={"minecraft:sharpness":2},custom_data={mark:1b},lore=["a"],repair_cost=4]"#,
+        );
+        let mut out = vec![marked.clone()];
+        hooked_stacks(&mut out, |_| {});
+        assert_eq!(out, std::slice::from_ref(&marked));
+        let mut out = vec![marked.clone(), ItemStack::new("minecraft:bone", 3)];
+        hooked_stacks(&mut out, |stacks| {
+            let mut stick = stacks[1].clone();
+            stick.item = "minecraft:stick".into();
+            stick.count = 2;
+            stacks[0] = stick;
+        });
+        assert_eq!(
+            out,
+            [
+                ItemStack::new("minecraft:stick", 2),
+                ItemStack::new("minecraft:bone", 3)
+            ]
+        );
+        for stack in [
+            marked,
+            with_components(
+                "minecraft:enchanted_book",
+                r#"[stored_enchantments={"minecraft:mending":1}]"#,
+            ),
+            with_components(
+                "minecraft:potion",
+                r#"[potion_contents={potion:"minecraft:swiftness",custom_color:5}]"#,
+            ),
+            with_components(
+                "minecraft:potion",
+                r#"[potion_contents={potion:"minecraft:swiftness"}]"#,
+            ),
+            with_components("minecraft:ominous_bottle", "[ominous_bottle_amplifier=2]"),
+            with_components(
+                "minecraft:suspicious_stew",
+                r#"[suspicious_stew_effects=[{id:"minecraft:speed",duration:40}]]"#,
+            ),
+            with_components(
+                "minecraft:leather_helmet",
+                "[dyed_color=255,custom_name='\"Cap\"']",
+            ),
+            with_components("minecraft:stick", "[!minecraft:max_stack_size]"),
+        ] {
+            assert_eq!(stack_from_loot(&loot_of(&stack)), stack, "{}", stack.item);
+        }
+    }
+
     #[test]
     fn loot_patches_keep_nbt_types_removals_and_order() {
         use horizon_core::nbt::Tag;
@@ -4251,6 +4374,7 @@ mod tests {
         };
         let table = json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:bone","modifier":[{"type":"minecraft:enchanted_count_increase","enchantment":"minecraft:looting","count":2.0}]}]}]});
         let drops = items.roll_block_table(
+            "",
             &table,
             "minecraft:stone",
             &props,

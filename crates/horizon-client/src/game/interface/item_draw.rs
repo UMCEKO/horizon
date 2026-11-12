@@ -4,7 +4,7 @@
 //! frames, armour stands). This binds the resolver's host services
 //! (`ItemEnv`) and the special renderers' registries to the game.
 use super::api_values::TryIntoApi;
-use super::{Dim, Game, entity_culling::EntityCullDecision};
+use super::{Game, entity_culling::EntityCullDecision};
 use horizon_assets::item_model::{
     Components, ComponentsView, DisplayContext, GlobalPos, ItemEnv, LevelState, OwnerState,
     StackView,
@@ -501,7 +501,7 @@ impl Game<'_> {
         light: u32,
         out: &mut Vec<Vertex>,
     ) {
-        let lights = diffuse_lights(self.dim == Dim::Nether);
+        let lights = diffuse_lights(self.nether_cardinal_light());
         self.submit_item_lit(state, pose, light, lights, out);
     }
     /// [`Self::submit_item_world`] shaded by other diffuse lights (a
@@ -603,7 +603,7 @@ impl Game<'_> {
         light: u32,
         skinned: &mut super::creatures::Skinned,
     ) -> bool {
-        let lights = diffuse_lights(self.dim == Dim::Nether);
+        let lights = diffuse_lights(self.nether_cardinal_light());
         let Some((mark, bounds)) = self.submit_item_skinned(state, &[pose], light, lights) else {
             return false;
         };
@@ -674,7 +674,7 @@ impl Game<'_> {
         let range =
             super::entity_culling::default_range(glam::DVec3::splat(0.25), self.view_scale());
         let skinning = self.skinning();
-        let lights = diffuse_lights(self.dim == Dim::Nether);
+        let lights = diffuse_lights(self.nether_cardinal_light());
         for ItemEntityDraw {
             item,
             at,

@@ -317,11 +317,13 @@ pub fn carry(
             Ok(report) => {
                 done += 1;
                 log(format!(
-                    "{}: {} files, {} recipes upgraded ({} kept), {} loot tables upgraded ({} added), {} item definitions added, {} blocks ({} left out, {} with differences), {} items ({} left out), {} convention tags, {} outside",
+                    "{}: {} files, {} recipes upgraded ({} kept), {} recipes from Java ({} unloaded), {} loot tables upgraded ({} added), {} item definitions added, {} blocks ({} left out, {} with differences), {} items ({} left out), {} convention tags, {} outside",
                     r.key,
                     report.copied,
                     report.recipes_upgraded,
                     report.recipes_kept.len(),
+                    report.recipes_from_java,
+                    report.recipes_unloaded.len(),
                     report.loot_tables_upgraded,
                     report.loot_tables_added,
                     report.item_definitions_added,
@@ -333,6 +335,9 @@ pub fn carry(
                     report.convention_tags,
                     report.outside.len()
                 ));
+                for (id, e) in &report.recipes_java_errors {
+                    log(format!("{id}: Java couldn't encode it: {e}"));
+                }
             }
             Err(e) => log(format!("{}: {e}", r.key)),
         }

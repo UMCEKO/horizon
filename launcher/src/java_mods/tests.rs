@@ -43,10 +43,14 @@ fn client_args_name_the_libraries_assets_and_neoforge() {
         "9.9",
         &profiles(),
         Some((Path::new("/i/assets"), "34")),
+        Path::new("/j"),
+        Path::new("/i/host/h.jar"),
     );
     assert_eq!(
         lines,
         [
+            "java /j",
+            "host /i/host/h.jar",
             "dist client",
             "cp /i/libraries/a/a.jar:/i/libraries/b/b.jar",
             "jvm -DlibraryDirectory=/i/libraries",
@@ -72,8 +76,11 @@ fn server_args_come_from_unix_args_and_have_no_dist_line() {
         "9.9",
         &profiles(),
         None,
+        Path::new("/j"),
+        Path::new("/i/host/h.jar"),
     );
-    assert_eq!(lines[0], "cp /i/libraries/a/a.jar:/i/libraries/b/b.jar");
+    assert_eq!(&lines[..2], ["java /j", "host /i/host/h.jar"]);
+    assert_eq!(lines[2], "cp /i/libraries/a/a.jar:/i/libraries/b/b.jar");
     assert!(lines.contains(&"jvm --add-opens=java.base/x=ALL-UNNAMED".to_string()));
     assert!(lines.contains(&"jvm -DlibraryDirectory=/i/libraries".to_string()));
     assert!(lines.contains(&"jvm --add-modules=ALL-MODULE-PATH".to_string()));
@@ -92,8 +99,10 @@ fn windows_joins_the_classpath_with_semicolons() {
         "9.9",
         &profiles(),
         None,
+        Path::new("C:/j"),
+        Path::new("C:/h.jar"),
     );
-    assert_eq!(lines[1], "cp C:/i/libraries/a/a.jar;C:/i/libraries/b/b.jar");
+    assert_eq!(lines[3], "cp C:/i/libraries/a/a.jar;C:/i/libraries/b/b.jar");
     let server = args_lines(
         Os::Windows,
         true,
@@ -101,35 +110,35 @@ fn windows_joins_the_classpath_with_semicolons() {
         "9.9",
         &profiles(),
         None,
+        Path::new("C:/j"),
+        Path::new("C:/h.jar"),
     );
     assert_eq!(
-        server[0],
+        server[2],
         "cp C:/i/libraries/a/a.jar;C:/i/libraries/b/b.jar"
     );
 }
 
 #[test]
 fn each_system_has_its_own_library_path() {
-    let java = Path::new("/j");
     let none = |_: &str| None;
-    let run = Path::new("/r");
-    let host = Path::new("/h.jar");
-    let linux = launch_env(Os::Linux, java, "9.9", host, run, &|n| {
+    let linux = launch_env(Os::Linux, &|n| {
         (n == "LD_LIBRARY_PATH").then(|| "/x".into())
     });
-    let value = &linux["LD_LIBRARY_PATH"];
-    assert!(value.starts_with("/j/lib/server:/j/lib"));
-    assert!(value.ends_with(":/x"));
-    assert_eq!(linux["JAVA_HOME"], "/j");
-    assert_eq!(linux["HORIZON_JAVA_RUN"], "/r");
-    assert_eq!(linux["HORIZON_JAVA_HOST_JAR"], "/h.jar");
-    assert_eq!(linux["HORIZON_NEOFORGE"], "9.9");
-    let mac = launch_env(Os::MacOs, java, "9.9", host, run, &none);
-    assert_eq!(mac["DYLD_LIBRARY_PATH"], "/j/lib/server:/j/lib/jli:/j/lib");
-    let windows = launch_env(Os::Windows, java, "9.9", host, run, &|n| {
-        (n == "PATH").then(|| "C:/Windows".into())
-    });
-    assert_eq!(windows["PATH"], "/j/bin/server;/j/bin;C:/Windows");
+    assert!(linux["LD_LIBRARY_PATH"].ends_with("/x"));
+    assert!(!linux["LD_LIBRARY_PATH"].contains("/j/lib"));
+    for key in [
+        "JAVA_HOME",
+        "HORIZON_JAVA_HOST_JAR",
+        "HORIZON_NEOFORGE",
+        "HORIZON_JAVA_RUN",
+    ] {
+        assert!(!linux.contains_key(key), "{key}");
+    }
+    let mac = launch_env(Os::MacOs, &none);
+    assert_eq!(mac["DYLD_LIBRARY_PATH"], "");
+    let windows = launch_env(Os::Windows, &|n| (n == "PATH").then(|| "C:/Windows".into()));
+    assert_eq!(windows["PATH"], "C:/Windows");
     assert!(!windows.contains_key("LD_LIBRARY_PATH"));
 }
 
@@ -278,14 +287,14 @@ fn host_jars_come_from_the_version_and_only_a_local_build_falls_back() {
 }
 
 #[test]
-fn the_feature_is_found_in_a_program_that_holds_the_host_variable() {
+fn the_feature_is_found_in_a_program_that_holds_the_support_mark() {
     let root = dir("feature");
     let with = root.join("with");
     let without = root.join("without");
     let mut bytes = vec![7u8; 20_000_000];
     fs::write(&without, &bytes).unwrap();
     let at = 8 * 1024 * 1024 - 5;
-    bytes[at..at + FEATURE_MARK.len()].copy_from_slice(FEATURE_MARK);
+    bytes[at..at + 25].copy_from_slice(b"horizon-java-mods-support");
     fs::write(&with, &bytes).unwrap();
     assert!(has_feature(&with));
     assert!(!has_feature(&without));
@@ -395,4 +404,14 @@ fn a_bad_download_checksum_is_refused_before_it_takes_the_place_of_the_file() {
         h.hex()
     };
     download("http://127.0.0.1:9/x", &dest, Check::Sha256(&sum), &|_| {}).unwrap();
+}
+
+#[test]
+fn the_game_is_given_its_run_folder_by_argument() {
+    let mut cmd = Command::new("game");
+    cmd.arg("--world").arg("w");
+    hand_run(&mut cmd, Path::new("/i/client"), Os::Linux);
+    let args: Vec<_> = cmd.get_args().collect();
+    assert_eq!(args, ["--world", "w", "--java-mods", "/i/client"]);
+    assert!(!cmd.get_envs().any(|(k, _)| k == "HORIZON_JAVA_RUN"));
 }

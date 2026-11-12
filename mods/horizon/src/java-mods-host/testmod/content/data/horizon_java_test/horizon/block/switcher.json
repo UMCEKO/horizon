@@ -1,0 +1,3 @@
+{ "template": "minecraft:iron_block", "item": true,
+  "state_properties": { "alt": { "type": "boolean" }, "off": { "type": "boolean" } },
+  "default_state": { "alt": "false", "off": "false" } }

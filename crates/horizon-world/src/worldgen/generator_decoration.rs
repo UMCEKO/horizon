@@ -29,6 +29,7 @@ use super::{
 };
 use super::{
     generator_blocks::BlockBehavior,
+    mirror::{Write, WriteLog},
     state_provider::{StateProviderBindings, StateProviderCatalog},
 };
 use crate::{
@@ -471,6 +472,7 @@ impl Decoration {
             biome_quarts: region[4].biomes().quart_range(),
             decoration: self,
             temperatures: &mut worker.temperatures,
+            log: worker.write_log.as_mut(),
             behaviours: data.behaviours.as_deref(),
             // WorldGenRegion.isOutsideBuildHeight: the level's range, not the noise's.
             build: (min_y, min_y + height),
@@ -791,6 +793,8 @@ struct World<'a> {
     floor_bounds: [Option<i32>; 9],
     /// Reusable capture storage for shape updates in this decoration region.
     shape_capture: std::cell::RefCell<Vec<crate::level::ticks::CapturedTick>>,
+    /// A region session's log of this world's writes (`GeneratorWorker::record_writes`).
+    log: Option<&'a mut WriteLog>,
 }
 /// Read-only `LevelAccess` view of the decoration region for
 /// `BlockState.updateShape` (writes go through `World::set_block`).
@@ -988,6 +992,10 @@ impl FeatureWorld for World<'_> {
         let old = self.region.block(position)?;
         self.region.set_block_worldgen(position, state)?;
         self.raise_floor_bound(position);
+        let pos = BlockPos::new(position[0], position[1], position[2]);
+        if old != state {
+            self.log(Write::Block { pos, state, flags });
+        }
         // ProtoChunk keeps a block entity that already exists when the same kind
         // of block is set again (a chest turning waterlogged); other changes drop it.
         let registry = self.decoration.bindings.registry();
@@ -995,7 +1003,11 @@ impl FeatureWorld for World<'_> {
             || registry.state(old).map(|s| s.name.as_str())
                 == registry.state(state).map(|s| s.name.as_str());
         if !same_block {
+            let before = self.block_entities.len();
             self.block_entities.retain(|(p, _)| *p != position);
+            if self.block_entities.len() != before {
+                self.log(Write::BlockEntityRemoved { pos });
+            }
         }
         // WorldGenRegion.setBlock: BlockState.getPostProcessPos unless UPDATE_KNOWN_SHAPE.
         if flags & 16 == 0 {
@@ -1011,9 +1023,61 @@ impl FeatureWorld for World<'_> {
                 self.region
                     .chunk_mut(x >> 4, z >> 4)?
                     .mark_postprocessing(x, y, z);
+                self.log(Write::PostProcess {
+                    pos: BlockPos::new(x, y, z),
+                });
             }
         }
         Ok(true)
+    }
+}
+impl World<'_> {
+    fn log(&mut self, write: Write) {
+        if let Some(log) = self.log.as_deref_mut() {
+            log.record(write);
+        }
+    }
+    /// Logs the tick a schedule call just added to the chunk at `position`, if it added one.
+    fn log_new_tick(&mut self, position: [i32; 3], fluid: bool, before: usize) {
+        if self.log.is_none() {
+            return;
+        }
+        let Ok(chunk) = self.region.chunk(position[0] >> 4, position[2] >> 4) else {
+            return;
+        };
+        let ticks = if fluid {
+            chunk.fluid_ticks()
+        } else {
+            chunk.block_ticks()
+        };
+        if ticks.count() == before {
+            return;
+        }
+        let Some(&tick) = ticks.pack(0).last() else {
+            return;
+        };
+        self.log(if fluid {
+            Write::FluidTick {
+                pos: tick.pos,
+                fluid: tick.kind.0,
+                delay: tick.delay,
+                priority: tick.priority,
+            }
+        } else {
+            Write::BlockTick {
+                pos: tick.pos,
+                block: BlockStateId(tick.kind.0),
+                delay: tick.delay,
+                priority: tick.priority,
+            }
+        });
+    }
+    fn tick_count(&self, position: [i32; 3], fluid: bool) -> usize {
+        match self.region.chunk(position[0] >> 4, position[2] >> 4) {
+            Ok(chunk) if fluid => chunk.fluid_ticks().count(),
+            Ok(chunk) => chunk.block_ticks().count(),
+            Err(_) => 0,
+        }
     }
 }
 fn query(e: impl std::fmt::Display) -> PlacementQueryError {
@@ -1309,6 +1373,9 @@ impl PlacementContext for World<'_> {
                 nbt.remove(&"horizon:finalize".into());
             }
         }
+        if self.log.is_some() {
+            self.log(Write::EntityAdded { tag: nbt.clone() });
+        }
         self.entities.push(nbt);
         Ok(())
     }
@@ -1344,6 +1411,12 @@ impl PlacementContext for World<'_> {
         position: [i32; 3],
         nbt: horizon_core::nbt::Compound,
     ) -> Result<(), PlacementQueryError> {
+        if self.log.is_some() {
+            self.log(Write::BlockEntitySet {
+                pos: BlockPos::new(position[0], position[1], position[2]),
+                tag: nbt.clone(),
+            });
+        }
         self.block_entities.retain(|(p, _)| *p != position);
         self.block_entities.push((position, nbt));
         Ok(())
@@ -1469,10 +1542,19 @@ impl PlacementContext for World<'_> {
         if self.is_full_chunk(position) {
             return Ok(());
         }
+        let old = self.region.block(position).map_err(query)?;
         self.region
             .set_block_worldgen(position, state)
             .map_err(|e| query(format!("{e:?}")))?;
         self.raise_floor_bound(position);
+        if old != state {
+            let [x, y, z] = position;
+            self.log(Write::Block {
+                pos: BlockPos::new(x, y, z),
+                state,
+                flags: 0,
+            });
+        }
         Ok(())
     }
     /// BulkSectionAccess write: section storage only, no heightmap updates.
@@ -1481,10 +1563,18 @@ impl PlacementContext for World<'_> {
         [x, y, z]: [i32; 3],
         state: BlockStateId,
     ) -> Result<(), PlacementQueryError> {
-        self.region
+        let old = self
+            .region
             .chunk_mut(x >> 4, z >> 4)?
             .set_block_raw(x, y, z, state)
             .map_err(|e| query(format!("{e:?}")))?;
+        if old != state {
+            self.log(Write::Block {
+                pos: BlockPos::new(x, y, z),
+                state,
+                flags: 0,
+            });
+        }
         Ok(())
     }
     /// Generation regions contain no entities.
@@ -1564,10 +1654,17 @@ impl PlacementContext for World<'_> {
         fluid: FluidKind,
         delay: i32,
     ) -> Result<(), PlacementQueryError> {
-        self.region.schedule_fluid_tick(position, fluid, delay)
+        let before = self.tick_count(position, true);
+        self.region.schedule_fluid_tick(position, fluid, delay)?;
+        self.log_new_tick(position, true, before);
+        Ok(())
     }
     fn mark_postprocessing(&mut self, position: [i32; 3]) -> Result<(), PlacementQueryError> {
-        self.region.mark_postprocessing(position)
+        self.region.mark_postprocessing(position)?;
+        self.log(Write::PostProcess {
+            pos: BlockPos::new(position[0], position[1], position[2]),
+        });
+        Ok(())
     }
     fn water_at(&mut self, position: [i32; 3]) -> Result<bool, PlacementQueryError> {
         self.region.water_at(position)
@@ -1578,7 +1675,10 @@ impl PlacementContext for World<'_> {
         block: BlockStateId,
         delay: i32,
     ) -> Result<(), PlacementQueryError> {
-        self.region.schedule_block_tick(position, block, delay)
+        let before = self.tick_count(position, false);
+        self.region.schedule_block_tick(position, block, delay)?;
+        self.log_new_tick(position, false, before);
+        Ok(())
     }
     fn biome_identity(&mut self, position: [i32; 3]) -> Result<BiomeId, PlacementQueryError> {
         if let Some(biome) = self.uniform_biome(position) {
@@ -1699,7 +1799,7 @@ impl PlacementContext for World<'_> {
 }
 
 /// The block an entity's `Pos` is in.
-fn block_of(nbt: &horizon_core::nbt::Compound) -> Option<[i32; 3]> {
+pub(super) fn block_of(nbt: &horizon_core::nbt::Compound) -> Option<[i32; 3]> {
     let Some(horizon_core::nbt::Tag::List(p)) = nbt.get(&"Pos".into()) else {
         return None;
     };

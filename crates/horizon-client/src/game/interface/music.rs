@@ -174,7 +174,14 @@ impl Game<'_> {
 
         if self.pause != self.sound_paused {
             if self.pause {
-                self.audio.pause();
+                #[cfg(feature = "java-mods")]
+                let kept = self.java_pause_sources();
+                #[cfg(not(feature = "java-mods"))]
+                let kept: Option<Vec<usize>> = None;
+                match kept {
+                    Some(sources) => self.audio.pause_except(&sources),
+                    None => self.audio.pause(),
+                }
             } else {
                 self.audio.resume();
             }

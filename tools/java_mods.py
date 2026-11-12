@@ -75,7 +75,9 @@ def build(java_only=False):
     classpath = oracle.client_classpath(oracle.client()[0])
     cp = ':'.join(jar for jar in classpath.split(':') if 'installertools' not in jar) + ':' + mixinextras(classpath)
     host_classes = str(JARS / 'classes' / 'host')
-    for name, jar, extra in (('host', HOST_JAR, ''), ('plugin', PLUGIN_JAR, host_classes), ('boot', BOOT_JAR, host_classes), ('testmod', TEST_JAR, '')):
+    # The test mod checks boot's own classes (`ChunkMirror`), which share the game layer with it.
+    boot_classes = f"{host_classes}:{JARS / 'classes' / 'boot'}"
+    for name, jar, extra in (('host', HOST_JAR, ''), ('plugin', PLUGIN_JAR, host_classes), ('boot', BOOT_JAR, host_classes), ('testmod', TEST_JAR, boot_classes)):
         classes = JARS / 'classes' / name
         shutil.rmtree(classes, ignore_errors=True)
         classes.mkdir(parents=True)
@@ -146,9 +148,13 @@ def assets_index(resources, index_id, root):
     return folder
 
 
-def args_lines(dist, libs, neoforge, client=None, server=None, assets=None, analysis=None):
-    """The lines of `horizon-java.args`: `client` is (NeoForge's client profile, its library jars), `server` the text of its `unix_args.txt`, `assets` (folder, index id), `analysis` the install's entity-facts.json."""
+def args_lines(dist, libs, neoforge, client=None, server=None, assets=None, analysis=None, java=None, host=None):
+    """The lines of `horizon-java.args`: `client` is (NeoForge's client profile, its library jars), `server` the text of its `unix_args.txt`, `assets` (folder, index id), `analysis` the install's entity-facts.json, `java` the JDK home and `host` the host jar."""
     lines = []
+    if java is not None:
+        lines.append(f'java {java}')
+    if host is not None:
+        lines.append(f'host {host}')
     if dist == 'client':
         neo, jars = client
         lines.append('dist client')
@@ -216,9 +222,9 @@ def write_args(run, home, analysis=None):
     if DIST == 'client':
         _, neo, _, jars = oracle.client()
         index_id = json.loads((lab.GAME / 'manifest.json').read_text())['assetIndex']['id']
-        lines = args_lines('client', libs, NEOFORGE, client=(neo, jars), assets=(assets_index(lab.RESOURCES, index_id, JARS), index_id), analysis=analysis)
+        lines = args_lines('client', libs, NEOFORGE, client=(neo, jars), assets=(assets_index(lab.RESOURCES, index_id, JARS), index_id), analysis=analysis, java=java_home(), host=HOST_JAR)
     else:
-        lines = args_lines('server', libs, NEOFORGE, server=(libs / 'net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text(), analysis=analysis)
+        lines = args_lines('server', libs, NEOFORGE, server=(libs / 'net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text(), analysis=analysis, java=java_home(), host=HOST_JAR)
     (run / 'horizon-java.args').write_text('\n'.join(lines) + '\n')
 
 
@@ -332,12 +338,20 @@ def bridges(args):
     def drive(send):
         x, y, z = json.loads(send('state'))['player']['block_pos']
         base = (x + 3, y, z)
+        # A walk, for the test mod's lockstep checks: its `PlayerTickEvent.Post` sees where this tick's step went.
+        send('key w down')
+        send('wait 20')
+        send('key w up')
+        send(f'command tp @s {x + 0.5} {y} {z + 0.5}')
         send(f'command fill {x + 1} {y - 1} {z - 2} {x + 5} {y + 12} {z + 2} air')
         # Each family's checks build in their own stretch, on the same flat ground in any world.
         for at in range(x + 6, x + 52, 15):
             send(f'command fill {at} {y} {z - 6} {at + 14} {y + 14} {z + 4} air')
             send(f'command fill {at} {y - 1} {z - 6} {at + 14} {y - 1} {z + 4} minecraft:stone')
         send('wait 2')
+        # The test mod drops this sound in its PlaySoundEvent, which native posts from play_sound.
+        send('command playsound minecraft:block.note_block.bell master @s')
+        send('wait 5')
         # ctl counts slots from 1: the server's setSelectedSlot sees 1, 7 (the test mod cancels it), then 2.
         for slot in (2, 8, 3):
             send(f'select {slot}')
@@ -354,6 +368,9 @@ def bridges(args):
             wrong.append('route_body_free_slot')
         send('select 3')
         send('wait 3')
+        # A native give between two player ticks: the Java view's next tick sees it.
+        send('command give @s minecraft:apple 1')
+        send('wait 3')
         send('command kill @e[type=item]')
         # Outside the checked stretches: an entity the player's client tracks.
         send(f'command summon minecraft:armor_stand {base[0] + 40} {y} {z - 12} {{NoGravity:1b}}')
@@ -362,6 +379,10 @@ def bridges(args):
         machine = base[0] + 32
         send(f'command fill {machine - 3} {y} {z - 2} {machine + 2} {y + 8} {z + 2} air')
         send(f'command setblock {machine - 2} {y - 1} {z} minecraft:stone')
+        # The Nether's mark, which the test mod reads through its own ServerLevel while the Overworld is in place.
+        send('command execute in minecraft:the_nether run forceload add 0 0')
+        send('wait 40')
+        send('command execute in minecraft:the_nether run setblock 0 64 0 minecraft:lodestone')
         send('give horizon_java_test:wand')
         send('wait 20')
         send('select horizon_java_test:wand')
@@ -401,7 +422,18 @@ def bridges(args):
         send(f'command item replace block {machine} {y + 4} {z} container.0 with minecraft:cobblestone 20')
         send(f'command setblock {machine} {y + 8} {z} minecraft:chest')
         send(f'command setblock {machine} {y + 10} {z} minecraft:air')
+        # The switcher went tickerless by Java's setBlock; a native setblock gives it ticker A again.
+        send(f'command setblock {machine} {y} {z - 4} horizon_java_test:switcher[alt=false,off=false]')
+        # A chest Java holds destroyed and placed again, one merged into and one removed natively: replaced, kept, dropped.
+        send(f'command setblock {machine} {y + 6} {z} minecraft:air')
+        send(f'command setblock {machine} {y + 6} {z} minecraft:chest')
+        send(f'command data merge block {machine} {y + 7} {z} {{Items:[{{Slot:0b,id:"minecraft:diamond",count:5}}]}}')
+        send(f'command setblock {machine} {y + 9} {z} minecraft:air')
         send(f'command tp @s {x} {y} {z}')
+        # The test mod refuses every bat's join, and the wand's diamond leaves KILLED.
+        send(f'command summon minecraft:bat {base[0] + 28} {y + 1} {base[2]}')
+        send('command kill @e[type=item,nbt={Item:{id:"minecraft:diamond"}}]')
+        send('wait 5')
         send('give horizon_java_test:probe')
         send('wait 40')
         send('select horizon_java_test:probe')
@@ -479,6 +511,11 @@ def bridges(args):
         print(f"  mod_block_refuses_removal: {'ok' if ok else 'WRONG'}", flush=True)
         wrong.extend([] if ok else ['mod_block_refuses_removal'])
         send('command gamemode creative')
+        # Pausing asks Java which sources keep playing: the test mod's runTick handler drops UI from vanilla's [MUSIC, UI].
+        send('key escape tap')
+        send('wait 5')
+        send('key escape tap')
+        send('wait 3')
         positions.append((x, y, z, base))
 
     def again(send):
@@ -501,7 +538,9 @@ def bridges(args):
     session(args, drive)
     checks = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     shutil.copy(Path(args.scratch) / 'ctl.log', Path(args.scratch) / 'first-session.log')
-    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java') if (name, 'ok') not in checks)
+    paused = re.findall(r'^Horizon: pause sources: \[(.*)\]$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
+    checks.append(('pause_sources_from_handler', 'ok' if paused == ['music'] else f'FAILED {paused}'))
+    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'player_stack_keeps_identity', 'player_view_sees_native_give', 'play_sound_posted_from_native', 'gui_layer_pre_cancel', 'lockstep_order', 'lockstep_post_sees_this_tick', 'glyph_shadow_from_patch', 'loop_init_then_run') if (name, 'ok') not in checks)
     session(args, again)
     second = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks += [(name + ' (second session)', result) for name, result in second]
@@ -679,7 +718,8 @@ def check_bridges(args=None):
             if len(mine) != len(args) and not this:
                 errors.append(f'{where}: {len(mine)} arguments for {desc}')
                 continue
-            lined = ([f'L{"net/minecraft/world/entity/Entity" if guard.startswith("@") else owner};'] if this else []) + args
+            receiver = 'net/minecraft/world/entity/Entity' if guard.startswith('@') else guard or owner
+            lined = ([f'L{receiver};'] if this else []) + args
             for java, raw, name in zip(lined, mine, named):
                 if raw == '-':
                     continue
@@ -1158,6 +1198,7 @@ def install_pack(args):
     except ImportError:
         import mod_replaces
     analysis = mod_replaces.install_analysis(install, cache / 'mod-replaces')
+    host = install / 'host' / 'horizon-java-host.jar'
     mod_links = [*sorted(mods.glob('*.jar')), install / 'host' / 'horizon-java-boot.jar', install / 'host' / 'horizon-java-plugin.jar']
     for dedicated in (False, True):
         run = install / run_name(dedicated)
@@ -1166,11 +1207,11 @@ def install_pack(args):
         if not (run / 'libraries').is_symlink():
             (run / 'libraries').symlink_to(Path('..') / 'libraries')
         if dedicated:
-            lines = args_lines('server', libs, NEOFORGE, server=(server_home / 'libraries/net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text(), analysis=analysis)
+            lines = args_lines('server', libs, NEOFORGE, server=(server_home / 'libraries/net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text(), analysis=analysis, java=java, host=host)
             if args.accept_eula:
                 write_if_changed(run / 'eula.txt', 'eula=true\n')
         else:
-            lines = args_lines('client', libs, NEOFORGE, client=(neo, [libs / j.relative_to(client_home / 'libraries') for j in client_jars]), assets=(assets, index_id), analysis=analysis)
+            lines = args_lines('client', libs, NEOFORGE, client=(neo, [libs / j.relative_to(client_home / 'libraries') for j in client_jars]), assets=(assets, index_id), analysis=analysis, java=java, host=host)
         write_if_changed(run / 'horizon-java.args', '\n'.join(lines) + '\n')
     print(f'{install}: {len(pack)} mods, NeoForge {NEOFORGE}, JDK at {java}')
     if not (install / 'server' / 'eula.txt').exists():
@@ -1179,22 +1220,23 @@ def install_pack(args):
 
 def launch_env(install, record, dedicated, base):
     """The environment the game needs for the Java mods of `install`; a home folder the caller set stays theirs, the rest live in the install."""
-    java = record['java']
     env = dict(base)
     library_path = 'DYLD_LIBRARY_PATH' if sys.platform == 'darwin' else 'LD_LIBRARY_PATH'
     drivers = '/run/opengl-driver/lib' if Path('/run/opengl-driver/lib').is_dir() else ''
-    env[library_path] = ':'.join(p for p in (f'{java}/lib/server', f'{java}/lib', drivers, base.get(library_path, '')) if p)
-    env.update(JAVA_HOME=java, HORIZON_NEOFORGE=record['neoforge'], HORIZON_JAVA_HOST_JAR=str(install / 'host' / 'horizon-java-host.jar'),
-               HORIZON_JAVA_RUN=str(install / run_name(dedicated)))
+    env[library_path] = ':'.join(p for p in (drivers, base.get(library_path, '')) if p)
+    for name in ('JAVA_HOME', 'HORIZON_JAVA_HOST_JAR'):
+        env.pop(name, None)
+    env.pop('HORIZON_JAVA_RUN', None)
+    env.update(HORIZON_NEOFORGE=record['neoforge'])
     for name, folder in (('HORIZON_HOME', 'horizon'), ('HORIZON_LAUNCHER_HOME', 'launcher'), ('XDG_DATA_HOME', 'xdg-data'), ('XDG_CONFIG_HOME', 'xdg-config')):
         if not env.get(name):
             env[name] = str(install / 'home' / folder)
     return env
 
 
-def launch_command(game, record, game_args):
-    """The game's command line: the install's prepared resources unless the caller names theirs."""
-    command = [str(game)]
+def launch_command(game, record, run, game_args):
+    """The game's command line: the run folder first (the server's parser takes what follows `--dedicated`), and the install's prepared resources unless the caller names theirs."""
+    command = [str(game), '--java-mods', str(run)]
     if '--resources' not in game_args:
         command += ['--resources', record['resources']]
     return command + game_args
@@ -1216,7 +1258,7 @@ def launch(args, game_args):
     for name in ('HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME'):
         Path(env[name]).mkdir(parents=True, exist_ok=True)
     os.chdir(cwd)
-    os.execve(game, launch_command(game, record, game_args), env)
+    os.execve(game, launch_command(game, record, install / run_name(dedicated), game_args), env)
 
 
 def main():

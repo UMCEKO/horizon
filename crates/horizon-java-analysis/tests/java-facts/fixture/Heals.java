@@ -1,0 +1,1 @@
+package fixture; public class Heals { static void heal(net.minecraft.world.entity.LivingEntity l) { l.setHealth(1); } static Object data(net.minecraft.world.entity.item.ItemEntity i) { return i.getData(null); } }

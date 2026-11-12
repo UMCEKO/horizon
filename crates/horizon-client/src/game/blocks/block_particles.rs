@@ -84,6 +84,9 @@ impl Game<'_> {
         if self.settings.extras.hide_block_particles {
             return;
         }
+        if self.java_hook_block_effect(0, pos, state, [0; 3]) {
+            return;
+        }
         let Some((sprite, tint)) = self.particle_sprite(state, pos) else {
             return;
         };

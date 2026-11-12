@@ -65,10 +65,12 @@ public final class WorldFrame {
     private WorldFrame() {}
 
     public static final int SUBMIT = 0, AFTER_SKY = 1, AFTER_OPAQUE_BLOCKS = 2, AFTER_OPAQUE_FEATURES = 3, AFTER_TRANSLUCENT_FEATURES = 4, AFTER_TRANSLUCENT_BLOCKS = 5,
-            AFTER_TRANSLUCENT_PARTICLES = 6, AFTER_WEATHER = 7, AFTER_LEVEL = 8, OIT = 9;
+            AFTER_TRANSLUCENT_PARTICLES = 6, AFTER_WEATHER = 7, AFTER_LEVEL = 8, OIT = 9, SKY_STAGE = 10, CLOUDS_STAGE = 11, WEATHER_STAGE = 12;
 
     /** Passes on the wire. */
-    static final byte OPAQUE = 0, TRANSLUCENT = 1, AFTER_TRANSLUCENT = 2, ADDITIVE = 3, SEE_THROUGH = 4, LINES = 5, LINES_ON_TOP = 6;
+    static final byte OPAQUE = 0, TRANSLUCENT = 1, AFTER_TRANSLUCENT = 2, ADDITIVE = 3, SEE_THROUGH = 4, LINES = 5, LINES_ON_TOP = 6, SKY = 7, CLOUDS = 8, WEATHER = 9;
+    /** A piece's flag for positions relative to the camera, not the world. */
+    static final int ANCHORED = 4;
 
     /** The recording device is the GPU while this is set, on the render thread only. */
     public static volatile boolean recording;
@@ -149,11 +151,12 @@ public final class WorldFrame {
     }
 
     /** `ExtractLevelRenderStateEvent`, `SubmitCustomGeometryEvent`, `PrepareRenderBuffersEvent`, then the stages' events; `FrameGraphSetupEvent` needs a frame graph and its targets, which this client has none of. */
-    static void fire(Frame f, Sink sink) {
+    static void fire(Frame f, Sink sink, Runnable particles) {
         stage = SUBMIT;
         sink.post("ExtractLevelRenderStateEvent", new ExtractLevelRenderStateEvent(f.extractor(), f.state(), f.options(), f.level(), f.camera(), f.frustum(), f.delta()));
         stage = SUBMIT;
         sink.post("SubmitCustomGeometryEvent", new SubmitCustomGeometryEvent(f.state(), f.collector(), new PoseStack(), f.sections()));
+        particles.run();
         sink.post("PrepareRenderBuffersEvent", new PrepareRenderBuffersEvent(f.renderer(), f.state(), f.options()));
         if (f.sky()) {
             stage = AFTER_SKY;
@@ -336,7 +339,7 @@ public final class WorldFrame {
         return (float) (Math.round(v * 65536.0) / 65536.0);
     }
 
-    /** A piece's flags: 1 no cull, 2 writes depth. */
+    /** A piece's flags: 1 no cull, 2 writes depth, 4 anchored to the camera. */
     static int flags(RenderPipeline pipeline) {
         return flags(pipeline.isCull(), pipeline.getDepthStencilState());
     }
@@ -461,6 +464,16 @@ public final class WorldFrame {
 
     /** The draws made on the recording device, placed in the world. */
     private static void drawn(Cam cam, Matrix4fc viewRotation, Recording out, List<Piece> pieces) {
+        drawn(cam, viewRotation, out, pieces, (byte) -1);
+    }
+
+    /** The draws a custom sky, cloud or weather renderer made, as pieces of `pass` placed relative to the camera. */
+    static void anchored(Cam cam, Matrix4fc viewRotation, byte pass, Recording out, List<Piece> pieces) {
+        drawn(cam, viewRotation, out, pieces, pass);
+    }
+
+    private static void drawn(Cam cam, Matrix4fc viewRotation, Recording out, List<Piece> pieces, byte fixed) {
+        boolean anchored = fixed >= 0;
         for (var d : DEVICE.draws) {
             var pipeline = d.pipeline().pipeline();
             long id = meshKey(d);
@@ -472,11 +485,12 @@ public final class WorldFrame {
             }
             if (mesh.quads().isEmpty() && mesh.lines().isEmpty()) continue;
             unsupported(pipeline);
-            byte pass = classify(pipeline, d.stage());
+            byte pass = anchored ? fixed : classify(pipeline, d.stage());
             out.meshes().putIfAbsent(id, mesh);
             var t = d.transform();
             var c = t.colorModulator();
-            pieces.add(placed(id, pass, flags(pipeline), toWorld(t, viewRotation, cam.x(), cam.y(), cam.z()), new float[] {c.x(), c.y(), c.z(), c.w()}));
+            var at = anchored ? toWorld(t, viewRotation, 0, 0, 0) : toWorld(t, viewRotation, cam.x(), cam.y(), cam.z());
+            pieces.add(placed(id, pass, flags(pipeline) | (anchored ? ANCHORED : 0), at, new float[] {c.x(), c.y(), c.z(), c.w()}));
         }
     }
 
@@ -512,17 +526,7 @@ public final class WorldFrame {
 
     /** Whether the bus has a listener for any of the frame's events. */
     static boolean listened(net.neoforged.bus.api.IEventBus bus) {
-        try {
-            var list = net.neoforged.bus.EventBus.class.getDeclaredMethod("getListenerList", Class.class);
-            list.setAccessible(true);
-            for (var event : EVENTS) {
-                var listeners = (net.neoforged.bus.ListenerList) list.invoke(bus, event);
-                if (listeners.getListeners().length > 0) return true;
-            }
-            return false;
-        } catch (ReflectiveOperationException e) {
-            throw new IllegalStateException(e);
-        }
+        return EVENTS.stream().anyMatch(event -> Listeners.listened(bus, event));
     }
 
     /** Called once the mods have loaded. */
@@ -672,7 +676,7 @@ public final class WorldFrame {
     }
 
     /** `LevelRenderer.render`'s events for one frame at the camera, taken into world-space pieces. Null when no level is up. */
-    static Recording record(Cam cam, float partial, DeltaTracker delta, int windowWidth, int windowHeight) throws ReflectiveOperationException {
+    static Recording record(Cam cam, float partial, DeltaTracker delta, int windowWidth, int windowHeight, boolean tick) throws ReflectiveOperationException {
         records++;
         Minecraft minecraft = Minecraft.getInstance();
         ClientLevel level = minecraft.level;
@@ -687,11 +691,14 @@ public final class WorldFrame {
         try {
             var frame = frame(minecraft, level, cam, partial, delta, capture);
             stack.mul(frame.viewRotation());
-            fire(frame, WorldFrame::safely);
             var out = new Recording(new ArrayList<>(), new LinkedHashMap<>());
             var pieces = new ArrayList<Piece>();
-            submitted(capture, cam, out, pieces);
-            drawn(cam, frame.viewRotation(), out, pieces);
+            if (needed || ParticleRecorder.groupsLive()) {
+                fire(frame, WorldFrame::safely, () -> ParticleRecorder.submitGroups(frame.frustum(), frame.camera(), frame.state().worldPartialTicks, frame.collector(), frame.state().cameraRenderState));
+                submitted(capture, cam, out, pieces);
+                drawn(cam, frame.viewRotation(), out, pieces);
+            }
+            Environments.record(frame, cam, partial, tick, out, pieces);
             return new Recording(capped(pieces, out.meshes()), out.meshes());
         } finally {
             stack.popMatrix();
@@ -809,6 +816,7 @@ public final class WorldFrame {
         animating = false;
         ticksSinceFrame = 0;
         camera = null;
+        Environments.forget();
     }
 
     /** The latest camera the window told. */
@@ -824,11 +832,16 @@ public final class WorldFrame {
         return height;
     }
 
+    /** Whether the last recording held a mod's particle group: the one after it clears the geometry. */
+    private static boolean groupsWere;
+
     /** A recording of the world for one tick or one frame: its blob if it changed, with the animation bookkeeping. */
     static byte[] take(Cam cam, float partial, DeltaTracker delta, int windowWidth, int windowHeight, boolean frame) {
-        if (!needed) return null;
+        boolean groups = ParticleRecorder.groupsLive();
+        if (!Environments.wanted(cam) && !needed && !groups && !groupsWere) return null;
+        groupsWere = groups;
         try {
-            var recording = record(cam, partial, delta, windowWidth, windowHeight);
+            var recording = record(cam, partial, delta, windowWidth, windowHeight, !frame);
             if (recording == null) return null;
             var blob = blob(recording);
             noted(blob == null, delta.getRealtimeDeltaTicks());

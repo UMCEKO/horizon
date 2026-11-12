@@ -142,9 +142,23 @@ fn connect(op: &str, profile: u128, name: &str, address: &str) {
 }
 
 pub(super) fn install() {
+    if !horizon_java_host::configured() {
+        return;
+    }
     horizon_client::net::on_local_login(java_client_login);
     horizon_client::net::on_java_link(java_link);
-    if std::env::var_os("HORIZON_JAVA_RUN").is_some() {
-        foreign::install(Box::new(Codecs::default()));
+    foreign::install(Box::new(Codecs::default()));
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn without_a_run_folder_no_jvm_starts_and_no_hook_is_installed() {
+        horizon_java_host::set_run(None);
+        super::super::java_hooks::java_hook_start(None, false).unwrap();
+        super::install();
+        assert!(!horizon_java_host::configured());
+        assert!(!horizon_client::net::java_link_installed());
+        assert!(horizon_java_host::get().is_none());
     }
 }

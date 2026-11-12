@@ -40,10 +40,13 @@ public final class ClientResources {
         ResourceTextures.export(out.resolveSibling(out.getFileName().toString().replaceFirst("\\.[^.]+$", ".textures")));
         var states = bakeStates;
         bakeStates = java.util.Set.of();
-        if (states.isEmpty()) return new byte[] {1};
-        var models = Minecraft.getInstance().getModelManager().getBlockStateModelSet();
-        var n = dev.horizonlab.facts.BakedWriter.write(out, models::get, states::contains);
-        System.err.println("Horizon: baked " + n[0] + " blocks, " + n[1] + " states, " + n[2] + " quads for the content");
+        var manager = Minecraft.getInstance().getModelManager();
+        boolean fluids = false;
+        for (var fluid : BuiltInRegistries.FLUID) fluids |= BootFacts.ownsFluid(fluid);
+        if (states.isEmpty() && !fluids) return new byte[] {1};
+        var models = manager.getBlockStateModelSet();
+        var n = dev.horizonlab.facts.BakedWriter.write(out, models::get, states::contains, manager.getFluidStateModelSet(), BootFacts::ownsFluid, BootFacts::ownsBlock);
+        System.err.println("Horizon: baked " + n[0] + " blocks, " + n[1] + " states, " + n[2] + " quads, " + n[3] + " fluids for the content");
         return new byte[] {1};
     }
 
@@ -91,6 +94,7 @@ public final class ClientResources {
             report.append("\n  ").append(atlas.location()).append(' ').append(view.width()).append('x').append(view.height()).append(": ").append(names.size()).append(" sprites");
             freed += Sprites.free(atlas);
         }
+        BlockEffects.export(out);
         exported = bytes.toByteArray();
         System.err.println("Horizon: the client's resource reload stitched " + atlases.size() + " atlases (" + sprites + " sprites), " + states.size()
                 + " block states with code-built models, " + drawn.size() + " items only their mods' code draws; freed " + freed / 1048576 + " MB of sprite mip levels" + report);

@@ -183,7 +183,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
     }
 
     "net/minecraft/server/level/ServerLevel".sendParticles
-    "(Lnet/minecraft/core/particles/ParticleOptions;ZZDDDIDDDDDDLnet/minecraft/network/protocol/game/ClientboundLevelParticlesPacket$RandomizationType;)I" =>
+    "(Lnet/minecraft/core/particles/ParticleOptions;ZZDDDIDDDDDDLnet/minecraft/network/protocol/game/ClientboundLevelParticlesPacket$RandomizationType;)I" if "@dev/horizonlab/javamods/boot/Effects.nativeParticles+" =>
     fn level_send_particles(game, options: Bytes, limiter: bool, always: bool, x: f64, y: f64, z: f64, count: i32, dx: f64, dy: f64, dz: f64, sx: f64, sy: f64, sz: f64, randomization: i32) -> i32 {
         let at = [x, y, z];
         let Some((options, state)) = particle_of(game, &options.0, at) else {

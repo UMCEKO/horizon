@@ -167,6 +167,7 @@ use horizon_core::{
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use horizon_mod_package::selection::{Argument, LaunchArguments};
+pub(crate) use java_hooks::{java_hook_loot_rolled, java_hook_loot_wanted, java_hook_resolve};
 pub use native_block_entity_draw::BlockEntityDraw;
 pub use native_claimed_items::{HeldItemSlot, ModEvent};
 pub use native_components::NativeComponentError;
@@ -298,6 +299,8 @@ pub(crate) struct Options {
     session_file: Option<String>,
     /// `--session-stdin`: the session file's JSON comes on standard input instead.
     session_stdin: bool,
+    /// `--java-mods DIR`: the run folder of this game's Java mods (a build with the `java-mods` feature).
+    pub(crate) java_mods: Option<PathBuf>,
 }
 impl Options {
     /// Whether this `Game` is the process's client start: not a dedicated server, and not
@@ -437,13 +440,14 @@ impl Options {
             quick_play: None,
             session_file: std::env::var("HORIZON_SESSION_FILE").ok(),
             session_stdin: false,
+            java_mods: None,
         };
         for argument in rest {
             match argument {
                 Argument::Switch(arg) => match arg.as_str() {
                     "--help" | "-h" => {
                         println!(
-                            "Horizon — Minecraft Java Edition {} in Rust\n\n  --resources PATH        Prepared resources (horizon-prepare)\n  --render-distance N     Chunks, 2..128 (default 12)\n  --world NAME            World folder under saves/ (default \"New World\")\n  --seed N                World seed for new worlds (default 0)\n  --width N, --height N   Window size (default 1280 x 720)\n  --creative              Creative mode (default survival)\n  --test-terrain          Simple test terrain instead of vanilla generation\n  --frames N              Exit after N frames (testing)\n  --world-frames N        Exit after N frames drawn in the world (testing)\n  --smoke-report PATH     Write a JSON report on exit\n  --benchmark SCENARIO    Run a benchmark (standard, village, forest, ocean, mountain), write its report to benchmarks/ and quit\n  --control               Accept horizon-ctl commands on a local socket\n  --control-socket PATH   Control socket path (default $XDG_RUNTIME_DIR/horizon-control.sock)\n  --server HOST[:PORT]    Join a multiplayer server (offline mode) at start\n  --quickPlaySingleplayer WORLD  Open this world of saves/ at start, only if it exists (vanilla's)\n  --quickPlayMultiplayer HOST[:PORT]  The same as --server (vanilla's name)\n  --name NAME             Player name for multiplayer (default: generated once, kept in horizon-player.txt)\n  --session-file PATH     Signed-in account from the launcher (read once, then deleted)\n  --session-stdin         The same account as JSON on standard input\n  --game-dir DIR          Game folder: saves, options.txt, packs, mods (default: the working directory)\n  --home DIR              Logs and crash reports (default $HORIZON_HOME, else the platform data folder)\n  --player-dir DIR        This player's own files when several play in one game folder: options.txt, logs, horizon-player.txt, servers.dat, screenshots\n  --fullscreen            Open the window fullscreen\n  --launch-api            Print the Launch API version and options as JSON (docs/api/launch.md)\n  --dev-mod PATH          A content mod (.hmod or folder) to develop: always on\n  --pregen                Add Horizon's /pregen command (docs/pregeneration.md)\n\nControls: mouse look, WASD move, Space jump, Left Shift sneak, Left Ctrl sprint,\nleft click break, right click place/use, 1-9/scroll hotbar, E inventory,\nQ drop, F3 debug, Esc pause.",
+                            "Horizon — Minecraft Java Edition {} in Rust\n\n  --resources PATH        Prepared resources (horizon-prepare)\n  --render-distance N     Chunks, 2..128 (default 12)\n  --world NAME            World folder under saves/ (default \"New World\")\n  --seed N                World seed for new worlds (default 0)\n  --width N, --height N   Window size (default 1280 x 720)\n  --creative              Creative mode (default survival)\n  --test-terrain          Simple test terrain instead of vanilla generation\n  --frames N              Exit after N frames (testing)\n  --world-frames N        Exit after N frames drawn in the world (testing)\n  --smoke-report PATH     Write a JSON report on exit\n  --benchmark SCENARIO    Run a benchmark (standard, village, forest, ocean, mountain), write its report to benchmarks/ and quit\n  --control               Accept horizon-ctl commands on a local socket\n  --control-socket PATH   Control socket path (default $XDG_RUNTIME_DIR/horizon-control.sock)\n  --server HOST[:PORT]    Join a multiplayer server (offline mode) at start\n  --quickPlaySingleplayer WORLD  Open this world of saves/ at start, only if it exists (vanilla's)\n  --quickPlayMultiplayer HOST[:PORT]  The same as --server (vanilla's name)\n  --name NAME             Player name for multiplayer (default: generated once, kept in horizon-player.txt)\n  --session-file PATH     Signed-in account from the launcher (read once, then deleted)\n  --session-stdin         The same account as JSON on standard input\n  --game-dir DIR          Game folder: saves, options.txt, packs, mods (default: the working directory)\n  --home DIR              Logs and crash reports (default $HORIZON_HOME, else the platform data folder)\n  --player-dir DIR        This player's own files when several play in one game folder: options.txt, logs, horizon-player.txt, servers.dat, screenshots\n  --fullscreen            Open the window fullscreen\n  --launch-api            Print the Launch API version and options as JSON (docs/api/launch.md)\n  --dev-mod PATH          A content mod (.hmod or folder) to develop: always on\n  --java-mods DIR          Run the Java mods of this run folder (a build with Java mods support)\n  --pregen                Add Horizon's /pregen command (docs/pregeneration.md)\n\nControls: mouse look, WASD move, Space jump, Left Shift sneak, Left Ctrl sprint,\nleft click break, right click place/use, 1-9/scroll hotbar, E inventory,\nQ drop, F3 debug, Esc pause.",
                             horizon_core::VANILLA_VERSION
                         );
                         return Ok(None);
@@ -542,6 +546,7 @@ impl Options {
                             }
                             "--server" | "--quickPlayMultiplayer" => o.server = Some(value),
                             "--name" => o.player_name = Some(value),
+                            "--java-mods" => o.java_mods = Some(std::path::absolute(&value)?),
                             "--session-file" => o.session_file = Some(value),
                             "--control-socket" => o.control = Some(value.into()),
                             "--transfers" => {
@@ -3238,6 +3243,8 @@ struct Game<'a> {
     integrated: Option<integrated::Integrated>,
     /// The shapes of the open world's levels, from its dimension types.
     level_shapes: horizon_client::chunk::LevelShapes,
+    /// The Java mods' worldgen export of the open world, which its levels' generators are built from.
+    java_worldgen: world_loading::JavaWorldgen,
     /// This game is that server thread's (game/world/integrated.rs).
     serving: Option<integrated::Serving>,
     /// The open world is shared behind an invite code (game/network/friends.rs).
@@ -3623,7 +3630,30 @@ impl Dim {
 /// hotbar and the main inventory), then into empty slots of the inventory
 /// (`getFreeSlot`, never the off hand). What does not fit stays in `stack`;
 /// true when some of it is left.
+#[cfg_attr(feature = "java-mods", allow(dead_code))]
 fn inventory_add(
+    inventory: &mut [Option<ItemStack>],
+    offhand: &mut Option<ItemStack>,
+    selected: usize,
+    max: u32,
+    stack: &mut ItemStack,
+) -> bool {
+    if !inventory_stack_onto(inventory, offhand, selected, max, stack) {
+        return false;
+    }
+    while let Some(i) =
+        horizon_client::pick_item::free_slot_in(&inventory[..inventory.len().min(36)])
+    {
+        if !inventory_fill_free(inventory, i, max, stack) {
+            return false;
+        }
+    }
+    true
+}
+
+/// `Inventory.add`'s first half: onto equal stacks in the selected slot, the off hand, then the
+/// hotbar and the main inventory; true when some of `stack` is left.
+fn inventory_stack_onto(
     inventory: &mut [Option<ItemStack>],
     offhand: &mut Option<ItemStack>,
     selected: usize,
@@ -3651,20 +3681,23 @@ fn inventory_add(
             }
         }
     }
-    for slot in inventory.iter_mut().take(36) {
-        if slot.is_none() {
-            let moved = stack.count.min(max);
-            *slot = Some(ItemStack {
-                count: moved,
-                ..stack.clone()
-            });
-            stack.count -= moved;
-            if stack.count == 0 {
-                return false;
-            }
-        }
-    }
     true
+}
+
+/// Puts up to `max` of `stack` into the empty slot `i`; true when some of it is left.
+fn inventory_fill_free(
+    inventory: &mut [Option<ItemStack>],
+    i: usize,
+    max: u32,
+    stack: &mut ItemStack,
+) -> bool {
+    let moved = stack.count.min(max);
+    inventory[i] = Some(ItemStack {
+        count: moved,
+        ..stack.clone()
+    });
+    stack.count -= moved;
+    stack.count > 0
 }
 
 fn facing_offset(facing: &str) -> [i32; 3] {
@@ -4650,6 +4683,7 @@ impl Game<'_> {
             .get(&stack.item)
             .map_or(64, |i| i.max_stack);
         let before = stack.count;
+        #[cfg(not(feature = "java-mods"))]
         let left = inventory_add(
             &mut self.inventory,
             &mut self.offhand,
@@ -4657,6 +4691,21 @@ impl Game<'_> {
             max,
             &mut stack,
         );
+        // `Inventory.add`'s empty slot comes from the gated `getFreeSlot`.
+        #[cfg(feature = "java-mods")]
+        let left = {
+            let mut left = inventory_stack_onto(
+                &mut self.inventory,
+                &mut self.offhand,
+                self.selected,
+                max,
+                &mut stack,
+            );
+            while left && let Ok(i) = usize::try_from(self.free_slot()) {
+                left = inventory_fill_free(&mut self.inventory, i, max, &mut stack);
+            }
+            left
+        };
         if stack.count < before {
             self.tutorial_get_item(tutorial_item.as_ref());
         }
@@ -4719,6 +4768,9 @@ impl Game<'_> {
     /// ClientLevel.addBreakingParticles: one crumb on the face being mined.
     fn crack_particle(&mut self, pos: [i32; 3], face: [i32; 3], state: BlockStateId) {
         if self.settings.extras.hide_block_particles {
+            return;
+        }
+        if self.java_hook_block_effect(1, pos, state, face) {
             return;
         }
         let Some((sprite, tint)) = self.particle_sprite(state, pos) else {
@@ -4883,6 +4935,8 @@ impl Game<'_> {
                 raining: weather && rain > 0.2,
                 thundering: weather && thunder > 0.9,
             }),
+            this_entity: None,
+            killer: None,
         }
     }
     /// `Block.getDrops` for a block a player breaks: the block's loot table
@@ -4897,8 +4951,10 @@ impl Game<'_> {
         block_entity: Option<horizon_core::nbt::Tag>,
     ) -> Vec<ItemStack> {
         let dynamic = self.pending.dynamic(pos);
-        let place = self.loot_place_at(pos.map(|v| f64::from(v) + 0.5), block_entity);
+        let mut place = self.loot_place_at(pos.map(|v| f64::from(v) + 0.5), block_entity);
         let (_, entity) = self.native_clicker();
+        let player = self.native_acting_id();
+        place.this_entity = Some((entity, player));
         let mut drops = horizon_world::loot::with_native_loot_place(place, || {
             let roll = horizon_client::items::BlockLootRoll {
                 held,
@@ -4908,7 +4964,6 @@ impl Game<'_> {
             };
             self.roll_block_loot(pos, state, Some(entity as u32), roll)
         });
-        let player = self.native_acting_id();
         self.native_block_loot(pos, state, Some(player), held, None, &mut drops);
         drops
     }
@@ -9878,10 +9933,12 @@ impl Game<'_> {
             locator,
             loot,
             owner_migration,
+            java_worldgen,
         } = prepared;
         self.server_loot = loot;
         let dim = Dim::from_id(&level.dimension);
         self.level_shapes = shapes;
+        self.java_worldgen = java_worldgen;
         self.world_root = save_root.clone();
         // The root moves before the prepared level is installed. Until then a
         // final save must not run: the lock below only marks tag tables.
@@ -13815,6 +13872,7 @@ impl<'a> Game<'a> {
             lan: None,
             integrated: None,
             level_shapes: Default::default(),
+            java_worldgen: None,
             serving: None,
             world_options: None,
             options_to_world_options: false,
@@ -14632,12 +14690,16 @@ pub(crate) fn run_with(
 ) -> Result<()> {
     let mut options = Options::read(options)?;
     options.mods.native = Arc::new(native);
-    java_hooks::java_hook_start(options.execution_role.is_client());
     if options.execution_role == execution_role::ExecutionRole::DedicatedServer
         && !dedicated::preflight(&mut options)?
     {
         return Ok(());
     }
+    // The mod host's loading phase: the Java run folder is decided before any package is selected.
+    java_hooks::java_hook_start(
+        options.java_mods.as_deref(),
+        options.execution_role.is_client(),
+    )?;
     let _ = horizon_client::block_contact::HOOKS.set(native_hooks::BLOCK_CONTACT_HOOKS);
     // Before any worker starts: on Linux they go behind the server thread
     // and the render thread.

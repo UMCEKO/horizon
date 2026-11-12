@@ -57,6 +57,42 @@ impl crate::game::Game<'_> {
     pub(in crate::game) fn java_player_arg(&mut self) -> PlayerArg {
         PlayerArg(self.java_use_request())
     }
+
+    /// `runTick`'s `pauseAllExcept(MUSIC, UI)` through the mods' `@ModifyArg`s: the engine's sources to keep, None while the route is off.
+    pub(in crate::game) fn java_pause_sources(&mut self) -> Option<Vec<usize>> {
+        const KEY: &str = "net/minecraft/client/Minecraft#runTick(Z)V";
+        gui_route!("net/minecraft/client/Minecraft#runTick(Z)V");
+        let routes = horizon_java_host::routes::get()?;
+        if !routes.get(routes.id(KEY)?).on {
+            return None;
+        }
+        let host = horizon_java_host::get()?;
+        let reply = horizon_java_host::bridge::with_active(self, || {
+            host.request("client_pause_sources", &[])
+        });
+        let kept = reply.as_deref().and_then(pause_sources);
+        if kept.is_none() {
+            log::error!("Horizon: the Java client gave no pause sources; pausing vanilla's");
+        }
+        kept
+    }
+}
+
+/// The `client_pause_sources` reply (`int n`, n `SoundSource` names) as the engine's source indices, matched by name.
+#[cfg(feature = "java-mods")]
+fn pause_sources(reply: &[u8]) -> Option<Vec<usize>> {
+    use horizon_client::settings::SOUND_SOURCES;
+    let mut r = horizon_java_host::wire::In(reply);
+    let n = r.int()?;
+    let mut kept = Vec::with_capacity(usize::try_from(n).ok()?);
+    for _ in 0..n {
+        let name = r.text()?;
+        match SOUND_SOURCES.iter().position(|s| *s == name) {
+            Some(index) => kept.push(index),
+            None => log::error!("Horizon: a mod kept an unknown sound source {name} playing through the pause"),
+        }
+    }
+    Some(kept)
 }
 
 #[cfg(feature = "java-mods")]
@@ -302,6 +338,13 @@ mod gate {
             };
             let mut reply = In(&reply);
             let value = read_value::<R>(key, &mut reply);
+            let level = reply
+                .int()
+                .unwrap_or_else(|| panic!("Horizon: route {key} answered in pieces"));
+            // -1: no player was filled for this call.
+            if level != -1 && self.java_apply_changes(level, &mut reply).is_none() {
+                panic!("Horizon: route {key} answered in pieces");
+            }
             if self.java_apply_effects(&mut reply).is_none() {
                 panic!("Horizon: route {key} answered in pieces");
             }
@@ -412,7 +455,15 @@ mod gate {
             let mut reply = Out::default();
             reply.0.push(0);
             reply.int(7);
-            assert_eq!(read_value::<i32>("k", &mut In(&reply.0)), 7);
+            reply.int(-1);
+            reply.int(0);
+            let mut reply = In(&reply.0);
+            assert_eq!(read_value::<i32>("k", &mut reply), 7);
+            // After the value: no player's changes (-1), then no sounds.
+            assert_eq!(
+                (reply.int(), reply.int(), reply.int()),
+                (Some(-1), Some(0), None)
+            );
         }
 
         #[test]

@@ -314,3 +314,4 @@ RepeaterBlock.getStateForPlacement	port	crates/horizon-world/src/level/place.rs:
 RepeaterBlock.shouldRedstoneWireConnectTo	port	crates/horizon-world/src/level/redstone.rs::Sim::should_wire_connect_to	
 RepeaterBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	
 RepeaterBlock.useWithoutItem	port	crates/horizon-world/src/level/interact.rs::Sim::use_without_item	
+MultiNoiseBiomeSourceParameterList.<clinit>	inline	crates/horizon-world/src/worldgen/biome.rs::MultiNoiseBiomeSource::from_quantized_json	w12-coverage: W10; the presets come from the exported parameter lists

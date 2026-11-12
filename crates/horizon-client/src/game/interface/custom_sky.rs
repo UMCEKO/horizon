@@ -2,6 +2,7 @@
 //! world's sky whose day, weather, biome and height hold at the camera, handed to the renderer,
 //! which draws them over the vanilla sky. A pack without layers hands it none.
 use super::*;
+use horizon_world::dimension_type::Skybox;
 use horizon_client::custom_sky::{Conditions, Weather};
 
 /// The layers' eased brightness between frames, and when the last frame was.
@@ -29,10 +30,10 @@ impl Game<'_> {
             return;
         };
         draws.clear();
-        let world = match self.dim {
-            Dim::Overworld | Dim::Extra(_) => Some(0),
-            Dim::End => Some(1),
-            Dim::Nether => None,
+        let world = match self.dimension_type().skybox {
+            Skybox::Overworld => Some(0),
+            Skybox::End => Some(1),
+            Skybox::None => None,
         };
         let now = std::time::Instant::now();
         let seconds = self

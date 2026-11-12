@@ -33,7 +33,7 @@ public final class ParticleFacts {
         return owned;
     }
 
-    static boolean owned(ParticleType<?> type) {
+    public static boolean owned(ParticleType<?> type) {
         return owned().get(BuiltInRegistries.PARTICLE_TYPE.getId(type));
     }
 

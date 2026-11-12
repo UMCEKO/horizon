@@ -19,7 +19,7 @@ use jni::sys::{jint, jvalue};
 use jni::{InitArgsBuilder, JNIEnv, JNIVersion, JavaVM, NativeMethod};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::ffi::{CString, c_void};
+use std::ffi::{CString, OsStr, c_void};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, OnceLock};
@@ -46,10 +46,113 @@ pub const MAIN_THREAD_STACK: &str = "-Xss8m";
 /// The platform's classpath separator; the `cp` line of the args file uses it too.
 const CP_SEP: char = if cfg!(windows) { ';' } else { ':' };
 
-/// The JVM options, classpath and FML arguments `java_mods.py` wrote for this run, one `kind value` per line.
-pub fn create_vm(run_dir: &str) -> (JavaVM, Vec<String>) {
-    let args = std::fs::read_to_string(format!("{run_dir}/horizon-java.args")).unwrap();
-    let host_jar = std::env::var("HORIZON_JAVA_HOST_JAR").unwrap();
+/// What `horizon-java.args` asks the JVM for.
+pub struct RunArgs {
+    pub java: PathBuf,
+    pub options: Vec<String>,
+    pub prog: Vec<String>,
+    pub client: bool,
+}
+
+impl RunArgs {
+    /// `host_override` is `HORIZON_JAVA_HOST_JAR` when set: a developer's private host jar.
+    pub fn parse(
+        run_dir: &Path,
+        text: &str,
+        host_override: Option<&str>,
+    ) -> Result<RunArgs, String> {
+        let run = run_dir.display();
+        let mut java = None;
+        let mut host = host_override.map(str::to_string);
+        let mut classpath = None;
+        let mut options = Vec::new();
+        let mut prog = vec!["--gameDir".to_string(), run.to_string()];
+        let mut client = false;
+        let mut cp_at = 0;
+        for line in text.lines() {
+            client |= line == "dist client";
+            match line.split_once(' ') {
+                Some(("java", home)) => java = Some(PathBuf::from(home)),
+                Some(("host", jar)) if host_override.is_none() => host = Some(jar.to_string()),
+                Some(("jvm", option)) => options.push(option.to_string()),
+                Some(("cp", path)) => {
+                    classpath = Some(path.to_string());
+                    cp_at = options.len();
+                }
+                Some(("prog", arg)) => prog.push(arg.to_string()),
+                Some(("analysis", path)) => options.push(format!("-Dhorizon.java.analysis={path}")),
+                _ => {}
+            }
+        }
+        let java = java.ok_or_else(|| {
+            format!(
+                "{run}/horizon-java.args names no Java (a `java` line): install the Java mods again"
+            )
+        })?;
+        let host = host.ok_or_else(|| {
+            format!("{run}/horizon-java.args names no host jar (a `host` line): install the Java mods again")
+        })?;
+        let classpath = classpath
+            .ok_or_else(|| format!("{run}/horizon-java.args has no classpath (a `cp` line)"))?;
+        options.insert(
+            cp_at,
+            format!("-Djava.class.path={classpath}{CP_SEP}{host}"),
+        );
+        Ok(RunArgs {
+            java,
+            options,
+            prog,
+            client,
+        })
+    }
+}
+
+/// The JDK's major version, from the `JAVA_VERSION` line of its `release` file.
+fn java_major(home: &Path) -> Result<u32, String> {
+    let release = std::fs::read_to_string(home.join("release"))
+        .map_err(|_| format!("{} is not a Java home (no release file)", home.display()))?;
+    release
+        .lines()
+        .find_map(|line| line.strip_prefix("JAVA_VERSION="))
+        .map(|v| v.trim().trim_matches('"'))
+        .and_then(|v| v.split('.').next())
+        .and_then(|major| major.parse().ok())
+        .ok_or_else(|| format!("{}/release names no JAVA_VERSION", home.display()))
+}
+
+/// The JDK's `libjvm`, where the platform keeps it.
+fn libjvm(home: &Path) -> PathBuf {
+    if cfg!(target_os = "windows") {
+        home.join("bin/server/jvm.dll")
+    } else if cfg!(target_os = "macos") {
+        home.join("lib/server/libjvm.dylib")
+    } else {
+        home.join("lib/server/libjvm.so")
+    }
+}
+
+/// Starts the JVM `horizon-java.args` in `run_dir` names, opening that JDK's `libjvm` by path.
+pub fn create_vm(run_dir: &Path) -> Result<(JavaVM, RunArgs), String> {
+    let file = run_dir.join("horizon-java.args");
+    let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+    let host = std::env::var("HORIZON_JAVA_HOST_JAR").ok();
+    let run = RunArgs::parse(run_dir, &text, host.as_deref())?;
+    let home = &run.java;
+    let major = java_major(home)?;
+    if major < 25 {
+        return Err(format!(
+            "Java mods need Java 25 or later; {} is Java {major}",
+            home.display()
+        ));
+    }
+    let lib = libjvm(home);
+    if !lib.exists() {
+        return Err(format!(
+            "{} is missing: {} is not a full JDK",
+            lib.display(),
+            home.display()
+        ));
+    }
     let mut b = InitArgsBuilder::new().version(JNIVersion::V8);
     // First, so the run's own arguments and HORIZON_JAVA_OPTS override them.
     for option in MEMORY {
@@ -61,29 +164,16 @@ pub fn create_vm(run_dir: &str) -> (JavaVM, Vec<String>) {
             b = b.option(option);
         }
     }
-    let mut prog = vec!["--gameDir".to_string(), run_dir.to_string()];
-    for line in args.lines() {
-        match line.split_once(' ') {
-            Some(("jvm", option)) => b = b.option(option),
-            Some(("cp", classpath)) => {
-                b = b.option(format!("-Djava.class.path={classpath}{CP_SEP}{host_jar}"))
-            }
-            Some(("prog", arg)) => prog.push(arg.to_string()),
-            Some(("analysis", path)) => b = b.option(format!("-Dhorizon.java.analysis={path}")),
-            _ => {}
-        }
+    for option in &run.options {
+        b = b.option(option);
     }
     let extra = std::env::var("HORIZON_JAVA_OPTS").unwrap_or_default();
     for o in extra.split_whitespace() {
         b = b.option(o);
     }
-    (JavaVM::new(b.build().unwrap()).expect("JavaVM::new"), prog)
-}
-
-/// Whether this run boots NeoForge's client side, as a game window does, rather than a dedicated server's.
-fn client_side(run_dir: &str) -> bool {
-    std::fs::read_to_string(format!("{run_dir}/horizon-java.args"))
-        .is_ok_and(|args| args.lines().any(|line| line == "dist client"))
+    let args = b.build().map_err(|e| e.to_string())?;
+    let vm = JavaVM::with_libjvm(args, || Ok(lib)).map_err(|e| e.to_string())?;
+    Ok((vm, run))
 }
 
 pub fn register_natives(env: &mut JNIEnv) {
@@ -149,8 +239,8 @@ fn publish_bridges(env: &mut JNIEnv) {
 }
 
 /// Starts FML and loads the mods, on this thread.
-pub fn run_fml(env: &mut JNIEnv, prog: &[String], run_dir: &str) {
-    try_run_fml(env, prog, run_dir).unwrap_or_else(|e| panic!("Host.run: {e}"));
+pub fn run_fml(env: &mut JNIEnv, run: &RunArgs) {
+    try_run_fml(env, run).unwrap_or_else(|e| panic!("Host.run: {e}"));
 }
 
 /// The pending Java exception's stack trace, cleared.
@@ -174,13 +264,12 @@ fn java_error(env: &mut JNIEnv, e: jni::errors::Error) -> String {
 }
 
 /// [`run_fml`], with what stopped FML as the error.
-pub fn try_run_fml(env: &mut JNIEnv, prog: &[String], run_dir: &str) -> Result<(), String> {
+pub fn try_run_fml(env: &mut JNIEnv, run: &RunArgs) -> Result<(), String> {
     publish_bridges(env);
-    let client = client_side(run_dir);
     let args = env
-        .new_object_array(prog.len() as i32, "java/lang/String", JObject::null())
+        .new_object_array(run.prog.len() as i32, "java/lang/String", JObject::null())
         .unwrap();
-    for (i, p) in prog.iter().enumerate() {
+    for (i, p) in run.prog.iter().enumerate() {
         let s = env.new_string(p).unwrap();
         env.set_object_array_element(&args, i as i32, s).unwrap();
     }
@@ -188,7 +277,7 @@ pub fn try_run_fml(env: &mut JNIEnv, prog: &[String], run_dir: &str) -> Result<(
         HOST,
         "run",
         "([Ljava/lang/String;Z)V",
-        &[JValue::Object(&args), JValue::Bool(client.into())],
+        &[JValue::Object(&args), JValue::Bool(run.client.into())],
     )
     .map(drop)
     .map_err(|e| java_error(env, e))
@@ -311,10 +400,10 @@ static FACTS: OnceLock<PathBuf> = OnceLock::new();
 static WINDOW: OnceLock<bool> = OnceLock::new();
 
 static RUNNING: LazyLock<Boot> = LazyLock::new(|| {
-    let Ok(run_dir) = std::env::var("HORIZON_JAVA_RUN") else {
+    let Some(run_dir) = run_dir() else {
         return Boot::Off;
     };
-    let booted = std::panic::catch_unwind(|| boot(&run_dir)).unwrap_or_else(|panic| {
+    let booted = std::panic::catch_unwind(|| boot(run_dir)).unwrap_or_else(|panic| {
         let text = panic
             .downcast_ref::<String>()
             .cloned()
@@ -330,15 +419,15 @@ static RUNNING: LazyLock<Boot> = LazyLock::new(|| {
     }
 });
 
-fn boot(run_dir: &str) -> Result<Host, String> {
+fn boot(run_dir: &Path) -> Result<Host, String> {
     let began = std::time::Instant::now();
-    let (vm, prog) = create_vm(run_dir);
+    let (vm, run) = create_vm(run_dir)?;
     let (server_group, entry) = {
         let mut env = vm
             .attach_current_thread_permanently()
             .map_err(|e| e.to_string())?;
         register_natives(&mut env);
-        try_run_fml(&mut env, &prog, run_dir)?;
+        try_run_fml(&mut env, &run)?;
         let group = env
             .get_static_field(HOST, "serverGroup", "Ljava/lang/ThreadGroup;")
             .and_then(|group| group.l())
@@ -422,9 +511,50 @@ pub fn start(bridges: Vec<bridge::Bridge>, facts: PathBuf, window: bool) {
     }
 }
 
-/// Whether this run has Java mods (`HORIZON_JAVA_RUN`), booted or not.
+static RUN: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+/// Jars every run folder's `mods/` holds that are Horizon's own, not a mod.
+const OWN_JARS: [&str; 2] = ["horizon-java-boot.jar", "horizon-java-plugin.jar"];
+
+/// The launcher finds this in a game build that supports Java mods.
+#[used]
+pub static SUPPORT_MARK: [u8; 25] = *b"horizon-java-mods-support";
+
+/// The run folder this process's Java mods start from; set once, at startup, before `start`.
+pub fn set_run(dir: Option<PathBuf>) {
+    let _ = RUN.set(dir);
+}
+
+/// Whether `set_run` has been called, with or without a folder.
+pub fn run_decided() -> bool {
+    RUN.get().is_some()
+}
+
+/// The Java mods' run folder, when this process has Java mods.
+pub fn run_dir() -> Option<&'static Path> {
+    RUN.get().and_then(|run| run.as_deref())
+}
+
+/// Whether this process has Java mods, booted or not.
 pub fn configured() -> bool {
-    std::env::var_os("HORIZON_JAVA_RUN").is_some()
+    run_dir().is_some()
+}
+
+/// Whether `run`'s `mods/` holds a jar that isn't Horizon's own.
+pub fn has_mods(run: &Path) -> bool {
+    std::fs::read_dir(run.join("mods")).is_ok_and(|entries| {
+        entries.flatten().any(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.ends_with(".jar") && !OWN_JARS.contains(&name.as_ref())
+        })
+    })
+}
+
+/// The run folder of a launch: `--java-mods` wins over `HORIZON_JAVA_RUN`; a relative path is taken from `cwd`.
+pub fn resolve_run(flag: Option<&Path>, env: Option<&OsStr>, cwd: &Path) -> Option<PathBuf> {
+    flag.or_else(|| env.filter(|v| !v.is_empty()).map(Path::new))
+        .map(|run| cwd.join(run))
 }
 
 /// The running host, once the mods have loaded (this waits for them); None when this run has no Java mods or their boot failed.
@@ -589,7 +719,12 @@ impl Host {
 
     /// One call into `GameBridge`; None when it threw, which its own stack trace explains.
     pub fn request(&self, op: &str, input: &[u8]) -> Option<Vec<u8>> {
-        self.timed(op, || self.cross(op, input, |reply| Some(reply.to_vec())))
+        self.timed(op, || {
+            self.cross(op, input, |reply| {
+                profile::note_copy(reply.len());
+                Some(reply.to_vec())
+            })
+        })
     }
 
     /// [`request`](Self::request) without the copies: `write` fills the request in this thread's buffer and `read` parses the reply where it lies.
@@ -608,8 +743,19 @@ impl Host {
                     .unwrap_or_default()
             }));
             out.0.clear();
+            let started = profile::dir().map(|_| std::time::Instant::now());
             write(&mut out);
-            let reply = self.cross(op, &out.0, |bytes| read(&mut wire::In(bytes)));
+            if let Some(started) = started {
+                profile::note_ser(started.elapsed());
+            }
+            let reply = self.cross(op, &out.0, |bytes| {
+                let started = profile::dir().map(|_| std::time::Instant::now());
+                let reply = read(&mut wire::In(bytes));
+                if let Some(started) = started {
+                    profile::note_ser(started.elapsed());
+                }
+                reply
+            });
             CROSSING.with_borrow_mut(|c| {
                 if c.scratch.len() <= level {
                     c.scratch.resize_with(level + 1, Vec::new);
@@ -622,6 +768,7 @@ impl Host {
 
     fn timed<R>(&self, op: &str, f: impl FnOnce() -> R) -> R {
         let started = profile::dir().map(|_| std::time::Instant::now());
+        let _node = profile::cross(profile::Way::Request, op);
         let out = f();
         if let Some(started) = started {
             profile::record_call(op, started.elapsed());
@@ -708,11 +855,21 @@ impl Host {
             let _ = env.exception_clear();
             return None;
         }
+        if profile::dir().is_some() {
+            profile::note_bytes(input.len(), n.max(0) as usize);
+            profile::note_copy(input.len());
+            profile::note_scratch(CROSSING.with_borrow(|c| {
+                c.arenas.iter().map(|a| a.capacity).sum::<usize>()
+                    + c.scratch.iter().map(Vec::capacity).sum::<usize>()
+            }));
+        }
         let result = match n {
             // SAFETY: Java wrote `n` bytes to the arena's start, and a request nested in `read` uses the next level's.
             1.. => read(unsafe { std::slice::from_raw_parts(address, n as usize) }),
             OVERFLOW => {
                 let reply = self.entry.overflow(&mut env)?;
+                profile::note_bytes(0, reply.len());
+                profile::note_copy(reply.len());
                 if reply.len() <= ARENA_CAP {
                     self.arena(&mut env, level, reply.len());
                 }
@@ -873,6 +1030,119 @@ impl Drop for Nesting {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run_with_mods(jars: &[&str]) -> PathBuf {
+        let run = std::env::temp_dir().join(format!(
+            "horizon-java-run-{}-{}",
+            std::process::id(),
+            jars.join("+")
+        ));
+        let _ = std::fs::remove_dir_all(&run);
+        std::fs::create_dir_all(run.join("mods")).unwrap();
+        for jar in jars {
+            std::fs::write(run.join("mods").join(jar), b"").unwrap();
+        }
+        run
+    }
+
+    #[test]
+    fn only_a_jar_that_is_not_horizons_own_is_a_mod() {
+        let none =
+            std::env::temp_dir().join(format!("horizon-java-run-{}-empty", std::process::id()));
+        assert!(!has_mods(&none));
+        let own = ["horizon-java-boot.jar", "horizon-java-plugin.jar"];
+        assert!(!has_mods(&run_with_mods(&own)));
+        assert!(has_mods(&run_with_mods(&[own[0], own[1], "jei.jar"])));
+        assert!(!has_mods(&run_with_mods(&[own[0], own[1], "notes.txt"])));
+    }
+
+    #[test]
+    fn the_flag_wins_and_a_relative_run_is_taken_from_the_working_folder() {
+        let (a, b, w) = (Path::new("/a"), OsStr::new("/b"), Path::new("/w"));
+        assert_eq!(resolve_run(Some(a), Some(b), w), Some(PathBuf::from("/a")));
+        assert_eq!(
+            resolve_run(None, Some(OsStr::new("b")), w),
+            Some(PathBuf::from("/w/b"))
+        );
+        assert_eq!(resolve_run(None, None, w), None);
+    }
+
+    const ARGS: &str =
+        "java /j\nhost /h.jar\ndist client\ncp /a.jar:/b.jar\njvm -Dx=1\nprog --fml.x\nprog 1\n";
+
+    #[test]
+    fn args_file_names_the_jvm_and_its_options() {
+        let run = RunArgs::parse(Path::new("/run"), ARGS, None).unwrap();
+        assert_eq!(
+            run.options,
+            ["-Djava.class.path=/a.jar:/b.jar:/h.jar", "-Dx=1"]
+        );
+        assert_eq!(run.prog, ["--gameDir", "/run", "--fml.x", "1"]);
+        assert!(run.client);
+        assert_eq!(run.java, PathBuf::from("/j"));
+    }
+
+    #[test]
+    fn host_override_replaces_the_hosts_jar() {
+        let run = RunArgs::parse(Path::new("/run"), ARGS, Some("/p.jar")).unwrap();
+        assert_eq!(run.options[0], "-Djava.class.path=/a.jar:/b.jar:/p.jar");
+    }
+
+    #[test]
+    fn missing_lines_are_named() {
+        let err = |text: &str| RunArgs::parse(Path::new("/run"), text, None).err().unwrap();
+        assert_eq!(
+            err("host /h\ncp /a\n"),
+            "/run/horizon-java.args names no Java (a `java` line): install the Java mods again"
+        );
+        assert_eq!(
+            err("java /j\ncp /a\n"),
+            "/run/horizon-java.args names no host jar (a `host` line): install the Java mods again"
+        );
+        assert_eq!(
+            err("java /j\nhost /h\n"),
+            "/run/horizon-java.args has no classpath (a `cp` line)"
+        );
+    }
+
+    fn home_with(release: Option<&str>) -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "hz-java-major-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Some(text) = release {
+            std::fs::write(dir.join("release"), text).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn java_major_reads_the_release_file() {
+        for (text, major) in [
+            ("JAVA_VERSION=\"25.0.5\"\n", 25),
+            ("IMPLEMENTOR=\"x\"\nJAVA_VERSION=\"21.0.12.1\"\n", 21),
+            ("JAVA_VERSION=\"26\"\n", 26),
+        ] {
+            assert_eq!(java_major(&home_with(Some(text))), Ok(major));
+        }
+        let none = home_with(None);
+        assert_eq!(
+            java_major(&none),
+            Err(format!(
+                "{} is not a Java home (no release file)",
+                none.display()
+            ))
+        );
+        let bare = home_with(Some("X=1\n"));
+        assert_eq!(
+            java_major(&bare),
+            Err(format!("{}/release names no JAVA_VERSION", bare.display()))
+        );
+    }
 
     #[test]
     fn a_boot_export_is_given_up_whole_once_and_only_kept_for_a_reader() {

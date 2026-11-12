@@ -53,6 +53,9 @@ impl<T: Clone> BiomeChunk<T> {
     pub fn section(&self, index: usize) -> Option<&[T; 64]> {
         self.sections.get(index)
     }
+    pub fn section_mut(&mut self, index: usize) -> Option<&mut [T; 64]> {
+        self.sections.get_mut(index)
+    }
     /// Vanilla clamps quart Y to the chunk and wraps X/Z to the local 4×4 grid.
     /// The caller is responsible for selecting the chunk containing X/Z.
     pub fn noise_biome(&self, quart: [i32; 3]) -> &T {

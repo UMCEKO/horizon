@@ -92,40 +92,44 @@ horizon_java_host::java_bridges! { table for Game<'static> {
 
     "net/minecraft/world/level/LevelAccessor".hasChunk
     "(II)Z" if "net/minecraft/server/level/ServerLevel" =>
-    fn level_has_chunk(game, x: i32, z: i32) -> bool {
-        game.java_column_loaded(x, z)
+    fn level_has_chunk(game, on: LevelOn, x: i32, z: i32) -> bool {
+        game.on_level(&on, |game| game.java_column_loaded(x, z))
     }
 
     "net/minecraft/world/level/BlockAndLightGetter".getBrightness
     "(Lnet/minecraft/world/level/LightLayer;Lnet/minecraft/core/BlockPos;)I" if "net/minecraft/server/level/ServerLevel" =>
-    fn level_brightness(game, layer: i32, pos: Pos) -> i32 {
-        let light = i32::from(game.world.light(pos.0.x, pos.0.y, pos.0.z));
-        if layer == 0 { light >> 4 } else { light & 15 }
+    fn level_brightness(game, on: LevelOn, layer: i32, pos: Pos) -> i32 {
+        game.on_level(&on, |game| {
+            let light = i32::from(game.world.light(pos.0.x, pos.0.y, pos.0.z));
+            if layer == 0 { light >> 4 } else { light & 15 }
+        })
     }
 
     "net/minecraft/world/level/LevelReader".getBiome
     "(Lnet/minecraft/core/BlockPos;)Lnet/minecraft/core/Holder;" if "net/minecraft/server/level/ServerLevel" =>
-    fn level_biome(game, pos: Pos) -> Text {
-        let [x, y, z] = game.streaming.biome_zoom.quart_at_block(pos.0);
-        game.java_biome(x, y, z)
+    fn level_biome(game, on: LevelOn, pos: Pos) -> Text {
+        game.on_level(&on, |game| {
+            let [x, y, z] = game.streaming.biome_zoom.quart_at_block(pos.0);
+            game.java_biome(x, y, z)
+        })
     }
 
     "net/minecraft/world/level/LevelReader".getNoiseBiome
     "(III)Lnet/minecraft/core/Holder;" if "net/minecraft/server/level/ServerLevel" =>
-    fn level_noise_biome(game, x: i32, y: i32, z: i32) -> Text {
-        game.java_biome(x, y, z)
+    fn level_noise_biome(game, on: LevelOn, x: i32, y: i32, z: i32) -> Text {
+        game.on_level(&on, |game| game.java_biome(x, y, z))
     }
 
     "net/minecraft/server/level/ServerLevel".getUncachedNoiseBiome
     "(III)Lnet/minecraft/core/Holder;" =>
-    fn level_uncached_noise_biome(game, x: i32, y: i32, z: i32) -> Text {
-        game.java_biome(x, y, z)
+    fn level_uncached_noise_biome(game, on: LevelOn, x: i32, y: i32, z: i32) -> Text {
+        game.on_level(&on, |game| game.java_biome(x, y, z))
     }
 
     "net/minecraft/server/level/ServerLevel".getSeaLevel
     "()I" =>
-    fn level_sea_level(game) -> i32 {
-        game.java_sea_level()
+    fn level_sea_level(game, on: LevelOn) -> i32 {
+        game.on_level(&on, |game| game.java_sea_level())
     }
 
     "net/minecraft/server/level/ServerLevel".getSeed
@@ -148,8 +152,8 @@ horizon_java_host::java_bridges! { table for Game<'static> {
 
     "net/minecraft/world/level/Level".isBrightOutside
     "()Z" if "net/minecraft/server/level/ServerLevel" =>
-    fn level_bright_outside(game) -> bool {
-        !has_fixed_time(game.dim) && game.sky_darken() < 4
+    fn level_bright_outside(game, on: LevelOn) -> bool {
+        game.on_level(&on, |game| !has_fixed_time(game.dim) && game.sky_darken() < 4)
     }
 
     "net/minecraft/world/level/Level".getOverworldClockTime
@@ -160,8 +164,8 @@ horizon_java_host::java_bridges! { table for Game<'static> {
 
     "net/minecraft/world/level/Level".getDefaultClockTime
     "()J" if "net/minecraft/server/level/ServerLevel" =>
-    fn level_default_clock_time(game) -> i64 {
-        if game.dim == Dim::Nether { 0 } else { game.world.day_time }
+    fn level_default_clock_time(game, on: LevelOn) -> i64 {
+        game.on_level(&on, |game| if game.dim == Dim::Nether { 0 } else { game.world.day_time })
     }
 
     "net/minecraft/world/level/LevelAccessor".getDifficulty
@@ -172,14 +176,16 @@ horizon_java_host::java_bridges! { table for Game<'static> {
 
     "net/minecraft/server/level/ServerLevel".getCurrentDifficultyAt
     "(Lnet/minecraft/core/BlockPos;)Lnet/minecraft/world/DifficultyInstance;" =>
-    fn level_difficulty_at(game, pos: Pos) -> Doubles {
-        let key = (pos.0.x >> 4, pos.0.z >> 4);
-        let (local, moon) = if game.world.chunks.contains_key(&key) {
-            (game.world.inhabited.get(&key).copied().unwrap_or(0), game.java_moon_brightness())
-        } else {
-            (0, 0.0)
-        };
-        Doubles(vec![f64::from(game.difficulty_id()), game.world.day_time as f64, local as f64, f64::from(moon)])
+    fn level_difficulty_at(game, on: LevelOn, pos: Pos) -> Doubles {
+        game.on_level(&on, |game| {
+            let key = (pos.0.x >> 4, pos.0.z >> 4);
+            let (local, moon) = if game.world.chunks.contains_key(&key) {
+                (game.world.inhabited.get(&key).copied().unwrap_or(0), game.java_moon_brightness())
+            } else {
+                (0, 0.0)
+            };
+            Doubles(vec![f64::from(game.difficulty_id()), game.world.day_time as f64, local as f64, f64::from(moon)])
+        })
     }
 
     "net/minecraft/server/level/ServerLevel".getMoonBrightness
@@ -202,71 +208,83 @@ horizon_java_host::java_bridges! { table for Game<'static> {
 
     "net/minecraft/world/level/CollisionGetter".noBlockCollision
     "(Lnet/minecraft/world/entity/Entity;Lnet/minecraft/world/phys/AABB;Z)Z" if "net/minecraft/server/level/ServerLevel" =>
-    fn level_no_block_collision(game, _entity: Skip, bounds: Bounds, fluids: bool) -> bool {
-        let b = bounds.0;
-        let area = Aabb::new(Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5]));
-        let mut scene = SceneCollisions { world: &game.world, binding: game.res.collision(), subject: None };
-        if fluids { no_collision_or_liquid(&mut scene, area) } else { no_collision_empty(&mut scene, area) }
+    fn level_no_block_collision(game, on: LevelOn, _entity: Skip, bounds: Bounds, fluids: bool) -> bool {
+        game.on_level(&on, |game| {
+            let b = bounds.0;
+            let area = Aabb::new(Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5]));
+            let mut scene = SceneCollisions { world: &game.world, binding: game.res.collision(), subject: None };
+            if fluids { no_collision_or_liquid(&mut scene, area) } else { no_collision_empty(&mut scene, area) }
+        })
     }
 
     "net/minecraft/world/level/EntityGetter".hasNearbyAlivePlayer
     "(DDDD)Z" if "net/minecraft/server/level/ServerLevel" =>
-    fn level_has_nearby_alive_player(game, x: f64, y: f64, z: f64, distance: f64) -> bool {
-        game.alive_player_near(x, y, z, distance)
+    fn level_has_nearby_alive_player(game, on: LevelOn, x: f64, y: f64, z: f64, distance: f64) -> bool {
+        game.on_level(&on, |game| game.alive_player_near(x, y, z, distance))
     }
 
     "net/minecraft/world/level/ScheduledTickAccess".scheduleTick
     "(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/Block;ILnet/minecraft/world/ticks/TickPriority;)V" if "net/minecraft/server/level/ServerLevel" =>
-    fn level_schedule_block_tick(game, pos: Pos, block: State, delay: i32, priority: i32) -> () {
+    fn level_schedule_block_tick(game, on: LevelOn, pos: Pos, block: State, delay: i32, priority: i32) -> () {
         let Some(state) = block.0 else { return };
-        game.with_level(|b, level, ticks| {
-            let block = b.block(state);
-            ticks.schedule_block(level.game_time(), pos.0, block, delay, TickPriority::by_value(priority));
-        });
+        game.on_level(&on, |game| {
+            game.with_level(|b, level, ticks| {
+                let block = b.block(state);
+                ticks.schedule_block(level.game_time(), pos.0, block, delay, TickPriority::by_value(priority));
+            });
+        })
     }
 
     "net/minecraft/world/level/ScheduledTickAccess".scheduleTick
     "(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/material/Fluid;I)V" if "net/minecraft/server/level/ServerLevel" =>
-    fn level_schedule_fluid_tick(game, pos: Pos, fluid: Text, delay: i32) -> () {
-        game.java_schedule_fluid(pos.0, &fluid.0, delay, 0);
+    fn level_schedule_fluid_tick(game, on: LevelOn, pos: Pos, fluid: Text, delay: i32) -> () {
+        game.on_level(&on, |game| {
+            game.java_schedule_fluid(pos.0, &fluid.0, delay, 0);
+        })
     }
 
     "net/minecraft/world/level/ScheduledTickAccess".scheduleTick
     "(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/material/Fluid;ILnet/minecraft/world/ticks/TickPriority;)V" if "net/minecraft/server/level/ServerLevel" =>
-    fn level_schedule_fluid_tick_priority(game, pos: Pos, fluid: Text, delay: i32, priority: i32) -> () {
-        game.java_schedule_fluid(pos.0, &fluid.0, delay, priority);
+    fn level_schedule_fluid_tick_priority(game, on: LevelOn, pos: Pos, fluid: Text, delay: i32, priority: i32) -> () {
+        game.on_level(&on, |game| {
+            game.java_schedule_fluid(pos.0, &fluid.0, delay, priority);
+        })
     }
 
     "net/minecraft/server/level/ServerLevel".sectionsToVillage
     "(Lnet/minecraft/core/SectionPos;)I" =>
-    fn level_sections_to_village(game, section: Pos) -> i32 {
-        let at = section.0;
-        let centers = game.village_centers();
-        raids::sections_to_village(&centers, raids::section([at.x, at.y, at.z]))
+    fn level_sections_to_village(game, on: LevelOn, section: Pos) -> i32 {
+        game.on_level(&on, |game| {
+            let at = section.0;
+            let centers = game.village_centers();
+            raids::sections_to_village(&centers, raids::section([at.x, at.y, at.z]))
+        })
     }
 
     "net/minecraft/server/level/ServerLevel".isRaided
     "(Lnet/minecraft/core/BlockPos;)Z" =>
-    fn level_is_raided(game, pos: Pos) -> bool {
-        game.raiding_nearby([pos.0.x, pos.0.y, pos.0.z]).is_some()
+    fn level_is_raided(game, on: LevelOn, pos: Pos) -> bool {
+        game.on_level(&on, |game| game.raiding_nearby([pos.0.x, pos.0.y, pos.0.z]).is_some())
     }
 
     "net/minecraft/server/level/ServerLevel".blockEvent
     "(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/Block;II)V" =>
-    fn level_block_event(game, pos: Pos, block: State, param_a: i32, param_b: i32) -> () {
+    fn level_block_event(game, on: LevelOn, pos: Pos, block: State, param_a: i32, param_b: i32) -> () {
         let Some(state) = block.0 else { return };
-        game.with_level(|b, _, ticks| {
-            let event = BlockEventData { pos: pos.0, block: b.block(state), param_a, param_b, note_override: None };
-            if !ticks.block_events.contains(&event) {
-                ticks.block_events.push(event);
-            }
-        });
+        game.on_level(&on, |game| {
+            game.with_level(|b, _, ticks| {
+                let event = BlockEventData { pos: pos.0, block: b.block(state), param_a, param_b, note_override: None };
+                if !ticks.block_events.contains(&event) {
+                    ticks.block_events.push(event);
+                }
+            });
+        })
     }
 
     "net/minecraft/server/level/ServerLevel".getForceLoadedChunks
     "()Lit/unimi/dsi/fastutil/longs/LongSet;" =>
-    fn level_forced_chunks(game) -> Longs {
-        Longs(game.streaming.forced.iter().map(|&(x, z)| i64::from(x) & 0xFFFF_FFFF | (i64::from(z) & 0xFFFF_FFFF) << 32).collect())
+    fn level_forced_chunks(game, on: LevelOn) -> Longs {
+        game.on_level(&on, |game| Longs(game.streaming.forced.iter().map(|&(x, z)| i64::from(x) & 0xFFFF_FFFF | (i64::from(z) & 0xFFFF_FFFF) << 32).collect()))
     }
 
     "net/minecraft/server/level/ServerLevel".globalLevelEvent

@@ -115,8 +115,10 @@ public final class Routing {
         var edgeFlags = new boolean[ordered.size()];
         boolean server = !net.neoforged.fml.loading.FMLEnvironment.getDist().isClient();
         var gates = gates(Routing.class.getResourceAsStream("/route_gates.tsv"));
+        var statuses = statuses(Routing.class.getResourceAsStream("/route_status.tsv"));
         var ungated = new ArrayList<String>();
-        int id = 0, on = 0, dropped = 0, inert = 0;
+        var waiting = new ArrayList<String>();
+        int id = 0, on = 0, dropped = 0, inert = 0, constructors = 0;
         var modOf = new java.util.HashMap<String, String>();
         for (var r : ordered.values()) {
             for (JsonElement c : r.getAsJsonArray("changes")) modOf.put(c.getAsJsonObject().get("mixin").getAsString(), c.getAsJsonObject().get("mod").getAsString());
@@ -152,7 +154,9 @@ public final class Routing {
                 var clash = contradiction(key, name, MethodType.fromMethodDescriptorString(desc, loader).parameterCount(), declaredNamed(type, name) > 1, route.getAsJsonArray("changes"), shapes(type), modOf);
                 if (clash != null) throw new IllegalStateException(clash);
             }
-            boolean live = applied > 0;
+            boolean built = constructor(name);
+            if (built) constructors++;
+            boolean live = applied > 0 && !built;
             if (live) {
                 on++;
                 handles[id] = handle(type, key, name, desc, route.get("static").getAsBoolean(), loader);
@@ -175,11 +179,16 @@ public final class Routing {
             boolean none = admission != null && admission.inert();
             write(out, admission, family);
             if (none) inert++;
-            System.err.println(line(key, body, live, none, gates.get(key), mods));
-            if (live && !none && !gates.containsKey(key)) for (String mod : mods) ungated.add(mod + ": " + simple(owner) + "." + name);
+            String status = statuses.get(key);
+            System.err.println(built ? constructorLine(key, route.getAsJsonObject("construct"), applied > 0, mods) : line(key, body, live, none, gates.get(key), status, mods));
+            if (live && !none && !gates.containsKey(key)) {
+                if (status == null) for (String mod : mods) ungated.add(mod + ": " + simple(owner) + "." + name);
+                else if (!status.startsWith("verdict: ")) waiting.add(status);
+            }
             id++;
         }
         if (!ungated.isEmpty()) System.err.println(summary(ungated));
+        if (!waiting.isEmpty()) System.err.println(waiting(waiting));
         HANDLES = handles;
         KEYS = keys;
         DESCS = descs;
@@ -190,7 +199,8 @@ public final class Routing {
         Routing.live = liveFlags;
         edges = edgeFlags;
         bin = bytes.toByteArray();
-        System.err.println("Horizon: routes: " + on + " on (" + inert + " inert by guard), " + (ordered.size() - on) + " off, " + dropped + " changes dropped, confirmed in " + (System.nanoTime() - began) / 1_000_000 + " ms");
+        Glyphs.decide();
+        System.err.println("Horizon: routes: " + on + " on (" + inert + " inert by guard), " + (ordered.size() - on) + " off (" + constructors + " constructors, never bound), " + dropped + " changes dropped, confirmed in " + (System.nanoTime() - began) / 1_000_000 + " ms");
     }
 
     /** The routes this build gates, from `route_gates.tsv`: key to the number of native sites that still skip the gate; empty when the stream is null. */
@@ -207,15 +217,62 @@ public final class Routing {
         return out;
     }
 
-    /** One route's boot line; `partial` is null for a route without a gate. */
-    static String line(String key, boolean body, boolean live, boolean inert, Integer partial, java.util.Collection<String> mods) {
-        String gate = inert ? "inert (guard)" : partial == null ? "UNGATED" : partial == 0 ? "gated" : "gated (partial: " + partial + " sites)";
+    /** Each route's deferral reason or `verdict: <verdict>`, from `route_status.tsv`; empty when the stream is null. */
+    static java.util.Map<String, String> statuses(java.io.InputStream stream) throws IOException {
+        var out = new java.util.HashMap<String, String>();
+        if (stream == null) return out;
+        try (stream) {
+            for (String row : new String(stream.readAllBytes(), StandardCharsets.UTF_8).split("\n")) {
+                if (row.isBlank() || row.startsWith("#")) continue;
+                String[] cells = row.split("\t");
+                if (cells.length > 1) out.put(cells[0], cells[1]);
+            }
+        }
+        return out;
+    }
+
+    /** One route's boot line; `partial` is null for a route without a gate, `status` null for one with no deferral or verdict. */
+    static String line(String key, boolean body, boolean live, boolean inert, Integer partial, String status, java.util.Collection<String> mods) {
+        String open = status == null ? "UNGATED" : status.startsWith("verdict: ") ? status.substring("verdict: ".length()) : "deferred (" + status + ")";
+        String gate = inert ? "inert (guard)" : partial == null ? open : partial == 0 ? "gated" : "gated (partial: " + partial + " sites)";
         return "Horizon: route " + key + " " + (body ? "body" : "edge") + " " + (live ? "on" : "off") + " " + gate + " (" + String.join(", ", mods) + ")";
+    }
+
+    /** Whether a route's method is a constructor or static initialiser: Rust never calls one on an object it holds, so such a route is never bound. */
+    static boolean constructor(String name) {
+        return name.equals("<init>") || name.equals("<clinit>");
+    }
+
+    /** A constructor route's boot line: who runs its patches (`construct` in routing.json, null from an older analysis) and why. */
+    static String constructorLine(String key, JsonObject construct, boolean applied, java.util.Collection<String> mods) {
+        String by = construct == null ? "deferred (no decision in the analysis)" : construct.get("by").getAsString() + " (" + construct.get("reason").getAsString() + ")";
+        return "Horizon: route " + key + " constructor " + (applied ? "applied" : "not applied") + ", " + by + " (" + String.join(", ", mods) + ")";
     }
 
     /** The loud line for patches that are on but have no gate; the items are `mod: Class.method`. */
     static String summary(List<String> ungated) {
         return "Horizon: " + ungated.size() + " behaviours mods change won't take effect (native runs them without the mods' patches): " + String.join(", ", ungated);
+    }
+
+    /** The quiet line for patches whose native gate another workstream owns; the items are deferral reasons, counted by owner. */
+    static String waiting(List<String> reasons) {
+        var counts = new TreeMap<String, Integer>(java.util.Comparator.comparingInt(Routing::ownerOrder).thenComparing(s -> s));
+        for (String reason : reasons) counts.merge(ownerOf(reason), 1, Integer::sum);
+        var parts = new ArrayList<String>();
+        counts.forEach((who, n) -> parts.add(who + " " + n));
+        return "Horizon: " + reasons.size() + " routes wait for their owner: " + String.join(", ", parts);
+    }
+
+    /** `W9` for `owner: W9 3-2`, `w12-coverage` for `spec: w12-coverage SPEC-6`, else the reason's kind; as tools/java_routing.py groups them. */
+    static String ownerOf(String reason) {
+        if (reason.startsWith("owner: ")) return reason.substring("owner: ".length()).split(" ")[0];
+        if (reason.startsWith("spec: w12-coverage ")) return "w12-coverage";
+        int colon = reason.indexOf(':');
+        return colon < 0 ? reason : reason.substring(0, colon);
+    }
+
+    private static int ownerOrder(String who) {
+        return who.matches("W\\d+") ? Integer.parseInt(who.substring(1)) : Integer.MAX_VALUE;
     }
 
     private static String simple(String owner) {
@@ -228,7 +285,7 @@ public final class Routing {
     }
 
     /** A merged handler as it stands in the target class: the annotation Mixin kept names what it injects into and where. */
-    record Applied(String name, String mixin, String kind, List<String> at, boolean argsOnly, int params, List<String> targets) {}
+    record Applied(String name, String mixin, String kind, List<String> at, boolean argsOnly, int params, List<String> targets, List<String> atTargets) {}
 
     private static int declaredNamed(Class<?> type, String name) {
         int n = 0;
@@ -248,9 +305,11 @@ public final class Routing {
                     var targets = a.annotationType().getMethod("method").invoke(a);
                     if (!(targets instanceof String[] names)) continue;
                     var at = new ArrayList<String>();
+                    var atTargets = new ArrayList<String>();
                     var raw = a.annotationType().getMethod("at").invoke(a);
                     for (Object one : raw instanceof Object[] many ? many : new Object[] {raw}) {
                         at.add((String) one.getClass().getMethod("value").invoke(one));
+                        atTargets.add((String) one.getClass().getMethod("target").invoke(one));
                     }
                     boolean argsOnly = false;
                     try {
@@ -258,7 +317,7 @@ public final class Routing {
                     } catch (NoSuchMethodException none) {
                         // only ModifyVariable has it
                     }
-                    out.add(new Applied(m.getName(), from.mixin(), kind, at, argsOnly, m.getParameterCount(), List.of(names)));
+                    out.add(new Applied(m.getName(), from.mixin(), kind, at, argsOnly, m.getParameterCount(), List.of(names), atTargets));
                 } catch (ReflectiveOperationException | LinkageError | ClassCastException unreadable) {
                     // not an injector annotation
                 }
@@ -310,12 +369,13 @@ public final class Routing {
         return null;
     }
 
-    private static boolean targets(String target, String name, String desc) {
+    static boolean targets(String target, String name, String desc) {
         String bare = target.substring(target.indexOf(';') + 1);
         return bare.contains("(") ? bare.equals(name + desc) : bare.equals(name);
     }
 
-    private static MethodHandle handle(Class<?> owner, String key, String name, String desc, boolean isStatic, ClassLoader loader) throws Exception {
+    static MethodHandle handle(Class<?> owner, String key, String name, String desc, boolean isStatic, ClassLoader loader) throws Exception {
+        if (constructor(name)) throw new IllegalStateException("route " + key + ": a constructor is never bound");
         try {
             var lookup = MethodHandles.privateLookupIn(owner, MethodHandles.lookup());
             var type = MethodType.fromMethodDescriptorString(desc, loader);
@@ -364,14 +424,15 @@ public final class Routing {
             return;
         }
         Object receiver = null;
+        net.minecraft.server.level.ServerPlayer filled = null;
         switch (recv) {
             case 0 -> {
-                var player = GameBridge.fill(in, false).player();
+                var player = filled = GameBridge.fill(in, false).player();
                 receiver = owner.equals("net/minecraft/world/entity/player/Inventory") ? player.getInventory()
                         : owner.equals("net/minecraft/world/inventory/AbstractContainerMenu") ? player.containerMenu : player;
             }
             case 1 -> {
-                var level = GameBridge.level(GameBridge.text(in));
+                var level = GameBridge.level(in.readInt());
                 ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
                 receiver = level;
             }
@@ -389,7 +450,7 @@ public final class Routing {
             else if (type == net.minecraft.world.item.ItemStack.class) args.add(GameBridge.decode(in.readNBytes(in.readInt())));
             else if (type == net.minecraft.world.phys.Vec3.class) args.add(new net.minecraft.world.phys.Vec3(in.readDouble(), in.readDouble(), in.readDouble()));
             else if (type == net.minecraft.network.chat.Component.class) args.add(GameBridge.component(in.readNBytes(in.readInt())));
-            else if (type == net.minecraft.world.entity.player.Player.class) args.add(GameBridge.fill(in, false).player());
+            else if (type == net.minecraft.world.entity.player.Player.class) args.add(filled = GameBridge.fill(in, false).player());
             else args.add(net.minecraft.core.BlockPos.of(in.readLong()));
         }
         long started = Profile.ON ? System.nanoTime() : 0;
@@ -414,6 +475,8 @@ public final class Routing {
             case 'D' -> out.writeDouble((Double) result);
             default -> {}
         }
+        if (filled != null) PlayerSync.writeChanges(filled, out);
+        else out.writeInt(-1);
         GameBridge.writeEffects(out);
     }
 

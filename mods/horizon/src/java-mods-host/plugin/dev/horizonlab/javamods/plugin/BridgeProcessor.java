@@ -31,10 +31,14 @@ import org.objectweb.asm.tree.VarInsnNode;
 /** Gives each method in Rust's table a first step that jumps to its native; runs before Mixin, so mods' HEAD and RETURN injections still apply. */
 final class BridgeProcessor implements ClassProcessor {
     private static final String FLAT = "dev/horizonlab/javamods/boot/Flat";
+    /** A backed view's bridge settles the groups its native wrote here, after the native returns. */
+    private static final String VIEWS = "dev/horizonlab/javamods/boot/EntityViews";
 
     private static final String ROUTING = "dev/horizonlab/javamods/boot/Routing";
     /** W5's class; the unit check points it at a stand-in. */
     static String guiRoutes = "dev/horizonlab/javamods/boot/GuiRoutes";
+    /** Whose `beforeNativeBody()` a route stub calls before its native; the unit check points it at a stand-in. */
+    static String playerSync = "dev/horizonlab/javamods/boot/PlayerSync";
 
     /** `routing.tsv`'s row for one method: `tail` and `returns` decide whether a stub checks for an early return. */
     record Routed(boolean body, boolean tail, int returns) {}
@@ -155,7 +159,7 @@ final class BridgeProcessor implements ClassProcessor {
     }
 
     /** The native call with its arguments, behind the guard test that jumps to `body` when the receiver isn't backed; leaves the result on the stack. */
-    private static InsnList nativeCall(ClassNode node, MethodNode method, Entry entry, LabelNode body) {
+    private static InsnList nativeCall(ClassNode node, MethodNode method, Entry entry, LabelNode body, boolean flush) {
         boolean isStatic = (method.access & Opcodes.ACC_STATIC) != 0;
         Type[] params = Type.getArgumentTypes(method.desc);
         Type result = Type.getReturnType(method.desc);
@@ -164,9 +168,20 @@ final class BridgeProcessor implements ClassProcessor {
             head.add(new VarInsnNode(Opcodes.ALOAD, 0));
             head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, guiRoutes, "backed", "(Ljava/lang/Object;)Z", false));
         } else if (!isStatic && entry.guard.startsWith("@")) {
-            int dot = entry.guard.lastIndexOf('.');
+            boolean withArgs = entry.guard.endsWith("+");
+            String predicate = withArgs ? entry.guard.substring(0, entry.guard.length() - 1) : entry.guard;
+            int dot = predicate.lastIndexOf('.');
             head.add(new VarInsnNode(Opcodes.ALOAD, 0));
-            head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, entry.guard.substring(1, dot), entry.guard.substring(dot + 1), "(Ljava/lang/Object;)Z", false));
+            StringBuilder guardDesc = new StringBuilder("(Ljava/lang/Object;");
+            if (withArgs) {
+                int slot = 1;
+                for (Type param : params) {
+                    head.add(new VarInsnNode(param.getOpcode(Opcodes.ILOAD), slot));
+                    guardDesc.append(param.getDescriptor());
+                    slot += param.getSize();
+                }
+            }
+            head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, predicate.substring(1, dot), predicate.substring(dot + 1), guardDesc.append(")Z").toString(), false));
         } else if (!isStatic && !entry.guard.isEmpty()) {
             head.add(new VarInsnNode(Opcodes.ALOAD, 0));
             head.add(new TypeInsnNode(Opcodes.INSTANCEOF, entry.guard));
@@ -178,11 +193,14 @@ final class BridgeProcessor implements ClassProcessor {
             javaBody(head, method, entry);
             return head;
         }
+        if (flush) head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, playerSync, "beforeNativeBody", "()V", false));
         int local = isStatic ? 0 : 1;
         int arg = 0;
         if (entry.args.length == params.length + 1) {
             head.add(new VarInsnNode(Opcodes.ALOAD, 0));
-            flatten(head, Type.getObjectType(entry.guard.startsWith("@") ? "net/minecraft/world/entity/Entity" : node.name), entry.args[arg++]);
+            String receiver = entry.guard.startsWith("@") ? "net/minecraft/world/entity/Entity" : entry.guard.isEmpty() ? node.name : entry.guard;
+            if (!receiver.equals(node.name) && !entry.guard.startsWith("@")) head.add(new TypeInsnNode(Opcodes.CHECKCAST, receiver));
+            flatten(head, Type.getObjectType(receiver), entry.args[arg++]);
         }
         for (Type param : params) {
             String flat = entry.args[arg++];
@@ -196,6 +214,7 @@ final class BridgeProcessor implements ClassProcessor {
             local += param.getSize();
         }
         head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, entry.holder(), entry.nativeName, entry.rawDesc(), false));
+        if (entry.guard.equals("@" + VIEWS + ".backed")) head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, VIEWS, "settle", "()V", false));
         if (result.getSort() >= Type.ARRAY && !entry.ret.equals(result.getDescriptor())) {
             String simple = result.getClassName().substring(Math.max(result.getClassName().lastIndexOf('.'), result.getClassName().lastIndexOf('$')) + 1);
             head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, FLAT, "to" + simple, "(" + entry.ret + ")" + result.getDescriptor(), false));
@@ -262,7 +281,7 @@ final class BridgeProcessor implements ClassProcessor {
         LabelNode body = new LabelNode();
         LabelNode join = new LabelNode();
         LabelNode tail = new LabelNode();
-        InsnList head = nativeCall(node, method, entry, body);
+        InsnList head = nativeCall(node, method, entry, body, true);
         if (value) head.add(new VarInsnNode(result.getOpcode(Opcodes.ISTORE), slot));
         if (earlyCheck) {
             head.add(new MethodInsnNode(Opcodes.INVOKESTATIC, earlyOwner, earlyName, "()Z", false));
@@ -281,11 +300,11 @@ final class BridgeProcessor implements ClassProcessor {
         return true;
     }
 
-    private static void bridge(ClassNode node, MethodNode method, Entry entry) {
+    static void bridge(ClassNode node, MethodNode method, Entry entry) {
         boolean isStatic = (method.access & Opcodes.ACC_STATIC) != 0;
         Type[] params = Type.getArgumentTypes(method.desc);
         LabelNode body = new LabelNode();
-        InsnList head = nativeCall(node, method, entry, body);
+        InsnList head = nativeCall(node, method, entry, body, false);
         head.add(new InsnNode(Type.getReturnType(method.desc).getOpcode(Opcodes.IRETURN)));
         head.add(body);
         if (!startsWithFrame(method)) head.add(frame(node, isStatic, params));

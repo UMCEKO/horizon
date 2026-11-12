@@ -1,11 +1,19 @@
 package dev.horizonlab.javamods.boot;
 
-import java.io.DataInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.NbtOps;
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.syncher.EntityDataAccessor;
@@ -21,6 +29,9 @@ import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.EntityFluidInteraction;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+import net.minecraft.world.entity.ai.attributes.AttributeMap;
+import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.food.FoodData;
 
@@ -31,6 +42,9 @@ public final class PlayerSync {
     /** The player whose call this is, once its view is filled; changes to any other view stay in Java. */
     private static ServerPlayer acting;
 
+    /** The acting player's attribute map: an instance is its own when the map holds that very object. */
+    private static AttributeMap actingAttributes;
+
     static void food(int food, float saturation, float exhaustion) {}
 
     static void health(float health) {}
@@ -40,6 +54,51 @@ public final class PlayerSync {
     static void effect(MobEffectInstance effect) {}
 
     static void effectRemoved(Holder<MobEffect> effect) {}
+
+    static void abilities(boolean invulnerable, boolean flying, boolean mayfly, boolean instabuild, boolean mayBuild, float flyingSpeed, float walkingSpeed) {}
+
+    /** `kind` 0 adds or replaces a modifier, 1 removes it, 2 sets the base value to `amount`. */
+    static void modifier(String attribute, int kind, String id, double amount, int operation, boolean permanent) {}
+
+    private static final String[] SKIPPED = {"net.minecraft.world.entity.", "net.minecraft.server.level.", "dev.horizonlab.javamods.boot.PlayerSync"};
+
+    public static void abilities(Object entity) {
+        if (!acting(entity) || !Callers.byMod(SKIPPED)) return;
+        var a = ((Player) entity).getAbilities();
+        abilities(a.invulnerable, a.flying, a.mayfly, a.instabuild, a.mayBuild, a.getFlyingSpeed(), a.getWalkingSpeed());
+    }
+
+    public static void modifier(AttributeInstance instance, AttributeModifier modifier, boolean permanent) {
+        if (ours(instance) && Callers.byMod(SKIPPED)) {
+            modifier(instance.getAttribute().getRegisteredName(), 0, modifier.id().toString(), modifier.amount(), modifier.operation().id(), permanent);
+        }
+    }
+
+    public static void removed(AttributeInstance instance, Identifier id) {
+        if (ours(instance) && Callers.byMod(SKIPPED)) modifier(instance.getAttribute().getRegisteredName(), 1, id.toString(), 0, 0, false);
+    }
+
+    public static void base(AttributeInstance instance, double value) {
+        if (ours(instance) && Callers.byMod(SKIPPED)) modifier(instance.getAttribute().getRegisteredName(), 2, "", value, 0, false);
+    }
+
+    private static boolean ours(AttributeInstance instance) {
+        var map = actingAttributes;
+        return map != null && map.getInstance(instance.getAttribute()) == instance;
+    }
+
+    /** Horizon's abilities into the view as they are, setting fields so nothing writes back. */
+    static void fillAbilities(ServerPlayer player, PlayerGroups g) {
+        if (!g.abilitiesHeld) return;
+        var a = player.getAbilities();
+        a.invulnerable = g.invulnerable;
+        a.flying = g.flying;
+        a.mayfly = g.mayfly;
+        a.instabuild = g.instabuild;
+        a.mayBuild = g.mayBuild;
+        a.setFlyingSpeed(g.flyingSpeed);
+        a.setWalkingSpeed(g.walkingSpeed);
+    }
 
     public static void health(Object entity) {
         if (acting(entity)) health(((LivingEntity) entity).getHealth());
@@ -63,6 +122,7 @@ public final class PlayerSync {
 
     static void acting(ServerPlayer player) {
         acting = player;
+        actingAttributes = player == null ? null : player.getAttributes();
     }
 
     private static boolean acting(Object entity) {
@@ -97,31 +157,114 @@ public final class PlayerSync {
     }
 
     @SuppressWarnings("unchecked")
-    private static <T> EntityDataAccessor<T> accessor(Class<?> owner, String name) throws ReflectiveOperationException {
-        Field f = owner.getDeclaredField(name);
-        f.setAccessible(true);
-        return (EntityDataAccessor<T>) f.get(null);
+    private static <T> EntityDataAccessor<T> accessor(Class<?> owner, String name) {
+        try {
+            return (EntityDataAccessor<T>) field(owner, name).get(null);
+        } catch (IllegalAccessException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
-    /** Horizon's vitals and effects into the view as they are, setting fields so nothing writes back. */
-    static void fill(ServerPlayer player, Crossing.In in) throws IOException, ReflectiveOperationException {
-        player.getEntityData().set(PlayerSync.<Float>accessor(LivingEntity.class, "DATA_HEALTH_ID"), in.readFloat());
+    /** Looked up once, on the first fill; a holder, so the entry points above never start the entity classes' static setup. */
+    private static final class Data {
+        static final EntityDataAccessor<Float> HEALTH = accessor(LivingEntity.class, "DATA_HEALTH_ID");
+        static final EntityDataAccessor<Float> ABSORPTION = accessor(Player.class, "DATA_PLAYER_ABSORPTION_ID");
+    }
+
+    /** Horizon's vitals into the view as they are, setting fields so nothing writes back. */
+    static void fillVitals(ServerPlayer player, PlayerGroups g) throws ReflectiveOperationException {
+        player.getEntityData().set(Data.HEALTH, g.health);
         FoodData food = player.getFoodData();
-        FOOD.setInt(food, in.readInt());
-        SATURATION.setFloat(food, in.readFloat());
-        EXHAUSTION.setFloat(food, in.readFloat());
-        player.getEntityData().set(PlayerSync.<Float>accessor(Player.class, "DATA_PLAYER_ABSORPTION_ID"), in.readFloat());
+        FOOD.setInt(food, g.food);
+        SATURATION.setFloat(food, g.saturation);
+        EXHAUSTION.setFloat(food, g.exhaustion);
+        player.getEntityData().set(Data.ABSORPTION, g.absorption);
+    }
+
+    /** Horizon's effects into the view, telling the client what changed. */
+    static void fillEffects(ServerPlayer player, PlayerGroups g) {
         var effects = player.getActiveEffectsMap();
         var before = new HashMap<>(effects);
         effects.clear();
-        for (int n = in.readInt(); n > 0; n--) {
-            var id = Identifier.parse(GameBridge.text(in));
-            int duration = in.readInt(), amplifier = in.readInt();
-            boolean ambient = in.readBoolean(), visible = in.readBoolean();
-            var holder = BuiltInRegistries.MOB_EFFECT.get(id).orElse(null);
-            if (holder != null) effects.put(holder, new MobEffectInstance(holder, duration, amplifier, ambient, visible, visible));
+        for (var effect : g.effects) {
+            var holder = BuiltInRegistries.MOB_EFFECT.get(Identifier.parse(effect.id())).orElse(null);
+            if (holder != null) effects.put(holder, new MobEffectInstance(holder, effect.duration(), effect.amplifier(), effect.ambient(), effect.visible(), effect.visible()));
         }
         sendEffectChanges(player, before, effects);
+    }
+
+    static final int SLOTS = 41;
+    /** Per player, copies of the stacks native holds: what its view was last filled with or last told native. */
+    private static final Map<UUID, ItemStack[]> SYNCED = new HashMap<>();
+
+    static ItemStack[] synced(UUID id) {
+        return SYNCED.computeIfAbsent(id, k -> {
+            var stacks = new ItemStack[SLOTS];
+            Arrays.fill(stacks, ItemStack.EMPTY);
+            return stacks;
+        });
+    }
+
+    static void forget(UUID id) {
+        SYNCED.remove(id);
+    }
+
+    static void forgetAll() {
+        SYNCED.clear();
+    }
+
+    /** Native's own copy of the acting player's slots: they become what Java changed. */
+    static void stacksWritten(byte[] slots) {}
+
+    /** Before a routed method's native body: Java's changes to the acting player's slots reach native first, as the body reads them. */
+    public static void beforeNativeBody() {
+        var player = acting;
+        if (player == null) return;
+        var synced = synced(player.getUUID());
+        var inventory = player.getInventory();
+        List<Integer> changed = null;
+        for (int slot = 0; slot < SLOTS; slot++) {
+            if (!ItemStack.matches(synced[slot], inventory.getItem(slot))) {
+                if (changed == null) changed = new ArrayList<>();
+                changed.add(slot);
+            }
+        }
+        if (changed == null) return;
+        var bytes = new ByteArrayOutputStream();
+        try {
+            writeSlots(player, new DataOutputStream(bytes), changed);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        stacksWritten(bytes.toByteArray());
+    }
+
+    /** The reply's block for the player a call filled: experience, then the slots Java changed against what native holds. */
+    static void writeChanges(ServerPlayer player, DataOutputStream out) throws IOException {
+        out.writeInt(player.experienceLevel);
+        out.writeFloat(player.experienceProgress);
+        out.writeInt(player.totalExperience);
+        var synced = synced(player.getUUID());
+        var inventory = player.getInventory();
+        var changed = new ArrayList<Integer>();
+        for (int slot = 0; slot < SLOTS; slot++) {
+            if (!ItemStack.matches(synced[slot], inventory.getItem(slot))) changed.add(slot);
+        }
+        writeSlots(player, out, changed);
+    }
+
+    private static void writeSlots(ServerPlayer player, DataOutputStream out, List<Integer> slots) throws IOException {
+        var synced = synced(player.getUUID());
+        var inventory = player.getInventory();
+        var ops = GameBridge.registries().createSerializationContext(NbtOps.INSTANCE);
+        out.writeInt(slots.size());
+        for (int slot : slots) {
+            out.writeInt(slot);
+            ItemStack stack = inventory.getItem(slot);
+            if (stack.isEmpty()) out.writeInt(0);
+            else GameBridge.writeTag(out, (CompoundTag) ItemStack.CODEC.encodeStart(ops, stack).getOrThrow());
+            synced[slot] = stack.copy();
+        }
     }
 
     /** `ServerPlayer.onEffectAdded`, `onEffectUpdated` and `onEffectsRemoved` for what Horizon changed since the last fill: the client hears of an effect only from these. */

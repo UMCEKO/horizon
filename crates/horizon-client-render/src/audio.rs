@@ -1880,10 +1880,11 @@ impl Audio {
     }
     /// `SoundManager.pauseAllExcept(MUSIC, UI)`.
     pub fn pause(&mut self) {
-        self.engine.pause_all_except(
-            &[crate::sound_engine::MUSIC, crate::sound_engine::UI],
-            &mut self.backend,
-        );
+        self.pause_except(&[crate::sound_engine::MUSIC, crate::sound_engine::UI]);
+    }
+    /// `SoundManager.pauseAllExcept(sources)`, with the sources a mod's handler chose.
+    pub fn pause_except(&mut self, sources: &[usize]) {
+        self.engine.pause_all_except(sources, &mut self.backend);
     }
     /// `SoundManager.resume`.
     pub fn resume(&mut self) {

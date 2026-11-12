@@ -144,3 +144,4 @@ MultiLineEditBox.setFocused	inline	crates/horizon-client-render/src/screen_draw.
 MultiLineEditBox.Builder.build	skip:java		builder
 MultiLineTextWidget.getHeight	skip:ui		layout: wrapped line count times 9; Measure::split does the wrap when drawing
 MultiLineTextWidget.getFreshCacheKey	skip:java		cache key for the wrapped lines
+EditBox.deleteText	inline	crates/horizon-client-render/src/screen_draw.rs::TextField::delete_chars	w12-coverage: W5

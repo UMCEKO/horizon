@@ -497,6 +497,7 @@ impl Game<'_> {
             self.level.seed,
             &self.level.enabled_features,
             self.server_loot.clone(),
+            self.java_worldgen.as_deref(),
         )?;
         let mut world = World::new(self.res.facts().air, self.level.seed);
         world.attachments = save.load_attachments();

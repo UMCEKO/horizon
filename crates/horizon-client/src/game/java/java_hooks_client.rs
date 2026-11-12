@@ -181,9 +181,10 @@ impl Game<'_> {
         &mut self,
         batch: &mut HudBatch,
         _layer: Option<HudLayer>,
+        canceled: bool,
         native: impl FnOnce(&mut Self, &mut HudBatch) -> R,
     ) -> Option<R> {
-        Some(native(self, batch))
+        (!canceled).then(|| native(self, batch))
     }
     pub(super) fn java_screen_click(&mut self, _button: MouseButton, _pressed: bool) {}
     pub(super) fn java_screen_moved(&mut self) {}
@@ -203,7 +204,6 @@ impl Game<'_> {
     }
     pub(super) fn java_window_input(&mut self, _event: &winit::event::WindowEvent) {}
     pub(super) fn java_key_input(&mut self, _code: KeyCode, _pressed: bool, _repeat: bool) {}
-    pub(super) fn java_client_tick_begin(&mut self) {}
     pub(super) fn java_client_tick_send(&mut self) {}
     pub(super) fn java_client_frame(&mut self) {}
     pub(super) fn java_client_left(&mut self) {}

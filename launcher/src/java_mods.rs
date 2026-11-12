@@ -34,8 +34,8 @@ const FORMAT: u32 = 1;
 /// A folder of a game version marks a local build with this file: its text names the folder of the
 /// built jars (`.local/java-mods`), used when the version carries none.
 pub const LOCAL_BUILD: &str = ".local-build";
-/// A string only a game built with the `java-mods` feature holds (the host's own variable).
-const FEATURE_MARK: &[u8] = b"HORIZON_JAVA_HOST_JAR";
+/// A string only a game built with the `java-mods` feature holds (`horizon_java_host::SUPPORT_MARK`).
+const FEATURE_MARK: &[u8] = b"horizon-java-mods-support";
 
 /// What a long step says it is doing, with how far it is when it knows.
 pub type Progress<'a> = &'a dyn Fn(&str, Option<f32>);
@@ -689,6 +689,8 @@ pub fn prepare_run(tag: &str, install: &Path, run: &Path, dedicated: bool) -> Re
         &record.neoforge,
         &profiles,
         assets.as_ref().map(|(f, id)| (f.as_path(), id.as_str())),
+        &record.java_home(install),
+        &install.join("host").join(HOST_JARS[0]),
     );
     write_if_changed(&run.join("horizon-java.args"), &(lines.join("\n") + "\n"))
 }
@@ -725,8 +727,10 @@ pub fn set_server(dir: &Path, on: bool) -> Result<(), String> {
 /// The environment `horizon-server` and its game get for the server in `dir`, with its run folder
 /// `dir/java` made ready; the game version is the one the server programs were set up from.
 pub fn server_env(tag: &str, dir: &Path) -> Result<Vec<(String, String)>, String> {
+    let run = dir.join("java");
     let mut probe = Command::new("unused");
-    apply(&mut probe, tag, true, Some(&dir.join("java")))?;
+    apply(&mut probe, tag, true, Some(&run))?;
+    // horizon-server hands its game its environment, not arguments: the variable means `--java-mods`.
     Ok(probe
         .get_envs()
         .filter_map(|(k, v)| {
@@ -735,14 +739,16 @@ pub fn server_env(tag: &str, dir: &Path) -> Result<Vec<(String, String)>, String
                 v?.to_string_lossy().into_owned(),
             ))
         })
+        .chain([("HORIZON_JAVA_RUN".to_string(), run.display().to_string())])
         .collect())
 }
 
 // ----- Launch ------------------------------------------------------------------------------------
 
-/// Gives the game command what the Java mods need: the run folder brought up to date and the
-/// environment. `run` is the server's own folder for a dedicated server, else the install's
-/// `client/`. Refused with a plain reason when the install isn't ready or the game lacks support.
+/// Gives the game command what the Java mods need: the run folder brought up to date, named by
+/// `--java-mods`, and the environment. `run` is the server's own folder for a dedicated server, else
+/// the install's `client/`. Refused with a plain reason when the install isn't ready or the game
+/// lacks support. Call it before `--dedicated` is added: the server's own parser takes what follows.
 pub fn apply(
     cmd: &mut Command,
     tag: &str,
@@ -767,22 +773,20 @@ pub fn apply(
         }
     }
     support(tag)?;
-    let record = read_record(&install).ok_or(tr("The Java mods are not installed."))?;
+    read_record(&install).ok_or(tr("The Java mods are not installed."))?;
     let run = match run {
         Some(run) => run.to_path_buf(),
         None => install.join(if dedicated { "server" } else { "client" }),
     };
     prepare_run(tag, &install, &run, dedicated)?;
-    let env = args::launch_env(
-        Os::current(),
-        &record.java_home(&install),
-        &record.neoforge,
-        &install.join("host").join(HOST_JARS[0]),
-        &run,
-        &|name| std::env::var(name).ok(),
-    );
-    cmd.envs(env);
+    hand_run(cmd, &run, Os::current());
     Ok(())
+}
+
+/// Names the run folder to the game and sets the environment its Java needs.
+fn hand_run(cmd: &mut Command, run: &Path, os: Os) {
+    cmd.arg("--java-mods").arg(run);
+    cmd.envs(args::launch_env(os, &|name| std::env::var(name).ok()));
 }
 
 #[cfg(test)]

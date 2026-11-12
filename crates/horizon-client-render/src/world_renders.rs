@@ -3,7 +3,10 @@ use crate::{hud::Rect, mesher::Vertex};
 use glam::{DVec3, Mat3, Vec3};
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, LazyLock, Mutex, RwLock},
+    sync::{
+        Arc, LazyLock, Mutex, RwLock,
+        atomic::{AtomicU8, Ordering},
+    },
 };
 
 /// At most this many quads and lines are drawn from one recording.
@@ -23,6 +26,10 @@ pub enum Pass {
     SeeThrough,
     Lines,
     LinesOnTop,
+    /// The custom sky, cloud and weather renderers' draws (anchored pieces).
+    Sky,
+    Clouds,
+    Weather,
 }
 impl Pass {
     fn from_byte(b: u8) -> Option<Pass> {
@@ -34,6 +41,9 @@ impl Pass {
             4 => Pass::SeeThrough,
             5 => Pass::Lines,
             6 => Pass::LinesOnTop,
+            7 => Pass::Sky,
+            8 => Pass::Clouds,
+            9 => Pass::Weather,
             _ => return None,
         })
     }
@@ -74,6 +84,8 @@ pub struct Piece {
     pub pass: Pass,
     pub no_cull: bool,
     pub depth_write: bool,
+    /// Placed relative to the camera, not the world.
+    pub anchored: bool,
     pub origin: DVec3,
     pub linear: Mat3,
     pub modulator: [f32; 4],
@@ -100,7 +112,38 @@ fn warn_once(what: &str) {
     }
 }
 
+/// What the Java client's custom sky, cloud and weather renderers replaced, as the last tick's status says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Environment {
+    pub sky: bool,
+    pub clouds: bool,
+    pub weather: bool,
+    /// The rain tick (splash particles, rain sounds) is the mod's.
+    pub rain_tick: bool,
+}
+impl Environment {
+    pub fn from_bits(bits: i32) -> Self {
+        Environment {
+            sky: bits & 1 != 0,
+            clouds: bits & 2 != 0,
+            weather: bits & 4 != 0,
+            rain_tick: bits & 8 != 0,
+        }
+    }
+}
+
+static ENVIRONMENT: AtomicU8 = AtomicU8::new(0);
+
+pub fn set_environment(bits: i32) {
+    ENVIRONMENT.store((bits & 15) as u8, Ordering::Relaxed);
+}
+
+pub fn environment() -> Environment {
+    Environment::from_bits(i32::from(ENVIRONMENT.load(Ordering::Relaxed)))
+}
+
 pub fn clear() {
+    ENVIRONMENT.store(0, Ordering::Relaxed);
     let mut r = REGISTRY.write().unwrap();
     r.meshes.clear();
     r.pieces.clear();
@@ -246,6 +289,7 @@ pub fn apply(bytes: &[u8]) -> bool {
                 pass,
                 no_cull: flags & 1 != 0,
                 depth_write: flags & 2 != 0,
+                anchored: flags & 4 != 0,
                 origin,
                 linear,
                 modulator: input.floats::<4>()?,
@@ -323,6 +367,10 @@ pub struct Outputs {
     pub after_translucent_depth: Vec<Vertex>,
     pub additive: Vec<Vertex>,
     pub see_through: Vec<Vertex>,
+    /// Camera-relative quads of the custom sky, cloud and weather renderers.
+    pub sky: Vec<Vertex>,
+    pub clouds: Vec<Vertex>,
+    pub weather: Vec<Vertex>,
     pub lines: Vec<WorldLine>,
     pub on_top: Vec<WorldLine>,
 }
@@ -333,6 +381,9 @@ impl Outputs {
         self.after_translucent_depth.clear();
         self.additive.clear();
         self.see_through.clear();
+        self.sky.clear();
+        self.clouds.clear();
+        self.weather.clear();
         self.lines.clear();
         self.on_top.clear();
     }
@@ -382,12 +433,16 @@ pub fn draw(frame: &Frame, out: &mut Outputs) {
         };
         let to_world = |p: Vec3| piece.origin + (piece.linear * p).as_dvec3();
         let (lo, hi) = mesh.bounds;
-        if lo.x > hi.x || !visible(frame, lo, hi, &to_world) {
+        if lo.x > hi.x || (!piece.anchored && !visible(frame, lo, hi, &to_world)) {
             continue;
         }
-        let relative = (piece.origin - frame.camera).as_vec3();
+        let relative = if piece.anchored {
+            piece.origin.as_vec3()
+        } else {
+            (piece.origin - frame.camera).as_vec3()
+        };
         let place = |p: [f32; 3]| relative + piece.linear * Vec3::from_slice(&p);
-        for line in &mesh.lines {
+        for line in mesh.lines.iter().filter(|_| !piece.anchored) {
             let target = if piece.pass == Pass::LinesOnTop {
                 &mut out.on_top
             } else {
@@ -407,6 +462,9 @@ pub fn draw(frame: &Frame, out: &mut Outputs) {
             Pass::AfterTranslucent => (&mut out.after_translucent, 0),
             Pass::Additive => (&mut out.additive, 0),
             Pass::SeeThrough => (&mut out.see_through, 0),
+            Pass::Sky => (&mut out.sky, 0),
+            Pass::Clouds => (&mut out.clouds, 0),
+            Pass::Weather => (&mut out.weather, 0),
             Pass::Lines | Pass::LinesOnTop => continue,
         };
         let normal = if piece.no_cull {
@@ -427,6 +485,7 @@ pub fn draw(frame: &Frame, out: &mut Outputs) {
                 at.z.floor() as i32,
             ];
             let world = match last_light {
+                _ if piece.anchored => 0xFF,
                 Some((b, l)) if b == block => l,
                 _ => {
                     let l = (frame.light)(block);
@@ -657,6 +716,44 @@ mod tests {
         assert_eq!(out.lines.len() + out.on_top.len(), 7);
         assert_eq!(out.on_top.len(), 1);
         clear();
+    }
+
+    #[test]
+    fn anchored_pieces_stay_on_the_camera_and_the_environment_bits_say_what_native_skips() {
+        let _t = TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        let mut bytes = Out(Vec::new());
+        bytes.int(1);
+        bytes.int(0);
+        bytes.int(1);
+        bytes.long(5);
+        bytes.int(1);
+        quad(&mut bytes, 0.0);
+        bytes.int(0);
+        bytes.int(3);
+        piece(&mut bytes, 5, 7, 4, [0.0, 100.0, 0.0]);
+        piece(&mut bytes, 5, 8, 4, [0.0, 100.0, 0.0]);
+        piece(&mut bytes, 5, 9, 4, [0.0, 100.0, 0.0]);
+        assert!(apply(&bytes.0));
+        set_environment(5);
+        let environment = environment();
+        assert!(environment.sky && !environment.clouds && environment.weather);
+        assert!(!environment.rain_tick);
+        let sprites = sprites();
+        let mut out = Outputs::default();
+        // A camera far away and a view that sees nothing of the world: anchored pieces are still drawn.
+        let far = Frame {
+            visible: &|_| false,
+            ..frame(&sprites, DVec3::new(5_000.0, 10.0, -7_000.0))
+        };
+        draw(&far, &mut out);
+        for quads in [&out.sky, &out.clouds, &out.weather] {
+            assert_eq!(quads.len(), 4);
+            assert_eq!(quads[0].pos, [0.0, 100.0, 0.0]);
+        }
+        assert!(out.lines.is_empty());
+        clear();
+        assert_eq!(super::environment(), Environment::default());
     }
 
     #[test]
