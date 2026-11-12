@@ -80,6 +80,7 @@ public final class TestMod {
             ClientChat.register();
             ClientView.register();
             ClientDebug.register(bus);
+            ClientWindowProbe.register();
         }
     }
 
