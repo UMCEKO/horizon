@@ -208,6 +208,7 @@ impl Game<'_> {
             self.res.biomes(),
             &self.level.enabled_features,
             &self.pack.additional_data,
+            self.java_worldgen.as_deref(),
         );
         (!Arc::ptr_eq(&table, self.res.biomes())).then_some(table)
     }
