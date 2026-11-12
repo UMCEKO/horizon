@@ -77,6 +77,8 @@ pub(in crate::game) struct Client {
     /// The open screen's frame blurs what is behind it (`blurBeforeThisStratum`).
     blurred: bool,
     shell: Shell,
+    /// A mod listens to `RenderFrameEvent`: each window frame posts it in the Java client.
+    frame_events: bool,
 }
 
 /// A vanilla screen of the window's that the Java client holds as a shell, so mods' screen events fire on it.
@@ -142,6 +144,8 @@ enum Input<'a> {
     Toasts(&'a [(i32, bool, i64)]),
     /// The window's Notification Time option.
     NotificationTime(f64),
+    /// Each sound source's volume by its vanilla name, master first.
+    Volumes(Vec<(&'static str, f32)>),
 }
 
 impl Input<'_> {
@@ -167,6 +171,7 @@ impl Input<'_> {
             Input::ShellLayout(_) => 16,
             Input::Toasts(_) => 26,
             Input::NotificationTime(_) => 27,
+            Input::Volumes(_) => 41,
         };
         out.0.push(kind);
         match *self {
@@ -230,6 +235,13 @@ impl Input<'_> {
                 }
             }
             Input::NotificationTime(time) => out.double(time),
+            Input::Volumes(ref volumes) => {
+                out.int(volumes.len() as i32);
+                for (name, value) in volumes {
+                    out.text(name);
+                    out.float(*value);
+                }
+            }
         }
     }
 }
@@ -268,6 +280,7 @@ struct Sent {
     motion: Option<Motion>,
     particles: Option<i32>,
     notification_time: Option<f64>,
+    volumes: Option<Vec<(&'static str, f32)>>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -696,6 +709,23 @@ impl Game<'_> {
         [size[0] as i32, size[1] as i32, batch.scale as i32]
     }
 
+    /// The player's volumes as `Options` keeps them: `master`, then every other source in `SOUND_SOURCES` order.
+    fn java_sound_volumes(&self) -> Vec<(&'static str, f32)> {
+        let settings = &self.settings;
+        horizon_client::settings::SOUND_SOURCES
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let value = if i == 0 {
+                    settings.master_volume
+                } else {
+                    settings.volumes[i]
+                };
+                (*name, value)
+            })
+            .collect()
+    }
+
     fn java_client_size(&self, out: &mut Out) {
         for value in self.java_client_window() {
             out.int(value);
@@ -745,6 +775,8 @@ impl Game<'_> {
         }
         let environment = reply.int()?;
         let lockstep = reply.bool()?;
+        let frame_events = reply.bool()?;
+        CLIENT.with_borrow_mut(|c| c.frame_events = frame_events);
         if lockstep != super::java_lockstep::lockstep_next()
             && std::env::var_os("HORIZON_JAVA_DEBUG").is_some()
         {
@@ -983,6 +1015,7 @@ impl Game<'_> {
             c.told.clear();
             c.hud = HudRecording::default();
             c.hud_animating = false;
+            c.frame_events = false;
             c.shell = Shell::default();
             c.owed = 0;
             c.animate.clear();
@@ -1170,6 +1203,12 @@ impl Game<'_> {
             if c.sent.notification_time != Some(notification_time) {
                 c.sent.notification_time = Some(notification_time);
                 Input::NotificationTime(notification_time).write(&mut events);
+                count += 1;
+            }
+            let volumes = self.java_sound_volumes();
+            if c.sent.volumes.as_ref() != Some(&volumes) {
+                c.sent.volumes = Some(volumes.clone());
+                Input::Volumes(volumes).write(&mut events);
                 count += 1;
             }
             let toasts = super::java_toasts::java_toasts_turns();
@@ -1366,6 +1405,18 @@ mod tests {
             (read.int(), read.int(), read.int()),
             (Some(1), Some(64), Some(101))
         );
+    }
+
+    #[test]
+    fn a_volumes_input_names_each_source_with_its_value() {
+        let mut out = Out::default();
+        Input::Volumes(vec![("master", 0.25), ("music", 1.0)]).write(&mut out);
+        assert_eq!(out.0[0], 41);
+        let mut read = In(&out.0[1..]);
+        assert_eq!(read.int(), Some(2));
+        assert_eq!((read.text(), read.float()), (Some("master"), Some(0.25)));
+        assert_eq!((read.text(), read.float()), (Some("music"), Some(1.0)));
+        assert_eq!(read.int(), None);
     }
 
     #[test]

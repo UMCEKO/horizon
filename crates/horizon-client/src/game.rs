@@ -12882,6 +12882,7 @@ impl Game<'_> {
             Err(_) if self.renderer.as_ref().is_some_and(Renderer::device_lost) => false,
             result => result?,
         };
+        self.java_render_frame(1);
         self.native_render_frame_post(elapsed);
         if rendered {
             // The submit thread may still hold the frame: a listener hears it after the
