@@ -157,20 +157,28 @@ public final class PlayerSync {
     }
 
     @SuppressWarnings("unchecked")
-    private static <T> EntityDataAccessor<T> accessor(Class<?> owner, String name) throws ReflectiveOperationException {
-        Field f = owner.getDeclaredField(name);
-        f.setAccessible(true);
-        return (EntityDataAccessor<T>) f.get(null);
+    private static <T> EntityDataAccessor<T> accessor(Class<?> owner, String name) {
+        try {
+            return (EntityDataAccessor<T>) field(owner, name).get(null);
+        } catch (IllegalAccessException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** Looked up once, on the first fill; a holder, so the entry points above never start the entity classes' static setup. */
+    private static final class Data {
+        static final EntityDataAccessor<Float> HEALTH = accessor(LivingEntity.class, "DATA_HEALTH_ID");
+        static final EntityDataAccessor<Float> ABSORPTION = accessor(Player.class, "DATA_PLAYER_ABSORPTION_ID");
     }
 
     /** Horizon's vitals into the view as they are, setting fields so nothing writes back. */
     static void fillVitals(ServerPlayer player, PlayerGroups g) throws ReflectiveOperationException {
-        player.getEntityData().set(PlayerSync.<Float>accessor(LivingEntity.class, "DATA_HEALTH_ID"), g.health);
+        player.getEntityData().set(Data.HEALTH, g.health);
         FoodData food = player.getFoodData();
         FOOD.setInt(food, g.food);
         SATURATION.setFloat(food, g.saturation);
         EXHAUSTION.setFloat(food, g.exhaustion);
-        player.getEntityData().set(PlayerSync.<Float>accessor(Player.class, "DATA_PLAYER_ABSORPTION_ID"), g.absorption);
+        player.getEntityData().set(Data.ABSORPTION, g.absorption);
     }
 
     /** Horizon's effects into the view, telling the client what changed. */
