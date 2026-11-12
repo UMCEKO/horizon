@@ -851,8 +851,10 @@ public final class GameBridge {
 
     /** `levelOf` for a block entity's tick: the tick cache goes once per game tick, as at `ServerLevel.tick`'s start. */
     private static ServerLevel tickingLevelOf(Crossing.In in) throws Exception {
-        var level = level(in.readInt());
-        long gameTime = in.readLong();
+        return ticking(level(in.readInt()), in.readLong());
+    }
+
+    private static ServerLevel ticking(ServerLevel level, long gameTime) {
         var data = (ViewLevelData) level.getLevelData();
         if (data.invalidatedAt != gameTime) return invalidated(level, gameTime);
         data.gameTime = gameTime;
@@ -910,31 +912,46 @@ public final class GameBridge {
         writeEffects(out);
     }
 
-    /** #268: a run of adjacent held block entities in one crossing, ticked in order until one wrote into Horizon (`runEntry` says so) or threw. */
+    /** #268 on #262's envelope: adjacent held block entities ticked in order until one wrote into Horizon (`runEntry`), threw, or the work budget ran out. */
     private static void blockEntityTickRun(Crossing.In in, Crossing.Out out) throws Exception {
-        var level = tickingLevelOf(in);
-        int count = in.readInt();
-        out.writeInt(0);
-        int processed = 0;
-        while (processed < count) {
-            var pos = BlockPos.of(in.readLong());
-            if (processed > 0 && !BlockEntities.runEntry(processed)) break;
-            processed++;
+        Bulk.Request request;
+        ServerLevel level;
+        long gameTime;
+        long[] positions;
+        try {
+            request = Bulk.read(in, Bulk.Op.BLOCK_ENTITY_TICK);
+            int key = in.readInt();
+            gameTime = in.readLong();
+            if (key < 0 || key >= levels.length || levels[key] == null) throw new Bulk.Rejected("no level for key " + key);
+            level = levels[key];
+            positions = new long[request.count()];
+            for (int i = 0; i < positions.length; i++) {
+                positions[i] = in.readLong();
+                if (level.isOutsideBuildHeight(BlockPos.getY(positions[i]))) throw new Bulk.Rejected("position " + BlockPos.of(positions[i]) + " outside the level");
+            }
+        } catch (Bulk.Rejected why) {
+            Bulk.reject(out, why);
+            return;
+        }
+        ticking(level, gameTime);
+        var reply = new Bulk.Reply(out);
+        for (int i = 0; i < positions.length; i++) {
+            if (i > 0 && (request.spent() || !BlockEntities.runEntry(i))) break;
             boolean held;
             try {
-                held = BlockEntities.tick(level, pos);
+                held = BlockEntities.tick(level, BlockPos.of(positions[i]));
             } catch (Throwable t) {
                 // As `game` reports a scalar tick that threw: its own effects go, the entries before keep theirs.
                 t.printStackTrace();
                 if (outermost()) abandonCall();
-                out.writeByte(2);
-                out.writeInt(0);
+                reply.begin(Bulk.THREW);
+                reply.end();
                 break;
             }
-            out.writeByte(held ? 1 : 0);
+            reply.begin(held ? Bulk.DONE : Bulk.GONE);
             writeEffects(out);
+            reply.end();
         }
-        out.patchInt(0, processed);
     }
 
     private static byte[] tracking(byte[] input) throws Exception {
