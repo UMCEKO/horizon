@@ -11,7 +11,7 @@ OUT/matrix.json and OUT/matrix.md (the table, then the distinct failures to file
 
 The install is only read: its home/ and client config are copied into OUT. Steps (a {"name": ...} entry labels the next step):
   {"wait": TICKS} {"command": "/fill ..."} {"look": [yaw, pitch]} {"lookat": [x, y, z]} {"slot": 0-8} {"use": TICKS} {"attack": TICKS}
-  {"key": "key.inventory"} {"close": true} {"pick": true} (a middle click) {"tp": [x, y, z]} or {"tp": [x, y, z, yaw, pitch]} {"screenshot": "name"} {"camera": [x, y, z, yaw, pitch]} {"hud": false} {"quit": true}
+  {"key": "key.inventory"} {"close": true} {"pick": true} (a middle click) {"click-slot": [SLOT, "shift"]} {"click-at": [x, y]} (GUI pixels) {"tp": [x, y, z]} or {"tp": [x, y, z, yaw, pitch]} {"screenshot": "name"} {"camera": [x, y, z, yaw, pitch]} {"hud": false} {"quit": true}
   {"check": {...}} with one of:
     {"block": [x,y,z], "is": "stone", "state": "oak_stairs[facing=east]"}   the loaded block at a position
     {"looking_at": "stone"}                                                  the block under the crosshair
@@ -90,6 +90,10 @@ def ctl_commands(kind, arg):
         return [['close']]
     if kind == 'pick':
         return [['mouse', 'middle', 'click']]
+    if kind == 'click-slot':
+        return [['click-slot', str(arg[0]), *arg[1:]]]
+    if kind == 'click-at':
+        return [['click-at', *map(str, arg)]]
     if kind == 'tp':
         lines = [['tp', *map(str, arg[:3])]]
         return lines + ([['look', str(arg[3]), str(arg[4])]] if len(arg) >= 5 else [])

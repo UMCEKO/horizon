@@ -43,7 +43,10 @@ public final class EventPosts {
     }
 
     /** The server events Rust posts through `post_event`, each with the acting player's view filled. */
-    private static final Map<String, PlayerPost> PLAYER = Map.of("BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity);
+    private static final Map<String, PlayerPost> PLAYER = Map.of(
+        "BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity,
+        "EnchantmentLevelSetEvent", EventPosts::enchantmentLevelSet, "PlayerEnchantItemEvent", EventPosts::playerEnchantItem,
+        "PlayerEvent.ItemSmeltedEvent", EventPosts::itemSmelted);
 
     /** The server events Rust posts through `post_level_event`. */
     private static final Map<String, LevelPost> LEVEL = Map.of();
@@ -207,6 +210,44 @@ public final class EventPosts {
     private static Posted attackEntity(GameBridge.Call call) {
         var target = call.level().getEntity(call.in().readInt());
         return new Posted(target != null && !CommonHooks.onPlayerAttackTarget(call.player(), target), Posted.NONE.result());
+    }
+
+    /** `EnchantmentLevelSetEvent`: the table, row, power, item, drawn level and current level; the result is the level the listeners left. */
+    private static Posted enchantmentLevelSet(GameBridge.Call call) throws IOException {
+        var in = call.in();
+        var pos = BlockPos.of(in.readLong());
+        int row = in.readInt();
+        int power = in.readInt();
+        var item = GameBridge.decode(in.readNBytes(in.readInt()));
+        int original = in.readInt();
+        var event = new net.neoforged.neoforge.event.enchanting.EnchantmentLevelSetEvent(call.level(), pos, row, power, item, original);
+        event.setEnchantLevel(in.readInt());
+        NeoForge.EVENT_BUS.post(event);
+        var bytes = new ByteArrayOutputStream();
+        new DataOutputStream(bytes).writeInt(event.getEnchantLevel());
+        return new Posted(false, bytes.toByteArray());
+    }
+
+    /** `PlayerEnchantItemEvent`: the enchanted item, then each enchantment's id and level. */
+    private static Posted playerEnchantItem(GameBridge.Call call) throws IOException {
+        var in = call.in();
+        var item = GameBridge.decode(in.readNBytes(in.readInt()));
+        var lookup = GameBridge.registries().lookupOrThrow(net.minecraft.core.registries.Registries.ENCHANTMENT);
+        var given = new java.util.ArrayList<net.minecraft.world.item.enchantment.EnchantmentInstance>();
+        for (int n = in.readInt(); n > 0; n--) {
+            var key = net.minecraft.resources.ResourceKey.create(net.minecraft.core.registries.Registries.ENCHANTMENT, net.minecraft.resources.Identifier.parse(in.text()));
+            given.add(new net.minecraft.world.item.enchantment.EnchantmentInstance(lookup.getOrThrow(key), in.readInt()));
+        }
+        CommonHooks.onPlayerEnchantItem(call.player(), item, given);
+        return Posted.NONE;
+    }
+
+    /** `PlayerEvent.ItemSmeltedEvent`: whether a stack follows, the stack, the count taken. */
+    private static Posted itemSmelted(GameBridge.Call call) throws IOException {
+        var in = call.in();
+        var stack = in.readBoolean() ? GameBridge.decode(in.readNBytes(in.readInt())) : net.minecraft.world.item.ItemStack.EMPTY;
+        net.neoforged.neoforge.event.EventHooks.firePlayerSmeltedEvent(call.player(), stack, in.readInt());
+        return Posted.NONE;
     }
 
     /** `client_post_event`: the event's name, then its fields, posted on the Java client's thread. */

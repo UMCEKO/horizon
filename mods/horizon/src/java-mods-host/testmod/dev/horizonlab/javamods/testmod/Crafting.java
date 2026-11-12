@@ -6,6 +6,7 @@ import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import net.minecraft.core.Holder;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.core.NonNullList;
@@ -37,6 +38,8 @@ import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.common.loot.IGlobalLootModifier;
 import net.neoforged.neoforge.common.loot.LootModifier;
+import net.neoforged.neoforge.event.enchanting.EnchantmentLevelSetEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerEnchantItemEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.registries.DeferredRegister;
 import net.neoforged.neoforge.registries.NeoForgeRegistries;
@@ -51,6 +54,11 @@ final class Crafting {
     static final Map<String, Integer> CRAFTED = new ConcurrentHashMap<>();
     /** The non-empty slots of the craft matrix at the last craft of each result item. */
     static final Map<String, Integer> MATRIX = new ConcurrentHashMap<>();
+
+    /** Enchantments performed on the server. */
+    static final AtomicInteger ENCHANTED = new AtomicInteger();
+    /** Furnace results taken on the server, by item id, summed over the amounts removed. */
+    static final Map<String, Integer> SMELTED = new ConcurrentHashMap<>();
 
     private static final DeferredRegister<RecipeSerializer<?>> SERIALIZERS = DeferredRegister.create(Registries.RECIPE_SERIALIZER, MOD);
     private static final DeferredRegister<MapCodec<? extends IGlobalLootModifier>> MODIFIERS = DeferredRegister.create(NeoForgeRegistries.GLOBAL_LOOT_MODIFIER_SERIALIZERS, MOD);
@@ -75,6 +83,20 @@ final class Crafting {
             int filled = 0;
             for (int i = 0; i < event.getInventory().getContainerSize(); i++) if (!event.getInventory().getItem(i).isEmpty()) filled++;
             MATRIX.put(result, filled);
+        });
+        NeoForge.EVENT_BUS.addListener((EnchantmentLevelSetEvent event) -> {
+            if (event.getLevel().isClientSide()) return;
+            if (event.getItem().is(Items.BOOK) && event.getEnchantRow() == 2) event.setEnchantLevel(30);
+            System.err.println("Horizon test: enchant_level_set row=" + event.getEnchantRow() + " power=" + event.getPower() + " original=" + event.getOriginalLevel() + " level=" + event.getEnchantLevel());
+        });
+        NeoForge.EVENT_BUS.addListener((PlayerEnchantItemEvent event) -> {
+            if (event.getEntity().level().isClientSide()) return;
+            System.err.println("Horizon test: player_enchant_item count=" + ENCHANTED.incrementAndGet() + " item=" + BuiltInRegistries.ITEM.getKey(event.getEnchantedItem().getItem()) + " enchantments=" + event.getEnchantments().size());
+        });
+        NeoForge.EVENT_BUS.addListener((PlayerEvent.ItemSmeltedEvent event) -> {
+            if (event.getEntity().level().isClientSide()) return;
+            String item = BuiltInRegistries.ITEM.getKey(event.getSmelting().getItem()).toString();
+            System.err.println("Horizon test: item_smelted item=" + item + " total=" + SMELTED.merge(item, event.getAmountRemoved(), Integer::sum));
         });
     }
 
