@@ -40,7 +40,6 @@ net/minecraft/client/renderer/blockentity/ChestRenderer#submit*	owner: W1
 net/minecraft/client/renderer/extract/LevelExtractor#extractBlockOutline(Lnet/minecraft/client/Camera;Lnet/minecraft/client/renderer/state/level/LevelRenderState;)V	owner: W1
 net/minecraft/client/renderer/fog/FogRenderer#setupFog(Lnet/minecraft/client/Camera;ILnet/minecraft/client/DeltaTracker;FLnet/minecraft/client/multiplayer/ClientLevel;)Lnet/minecraft/client/renderer/fog/FogData;	owner: W4
 net/minecraft/client/server/IntegratedServer#initServer()Z	spec: w12-coverage SPEC-20
-net/minecraft/client/sounds/MusicManager#tick()V	owner: W8
 net/minecraft/client/sounds/SoundEngine#refreshCategoryVolume(Lnet/minecraft/sounds/SoundSource;)V	owner: W8
 net/minecraft/client/sounds/SoundEngine#reload()V	owner: W8
 net/minecraft/core/component/BlockTransformer#transformBlock(Lnet/minecraft/world/item/context/UseOnContext;)Lnet/minecraft/world/InteractionResult;	spec: w12-coverage SPEC-13

@@ -77,6 +77,32 @@ pub(in crate::game) struct Client {
     /// The open screen's frame blurs what is behind it (`blurBeforeThisStratum`).
     blurred: bool,
     shell: Shell,
+    music: MusicState,
+}
+
+/// What the Java client's music tick last said: whether it runs the music, its track's handle and the Now Playing toasts it asked for.
+#[derive(Default, Debug, PartialEq)]
+struct MusicState {
+    owned: bool,
+    handle: Option<i32>,
+    toasts: Vec<bool>,
+}
+
+/// A status's `music` block.
+fn read_music(reply: &mut In) -> Option<MusicState> {
+    if !reply.bool()? {
+        return Some(MusicState::default());
+    }
+    let handle = Some(reply.int()?).filter(|handle| *handle >= 0);
+    let mut toasts = Vec::new();
+    for _ in 0..reply.int()? {
+        toasts.push(reply.bool()?);
+    }
+    Some(MusicState {
+        owned: true,
+        handle,
+        toasts,
+    })
 }
 
 /// A vanilla screen of the window's that the Java client holds as a shell, so mods' screen events fire on it.
@@ -140,6 +166,8 @@ enum Input<'a> {
     ShellLayout([i32; 5]),
     /// Each shown mod toast's `(id, finished, fully visible for)`.
     Toasts(&'a [(i32, bool, i64)]),
+    /// The music the game answers this tick (`getSituationalMusic`), `getMusicVolume`, whether native shows its level loading screen, and the Music Frequency option.
+    Music(Option<&'a horizon_client::music::Music>, f32, bool, u8),
     /// The window's Notification Time option.
     NotificationTime(f64),
 }
@@ -167,6 +195,7 @@ impl Input<'_> {
             Input::ShellLayout(_) => 16,
             Input::Toasts(_) => 26,
             Input::NotificationTime(_) => 27,
+            Input::Music(..) => 40,
         };
         out.0.push(kind);
         match *self {
@@ -230,6 +259,18 @@ impl Input<'_> {
                 }
             }
             Input::NotificationTime(time) => out.double(time),
+            Input::Music(music, volume, loading, frequency) => {
+                out.bool(music.is_some());
+                if let Some(music) = music {
+                    out.text(&music.sound);
+                    out.int(music.min_delay);
+                    out.int(music.max_delay);
+                    out.bool(music.replace_current_music);
+                }
+                out.float(volume);
+                out.bool(loading);
+                out.0.push(frequency);
+            }
         }
     }
 }
@@ -751,6 +792,12 @@ impl Game<'_> {
             log::info!("Horizon: client tick status lockstep {lockstep}");
         }
         super::java_lockstep::set_lockstep_next(lockstep);
+        let music = read_music(reply)?;
+        CLIENT.with_borrow_mut(|c| {
+            c.music.owned = music.owned;
+            c.music.handle = music.handle;
+            c.music.toasts.extend(music.toasts);
+        });
         super::java_world_renders::java_world_status(
             world.as_deref(),
             world_animating,
@@ -990,12 +1037,46 @@ impl Game<'_> {
             c.sent = Sent::default();
             c.queue.clear();
             c.queued = 0;
+            c.music = MusicState::default();
         });
         for (_, id) in CLIENT.with_borrow_mut(|c| std::mem::take(&mut c.sounds)) {
             super::java_listen_sound::external_stopped(id);
             self.audio.stop_and_release(id);
         }
         super::java_bridges::client_world::java_forget_client_world();
+    }
+
+    /// Whether the Java client's `MusicManager.tick` runs the music.
+    pub(in crate::game) fn java_music_owned(&self) -> bool {
+        CLIENT.with_borrow(|c| c.music.owned)
+    }
+
+    /// The sound engine's instance of the track the Java client's music manager plays.
+    pub(in crate::game) fn java_music_instance(
+        &self,
+    ) -> Option<horizon_client::sound_engine::InstanceId> {
+        CLIENT.with_borrow(|c| c.music.handle.and_then(|h| c.sounds.get(&h).copied()))
+    }
+
+    /// The Now Playing toast requests the Java client's tick made since the last call: true shows, false hides.
+    pub(in crate::game) fn java_music_toasts(&mut self) -> Vec<bool> {
+        CLIENT.with_borrow_mut(|c| std::mem::take(&mut c.music.toasts))
+    }
+
+    /// This tick's answers to the two questions the Java client's music tick asks the game.
+    pub(in crate::game) fn java_music_send(
+        &mut self,
+        music: Option<&horizon_client::music::Music>,
+        volume: f32,
+        loading: bool,
+        frequency: horizon_client::music::MusicFrequency,
+    ) {
+        CLIENT.with_borrow_mut(|c| {
+            let mut events = Out(std::mem::take(&mut c.queue));
+            Input::Music(music, volume, loading, frequency as u8).write(&mut events);
+            c.queue = events.0;
+            c.queued += 1;
+        });
     }
 
     /// The start of the window's tick: the Java client's last tick results are applied, before the window's tick reads what they changed.
@@ -1311,6 +1392,58 @@ fn face_index(face: [i32; 3]) -> i32 {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn the_music_input_is_kind_40_with_the_tracks_fields_then_volume_loading_and_frequency() {
+        let music = horizon_client::music::Music::new("minecraft:music.creative", 12000, 24000, true);
+        let mut out = Out::default();
+        super::Input::Music(Some(&music), 0.5, true, 2).write(&mut out);
+        let mut expected = vec![40, 1];
+        expected.extend(24_i32.to_be_bytes());
+        expected.extend(b"minecraft:music.creative");
+        expected.extend(12000_i32.to_be_bytes());
+        expected.extend(24000_i32.to_be_bytes());
+        expected.extend([1]);
+        expected.extend(0.5_f32.to_be_bytes());
+        expected.extend([1, 2]);
+        assert_eq!(out.0, expected);
+        let mut none = Out::default();
+        super::Input::Music(None, 1.0, false, 0).write(&mut none);
+        let mut expected = vec![40, 0];
+        expected.extend(1.0_f32.to_be_bytes());
+        expected.extend([0, 0]);
+        assert_eq!(none.0, expected);
+    }
+
+    #[test]
+    fn the_music_status_block_reads_ownership_handle_and_toast_requests() {
+        let mut out = Out::default();
+        out.bool(true);
+        out.int(7);
+        out.int(2);
+        out.bool(true);
+        out.bool(false);
+        assert_eq!(
+            super::read_music(&mut In(&out.0)),
+            Some(super::MusicState {
+                owned: true,
+                handle: Some(7),
+                toasts: vec![true, false],
+            })
+        );
+        let mut idle = Out::default();
+        idle.bool(true);
+        idle.int(-1);
+        idle.int(0);
+        assert_eq!(super::read_music(&mut In(&idle.0)).unwrap().handle, None);
+        let mut native = Out::default();
+        native.bool(false);
+        assert_eq!(
+            super::read_music(&mut In(&native.0)),
+            Some(super::MusicState::default())
+        );
+        assert_eq!(super::read_music(&mut In(&[1, 0, 0])), None);
+    }
+
+        #[test]
     fn the_font_table_ends_at_the_last_code_point_java_cannot_guess() {
         let mut table = vec![6.0; 0x11_0000];
         table[0x41] = 5.0;

@@ -37,6 +37,7 @@ public final class SoundOwnersCheck {
         check(!SoundOwners.nativeOwns(f("net.minecraft.world.level.block.HoneyBlock", "maybeDoSlideEffects")), "a java row is not native's");
         check(SoundOwners.nativeOwns(f("net.minecraft.world.level.block.CampfireBlock", "animateTick")), "a closure row is native's");
         check(!SoundOwners.nativeOwns(f("net.minecraft.world.level.block.TorchBlock", "somethingElse")), "a vanilla frame outside the table plays");
+        check(!SoundOwners.nativeOwns(f("net.minecraft.client.sounds.MusicManager", "startPlaying")) && !SoundOwners.nativeOwns(f("net.minecraft.client.sounds.MusicManager", "tick")), "music_manager_not_native");
         check(SoundOwners.source(plumbing) == null, "nothing but plumbing has no source");
         System.out.println("SoundOwnersCheck ok");
     }
