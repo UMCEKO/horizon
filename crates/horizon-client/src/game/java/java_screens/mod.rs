@@ -82,7 +82,8 @@ pub(in crate::game) struct Client {
 /// A vanilla screen of the window's that the Java client holds as a shell, so mods' screen events fire on it.
 #[derive(Default)]
 struct Shell {
-    open: bool,
+    /// The open shell's kind (`java_shell_kind`), 0 none.
+    kind: u8,
     /// Two per `Leaf`: the gap after it (what mods drew), then its own content when Java drew it.
     segments: [Vec<u8>; SEGMENTS],
     /// Bit per `Leaf`: Java drew that step, native skips its own.
@@ -138,6 +139,8 @@ enum Input<'a> {
     BlockEffect(u8, [i32; 3], i32, u8),
     /// `leftPos`, `topPos`, `imageWidth`, `imageHeight` and the hovered menu slot (-1 none) of the screen native shows.
     ShellLayout([i32; 5]),
+    /// The creative screen's selected tab id, what is hovered (0 none, 1 grid, 2 hotbar, 3 inventory tab, 4 destroy slot), its index, and the hovered grid stack's saved form.
+    ShellCreative(&'a str, i32, i32, &'a [u8]),
     /// Each shown mod toast's `(id, finished, fully visible for)`.
     Toasts(&'a [(i32, bool, i64)]),
     /// The window's Notification Time option.
@@ -165,6 +168,7 @@ impl Input<'_> {
             Input::Particles(_) => 15,
             Input::BlockEffect(..) => 30,
             Input::ShellLayout(_) => 16,
+            Input::ShellCreative(..) => 17,
             Input::Toasts(_) => 26,
             Input::NotificationTime(_) => 27,
         };
@@ -221,6 +225,12 @@ impl Input<'_> {
                 out.0.push(face);
             }
             Input::ShellLayout(layout) => layout.iter().for_each(|v| out.int(*v)),
+            Input::ShellCreative(tab, hovered, index, stack) => {
+                out.text(tab);
+                out.int(hovered);
+                out.int(index);
+                out.bytes(stack);
+            }
             Input::Toasts(turns) => {
                 out.int(turns.len() as i32);
                 for (id, finished, fully_for) in turns {
@@ -256,12 +266,16 @@ fn button_number(button: MouseButton) -> i32 {
     }
 }
 
+/// The creative screen's tab id, hover kind, hover index and hovered grid stack, as `Input::ShellCreative` carries them.
+type CreativeState = (String, i32, i32, Vec<u8>);
+
 /// What the Java client last heard of the window's own state, so each is sent only when it changes.
 #[derive(Default)]
 struct Sent {
     size: Option<[i32; 3]>,
     native_screen: Option<(bool, bool, u8)>,
     layout: Option<[i32; 5]>,
+    creative: Option<CreativeState>,
     focused: Option<bool>,
     camera: Option<([i32; 3], [f32; 4], u8)>,
     cursor: Option<(f64, f64)>,
@@ -407,6 +421,44 @@ fn hud_layer_draws(canceled: bool, drawn: u32, layer: HudLayer) -> (bool, bool) 
 /// Whether a Java mod cancelled the layer's `RenderGuiLayerEvent.Pre` in the Java client's last HUD recording.
 pub(in crate::game) fn java_hud_layer_cancelled(layer: HudLayer) -> bool {
     CLIENT.with_borrow(|c| c.hud.cancelled & (1 << layer as u32) != 0)
+}
+
+/// What the creative screen hovers: 0 none, 1 a grid cell, 2 a hotbar slot, 3 an inventory-tab slot, 4 the destroy slot; its index; the grid cell's stack.
+fn creative_hover(
+    inventory_tab: bool,
+    trash: bool,
+    slot: Option<usize>,
+    cell: impl FnOnce(usize) -> Option<ItemStack>,
+) -> (i32, i32, Option<ItemStack>) {
+    if trash && inventory_tab {
+        return (4, 0, None);
+    }
+    let Some(slot) = slot else {
+        return (0, 0, None);
+    };
+    if inventory_tab {
+        return match Game::menu_slot_index("inventory", slot) {
+            Some(index) => (3, index as i32, None),
+            None => (0, 0, None),
+        };
+    }
+    if (Creative::DISPLAY..Creative::DISPLAY + 45).contains(&slot) {
+        let index = slot - Creative::DISPLAY;
+        return (1, index as i32, cell(index));
+    }
+    if slot < 9 {
+        return (2, slot as i32, None);
+    }
+    (0, 0, None)
+}
+
+/// The native screen a shell kind stands for.
+fn shell_screen(kind: i32) -> Option<Screen> {
+    match kind {
+        1 => Some(Screen::Inventory),
+        2 => Some(Screen::Creative),
+        _ => None,
+    }
 }
 
 /// A shell's segments and the steps Java drew.
@@ -764,14 +816,17 @@ impl Game<'_> {
             if let Some(hud) = hud {
                 c.hud = read_hud(&hud).unwrap_or_default();
             }
-            if (shell == 1) != c.shell.open && std::env::var_os("HORIZON_JAVA_DEBUG").is_some() {
+            let kind = u8::try_from(shell).unwrap_or(0);
+            if kind != c.shell.kind && std::env::var_os("HORIZON_JAVA_DEBUG").is_some() {
                 let sizes = segments.as_ref().map(|s| s.0.each_ref().map(Vec::len));
-                log::info!(
-                    "Horizon: Java shell 1 {} {sizes:?}",
-                    if shell == 1 { "opened" } else { "closed" }
-                );
+                let (shown, opened) = if kind == 0 {
+                    (c.shell.kind, "closed")
+                } else {
+                    (kind, "opened")
+                };
+                log::info!("Horizon: Java shell {shown} {opened} {sizes:?}");
             }
-            c.shell.open = shell == 1;
+            c.shell.kind = kind;
             c.shell.opening = false;
             c.shell.animating = shell_animating;
             if let Some((segments, routed)) = segments {
@@ -779,7 +834,7 @@ impl Game<'_> {
                 c.shell.routed = routed;
                 c.shell.fresh = true;
             }
-            shell == 0 && matches!(c.sent.native_screen, Some((true, _, 1)))
+            shell == 0 && matches!(c.sent.native_screen, Some((true, _, 1 | 2)))
         });
         if tabs_ready {
             self.java_creative_tabs_built();
@@ -789,15 +844,18 @@ impl Game<'_> {
             self.capture(false);
         } else if !open && self.screen == Screen::Java {
             // A mod's screen over a shell closed back to it: native's screen is the shell's again.
-            if shell == 1 {
-                self.screen = Screen::Inventory;
+            if let Some(screen) = shell_screen(shell) {
+                self.screen = screen;
                 self.capture(false);
             } else {
                 self.screen = Screen::Playing;
                 self.capture(true);
             }
-        } else if refused && self.screen == Screen::Inventory && debug_once() {
-            log::info!("Horizon: no shell opened for the inventory; native's screen stays alone");
+        } else if refused
+            && matches!(self.screen, Screen::Inventory | Screen::Creative)
+            && debug_once()
+        {
+            log::info!("Horizon: no shell opened for the screen; native's screen stays alone");
         }
         Some(())
     }
@@ -1107,6 +1165,7 @@ impl Game<'_> {
         let kind = if open { self.java_shell_kind() } else { 0 };
         let native_screen = (open, open && self.pause, kind);
         let layout = (kind != 0).then(|| self.java_shell_layout());
+        let creative = (kind == 2).then(|| self.java_creative_state());
         let camera = self.java_world_camera();
         let camera_type = self.camera_type as u8;
         self.java_publish_client_world();
@@ -1127,6 +1186,13 @@ impl Game<'_> {
             {
                 c.sent.layout = Some(layout);
                 Input::ShellLayout(layout).write(&mut events);
+                count += 1;
+            }
+            if let Some((tab, hovered, index, stack)) = creative
+                && c.sent.creative.as_ref() != Some(&(tab.clone(), hovered, index, stack.clone()))
+            {
+                Input::ShellCreative(&tab, hovered, index, &stack).write(&mut events);
+                c.sent.creative = Some((tab, hovered, index, stack));
                 count += 1;
             }
             if c.sent.native_screen != Some(native_screen) {
@@ -1521,6 +1587,69 @@ mod tests {
         let layout: Vec<i32> = (0..5).map(|_| read.int().unwrap()).collect();
         assert_eq!(layout, [76, 83, 176, 166, -1]);
         assert!(read.byte().is_none());
+    }
+
+    #[test]
+    fn the_creative_shell_input_writes_what_events_reads() {
+        let mut out = Out::default();
+        Input::ShellCreative("minecraft:search", 1, 17, &[10, 0, 3]).write(&mut out);
+        let mut read = In(&out.0);
+        assert_eq!(read.byte(), Some(17));
+        assert_eq!(read.text(), Some("minecraft:search"));
+        assert_eq!((read.int(), read.int()), (Some(1), Some(17)));
+        assert_eq!(read.bytes(), Some(&[10u8, 0, 3][..]));
+        assert!(read.byte().is_none());
+    }
+
+    #[test]
+    fn a_status_with_the_creative_shell_reads_kind_two() {
+        let mut out = Out::default();
+        out.bool(false);
+        out.int(2);
+        out.bool(false);
+        out.int(0);
+        out.bool(false);
+        let (_, kind, recording, _) = read_shell_tail(&mut In(&out.0)).unwrap();
+        assert!(kind == 2 && recording.is_none());
+        assert!(matches!(shell_screen(kind), Some(Screen::Creative)));
+        assert!(shell_screen(0).is_none());
+    }
+
+    fn cell(index: usize) -> Option<ItemStack> {
+        Some(ItemStack::new(&format!("minecraft:item_{index}"), 1))
+    }
+
+    #[test]
+    fn a_grid_cell_is_hovered_with_its_stack_on_an_item_tab() {
+        let hover = creative_hover(false, false, Some(Creative::DISPLAY + 13), cell);
+        assert_eq!((hover.0, hover.1), (1, 13));
+        assert_eq!(hover.2.map(|s| s.item), Some("minecraft:item_13".into()));
+    }
+
+    #[test]
+    fn a_hotbar_slot_is_hovered_by_its_hotbar_index_on_an_item_tab() {
+        let hover = creative_hover(false, false, Some(4), cell);
+        assert_eq!((hover.0, hover.1), (2, 4));
+        assert!(hover.2.is_none());
+    }
+
+    #[test]
+    fn the_inventory_tab_names_the_inventory_menus_slots() {
+        // InventoryMenu: 5..9 armor, 9..36 main, 36..45 hotbar, 45 the off hand.
+        let index = |slot| creative_hover(true, false, Some(slot), cell);
+        assert_eq!((index(9).0, index(9).1), (3, 9));
+        assert_eq!(index(2).1, 38);
+        assert_eq!(index(501).1, 6);
+        assert_eq!(index(504).1, 45);
+        assert!(index(504).2.is_none());
+    }
+
+    #[test]
+    fn the_destroy_slot_and_nothing_are_told_apart() {
+        assert_eq!(creative_hover(true, true, Some(3), cell).0, 4);
+        assert_eq!(creative_hover(false, false, None, cell).0, 0);
+        // The trash slot exists on the inventory tab only.
+        assert_eq!(creative_hover(false, true, None, cell).0, 0);
     }
 
     #[test]

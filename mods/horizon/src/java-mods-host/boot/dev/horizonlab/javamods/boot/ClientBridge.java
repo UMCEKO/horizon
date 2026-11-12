@@ -810,6 +810,7 @@ public final class ClientBridge {
     private static final byte PARTICLES = 15;
     private static final byte SHELL_LAYOUT = 16;
     private static final byte BLOCK_EFFECT = 30;
+    private static final byte SHELL_CREATIVE = 17;
     private static final byte TOASTS = 26;
     private static final byte NOTIFICATION_TIME = 27;
 
@@ -857,6 +858,7 @@ public final class ClientBridge {
                 case NOTIFICATION_TIME -> minecraft.options.notificationDisplayTime().set(in.readDouble());
                 case BLOCK_EFFECT -> BlockEffects.run(in);
                 case SHELL_LAYOUT -> Shells.layout(new int[] {in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readInt()});
+                case SHELL_CREATIVE -> Shells.creative(text(in), in.readInt(), in.readInt(), in.readNBytes(in.readInt()));
                 case FOCUS -> set(Window.class, minecraft.getWindow(), "focused", in.readBoolean());
                 case DROP -> {
                     boolean all = in.readBoolean();
@@ -1106,7 +1108,7 @@ public final class ClientBridge {
         }
         out.writeBoolean(WorldFrame.animating);
         out.writeBoolean(CreativeTabs.ready());
-        out.writeInt(Shells.is(Minecraft.getInstance().gui.screen()) ? 1 : 0);
+        out.writeInt(Shells.is(Minecraft.getInstance().gui.screen()) ? Shells.kind : 0);
         Shells.write(out, shellSegments, shellChanged, true);
         out.writeBoolean(Shells.animating);
         Toasts.writeStatus(out);
@@ -1139,6 +1141,7 @@ public final class ClientBridge {
         float partial = in.readFloat();
         double x = in.readDouble(), y = in.readDouble();
         Shells.layout(new int[] {in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readInt()});
+        events(in);
         Minecraft minecraft = Minecraft.getInstance();
         if (!Shells.is(minecraft.gui.screen())) return Shells.reply(Shells.NONE, null, false);
         receive();
