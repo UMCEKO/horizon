@@ -1765,6 +1765,12 @@ fn fluid_declaration(
     let mut v = json!({});
     if let Some(model) = model {
         v["sprite"] = json!(model.still);
+        if model.flowing != model.still {
+            v["flowing"] = json!(model.flowing);
+        }
+        if let Some(overlay) = &model.overlay {
+            v["overlay"] = json!(overlay);
+        }
         if let crate::oracle::TintFacts::Constant { states } = &model.tint
             && let Some(tint) = states.get("amount=8,falling=false")
         {
@@ -3773,7 +3779,7 @@ mod tests {
             "fluids": {"gem:blood": fluid("gem:blood", "gem:flowing_blood"), "gem:flowing_blood": fluid("gem:blood", "gem:flowing_blood")},
         })).unwrap();
         let baked: BakedModels = serde_json::from_value(json!({"version": 2, "blocks": {},
-            "fluids": {"gem:blood": {"layer": "TRANSLUCENT", "still": "gem:block/blood_still", "flowing": "gem:block/blood_flow",
+            "fluids": {"gem:blood": {"layer": "TRANSLUCENT", "still": "gem:block/blood_still", "flowing": "gem:block/blood_flow", "overlay": "gem:block/blood_overlay",
                 "tint": {"kind": "constant", "states": {"amount=8,falling=false": 4286643968u32}}}}})).unwrap();
         let out = dir.join("work/mods/gem");
         let pack = Pack {
@@ -3797,7 +3803,8 @@ mod tests {
         let file: Value = serde_json::from_slice(&read("fluid", "blood").unwrap()).unwrap();
         assert_eq!(
             file,
-            json!({"sprite": "gem:block/blood_still", "tint": 0xFF80FF00u32,
+            json!({"sprite": "gem:block/blood_still", "flowing": "gem:block/blood_flow",
+            "overlay": "gem:block/blood_overlay", "tint": 0xFF80FF00u32,
             "world": {"source_conversion": true, "bucket": true}})
         );
         assert!(read("fluid", "flowing_blood").is_err());
