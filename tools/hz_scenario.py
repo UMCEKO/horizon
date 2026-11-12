@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Runs a scripted session on Horizon with the Java mods of an install, checks its state, and prints one short JSON result.
 
+    hz_scenario.py matrix --mods DIR --out OUT [--game BIN] [--jars DIR] [--only NAME]...
+
+`matrix` reads DIR (one folder of mod jars per library mod, made by `java_mods.py fetch --top 50 --out DIR`) and runs every mod alone and then all
+together, on single player and on a dedicated server with two clients: boot, join and a short tick per cell, one game at a time. It writes
+OUT/matrix.json and OUT/matrix.md (the table, then the distinct failures to file).
+
     hz_scenario.py run --install DIR --script S.json --out OUT [--game BIN] [--jars DIR] [--world NAME] [--size WxH] [--fresh] [--keep]
 
 The install is only read: its home/ and client config are copied into OUT. Steps (a {"name": ...} entry labels the next step):
@@ -28,6 +34,10 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import java_mods as jm  # noqa: E402
+import lab  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 CAMERA_SETTLE = 200  # ticks for chunks to mesh; horizon-ctl has no renderer-idle signal
@@ -437,9 +447,6 @@ def run(args):
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
     steps = flatten(json.loads(Path(args.script).read_text()))
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import java_mods as jm
-    import lab
     game = Path(args.game or ROOT / 'target' / 'fast' / 'horizon-client').resolve()
     if not game.is_file():
         sys.exit(f'{game} is not a file: pass --game')
@@ -493,6 +500,205 @@ def run(args):
     return result
 
 
+# The library matrix
+
+MATRIX_SCRIPT = Path(__file__).resolve().parent / 'scenarios' / 'matrix.json'
+MODES = ('single', 'dedicated')
+STEPS = ('boot', 'join', 'tick')
+ALL_TOGETHER = 'all-together'
+SERVER_PORT = 25599
+BOOT_TIMEOUT = 600
+JOIN_TIMEOUT = 120
+
+
+def matrix_entries(mods, only=()):
+    """[(name, [jars])]: each folder of jars alone, in name order, then every jar of them all together (a dependency shared by two mods once)."""
+    sets = {d.name: sorted(d.glob('*.jar')) for d in sorted(Path(mods).iterdir()) if d.is_dir()}
+    sets = {name: jars for name, jars in sets.items() if jars}
+    together = {}
+    for jars in sets.values():
+        for jar in jars:
+            together.setdefault(jar.name, jar)
+    entries = [(name, jars) for name, jars in sets.items() if not only or name in only]
+    if not only or ALL_TOGETHER in only:
+        entries.append((ALL_TOGETHER, sorted(together.values(), key=lambda j: j.name)))
+    return entries
+
+
+def cell(boot=False, join=False, tick=False, why=''):
+    return {'boot': boot, 'join': join, 'tick': tick, 'why': why[:300]}
+
+
+def single_cell(result):
+    """A cell from a `run` result: a failed launch is a failed boot or join (the launch call cannot say which), else only the tick step is judged."""
+    failed = result.get('failed')
+    if failed and failed.get('name') == 'launch':
+        return cell(why=failed.get('error', ''))
+    if result.get('ok'):
+        return cell(True, True, True)
+    errors = result.get('errors') or ''
+    return cell(True, True, False, (failed or {}).get('error') or (errors if isinstance(errors, str) else json.dumps(errors)))
+
+
+def server_cell(lines, joined, ticked):
+    """A dedicated cell from the server log's lines, how many of the two clients joined, and whether the server survived the tick."""
+    if not any('Done (' in line for line in lines):
+        return cell(why=summarize_errors('\n'.join(lines)) if lines else 'the server printed nothing')
+    if joined != 2:
+        return cell(True, False, False, f'{joined} of 2 clients joined')
+    return cell(True, True, ticked, '' if ticked else 'the server stopped or threw during the tick')
+
+
+def signature(why):
+    """What makes two failures the same issue: the first exception class named, else the text without numbers."""
+    heads = exception_heads(why)
+    return heads[0] if heads else re.sub(r'\d+', 'N', why).strip()[:120]
+
+
+def failures(results):
+    """{signature: [(entry, mode, step)]} over every red cell, in table order."""
+    groups = collections.OrderedDict()
+    for entry, modes in results.items():
+        for mode in MODES:
+            c = modes.get(mode)
+            step = next((s for s in STEPS if c and not c[s]), None)
+            if step:
+                groups.setdefault(signature(c['why']) or 'no reason recorded', []).append((entry, mode, step))
+    return groups
+
+
+def render_table(results):
+    def mark(c):
+        return '-' if c is None else ' '.join(f"{s[0]}:{'ok' if c[s] else 'FAIL'}" for s in STEPS)
+    lines = ['| mod | ' + ' | '.join(MODES) + ' |', '|---|' + '---|' * len(MODES)]
+    lines += [f'| {entry} | ' + ' | '.join(mark(modes.get(m)) for m in MODES) + ' |' for entry, modes in results.items()]
+    groups = failures(results)
+    lines += ['', f'{len(groups)} distinct failures:']
+    lines += [f'- `{sig}`: ' + ', '.join(f'{e} ({m}/{s})' for e, m, s in cells) for sig, cells in groups.items()]
+    return '\n'.join(lines) + '\n'
+
+
+def entry_install(args, name, jars, out):
+    """An install of exactly this entry's mods, built into OUT/install (libraries and the JDK are shared through the cache)."""
+    pack = out / 'pack' / name
+    shutil.rmtree(pack, ignore_errors=True)
+    jm.link_jars(jars, pack)
+    jm.install_pack(argparse.Namespace(pack=str(pack), out=str(out / 'install'), java=args.java, cache=args.cache, resources=args.resources,
+                                       minecraft=args.minecraft, host_jars=args.jars or str(jm.JARS), accept_eula=True))
+    return out / 'install'
+
+
+def run_single(args, install, name, out):
+    run_args = argparse.Namespace(install=str(install), script=str(MATRIX_SCRIPT), out=str(out / name / 'single'), game=args.game, jars=args.jars, world=None,
+                                  size=None, fresh=True, keep=False, timeout=args.timeout, step_timeout=120)
+    return single_cell(run(run_args))
+
+
+def read_text(path):
+    return Path(path).read_text(errors='replace')
+
+
+def run_dedicated(args, install, name, out):
+    """Starts the server, joins two headless clients to it, lets it tick, and stops it (`run` takes the gate itself for the single player cell)."""
+    if not acquire_gate(os.environ.get('GATE_OWNER', 'matrix')):
+        raise RuntimeError('the gate never opened')
+    work = out / name / 'dedicated'
+    shutil.rmtree(work, ignore_errors=True)
+    server_dir = install / 'server'
+    (server_dir / 'server.properties').write_text(f'online-mode=false\nserver-port={SERVER_PORT}\nlevel-seed=1\nview-distance=4\n')
+    game = Path(args.game or ROOT / 'target' / 'fast' / 'horizon-client').resolve()
+    record = json.loads((install / 'install.json').read_text())
+    homes = work / 'home'
+    for n in HOME_FOLDERS:
+        (homes / n).mkdir(parents=True)
+    base = game_base(args, work, homes)
+    env = jm.launch_env(install, record, True, base)
+    log_path = work / 'server.log'
+    lines, joined, ticked = [], 0, False
+    with log_path.open('w') as log:
+        server = subprocess.Popen(jm.launch_command(game, record, install / 'server', ['--dedicated']), cwd=server_dir, env=env, stdin=subprocess.PIPE,
+                                  stdout=log, stderr=subprocess.STDOUT, text=True)
+        try:
+            end = time.monotonic() + BOOT_TIMEOUT
+            while time.monotonic() < end and server.poll() is None and 'Done (' not in read_text(log_path):
+                time.sleep(2)
+            lines = read_text(log_path).splitlines()
+            if any('Done (' in line for line in lines):
+                joined = join_clients(game, record, base, work)
+                time.sleep(5)
+                after = read_text(log_path).splitlines()
+                ticked = server.poll() is None and not exception_heads('\n'.join(after[len(lines):]))
+                lines = after
+        finally:
+            for client in range(2):
+                subprocess.run([str(game.parent / 'horizon-ctl'), '--socket', str(work / f'ctl{client}.sock'), 'quit'], env=base, capture_output=True, timeout=30)
+            if server.poll() is None:
+                try:
+                    server.stdin.write('stop\n')
+                    server.stdin.flush()
+                    server.wait(60)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            kill_marked(work)
+    return server_cell(lines, joined, ticked)
+
+
+HOME_FOLDERS = ('horizon', 'launcher', 'xdg-data', 'xdg-config')
+
+
+def game_base(args, work, homes):
+    """The environment of a game run whose four homes are under `homes`."""
+    extra = {'HORIZON_JAVA_MODS_DIR': str(args.jars)} if args.jars else {}
+    return lab.game_env({**os.environ, **gfx_env()}, TMPDIR=work, HZ_SCENARIO_MARKER=work, HORIZON_HOME=homes / 'horizon', HORIZON_LAUNCHER_HOME=homes / 'launcher',
+                        XDG_DATA_HOME=homes / 'xdg-data', XDG_CONFIG_HOME=homes / 'xdg-config', **extra)
+
+
+def join_clients(game, record, base, work):
+    """How many of two headless clients end up connected to the server."""
+    joined = 0
+    for client in range(2):
+        home = work / f'client{client}'
+        for n in HOME_FOLDERS:
+            (home / n).mkdir(parents=True, exist_ok=True)
+        env = {**base, 'HORIZON_HOME': str(home / 'horizon'), 'HORIZON_LAUNCHER_HOME': str(home / 'launcher'), 'XDG_DATA_HOME': str(home / 'xdg-data'),
+               'XDG_CONFIG_HOME': str(home / 'xdg-config')}
+        ctl = Ctl(game.parent / 'horizon-ctl', work / f'ctl{client}.sock', env, work, record['java'], work)
+        code, _ = ctl('launch', '--headless', '--resources', record['resources'], '--game', str(game), timeout=300)
+        if code != 0:
+            continue
+        ctl('connect', f'127.0.0.1:{SERVER_PORT}', f'bot{client}', timeout=JOIN_TIMEOUT)
+        end = time.monotonic() + JOIN_TIMEOUT
+        while time.monotonic() < end:
+            code, state = ctl('state', timeout=30)
+            if code == 0 and isinstance(state, dict) and state.get('server'):
+                joined += 1
+                break
+            time.sleep(3)
+    return joined
+
+
+def matrix(args):
+    out = Path(args.out).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    entries = matrix_entries(args.mods, args.only)
+    if not entries:
+        sys.exit(f'{args.mods} holds no folder of jars: run `java_mods.py fetch --top 50 --out {args.mods}`')
+    results = collections.OrderedDict()
+    for name, jars in entries:
+        install = entry_install(args, name, jars, out)
+        results[name] = {}
+        for mode, runner in (('single', run_single), ('dedicated', run_dedicated)):
+            try:
+                results[name][mode] = runner(args, install, name, out)
+            except Exception as e:
+                results[name][mode] = cell(why=f'{type(e).__name__}: {e}')
+            print(name, mode, results[name][mode], flush=True)
+            (out / 'matrix.json').write_text(json.dumps(results, indent=1) + '\n')
+    (out / 'matrix.md').write_text(render_table(results))
+    print(render_table(results))
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -508,7 +714,21 @@ def main():
     r.add_argument('--keep', action='store_true', help='on success leave the game running and print its ctl socket')
     r.add_argument('--timeout', type=int, default=600, help='seconds for the whole run, launch included')
     r.add_argument('--step-timeout', type=int, default=120)
+    m = sub.add_parser('matrix')
+    m.add_argument('--mods', required=True, help='a folder of folders of mod jars (java_mods.py fetch --top N --out DIR)')
+    m.add_argument('--out', required=True)
+    m.add_argument('--game')
+    m.add_argument('--jars')
+    m.add_argument('--only', action='append', default=[], help='just this entry (a folder name, or all-together); repeatable')
+    m.add_argument('--java', help='a JDK 25 home')
+    m.add_argument('--cache')
+    m.add_argument('--resources', default=str(lab.RESOURCES))
+    m.add_argument('--minecraft', default=str(lab.GAME))
+    m.add_argument('--timeout', type=int, default=600, help='seconds for one single player cell')
     args = parser.parse_args()
+    if args.command == 'matrix':
+        results = matrix(args)
+        sys.exit(0 if all(c and c['tick'] for modes in results.values() for c in modes.values()) else 1)
     result = run(args)
     print(json.dumps(result))
     sys.exit(0 if result['ok'] else 1)
