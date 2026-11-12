@@ -2859,7 +2859,7 @@ impl Game<'_> {
             .as_ref()
             .is_none_or(|r| r.dimension.has_skylight);
         self.streaming.sky_light = has_sky;
-        self.streaming.nether_shading = self.dim == Dim::Nether;
+        self.streaming.nether_shading = self.nether_cardinal_light();
         // The seed in SpawnInfo is already the hashed one the client's BiomeManager holds.
         self.streaming.biome_zoom = horizon_core::biome::BiomeZoom::new(spawn.seed);
         let player = self.player.as_ref();
