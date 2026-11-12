@@ -12,6 +12,7 @@
       "uptime_seconds": "$TIME",
       "engine_pid": 4242,
       "engine_uptime_seconds": "$TIME",
+      "engine": {"java_mods": null},
       "crashes": 2,
       "last_crash": "exit status: 1",
       "sample": {"t": 200, "tps": 20, "players": 2},

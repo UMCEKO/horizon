@@ -353,11 +353,12 @@ pub fn command(dir: &Path, args: &[&str]) -> Result<Command, String> {
     let program = program().ok_or(
         "The server programs aren't set up yet: create a server, or press Prepare on its page.",
     )?;
+    crate::java_mods::convert_server_mark(dir, &crate::java_mods::set_server)?;
     let mut cmd = crate::process::command(program);
     cmd.arg("--dir").arg(dir).args(args);
     if crate::java_mods::server_enabled(dir) {
         let tag = crate::backend::resolve_version(None)?;
-        cmd.envs(crate::java_mods::server_env(&tag, dir)?);
+        crate::java_mods::prepare_server(&tag, dir)?;
     }
     Ok(cmd)
 }

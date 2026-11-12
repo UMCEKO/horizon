@@ -10,6 +10,7 @@
       "uptime_seconds": "<dynamic>",
       "engine_pid": null,
       "engine_uptime_seconds": null,
+      "engine": {"java_mods": null},
       "crashes": 2,
       "last_crash": "exit status: 1",
       "sample": {
