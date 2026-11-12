@@ -31,6 +31,10 @@ use std::{
 pub use horizon_client_core::particle_type::ParticleType;
 pub use horizon_items::firework::{DYE_FIREWORK_COLORS, FireworkExplosion, FireworkShape};
 mod native;
+// SPEC-4 draws what these hold.
+#[allow(dead_code)]
+mod java;
+pub use java::JavaParticles;
 mod spawn;
 pub use native::{ParticleController, ParticleUpdate, register_particle_providers};
 pub mod polytone;
@@ -1231,6 +1235,8 @@ pub struct ParticleEngine {
     /// The item particles' sprites (`BreakingItemParticle`'s slime ball, snowball
     /// and cobweb models, resolved for the ground), one per model layer.
     pub item_sprites: HashMap<ParticleType, Vec<String>>,
+    /// The Java client's quad particles of its last tick.
+    java: java::JavaParticles,
 }
 /// `ElderGuardianParticle.lifetime`.
 pub const ELDER_GUARDIAN_LIFETIME: i32 = 30;
@@ -1428,6 +1434,7 @@ impl ParticleEngine {
             sounds: Vec::new(),
             made: Default::default(),
             item_sprites: HashMap::new(),
+            java: java::JavaParticles::default(),
         };
         engine.reload(root, atlas, translucent);
         engine
@@ -1589,6 +1596,13 @@ impl ParticleEngine {
         self.starters.clear();
         self.elder_guardians.clear();
         self.pending.clear();
+        self.java = java::JavaParticles::default();
+    }
+    pub fn set_java(&mut self, java: JavaParticles) {
+        self.java = java;
+    }
+    pub fn java_len(&self) -> usize {
+        self.java.len()
     }
     /// `VibrationSignalParticle`'s body: the signal leaves `from` aimed at the
     /// listener at `to` and lands there in `ticks`.
