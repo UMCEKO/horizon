@@ -739,7 +739,7 @@ impl Game<'_> {
     }
 
     /// Calls `GameBridge`'s `op` for this level, with what it does to the world applied after.
-    fn java_level_call(&mut self, op: &str, body: impl FnOnce(&mut Out)) {
+    pub(super) fn java_level_call(&mut self, op: &str, body: impl FnOnce(&mut Out)) {
         if horizon_java_host::get().is_none() {
             return;
         }
@@ -960,45 +960,6 @@ impl Game<'_> {
             out.long(pos.pack());
             out.bytes(&bytes);
         });
-    }
-
-    /// NeoForge's `VanillaInventoryCodeHooks` for a hopper and the item handler of the block at `target`, if it has one.
-    pub(in crate::game) fn java_hopper(
-        &mut self,
-        hopper: (i32, i32, i32),
-        target: (i32, i32, i32),
-        side: horizon_core::geometry::Direction,
-        insert: bool,
-    ) -> Option<bool> {
-        horizon_java_host::get()?;
-        self.java_bind_states();
-        if !horizon_java_host::bridge::java_block(self.world.block(target.0, target.1, target.2)) {
-            return None;
-        }
-        // A hopper minecart's view is keyed off the world: only a block hopper reaches Java.
-        let at = self.world.block(hopper.0, hopper.1, hopper.2);
-        if &*self.res.facts().get(at).name != "minecraft:hopper" {
-            return None;
-        }
-        let pos = |p: (i32, i32, i32)| BlockPos::new(p.0, p.1, p.2).pack();
-        let (key, time) = (self.java_level_key(), self.world.game_time);
-        let (found, moved, sounds) = self.java_call_with(
-            "hopper_transfer",
-            |out| {
-                out.int(key as i32);
-                out.long(time);
-                out.long(pos(hopper));
-                out.long(pos(target));
-                out.int(side as i32);
-                out.bool(insert);
-            },
-            |reply| {
-                let (found, moved) = (reply.bool()?, reply.bool()?);
-                Some((found, moved, java_read_effects(reply).unwrap_or_default()))
-            },
-        )?;
-        self.java_play_effects(sounds);
-        found.then_some(moved)
     }
 
     /// Java made a block entity: its place in the chunk, which saves it and gives it its turn to tick.
