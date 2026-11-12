@@ -169,8 +169,9 @@ use horizon_core::{geometry::Vec3, random::RandomSource};
 use horizon_mod_package::selection::{Argument, LaunchArguments};
 pub(crate) use java_hooks::{
     java_hook_loot_condition, java_hook_loot_function, java_hook_loot_rolled, java_hook_loot_wanted,
-    java_hook_resolve,
 };
+#[cfg(feature = "java-mods")]
+pub(crate) use java_hooks::java_hook_resolve;
 pub use native_block_entity_draw::BlockEntityDraw;
 pub use native_claimed_items::{HeldItemSlot, ModEvent};
 pub use native_components::NativeComponentError;

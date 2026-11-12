@@ -231,25 +231,29 @@ impl Game<'_> {
     }
 
     #[cfg(feature = "java-mods")]
-    fn is_java_block_entity(&self, pos: [i32; 3]) -> bool {
+    pub(super) fn is_java_block_entity(&self, pos: [i32; 3]) -> bool {
         matches!(self.world.block_entities.get(&(pos[0], pos[1], pos[2])), Some(horizon_client::containers::BlockEntity::Mod(m)) if !m.id().is_empty())
     }
 
-    /// A hopper at `hopper` facing a block with no container: `Some(moved)` when that block has a mod's item handler.
-    pub(super) fn java_hook_hopper(
+    /// `ITEMS` of a Java mod's block entity at `at`: the handler its code gives for that side, if any.
+    pub(super) fn java_hook_item_part(
         &mut self,
-        hopper: (i32, i32, i32),
-        target: (i32, i32, i32),
-        side: horizon_core::geometry::Direction,
-        insert: bool,
-    ) -> Option<bool> {
+        at: mod_api::BlockSide,
+    ) -> Option<mod_api::Capability<dyn mod_api::ResourceHandler<mod_api::ItemResource>>> {
         #[cfg(feature = "java-mods")]
-        return self.java_hopper(hopper, target, side, insert);
+        return self.java_item_part(at);
         #[cfg(not(feature = "java-mods"))]
         {
-            let _ = (hopper, target, side, insert);
+            let _ = at;
             None
         }
+    }
+
+    /// A transaction a Java handler wrote in closed at `depth` (1: the root): Java's closes the same way.
+    pub(super) fn java_hook_transaction_closed(&mut self, depth: usize, commit: bool) {
+        #[cfg(feature = "java-mods")]
+        self.java_items_closed(depth, commit);
+        let _ = (depth, commit);
     }
 
     /// The progress of a break from Java's `getDestroyProgress`; None leaves it to Horizon.
@@ -679,8 +683,8 @@ pub(super) fn java_hook_ready() -> Result<(), &'static str> {
 }
 
 /// Decides the Java run folder once, before the listener families are read; later calls change nothing.
+#[cfg(feature = "java-mods")]
 pub(crate) fn java_hook_resolve(java_mods: Option<&Path>) -> std::io::Result<()> {
-    #[cfg(feature = "java-mods")]
     if !horizon_java_host::run_decided() {
         let run = horizon_java_host::resolve_run(
             java_mods,
@@ -699,8 +703,6 @@ pub(crate) fn java_hook_resolve(java_mods: Option<&Path>) -> std::io::Result<()>
         });
         horizon_java_host::set_run(run);
     }
-    #[cfg(not(feature = "java-mods"))]
-    let _ = java_mods;
     Ok(())
 }
 

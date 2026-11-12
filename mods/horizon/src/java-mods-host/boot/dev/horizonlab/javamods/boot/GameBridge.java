@@ -141,7 +141,8 @@ public final class GameBridge {
         Crossing.game("tracking", GameBridge::tracking);
         Crossing.game("block_entity_data", GameBridge::blockEntityData);
         Crossing.game("block_entity_set", GameBridge::blockEntitySet);
-        Crossing.game("hopper_transfer", GameBridge::hopperTransfer);
+        Crossing.game("item_handler", ItemHandlers::call);
+        Crossing.game("item_handler_close", ItemHandlers::close);
         Crossing.game("block_ticks", GameBridge::blockTicks);
         Crossing.game("entity_facts", input -> EntityFacts.bin());
         Crossing.game("particle_facts", input -> ParticleFacts.export());
@@ -860,7 +861,7 @@ public final class GameBridge {
     }
 
     /** The level a call acts on, with the time it arrived at. */
-    private static ServerLevel levelOf(Crossing.In in) throws Exception {
+    static ServerLevel levelOf(Crossing.In in) throws Exception {
         return invalidated(level(in.readInt()), in.readLong());
     }
 
@@ -1130,26 +1131,6 @@ public final class GameBridge {
         var pos = BlockPos.of(in.readLong());
         var tag = readTag(in);
         if (!BlockEntities.setData(level, pos, tag)) BlockEntities.load(level, pos, tag);
-        writeEffects(out);
-    }
-
-    /** NeoForge's hopper past vanilla containers: `VanillaInventoryCodeHooks` with the item handler at the target, if there is one. */
-    private static void hopperTransfer(Crossing.In in, Crossing.Out out) throws Exception {
-        var level = levelOf(in);
-        var hopperPos = BlockPos.of(in.readLong());
-        var target = BlockPos.of(in.readLong());
-        var side = net.minecraft.core.Direction.from3DDataValue(in.readInt());
-        boolean insert = in.readBoolean();
-        var handler = level.getCapability(net.neoforged.neoforge.capabilities.Capabilities.Item.BLOCK, target, side);
-        boolean moved = false;
-        if (handler != null && BlockEntities.get(level, hopperPos) instanceof net.minecraft.world.level.block.entity.HopperBlockEntity hopper) {
-            moved = insert
-                    ? net.neoforged.neoforge.transfer.item.VanillaInventoryCodeHooks.insertHook(hopper, handler)
-                    : net.neoforged.neoforge.transfer.item.VanillaInventoryCodeHooks.extractHook(hopper, handler);
-            if (moved) BlockEntities.changed(level, hopperPos);
-        }
-        out.writeBoolean(handler != null);
-        out.writeBoolean(moved);
         writeEffects(out);
     }
 
