@@ -109,6 +109,7 @@ pub(super) struct Parked {
     creaking: CreakingState,
     /// Natural spawning's candidate cache: each level keeps its own players' squares.
     spawn_scratch: super::natural_spawning::SpawnScratch,
+    tick_list: super::tick_list::TickList,
     /// Server ticks since a player was last in the level.
     idle: u32,
     /// The level's own world border (`ServerLevel.getWorldBorder`), and what its players were
@@ -366,6 +367,7 @@ impl Levels {
     }
 
     /// The save of the level not in place whose dimension is `dimension`.
+    #[cfg(feature = "java-mods")]
     pub(super) fn parked_save_of(&self, dimension: &str) -> Option<&Arc<SaveDir>> {
         self.parked_of(dimension).map(|level| &level.save)
     }
@@ -569,6 +571,7 @@ impl Game<'_> {
             sculk: Default::default(),
             creaking: Default::default(),
             spawn_scratch: Default::default(),
+            tick_list: Default::default(),
             idle: 0,
             border: self.load_border(dim),
             border_sent: None,
@@ -730,6 +733,7 @@ impl Game<'_> {
         self.sculk.swap_level(&mut p.sculk);
         self.creaking.swap_level(&mut p.creaking);
         swap(&mut self.spawn_scratch, &mut p.spawn_scratch);
+        swap(&mut self.tick_list, &mut p.tick_list);
         swap(&mut self.border, &mut p.border);
         // What only the client draws starts over.
         self.clear_client_particles();

@@ -167,11 +167,11 @@ use horizon_core::{
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use horizon_mod_package::selection::{Argument, LaunchArguments};
+#[cfg(feature = "java-mods")]
+pub(crate) use java_hooks::java_hook_resolve;
 pub(crate) use java_hooks::{
     java_hook_loot_condition, java_hook_loot_function, java_hook_loot_rolled, java_hook_loot_wanted,
 };
-#[cfg(feature = "java-mods")]
-pub(crate) use java_hooks::java_hook_resolve;
 pub use native_block_entity_draw::BlockEntityDraw;
 pub use native_claimed_items::{HeldItemSlot, ModEvent};
 pub use native_components::NativeComponentError;
@@ -2899,6 +2899,8 @@ struct Game<'a> {
     orbs: horizon_client::join_seq::JoinList<ExperienceOrb>,
     xp_delay: u32,
     ordered: ordered_tick::OrderedTicks,
+    /// The level in place's `EntityTickList`.
+    tick_list: tick_list::TickList,
     level_up_sound: horizon_client::entities::LevelUpSound,
     /// The arm swing (`LivingEntity.SwingState`) and how many swings started.
     swing: horizon_client::first_person::SwingState,
@@ -5936,7 +5938,11 @@ impl Game<'_> {
             self.is_logical_server()
                 && mod_api::__private::listened(mod_api::HookId::ChunkTicketLevelUpdated),
         );
+        let before = self.tickets.levels();
         self.tickets.update(sources);
+        if !before.same(&self.tickets.levels()) {
+            self.keep_tick_list();
+        }
         self.run_chunk_ticket_level_updates();
     }
     /// `ServerLevel.startTickingChunk`: a loaded chunk's saved ticks are
@@ -13691,6 +13697,7 @@ impl<'a> Game<'a> {
             orbs: Default::default(),
             xp_delay: 0,
             ordered: Default::default(),
+            tick_list: Default::default(),
             level_up_sound: Default::default(),
             swing: Default::default(),
             swings_started: 0,

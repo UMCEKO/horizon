@@ -8,7 +8,7 @@ EntityLookup.getEntity	skip:java		lookup by id or uuid over Horizon's per-kind l
 EntityLookup.remove	skip:java		index removal; Horizon removes the entity from its per-kind list
 EntitySection	skip:java		section container; Horizon has no section index, only the mob grid (mobs/seen_grid.rs)
 EntitySectionStorage	skip:java		spatial section index; Horizon has no section storage, the mob grid is its only spatial index
-EntityTickList	skip:java		ticking list; Horizon ticks its per-kind Vecs in order (game.rs)
+EntityTickList	port	crates/horizon-client/src/game/world/tick_list.rs::TickList	one per level, swapped with it; kept from the join-order walk over every kind (keep_tick_list); pass() is forEach's snapshot
 LevelEntityGetterAdapter	skip:java		adapter over the section storage; no equivalent needed
 PersistentEntitySectionManager.addEntity	skip:java		section and visibility bookkeeping; Horizon spawns entities into its per-kind Vecs (game.rs)
 PersistentEntitySectionManager.addEntityUuid	skip:java		uuid set kept in persist.uuids (game/world/persist.rs)
@@ -24,7 +24,7 @@ PersistentEntitySectionManager.processUnloads	inline	crates/horizon-client/src/g
 PersistentEntitySectionManager.requestChunkLoad	port	crates/horizon-client/src/save.rs::SaveDir::load_entities	reads the saved entity record of the chunk; the chunk load itself is streaming
 PersistentEntitySectionManager.saveAll	port	crates/horizon-client/src/game/world/persist.rs::Game::save_entities	the waiting form (quit path) writes every resident chunk and flushes
 PersistentEntitySectionManager.storeChunkSections	port	crates/horizon-client/src/game/world/persist.rs::Game::entity_chunks	the saved entity tags of a chunk; with remove the entities leave the world
-PersistentEntitySectionManager.updateChunkStatus	skip:other		visibility per chunk status; Horizon derives entity ticking from ticket levels (ticket_levels.rs) instead of storing it
+PersistentEntitySectionManager.updateChunkStatus	port	crates/horizon-client/src/game/world/tick_list.rs::TickList::keep	run when update_chunk_tickets rebuilds the levels and as each entity pass begins: chunks that turned Visibility.TICKING start their entities by section then entry
 PersistentEntitySectionManager.Callback.onMove	skip:java		section membership change; Horizon has no sections
 PersistentEntitySectionManager.Callback.onRemove	port	crates/horizon-client/src/game/world/persist.rs::Game::prune_entity_memory	gap: minor: removal is batched; dead ids are dropped from persist memory on save, not per removal
 PersistentEntitySectionManager.Callback.updateStatus	skip:other		visibility changes are chunk ticket levels in Horizon (ticket_levels.rs)

@@ -286,6 +286,14 @@ impl Levels {
     fn get(&self, x: i32, z: i32) -> Option<(u8, u8)> {
         Some(self.0.as_ref()?.get(x, z))
     }
+    /// The same build of the levels: no update rebuilt them in between.
+    pub fn same(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        }
+    }
     /// Whether any ticket exists; with none, everything ticks.
     pub fn has_tickets(&self) -> bool {
         self.0.is_some()
@@ -374,6 +382,24 @@ impl ChunkTickets {
         chunks: &crate::chunk_map::ChunkMap,
         gate: bool,
     ) -> impl Fn(i32, i32) -> bool + use<> {
+        self.gated_area(chunks, gate, Levels::entity_ticking_at)
+    }
+    /// `Visibility.TICKING` at a block position (`FullChunkStatus.ENTITY_TICKING`, loading level alone), gated as above.
+    pub fn entity_visible_area(
+        &self,
+        chunks: &crate::chunk_map::ChunkMap,
+        gate: bool,
+    ) -> impl Fn(i32, i32) -> bool + use<> {
+        self.gated_area(chunks, gate, |levels, x, z| {
+            levels.loaded_entity_ticking(x >> 4, z >> 4)
+        })
+    }
+    fn gated_area(
+        &self,
+        chunks: &crate::chunk_map::ChunkMap,
+        gate: bool,
+        test: fn(&Levels, i32, i32) -> bool,
+    ) -> impl Fn(i32, i32) -> bool + use<> {
         let levels = self.levels.clone();
         let resident = (gate && levels.0.is_some()).then(|| {
             let revision = chunks.membership_revision();
@@ -387,7 +413,7 @@ impl ChunkTickets {
         // entity costs one lookup instead of the 25 of its neighbourhood.
         let surrounded = std::cell::RefCell::new(crate::fast_hash::FxHashMap::default());
         move |x, z| {
-            levels.entity_ticking_at(x, z)
+            test(&levels, x, z)
                 && resident.as_ref().is_none_or(|keys| {
                     let (cx, cz) = (x >> 4, z >> 4);
                     *surrounded.borrow_mut().entry((cx, cz)).or_insert_with(|| {

@@ -68,6 +68,7 @@ pub(super) fn first_join<T: Joined>(list: &[T]) -> Option<JoinSeq> {
 impl Game<'_> {
     /// A level tick starts: what has joined so far ticks this tick.
     pub(super) fn begin_ordered_ticks(&mut self) {
+        self.keep_tick_list();
         let pending_buf = std::mem::take(&mut self.ordered.pending_buf);
         let firsts = [
             first_join(&self.armor_stands),
