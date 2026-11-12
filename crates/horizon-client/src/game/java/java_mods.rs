@@ -1443,6 +1443,9 @@ impl Game<'_> {
 
     /// `LevelTickEvent`, with this level in place.
     pub(super) fn java_level_tick(&mut self, post: bool) {
+        if !post {
+            self.java_capture_fluid_rules();
+        }
         self.java_level_call("level_tick", |out| out.bool(post));
         self.java_drain_block_events();
         self.java_wire_flush_lan();
@@ -1647,6 +1650,106 @@ pub(super) fn note_neighbor_changed(
 pub(super) fn note_block_tick(pos: BlockPos, state: BlockStateId, random: bool) {
     if horizon_java_host::bridge::java_block(state) {
         push_event(if random { 3 } else { 2 }, pos, java_id(state), 0, 0);
+    }
+}
+
+/// Kind 5: Java's `ServerLevel.tickFluid` runs the fluid's own `FluidState.tick` at the drain.
+pub(super) fn note_fluid_tick(pos: BlockPos, state: BlockStateId) {
+    push_event(5, pos, java_id(state), 0, 0);
+}
+
+pub(super) fn owns_fluid(
+    behaviours: &horizon_world::level::Behaviours,
+    fluid: horizon_world::fluid::ModFluid,
+) -> bool {
+    use horizon_world::fluid::{FluidKind, FluidState};
+    horizon_java_host::bridge::java_block(
+        behaviours.legacy_block(FluidState::new(FluidKind::Mod(fluid), 8, false)),
+    )
+}
+
+/// Java's own fluids' getters per dimension, by `ModFluid::index`; None where Java has no `FlowingFluid` of that id.
+type FluidRulesOf = Vec<(
+    horizon_core::dimension::Dimension,
+    Vec<Option<horizon_world::fluid::ModFluidRules>>,
+)>;
+
+thread_local! {
+    static FLUID_RULES: std::cell::RefCell<FluidRulesOf> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+pub(super) fn fluid_rules(
+    dimension: horizon_core::dimension::Dimension,
+    fluid: horizon_world::fluid::ModFluid,
+) -> Option<horizon_world::fluid::ModFluidRules> {
+    FLUID_RULES.with_borrow(|known| {
+        known
+            .iter()
+            .find(|(of, _)| *of == dimension)
+            .and_then(|(_, rules)| rules.get(fluid.index()).copied().flatten())
+    })
+}
+
+impl Game<'_> {
+    /// Asks Java once per level what its fluids' `getTickDelay`, `getDropOff`, `getSlopeFindDistance` and `canConvertToSource` answer there.
+    fn java_capture_fluid_rules(&mut self) {
+        let dimension = self.dim.level();
+        if horizon_java_host::get().is_none()
+            || FLUID_RULES.with_borrow(|known| known.iter().any(|(of, _)| *of == dimension))
+        {
+            return;
+        }
+        self.java_bind_states();
+        let fluids = horizon_world::fluid::mod_fluids();
+        let behaviours = self.res.behaviours();
+        let owned: Vec<bool> = fluids
+            .iter()
+            .map(|(fluid, _)| owns_fluid(behaviours, *fluid))
+            .collect();
+        let mut rules = vec![None; fluids.len()];
+        if owned.iter().any(|owned| *owned) {
+            let (key, time) = (self.java_level_key(), self.world.game_time);
+            let asked: Vec<_> = fluids
+                .iter()
+                .zip(&owned)
+                .filter(|(_, owned)| **owned)
+                .map(|((fluid, ty), _)| (*fluid, ty.id.as_str()))
+                .collect();
+            let answers = self.java_call_with(
+                "fluid_rules",
+                |out| {
+                    out.int(key as i32);
+                    out.long(time);
+                    out.int(asked.len() as i32);
+                    asked.iter().for_each(|(_, id)| out.text(id));
+                },
+                |reply| {
+                    asked
+                        .iter()
+                        .map(|_| {
+                            let known = reply.bool()?;
+                            let read = horizon_world::fluid::ModFluidRules {
+                                tick_delay: reply.int()?,
+                                drop_off: reply.int()?,
+                                slope_find_distance: reply.int()?,
+                                converts_to_source: reply.bool()?,
+                            };
+                            Some(known.then_some(read))
+                        })
+                        .collect::<Option<Vec<_>>>()
+                },
+            );
+            if answers.is_none() {
+                log::warn!("Horizon: Java's fluids did not answer their flow rules; their registered ones stand");
+            }
+            for ((fluid, id), answer) in asked.iter().zip(answers.unwrap_or_default()) {
+                if answer.is_none() {
+                    log::warn!("Horizon: Java has no flowing fluid {id}; its registered flow rules stand");
+                }
+                rules[fluid.index()] = answer;
+            }
+        }
+        FLUID_RULES.with_borrow_mut(|known| known.push((dimension, rules)));
     }
 }
 
