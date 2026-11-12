@@ -31,6 +31,7 @@ public final class TestMod {
         ITEMS.registerItem("labelled", Labelled::new);
         ITEMS.registerItem("digger", Digger::new);
         ITEMS.registerItem("miner", Miner::new);
+        ITEMS.registerSimpleItem("lens");
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.entity.player.PlayerEvent.HarvestCheck event) -> {
             if (event.getTargetBlock().is(Blocks.STONE) && event.getEntity().getMainHandItem().getItem() instanceof Digger) event.setCanHarvest(true);
         });

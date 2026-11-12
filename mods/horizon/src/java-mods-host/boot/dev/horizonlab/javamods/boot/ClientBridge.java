@@ -812,6 +812,7 @@ public final class ClientBridge {
     private static final byte BLOCK_EFFECT = 30;
     private static final byte TOASTS = 26;
     private static final byte NOTIFICATION_TIME = 27;
+    private static final byte FOV_BASE = 35;
 
     private static double cursorX, cursorY;
     private static BlockPos cameraBlock;
@@ -879,6 +880,7 @@ public final class ClientBridge {
                         BlockRenders.camera(cam.x(), cam.y(), cam.z());
                     }
                 }
+                case FOV_BASE -> FovHook.base(in);
                 case WIRE -> RemoteClient.inbound(in.readNBytes(in.readInt()));
                 case CHUNK -> CHUNK_EVENTS.add(new int[] {in.readInt(), in.readInt(), in.readBoolean() ? 1 : 0});
                 case HOTBAR -> {

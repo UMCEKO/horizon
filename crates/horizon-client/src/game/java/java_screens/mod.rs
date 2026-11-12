@@ -36,6 +36,8 @@ use std::sync::mpsc::TryRecvError;
 #[derive(Default)]
 pub(in crate::game) struct Client {
     joined: bool,
+    /// What the window's last `tick_fov` computed: the base modifier, whether a spyglass scopes, the effect scale.
+    pub(in crate::game) fov_base: Option<(f32, bool, f32)>,
     /// What the Java client's `useItemOn` answered for the last click: 0 none, 1 passed, 2 success, 3 consumed.
     block_use: u8,
     /// Columns holding block entity models wait for the Java client's answer.
@@ -142,6 +144,8 @@ enum Input<'a> {
     Toasts(&'a [(i32, bool, i64)]),
     /// The window's Notification Time option.
     NotificationTime(f64),
+    /// `Camera.tickFov`'s inputs: the base modifier, whether the player scopes, the effect scale.
+    FovBase(f32, bool, f32),
 }
 
 impl Input<'_> {
@@ -167,6 +171,7 @@ impl Input<'_> {
             Input::ShellLayout(_) => 16,
             Input::Toasts(_) => 26,
             Input::NotificationTime(_) => 27,
+            Input::FovBase(..) => 35,
         };
         out.0.push(kind);
         match *self {
@@ -230,6 +235,11 @@ impl Input<'_> {
                 }
             }
             Input::NotificationTime(time) => out.double(time),
+            Input::FovBase(base, scoping, scale) => {
+                out.float(base);
+                out.bool(scoping);
+                out.float(scale);
+            }
         }
     }
 }
@@ -268,6 +278,7 @@ struct Sent {
     motion: Option<Motion>,
     particles: Option<i32>,
     notification_time: Option<f64>,
+    fov_base: Option<(f32, bool, f32)>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1172,6 +1183,13 @@ impl Game<'_> {
                 Input::NotificationTime(notification_time).write(&mut events);
                 count += 1;
             }
+            if let Some((base, scoping, scale)) = c.fov_base
+                && c.sent.fov_base != c.fov_base
+            {
+                c.sent.fov_base = c.fov_base;
+                Input::FovBase(base, scoping, scale).write(&mut events);
+                count += 1;
+            }
             let toasts = super::java_toasts::java_toasts_turns();
             if !toasts.is_empty() {
                 Input::Toasts(&toasts).write(&mut events);
@@ -1310,6 +1328,13 @@ fn face_index(face: [i32; 3]) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fov_base_is_kind_35_then_the_float_the_bool_and_the_float() {
+        let mut out = Out::default();
+        super::Input::FovBase(1.0, true, 0.5).write(&mut out);
+        assert_eq!(out.0, [35, 0x3f, 0x80, 0, 0, 1, 0x3f, 0, 0, 0]);
+    }
+
     #[test]
     fn the_font_table_ends_at_the_last_code_point_java_cannot_guess() {
         let mut table = vec![6.0; 0x11_0000];

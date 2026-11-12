@@ -87,15 +87,20 @@ impl Game<'_> {
         })
     }
     /// `Camera.tick`: the eye height and the field-of-view modifier ease
-    /// halfway toward the player's each tick.
+    /// halfway toward the player's each tick; native reads the player after the move, vanilla's camera before it, and a Java client's event follows vanilla.
     pub(super) fn tick_fov(&mut self) {
         let first_person = self.camera_type.is_first_person();
         let effect = self.fov_effect_scale();
         let target = self.fov_player().map_or(1.0, |player| {
             let base = field_of_view_modifier(&player, first_person, effect);
-            let mut modifier = base;
-            self.native_compute_fov_modifier(&player, base, &mut modifier);
-            valid_fov_modifier(modifier, base)
+            let scoping = first_person && matches!(player.using, Some((UseItem::Spyglass, _)));
+            self.java_hook_fov_base(base, scoping, effect);
+            let start = self
+                .java_hook_fov_target()
+                .map_or(base, |java| valid_fov_modifier(java, base));
+            let mut modifier = start;
+            self.native_compute_fov_modifier(&player, start, &mut modifier);
+            valid_fov_modifier(modifier, start)
         });
         let target = self.zoomed_fov_target(target);
         // A server's spectator camera on a mob: its eye height. Its modifier
@@ -284,6 +289,25 @@ mod tests {
         for value in [f32::NAN, f32::INFINITY, 0.0, 10.1] {
             assert_eq!(valid_fov_modifier(value, 1.0), 1.0);
         }
+    }
+
+    #[test]
+    fn a_java_target_eases_halfway_each_tick() {
+        let mut view = horizon_client::camera::Camera {
+            fov_modifier: 1.0,
+            old_fov_modifier: 1.0,
+            ..Default::default()
+        };
+        for expected in [0.75, 0.625, 0.5625] {
+            view.tick(None, 0.5);
+            assert_eq!(view.fov_modifier, expected);
+        }
+    }
+
+    #[test]
+    fn a_java_target_outside_the_range_is_native_base() {
+        assert_eq!(valid_fov_modifier(20.0, 1.1), 1.1);
+        assert_eq!(valid_fov_modifier(0.5, 1.1), 0.5);
     }
 
     #[test]

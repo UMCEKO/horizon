@@ -187,7 +187,7 @@ public final class Lockstep {
         try {
             while (inFlight() && passed.ordinal() < point.ordinal() && parked != Point.ENDED) CHANGED.awaitUninterruptibly();
             here = parked == point;
-            parkRecord = here ? record : EMPTY;
+            parkRecord = here || parked == Point.ENDED ? record : EMPTY;
         } finally {
             LOCK.unlock();
         }
@@ -248,8 +248,8 @@ public final class Lockstep {
                 next = INBOX.poll();
                 if (next == null) {
                     parked = Point.ENDED;
+                    record = passed.ordinal() < Point.M.ordinal() ? ParkRecord.take() : EMPTY;
                     passed = Point.ENDED;
-                    record = EMPTY;
                     RELEASES.clear();
                     jobThread = null;
                     announced = false;
