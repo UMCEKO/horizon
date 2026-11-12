@@ -5087,6 +5087,12 @@ impl Game<'_> {
             if canceled {
                 return None;
             }
+            let at = [eye[0], y, eye[2]];
+            match self.java_hook_item_toss(&thrown, at, v, 40, thrown_from_hand) {
+                Some(None) => return None,
+                Some(Some(id)) => return Some(id),
+                None => {}
+            }
         }
         self.spawn_item(thrown, [eye[0], y, eye[2]], v, 40);
         let uuid = thrown_from_hand.then(|| self.acting_player_uuid());
@@ -11739,6 +11745,10 @@ impl Game<'_> {
         let mut charge = i32::try_from(ticks).unwrap_or(i32::MAX);
         let mut canceled = false;
         self.native_arrow_loose(stack, ammo.is_some(), &mut charge, &mut canceled);
+        if !canceled {
+            charge = self.java_hook_arrow_loose(self.hand, charge, ammo.is_some(), false);
+            canceled = charge < 0;
+        }
         let power = item_use::bow_release_power(ammo.is_some(), charge, canceled);
         let (Some(power), Some(ammo)) = (power, ammo) else {
             return;

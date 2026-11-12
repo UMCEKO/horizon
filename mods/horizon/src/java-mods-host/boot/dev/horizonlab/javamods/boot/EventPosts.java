@@ -12,6 +12,10 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.item.ItemEntity;
+import net.neoforged.neoforge.event.EventHooks;
+import net.neoforged.neoforge.event.entity.item.ItemTossEvent;
 import net.neoforged.bus.ListenerList;
 import net.neoforged.bus.api.Event;
 import net.neoforged.bus.api.IEventBus;
@@ -43,7 +47,7 @@ public final class EventPosts {
     }
 
     /** The server events Rust posts through `post_event`, each with the acting player's view filled. */
-    private static final Map<String, PlayerPost> PLAYER = Map.of("BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity);
+    private static final Map<String, PlayerPost> PLAYER = Map.of("BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity, "ItemTossEvent", EventPosts::itemToss, "ArrowLooseEvent", EventPosts::arrowLoose);
 
     /** The server events Rust posts through `post_level_event`. */
     private static final Map<String, LevelPost> LEVEL = Map.of();
@@ -207,6 +211,48 @@ public final class EventPosts {
     private static Posted attackEntity(GameBridge.Call call) {
         var target = call.level().getEntity(call.in().readInt());
         return new Posted(target != null && !CommonHooks.onPlayerAttackTarget(call.player(), target), Posted.NONE.result());
+    }
+
+    private static Posted intResult(boolean canceled, int value) {
+        var bytes = new ByteArrayOutputStream();
+        try {
+            new DataOutputStream(bytes).writeInt(value);
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+        return new Posted(canceled, bytes.toByteArray());
+    }
+
+    /** `Player.drop`: the item built from Rust's position and motion, posted, and spawned from the event's entity; the result is its id. */
+    private static Posted itemToss(GameBridge.Call call) throws Exception {
+        var in = call.in();
+        var stack = EntityViews.stack(in.readNBytes(in.readInt()), call.level());
+        double x = in.readDouble(), y = in.readDouble(), z = in.readDouble();
+        double vx = in.readDouble(), vy = in.readDouble(), vz = in.readDouble();
+        int delay = in.readInt();
+        boolean named = in.readBoolean();
+        var item = new ItemEntity(call.level(), x, y, z, stack, vx, vy, vz);
+        item.setPickUpDelay(delay);
+        if (named) item.setThrower(call.player());
+        var event = new ItemTossEvent(item, call.player());
+        boolean canceled = NeoForge.EVENT_BUS.post(event).isCanceled();
+        int id = -1;
+        if (!canceled && call.level().addFreshEntity(event.getEntity())) id = event.getEntity().getId();
+        if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: server event ItemTossEvent canceled=" + canceled + " id=" + id);
+        return intResult(canceled, id);
+    }
+
+    /** `BowItem.releaseUsing` and `CrossbowItem.performShooting`: the charge the listeners left, negative when they cancelled. */
+    private static Posted arrowLoose(GameBridge.Call call) {
+        var in = call.in();
+        var hand = in.readInt() == 0 ? InteractionHand.MAIN_HAND : InteractionHand.OFF_HAND;
+        int charge = in.readInt();
+        boolean hasAmmo = in.readBoolean();
+        boolean crossbow = in.readBoolean();
+        var stack = call.player().getItemInHand(hand);
+        int out = crossbow ? EventHooks.onArrowLoose(stack, call.level(), call.player(), 1) : EventHooks.onArrowLoose(stack, call.level(), call.player(), charge, hasAmmo);
+        if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: server event ArrowLooseEvent " + charge + "->" + out);
+        return intResult(false, out);
     }
 
     /** `client_post_event`: the event's name, then its fields, posted on the Java client's thread. */

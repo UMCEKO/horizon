@@ -3,7 +3,10 @@ package dev.horizonlab.javamods.testmod;
 import java.util.List;
 import java.util.Map;
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.item.context.UseOnContext;
+import net.neoforged.neoforge.event.entity.item.ItemTossEvent;
+import net.neoforged.neoforge.event.entity.player.ArrowLooseEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.level.ExplosionEvent;
@@ -16,6 +19,13 @@ final class ChecksServerEvents {
     static void listen() {
         NeoForge.EVENT_BUS.addListener((BlockEvent.EntityPlaceEvent event) -> {});
         NeoForge.EVENT_BUS.addListener((ExplosionEvent.Start event) -> {});
+        NeoForge.EVENT_BUS.addListener((ItemTossEvent event) -> {
+            if (event.getEntity().getItem().is(Items.DIAMOND)) event.setCanceled(true);
+            else event.getEntity().setPickUpDelay(0);
+        });
+        NeoForge.EVENT_BUS.addListener((ArrowLooseEvent event) -> {
+            if (event.getBow().is(Items.BOW)) event.setCharge(20);
+        });
     }
 
     static void run(UseOnContext context, BlockPos area) {
