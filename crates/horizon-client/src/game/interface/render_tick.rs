@@ -4,7 +4,7 @@ use super::{Dim, Game, host::draw::GameCameraDrawContext};
 use horizon_client::assets::Properties;
 use horizon_client::camera::NearPlane;
 use horizon_client::fog::{
-    FogData, FogInputs, FogType, fog_type, settle_rain_fog, update_rain_fog,
+    FogData, FogInputs, FogType, settle_rain_fog, update_rain_fog,
 };
 use horizon_client::{
     animate_tick::{AnimateContext, animate_tick, campfire_particles, marker_particle_target},
@@ -157,7 +157,7 @@ impl Game<'_> {
     ) -> FogData {
         let forward = self.forward();
         let at = [camera.x, camera.y, camera.z];
-        let fog_type = fog_type(&self.world, self.res.facts(), at, &self.near_plane());
+        let fog_type = self.camera_fog_type(at);
         let (rain, thunder) = self.view_weather(self.clock.fraction() as f32);
         let title_fog = horizon_client::fog::FogTables::default();
         let tables = if self.title.is_some() {
@@ -297,12 +297,32 @@ impl Game<'_> {
         };
         self.dim == Dim::Overworld
             && camera.y < horizon
-            && fog_type(
-                &self.world,
-                self.res.facts(),
-                [camera.x, camera.y, camera.z],
-                &self.near_plane(),
-            ) != FogType::Water
+            && self.camera_fog_type([camera.x, camera.y, camera.z]) != FogType::Water
+    }
+    /// `Camera.getFluidInCamera` with a mod fluid classed by the fluid tags.
+    pub(super) fn camera_fog_type(&self, camera: [f64; 3]) -> FogType {
+        let items = self.items();
+        horizon_client::fog::fog_type_classed(
+            &self.world,
+            self.res.facts(),
+            camera,
+            &self.near_plane(),
+            &|name| {
+                if items.fluid_in_tag("minecraft:water", name) {
+                    Fluid::Water
+                } else if items.fluid_in_tag("minecraft:lava", name) {
+                    Fluid::Lava
+                } else {
+                    Fluid::Modded
+                }
+            },
+        )
+    }
+    /// The overlay sprite of the mod fluid the eye is in, when its look names a texture.
+    fn mod_fluid_overlay(&self, eye: [f64; 3]) -> Option<String> {
+        let fluid = horizon_client::fog::eye_mod_fluid(&self.world, self.res.facts(), eye)?;
+        let texture = horizon_client::mod_content::fluid_look(&fluid)?.screen_overlay?;
+        Some(horizon_client::fluid_models::screen_overlay_sprite(&texture))
     }
     /// `ScreenEffectRenderer` + `Hud` camera overlays for this frame.
     /// `scale` is the player's `LivingEntity.getScale`.
@@ -328,9 +348,14 @@ impl Game<'_> {
         let block_overlay = effects
             .block
             .and_then(|state| Self::block_particle_sprite(&self.pack, state));
-        let water = effects
-            .water
-            .then(|| (self.eye_brightness(eye), self.yaw, self.pitch));
+        let overlay = if effects.water {
+            Some("misc/underwater".to_owned())
+        } else if self.spectator() {
+            None
+        } else {
+            self.mod_fluid_overlay(eye)
+        };
+        let fluid_overlay = overlay.map(|sprite| (sprite, self.eye_brightness(eye), self.yaw, self.pitch));
         // Hud.extractCameraOverlays; the spyglass scope (and its easing) is
         // drawn on the HUD by draw_spyglass.
         let fx = &self.screen_fx;
@@ -380,7 +405,7 @@ impl Game<'_> {
             aspect: size[0] as f32 / size[1].max(1) as f32,
             partial,
             block_overlay,
-            water,
+            fluid_overlay,
             on_fire: effects.on_fire,
             fire_lower: f32::from(self.settings.extras.pvp.tweaks.fire_lower) / 100.0,
             gui_overlays: &gui_overlays,
@@ -510,8 +535,7 @@ impl Game<'_> {
                 }
             }
         }
-        let in_water =
-            fog_type(&self.world, self.res.facts(), eye, &self.near_plane()) == FogType::Water;
+        let in_water = self.camera_fog_type(eye) == FogType::Water;
         let eye_block = eye.map(|c| c.floor() as i32);
         let water = in_water
             && !spectator
@@ -657,8 +681,7 @@ impl Game<'_> {
             let nausea = self.potions.effects.get("nausea").map(nausea_has_effect);
             self.screen_fx.tick_spinning(nausea);
             // LocalPlayer water vision and AtmosphericFogEnvironment rain fog.
-            let in_water =
-                fog_type(&self.world, self.res.facts(), e, &self.near_plane()) == FogType::Water;
+            let in_water = self.camera_fog_type(e) == FogType::Water;
             self.fog.tick(in_water, self.spectator());
             let (rain, sky_light, rains) = self.rain_fog_inputs(e);
             update_rain_fog(&mut self.fog, rain, sky_light, rains, 1.0);

@@ -1160,6 +1160,18 @@ impl HudAtlas {
                 }
             }
         }
+        if full {
+            for file in crate::fluid_models::screen_overlay_files() {
+                if files.contains(&file) {
+                    continue;
+                }
+                if root.contains(&file) {
+                    files.push(file);
+                } else {
+                    log::warn!("Horizon: fluid screen overlay {file} is missing: no overlay");
+                }
+            }
+        }
         files.retain(|p| !menu_pictures::menu_picture_only(p));
         // OptiFine random entity variants, under the names their scan gives them (those
         // outside `textures/` are `<ns>:optifine/random/...`).

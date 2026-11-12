@@ -2247,6 +2247,7 @@ mod tests {
                             id: "reload_fluid:oil".into(),
                             sprite: None,
                             tint: None,
+                            screen_overlay: None,
                             world: Some(Default::default()),
                         },
                     ]);
