@@ -166,10 +166,15 @@ def read_packs(directory=PACKS):
     return packs
 
 
+def constructor(key):
+    """Whether a key names a constructor or static initialiser, which Rust never calls and so never gates (mod_routing.construction)."""
+    return key.partition('#')[2].startswith(('<init>(', '<clinit>('))
+
+
 def routing_packs(routing):
     """{key: {kind, family, tail, returns, mods}} of an install's routing.json, as read_packs gives a reference pack's; a route inert by its guards needs no gate."""
     return {key: {'kind': r['kind'], 'family': r['family'], 'tail': bool(r['tail']), 'returns': int(r['returns']),
-                  'mods': {c['mod'] for c in r['changes']}} for key, r in routing['routes'].items() if not r.get('inert')}
+                  'mods': {c['mod'] for c in r['changes']}} for key, r in routing['routes'].items() if not r.get('inert') and not constructor(key)}
 
 
 def merge_packs(packs, more):
@@ -216,7 +221,12 @@ def lint(gates, packs, deferred, test_routes, bridges, gui_keys, root_text=None)
         deferred_keys[key].append(reason)
         if not REASON.match(reason):
             errors.append(f'{key}: bad deferral reason {reason!r}')
+    for key in sorted(gated | set(deferred_keys)):
+        if constructor(key):
+            errors.append(f'{key}: a constructor takes no gate or deferral (Rust never calls one; mod_routing decides who runs its patches)')
     for key in sorted(packs):
+        if constructor(key):
+            continue
         if key not in gated and key not in deferred_keys:
             errors.append(f'{key}: unrouted (no route! gate and no row in deferred.tsv)')
     for key in sorted(gated & set(deferred_keys)):
@@ -319,7 +329,9 @@ def ledger_lint(gates, packs, deferred, ledger, routing=None):
     return errors, notes
 
 
-def status_of(key, gated, deferred_by_key, inert=False):
+def status_of(key, gated, deferred_by_key, inert=False, construct=None):
+    if construct:
+        return f'constructor ({construct["by"]})'
     if inert:
         return 'inert (guard)'
     if key in gated:
@@ -341,7 +353,7 @@ def report_table(routing, gates=None, deferred=None):
     for key, r in sorted(routing['routes'].items()):
         mods = ', '.join(sorted({c['mod'] for c in r['changes']}))
         need = ', '.join(n.split('#')[-1] for n in r['closure']['needs_bridge'])
-        rows.append((key.replace('net/minecraft/', ''), r['kind'], r['family'], mods, status_of(key, gated, by_key, r.get('inert', False)), guards_text(r.get('guards')), need))
+        rows.append((key.replace('net/minecraft/', ''), r['kind'], r['family'], mods, status_of(key, gated, by_key, r.get('inert', False), r.get('construct')), guards_text(r.get('guards')), need))
     lines = ['| key | kind | family | mods | status | guards | needs_bridge |', '|---|---|---|---|---|---|---|']
     lines += ['| ' + ' | '.join(f'`{c}`' if i == 0 else c for i, c in enumerate(row)) + ' |' for row in rows]
     counts = collections.Counter(row[4].split(' ')[0] for row in rows)

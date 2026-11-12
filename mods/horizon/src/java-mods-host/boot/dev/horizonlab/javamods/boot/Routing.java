@@ -116,7 +116,7 @@ public final class Routing {
         boolean server = !net.neoforged.fml.loading.FMLEnvironment.getDist().isClient();
         var gates = gates(Routing.class.getResourceAsStream("/route_gates.tsv"));
         var ungated = new ArrayList<String>();
-        int id = 0, on = 0, dropped = 0, inert = 0;
+        int id = 0, on = 0, dropped = 0, inert = 0, constructors = 0;
         var modOf = new java.util.HashMap<String, String>();
         for (var r : ordered.values()) {
             for (JsonElement c : r.getAsJsonArray("changes")) modOf.put(c.getAsJsonObject().get("mixin").getAsString(), c.getAsJsonObject().get("mod").getAsString());
@@ -152,7 +152,9 @@ public final class Routing {
                 var clash = contradiction(key, name, MethodType.fromMethodDescriptorString(desc, loader).parameterCount(), declaredNamed(type, name) > 1, route.getAsJsonArray("changes"), shapes(type), modOf);
                 if (clash != null) throw new IllegalStateException(clash);
             }
-            boolean live = applied > 0;
+            boolean built = constructor(name);
+            if (built) constructors++;
+            boolean live = applied > 0 && !built;
             if (live) {
                 on++;
                 handles[id] = handle(type, key, name, desc, route.get("static").getAsBoolean(), loader);
@@ -175,7 +177,7 @@ public final class Routing {
             boolean none = admission != null && admission.inert();
             write(out, admission, family);
             if (none) inert++;
-            System.err.println(line(key, body, live, none, gates.get(key), mods));
+            System.err.println(built ? constructorLine(key, route.getAsJsonObject("construct"), applied > 0, mods) : line(key, body, live, none, gates.get(key), mods));
             if (live && !none && !gates.containsKey(key)) for (String mod : mods) ungated.add(mod + ": " + simple(owner) + "." + name);
             id++;
         }
@@ -191,7 +193,7 @@ public final class Routing {
         edges = edgeFlags;
         bin = bytes.toByteArray();
         Glyphs.decide();
-        System.err.println("Horizon: routes: " + on + " on (" + inert + " inert by guard), " + (ordered.size() - on) + " off, " + dropped + " changes dropped, confirmed in " + (System.nanoTime() - began) / 1_000_000 + " ms");
+        System.err.println("Horizon: routes: " + on + " on (" + inert + " inert by guard), " + (ordered.size() - on) + " off (" + constructors + " constructors, never bound), " + dropped + " changes dropped, confirmed in " + (System.nanoTime() - began) / 1_000_000 + " ms");
     }
 
     /** The routes this build gates, from `route_gates.tsv`: key to the number of native sites that still skip the gate; empty when the stream is null. */
@@ -212,6 +214,17 @@ public final class Routing {
     static String line(String key, boolean body, boolean live, boolean inert, Integer partial, java.util.Collection<String> mods) {
         String gate = inert ? "inert (guard)" : partial == null ? "UNGATED" : partial == 0 ? "gated" : "gated (partial: " + partial + " sites)";
         return "Horizon: route " + key + " " + (body ? "body" : "edge") + " " + (live ? "on" : "off") + " " + gate + " (" + String.join(", ", mods) + ")";
+    }
+
+    /** Whether a route's method is a constructor or static initialiser: Rust never calls one on an object it holds, so such a route is never bound. */
+    static boolean constructor(String name) {
+        return name.equals("<init>") || name.equals("<clinit>");
+    }
+
+    /** A constructor route's boot line: who runs its patches (`construct` in routing.json, null from an older analysis) and why. */
+    static String constructorLine(String key, JsonObject construct, boolean applied, java.util.Collection<String> mods) {
+        String by = construct == null ? "deferred (no decision in the analysis)" : construct.get("by").getAsString() + " (" + construct.get("reason").getAsString() + ")";
+        return "Horizon: route " + key + " constructor " + (applied ? "applied" : "not applied") + ", " + by + " (" + String.join(", ", mods) + ")";
     }
 
     /** The loud line for patches that are on but have no gate; the items are `mod: Class.method`. */
@@ -316,7 +329,8 @@ public final class Routing {
         return bare.contains("(") ? bare.equals(name + desc) : bare.equals(name);
     }
 
-    private static MethodHandle handle(Class<?> owner, String key, String name, String desc, boolean isStatic, ClassLoader loader) throws Exception {
+    static MethodHandle handle(Class<?> owner, String key, String name, String desc, boolean isStatic, ClassLoader loader) throws Exception {
+        if (constructor(name)) throw new IllegalStateException("route " + key + ": a constructor is never bound");
         try {
             var lookup = MethodHandles.privateLookupIn(owner, MethodHandles.lookup());
             var type = MethodType.fromMethodDescriptorString(desc, loader);

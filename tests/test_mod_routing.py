@@ -110,13 +110,25 @@ SOURCES.update({
             if (!(b instanceof fixture.ShapeLike)) return; System.out.println("shape"); }
         }''',
 })
+PANEL, CHUNK_MAP, GEN = 'net/minecraft/client/rt/Panel', 'net/minecraft/server/level/ChunkMap', 'net/minecraft/world/level/levelgen/RtGen'
+SOURCES.update({
+    'net/minecraft/client/rt/Panel.java': 'package net.minecraft.client.rt; public class Panel { public Panel(int a) {} }',
+    'net/minecraft/server/level/ChunkMap.java': 'package net.minecraft.server.level; public class ChunkMap { public ChunkMap(int a) {} }',
+    'net/minecraft/world/level/levelgen/RtGen.java': 'package net.minecraft.world.level.levelgen; public class RtGen { public RtGen() {} }',
+    'fixture/mixin/CtorMixin.java': '''package fixture.mixin; import org.spongepowered.asm.mixin.*; import org.spongepowered.asm.mixin.injection.*; import org.spongepowered.asm.mixin.injection.callback.*;
+        @Mixin(net.minecraft.client.rt.Panel.class) public class CtorMixin {
+          @Inject(method = "<init>", at = @At("TAIL")) void panelInit(int a, CallbackInfo ci) {}
+          @Inject(method = "<init>", at = @At("TAIL")) void mapInit(int a, CallbackInfo ci) {}
+          @Inject(method = "<init>", at = @At("TAIL")) void genInit(CallbackInfo ci) {}
+        }''',
+})
 KEY = 'net/minecraft/world/rt/Target#'
 ENTITY_SET_POS = 'net/minecraft/world/entity/Entity#setPos(DDD)V'
 LEDGER = {
     'methods': {},
     'fns': [{'file': 'crates/a.rs', 'line': 1}],
     'ported': {KEY + n: [0] for n in ('head', 'headLocal', 'tail', 'wrapped', 'mixed', 'varArg', 'varNo', 'run', 'hook', 'body', 'bridged', 'pure2')} | {'net/minecraft/world/entity/Entity#setPos': [0], ITEM_ENTITY + '#tick': [0]}
-              | {f'{GUARDED}#{n}': [0] for n in ('level', 'logged', 'twice', 'chestAt', 'join', 'joinLike')},
+              | {f'{GUARDED}#{n}': [0] for n in ('level', 'logged', 'twice', 'chestAt', 'join', 'joinLike')} | {f'{c}#<init>': [0] for c in (PANEL, CHUNK_MAP, GEN)},
     'mentioned': {KEY + 'weak': {'note': 'a comment'}},
 }
 BRIDGES = {('net/minecraft/world/rt/Target', 'bridged', '()V')}
@@ -138,6 +150,8 @@ ENTRIES = [
     dict(mixin('backpackTick', 'tick', ['HEAD']), mixin='fixture.mixin.BackpackMixin', target_class=['net.minecraft.world.entity.item.ItemEntity']),
     *(dict(mixin(handler, method, ['HEAD']), mixin='fixture.mixin.GuardedMixin', target_class=['net.minecraft.world.rt.Guarded'])
       for handler, method in (('tool', 'level'), ('logged', 'logged'), ('guardedOnce', 'twice'), ('openOnce', 'twice'), ('chest', 'chestAt'), ('shape', 'join'), ('shapeLike', 'joinLike'))),
+    *(dict(mixin(handler, '<init>', ['TAIL']), mixin='fixture.mixin.CtorMixin', target_class=[owner.replace('/', '.')])
+      for handler, owner in (('panelInit', PANEL), ('mapInit', CHUNK_MAP), ('genInit', GEN))),
 ]
 
 
@@ -270,6 +284,17 @@ class Routing(unittest.TestCase):
 
     def test_routes_of_unguarded_handlers_admit_all(self):
         self.assertIsNone(self.guards(f'{KEY}head(I)V'))
+
+    def test_a_constructor_route_is_never_bound_and_says_who_runs_its_patches(self):
+        by = {owner: self.routes[f'{owner}#<init>{desc}'] for owner, desc in ((PANEL, '(I)V'), (CHUNK_MAP, '(I)V'), (GEN, '()V'))}
+        self.assertEqual({o: (r['construct']['by'], r['inert']) for o, r in by.items()},
+                         {PANEL: ('java', True), CHUNK_MAP: ('seam', True), GEN: ('deferred', False)})
+        self.assertIn('no post-construct seam', by[GEN]['construct']['reason'])
+        self.assertEqual(by[CHUNK_MAP]['overriders'], [])
+
+    def test_the_view_list_is_read_from_view_inits(self):
+        self.assertIn(CHUNK_MAP, mrt.view_classes())
+        self.assertIn('net/minecraft/client/Minecraft', mrt.view_classes())
 
     def test_the_tsv_and_the_reference_list_carry_no_handler_names(self):
         rows = [line.split('\t') for line in mrt.tsv(self.report).splitlines()]
