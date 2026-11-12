@@ -264,10 +264,7 @@ impl Game<'_> {
         self.java_shell_layout().iter().for_each(|v| out.int(*v));
         out.bool(native_widget);
         out.bool(native_handles);
-        out.int(inputs.len() as i32);
-        for input in inputs {
-            input.write(&mut out);
-        }
+        self.java_shell_creative_inputs(inputs, &mut out);
         host.request("client_shell_input", &out.0)
             .and_then(|reply| self.java_shell_apply(&mut In(&reply)))
             .unwrap_or(ShellOwner::Native)
@@ -275,7 +272,12 @@ impl Game<'_> {
 
     /// A mouse button over the shell: true when native acts on it.
     pub(in crate::game) fn java_shell_mouse(&mut self, button: MouseButton, pressed: bool) -> bool {
-        let hit = pressed && self.recipe_book_hit(self.cursor.0, self.cursor.1);
+        let hit = pressed
+            && if self.screen == Screen::Creative {
+                self.creative_widget_hit()
+            } else {
+                self.recipe_book_hit(self.cursor.0, self.cursor.1)
+            };
         let mut inputs: Vec<Input> = self.java_cursor().into_iter().collect();
         inputs.push(Input::Button(
             button_number(button),
@@ -287,8 +289,11 @@ impl Game<'_> {
 
     /// The wheel over the shell: true when native scrolls.
     pub(in crate::game) fn java_shell_wheel(&mut self, x: f64, y: f64) -> bool {
-        let handles =
-            self.recipe_book_hit(self.cursor.0, self.cursor.1) || self.bundle_under_cursor();
+        let handles = if self.screen == Screen::Creative {
+            self.creative_screen.can_scroll(&self.pack.names)
+        } else {
+            self.recipe_book_hit(self.cursor.0, self.cursor.1)
+        } || self.bundle_under_cursor();
         let mut inputs: Vec<Input> = self.java_cursor().into_iter().collect();
         inputs.push(Input::Scroll(x, y));
         self.java_shell_input(&inputs, false, handles) == ShellOwner::Native
@@ -337,7 +342,7 @@ impl Game<'_> {
             .map(|c| Input::Char(c as u32))
             .collect();
         if !typed.is_empty() {
-            let handles = self.recipe_search_focused();
+            let handles = self.native_text_focused();
             self.java_shell_input(&typed, false, handles);
         }
         false

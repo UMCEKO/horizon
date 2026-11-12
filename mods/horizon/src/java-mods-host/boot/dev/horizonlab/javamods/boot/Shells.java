@@ -1,5 +1,6 @@
 package dev.horizonlab.javamods.boot;
 
+import dev.horizonlab.javamods.boot.mixin.CreativeShellAccess;
 import dev.horizonlab.javamods.boot.mixin.ShellAccess;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -12,10 +13,17 @@ import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.client.gui.screens.inventory.CreativeModeInventoryScreen;
 import net.minecraft.client.gui.screens.inventory.InventoryScreen;
 import net.minecraft.client.input.CharacterEvent;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.Identifier;
+import net.minecraft.world.SimpleContainer;
+import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.CreativeModeTabs;
+import net.minecraft.world.item.ItemStack;
 import net.neoforged.bus.api.Event;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.neoforge.client.event.ScreenEvent;
@@ -30,6 +38,8 @@ public final class Shells {
 
     /** The open shell, kept while a mod's screen covers it: a mod returns to the same object. */
     static Screen current;
+    /** What the open shell stands for: 1 the survival inventory, 2 the creative screen. */
+    static int kind;
     /** The widgets vanilla's `init()` made, which native draws and handles. */
     static final Set<Object> vanilla = Collections.newSetFromMap(new IdentityHashMap<>());
     private static Set<Object> before = Collections.emptySet();
@@ -42,8 +52,14 @@ public final class Shells {
     /** Bits of the steps Java drew in the last recording; native skips its own for them. */
     static int routed;
     static boolean animating;
+    /** The creative screen as native shows it: the selected tab's id, what is hovered (0 none, 1 grid, 2 hotbar, 3 inventory tab, 4 destroy slot) and where. */
+    private static String creativeTab = "";
+    private static int creativeHover, creativeIndex;
+    private static ItemStack creativeStack = ItemStack.EMPTY;
+    private static int written = -1;
+    private static final Slot DESTROY = new Slot(new SimpleContainer(1), 0, 173, 112);
     private static final Set<String> HEARD = new java.util.HashSet<>();
-    private static boolean cancelledLogged;
+    private static boolean cancelledLogged, notCreative, unknownTab;
 
     public static boolean is(Object screen) {
         return screen != null && screen == current;
@@ -74,29 +90,61 @@ public final class Shells {
     // --- Opening and closing
 
     /** Native opened one of its vanilla screens: with a mod listening, the Java client opens the real class as a shell. */
-    static void open(int kind, Minecraft minecraft) {
-        if (kind != 1 || !wanted(NeoForge.EVENT_BUS) || is(minecraft.gui.screen())) return;
+    static void open(int which, Minecraft minecraft) {
+        if ((which != 1 && which != 2) || !wanted(NeoForge.EVENT_BUS)) return;
+        if (is(minecraft.gui.screen()) && kind == which) return;
+        if (current != null && kind != which) {
+            if (is(minecraft.gui.screen())) minecraft.gui.setScreen(null);
+            release(minecraft);
+            current = null;
+        }
         Screen shell;
         try {
-            shell = new InventoryScreen(minecraft.player);
+            if (which == 2) {
+                // `init` selects the static tab: start from the default so the picker menu keeps its own slots.
+                CreativeShellAccess.horizon$selectedTab(CreativeModeTabs.getDefaultTab());
+                shell = new CreativeModeInventoryScreen(minecraft.player, minecraft.player.connection.enabledFeatures(), minecraft.options.operatorItemsTab().get());
+            } else {
+                shell = new InventoryScreen(minecraft.player);
+            }
         } catch (Throwable t) {
-            System.err.println("Horizon: the Java client's inventory shell failed; native's screen stays alone");
+            System.err.println("Horizon: the Java client's screen shell failed; native's screen stays alone");
             t.printStackTrace();
             return;
         }
         current = shell;
+        kind = which;
         last = new byte[SEGMENTS][];
         lastRouted = 0;
         animating = false;
+        written = -1;
         minecraft.gui.setScreen(shell);
-        if (minecraft.gui.screen() != shell) current = null;
+        if (which == 2 && minecraft.gui.screen() instanceof InventoryScreen) {
+            if (!notCreative) System.err.println("Horizon: the Java client is not in creative; no creative shell");
+            notCreative = true;
+            minecraft.gui.setScreen(null);
+        }
+        if (minecraft.gui.screen() != shell) {
+            release(minecraft);
+            current = null;
+        }
+    }
+
+    /** The creative screen's `init` listens to the inventory menu and its `removed`, which a shell never runs, stops that. */
+    private static void release(Minecraft minecraft) {
+        if (current instanceof CreativeModeInventoryScreen creative && minecraft.player != null) {
+            var listener = ((CreativeShellAccess) creative).horizon$listener();
+            if (listener != null) minecraft.player.inventoryMenu.removeSlotListener(listener);
+        }
     }
 
     /** Native closed its screen. A mod's screen over the shell keeps it: the mod sets the same object back. */
     static void close(Minecraft minecraft) {
         if (!is(minecraft.gui.screen())) return;
         minecraft.gui.setScreen(null);
+        release(minecraft);
         current = null;
+        kind = 0;
     }
 
     // --- Init bookkeeping
@@ -127,6 +175,10 @@ public final class Shells {
     /** The layout native sent, written where vanilla's `init` and `extractContents` would have: mods read it with the getters. */
     static void apply(Screen screen) {
         if (!(screen instanceof AbstractContainerScreen<?> container)) return;
+        if (screen instanceof CreativeModeInventoryScreen creative) {
+            applyCreative(creative);
+            return;
+        }
         var access = (ShellAccess) container;
         int[] l = layout;
         access.horizon$leftPos(l[0]);
@@ -135,6 +187,54 @@ public final class Shells {
         access.horizon$imageHeight(l[3]);
         var slots = container.getMenu().slots;
         access.horizon$hovered(l[4] >= 0 && l[4] < slots.size() ? container.getMenu().getSlot(l[4]) : null);
+    }
+
+    /** The creative screen's selected tab and hovered slot, written where `selectTab` and `renderSlot` would leave them: a field write and one slot, no vanilla logic. */
+    private static void applyCreative(CreativeModeInventoryScreen screen) {
+        var access = (ShellAccess) screen;
+        int[] l = layout;
+        access.horizon$leftPos(l[0]);
+        access.horizon$topPos(l[1]);
+        access.horizon$imageWidth(l[2]);
+        access.horizon$imageHeight(l[3]);
+        if (!creativeTab.isEmpty()) {
+            var id = Identifier.tryParse(creativeTab);
+            var tab = id == null ? null : BuiltInRegistries.CREATIVE_MODE_TAB.getValue(id);
+            if (tab != null) CreativeShellAccess.horizon$selectedTab(tab);
+            else if (!unknownTab) {
+                unknownTab = true;
+                System.err.println("Horizon: the creative tab " + creativeTab + " is not in the Java client's registry");
+            }
+        }
+        var slots = screen.getMenu().slots;
+        if (written >= 0 && written < slots.size()) slots.get(written).container.setItem(written, ItemStack.EMPTY);
+        written = -1;
+        Slot hovered = null;
+        switch (creativeHover) {
+            case 1 -> {
+                if (creativeIndex >= 0 && creativeIndex < 45 && creativeIndex < slots.size()) {
+                    hovered = slots.get(creativeIndex);
+                    hovered.container.setItem(creativeIndex, creativeStack);
+                    written = creativeIndex;
+                }
+            }
+            case 2 -> hovered = creativeIndex >= 0 && 45 + creativeIndex < slots.size() ? slots.get(45 + creativeIndex) : null;
+            case 3 -> {
+                var inventory = Minecraft.getInstance().player.inventoryMenu.slots;
+                hovered = creativeIndex >= 0 && creativeIndex < inventory.size() ? inventory.get(creativeIndex) : null;
+            }
+            case 4 -> hovered = DESTROY;
+            default -> {}
+        }
+        access.horizon$hovered(hovered);
+    }
+
+    /** `Input::ShellCreative`: native's selected tab and hovered slot. */
+    static void creative(String tab, int hover, int index, byte[] stack) throws IOException {
+        creativeTab = tab;
+        creativeHover = hover;
+        creativeIndex = index;
+        creativeStack = stack.length == 0 ? ItemStack.EMPTY : GameBridge.decode(stack);
     }
 
     // --- Recording
