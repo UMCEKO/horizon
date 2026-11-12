@@ -91,6 +91,21 @@ impl Game<'_> {
         let _ = pos;
     }
 
+    /// The ticks of the mod block entities from `slots[0]` on, as one Java run: how many slots it ticked, 0 to tick the first alone.
+    pub(super) fn java_hook_block_entity_run(
+        &mut self,
+        slots: &[(horizon_client::block_entities::Pos, u32)],
+        ticking: &dyn Fn(i32, i32) -> bool,
+    ) -> usize {
+        #[cfg(feature = "java-mods")]
+        return self.java_block_entity_run(slots, ticking);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (slots, ticking);
+            0
+        }
+    }
+
     /// Before a command reads a block entity: a mod's live form, from Java.
     pub(super) fn java_hook_block_entity_read(&mut self, pos: [i32; 3]) {
         #[cfg(feature = "java-mods")]

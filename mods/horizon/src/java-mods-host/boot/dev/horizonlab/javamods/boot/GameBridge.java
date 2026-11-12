@@ -126,6 +126,7 @@ public final class GameBridge {
         Crossing.game("clear_use", GameBridge::clearUse);
         Crossing.game("block_events", GameBridge::blockEvents);
         Crossing.game("block_entity_tick", GameBridge::blockEntityTick);
+        Crossing.game("block_entity_tick_run", GameBridge::blockEntityTickRun);
         Crossing.game("block_entity_load", GameBridge::blockEntityLoad);
         Crossing.game("block_entity_drop", GameBridge::blockEntityDrop);
         Crossing.game("entity_view", GameBridge::entityView);
@@ -882,6 +883,33 @@ public final class GameBridge {
         boolean held = BlockEntities.tick(level, BlockPos.of(in.readLong()));
         out.writeBoolean(held);
         writeEffects(out);
+    }
+
+    /** #268: a run of adjacent held block entities in one crossing, ticked in order until one wrote into Horizon (`runEntry` says so) or threw. */
+    private static void blockEntityTickRun(Crossing.In in, Crossing.Out out) throws Exception {
+        var level = tickingLevelOf(in);
+        int count = in.readInt();
+        out.writeInt(0);
+        int processed = 0;
+        while (processed < count) {
+            var pos = BlockPos.of(in.readLong());
+            if (processed > 0 && !BlockEntities.runEntry(processed)) break;
+            processed++;
+            boolean held;
+            try {
+                held = BlockEntities.tick(level, pos);
+            } catch (Throwable t) {
+                // As `game` reports a scalar tick that threw: its own effects go, the entries before keep theirs.
+                t.printStackTrace();
+                if (outermost()) abandonCall();
+                out.writeByte(2);
+                out.writeInt(0);
+                break;
+            }
+            out.writeByte(held ? 1 : 0);
+            writeEffects(out);
+        }
+        out.patchInt(0, processed);
     }
 
     private static byte[] tracking(byte[] input) throws Exception {

@@ -33,6 +33,12 @@ horizon_java_host::java_bridges! { table for Game<'static> {
         game.java_store_block_entity(pos.0, generation, &tag.0)
     }
 
+    "dev/horizonlab/javamods/boot/BlockEntities".runEntry
+    "(I)Z" =>
+    fn block_entity_run_entry(_game, index: i32) -> bool {
+        java_be_runs::run_entry(index)
+    }
+
     "dev/horizonlab/javamods/boot/Clients".collisionShape
     "(JLnet/minecraft/world/level/block/state/BlockState;[D)V" =>
     fn block_collision_shape(game, pos: Pos, state: State, boxes: Doubles) -> () {

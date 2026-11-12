@@ -2,6 +2,12 @@ use super::screen_build::ObservedScreen;
 use crate::game::api_values::{TryIntoApi, TryIntoEngine};
 use horizon_client::containers::ModBlockEntity as EngineBlockEntity;
 
+/// A mod block entity out of the world for its tick, with its item slots as they were before it.
+pub(in crate::game) struct TakenModBlockEntity {
+    entity: EngineBlockEntity,
+    items: Vec<Option<ItemStack>>,
+}
+
 struct ContentsChangedGuard<'a, 'game> {
     game: &'a mut Game<'game>,
 }
@@ -3336,8 +3342,17 @@ impl Game<'_> {
     }
     /// The tick of the mod block entity at `pos`.
     pub(super) fn tick_mod_block_entity(&mut self, pos: Pos) {
+        if let Some(taken) = self.take_ticking_mod_block_entity(pos) {
+            self.finish_mod_block_entity_tick(pos, taken);
+        }
+    }
+    /// `tick_mod_block_entity` up to its hook: the block entity out of the world, its slots grown to its container's.
+    pub(in crate::game) fn take_ticking_mod_block_entity(
+        &mut self,
+        pos: Pos,
+    ) -> Option<TakenModBlockEntity> {
         let Some(BlockEntity::Mod(m)) = self.world.block_entities.get_mut(&pos) else {
-            return;
+            return None;
         };
         // An empty id marks its place while the mod has it.
         let mut taken = std::mem::take(&mut **m);
@@ -3357,8 +3372,34 @@ impl Game<'_> {
             let items = horizon_client::save::encode_items(&std::mem::take(&mut taken.items));
             taken.nbt.insert("Items".into(), items);
         }
-        self.api_block_entity_tick([pos.0, pos.1, pos.2], &mut taken);
-        self.put_back_mod_block_entity(pos, taken, &items);
+        Some(TakenModBlockEntity {
+            entity: taken,
+            items,
+        })
+    }
+    /// The rest of `tick_mod_block_entity`: its hook, then the block entity back in the world.
+    pub(in crate::game) fn finish_mod_block_entity_tick(
+        &mut self,
+        pos: Pos,
+        mut taken: TakenModBlockEntity,
+    ) {
+        self.api_block_entity_tick([pos.0, pos.1, pos.2], &mut taken.entity);
+        self.put_back_mod_block_entity(pos, taken.entity, &taken.items);
+    }
+    /// Whether `tick_mod_block_entity` at `pos` reaches its hook: a mod block entity whose taken form converts for the mod API.
+    #[cfg(feature = "java-mods")]
+    pub(in crate::game) fn mod_block_entity_tick_reaches_hook(&self, pos: Pos) -> bool {
+        let Some(BlockEntity::Mod(m)) = self.world.block_entities.get(&pos) else {
+            return false;
+        };
+        let state = self.world.block(pos.0, pos.1, pos.2).0;
+        let slots = self
+            .world
+            .block_entities
+            .mod_container(state)
+            .map_or(0, |c| c.slots);
+        // Without a container its items go to its saved compound, which always converts.
+        !m.id().is_empty() && (slots == 0 || m.items.try_into_api().is_ok())
     }
     /// Puts back a mod block entity taken out for a call, unless the call
     /// removed or replaced it, with what its `setChanged` does.

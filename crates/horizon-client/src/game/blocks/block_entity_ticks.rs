@@ -46,7 +46,9 @@ impl Game<'_> {
         let tickers = self.world.block_entity_tickers();
         let mut last_chunk = (i32::MIN, i32::MIN);
         let mut last_chunk_ticking = false;
-        for slot in tickers.iter().copied() {
+        let mut next = 0;
+        while let Some(&slot) = tickers.get(next) {
+            next += 1;
             let pos = slot.0;
             let chunk = (pos.0 >> 4, pos.2 >> 4);
             let chunk_ticking = if chunk == last_chunk {
@@ -89,7 +91,13 @@ impl Game<'_> {
                 Some(BlockEntity::DaylightDetector) => self.tick_daylight_detector(pos),
                 Some(BlockEntity::EndGateway(_)) => self.tick_end_gateway(pos),
                 Some(BlockEntity::Campfire(_)) => self.tick_campfire(pos)?,
-                Some(BlockEntity::Mod(_)) => self.tick_mod_block_entity(pos),
+                Some(BlockEntity::Mod(_)) => {
+                    // A run of Java block entities ticks in one crossing; the rest of it is done.
+                    match self.java_hook_block_entity_run(&tickers[next - 1..], &ticking) {
+                        0 => self.tick_mod_block_entity(pos),
+                        ran => next += ran - 1,
+                    }
+                }
                 Some(BlockEntity::PotentSulfur(_)) => {
                     self.tick_potent_sulfur(pos)?;
                     // A window that simulates the world itself is its own
@@ -223,6 +231,19 @@ impl Game<'_> {
     /// `LevelChunk.isTicking` (block coordinates): a block-ticking chunk from
     /// every player's tickets (`update_chunk_tickets`), its entities loaded
     /// (`ServerLevel.areEntitiesLoaded`).
+    /// The tick loop's checks of a slot: its chunk ticks, not asleep, still live (`TickingBlockEntity.isRemoved`), inside the border.
+    #[cfg(feature = "java-mods")]
+    pub(in crate::game) fn block_entity_slot_ticks(
+        &self,
+        slot: (Pos, u32),
+        ticking: &dyn Fn(i32, i32) -> bool,
+    ) -> bool {
+        let pos = slot.0;
+        ticking(pos.0, pos.2)
+            && !self.world.block_entities.is_asleep(&pos)
+            && self.world.block_entities.is_live(slot)
+            && self.border.contains(f64::from(pos.0), f64::from(pos.2))
+    }
     pub(super) fn block_ticking_area(&self) -> impl Fn(i32, i32) -> bool + use<> {
         let levels = self.tickets.levels();
         let has_pending = !self.world.entities_pending.is_empty();

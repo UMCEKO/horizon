@@ -1019,15 +1019,13 @@ impl Game<'_> {
     /// `BlockEntityTicker.tick` of a block entity Java holds, which it took when its chunk loaded.
     pub(super) fn java_block_entity_tick(&mut self, pos: [i32; 3]) {
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
-        if !self.java_tick_once(at) {
-            thread_local! {
-                static WARNED: std::cell::RefCell<std::collections::HashSet<BlockPos>> = Default::default();
-            }
-            if WARNED.with_borrow_mut(|w| w.insert(at)) {
-                log::warn!(
-                    "Horizon: no Java block entity at {pos:?} for Horizon's record of one, so it doesn't tick"
-                );
-            }
+        // An entry of a run Java already ticked; its reply said whether Java held it.
+        let held = match java_be_runs::take_preticked() {
+            Some(held) => held,
+            None => self.java_tick_once(at),
+        };
+        if !held {
+            java_warn_unheld(at);
         }
         self.java_drain_block_events();
     }
@@ -1519,6 +1517,18 @@ impl BlockEventsAside {
         if dropped > 0 {
             log::warn!("Horizon: {dropped} block events of another level were left undrained");
         }
+    }
+}
+
+/// Logs once per position that Java had no block entity where Horizon ticked one.
+pub(super) fn java_warn_unheld(at: BlockPos) {
+    thread_local! {
+        static WARNED: std::cell::RefCell<std::collections::HashSet<BlockPos>> = Default::default();
+    }
+    if WARNED.with_borrow_mut(|w| w.insert(at)) {
+        log::warn!(
+            "Horizon: no Java block entity at {at:?} for Horizon's record of one, so it doesn't tick"
+        );
     }
 }
 
