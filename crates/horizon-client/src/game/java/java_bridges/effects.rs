@@ -158,6 +158,7 @@ horizon_java_host::java_bridges! { table for Game<'static> {
                 breaker,
                 ..Default::default()
             };
+            let _live = java_loot::LiveLoot::enter();
             Some(game.roll_block_loot(at, state, None, roll))
         })()
         .unwrap_or_default();

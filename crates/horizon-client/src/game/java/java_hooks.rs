@@ -590,6 +590,30 @@ pub(super) fn java_hook_wants_world_opening() -> bool {
     false
 }
 
+/// A loot function of a kind a Java mod owns runs in Java; any other kind is left alone.
+pub(crate) fn java_hook_loot_function(
+    kind: &str,
+    data: &serde_json::Value,
+    ctx: &horizon_world::loot::LootContext<'_>,
+    stack: &mut horizon_world::loot::LootStack,
+) {
+    #[cfg(feature = "java-mods")]
+    super::java_loot::hook_function(kind, data, ctx, stack);
+    let _ = (kind, data, ctx, stack);
+}
+
+/// A loot condition of a kind a Java mod owns is decided in Java; any other kind is left alone.
+pub(crate) fn java_hook_loot_condition(
+    kind: &str,
+    data: &serde_json::Value,
+    ctx: &horizon_world::loot::LootContext<'_>,
+    holds: &mut bool,
+) {
+    #[cfg(feature = "java-mods")]
+    super::java_loot::hook_condition(kind, data, ctx, holds);
+    let _ = (kind, data, ctx, holds);
+}
+
 /// Opening a world waits on the Java mods' start: Err when they failed to start.
 pub(super) fn java_hook_ready() -> Result<(), &'static str> {
     #[cfg(feature = "java-mods")]

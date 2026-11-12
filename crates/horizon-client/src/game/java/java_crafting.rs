@@ -173,6 +173,16 @@ impl CraftFacts {
     pub(in crate::game) fn owns_condition(&self, id: &str) -> bool {
         self.conditions.contains(id)
     }
+
+    #[cfg(test)]
+    pub(in crate::game) fn owning(functions: &[&str], conditions: &[&str]) -> Self {
+        let own = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect();
+        Self {
+            functions: own(functions),
+            conditions: own(conditions),
+            ..Self::default()
+        }
+    }
 }
 
 #[cfg(test)]

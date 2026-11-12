@@ -151,6 +151,7 @@ public final class GameBridge {
         Crossing.game("entity_types", input -> EntityFacts.types(level(OVERWORLD)));
         Crossing.game("level_add", GameBridge::levelAdd);
         Crossing.game("craft_facts", input -> CraftFacts.bin(server()));
+        Loot.register();
         Crossing.game("click_block", (in, out) -> use(in, out, 2));
         Crossing.game("event_click_block", (in, out) -> use(in, out, 3));
         Crossing.game("event_use_item", (in, out) -> use(in, out, 4));
@@ -341,6 +342,11 @@ public final class GameBridge {
         var out = new ArrayList<ServerLevel>();
         for (var level : levels) if (level != null) out.add(level);
         return out;
+    }
+
+    /** The level of a dimension's id, at the game time Horizon sent. */
+    static ServerLevel levelAt(String id, long gameTime) {
+        return invalidated(levelNamed(id), gameTime);
     }
 
     /** `level_add`: Horizon names the dimension of a key once, and its `ServerLevel` is made. */
@@ -762,6 +768,7 @@ public final class GameBridge {
 
     /** A server's levels, players and block entities are its own: the next world's start builds new ones. */
     private static void closeWorld() {
+        Loot.reset();
         levels = new ServerLevel[3];
         PLAYERS.clear();
         JOINED.clear();
