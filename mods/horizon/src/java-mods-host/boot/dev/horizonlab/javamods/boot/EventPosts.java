@@ -25,7 +25,7 @@ final class EventPosts {
     private static final Map<String, Integer> SERVER = Map.of("BreakBlockEvent", 5, "AttackEntityEvent", 6);
 
     /** The client events Rust posts through `client_post_event`. */
-    private static final Map<String, ClientPost> CLIENT = Map.of("PlaySoundEvent", NativeSounds::ask);
+    private static final Map<String, ClientPost> CLIENT = Map.of("PlaySoundEvent", NativeSounds::ask, "ClientChatReceivedEvent", ChatReceived::ask);
 
     /** Listeners Horizon itself put on `NeoForge.EVENT_BUS`, by event class: they do not make an event listened. */
     private static final Map<Class<?>, Integer> OWN = new HashMap<>();

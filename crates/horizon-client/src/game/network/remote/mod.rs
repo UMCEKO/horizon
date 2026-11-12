@@ -138,7 +138,7 @@ fn chat_type_decorate(
 }
 
 /// A text component the server sent, for the HUD.
-pub(super) fn remote_text(tag: &Tag) -> horizon_client::text::Text {
+pub(in crate::game) fn remote_text(tag: &Tag) -> horizon_client::text::Text {
     use horizon_client::scoreboard::{comp_text, tag_to_json};
     comp_text(&tag_to_json(tag))
 }
@@ -227,6 +227,36 @@ struct QueuedChat {
     sender: u128,
     /// The chat type's network ID (`ChatType.Bound.chatType`).
     chat_type: i32,
+    /// The packet's bound chat type, for the Java client's `ClientChatReceivedEvent`.
+    bound: play::ChatTypeBound,
+    /// The signed message's fields, for a player message only.
+    body: Option<ChatBody>,
+}
+
+/// What `PlayerChatMessage` holds of a player message beyond its decorated line, as the packet sent it.
+#[derive(Clone)]
+#[cfg_attr(not(feature = "java-mods"), expect(dead_code, reason = "only the Java client reads it"))]
+pub(in crate::game) struct ChatBody {
+    pub(in crate::game) index: i32,
+    pub(in crate::game) signature: Option<Vec<u8>>,
+    pub(in crate::game) content: String,
+    pub(in crate::game) timestamp: i64,
+    pub(in crate::game) salt: i64,
+    pub(in crate::game) unsigned: Option<Tag>,
+    pub(in crate::game) filtered: bool,
+}
+
+/// A message's bound chat type and body, while mods are told it arrived.
+pub(in crate::game) type EventChat = (play::ChatTypeBound, Option<ChatBody>);
+
+thread_local! {
+    static EVENT_CHAT: std::cell::RefCell<Option<EventChat>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The message `ClientChatReceivedEvent` is being posted for; `None` for a system message.
+#[cfg_attr(not(feature = "java-mods"), expect(dead_code, reason = "only the Java client reads it"))]
+pub(in crate::game) fn event_chat() -> Option<EventChat> {
+    EVENT_CHAT.with_borrow(Clone::clone)
 }
 
 /// `ChatTrustLevel`; a modified message keeps the signed content it was
@@ -1972,6 +2002,8 @@ impl Game<'_> {
             narration,
             sender: 0,
             chat_type: chat_type.chat_type,
+            bound: chat_type.clone(),
+            body: None,
         });
     }
 
@@ -2073,6 +2105,8 @@ impl Game<'_> {
             narration,
             sender,
             chat_type,
+            bound,
+            body,
         } = chat;
         // ChatListener.showMessageToPlayer: Only Show Secure Chat drops what is not secure.
         if matches!(trust, ChatTrust::NotSecure) && self.settings.file.bool("onlyShowSecureChat") {
@@ -2080,7 +2114,16 @@ impl Game<'_> {
         }
         // handleChatMessageError says its line as system chat, and mods are not told of it.
         let error = matches!(trust, ChatTrust::Error);
-        if !error && !self.chat_received(false, false, sender, Some(chat_type), &mut line) {
+        if !error
+            && !self.chat_received(
+                false,
+                false,
+                sender,
+                Some(chat_type),
+                Some((&bound, body.as_ref())),
+                &mut line,
+            )
+        {
             return false;
         }
         let source = horizon_client::chat::ChatSource::Player;
@@ -2102,17 +2145,20 @@ impl Game<'_> {
         overlay: bool,
         sender: u128,
         chat_type: Option<i32>,
+        message: Option<(&play::ChatTypeBound, Option<&ChatBody>)>,
         line: &mut horizon_client::text::Text,
     ) -> bool {
         if !mod_api::__private::listened(mod_api::HookId::ClientChatReceived) {
             return true;
         }
+        EVENT_CHAT.set(message.map(|(bound, body)| (bound.clone(), body.cloned())));
         let registries = self.remote.as_ref().map(|r| Arc::clone(&r.registries));
         let name = chat_type
             .zip(registries.as_deref())
             .and_then(|(id, registries)| registries.name("minecraft:chat_type", id));
         let mut cancel = false;
         self.native_client_chat_received(system, overlay, sender, name, line, &mut cancel);
+        EVENT_CHAT.set(None);
         !cancel
     }
 
@@ -5456,7 +5502,7 @@ impl Game<'_> {
                 // language; mods may change or cancel it. ChatListener.handleOverlay
                 // for the action bar.
                 let mut text = remote_text(&p.content);
-                if !self.chat_received(true, p.overlay, 0, None, &mut text) {
+                if !self.chat_received(true, p.overlay, 0, None, None, &mut text) {
                     return Ok(());
                 }
                 if p.overlay {
@@ -5573,6 +5619,15 @@ impl Game<'_> {
                     }
                     return Ok(());
                 };
+                let body = ChatBody {
+                    index: p.index,
+                    signature: p.signature.clone().filter(|_| signature.is_some()),
+                    content: p.content.clone(),
+                    timestamp: p.timestamp,
+                    salt: p.salt,
+                    unsigned: p.unsigned_content.clone(),
+                    filtered: p.filter.0 == 1,
+                };
                 self.handle_player_chat(QueuedChat {
                     line,
                     signature,
@@ -5580,6 +5635,8 @@ impl Game<'_> {
                     narration,
                     sender: p.sender,
                     chat_type: p.chat_type.chat_type,
+                    bound: p.chat_type.clone(),
+                    body: Some(body),
                 });
             }
             C::DisguisedChat(p) => {
@@ -5595,6 +5652,8 @@ impl Game<'_> {
                     narration,
                     sender: 0,
                     chat_type: p.chat_type.chat_type,
+                    bound: p.chat_type.clone(),
+                    body: None,
                 });
             }
             C::DeleteChat(p) => self.handle_delete_chat(&p.signature)?,
