@@ -23,8 +23,13 @@ public final class TestMod {
     public static final java.util.function.Supplier<net.minecraft.core.particles.SimpleParticleType> SPARK = PARTICLE_TYPES.register("spark", () -> new net.minecraft.core.particles.SimpleParticleType(false));
 
     public static final java.util.function.Supplier<net.minecraft.core.particles.SimpleParticleType> BEAM = PARTICLE_TYPES.register("beam", () -> new net.minecraft.core.particles.SimpleParticleType(true));
+    static volatile net.minecraft.commands.Commands.CommandSelection commandSelection;
 
     public TestMod(IEventBus bus) {
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.RegisterCommandsEvent event) -> {
+            commandSelection = event.getCommandSelection();
+            event.getDispatcher().register(net.minecraft.commands.Commands.literal("horizon_java_test").executes(context -> 1));
+        });
         ITEMS.registerItem("wand", Wand::new);
         ITEMS.registerItem("probe", Probe::new);
         ITEMS.registerItem("tonic", Tonic::new);

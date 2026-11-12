@@ -122,6 +122,7 @@ public final class GameBridge {
         Crossing.game("worldgen_export", GameBridge::worldgenExport);
         Crossing.game("items", input -> items());
         Crossing.game("states", input -> states());
+        Crossing.game("commands_roots", (in, out) -> commandsRoots(out));
         Crossing.game("refresh", GameBridge::refresh);
         Crossing.game("clear_use", GameBridge::clearUse);
         Crossing.game("block_events", GameBridge::blockEvents);
@@ -224,12 +225,24 @@ public final class GameBridge {
         return new byte[] {1};
     }
 
+    private static void commandsRoots(Crossing.Out out) throws IOException {
+        var roots = ModCommands.roots(server().getCommands().getDispatcher());
+        out.writeInt(roots.size());
+        var line = new StringBuilder();
+        for (var root : roots) {
+            writeText(out, root.getKey());
+            out.writeByte(root.getValue());
+            line.append(' ').append(root.getKey()).append('=').append(root.getValue() == ModCommands.JAVA ? 'J' : 'M');
+        }
+        if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: Java commands: " + roots.size() + " roots:" + line);
+    }
+
     static byte[] prepare() throws Exception {
         if (registries != null) return new byte[] {1};
         var repository = ServerPacksSource.createVanillaTrustedRepository();
         ResourcePackLoader.populatePackRepository(repository, PackType.SERVER_DATA, true);
         var packs = new WorldLoader.PackConfig(repository, WorldDataConfiguration.DEFAULT, false, true);
-        var config = new WorldLoader.InitConfig(packs, Commands.CommandSelection.DEDICATED, LevelBasedPermissionSet.GAMEMASTER);
+        var config = new WorldLoader.InitConfig(packs, net.neoforged.fml.loading.FMLEnvironment.getDist().isClient() ? Commands.CommandSelection.INTEGRATED : Commands.CommandSelection.DEDICATED, LevelBasedPermissionSet.GAMEMASTER);
         record Loaded(CloseableResourceManager manager, ReloadableServerResources resources, LayeredRegistryAccess<RegistryLayer> layers) {}
         Loaded loaded = Util.blockUntilDone(executor -> WorldLoader.load(
                 config,

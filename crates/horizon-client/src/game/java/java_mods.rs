@@ -1360,6 +1360,11 @@ impl Game<'_> {
                 s.known.clear();
             }
         });
+        if open {
+            self.java_read_commands();
+        } else {
+            super::java_commands::java_commands_reset();
+        }
         horizon_client::lan::chunk_watch::set_java_side(open && horizon_java_host::get().is_some());
         super::java_entities::reset_views();
         // Building every entity type reads the level through bridged natives (`getDifficulty`), so the game must be active.
