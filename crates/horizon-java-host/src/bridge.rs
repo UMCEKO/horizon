@@ -15,7 +15,7 @@ pub struct Bridge {
     pub class: &'static str,
     pub method: &'static str,
     pub desc: &'static str,
-    /// The method runs in Java when the receiver isn't this class; `@owner.method` names a static `(Object)Z` that must hold instead, and the native then goes on `owner`.
+    /// The method runs in Java when the receiver isn't this class; `@owner.method` names a static `(Object)Z` that must hold instead (`@owner.method+`: `(Object, the method's parameters)Z`), and the native then goes on `owner`.
     pub guard: &'static str,
     pub native: &'static str,
     pub args: Vec<&'static str>,
@@ -649,7 +649,7 @@ impl Ret for BlockStateId {
     }
 }
 
-/// One entry serves one Java method from Rust: the class, the method and its descriptor, then a body on `&mut Game`; a leading `route` makes it the method's body for a route stub.
+/// One entry serves one Java method from Rust: the class, the method and its descriptor, then a body on `&mut Game`; a leading `route` makes it the method's body for a route stub; a guard `@owner.method+` also receives the method's own parameters.
 #[macro_export]
 macro_rules! java_bridges {
     ($table:ident for $game:ty { $(
@@ -845,6 +845,12 @@ mod tests {
         );
         assert_eq!(source.at, Some([1.0, 2.0, 3.0]));
         assert_eq!(Source::read(&out.0[..5]), None);
+    }
+
+    #[test]
+    fn an_arguments_guard_keeps_its_holder() {
+        let bridge = entry("@dev/horizonlab/javamods/boot/Effects.nativeParticles+");
+        assert_eq!(bridge.holder(), "dev/horizonlab/javamods/boot/Effects");
     }
 
     #[test]
