@@ -727,6 +727,9 @@ impl Game<'_> {
             log::info!("Horizon: client tick status lockstep {lockstep}");
         }
         super::java_lockstep::set_lockstep_next(lockstep);
+        if super::java_world_renders::java_probe_status(reply).is_none() {
+            log::warn!("Horizon: a status's attribute probe ended in pieces");
+        }
         super::java_world_renders::java_world_status(
             world.as_deref(),
             world_animating,

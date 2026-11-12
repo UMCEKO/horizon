@@ -78,10 +78,6 @@ net/minecraft/server/players/PlayerList#placeNewPlayer(Lnet/minecraft/network/Co
 net/minecraft/world/RandomizableContainer#setLootTable(Lnet/minecraft/resources/ResourceKey;J)V	view: block_entity
 net/minecraft/world/RandomizableContainer#tryLoadLootTable(Lnet/minecraft/world/level/storage/ValueInput;)Z	view: block_entity
 net/minecraft/world/RandomizableContainer#unpackLootTable(Lnet/minecraft/world/entity/player/Player;)V	view: block_entity
-net/minecraft/world/attribute/EnvironmentAttributeProbe#tick(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/phys/Vec3;)V	seam: crates/horizon-client-render/src/biome.rs:402
-net/minecraft/world/attribute/EnvironmentAttributeSystem#addDynamicLayers(Lnet/minecraft/world/attribute/EnvironmentAttributeSystem$Builder;Lnet/minecraft/world/level/Level;)V	seam: crates/horizon-client-render/src/environment.rs:240
-net/minecraft/world/attribute/EnvironmentAttributeSystem$ValueSampler#computeValueNotPositional()Ljava/lang/Object;	seam: crates/horizon-client-render/src/environment.rs:240
-net/minecraft/world/attribute/EnvironmentAttributeSystem$ValueSampler#computeValuePositional(Lnet/minecraft/world/phys/Vec3;Lnet/minecraft/world/attribute/SpatialAttributeInterpolator;)Ljava/lang/Object;	seam: crates/horizon-client/src/game.rs:15178
 net/minecraft/world/effect/MobEffectInstance#update(Lnet/minecraft/world/effect/MobEffectInstance;)Z	seam: crates/horizon-client-render/src/effects.rs:40
 net/minecraft/world/entity/Entity#getDismountLocationForPassenger(Lnet/minecraft/world/entity/LivingEntity;)Lnet/minecraft/world/phys/Vec3;	view: entity
 net/minecraft/world/entity/Entity#isInWater()Z	view: entity

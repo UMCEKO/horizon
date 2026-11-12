@@ -1,3 +1,7 @@
 # GUI keys native serves from a recorded frame
 net/minecraft/client/gui/Font$PreparedTextBuilder#accept(ILnet/minecraft/network/chat/Style;Lnet/minecraft/client/gui/font/glyphs/BakedGlyph;)Z	GLYPHS entry
 net/minecraft/client/gui/Font$PreparedTextBuilder#getShadowColor(Lnet/minecraft/network/chat/Style;I)I	GLYPHS entry
+net/minecraft/world/attribute/EnvironmentAttributeProbe#tick(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/phys/Vec3;)V	ATTRIBUTES probe
+net/minecraft/world/attribute/EnvironmentAttributeSystem#addDynamicLayers(Lnet/minecraft/world/attribute/EnvironmentAttributeSystem$Builder;Lnet/minecraft/world/level/Level;)V	ATTRIBUTES probe
+net/minecraft/world/attribute/EnvironmentAttributeSystem$ValueSampler#computeValueNotPositional()Ljava/lang/Object;	ATTRIBUTES probe
+net/minecraft/world/attribute/EnvironmentAttributeSystem$ValueSampler#computeValuePositional(Lnet/minecraft/world/phys/Vec3;Lnet/minecraft/world/attribute/SpatialAttributeInterpolator;)Ljava/lang/Object;	ATTRIBUTES probe

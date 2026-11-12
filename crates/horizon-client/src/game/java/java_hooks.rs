@@ -23,6 +23,14 @@ pub(super) struct JavaItemText {
 }
 
 impl Game<'_> {
+    /// A loaded mod patches the attribute system: the window's sky comes from Java's probe.
+    pub(super) fn client_env_routed(&self) -> bool {
+        #[cfg(feature = "java-mods")]
+        return super::java_routing::client_env_routed();
+        #[cfg(not(feature = "java-mods"))]
+        false
+    }
+
     /// The slot bits of the toasts mods added to the Java client, shown in the window's column.
     pub(super) fn java_hook_toast_slots(&self) -> u32 {
         #[cfg(feature = "java-mods")]

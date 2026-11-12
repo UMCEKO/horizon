@@ -547,6 +547,7 @@ public final class ClientBridge {
             cameraAndPick(minecraft);
             // `runTick`: the game time advances, then the window's own count of ticks and its progress into the next replace the timer's.
             advance(minecraft, partial);
+            ClientAttributes.place(minecraft, WorldFrame.camera());
             for (int n = 0; n < ticks; n++) {
                 Animate.next();
                 minecraft.tick();
@@ -1102,6 +1103,7 @@ public final class ClientBridge {
         Toasts.writeStatus(out);
         out.writeInt(Environments.bits);
         out.writeBoolean(Lockstep.wanted());
+        ClientAttributes.write(out, Minecraft.getInstance());
         shellSegments = null;
         shellChanged = false;
         return bytes.toByteArray();

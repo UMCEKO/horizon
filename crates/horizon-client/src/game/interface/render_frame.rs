@@ -244,9 +244,20 @@ impl Game<'_> {
             })
         };
         // visual/water_fog_color: no dimension sets it, its default is #050533.
-        let water_fog = horizon_client::biome::blend_rgb(&weights, |b| {
+        let mut water_fog = horizon_client::biome::blend_rgb(&weights, |b| {
             horizon_client::biome::rgb(biomes.get(b).water_fog)
         });
+        // A mod patched the attribute system: Java's probe holds the values, weather in them.
+        let probed = self
+            .client_env_routed()
+            .then(horizon_client::world_renders::probed)
+            .flatten();
+        if let Some(horizon_world::environment_attributes::Value::Rgb(color)) = probed
+            .as_ref()
+            .and_then(|p| p.lerp("visual/water_fog_color", alpha as f32))
+        {
+            water_fog = color;
+        }
         // The attribute stack, with the camera's biome mix in the probe's order; the biome
         // maps as the packs left them.
         let attributes_of = |b: u16| {
@@ -314,15 +325,18 @@ impl Game<'_> {
             polytone_frame = Some(frame.clone());
             environment.set_frame(frame);
         }
-        let mut sky = environment.sample(&horizon_client::environment::Sample {
-            day_time: self.view_day_time(),
-            rain,
-            thunder,
-            blend: Some(&blend),
-            biome: Some(attributes_of(biome)),
-            post_blend: Some(&post_blend),
-            post_biome: Some(post_of(biome)),
-        });
+        let mut sky = match &probed {
+            Some(probed) => probed.sky_from_probe(alpha as f32),
+            None => environment.sample(&horizon_client::environment::Sample {
+                day_time: self.view_day_time(),
+                rain,
+                thunder,
+                blend: Some(&blend),
+                biome: Some(attributes_of(biome)),
+                post_blend: Some(&post_blend),
+                post_biome: Some(post_of(biome)),
+            }),
+        };
         self.end_flash_sky(&mut sky, alpha);
         if self.flash > 0 && !self.settings.file.bool("hideLightningFlashes") {
             // ClientLevel's flash layer while skyFlashTime > 0: the sky colour
