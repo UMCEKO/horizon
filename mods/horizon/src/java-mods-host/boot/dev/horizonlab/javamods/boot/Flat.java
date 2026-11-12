@@ -127,6 +127,11 @@ public final class Flat {
         }
     }
 
+    /** `ServerPlayer.teleport`'s result: the acting player when native moved it, else null. */
+    public static net.minecraft.server.level.ServerPlayer toServerPlayer(int moved) {
+        return moved != 0 ? PlayerSync.actingPlayer() : null;
+    }
+
     public static net.minecraft.world.entity.Entity toEntity(int id) {
         return EntityViews.byId(id);
     }

@@ -13,6 +13,20 @@ pub(in crate::game) enum Recv {
     Scoreboard,
     /// The block entity at this position of the current level.
     BlockEntity(horizon_core::position::BlockPos),
+    /// A level's view.
+    Level(crate::game::Dim),
+}
+
+/// What a route's body fn calls to mark one of vanilla's early returns.
+pub(in crate::game) mod route {
+    /// Marks the route stub only when a bridge runs the body; a native call of it leaves nothing behind.
+    pub(in crate::game) fn early<T>(value: T) -> T {
+        if horizon_java_host::bridge::has_active() {
+            horizon_java_host::bridge::early(value)
+        } else {
+            value
+        }
+    }
 }
 
 #[cfg(feature = "java-mods")]
@@ -507,6 +521,12 @@ mod gate {
                     out.text(self.dim.id());
                     out.long(self.world.game_time);
                     out.long(pos.pack());
+                }
+                Recv::Level(dim) => {
+                    self.java_register_level(dim);
+                    out.0.push(1);
+                    out.int(dim.key().slot() as i32);
+                    out.long(self.world.game_time);
                 }
             }
             args(&mut out);

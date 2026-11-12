@@ -3,7 +3,7 @@
   "minVersion": "0.8",
   "package": "dev.horizonlab.javamods.testmod.mixin",
   "compatibilityLevel": "JAVA_21",
-  "mixins": ["InventoryRouteMixin", "InventoryFreeSlotMixin"],
+  "mixins": ["InventoryRouteMixin", "InventoryFreeSlotMixin", "JoinRouteMixin", "LevelJoinRouteMixin"],
   "client": ["ShadowRouteMixin", "MinecraftLoopMixin"],
   "injectors": {"defaultRequire": 1}
 }

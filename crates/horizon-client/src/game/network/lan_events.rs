@@ -264,6 +264,16 @@ impl Game<'_> {
                         .filter(|g| g.placed)
                         .map(|g| (g.uuid, g.name.clone()))
                     {
+                        #[cfg(feature = "java-mods")]
+                        {
+                            let dim = super::Dim::from_id(
+                                self.lan
+                                    .as_ref()
+                                    .and_then(|host| host.hub.guest(conn))
+                                    .map_or("", |g| g.dimension.as_str()),
+                            );
+                            self.as_guest(conn, |g| g.level_add_player(dim));
+                        }
                         self.native_player_logged_in(uuid, &name);
                     }
                 }

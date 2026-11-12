@@ -562,6 +562,7 @@ public final class Routing {
             };
         }
         if (type == String.class) return (v, o) -> GameBridge.writeText(o, (String) v);
+        if (type == ServerPlayer.class) return (v, o) -> o.writeBoolean(v != null);
         if (type == ResourceKey.class) return (v, o) -> GameBridge.writeText(o, ((ResourceKey<?>) v).identifier().toString());
         if (type == InteractionResult.class) {
             return (v, o) -> {
