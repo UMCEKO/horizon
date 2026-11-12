@@ -3167,17 +3167,9 @@ impl Game<'_> {
             if let Some(r) = self.remote.as_mut() {
                 r.predictions.remove(&pos);
             }
-            if self.world.block(pos[0], pos[1], pos[2]).0 as i32 == prediction.state {
-                continue;
-            }
-            self.set_block(pos, prediction.state);
-            // ClientLevel.syncBlockState: the block that comes back may now hold
-            // the player, and then it goes to the position the prediction
-            // remembered.
-            let meets = self.block_meets_player(pos, prediction.state);
-            if let Some(at) = snap_target(prediction.player_pos, last_teleport, sequence, meets) {
-                self.snap_player_to(at);
-            }
+            // No position to go back to once a later teleport moved the player.
+            let at = snap_target(prediction.player_pos, last_teleport, sequence, true);
+            self.client_sync_block_state(pos, prediction.state, at);
         }
     }
     /// The player's position, for `retainKnownServerState`'s `player.position()`.
@@ -3191,7 +3183,7 @@ impl Game<'_> {
     }
     /// `Entity.isColliding(pos, state)` for the local player: the state's own
     /// collision shape, at the player's pose, against the player's box.
-    fn block_meets_player(&self, pos: [i32; 3], state: i32) -> bool {
+    pub(super) fn block_meets_player(&self, pos: [i32; 3], state: i32) -> bool {
         let Some(player) = self.player.as_ref() else {
             return false;
         };
@@ -3225,7 +3217,7 @@ impl Game<'_> {
     /// `Entity.absSnapTo`: the remembered point, clamped to the level's edge.
     /// The velocity is left alone, and the player has no separate previous
     /// position to reset (its box is drawn from `position`).
-    fn snap_player_to(&mut self, at: [f64; 3]) {
+    pub(super) fn snap_player_to(&mut self, at: [f64; 3]) {
         let Some(player) = self.player.as_mut() else {
             return;
         };
@@ -3244,7 +3236,7 @@ impl Game<'_> {
             horizon_client::dynamic_renders::remove(pos);
         }
     }
-    fn set_block(&mut self, pos: [i32; 3], state: i32) {
+    pub(super) fn set_block(&mut self, pos: [i32; 3], state: i32) {
         // A state we don't have (a server with mods we lack) reads as air, as in its chunks.
         let state = state.max(0) as u32;
         let known = horizon_client::chunk::known_block_state(state);
@@ -10542,7 +10534,7 @@ impl Game<'_> {
             .ok()
     }
 
-    fn remote_continue_attack(&mut self, down: bool) {
+    pub(super) fn remote_continue_attack(&mut self, down: bool) {
         if !down {
             self.clicks.miss_time = 0;
         }
@@ -12288,7 +12280,7 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
         self.0.use_delay
     }
     fn continue_attack(&mut self, down: bool) {
-        self.0.remote_continue_attack(down);
+        self.0.client_continue_attack(down);
     }
 }
 

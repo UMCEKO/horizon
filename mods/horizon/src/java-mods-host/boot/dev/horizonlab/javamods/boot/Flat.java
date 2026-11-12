@@ -60,6 +60,11 @@ public final class Flat {
         return entity == null ? "" : entity.getUUID().toString();
     }
 
+    /** A client key event by its key's name (`key.keyboard.f3`). */
+    public static String keyName(net.minecraft.client.input.KeyEvent event) {
+        return com.mojang.blaze3d.platform.InputConstants.getKey(event).getName();
+    }
+
     /** A UUID as text, empty for none. */
     public static String raw(java.util.UUID id) {
         return id == null ? "" : id.toString();

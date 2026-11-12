@@ -1,6 +1,4 @@
 # key, reason; the reasons are fixed (tools/java_routing.py)
-net/minecraft/client/KeyboardHandler#handleDebugKeys(Lnet/minecraft/client/input/KeyEvent;)Z	spec: w12-coverage SPEC-22
-net/minecraft/client/Minecraft#continueAttack(Z)V	spec: w12-coverage SPEC-22
 net/minecraft/client/Minecraft#handleKeybinds()V	spec: w12-coverage SPEC-22
 net/minecraft/client/Minecraft#resizeGui()V	special: screens
 net/minecraft/client/Minecraft#run()V	special: loop
@@ -34,7 +32,6 @@ net/minecraft/client/gui/screens/inventory/AbstractContainerScreen#isHovering(Ln
 net/minecraft/client/gui/screens/inventory/CreativeModeInventoryScreen#getTooltipFromContainerItem(Lnet/minecraft/world/item/ItemStack;)Ljava/util/List;	owner: W5
 net/minecraft/client/gui/screens/options/controls/KeyBindsList$KeyEntry#updateChangeButtonMessage()V	owner: W5
 net/minecraft/client/model/HumanoidModel#setupAnim(Lnet/minecraft/client/renderer/entity/state/HumanoidRenderState;)V	owner: W2
-net/minecraft/client/multiplayer/ClientLevel#syncBlockState(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/world/phys/Vec3;)V	spec: w12-coverage SPEC-22
 net/minecraft/client/multiplayer/ClientSuggestionProvider#getSelectedEntities()Ljava/util/Collection;	owner: W6
 net/minecraft/client/renderer/blockentity/ChestRenderer#submit*	owner: W1
 net/minecraft/client/renderer/extract/LevelExtractor#extractBlockOutline(Lnet/minecraft/client/Camera;Lnet/minecraft/client/renderer/state/level/LevelRenderState;)V	owner: W1

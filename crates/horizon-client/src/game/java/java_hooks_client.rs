@@ -161,6 +161,17 @@ impl Game<'_> {
 
 #[cfg(not(feature = "java-mods"))]
 impl Game<'_> {
+    pub(super) fn client_continue_attack(&mut self, down: bool) {
+        self.remote_continue_attack(down);
+    }
+    pub(super) fn client_sync_block_state(
+        &mut self,
+        pos: [i32; 3],
+        state: i32,
+        player_pos: Option<[f64; 3]>,
+    ) {
+        self.sync_block_state_body(pos, state, player_pos);
+    }
     pub(super) fn java_click_canceled(&mut self, _click: JavaClick) -> Option<Option<Hand>> {
         None
     }

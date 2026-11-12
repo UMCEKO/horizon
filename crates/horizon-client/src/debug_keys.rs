@@ -110,6 +110,47 @@ pub trait DebugHost {
     /// One matching mapping of `handleDebugKeys`; whether its condition held
     /// (vanilla's `debugAction = true`). `shift`: `event.hasShiftDown()`.
     fn debug_action(&mut self, action: DebugAction, shift: bool) -> bool;
+    /// `handleDebugKeys` as the game runs it, which a mod may patch; vanilla's is [`debug_keys_body`].
+    fn handle_debug_keys(
+        &mut self,
+        crash_key_time: i64,
+        binds: &KeyBinds,
+        key: &str,
+        shift: bool,
+        now: i64,
+    ) -> bool
+    where
+        Self: Sized,
+    {
+        debug_keys_body(crash_key_time, self, binds, key, shift, now)
+    }
+}
+
+/// `handleDebugKeys`: every debug mapping on this key, in order. `crash_key_time` is `debugCrashKeyTime`.
+pub fn debug_keys_body(
+    crash_key_time: i64,
+    host: &mut impl DebugHost,
+    binds: &KeyBinds,
+    key: &str,
+    shift: bool,
+    now: i64,
+) -> bool {
+    // Once the crash keys have been down a tenth of a second.
+    if crash_key_time > 0 && crash_key_time < now - 100 {
+        return true;
+    }
+    let mut did = false;
+    for (name, action) in ACTIONS {
+        if binds.get(name) == key {
+            did |= host.debug_action(action, shift);
+        }
+    }
+    for (name, action) in HORIZON_ACTIONS {
+        if key == name {
+            did |= host.debug_action(action, shift);
+        }
+    }
+    did
 }
 
 /// What `KeyboardHandler.tick` reports while the debug crash keys are held.
@@ -197,7 +238,7 @@ impl DebugKeys {
             host.pause_game(modifier_down);
             did = modifier_down;
         } else if modifier_down {
-            did = self.handle_debug_keys(host, binds, key, shift, now);
+            did = host.handle_debug_keys(self.crash_key_time, binds, key, shift, now);
         }
         if same {
             self.used_debug_key_as_modifier |= did;
@@ -207,32 +248,6 @@ impl DebugKeys {
             self.modifier_down = !did;
         }
         handles_game && !did
-    }
-    /// `handleDebugKeys`: every debug mapping on this key, in order.
-    fn handle_debug_keys(
-        &mut self,
-        host: &mut impl DebugHost,
-        binds: &KeyBinds,
-        key: &str,
-        shift: bool,
-        now: i64,
-    ) -> bool {
-        // Once the crash keys have been down a tenth of a second.
-        if self.crash_key_time > 0 && self.crash_key_time < now - 100 {
-            return true;
-        }
-        let mut did = false;
-        for (name, action) in ACTIONS {
-            if binds.get(name) == key {
-                did |= host.debug_action(action, shift);
-            }
-        }
-        for (name, action) in HORIZON_ACTIONS {
-            if key == name {
-                did |= host.debug_action(action, shift);
-            }
-        }
-        did
     }
     /// `KeyboardHandler.tick`.
     pub fn tick(&mut self, now: i64) -> Option<CrashNotice> {

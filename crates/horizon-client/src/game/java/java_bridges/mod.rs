@@ -6,6 +6,7 @@ pub(super) use horizon_java_host::bridge::{Bytes, Dir, LevelOn, Point, Pos, Skip
 pub(super) use horizon_world::registry::BlockStateId;
 
 mod block_entities;
+mod client_window;
 pub(super) mod client_world;
 mod effects;
 mod entities;
@@ -23,6 +24,7 @@ pub(super) fn bridges() -> Vec<horizon_java_host::bridge::Bridge> {
     horizon_java_host::bridge::before_native::<Game<'static>>(Game::java_run_native);
     [
         block_entities::table(),
+        client_window::table(),
         client_world::table(),
         effects::table(),
         entities::table(),
