@@ -1,0 +1,1 @@
+package net.minecraft.client.rt; public class Panel { public Panel(int a) {} }

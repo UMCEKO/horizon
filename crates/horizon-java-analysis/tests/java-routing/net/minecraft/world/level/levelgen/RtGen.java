@@ -1,0 +1,1 @@
+package net.minecraft.world.level.levelgen; public class RtGen { public RtGen() {} }
