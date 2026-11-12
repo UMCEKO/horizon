@@ -616,8 +616,13 @@ pub(super) fn java_frames() -> Option<std::sync::Arc<dyn Fn() -> Vec<Vec<u8>> + 
 
 /// Whether a Java mod modifies the loot of a top-level roll of `table` (NeoForge's `modifyLoot`).
 pub(crate) fn java_hook_loot_wanted(table: &str) -> bool {
-    let _ = table;
-    false
+    #[cfg(feature = "java-mods")]
+    return super::java_loot_modify::loot_wanted(table);
+    #[cfg(not(feature = "java-mods"))]
+    {
+        let _ = table;
+        false
+    }
 }
 
 /// NeoForge's `CommonHooks.modifyLoot` for a roll [`java_hook_loot_wanted`] took.
@@ -628,6 +633,8 @@ pub(crate) fn java_hook_loot_rolled(
     random: &mut Option<horizon_core::random::RandomState>,
     items: &mut Vec<horizon_world::loot::LootStack>,
 ) {
+    #[cfg(feature = "java-mods")]
+    super::java_loot_modify::loot_rolled(table, ctx, tool, random, items);
     let _ = (table, ctx, tool, random, items);
 }
 

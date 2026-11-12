@@ -152,6 +152,7 @@ public final class GameBridge {
         Crossing.game("level_add", GameBridge::levelAdd);
         Crossing.game("craft_facts", input -> CraftFacts.bin(server()));
         Loot.register();
+        Crossing.game("loot_modify", LootModifiers::modify);
         Crossing.game("click_block", (in, out) -> use(in, out, 2));
         Crossing.game("event_click_block", (in, out) -> use(in, out, 3));
         Crossing.game("event_use_item", (in, out) -> use(in, out, 4));
@@ -326,7 +327,7 @@ public final class GameBridge {
         return levelNamed(id);
     }
 
-    private static ServerLevel levelNamed(String id) {
+    static ServerLevel levelNamed(String id) {
         for (var level : allLevels()) if (level.dimension().identifier().toString().equals(id)) return level;
         throw new IllegalStateException("no level named " + id);
     }

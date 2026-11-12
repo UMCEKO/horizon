@@ -4940,6 +4940,7 @@ impl Game<'_> {
             }),
             this_entity: None,
             killer: None,
+            block_state: None,
         }
     }
     /// `Block.getDrops` for a block a player breaks: the block's loot table
@@ -4960,6 +4961,7 @@ impl Game<'_> {
         let (_, entity) = self.native_clicker();
         let player = self.native_acting_id();
         place.this_entity = Some((entity, player));
+        place.block_state = Some(state);
         let mut drops = horizon_world::loot::with_native_loot_place(place, || {
             let roll = horizon_client::items::BlockLootRoll {
                 held,
