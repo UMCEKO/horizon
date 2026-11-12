@@ -33,6 +33,7 @@ final class ClientSpark {
                 sprites -> (options, level, x, y, z, xa, ya, za, random) -> new Spark(level, x, y, z, sprites.first())));
         bus.addListener((RegisterParticleGroupsEvent event) -> event.register(BEAM_GROUP, BeamGroup::new));
         bus.addListener((RegisterParticleProvidersEvent event) -> event.registerSpecial(TestMod.BEAM.get(), (options, level, x, y, z, xa, ya, za, random) -> new Beam(level, x, y, z)));
+        bus.addListener((net.neoforged.neoforge.client.extensions.common.RegisterClientExtensionsEvent event) -> event.registerBlock(new Burst(), Battery.BLOCK.get()));
         NeoForge.EVENT_BUS.addListener((ClientTickEvent.Post event) -> {
             var minecraft = Minecraft.getInstance();
             var level = minecraft.level;
@@ -79,6 +80,15 @@ final class ClientSpark {
                     consumer.addVertex(pose, x - 0.05F, y + 2, z).setColor(0x8000FF00);
                 }
             });
+        }
+    }
+
+    /** The battery's own destroy effect: four sparks at its centre, in place of vanilla's crumbs. */
+    static final class Burst implements net.neoforged.neoforge.client.extensions.common.IClientBlockExtensions {
+        @Override
+        public boolean addDestroyEffects(net.minecraft.world.level.block.state.BlockState state, net.minecraft.world.level.Level level, net.minecraft.core.BlockPos pos, net.minecraft.client.particle.ParticleEngine engine) {
+            for (int i = 0; i < 4; i++) level.addParticle(TestMod.SPARK.get(), pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5, 0, 0, 0);
+            return true;
         }
     }
 

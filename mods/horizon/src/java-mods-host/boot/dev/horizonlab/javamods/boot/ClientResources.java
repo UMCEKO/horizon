@@ -94,6 +94,7 @@ public final class ClientResources {
             report.append("\n  ").append(atlas.location()).append(' ').append(view.width()).append('x').append(view.height()).append(": ").append(names.size()).append(" sprites");
             freed += Sprites.free(atlas);
         }
+        BlockEffects.export(out);
         exported = bytes.toByteArray();
         System.err.println("Horizon: the client's resource reload stitched " + atlases.size() + " atlases (" + sprites + " sprites), " + states.size()
                 + " block states with code-built models, " + drawn.size() + " items only their mods' code draws; freed " + freed / 1048576 + " MB of sprite mip levels" + report);

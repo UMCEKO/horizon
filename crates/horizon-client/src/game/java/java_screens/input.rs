@@ -142,6 +142,34 @@ impl Game<'_> {
             .and_then(|reply| In(&reply).float())
     }
 
+    /// Queues a block's destroy (0) or hit (1) particles for the Java client when its mod's extension makes them.
+    pub(in crate::game) fn java_block_effect(
+        &mut self,
+        kind: u8,
+        pos: [i32; 3],
+        state: BlockStateId,
+        face: [i32; 3],
+    ) -> bool {
+        if !CLIENT.with_borrow(|c| c.joined)
+            || super::java_particles::java_block_effects(state) & (1 << kind) == 0
+        {
+            return false;
+        }
+        let Some(map) = horizon_java_host::bridge::STATES.get() else {
+            return false;
+        };
+        let Some(&java) = map.to_java.get(state.0 as usize) else {
+            return false;
+        };
+        let face = if kind == 0 {
+            0
+        } else {
+            super::java_particles::direction(face)
+        };
+        CLIENT.with_borrow_mut(|c| c.block_effects.push((kind, pos, java, face)));
+        true
+    }
+
     /// The Java client's own `useItemOn` result for the click just run, when the block at `pos` is a mod's: it decides whether the click ends there, as the block's code does in vanilla.
     pub(in crate::game) fn java_block_prediction(
         &mut self,

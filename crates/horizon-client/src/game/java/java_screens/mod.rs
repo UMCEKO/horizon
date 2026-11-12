@@ -72,6 +72,8 @@ pub(in crate::game) struct Client {
     animate: std::collections::VecDeque<Vec<[i32; 3]>>,
     /// This tick's picks, which the tick's end turns into a group.
     picked: Vec<[i32; 3]>,
+    /// Destroy and hit particles native handed over: kind, position, Java state, face.
+    block_effects: Vec<(u8, [i32; 3], i32, u8)>,
     /// The open screen's frame blurs what is behind it (`blurBeforeThisStratum`).
     blurred: bool,
     shell: Shell,
@@ -132,6 +134,8 @@ enum Input<'a> {
     Animate(&'a [[i32; 3]]),
     /// The window's Particles option.
     Particles(i32),
+    /// `addDestroyBlockEffect` (0) or `addBreakingBlockEffects` (1) at a position, for a Java state and a face.
+    BlockEffect(u8, [i32; 3], i32, u8),
     /// `leftPos`, `topPos`, `imageWidth`, `imageHeight` and the hovered menu slot (-1 none) of the screen native shows.
     ShellLayout([i32; 5]),
     /// Each shown mod toast's `(id, finished, fully visible for)`.
@@ -159,6 +163,7 @@ impl Input<'_> {
             Input::Camera(..) => 13,
             Input::Animate(_) => 14,
             Input::Particles(_) => 15,
+            Input::BlockEffect(..) => 30,
             Input::ShellLayout(_) => 16,
             Input::Toasts(_) => 26,
             Input::NotificationTime(_) => 27,
@@ -209,6 +214,12 @@ impl Input<'_> {
                 group.iter().flatten().for_each(|v| out.int(*v));
             }
             Input::Particles(level) => out.int(level),
+            Input::BlockEffect(kind, at, state, face) => {
+                out.0.push(kind);
+                at.iter().for_each(|v| out.int(*v));
+                out.int(state);
+                out.0.push(face);
+            }
             Input::ShellLayout(layout) => layout.iter().for_each(|v| out.int(*v)),
             Input::Toasts(turns) => {
                 out.int(turns.len() as i32);
@@ -1137,6 +1148,10 @@ impl Game<'_> {
             if c.sent.particles != Some(particles) {
                 c.sent.particles = Some(particles);
                 Input::Particles(particles).write(&mut events);
+                count += 1;
+            }
+            for (kind, at, state, face) in std::mem::take(&mut c.block_effects) {
+                Input::BlockEffect(kind, at, state, face).write(&mut events);
                 count += 1;
             }
             let block = camera.map(|(p, _)| p.map(|v| v.floor() as i32));
