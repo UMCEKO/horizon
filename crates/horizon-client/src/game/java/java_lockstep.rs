@@ -2,7 +2,9 @@
 //! The lockstep client tick: the Java tick parks at `handleKeybinds` (K) and the local player's `aiStep` (M) while the window's tick runs there.
 
 use super::*;
+use horizon_core::geometry::Vec3;
 use horizon_java_host::wire::{In, Out};
+use horizon_protocol::packets::play;
 use std::cell::RefCell;
 
 /// Where the window's tick is with the Java client's parks.
@@ -198,6 +200,112 @@ pub(in crate::game) fn finish() -> Vec<[i32; 3]> {
     })
 }
 
+/// What mods wrote to the local player since the last step, applied in order; `OldPos` marks where vanilla took `xo/yo/zo`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(in crate::game) struct MotionWrites {
+    pub entries: Vec<MotionWrite>,
+}
+
+/// One setter a mod called on the local player, with the value the setter left (`MotionLog`'s kinds).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::game) enum MotionWrite {
+    Velocity([f64; 3]),
+    Position([f64; 3]),
+    Yaw(f32),
+    Pitch(f32),
+    Ground(bool),
+    FallReset,
+    Sprint(bool),
+    Abilities {
+        flying: bool,
+        may_fly: bool,
+        flying_speed: f32,
+    },
+    OldPos,
+}
+
+/// `MotionLog.take`'s bytes: `int n`, then each entry's kind and body; None for an unknown kind or a short read.
+pub(in crate::game) fn read_motion_writes(bytes: &mut In) -> Option<MotionWrites> {
+    let n = usize::try_from(bytes.int()?).ok()?;
+    let mut entries = Vec::with_capacity(n.min(256));
+    for _ in 0..n {
+        let triple = |b: &mut In| Some([b.double()?, b.double()?, b.double()?]);
+        entries.push(match bytes.byte()? {
+            1 => MotionWrite::Velocity(triple(bytes)?),
+            2 => MotionWrite::Position(triple(bytes)?),
+            3 => MotionWrite::Yaw(bytes.float()?),
+            4 => MotionWrite::Pitch(bytes.float()?),
+            5 => MotionWrite::Ground(bytes.bool()?),
+            6 => MotionWrite::FallReset,
+            7 => MotionWrite::Sprint(bytes.bool()?),
+            8 => MotionWrite::Abilities {
+                flying: bytes.bool()?,
+                may_fly: bytes.bool()?,
+                flying_speed: bytes.float()?,
+            },
+            9 => MotionWrite::OldPos,
+            _ => return None,
+        });
+    }
+    Some(MotionWrites { entries })
+}
+
+/// The local player's state a write log reaches.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct LocalMotion {
+    position: [f64; 3],
+    velocity: [f64; 3],
+    yaw: f32,
+    pitch: f32,
+    on_ground: bool,
+    fall_distance: f64,
+    sprinting: bool,
+    flying: bool,
+    may_fly: bool,
+    flying_speed: f32,
+}
+
+/// What applying a log left besides the state: the marked old position, a pitch write, and the abilities packets' flags to send.
+#[derive(Debug, Default, PartialEq)]
+struct Applied {
+    old: Option<[f64; 3]>,
+    turned: bool,
+    abilities: Vec<i8>,
+}
+
+fn apply_motion_writes(m: &mut LocalMotion, writes: &MotionWrites) -> Applied {
+    let mut applied = Applied::default();
+    for write in &writes.entries {
+        match *write {
+            MotionWrite::Velocity(v) => m.velocity = v,
+            MotionWrite::Position(p) => m.position = p,
+            MotionWrite::Yaw(y) => m.yaw = y,
+            MotionWrite::Pitch(x) => {
+                m.pitch = x;
+                applied.turned = true;
+            }
+            MotionWrite::Ground(g) => m.on_ground = g,
+            MotionWrite::FallReset => m.fall_distance = 0.0,
+            MotionWrite::Sprint(s) => m.sprinting = s,
+            MotionWrite::Abilities {
+                flying,
+                may_fly,
+                flying_speed,
+            } => {
+                // `ServerboundPlayerAbilitiesPacket` writes 2 for flying.
+                if flying != m.flying {
+                    applied.abilities.push(if flying { 2 } else { 0 });
+                }
+                m.flying = flying;
+                m.may_fly = may_fly;
+                m.flying_speed = flying_speed;
+            }
+            MotionWrite::OldPos => applied.old = Some(m.position),
+        }
+    }
+    applied
+}
+
 /// A lockstep inbox call from the window thread while Java is parked; None outside a lockstep tick.
 #[cfg_attr(not(test), expect(dead_code, reason = "SPEC-3's requests use it"))]
 pub(in crate::game) fn java_lockstep_call(kind: u8, request: &[u8]) -> Option<Vec<u8>> {
@@ -260,6 +368,62 @@ impl Game<'_> {
         let fill = self.java_lockstep_fill(moved, keys);
         release(Point::M, &fill);
         set_stage(Stage::Done);
+    }
+
+    /// The park record's motion log (`int len` and the log), applied to the window's player; where vanilla took `xo/yo/zo`, when it marked it.
+    pub(in crate::game) fn java_lockstep_motion_writes(&mut self, record: &[u8]) -> Option<Vec3> {
+        let writes = In(record)
+            .bytes()
+            .and_then(|log| read_motion_writes(&mut In(log)));
+        let Some(writes) = writes else {
+            static TOLD: std::sync::Once = std::sync::Once::new();
+            TOLD.call_once(|| eprintln!("Horizon: a lockstep record ended in pieces"));
+            return None;
+        };
+        self.java_apply_motion_writes(&writes)
+    }
+
+    /// Applies a write log to the window's player; returns the position vanilla took as `xo/yo/zo`, when the log marked it.
+    pub(in crate::game) fn java_apply_motion_writes(&mut self, writes: &MotionWrites) -> Option<Vec3> {
+        if writes.entries.is_empty() {
+            return None;
+        }
+        let p = self.player.as_mut()?;
+        let mut m = LocalMotion {
+            position: [p.position.x, p.position.y, p.position.z],
+            velocity: [p.velocity.x, p.velocity.y, p.velocity.z],
+            yaw: self.yaw,
+            pitch: self.pitch,
+            on_ground: p.ground.on_ground,
+            fall_distance: p.fall_distance,
+            sprinting: p.sprinting,
+            flying: p.flying,
+            may_fly: p.may_fly,
+            flying_speed: p.flying_speed,
+        };
+        let applied = apply_motion_writes(&mut m, writes);
+        p.position = Vec3::new(m.position[0], m.position[1], m.position[2]);
+        p.velocity = Vec3::new(m.velocity[0], m.velocity[1], m.velocity[2]);
+        p.ground.on_ground = m.on_ground;
+        p.fall_distance = m.fall_distance;
+        p.sprinting = m.sprinting;
+        p.flying = m.flying;
+        p.may_fly = m.may_fly;
+        p.flying_speed = m.flying_speed;
+        self.yaw = m.yaw;
+        self.pitch = m.pitch;
+        if applied.turned
+            && let Some(model) = self.player_model.as_mut()
+        {
+            model.head_pitch = m.pitch;
+        }
+        // Vanilla's `LocalPlayer.onUpdateAbilities` sends at once.
+        for flags in applied.abilities {
+            self.send(play::Serverbound::PlayerAbilities(
+                play::PlayerAbilitiesRequest { flags },
+            ));
+        }
+        applied.old.map(|[x, y, z]| Vec3::new(x, y, z))
     }
 
     fn java_lockstep_fill(&self, moved: bool, keys: u8) -> Vec<u8> {
@@ -349,6 +513,104 @@ mod tests {
         assert_eq!(r.int(), Some(1));
         assert_eq!([r.int(), r.int(), r.int()], [Some(3), Some(70), Some(-9)]);
         assert_eq!(r.byte(), None);
+    }
+
+    #[test]
+    fn a_write_log_reads_back_as_typed_entries() {
+        let mut out = Out::default();
+        out.int(10);
+        out.0.push(1);
+        [0.0, 0.5, 0.0].iter().for_each(|v| out.double(*v));
+        out.0.push(2);
+        [1.5, 64.0, -2.25].iter().for_each(|v| out.double(*v));
+        out.0.push(3);
+        out.float(90.0);
+        out.0.push(4);
+        out.float(-15.5);
+        out.0.push(5);
+        out.bool(true);
+        out.0.push(6);
+        out.0.push(7);
+        out.bool(true);
+        out.0.push(8);
+        out.bool(true);
+        out.bool(true);
+        out.float(0.05);
+        out.0.push(9);
+        out.0.push(1);
+        [0.25, -1.0, 2.0].iter().for_each(|v| out.double(*v));
+        let read = read_motion_writes(&mut In(&out.0)).unwrap();
+        assert_eq!(
+            read.entries,
+            vec![
+                MotionWrite::Velocity([0.0, 0.5, 0.0]),
+                MotionWrite::Position([1.5, 64.0, -2.25]),
+                MotionWrite::Yaw(90.0),
+                MotionWrite::Pitch(-15.5),
+                MotionWrite::Ground(true),
+                MotionWrite::FallReset,
+                MotionWrite::Sprint(true),
+                MotionWrite::Abilities {
+                    flying: true,
+                    may_fly: true,
+                    flying_speed: 0.05
+                },
+                MotionWrite::OldPos,
+                MotionWrite::Velocity([0.25, -1.0, 2.0]),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unknown_kind_or_a_short_log_reads_as_nothing() {
+        let mut out = Out::default();
+        out.int(1);
+        out.0.push(42);
+        assert_eq!(read_motion_writes(&mut In(&out.0)), None);
+        let mut out = Out::default();
+        out.int(2);
+        out.0.push(6);
+        assert_eq!(read_motion_writes(&mut In(&out.0)), None);
+    }
+
+    #[test]
+    fn writes_apply_in_order_and_the_old_position_is_where_the_mark_fell() {
+        let mut m = LocalMotion {
+            position: [0.5, 64.0, 0.5],
+            ..LocalMotion::default()
+        };
+        let writes = MotionWrites {
+            entries: vec![
+                MotionWrite::Velocity([0.0, 0.5, 0.0]),
+                MotionWrite::Position([0.5, 70.0, 0.5]),
+                MotionWrite::OldPos,
+                MotionWrite::Velocity([0.1, 0.2, 0.3]),
+            ],
+        };
+        let applied = apply_motion_writes(&mut m, &writes);
+        assert_eq!(m.velocity, [0.1, 0.2, 0.3]);
+        assert_eq!(m.position, [0.5, 70.0, 0.5]);
+        assert_eq!(applied.old, Some([0.5, 70.0, 0.5]));
+        assert!(applied.abilities.is_empty());
+    }
+
+    #[test]
+    fn turning_flight_on_sends_one_abilities_packet_flying() {
+        let mut m = LocalMotion::default();
+        let on = MotionWrite::Abilities {
+            flying: true,
+            may_fly: true,
+            flying_speed: 0.05,
+        };
+        let applied = apply_motion_writes(
+            &mut m,
+            &MotionWrites {
+                entries: vec![on, on],
+            },
+        );
+        assert_eq!(applied.abilities, vec![2]);
+        assert!(m.flying && m.may_fly);
+        assert_eq!(applied.old, None);
     }
 
     #[test]

@@ -174,6 +174,17 @@ impl Game<'_> {
         None
     }
 
+    /// Mods' writes to the local player in the park's record, applied before the step; where vanilla took `xo/yo/zo`, when the record marked it.
+    pub(super) fn java_hook_motion_writes(&mut self, record: Option<&[u8]>) -> Option<horizon_core::geometry::Vec3> {
+        #[cfg(feature = "java-mods")]
+        return self.java_lockstep_motion_writes(record?);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = record;
+            None
+        }
+    }
+
     /// The window's player step ran, with the tick's `Input` bits: the Java tick goes on from `aiStep` with its result.
     pub(super) fn java_hook_player_end(&mut self, moved: bool, keys: u8) {
         #[cfg(feature = "java-mods")]
@@ -588,6 +599,7 @@ pub(super) fn java_hook_ready() -> Result<(), &'static str> {
 }
 
 /// Decides the Java run folder once, before the listener families are read; later calls change nothing.
+#[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
 pub(crate) fn java_hook_resolve(java_mods: Option<&Path>) -> std::io::Result<()> {
     #[cfg(feature = "java-mods")]
     if !horizon_java_host::run_decided() {

@@ -1689,7 +1689,7 @@ impl Game<'_> {
         self.titles.reset_times();
     }
 
-    pub(super) fn send(&self, packet: S) {
+    pub(in crate::game) fn send(&self, packet: S) {
         if self.remote.is_some() {
             // MultiPlayerGameMode's attack, interact, useItem, useItemOn, releaseUsingItem, dropItem and
             // piercingAttack run ensureHasSentCarriedItem before their packet: a slot the number keys
@@ -6854,7 +6854,8 @@ impl Game<'_> {
         self.tick_subtitles();
         self.tick_client_load();
         // `LocalPlayer.aiStep`'s moment; Java parks there or not on its own state, and early returns leave it to the tick's guard.
-        let _java_step = self.java_hook_player_begin();
+        let java_step = self.java_hook_player_begin();
+        let java_old = self.java_hook_motion_writes(java_step.as_deref());
         let entity_collisions = self.player_entity_collisions();
         // Those added before it tick before it: their pushes reach this move.
         let pushed = pushed_after.add_vector(self.remote_pushes(true));
@@ -6895,7 +6896,7 @@ impl Game<'_> {
         if let Some(player) = player {
             self.native_player_tick_pre(mod_api::__private::PlayerTickPreCall { player });
         }
-        let result = self.tick_local_player(entity_collisions, pushed, sprint_window);
+        let result = self.tick_local_player(entity_collisions, pushed, sprint_window, java_old);
         // `EntityEvent.Size` for the pose the tick set.
         self.native_local_player_size();
         if let Some(player) = player {
@@ -6911,6 +6912,7 @@ impl Game<'_> {
         entity_collisions: Vec<horizon_core::geometry::Aabb>,
         pushed: Vec3,
         sprint_window: i32,
+        java_old: Option<Vec3>,
     ) -> Result<()> {
         // Player.tick's ItemCooldowns.tick, after Pre and after
         // handleKeybinds: this path replaces `tick_world`'s for a server's
@@ -7003,7 +7005,8 @@ impl Game<'_> {
         };
         player.fluids.boat = boat;
         if !riding && !self.replay.playing() {
-            self.previous_position = player.position;
+            // Vanilla took `xo` before a `PlayerTickEvent.Pre` write and after a `ClientTickEvent.Pre` one.
+            self.previous_position = java_old.unwrap_or(player.position);
         }
         let before = (
             player.ground.on_ground,
