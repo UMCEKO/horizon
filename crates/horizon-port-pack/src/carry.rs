@@ -137,6 +137,9 @@ pub struct Report {
     /// Blocks left out, and why.
     pub blocks_unknown: BTreeMap<String, String>,
     pub items: usize,
+    /// Fluids declared in `data/<id>/horizon/fluid/`, by id with whether they exist in the world.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub fluids: BTreeMap<String, bool>,
     /// Equipment assets written from 1.21.1 armour materials.
     pub equipment: usize,
     /// Items left out, and why (oracle only).
@@ -1386,11 +1389,37 @@ pub fn carry(
         report.oracle = true;
         let prefix = format!("{id}:");
         let mut declared = BTreeSet::new();
+        let world = world_fluids(facts, &prefix);
+        let world_buckets: BTreeSet<String> = world
+            .iter()
+            .filter(|(_, bucket)| **bucket)
+            .map(|(id, _)| format!("{id}_bucket"))
+            .collect();
+        for (full, fluid) in &facts.fluids {
+            let Some(name) = full.strip_prefix(&prefix) else {
+                continue;
+            };
+            if !facts.owns_fluid(full) || fluid.source != *full {
+                continue;
+            }
+            let v = fluid_declaration(
+                fluid,
+                baked.and_then(|b| b.fluids.get(full)),
+                world.get(full).copied(),
+            );
+            write_decl("fluid", name, &v)?;
+            report.fluids.insert(full.clone(), world.contains_key(full));
+            if world.contains_key(full) {
+                report
+                    .blocks
+                    .insert(name.to_owned(), "minecraft:water".into());
+            }
+        }
         for (full, block) in facts.blocks.range(prefix.clone()..) {
             let Some(b) = full.strip_prefix(&prefix) else {
                 break;
             };
-            if !facts.owns_block(full) {
+            if !facts.owns_block(full) || world.contains_key(full) {
                 continue;
             }
             let Some(choice) = facts.template(full, allowed) else {
@@ -1498,7 +1527,11 @@ pub fn carry(
             let Some(name) = full.strip_prefix(&prefix) else {
                 break;
             };
-            if declared.contains(full) || !facts.owns_item(full) {
+            if declared.contains(full)
+                || !facts.owns_item(full)
+                || world_buckets.contains(full)
+                || world.contains_key(full)
+            {
                 continue;
             }
             // The block it places must be carried: a vanilla one or one of this mod's declared ones.
@@ -1701,6 +1734,52 @@ fn state_properties(states: &BTreeMap<String, Vec<String>>) -> Value {
         out.insert(name.clone(), property);
     }
     Value::Object(out)
+}
+
+/// The mod's fluids Horizon can hold in the world, with whether their bucket is the one it makes (`<id>_bucket`): a still fluid, its flowing partner named as Horizon names it, and the block of the same id.
+fn world_fluids(facts: &Facts, prefix: &str) -> BTreeMap<String, bool> {
+    let mut world = BTreeMap::new();
+    for (full, fluid) in &facts.fluids {
+        let Some(path) = full.strip_prefix(prefix) else {
+            continue;
+        };
+        let flowing = format!("{prefix}flowing_{path}");
+        if facts.owns_fluid(full)
+            && fluid.source == *full
+            && fluid.flowing == flowing
+            && facts.owns_block(full)
+            && facts.blocks.contains_key(full)
+        {
+            world.insert(full.clone(), fluid.bucket == format!("{full}_bucket"));
+        }
+    }
+    world
+}
+
+/// A fluid's content file: its look from the baked client model, and how it flows when it is in the world.
+fn fluid_declaration(
+    fluid: &crate::oracle::Fluid,
+    model: Option<&crate::oracle::FluidModelFacts>,
+    bucket: Option<bool>,
+) -> Value {
+    let mut v = json!({});
+    if let Some(model) = model {
+        v["sprite"] = json!(model.still);
+        if let crate::oracle::TintFacts::Constant { states } = &model.tint
+            && let Some(tint) = states.get("amount=8,falling=false")
+        {
+            v["tint"] = json!(tint);
+        }
+    }
+    if let Some(bucket) = bucket {
+        // Java's tick delay, drop-off and slope distance are not in the facts: water's defaults stand.
+        let converts = fluid
+            .fluid_type
+            .as_ref()
+            .is_some_and(|t| t.can_convert_to_source);
+        v["world"] = json!({"source_conversion": converts, "bucket": bucket});
+    }
+    v
 }
 
 /// Writes the oracle's baked models of the blocks in `owned` namespaces as `horizon:baked` models,
@@ -3648,6 +3727,85 @@ mod tests {
         assert!(decl("item")["template"].is_string());
         assert_eq!(decl("item")["block"], "gem:blood");
         assert_eq!(report.items, 1);
+        assert!(report.items_unknown.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_mod_fluid_is_declared_as_a_world_fluid_with_its_block_and_bucket_left_to_it() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-port-pack-world-fluid-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let jar = dir.join("gem-1.0.jar");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&jar).unwrap());
+        zip.start_file(
+            "META-INF/neoforge.mods.toml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"license = \"MIT\"\n[[mods]]\nmodId = \"gem\"\nversion = \"1.0\"\n")
+            .unwrap();
+        zip.finish().unwrap();
+        let info = crate::jar::read(&jar).unwrap();
+        let state = json!({"hardness": 100.0, "emission": 0, "requires_tool": false, "map_color_id": 4,
+            "sound": {"break": "empty"}, "outline": [], "collision": []});
+        let liquid = json!({"class": ["gem.BloodBlock", "net.minecraft.world.level.block.LiquidBlock", "net.minecraft.world.level.block.Block"],
+            "properties": {"level": ["0", "1"]}, "default": "level=0", "item": "minecraft:air",
+            "explosion_resistance": 100.0, "friction": 0.6, "speed_factor": 1.0, "jump_factor": 1.0,
+            "states": {"level=0": state.clone(), "level=1": state.clone()}});
+        let fluid = |source: &str, flowing: &str| {
+            json!({
+            "class": ["gem.Blood", "net.minecraft.world.level.material.FlowingFluid"],
+            "source": source, "flowing": flowing, "bucket": "gem:blood_bucket",
+            "states": {"amount=8,falling=false": {"amount": 8, "falling": false, "source": true, "random": false, "block": "gem:blood[level=0]"}},
+            "fluid_type": {"id": "gem:blood", "motionScale": 0.014, "canPushEntity": true, "canSwim": true,
+                "canDrown": true, "fallDistanceModifier": 0.5, "canExtinguish": false,
+                "canConvertToSource": true, "supportsBoating": false, "canHydrate": false,
+                "lightLevel": 0, "density": 1000, "temperature": 300, "viscosity": 1000, "isWaterLike": false}})
+        };
+        let facts: Facts = serde_json::from_value(json!({
+            "blocks": {"minecraft:lava": liquid.clone(), "gem:blood": liquid},
+            "items": {"gem:blood_bucket": {"class": "net.minecraft.world.item.BucketItem", "max_stack_size": 1, "rarity": "common"}},
+            "owned": {"block": ["gem:blood"], "item": ["gem:blood_bucket"], "fluid": ["gem:blood", "gem:flowing_blood"]},
+            "fluids": {"gem:blood": fluid("gem:blood", "gem:flowing_blood"), "gem:flowing_blood": fluid("gem:blood", "gem:flowing_blood")},
+        })).unwrap();
+        let baked: BakedModels = serde_json::from_value(json!({"version": 2, "blocks": {},
+            "fluids": {"gem:blood": {"layer": "TRANSLUCENT", "still": "gem:block/blood_still", "flowing": "gem:block/blood_flow",
+                "tint": {"kind": "constant", "states": {"amount=8,falling=false": 4286643968u32}}}}})).unwrap();
+        let out = dir.join("work/mods/gem");
+        let pack = Pack {
+            loaded: &|_| true,
+            mods: &|_| false,
+        };
+        let report = carry(
+            &jar,
+            &info,
+            &out,
+            Some(&facts),
+            Some(&baked),
+            &|_| true,
+            &pack,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let read = |kind: &str, name: &str| {
+            fs::read(out.join(format!("carry/data/gem/horizon/{kind}/{name}.json")))
+        };
+        let file: Value = serde_json::from_slice(&read("fluid", "blood").unwrap()).unwrap();
+        assert_eq!(
+            file,
+            json!({"sprite": "gem:block/blood_still", "tint": 0xFF80FF00u32,
+            "world": {"source_conversion": true, "bucket": true}})
+        );
+        assert!(read("fluid", "flowing_blood").is_err());
+        assert!(read("block", "blood").is_err() && read("item", "blood_bucket").is_err());
+        assert_eq!(
+            report.fluids,
+            BTreeMap::from([("gem:blood".to_string(), true)])
+        );
         assert!(report.items_unknown.is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
