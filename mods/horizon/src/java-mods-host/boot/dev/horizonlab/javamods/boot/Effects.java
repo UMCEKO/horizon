@@ -168,6 +168,7 @@ final class Effects {
 
     /** What `BlockBehaviour.getDrops` reads of its loot parameters: the tool, the origin, whether an entity broke it, the explosion's radius. */
     static byte[] lootParams(LootParams.Builder params) {
+        Loot.LIVE.set(params);
         try {
             ItemInstance tool = params.getOptionalParameter(LootContextParams.TOOL);
             ItemStack held = tool instanceof ItemStack stack ? stack : tool instanceof ItemStackTemplate template ? template.create() : ItemStack.EMPTY;

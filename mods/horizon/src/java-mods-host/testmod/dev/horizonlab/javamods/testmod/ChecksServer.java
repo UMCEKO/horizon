@@ -34,6 +34,76 @@ final class ChecksServer {
             return net.neoforged.neoforge.common.util.FakePlayerFactory.get((net.minecraft.server.level.ServerLevel) level, profile).getUUID().equals(profile.id());
         });
         Checks.check("craft_facts", () -> craftFacts(server));
+        Checks.check("loot_kinds_isolated", () -> {
+            try {
+                return lootKinds((net.minecraft.server.level.ServerLevel) level);
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        });
+    }
+
+    private static final String STONE = "{\"id\":\"minecraft:stone\",\"count\":1}";
+
+    /** `Loot.function` asked as Rust asks, with a hand-built request: the stack comes back stamped. */
+    private static String lootFunction(net.minecraft.server.level.ServerLevel level, String type, boolean live) throws Exception {
+        var bytes = new java.io.ByteArrayOutputStream();
+        var out = new java.io.DataOutputStream(bytes);
+        text(out, "horizon_java_test:" + type);
+        text(out, "{\"type\":\"horizon_java_test:" + type + "\"}");
+        out.writeBoolean(live);
+        text(out, level.dimension().identifier().toString());
+        out.writeLong(level.getGameTime());
+        out.writeBoolean(false);
+        out.writeBoolean(false);
+        out.writeBoolean(false);
+        text(out, "");
+        text(out, "");
+        out.writeInt(0);
+        out.writeFloat(0);
+        out.writeLong(1234L);
+        text(out, STONE);
+        var loot = Class.forName("dev.horizonlab.javamods.boot.Loot", true, ClassLoader.getSystemClassLoader());
+        var in = Class.forName("dev.horizonlab.javamods.boot.Crossing$In").getMethod("of", byte[].class).invoke(null, (Object) bytes.toByteArray());
+        var outType = Class.forName("dev.horizonlab.javamods.boot.Crossing$Out");
+        var constructor = outType.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        var reply = constructor.newInstance();
+        var function = loot.getDeclaredMethod("function", in.getClass(), outType);
+        function.setAccessible(true);
+        function.invoke(null, in, reply);
+        var toBytes = outType.getDeclaredMethod("toByteArray");
+        toBytes.setAccessible(true);
+        var read = new java.io.DataInputStream(new java.io.ByteArrayInputStream((byte[]) toBytes.invoke(reply)));
+        return text(read);
+    }
+
+    private static boolean lootKinds(net.minecraft.server.level.ServerLevel level) throws Exception {
+        String stamped = lootFunction(level, "stamp", false);
+        var live = Class.forName("dev.horizonlab.javamods.boot.Loot", true, ClassLoader.getSystemClassLoader()).getDeclaredField("LIVE");
+        live.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        var holder = (ThreadLocal<net.minecraft.world.level.storage.loot.LootParams.Builder>) live.get(null);
+        var state = Breakables.DROPPER.get().defaultBlockState();
+        var entity = new Breakables.Entity(BlockPos.ZERO, state);
+        holder.set(new net.minecraft.world.level.storage.loot.LootParams.Builder(level)
+                .withParameter(net.minecraft.world.level.storage.loot.parameters.LootContextParams.BLOCK_STATE, state)
+                .withParameter(net.minecraft.world.level.storage.loot.parameters.LootContextParams.ORIGIN, net.minecraft.world.phys.Vec3.ZERO)
+                .withParameter(net.minecraft.world.level.storage.loot.parameters.LootContextParams.TOOL, net.minecraft.world.item.ItemStack.EMPTY)
+                .withParameter(net.minecraft.world.level.storage.loot.parameters.LootContextParams.BLOCK_ENTITY, entity));
+        String typed;
+        try {
+            typed = lootFunction(level, "stamp_entity", true);
+        } finally {
+            holder.remove();
+        }
+        return stamped.contains("\"stamped\":1") && typed.contains("\"entity\":\"horizon_java_test:breakable\"");
+    }
+
+    private static void text(java.io.DataOutputStream out, String value) throws java.io.IOException {
+        byte[] bytes = value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        out.writeInt(bytes.length);
+        out.write(bytes);
     }
 
     private static String text(java.io.DataInputStream in) throws java.io.IOException {

@@ -150,6 +150,7 @@ public final class GameBridge {
         Crossing.game("entity_types", input -> EntityFacts.types(level(OVERWORLD)));
         Crossing.game("level_add", GameBridge::levelAdd);
         Crossing.game("craft_facts", input -> CraftFacts.bin(server()));
+        Loot.register();
         Crossing.game("click_block", (in, out) -> use(in, out, 2));
         Crossing.game("event_click_block", (in, out) -> use(in, out, 3));
         Crossing.game("event_use_item", (in, out) -> use(in, out, 4));
@@ -324,6 +325,11 @@ public final class GameBridge {
         return out;
     }
 
+    /** The level of a dimension's id, at the game time Horizon sent. */
+    static ServerLevel levelAt(String id, long gameTime) {
+        return invalidated(levelNamed(id), gameTime);
+    }
+
     /** `level_add`: Horizon names the dimension of a key once, and its `ServerLevel` is made. */
     private static byte[] levelAdd(byte[] input) throws Exception {
         var in = new DataInputStream(new ByteArrayInputStream(input));
@@ -492,7 +498,7 @@ public final class GameBridge {
         if (Clients.joining(player.getUUID())) safely("the client's login", () -> Menus.login(player));
         if (joined) {
             // `placeNewPlayer` adds the player to its level (`addNewPlayer`) before PlayerLoggedIn.
-            if (!playerJoins(player, level)) System.err.println("Horizon: a Java mod canceled player " + name + " joining " + level.dimension() + "; it joins anyway, as vanilla ignores it");
+            if (!playerJoins(player, level)) System.err.println("Horizon: a Java mod canceled player " + g.name + " joining " + level.dimension() + "; it joins anyway, as vanilla ignores it");
             safely("PlayerLoggedIn", () -> EventHooks.firePlayerLoggedIn(player));
             safely("chunks sent before the player's view", () -> Tracking.joined(player, level));
         }
@@ -743,6 +749,7 @@ public final class GameBridge {
 
     /** A server's levels, players and block entities are its own: the next world's start builds new ones. */
     private static void closeWorld() {
+        Loot.reset();
         levels = new ServerLevel[3];
         PLAYERS.clear();
         JOINED.clear();

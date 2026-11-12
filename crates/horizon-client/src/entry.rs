@@ -205,9 +205,11 @@ pub fn main_with(
             },
             loot_function: |kind, data, ctx, stack| {
                 crate::game::api_values::dispatch_loot_function(kind, data, ctx, stack);
+                crate::game::java_hook_loot_function(kind, data, ctx, stack);
             },
             loot_condition: |kind, data, ctx, holds| {
                 crate::game::api_values::dispatch_loot_condition(kind, data, ctx, holds);
+                crate::game::java_hook_loot_condition(kind, data, ctx, holds);
             },
             loot_wanted: |table| crate::game::java_hook_loot_wanted(table),
             loot_rolled: |table, ctx, tool, random, items| {
