@@ -162,14 +162,7 @@ impl Game<'_> {
     /// game's own when it has packs, a server's tags over the game's own on a
     /// server, `Resources.rest`'s own otherwise.
     pub(super) fn items(&self) -> &Items {
-        match &self.world_tables {
-            Some(t) => &t.items,
-            None => self
-                .remote
-                .as_ref()
-                .and_then(|r| r.tables.items.as_deref())
-                .unwrap_or_else(|| self.res.items()),
-        }
+        world_items(&self.world_tables, &self.remote, &self.res)
     }
     pub(super) fn mob_suffocation(
         &self,
@@ -386,5 +379,20 @@ impl Game<'_> {
             return Err("world resources are unavailable".into());
         }
         Ok(())
+    }
+}
+
+/// [`Game::items`] over the fields it reads, for a borrow beside others.
+pub(super) fn world_items<'a>(
+    world_tables: &'a Option<WorldTables>,
+    remote: &'a Option<remote::Remote>,
+    res: &'a Resources,
+) -> &'a Items {
+    match world_tables {
+        Some(t) => &t.items,
+        None => remote
+            .as_ref()
+            .and_then(|r| r.tables.items.as_deref())
+            .unwrap_or_else(|| res.items()),
     }
 }
