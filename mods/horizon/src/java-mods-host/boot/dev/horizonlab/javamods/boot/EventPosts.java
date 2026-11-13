@@ -48,6 +48,8 @@ import net.minecraft.world.level.ServerExplosion;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.ListenerList;
 import net.neoforged.bus.api.Event;
+import net.neoforged.bus.api.EventPriority;
+import net.neoforged.bus.api.ICancellableEvent;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.common.CommonHooks;
 import net.neoforged.neoforge.common.NeoForge;
@@ -124,39 +126,77 @@ public final class EventPosts {
         "net.neoforged.neoforge.registries.datamaps", "net.neoforged.neoforge.server.permission.events",
     };
 
-    /** `bool loud`, `int n` x (name, `bool sited`), answered with `int m` of the names a loaded mod listens to; `loud` logs each. */
+    /** A listened event: its listeners' owners, a bit per `EventPriority` ordinal with one, and whether one hears it cancelled. */
+    record Heard(List<String> owners, int phases, boolean receivesCanceled) {}
+
+    /** `bool loud`, `int n` x (name, `bool sited`), answered with `int m` x (name, `byte phases`, `bool receives canceled`) of the events a loaded mod listens to; `loud` logs each. */
     static byte[] census(byte[] input) throws IOException {
+        CompiledEvents.freeze();
         var in = Crossing.In.of(input);
         boolean loud = in.readBoolean();
         int n = in.readInt();
         boolean debug = System.getenv("HORIZON_JAVA_DEBUG") != null;
-        var found = new TreeMap<String, List<String>>();
+        var found = new TreeMap<String, Heard>();
         for (int i = 0; i < n; i++) {
             String name = in.text();
             boolean sited = in.readBoolean();
             Class<?> event = resolve(name);
             if (event == null) continue;
-            List<String> owners = owners(NeoForge.EVENT_BUS, event);
-            if (owners.isEmpty()) {
+            Heard heard = heard(NeoForge.EVENT_BUS, event);
+            if (heard.owners().isEmpty()) {
                 if (loud && debug) System.err.println("Horizon: server event " + event.getName() + " not listened");
                 continue;
             }
-            found.put(name, owners);
+            found.put(name, heard);
             if (!loud) continue;
-            String by = String.join(", ", owners);
+            String by = String.join(", ", heard.owners());
             System.err.println("Horizon: server event " + event.getName() + " listened by " + by);
             if (!sited) System.err.println("Horizon: WARNING: server event " + event.getName() + " is listened (" + by + ") but Horizon has no site for it: mods will not hear it");
         }
-        listened = Collections.unmodifiableMap(found);
+        var owners = new TreeMap<String, List<String>>();
+        found.forEach((name, heard) -> owners.put(name, heard.owners()));
+        listened = Collections.unmodifiableMap(owners);
         var bytes = new ByteArrayOutputStream();
         var out = new DataOutputStream(bytes);
         out.writeInt(found.size());
-        for (String name : found.keySet()) {
-            byte[] utf = name.getBytes(StandardCharsets.UTF_8);
+        for (var entry : found.entrySet()) {
+            byte[] utf = entry.getKey().getBytes(StandardCharsets.UTF_8);
             out.writeInt(utf.length);
             out.write(utf);
+            out.writeByte(entry.getValue().phases());
+            out.writeBoolean(entry.getValue().receivesCanceled());
         }
         return bytes.toByteArray();
+    }
+
+    /** `event`'s listeners on the bus beyond Horizon's own, by phase: whom they belong to, their phases, whether one hears a cancelled event. */
+    static Heard heard(IEventBus bus, Class<?> event) {
+        if (!Event.class.isAssignableFrom(event)) return new Heard(List.of(), 0, false);
+        boolean cancellable = ICancellableEvent.class.isAssignableFrom(event);
+        var owners = new TreeSet<String>();
+        int phases = 0;
+        boolean receives = false;
+        try {
+            for (EventPriority phase : EventPriority.values()) {
+                for (var listener : CompiledEvents.phaseListeners(bus, event, phase)) {
+                    String owner;
+                    try {
+                        owner = Listeners.ownerOf(listener).getName();
+                    } catch (ReflectiveOperationException | RuntimeException e) {
+                        owner = listener.getClass().getName();
+                    }
+                    if (horizons(owner)) continue;
+                    owners.add(owner);
+                    phases |= 1 << phase.ordinal();
+                    receives |= cancellable && CompiledEvents.receivesCanceled(listener);
+                }
+            }
+        } catch (Throwable e) {
+            System.err.println("Horizon: the listeners of " + event.getName() + " can't be read by phase: " + e);
+            List<String> all = owners(bus, event);
+            return new Heard(all, all.isEmpty() ? 0 : 1 << EventPriority.NORMAL.ordinal(), false);
+        }
+        return new Heard(List.copyOf(owners), phases, receives);
     }
 
     /** The last census's listened names, each with its listeners' owners. */
@@ -210,25 +250,27 @@ public final class EventPosts {
         return List.copyOf(owners);
     }
 
-    /** `post_event`: the event's name, then the acting player's view and its fields; the reply is the posted result, then the use reply's tail. */
+    /** `post_event`: the event's name, whether it arrives cancelled, then the acting player's view and its fields; the reply is the posted result, then the use reply's tail. */
     static void server(Crossing.In in, Crossing.Out out) throws Exception {
         String name = in.text();
+        boolean arrivesCanceled = in.readBoolean();
         PlayerPost post = PLAYER.get(name);
         if (post == null) throw new IllegalArgumentException("no server post for " + name);
         var call = GameBridge.fill(in, false);
         // A view keeps no use between calls, as in `GameBridge.use`.
         Using.clear(call.player());
-        write(out, posted(name, () -> post.post(call)));
+        write(out, posted(name, arrivesCanceled, () -> post.post(call)));
         GameBridge.writeUseTail(call.player(), out);
     }
 
-    /** `post_level_event`: the level, the event's name and its fields; the reply is the posted result, then the effects. */
+    /** `post_level_event`: the level, the event's name, whether it arrives cancelled, and its fields; the reply is the posted result, then the effects. */
     static void level(Crossing.In in, Crossing.Out out) throws Exception {
         var level = GameBridge.levelOf(in);
         String name = in.text();
+        boolean arrivesCanceled = in.readBoolean();
         LevelPost post = LEVEL.get(name);
         if (post == null) throw new IllegalArgumentException("no level post for " + name);
-        write(out, posted(name, () -> post.post(level, in)));
+        write(out, posted(name, arrivesCanceled, () -> post.post(level, in)));
         GameBridge.writeEffects(out);
     }
 
@@ -236,16 +278,26 @@ public final class EventPosts {
         Posted run() throws Exception;
     }
 
-    /** Runs a post through `GameBridge.safely`: a listener that throws leaves the event as it was. */
-    private static Posted posted(String name, Step step) {
+    /** The event classes posts resolved by name. */
+    private static final Map<String, Class<?>> CLASSES = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Runs a post through `GameBridge.safely`: a listener that throws leaves the event as it was; one a native mod cancelled first starts cancelled. */
+    private static Posted posted(String name, boolean arrivesCanceled, Step step) {
         Posted[] posted = {Posted.NONE};
-        GameBridge.safely(name, () -> {
+        Runnable run = () -> GameBridge.safely(name, () -> {
             try {
                 posted[0] = step.run();
             } catch (Exception e) {
                 throw new IllegalStateException(e);
             }
         });
+        if (!arrivesCanceled) {
+            run.run();
+        } else {
+            Class<?> type = CLASSES.computeIfAbsent(name, EventPosts::resolve);
+            // Only compiled dispatch can start the site's own event cancelled; without it the cancel stands unheard.
+            if (type == null || !CompiledEvents.carry(type, run)) return new Posted(true, Posted.NONE.result());
+        }
         if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: server event " + name + " canceled=" + posted[0].canceled() + " result=" + posted[0].result().length + " bytes");
         return posted[0];
     }

@@ -201,6 +201,38 @@ fn native_switch_skips_and_resumes_subscribed_hooks() {
 }
 
 #[test]
+fn a_hook_switch_skips_one_subscription_and_leaves_the_mods_others() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Counter(Arc<AtomicUsize>, Arc<AtomicUsize>);
+    #[mod_api::__subscriptions]
+    impl Hooks for Counter {
+        fn client_tick_pre(&self, _: &mut dyn ClientHost, _: &mut ClientTickPreEvent) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+        fn client_tick_post(&self, _: &mut dyn ClientHost, _: &mut ClientTickPostEvent) {
+            self.1.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    let (pre, post) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    testing::with_mods(
+        vec![ModEntry::new("counter", Box::new(Counter(pre.clone(), post.clone())))].into(),
+        || {
+            assert!(__private::set_hook_enabled("counter", HookId::ClientTickPre, false));
+            assert!(!subscribed_by(0, Some(HookId::ClientTickPre)));
+            assert!(subscribed_by(0, Some(HookId::ClientTickPost)));
+            dispatch_client_tick_pre(&mut FakeHost::new());
+            dispatch_client_tick_post(&mut FakeHost::new());
+            assert!(__private::set_hook_enabled("counter", HookId::ClientTickPre, true));
+            dispatch_client_tick_pre(&mut FakeHost::new());
+            assert!(!__private::set_hook_enabled("counter", HookId::PlaySound, false));
+            assert!(!__private::set_hook_enabled("missing", HookId::ClientTickPre, false));
+        },
+    );
+    assert_eq!((pre.load(Ordering::Relaxed), post.load(Ordering::Relaxed)), (1, 1));
+}
+
+#[test]
 fn movement_input_writes_back_all_fields() {
     struct Movement;
     #[mod_api::__subscriptions]

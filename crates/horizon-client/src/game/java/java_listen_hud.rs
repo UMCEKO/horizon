@@ -3,12 +3,11 @@
 //! `RenderGuiLayerEvent.Pre` on `gui_layer_pre`: a Java mod's cancel hides the vanilla layer by the hook's contract.
 
 use super::java_hooks_client::HudLayer;
-use super::java_listener::Family;
-use mod_api::{ClientHost, Flow, GuiLayerPreEvent, HookId};
-use std::sync::OnceLock;
+use super::java_listener::{Family, Subscriptions};
+use mod_api::{ClientHost, Flow, GuiLayerPreEvent, HookId, Listener};
 
 const HOOKS: &[HookId] = &[HookId::GuiLayerPre];
-static SUBSCRIBED: OnceLock<Vec<Option<HookId>>> = OnceLock::new();
+static SUBSCRIBED: Subscriptions = Subscriptions::new();
 
 pub(super) fn family() -> Family {
     Family {
@@ -21,7 +20,11 @@ struct Hud;
 
 impl mod_api::Hooks for Hud {
     fn subscribed(&self) -> &'static [Option<HookId>] {
-        super::java_listener::subscribed(HOOKS, &SUBSCRIBED)
+        super::java_listener::subscribed(HOOKS, &SUBSCRIBED, false)
+    }
+
+    fn listeners(&self) -> &'static [Listener] {
+        super::java_listener::listeners(HOOKS, &SUBSCRIBED, false)
     }
 
     // The Java client's own HUD pass posts the event on its thread as it records the frame; posting it again here would run its listeners twice and wait on the JVM every frame.
