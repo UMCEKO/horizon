@@ -253,7 +253,7 @@ fn export_routes<const N: usize>(
     ov: &WorldgenOverrides,
     read: [(&'static str, &Bundle); N],
 ) -> Result<super::routes::WorldgenRoutes, GeneratorError> {
-    if ov.owners().with_mod_types() == 0 {
+    if ov.owners().with_mod_types() == 0 && ov.owners().routed().is_empty() {
         return Ok(Default::default());
     }
     let mut more = Vec::new();

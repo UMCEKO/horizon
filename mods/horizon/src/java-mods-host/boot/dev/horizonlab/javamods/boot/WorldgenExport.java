@@ -121,6 +121,7 @@ public final class WorldgenExport {
         root.add("entries", entries);
         root.add("tags", tags);
         root.add("owners", owners);
+        root.add("routed", routed());
         var notes = new JsonArray();
         warnings.forEach(notes::add);
         root.add("warnings", notes);
@@ -128,6 +129,30 @@ public final class WorldgenExport {
         var temp = target.resolveSibling(target.getFileName() + ".tmp");
         Files.writeString(temp, new GsonBuilder().serializeNulls().create().toJson(root), StandardCharsets.UTF_8);
         Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+    }
+
+    /** The seams (`biomes`, `feature:<type>`...) whose closure in `worldgen_closure.tsv` (tools/worldgen_closure.py) holds a method a loaded mod patches, with those methods' keys. */
+    static JsonObject routed() throws IOException {
+        String tsv;
+        try (var in = WorldgenExport.class.getResourceAsStream("/worldgen_closure.tsv")) {
+            if (in == null) throw new IllegalStateException("the boot jar has no worldgen_closure.tsv");
+            tsv = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        var seams = new TreeMap<String, Set<String>>();
+        for (String line : tsv.split("\n")) {
+            String[] f = line.split("\t", -1);
+            if (f.length < 5) continue;
+            String key = f[2] + "#" + f[3] + f[4];
+            if (!Routing.patched(key)) continue;
+            seams.computeIfAbsent(f[1].isEmpty() ? f[0] : f[0] + ":" + f[1], k -> new TreeSet<>()).add(key);
+        }
+        var out = new JsonObject();
+        seams.forEach((seam, keys) -> {
+            var array = new JsonArray();
+            keys.forEach(array::add);
+            out.add(seam, array);
+        });
+        return out;
     }
 
     /** Vanilla's own entries: a second load of the vanilla pack alone, kept for the next export. */

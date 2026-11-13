@@ -70,6 +70,50 @@ impl std::fmt::Display for Seam {
     }
 }
 
+/// A seam as the export's `routed` block names it: a whole stage, or every entry of one registered type.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MethodSeam {
+    Biomes,
+    Fill,
+    Surface,
+    Terrain,
+    Beard,
+    Spawn,
+    /// Every configured carver of this carver type.
+    Carver(String),
+    /// Every placed feature whose configured feature has this feature type.
+    Feature(String),
+    /// Every structure of this structure type.
+    Start(String),
+    /// The same, for its placement.
+    Place(String),
+}
+
+impl std::str::FromStr for MethodSeam {
+    type Err = String;
+
+    fn from_str(key: &str) -> Result<Self, String> {
+        let unknown = || format!("routed seam {key} is unknown");
+        Ok(match key.split_once(':') {
+            None => match key {
+                "biomes" => Self::Biomes,
+                "fill" => Self::Fill,
+                "surface" => Self::Surface,
+                "terrain" => Self::Terrain,
+                "beard" => Self::Beard,
+                "spawn" => Self::Spawn,
+                _ => return Err(unknown()),
+            },
+            Some((_, "")) => return Err(unknown()),
+            Some(("carver", ty)) => Self::Carver(normalize(ty)),
+            Some(("feature", ty)) => Self::Feature(normalize(ty)),
+            Some(("start", ty)) => Self::Start(normalize(ty)),
+            Some(("place", ty)) => Self::Place(normalize(ty)),
+            Some(_) => return Err(unknown()),
+        })
+    }
+}
+
 /// Bundles read here, by the name `GeneratorData` gives them.
 const PLACED: &str = "placed_features";
 const FEATURES: &str = "features";
@@ -119,7 +163,7 @@ pub type Bundles<'a> = BTreeMap<&'a str, &'a BTreeMap<String, String>>;
 #[derive(Debug, Default)]
 pub struct WorldgenRoutes {
     java: BTreeSet<Seam>,
-    /// The mod-owned types behind each seam, for the log.
+    /// The mod-owned types and patched methods (`owner#name(desc)`) behind each seam, for the log.
     why: BTreeMap<Seam, Vec<String>>,
     /// Entries native leaves undecoded because a routed seam owns them, by bundle.
     skipped: BTreeMap<&'static str, BTreeSet<String>>,
@@ -131,9 +175,59 @@ impl WorldgenRoutes {
     /// The routes of the export whose owners are `owners`, over the merged bundles `bundles`.
     pub fn from_export(owners: &ExportOwners, bundles: &Bundles<'_>) -> Self {
         let mut routes = Self::default();
-        if owners.with_mod_types() == 0 {
-            return routes;
+        routes.add_methods(owners.routed(), bundles);
+        if owners.with_mod_types() > 0 {
+            routes.add_products(owners, bundles);
         }
+        if routes.routes(&Seam::Terrain)
+            && (routes.routes(&Seam::Fill) || routes.routes(&Seam::Surface))
+        {
+            log::info!(
+                "Horizon: Java runs the whole terrain stage, so its noise fill and surface seams are part of it"
+            );
+        }
+        routes
+    }
+
+    /// The method half: seams whose vanilla closure holds a method a loaded mod patches, typed seams spread over their type's entries.
+    fn add_methods(&mut self, routed: &BTreeMap<MethodSeam, Vec<String>>, bundles: &Bundles<'_>) {
+        for (seam, keys) in routed {
+            let keys: BTreeSet<String> = keys.iter().cloned().collect();
+            match seam {
+                MethodSeam::Biomes => self.add(Seam::Biomes, keys),
+                MethodSeam::Fill => self.add(Seam::Fill, keys),
+                MethodSeam::Surface => self.add(Seam::Surface, keys),
+                MethodSeam::Terrain => self.add(Seam::Terrain, keys),
+                MethodSeam::Beard => self.add(Seam::Beard, keys),
+                MethodSeam::Spawn => self.add(Seam::Spawn, keys),
+                MethodSeam::Carver(ty) => {
+                    for id in of_type(bundles, CARVERS, ty) {
+                        self.add(Seam::Carver(id), keys.clone());
+                    }
+                }
+                MethodSeam::Feature(ty) => {
+                    for id in ids(bundles, PLACED) {
+                        if placed_type(bundles, &id).as_deref() == Some(ty.as_str()) {
+                            self.add(Seam::Feature(id), keys.clone());
+                        }
+                    }
+                }
+                MethodSeam::Start(ty) => {
+                    for id in of_type(bundles, STRUCTURES, ty) {
+                        self.add(Seam::Start(id), keys.clone());
+                    }
+                }
+                MethodSeam::Place(ty) => {
+                    for id in of_type(bundles, STRUCTURES, ty) {
+                        self.add(Seam::Place(id), keys.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    /// The product half: seams whose entries hold a mod-owned type.
+    fn add_products(&mut self, owners: &ExportOwners, bundles: &Bundles<'_>) {
         let mut reach = Reach {
             owners,
             bundles,
@@ -142,7 +236,7 @@ impl WorldgenRoutes {
         };
         for id in ids(bundles, PLACED) {
             let types = reach.types(PLACED, &id);
-            routes.add(Seam::Feature(id), types);
+            self.add(Seam::Feature(id), types);
         }
         let mut structures: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for id in ids(bundles, STRUCTURES) {
@@ -165,33 +259,32 @@ impl WorldgenRoutes {
             }
         }
         for (id, types) in structures {
-            routes.add(Seam::Start(id.clone()), types.clone());
-            routes.add(Seam::Place(id), types);
+            self.add(Seam::Start(id.clone()), types.clone());
+            self.add(Seam::Place(id), types);
         }
         for (bundle, id, types) in owners.owned() {
             if bundle == CARVERS {
-                routes.add(Seam::Carver(id.to_owned()), types.iter().cloned().collect());
+                self.add(Seam::Carver(id.to_owned()), types.iter().cloned().collect());
             }
         }
         for id in ids(bundles, DIMENSIONS) {
-            routes.add_stem(&mut reach, &id);
+            self.add_stem(&mut reach, &id);
         }
         for id in ids(bundles, SETTINGS) {
             let types = reach.types(SETTINGS, &id);
-            routes.add_typed(types);
+            self.add_typed(types);
         }
-        if routes.routes(&Seam::Surface) {
+        if self.routes(&Seam::Surface) {
             for bundle in [RULES, CONDITIONS] {
                 let skipped: BTreeSet<String> = ids(bundles, bundle)
                     .into_iter()
                     .filter(|id| !reach.types(bundle, id).is_empty())
                     .collect();
                 if !skipped.is_empty() {
-                    routes.skipped.insert(bundle, skipped);
+                    self.skipped.insert(bundle, skipped);
                 }
             }
         }
-        routes
     }
 
     /// A level stem: its biome source, generator and noise settings.
@@ -259,7 +352,7 @@ impl WorldgenRoutes {
         self.java.iter()
     }
 
-    /// The mod-owned types behind `seam`.
+    /// The mod-owned types and patched methods behind `seam`.
     pub fn why(&self, seam: &Seam) -> &[String] {
         self.why.get(seam).map_or(&[], Vec::as_slice)
     }
@@ -353,6 +446,32 @@ fn parse(bundles: &Bundles<'_>, bundle: &str, id: &str) -> Option<Value> {
     serde_json::from_str(bundles.get(bundle)?.get(id)?).ok()
 }
 
+fn type_of(entry: &Value) -> Option<String> {
+    entry["type"].as_str().map(normalize)
+}
+
+/// The entries of `bundle` whose `type` is `ty`.
+fn of_type(bundles: &Bundles<'_>, bundle: &str, ty: &str) -> Vec<String> {
+    ids(bundles, bundle)
+        .into_iter()
+        .filter(|id| {
+            parse(bundles, bundle, id)
+                .and_then(|e| type_of(&e))
+                .as_deref()
+                == Some(ty)
+        })
+        .collect()
+}
+
+/// A placed feature's feature type: its configured feature's, named or inline.
+fn placed_type(bundles: &Bundles<'_>, id: &str) -> Option<String> {
+    let placed = parse(bundles, PLACED, id)?;
+    match &placed["feature"] {
+        Value::String(name) => type_of(&parse(bundles, FEATURES, &normalize(name))?),
+        inline => type_of(inline),
+    }
+}
+
 /// The mod-owned types each entry holds or reaches through the entries it names.
 struct Reach<'a> {
     owners: &'a ExportOwners,
@@ -406,6 +525,7 @@ fn strings(value: &Value, out: &mut Vec<String>) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::overrides::WorldgenOverrides;
     use super::*;
 
     fn bundle(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -557,6 +677,72 @@ mod tests {
         let routes = WorldgenRoutes::from_export(&owners, &bundles);
         assert!(routes.routes(&Seam::Biomes));
         assert_eq!(routes.seams().count(), 1);
+    }
+
+    #[test]
+    fn a_routed_block_turns_typed_seams_into_id_seams() {
+        let export = r#"{"format":1,"entries":{},"tags":{},"owners":{},"warnings":[],"routed":{
+            "start:minecraft:jigsaw":["net/minecraft/world/level/levelgen/structure/pools/JigsawPlacement$Placer#tryPlacingChildren()V"],
+            "place:mineshaft":["net/minecraft/world/level/levelgen/structure/StructurePiece#placeBlock()V"],
+            "feature:minecraft:tree":["net/minecraft/world/level/levelgen/feature/TreeFeature#place()Z"],
+            "terrain":["net/minecraft/world/level/levelgen/NoiseBasedChunkGenerator#buildTerrain()V"]}}"#;
+        let (_, owners) = WorldgenOverrides::from_java_export(export).unwrap();
+        let structures = bundle(&[
+            ("minecraft:village_plains", r#"{"type":"minecraft:jigsaw"}"#),
+            ("mod:tower", r#"{"type":"jigsaw"}"#),
+            ("minecraft:mineshaft", r#"{"type":"minecraft:mineshaft"}"#),
+        ]);
+        let placed = bundle(&[
+            (
+                "minecraft:oak",
+                r#"{"feature":"minecraft:oak","placement":[]}"#,
+            ),
+            (
+                "mod:inline_tree",
+                r#"{"feature":{"type":"minecraft:tree","config":{}},"placement":[]}"#,
+            ),
+            (
+                "minecraft:ore_iron",
+                r#"{"feature":"minecraft:ore_iron","placement":[]}"#,
+            ),
+        ]);
+        let features = bundle(&[
+            ("minecraft:oak", r#"{"type":"minecraft:tree","config":{}}"#),
+            (
+                "minecraft:ore_iron",
+                r#"{"type":"minecraft:ore","config":{}}"#,
+            ),
+        ]);
+        let bundles = Bundles::from([
+            (STRUCTURES, &structures),
+            (PLACED, &placed),
+            (FEATURES, &features),
+        ]);
+        let routes = WorldgenRoutes::from_export(&owners, &bundles);
+        let seams: Vec<&Seam> = routes.seams().collect();
+        assert_eq!(
+            seams,
+            [
+                &Seam::Terrain,
+                &Seam::Feature("minecraft:oak".into()),
+                &Seam::Feature("mod:inline_tree".into()),
+                &Seam::Start("minecraft:village_plains".into()),
+                &Seam::Start("mod:tower".into()),
+                &Seam::Place("minecraft:mineshaft".into()),
+            ]
+        );
+        assert_eq!(
+            routes.why(&Seam::Place("minecraft:mineshaft".into())),
+            ["net/minecraft/world/level/levelgen/structure/StructurePiece#placeBlock()V"]
+        );
+    }
+
+    #[test]
+    fn an_unknown_routed_seam_is_a_warning() {
+        let export = r#"{"format":1,"entries":{},"tags":{},"owners":{},"warnings":[],"routed":{"light":["a#b()V"],"start:":["a#c()V"]}}"#;
+        let (_, owners) = WorldgenOverrides::from_java_export(export).unwrap();
+        assert!(owners.routed().is_empty());
+        assert_eq!(owners.warnings.len(), 2);
     }
 
     #[test]

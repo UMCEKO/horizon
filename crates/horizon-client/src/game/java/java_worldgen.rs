@@ -20,10 +20,7 @@ static RECHECK: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 impl Game<'_> {
     /// `server_about_to_start` for the world, then the export: the cached one, or Java's, waited for; an error when Java's generation context failed.
-    pub(super) fn java_world_opening(
-        &mut self,
-        opening: &WorldOpening,
-    ) -> JavaWorldStart {
+    pub(super) fn java_world_opening(&mut self, opening: &WorldOpening) -> JavaWorldStart {
         if horizon_java_host::get().is_none() {
             return Ok(None);
         }
@@ -35,10 +32,15 @@ impl Game<'_> {
         out.long(opening.seed);
         // `ServerLevel.getSeed` is bridged, and `ChunkMap.<init>` seeds the `RandomState` with it before the world's level data is in place.
         self.level.seed = opening.seed;
-        match self.java_request("server_about_to_start", &out.0).as_deref() {
+        match self
+            .java_request("server_about_to_start", &out.0)
+            .as_deref()
+        {
             Some([STARTED]) => {}
             Some([CONTEXT_FAILED]) => {
-                return Err("the Java mods' generation context failed to build; see the log".into());
+                return Err(
+                    "the Java mods' generation context failed to build; see the log".into(),
+                );
             }
             _ => {
                 log::error!(
@@ -55,7 +57,9 @@ impl Game<'_> {
         let (file, reuse) = match super::java_content::cache_at() {
             Some(dir) => (dir.join(export_name(&opening.packs)), true),
             None => {
-                log::warn!("Horizon: the Java mods' content has no cache entry; their worldgen export isn't cached");
+                log::warn!(
+                    "Horizon: the Java mods' content has no cache entry; their worldgen export isn't cached"
+                );
                 let name = format!("worldgen-{}.json", std::process::id());
                 (std::env::temp_dir().join(name), false)
             }
@@ -76,9 +80,10 @@ impl Game<'_> {
             }
         };
         log::info!(
-            "Horizon: worldgen export: {} entries, {} with mod types, {} ms{}",
+            "Horizon: worldgen export: {} entries, {} with mod types, {} seams with patched methods, {} ms{}",
             overrides.entry_count(),
             owners.with_mod_types(),
+            owners.routed().len(),
             began.elapsed().as_millis(),
             if cached { " (cached)" } else { "" }
         );
@@ -165,7 +170,11 @@ fn read_or_export(
 
 /// After `server_start` of a world opened from a cached export: Java exports again beside it, off the server thread.
 pub(super) fn recheck_export() {
-    let Some(file) = RECHECK.lock().unwrap_or_else(PoisonError::into_inner).take() else {
+    let Some(file) = RECHECK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+    else {
         return;
     };
     let Some(host) = horizon_java_host::get() else {
@@ -184,7 +193,9 @@ pub(super) fn recheck_export() {
             if wrote.as_deref() == Some(&[1]) {
                 settle(&file, &next);
             } else {
-                log::error!("Horizon: Java mods' worldgen export not checked: Java didn't write it");
+                log::error!(
+                    "Horizon: Java mods' worldgen export not checked: Java didn't write it"
+                );
             }
         });
 }
@@ -252,7 +263,10 @@ mod tests {
             fs::write(path, r#"{"format":1}"#).is_ok()
         })
         .unwrap();
-        assert_eq!((text.as_str(), cached, calls), (r#"{"format":1}"#, false, 1));
+        assert_eq!(
+            (text.as_str(), cached, calls),
+            (r#"{"format":1}"#, false, 1)
+        );
         let (text, cached) = read_or_export(&file, true, |_| panic!("a hit exports")).unwrap();
         assert_eq!((text.as_str(), cached), (r#"{"format":1}"#, true));
         assert!(read_or_export(&dir.join("other.json"), true, |_| false).is_err());

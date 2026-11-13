@@ -6,6 +6,7 @@
 //! file for a tag adds its entries, and `replace` drops what came before.
 //! The prepared bundles are the built-in pack, so the packs above it are
 //! entries that replace or join a bundle's (`GeneratorData::load_with`).
+use super::routes::MethodSeam;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::OnceLock};
 
@@ -209,6 +210,8 @@ pub struct ExportOwners {
     pub failed: Vec<(String, String)>,
     /// Java's own notes on the export.
     pub warnings: Vec<String>,
+    /// The seams whose vanilla closure holds a method a loaded mod patches, with those methods' keys.
+    routed: BTreeMap<MethodSeam, Vec<String>>,
 }
 
 impl ExportOwners {
@@ -235,6 +238,11 @@ impl ExportOwners {
     /// The types of `id` in `bundle`, for a test or a hand-built export.
     pub fn set_mod_types(&mut self, bundle: &str, id: &str, types: Vec<String>) {
         self.types.insert((bundle.to_owned(), id.to_owned()), types);
+    }
+
+    /// The export's `routed` block: seam → the patched methods in its closure.
+    pub fn routed(&self) -> &BTreeMap<MethodSeam, Vec<String>> {
+        &self.routed
     }
 }
 
@@ -304,6 +312,13 @@ impl WorldgenOverrides {
         for (bundle, id, types) in export.owners.owned() {
             self.owners.set_mod_types(bundle, id, types.to_vec());
         }
+        for (seam, keys) in &export.owners.routed {
+            self.owners
+                .routed
+                .entry(seam.clone())
+                .or_default()
+                .extend(keys.iter().cloned());
+        }
     }
     /// A mod's level: called before any pack's file, so a pack's replaces it.
     pub fn add_mod_dimension(&mut self, dimension: &ModDimension) {
@@ -359,7 +374,7 @@ impl WorldgenOverrides {
             PackFile::Other
         }
     }
-    /// Java's export of the final worldgen registries (format 1): the entries and tags that differ from vanilla's, and the mod-owned types in each entry.
+    /// Java's export of the final worldgen registries (format 1): the entries and tags that differ from vanilla's, the mod-owned types in each entry, and the seams routed by patched methods.
     pub fn from_java_export(text: &str) -> Result<(Self, ExportOwners), String> {
         let root: Value =
             serde_json::from_str(text).map_err(|e| format!("worldgen export: {e}"))?;
@@ -414,7 +429,18 @@ impl WorldgenOverrides {
         owners.warnings = warnings
             .filter_map(|w| w.as_str().map(str::to_owned))
             .collect();
+        for (key, methods) in root["routed"].as_object().into_iter().flatten() {
+            match key.parse::<MethodSeam>() {
+                Ok(seam) => {
+                    let methods = methods.as_array().into_iter().flatten();
+                    let methods = methods.filter_map(|m| m.as_str().map(str::to_owned));
+                    owners.routed.insert(seam, methods.collect());
+                }
+                Err(e) => owners.warnings.push(format!("worldgen export: {e}")),
+            }
+        }
         overrides.owners.types = owners.types.clone();
+        overrides.owners.routed = owners.routed.clone();
         Ok((overrides, owners))
     }
     /// After the last pack: leaves out the packs' new biomes (`known` says
