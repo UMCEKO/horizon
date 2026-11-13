@@ -273,7 +273,7 @@ impl Game<'_> {
         let (u, e, s) = (num(u)?, num(e)?, num(s)?);
         horizon_client::random_source::set_thread_uniquifier(u)?;
         self.next_entity = u32::try_from(e).map_err(|err| err.to_string())?;
-        self.world.random = LegacyRandom::new(s);
+        horizon_core::random::RandomSource::set_seed(&mut self.world.random, s);
         JOIN_BASE.store(JoinSeq::upcoming().get(), Ordering::Relaxed);
         Ok(())
     }

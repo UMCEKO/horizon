@@ -10,6 +10,7 @@ description = "Vanilla's logical side: the gameplay the server jar holds, common
 horizon-client-core = { path = "../horizon-client-core" }
 horizon-client-lib = { path = "../horizon-client-lib", default-features = false }
 horizon-core = { path = "../horizon-core" }
+horizon-threads = { path = "../horizon-threads" }
 horizon-world = { path = "../horizon-world" }
 serde_json = { version = "1.0.151", features = ["raw_value"] }
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }

@@ -13,6 +13,7 @@
   ],
   "crates": {
     "horizon-assets": "engine",
+    "horizon-bench": "engine",
     "horizon-client": "engine",
     "horizon-client-core": "engine",
     "horizon-client-input": "engine",
@@ -25,6 +26,7 @@
     "horizon-hooks": "engine",
     "horizon-items": "engine",
     "horizon-narrator": "engine",
+    "horizon-perf-format": "engine",
     "horizon-prepare": "engine",
     "horizon-protocol": "engine",
     "horizon-server-files": "engine",
@@ -51,7 +53,6 @@
     "horizon-theme": "platform",
 
     "horizon-addresses": "horizon",
-    "horizon-bench": "horizon",
     "horizon-cosmetics": "horizon",
     "horizon-discord": "horizon",
     "horizon-friends": "horizon",
@@ -60,6 +61,7 @@
     "horizon-mod-registry": "horizon",
     "horizon-official": "horizon",
     "horizon-official-servers": "horizon",
+    "horizon-perf-share": "horizon",
     "horizon-relay": "horizon",
     "horizon-release-sign": "horizon",
     "horizon-server": "horizon",
@@ -67,6 +69,7 @@
     "horizon-telemetry-server": "horizon",
 
     "horizon-bots": "tool",
+    "horizon-perf": "tool",
     "horizon-mod-api-gen-tests": "tool",
     "xtask": "tool"
   },
@@ -79,6 +82,7 @@
       "horizon-core",
       "horizon-items",
       "horizon-protocol",
+      "horizon-threads",
       "horizon-world"
     ],
     "pending": {
@@ -89,7 +93,6 @@
   },
   "allowed": [
     "horizon-client -> horizon-anticheat",
-    "horizon-client -> horizon-bench",
     "horizon-client -> horizon-chat-filter",
     "horizon-client -> horizon-cosmetics",
     "horizon-client -> horizon-dualsense",
@@ -103,8 +106,6 @@
     "horizon-client -> horizon-telemetry",
     "horizon-client -> horizon-theme",
     "horizon-client-lib -> horizon-anticheat",
-    "horizon-client-lib -> horizon-bench",
-    "horizon-client-lib -> horizon-chat-filter",
     "horizon-client-lib -> horizon-hdr",
     "horizon-client-lib -> horizon-mcp",
     "horizon-client-lib -> horizon-mods",
@@ -112,7 +113,6 @@
     "horizon-client-lib -> horizon-shader-api",
     "horizon-client-lib -> horizon-shaders",
     "horizon-client-lib -> horizon-telemetry",
-    "horizon-client-render -> horizon-cosmetics",
     "horizon-client-render -> horizon-hdr",
     "horizon-client-render -> horizon-optifine",
     "horizon-client-render -> horizon-polytone",
