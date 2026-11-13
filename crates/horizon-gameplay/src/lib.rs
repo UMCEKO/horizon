@@ -10,4 +10,5 @@ pub mod lan;
 pub mod mob_index;
 pub mod stats;
 pub mod tick_profile;
+pub mod trident;
 pub mod wandering_trader;

@@ -2011,7 +2011,6 @@ impl Entity for ThrownTrident {
 }
 
 impl EntityRules for Rocket {}
-impl EntityRules for ThrownTrident {}
 impl EntityRules for Boat {
     fn is_no_gravity(&self) -> bool {
         self.no_gravity
