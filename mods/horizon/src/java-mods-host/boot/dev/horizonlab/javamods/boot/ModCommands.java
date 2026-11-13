@@ -105,7 +105,7 @@ final class ModCommands {
         GameBridge.writeEffects(out);
     }
 
-    private static boolean modOwned(ArgumentType<?> type) {
+    static boolean modOwned(ArgumentType<?> type) {
         var registry = BuiltInRegistries.COMMAND_ARGUMENT_TYPE;
         return BootFacts.owns(registry, registry.getKey(ArgumentTypeInfos.byClass(type)));
     }

@@ -57,6 +57,7 @@ impl Game<'_> {
                 let commands = Commands {
                     dispatcher: super::chat::chat_tree(&self.remote),
                     registries: &self.ui.registries,
+                    foreign: self.java_hook_foreign_commands(),
                 };
                 let screen = if self.screen == Screen::Chat {
                     self.ui.chat_screen.as_mut()?
@@ -245,6 +246,7 @@ mod tests {
                     &Commands {
                         dispatcher: super::super::chat::chat_tree(&game.remote),
                         registries: &game.ui.registries,
+                        foreign: None,
                     },
                     "",
                     false,

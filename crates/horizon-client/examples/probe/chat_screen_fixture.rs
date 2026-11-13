@@ -33,6 +33,7 @@ pub fn main() -> horizon_client::Result<()> {
     let c = Commands {
         dispatcher: vanilla::release_dispatcher(),
         registries: &reg,
+        foreign: None,
     };
     let mut out = String::new();
     for line in fs::read_to_string(inputs)?

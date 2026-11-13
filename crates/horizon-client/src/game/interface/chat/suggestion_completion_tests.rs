@@ -82,6 +82,7 @@ fn chat_completion_reaches_mods_from_keyboard_and_mouse_isolated() {
             &Commands {
                 dispatcher: chat_tree(&game.remote),
                 registries: &game.ui.registries,
+                foreign: None,
             },
             "",
             false,

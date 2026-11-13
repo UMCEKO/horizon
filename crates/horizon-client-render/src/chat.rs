@@ -1221,6 +1221,37 @@ pub enum ChatAction {
 pub struct Commands<'a> {
     pub dispatcher: &'a Dispatcher,
     pub registries: &'a Registries,
+    /// Another parser for the roots it owns; none draws every line from the dispatcher.
+    pub foreign: Option<&'a dyn ForeignCommands>,
+}
+
+/// What another parser (the Java client's) says about the line, in the chat box's own terms.
+pub struct ForeignInfo {
+    /// Char ranges and colours over the whole line.
+    pub spans: Vec<(usize, usize, u32)>,
+    pub usage: Vec<Text>,
+    pub usage_position: i32,
+    pub usage_width: i32,
+    pub suggestions: ForeignSuggestions,
+}
+
+/// The completions at the cursor from another parser.
+pub enum ForeignSuggestions {
+    None,
+    /// `start` and `end` are chars of the line.
+    Done {
+        start: usize,
+        end: usize,
+        list: Vec<Suggestion>,
+    },
+    Pending,
+}
+
+/// A parser other than the dispatcher for the lines whose first word it owns.
+pub trait ForeignCommands {
+    fn owns(&self, root: &str) -> bool;
+    /// `None` when it cannot answer; `cursor` counts chars.
+    fn info(&self, value: &str, cursor: usize, width: i32, height: i32) -> Option<ForeignInfo>;
 }
 
 /// `CommandSuggestions`' constructor arguments: how a screen's suggestions
@@ -1293,6 +1324,10 @@ pub struct ChatScreen {
     /// The request to send (`ServerboundCommandSuggestionPacket`): id and
     /// the command up to the cursor.
     request: Option<(i32, String)>,
+    /// The colours another parser gave the line, which replace the native parse's.
+    foreign_spans: Option<Vec<(usize, usize, u32)>>,
+    /// Another parser's completions have not come yet.
+    foreign_waiting: bool,
     suggestions: Option<SuggestionList>,
     completion: Option<SuggestionCompletion>,
     usage: Vec<Text>,
@@ -1317,6 +1352,34 @@ struct Awaiting {
 static SUGGESTION_ID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 /// `CommandSuggestions`' fill colour.
 const FILL: i32 = -805306368;
+/// The text with another parser's colours: `spans` are char ranges of the whole line, `value` starts `offset` chars into it.
+fn foreign_format(spans: &[(usize, usize, u32)], value: &str, offset: usize) -> Text {
+    let len = value.chars().count();
+    let mut out = Text::empty();
+    let mut done = 0;
+    for &(from, to, rgb) in spans {
+        let start = from.saturating_sub(offset).clamp(done, len);
+        let end = to.saturating_sub(offset).min(len);
+        if end > start {
+            if start > done {
+                out.push(Text::literal(
+                    value
+                        .chars()
+                        .skip(done)
+                        .take(start - done)
+                        .collect::<String>(),
+                ));
+            }
+            let piece: String = value.chars().skip(start).take(end - start).collect();
+            out.push(Text::styled(piece, Style::color(rgb)));
+            done = end;
+        }
+    }
+    if done < len {
+        out.push(Text::literal(value.chars().skip(done).collect::<String>()));
+    }
+    out
+}
 fn byte_at(s: &str, chars: usize) -> usize {
     s.char_indices().nth(chars).map_or(s.len(), |(i, _)| i)
 }
@@ -1416,6 +1479,8 @@ impl ChatScreen {
             pending: None,
             awaiting: None,
             request: None,
+            foreign_spans: None,
+            foreign_waiting: false,
             suggestions: None,
             completion: None,
             usage: Vec::new(),
@@ -1454,6 +1519,8 @@ impl ChatScreen {
             pending: None,
             awaiting: None,
             request: None,
+            foreign_spans: None,
+            foreign_waiting: false,
             suggestions: None,
             completion: None,
             usage: Vec::new(),
@@ -1556,6 +1623,22 @@ impl ChatScreen {
         let cursor = self.input.cursor;
         let cursor_b = byte_at(&command, cursor);
         let slash = command.starts_with('/');
+        self.foreign_spans = None;
+        self.foreign_waiting = false;
+        if (self.layout.commands_only || slash)
+            && let Some(foreign) = c.foreign
+            && foreign.owns(
+                command
+                    .trim_start_matches('/')
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(""),
+            )
+        {
+            self.parse = None;
+            self.foreign_command_info(m, foreign, &command, cursor);
+            return;
+        }
         if self.layout.commands_only || slash {
             let start = usize::from(slash);
             if self.parse.is_none() {
@@ -1611,6 +1694,57 @@ impl ChatScreen {
         } else {
             self.awaiting = None;
             self.pending = None;
+        }
+    }
+    /// `updateCommandInfo` for a line another parser owns: its colours, usage and completions in the same fields.
+    fn foreign_command_info(
+        &mut self,
+        m: &Measure,
+        foreign: &dyn ForeignCommands,
+        command: &str,
+        cursor: usize,
+    ) {
+        self.awaiting = None;
+        let from = if self.layout.only_past_error { 0 } else { 1 };
+        let Some(info) = foreign.info(command, cursor, self.width, self.height) else {
+            self.pending = None;
+            self.suggestions = None;
+            self.usage_width = 0;
+            self.usage_position = 0;
+            return;
+        };
+        self.foreign_spans = Some(info.spans);
+        self.usage = info.usage;
+        self.usage_position = info.usage_position;
+        self.usage_width = info.usage_width;
+        if cursor < from || (self.suggestions.is_some() && self.keep_suggestions) {
+            return;
+        }
+        match info.suggestions {
+            ForeignSuggestions::None => self.pending = None,
+            ForeignSuggestions::Pending => {
+                self.pending = None;
+                self.foreign_waiting = true;
+            }
+            ForeignSuggestions::Done { start, list, .. } => {
+                self.pending = Some((byte_at(command, start), list));
+            }
+        }
+        if !self.abilities.send_commands {
+            let line =
+                Text::translate("chat_screen.commands_not_allowed", &[]).with_color(text::RED);
+            self.usage_width = self.usage_width.max(m.width(&line));
+            self.usage.push(line);
+        }
+        self.suggestions = None;
+        if self.allow_suggestions && self.auto_suggestions {
+            self.show_suggestions(m, false);
+        }
+    }
+    /// Another parser's completions arrived: the line is read again.
+    pub fn foreign_ready(&mut self, m: &Measure, c: &Commands) {
+        if self.foreign_waiting {
+            self.update_command_info(m, c);
         }
     }
     /// The completion request to send to the server, if one is waiting.
@@ -2004,6 +2138,9 @@ impl ChatScreen {
             return Text::literal(value).with_color(text::GRAY).italic();
         }
         let gray = Style::color(text::GRAY);
+        if let Some(spans) = &self.foreign_spans {
+            return foreign_format(spans, value, offset);
+        }
         let Some(parse) = &self.parse else {
             return Text::literal(value);
         };

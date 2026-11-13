@@ -19,6 +19,7 @@ fn accepted_suggestions_report_utf16_ranges_and_tab_cycles() {
     let c = Commands {
         dispatcher: crate::command::vanilla::game_dispatcher(),
         registries: &registries,
+        foreign: None,
     };
     let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, full());
     screen.type_text(&m, &c, "😀 hi st");
@@ -66,6 +67,7 @@ fn clicked_suggestion_reports_the_actual_length_limited_input() {
     let c = Commands {
         dispatcher: crate::command::vanilla::game_dispatcher(),
         registries: &registries,
+        foreign: None,
     };
     let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, full());
     screen.input.max_length = 6;
@@ -269,6 +271,7 @@ fn locate_coordinates_fill_chat_with_teleport_without_submitting() {
     let commands = Commands {
         dispatcher: crate::command::vanilla::game_dispatcher(),
         registries: &registries,
+        foreign: None,
     };
     // Structures and POIs use relative Y; biome results include absolute Y.
     for (y, expected) in [
@@ -315,6 +318,7 @@ fn history_arrows_recall_messages_and_restore_the_draft() {
     let commands = Commands {
         dispatcher: crate::command::vanilla::game_dispatcher(),
         registries: &registries,
+        foreign: None,
     };
     let history = vec!["first message".to_owned(), "latest message".to_owned()];
     let mut screen = ChatScreen::new(
@@ -358,6 +362,7 @@ fn a_restored_draft_is_grey_italic_and_one_backspace_clears_it() {
     let c = Commands {
         dispatcher: crate::command::vanilla::game_dispatcher(),
         registries: &registries,
+        foreign: None,
     };
     // The input's own text as the game draws it: x 4, y height - 12.
     let input_text = |screen: &mut ChatScreen| -> Text {
@@ -449,6 +454,7 @@ fn mod_commands_are_coloured_and_complete_like_vanilla_ones() {
         let c = Commands {
             dispatcher,
             registries: &registries,
+            foreign: None,
         };
         let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, full());
         screen.type_text(&m, &c, line);
@@ -462,6 +468,7 @@ fn mod_commands_are_coloured_and_complete_like_vanilla_ones() {
     let c = Commands {
         dispatcher: &modded,
         registries: &registries,
+        foreign: None,
     };
     let mut screen = typed(&modded, "/coo");
     screen.key(&m, &c, &[], winit::keyboard::KeyCode::Tab, false, false);
@@ -499,6 +506,7 @@ fn chat_completes_the_servers_custom_completions_with_the_players() {
         let c = Commands {
             dispatcher,
             registries,
+            foreign: None,
         };
         let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, full());
         screen.type_text(&m, &c, line);
@@ -544,6 +552,7 @@ fn ask_server_nodes_wait_for_the_servers_completions() {
     let c = Commands {
         dispatcher: &d,
         registries: &registries,
+        foreign: None,
     };
     let tab = |screen: &mut ChatScreen| {
         screen.key(&m, &c, &[], winit::keyboard::KeyCode::Tab, false, false);
@@ -579,6 +588,7 @@ fn ask_server_nodes_wait_for_the_servers_completions() {
     let c = Commands {
         dispatcher: local,
         registries: &registries,
+        foreign: None,
     };
     let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, full());
     screen.type_text(&m, &c, "/bossbar get pt");
@@ -637,6 +647,7 @@ fn the_chat_option_decides_what_may_be_sent() {
     let c = Commands {
         dispatcher: crate::command::vanilla::game_dispatcher(),
         registries: &registries,
+        foreign: None,
     };
     let enter = |screen: &mut ChatScreen| {
         screen.key(&m, &c, &[], winit::keyboard::KeyCode::Enter, false, false)
@@ -674,6 +685,7 @@ fn restricted_input_says_why_it_will_not_send() {
     let c = Commands {
         dispatcher: crate::command::vanilla::game_dispatcher(),
         registries: &registries,
+        foreign: None,
     };
     let usage = |visibility, line: &str| {
         let mut screen = ChatScreen::new(
@@ -1065,4 +1077,113 @@ fn a_server_filter_mask_hides_or_masks_the_message() {
             .filter(|s| s.text != "##")
             .all(|s| s.style.color.is_none())
     );
+}
+
+/// Owns `mek` and answers as the Java client would: `Pending` until `done` is set.
+struct FakeForeign {
+    calls: std::cell::Cell<usize>,
+    done: std::cell::Cell<bool>,
+}
+
+impl ForeignCommands for FakeForeign {
+    fn owns(&self, root: &str) -> bool {
+        root == "mek"
+    }
+    fn info(&self, value: &str, _cursor: usize, _width: i32, _height: i32) -> Option<ForeignInfo> {
+        self.calls.set(self.calls.get() + 1);
+        let chars = value.chars().count();
+        Some(ForeignInfo {
+            spans: vec![(0, 4, 0x55FFFF), (4, chars, 0xAAAAAA)],
+            usage: vec![Text::literal("<machine>")],
+            usage_position: 9,
+            usage_width: 40,
+            suggestions: if self.done.get() {
+                ForeignSuggestions::Done {
+                    start: chars,
+                    end: chars,
+                    list: vec![Suggestion {
+                        range: (value.len(), value.len()),
+                        text: "alpha".into(),
+                        tooltip: None,
+                        int_value: None,
+                    }],
+                }
+            } else {
+                ForeignSuggestions::Pending
+            },
+        })
+    }
+}
+
+#[test]
+fn a_foreign_root_takes_its_colours_usage_and_completions_from_the_other_parser() {
+    let font = font();
+    let m = Measure(&font);
+    let registries = Registries::default();
+    let fake = FakeForeign {
+        calls: 0.into(),
+        done: true.into(),
+    };
+    let c = Commands {
+        dispatcher: crate::command::vanilla::game_dispatcher(),
+        registries: &registries,
+        foreign: Some(&fake),
+    };
+    let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, full());
+    screen.type_text(&m, &c, "/mek give ");
+    assert!(screen.parse.is_none());
+    assert_eq!(
+        screen.foreign_spans,
+        Some(vec![(0, 4, 0x55FFFF), (4, 10, 0xAAAAAA)])
+    );
+    assert_eq!(screen.usage.len(), 1);
+    assert_eq!(screen.usage[0].plain(), "<machine>");
+    assert_eq!((screen.usage_position, screen.usage_width), (9, 40));
+    assert!(screen.suggestions_visible());
+    screen.key(&m, &c, &[], winit::keyboard::KeyCode::Tab, false, false);
+    assert_eq!(screen.value(), "/mek give alpha");
+}
+
+#[test]
+fn a_native_root_never_asks_the_other_parser() {
+    let font = font();
+    let m = Measure(&font);
+    let registries = Registries::default();
+    let fake = FakeForeign {
+        calls: 0.into(),
+        done: true.into(),
+    };
+    let c = Commands {
+        dispatcher: crate::command::vanilla::game_dispatcher(),
+        registries: &registries,
+        foreign: Some(&fake),
+    };
+    let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, full());
+    screen.type_text(&m, &c, "/give ");
+    assert_eq!(fake.calls.get(), 0);
+    assert!(screen.parse.is_some());
+    assert!(screen.foreign_spans.is_none());
+}
+
+#[test]
+fn pending_foreign_completions_fill_the_list_once_ready() {
+    let font = font();
+    let m = Measure(&font);
+    let registries = Registries::default();
+    let fake = FakeForeign {
+        calls: 0.into(),
+        done: false.into(),
+    };
+    let c = Commands {
+        dispatcher: crate::command::vanilla::game_dispatcher(),
+        registries: &registries,
+        foreign: Some(&fake),
+    };
+    let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, full());
+    screen.type_text(&m, &c, "/mek ");
+    assert!(!screen.suggestions_visible());
+    assert!(screen.take_request().is_none());
+    fake.done.set(true);
+    screen.foreign_ready(&m, &c);
+    assert!(screen.suggestions_visible());
 }

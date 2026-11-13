@@ -997,6 +997,9 @@ impl Game<'_> {
         for _ in 0..reply.int()? {
             dropped.push(reply.int()?);
         }
+        if self.java_chat_box_status(reply).is_none() {
+            log::warn!("Horizon: a status's chat box tail ended in pieces");
+        }
         super::java_world_renders::java_world_status(
             world.as_deref(),
             world_animating,

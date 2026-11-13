@@ -11,6 +11,8 @@ import net.neoforged.neoforge.common.NeoForge;
 final class ClientChat {
     private ClientChat() {}
 
+    private static boolean checked;
+
     static void register() {
         NeoForge.EVENT_BUS.addListener((RegisterClientCommandsEvent event) -> {
             Checks.check("client_commands_registered", () -> true);
@@ -19,6 +21,13 @@ final class ClientChat {
                 ctx.getSource().sendSuccess(() -> Component.literal("client pong"), false);
                 return 1;
             }));
+        });
+        NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.client.event.ClientTickEvent.Post event) -> {
+            if (checked || net.minecraft.client.Minecraft.getInstance().getConnection() == null) return;
+            var roots = dev.horizonlab.javamods.boot.ChatBox.javaParsedRoots();
+            if (!roots.containsKey("horizon_java_test")) return;
+            checked = true;
+            Checks.check("java_parsed_roots", () -> roots.get("horizon_java_test") == 2 && roots.get("horizon_java_test_client") == 1);
         });
         NeoForge.EVENT_BUS.addListener((ClientChatEvent event) -> {
             if (event.getMessage().equals("horizon chat edit")) event.setMessage("horizon chat edited");

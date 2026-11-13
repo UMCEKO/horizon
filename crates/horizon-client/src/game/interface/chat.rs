@@ -1013,6 +1013,7 @@ impl Game<'_> {
         let c = Commands {
             dispatcher: chat_tree(&self.remote),
             registries: &self.ui.registries,
+            foreign: self.java_hook_foreign_commands(),
         };
         let mut screen = ChatScreen::new(
             &m,
@@ -1231,6 +1232,7 @@ impl Game<'_> {
             let c = Commands {
                 dispatcher: chat_tree(&self.remote),
                 registries: &self.ui.registries,
+                foreign: self.java_hook_foreign_commands(),
             };
             if let Some(screen) = self.ui.chat_screen.as_mut() {
                 screen.shortcut(&m, &c, shortcut, &mut self.clipboard);
@@ -1284,6 +1286,7 @@ impl Game<'_> {
         let c = Commands {
             dispatcher: chat_tree(&self.remote),
             registries: &self.ui.registries,
+            foreign: self.java_hook_foreign_commands(),
         };
         match screen.key(&m, &c, &self.ui.chat.recent, key, shift, ctrl) {
             ChatAction::Close => {
@@ -1348,6 +1351,7 @@ impl Game<'_> {
         let c = Commands {
             dispatcher: chat_tree(&self.remote),
             registries: &self.ui.registries,
+            foreign: self.java_hook_foreign_commands(),
         };
         if let Some(screen) = self.ui.chat_screen.as_mut() {
             screen.server_suggestions(&m, &c, id, range, list);
@@ -1359,6 +1363,7 @@ impl Game<'_> {
         let c = Commands {
             dispatcher: chat_tree(&self.remote),
             registries: &self.ui.registries,
+            foreign: self.java_hook_foreign_commands(),
         };
         if let Some(screen) = self.ui.chat_screen.as_mut() {
             screen.type_text(&m, &c, text);
@@ -1444,6 +1449,7 @@ impl Game<'_> {
         let c = Commands {
             dispatcher: chat_tree(&self.remote),
             registries: &self.ui.registries,
+            foreign: self.java_hook_foreign_commands(),
         };
         if self.ui.in_bed_chat && self.sleeping.is_some() {
             let width = self.renderer.as_ref().map_or(1280.0, |r| {
@@ -1646,6 +1652,7 @@ impl Game<'_> {
         let c = Commands {
             dispatcher: chat_tree(&self.remote),
             registries: &self.ui.registries,
+            foreign: self.java_hook_foreign_commands(),
         };
         if let Some(screen) = self.ui.chat_screen.as_mut() {
             screen.suggest_command(&m, &c, &next);
@@ -1745,6 +1752,7 @@ impl Game<'_> {
         let c = Commands {
             dispatcher: chat_tree(&self.remote),
             registries: &self.ui.registries,
+            foreign: self.java_hook_foreign_commands(),
         };
         screen.resize(&m, &c, batch.width as i32, batch.height as i32);
         // Options.getBackgroundColor(Integer.MIN_VALUE).
@@ -2856,6 +2864,7 @@ mod tests {
         let c = Commands {
             dispatcher: horizon_client::command::vanilla::game_dispatcher(),
             registries: &registries,
+            foreign: None,
         };
         let (width, height) = (427.0, 240.0);
         let mut screen = ChatScreen::new(

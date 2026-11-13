@@ -71,6 +71,16 @@ impl Game<'_> {
         false
     }
 
+    /// The Java client's parser for the chat box's lines it owns; none without a Java client.
+    pub(super) fn java_hook_foreign_commands(
+        &self,
+    ) -> Option<&'static dyn horizon_client::chat::ForeignCommands> {
+        #[cfg(feature = "java-mods")]
+        return super::java_chat::foreign_commands();
+        #[cfg(not(feature = "java-mods"))]
+        None
+    }
+
     /// The slot bits of the toasts mods added to the Java client, shown in the window's column.
     pub(super) fn java_hook_toast_slots(&self) -> u32 {
         #[cfg(feature = "java-mods")]

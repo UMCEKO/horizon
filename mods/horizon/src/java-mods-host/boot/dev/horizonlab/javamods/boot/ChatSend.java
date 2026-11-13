@@ -53,20 +53,6 @@ public final class ChatSend {
         return bytes.toByteArray();
     }
 
-    /** `client_command_names`: `int n` x `text name`, the roots of the Java client's command dispatcher. */
-    static byte[] names() throws IOException {
-        var roots = net.neoforged.neoforge.client.ClientCommandHandler.getDispatcher().getRoot().getChildren();
-        var bytes = new ByteArrayOutputStream();
-        var out = new DataOutputStream(bytes);
-        out.writeInt(roots.size());
-        for (var root : roots) {
-            byte[] utf = root.getName().getBytes(StandardCharsets.UTF_8);
-            out.writeInt(utf.length);
-            out.write(utf);
-        }
-        return bytes.toByteArray();
-    }
-
     /** Whether `packet` was kept instead of sent. */
     static boolean capture(Packet<?> packet) {
         if (capturing == null) return false;

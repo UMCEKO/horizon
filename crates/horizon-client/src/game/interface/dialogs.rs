@@ -365,6 +365,7 @@ impl Game<'_> {
                     let c = horizon_client::chat::Commands {
                         dispatcher: super::chat::chat_tree(&self.remote),
                         registries: &self.ui.registries,
+                        foreign: self.java_hook_foreign_commands(),
                     };
                     if let Some(screen) = self.ui.chat_screen.as_mut() {
                         screen.suggest_command(&m, &c, &command);

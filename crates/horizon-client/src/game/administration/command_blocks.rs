@@ -361,6 +361,7 @@ impl Game<'_> {
         let c = Commands {
             dispatcher: super::chat::chat_tree(&self.remote),
             registries: &self.ui.registries,
+            foreign: None,
         };
         let Some(screen) = self.command_block_screen.as_mut() else {
             return;
@@ -633,6 +634,7 @@ impl Game<'_> {
         let c = Commands {
             dispatcher: super::chat::chat_tree(&self.remote),
             registries: &self.ui.registries,
+            foreign: None,
         };
         let mut command = ChatScreen::command_block(&m, &c, &block.command, w as i32, h as i32);
         command.auto_suggestions = self.settings.auto_suggestions;
@@ -742,6 +744,7 @@ impl Game<'_> {
         let c = Commands {
             dispatcher: super::chat::chat_tree(&self.remote),
             registries: &self.ui.registries,
+            foreign: None,
         };
         s.command.resize(&m, &c, w as i32, h as i32);
         let mouse = (self.cursor.0.floor() as i32, self.cursor.1.floor() as i32);
@@ -778,6 +781,7 @@ impl Game<'_> {
         let c = Commands {
             dispatcher: super::chat::chat_tree(&self.remote),
             registries: &self.ui.registries,
+            foreign: None,
         };
         s.command.server_suggestions(&m, &c, id, range, list);
         self.command_block_screen = Some(s);
@@ -792,6 +796,7 @@ impl Game<'_> {
             let c = Commands {
                 dispatcher: super::chat::chat_tree(&self.remote),
                 registries: &self.ui.registries,
+                foreign: None,
             };
             let (x, y) = (f64::from(self.cursor.0), f64::from(self.cursor.1));
             if s.command.click(&m, &c, x, y) {
@@ -865,6 +870,7 @@ impl Game<'_> {
         let c = Commands {
             dispatcher: super::chat::chat_tree(&self.remote),
             registries: &self.ui.registries,
+            foreign: None,
         };
         if s.command.suggestions_key(&m, &c, key, shift) {
             self.command_block_screen = Some(s);
@@ -912,6 +918,7 @@ impl Game<'_> {
         let c = Commands {
             dispatcher: super::chat::chat_tree(&self.remote),
             registries: &self.ui.registries,
+            foreign: None,
         };
         s.command.type_text(&m, &c, &allowed);
         self.command_block_screen = Some(s);

@@ -259,7 +259,8 @@ public final class ClientBridge {
         OPS.put("client_creative_tabs", in -> CreativeTabs.take());
         OPS.put("client_post_event", in -> EventPosts.client(in));
         OPS.put("client_chat_send", in -> ChatSend.send(in));
-        OPS.put("client_command_names", in -> ChatSend.names());
+        OPS.put("client_command_names", in -> ChatBox.names());
+        OPS.put("client_command_info", in -> ChatBox.info(in));
         OPS.put("client_debug_entries", in -> DebugLines.export());
         OPS.put("client_shell_frame", in -> shellFrame(in));
         OPS.put("client_shell_input", in -> shellInput(in));
@@ -1329,6 +1330,7 @@ public final class ClientBridge {
         int[] refused = ClientEntities.takeRefused();
         out.writeInt(refused.length);
         for (int id : refused) out.writeInt(id);
+        ChatBox.writeStatus(out);
         shellSegments = null;
         shellChanged = false;
         return bytes.toByteArray();
@@ -1410,7 +1412,7 @@ public final class ClientBridge {
         receive();
         chunkEvents();
         recordShell(Minecraft.getInstance(), Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false));
-        return status(null, null, null);
+        return status(null, null, null, null);
     }
 
     /** Dev: how many of the code-built block models the reload baked have parts. */
@@ -1468,6 +1470,7 @@ public final class ClientBridge {
         ParticleRecorder.forget();
         Animate.forget();
         Clients.registries = null;
+        ChatBox.forget();
         return new byte[] {1};
     }
 
