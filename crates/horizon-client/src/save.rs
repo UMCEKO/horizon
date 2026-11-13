@@ -7551,7 +7551,7 @@ mod tests {
             kind: horizon_core::ticks::TickTypeId(kind.tick_id()),
             pos: BlockPos::new(1, 64, 2),
             delay: 3,
-            priority: horizon_core::ticks::TickPriority::Normal,
+            priority: horizon_core::ticks::TickPriority::High,
         };
         let ticks = [
             tick(FluidKind::ModFlowing(fluid)),
@@ -7575,8 +7575,13 @@ mod tests {
         );
         let back = read_ticks(Some(&tag), (0, 0), fluid_id);
         assert_eq!(
-            back.iter().map(|t| t.kind).collect::<Vec<_>>(),
-            ticks.iter().map(|t| t.kind).collect::<Vec<_>>()
+            back.iter()
+                .map(|t| (t.kind, t.delay, t.priority))
+                .collect::<Vec<_>>(),
+            ticks
+                .iter()
+                .map(|t| (t.kind, t.delay, t.priority))
+                .collect::<Vec<_>>()
         );
     }
 

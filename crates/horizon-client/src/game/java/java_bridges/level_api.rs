@@ -51,6 +51,14 @@ impl Game<'_> {
 
     fn java_schedule_fluid(&mut self, pos: BlockPos, fluid: &str, delay: i32, priority: i32) {
         let Some(kind) = FluidKind::from_name(fluid) else {
+            static WARNED: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
+                std::sync::Mutex::new(None);
+            let mut warned = WARNED.lock().unwrap();
+            if warned.get_or_insert_default().insert(fluid.to_owned()) {
+                log::warn!(
+                    "Horizon: a Java mod scheduled a tick of fluid {fluid}, which Horizon doesn't have"
+                );
+            }
             return;
         };
         self.with_level(|_, level, ticks| {
