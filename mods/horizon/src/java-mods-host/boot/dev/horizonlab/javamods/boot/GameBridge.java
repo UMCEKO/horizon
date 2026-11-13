@@ -590,13 +590,22 @@ public final class GameBridge {
 
     static void use(Crossing.In in, Crossing.Out out, int kind) throws Exception {
         var call = fill(in, false);
+        // A view keeps no use between calls: Horizon's player holds it, and a call that continues one restores it.
+        Using.clear(call.player);
+        CaptureBridge.CAPTURED.clear();
+        try {
+            useKind(call, in, out, kind);
+        } finally {
+            CaptureBridge.CAPTURED.clear();
+        }
+    }
+
+    private static void useKind(Call call, Crossing.In in, Crossing.Out out, int kind) throws Exception {
         var level = call.level;
         var player = call.player;
         var hand = call.hand;
         var inventory = player.getInventory();
         InteractionResult result = InteractionResult.PASS;
-        // A view keeps no use between calls: Horizon's player holds it, and a call that continues one restores it.
-        Using.clear(player);
         ItemStack held = player.getItemInHand(hand);
         switch (kind) {
             case 0 -> result = player.gameMode.useItem(player, level, held, hand);

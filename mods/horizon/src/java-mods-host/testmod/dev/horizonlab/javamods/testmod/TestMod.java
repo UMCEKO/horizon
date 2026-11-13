@@ -34,6 +34,7 @@ public final class TestMod {
         ITEMS.registerItem("labelled", Labelled::new);
         ITEMS.registerItem("digger", Digger::new);
         ITEMS.registerItem("miner", Miner::new);
+        CaptureWand.register(ITEMS);
         for (String view : new String[] {"tilt", "zoom", "slow_mouse", "far_camera", "fog_lens"}) ITEMS.registerSimpleItem(view, p -> p.stacksTo(1));
         ITEMS.registerItem("rocket", Item::new);
         ITEMS.registerSimpleItem("lens");

@@ -45,6 +45,36 @@ horizon_java_host::java_bridges! { table for Game<'static> {
         })
     }
 
+    "dev/horizonlab/javamods/boot/CaptureBridge".setBlock
+    "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;I)Z" =>
+    fn capture_set_block(game, on: LevelOn, pos: Pos, state: State, flags: i32) -> bool {
+        let Some(state) = state.0 else { return false };
+        game.on_level(&on, |game| {
+            let set = game.with_level(|b, level, ticks| b.set_block_captured(level, ticks, pos.0, state, flags));
+            game.after_java_change(set)
+        })
+    }
+
+    "dev/horizonlab/javamods/boot/CaptureBridge".onPlace
+    "(Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/world/level/block/state/BlockState;Z)V" =>
+    fn capture_on_place(game, on: LevelOn, pos: Pos, state: State, old: State, moved: bool) -> () {
+        let (Some(state), Some(old)) = (state.0, old.0) else { return };
+        game.on_level(&on, |game| {
+            game.with_level(|b, level, ticks| b.on_place_at(level, ticks, pos.0, state, old, moved));
+            game.after_java_change(())
+        })
+    }
+
+    "net/minecraft/world/level/Level".markAndNotifyBlock
+    "(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/chunk/LevelChunk;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/world/level/block/state/BlockState;II)V" if "net/minecraft/server/level/ServerLevel" =>
+    fn level_mark_and_notify(game, on: LevelOn, pos: Pos, _chunk: Skip, old: State, new: State, flags: i32, limit: i32) -> () {
+        let (Some(old), Some(new)) = (old.0, new.0) else { return };
+        game.on_level(&on, |game| {
+            game.with_level(|b, level, ticks| b.mark_and_notify(level, ticks, pos.0, old, new, flags, limit));
+            game.after_java_change(())
+        })
+    }
+
     "net/minecraft/world/level/Level".removeBlock
     "(Lnet/minecraft/core/BlockPos;Z)Z" if "net/minecraft/server/level/ServerLevel" =>
     fn level_remove_block(game, on: LevelOn, pos: Pos, moved: bool) -> bool {

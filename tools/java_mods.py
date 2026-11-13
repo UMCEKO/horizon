@@ -578,6 +578,27 @@ def bridges(args):
                          ('door_placed', 'minecraft:oak_door' in send(f'block {x + 4} {y + 1} {z + 1}'))):
             print(f"  {name}: {'ok' if ok else 'WRONG'}", flush=True)
             wrong.extend([] if ok else [name])
+        # A mod item's three writes under NeoForge's capture: one multi-place event, a sneaking use cancelled, a lamp lit only after the event.
+        send(f'command fill {x - 1} {y - 1} {z - 16} {x + 5} {y - 1} {z - 8} minecraft:stone')
+        send(f'command fill {x - 1} {y} {z - 16} {x + 5} {y + 3} {z - 8} air')
+        send(f'command setblock {x + 2} {y - 1} {z - 12} minecraft:gold_block')
+        send(f'command setblock {x + 2} {y} {z - 13} minecraft:redstone_lamp')
+        send(f'command tp @s {x + 0.5} {y} {z - 11.5}')
+        send('give horizon_java_test:capture_wand')
+        send('wait 10')
+        send('select horizon_java_test:capture_wand')
+        print(send(f'interact {x + 2} {y - 1} {z - 9} up')[:160], flush=True)
+        send('wait 5')
+        print(send(f'interact {x + 2} {y - 1} {z - 12} up')[:160], flush=True)
+        send('wait 5')
+        print(send(f'interact {x + 2} {y - 1} {z - 15} up --sneak')[:160], flush=True)
+        send('wait 5')
+        stone_row = all('minecraft:stone' in send(f'block {x + dx} {y} {z - 9}') for dx in (2, 3, 4))
+        cancelled_row = all('minecraft:air' in send(f'block {x + dx} {y} {z - 15}') for dx in (2, 3, 4))
+        lamp_lit = 'passed' in send(f'command execute if block {x + 2} {y} {z - 13} minecraft:redstone_lamp[lit=true]')
+        for name, ok in (('java_place_written', stone_row), ('java_place_cancel_restores', cancelled_row), ('java_place_updates_after_event', lamp_lit)):
+            print(f"  {name}: {'ok' if ok else 'WRONG'}", flush=True)
+            wrong.extend([] if ok else [name])
         # A mod block whose drops come from code, then one that refuses its removal.
         send(f'command setblock {x + 2} {y} {z - 3} horizon_java_test:dropper')
         send('wait 5')
@@ -658,7 +679,7 @@ def bridges(args):
     shutil.copy(Path(args.scratch) / 'ctl.log', Path(args.scratch) / 'first-session.log')
     paused = re.findall(r'^Horizon: pause sources: \[(.*)\]$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks.append(('pause_sources_from_handler', 'ok' if paused == ['music'] else f'FAILED {paused}'))
-    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'team_join_routed', 'team_leave_routed', 'team_view_matches', 'team_join_inner_sees_member', 'team_leave_inner_sees_member_gone', 'player_stack_keeps_identity', 'player_view_sees_native_give', 'play_sound_posted_from_native', 'gui_layer_pre_cancel', 'chat_received_overlay', 'chat_received_player', 'lockstep_order', 'lockstep_post_sees_this_tick', 'glyph_shadow_from_patch', 'loop_init_then_run', 'mod_command_registered', 'commands_selection_follows_dist', 'server_chat_event_player', 'client_commands_registered', 'client_command_runs', 'client_level_sees_the_pig', 'client_level_finds_the_pig_in_its_box', 'client_level_loses_the_removed_pig', 'debug_entry_lines_recorded', 'rocket_moves_in_its_own_tick', 'rocket_lifts_five_blocks', 'pre_write_moves_without_lerp_start', 'spring_jump_apex', 'input_event_walks', 'input_event_seen_every_tick', 'fall_canceled_client','window_resize_fired', 'render_frame_paired', 'master_volume_follows', 'door_is_multi_place', 'mod_command_runs_in_java', 'command_event_for_native', 'command_event_once', 'client_join_once', 'client_leave_once', 'client_tick_post_per_tick', 'anvil_view_matches', 'chest_view_is_the_block_entity', 'menu_view_closed') if (name, 'ok') not in checks)
+    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'team_join_routed', 'team_leave_routed', 'team_view_matches', 'team_join_inner_sees_member', 'team_leave_inner_sees_member_gone', 'player_stack_keeps_identity', 'player_view_sees_native_give', 'play_sound_posted_from_native', 'gui_layer_pre_cancel', 'chat_received_overlay', 'chat_received_player', 'lockstep_order', 'lockstep_post_sees_this_tick', 'glyph_shadow_from_patch', 'loop_init_then_run', 'mod_command_registered', 'commands_selection_follows_dist', 'server_chat_event_player', 'client_commands_registered', 'client_command_runs', 'client_level_sees_the_pig', 'client_level_finds_the_pig_in_its_box', 'client_level_loses_the_removed_pig', 'debug_entry_lines_recorded', 'rocket_moves_in_its_own_tick', 'rocket_lifts_five_blocks', 'pre_write_moves_without_lerp_start', 'spring_jump_apex', 'input_event_walks', 'input_event_seen_every_tick', 'fall_canceled_client','window_resize_fired', 'render_frame_paired', 'master_volume_follows', 'door_is_multi_place', 'mod_command_runs_in_java', 'command_event_for_native', 'command_event_once', 'client_join_once', 'client_leave_once', 'client_tick_post_per_tick', 'anvil_view_matches', 'chest_view_is_the_block_entity', 'menu_view_closed', 'java_place_is_multi_place', 'java_place_defers_updates') if (name, 'ok') not in checks)
     session(args, again)
     second = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks += [(name + ' (second session)', result) for name, result in second]

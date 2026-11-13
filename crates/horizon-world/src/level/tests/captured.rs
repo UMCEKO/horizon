@@ -110,3 +110,30 @@ fn restore_puts_back_the_old_states_last_first() {
         "a restore drops nothing"
     );
 }
+
+#[test]
+fn capture_set_block_skips_updates() {
+    let mut w = world!();
+    w.floor(0, 3, "stone");
+    let lamp = BlockPos::new(1, 1, 0);
+    let at = BlockPos::new(0, 1, 0);
+    let unlit = w.id("redstone_lamp", &[("lit", "false")]);
+    w.put(lamp, unlit);
+    let air = w.b().air();
+    let redstone = w.id("redstone_block", &[]);
+    let b = w.b();
+    assert!(b.set_block_captured(&mut w.level, &mut w.ticks, at, redstone, flags::UPDATE_ALL));
+    assert_eq!(w.get(at), redstone);
+    assert_eq!(w.prop(lamp, "lit"), "false", "the lamp hears nothing yet");
+    b.on_place_at(&mut w.level, &mut w.ticks, at, redstone, air, false);
+    b.mark_and_notify(
+        &mut w.level,
+        &mut w.ticks,
+        at,
+        air,
+        redstone,
+        flags::UPDATE_ALL,
+        flags::UPDATE_LIMIT,
+    );
+    assert_eq!(w.prop(lamp, "lit"), "true");
+}

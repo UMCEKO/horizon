@@ -768,3 +768,53 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.signals().state(pos)
     }
 }
+
+/// The halves of a write under NeoForge's capture when Java runs the placement and its post-event loop.
+impl super::Behaviours {
+    /// `Level.setBlock` while `captureBlockSnapshots`: written with no `onPlace` and no updates; Java keeps the snapshot.
+    pub fn set_block_captured<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut super::Ticks,
+        pos: BlockPos,
+        state: BlockStateId,
+        update_flags: i32,
+    ) -> bool {
+        let mut sim = self.sim(level, ticks);
+        sim.capture = Some(Vec::new());
+        // The observer sees UPDATE_SKIP_ON_PLACE so Java's own block defers its onPlace to NeoForge's loop too.
+        sim.set_block_limit(
+            pos,
+            state,
+            update_flags | flags::UPDATE_SKIP_ON_PLACE,
+            flags::UPDATE_LIMIT,
+        )
+    }
+    /// `BlockState.onPlace` of `state` at `pos`, which replaced `old`.
+    pub fn on_place_at<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut super::Ticks,
+        pos: BlockPos,
+        state: BlockStateId,
+        old: BlockStateId,
+        moved: bool,
+    ) {
+        self.sim(level, ticks).on_place(state, pos, old, moved);
+    }
+    /// `Level.markAndNotifyBlock`: the clients, neighbour and shape updates of a write `old` to `new`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn mark_and_notify<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut super::Ticks,
+        pos: BlockPos,
+        old: BlockStateId,
+        new: BlockStateId,
+        update_flags: i32,
+        limit: i32,
+    ) {
+        self.sim(level, ticks)
+            .mark_and_notify(pos, old, new, update_flags, limit);
+    }
+}
