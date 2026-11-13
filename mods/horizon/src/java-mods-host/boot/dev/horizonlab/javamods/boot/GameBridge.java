@@ -123,6 +123,7 @@ public final class GameBridge {
         Crossing.free("bench_echo_free", input -> input);
         Crossing.free("listener_census", EventPosts::census);
         Crossing.free("wg_probe", WorldgenLevels::probe);
+        Crossing.game("item_attribute_modifiers", ItemAttributes::modifiers);
         Crossing.game("prepare", input -> prepare());
         Crossing.game("worldgen_export", GameBridge::worldgenExport);
         Crossing.game("items", input -> items());
