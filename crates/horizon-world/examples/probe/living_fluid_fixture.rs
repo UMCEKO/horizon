@@ -201,6 +201,10 @@ impl LivingFluidWorld for World<'_> {
         self.query("water")?;
         Ok(self.flag("water"))
     }
+    fn swims_in_fluid_type(&mut self) -> io::Result<bool> {
+        // Vanilla has no fluid types: nothing to ask the oracle.
+        Ok(false)
+    }
     fn sprinting(&mut self) -> io::Result<bool> {
         self.query("sprint")?;
         let b = self.sequence("sprint", self.sprint_calls);

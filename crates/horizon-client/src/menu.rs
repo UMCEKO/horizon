@@ -1602,6 +1602,11 @@ impl Menu {
         self.containers[s.container][s.index].as_ref()
     }
 
+    /// Whether slot `i` is one of the player's inventory, not the menu's own containers.
+    pub fn slot_is_players(&self, i: usize) -> bool {
+        self.slots.get(i).is_some_and(|s| s.container == PLAYER)
+    }
+
     /// Load an existing container slot without applying insertion limits.
     pub fn load_slot(&mut self, i: usize, stack: Option<ItemStack>) {
         let slot = self.slots[i];
@@ -4946,6 +4951,8 @@ pub(crate) mod tests {
                         std::sync::atomic::Ordering::Relaxed,
                     );
                 },
+                living_jump_motion: |_, _, _| {},
+                player_flyable_fall: |_, _| {},
                 living_jump_power: |context, _, _, power| {
                     *power += context.setting("rules_mod", "stack").map_or(0.0, |_| 1.0);
                 },

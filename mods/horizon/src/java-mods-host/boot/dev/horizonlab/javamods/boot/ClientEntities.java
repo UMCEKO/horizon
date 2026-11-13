@@ -4,10 +4,15 @@ import dev.horizonlab.javamods.boot.mixin.LivingAccess;
 import dev.horizonlab.javamods.boot.mixin.SynchedAccess;
 import io.netty.buffer.Unpooled;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.ints.IntArrayList;
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Predicate;
 import net.minecraft.client.Minecraft;
@@ -23,6 +28,10 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
 import net.minecraft.world.level.entity.EntityTypeTest;
 import net.minecraft.world.phys.AABB;
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.EventHooks;
+import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
+import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
 import net.neoforged.neoforge.network.connection.ConnectionType;
 
 /** The entities of the Java client's level: views made from what the window applied of the server's entity packets, written raw; Java never ticks, moves or draws them. */
@@ -32,6 +41,13 @@ public final class ClientEntities {
     static final EntityFeed FEED = new EntityFeed();
     private static final Int2ObjectOpenHashMap<Entity> VIEWS = new Int2ObjectOpenHashMap<>();
     private static final Map<UUID, Entity> BY_UUID = new HashMap<>();
+    /** The views whose leave the client's listeners hear. */
+    private static final IntOpenHashSet LEAVES = new IntOpenHashSet();
+    /** The ids whose join a listener canceled, for the window to drop. */
+    private static final IntArrayList REFUSED = new IntArrayList();
+    /** The window's ticks since the level's last `tickEntities`, in its order. */
+    private static final List<EntityFeed.Tick> TICKS = new ArrayList<>();
+    private static final Set<String> CANCEL_REPORTED = new HashSet<>();
 
     /** The window's changes up to its play packet at `stamp`, before a packet the server sent after that one; they wait for the client's level. */
     static void applyUpTo(long stamp) throws IOException {
@@ -48,6 +64,9 @@ public final class ClientEntities {
         VIEWS.values().forEach(view -> view.setRemoved(Entity.RemovalReason.DISCARDED));
         VIEWS.clear();
         BY_UUID.clear();
+        LEAVES.clear();
+        REFUSED.clear();
+        TICKS.clear();
     }
 
     /** The window left its world. */
@@ -88,6 +107,9 @@ public final class ClientEntities {
             case EntityFeed.Remove remove -> {
                 for (int id : remove.ids()) remove(id);
             }
+            case EntityFeed.Tick tick -> {
+                if (VIEWS.containsKey(tick.id())) TICKS.add(tick);
+            }
         }
     }
 
@@ -109,8 +131,46 @@ public final class ClientEntities {
         view.setYHeadRot(add.head());
         view.setDeltaMovement(add.dx(), add.dy(), add.dz());
         view.setOldPosAndRot();
+        // `ClientLevel.addEntity` posts the join before the entity is in the level; a cancel keeps it out.
+        if ((add.events() & EntityFeed.JOIN) != 0) {
+            var event = new EntityJoinLevelEvent(view, level);
+            GameBridge.safely("EntityJoinLevelEvent", () -> NeoForge.EVENT_BUS.post(event));
+            if (event.isCanceled()) {
+                view.setRemoved(Entity.RemovalReason.DISCARDED);
+                REFUSED.add(add.id());
+                return;
+            }
+        }
+        if ((add.events() & EntityFeed.LEAVE) != 0) LEAVES.add(add.id());
         VIEWS.put(add.id(), view);
         BY_UUID.put(add.uuid(), view);
+    }
+
+    /** The ids whose join a listener canceled since the last call; the window removes them. */
+    static int[] takeRefused() {
+        int[] ids = REFUSED.toIntArray();
+        REFUSED.clear();
+        return ids;
+    }
+
+    /** `ClientLevel.tickEntities`: the events for the entities the window ticked, in its order, with no body between; the window already ran their ticks. */
+    public static void tickEvents() {
+        if (TICKS.isEmpty()) return;
+        var ticks = List.copyOf(TICKS);
+        TICKS.clear();
+        for (var tick : ticks) {
+            Entity view = VIEWS.get(tick.id());
+            if (view == null) continue;
+            if ((tick.mask() & EntityFeed.PRE) != 0) {
+                boolean[] canceled = {false};
+                GameBridge.safely("EntityTickEvent.Pre", () -> canceled[0] = EventHooks.fireEntityTickPre(view).isCanceled());
+                String type = EntityType.getKey(view.getType()).toString();
+                if (canceled[0] && CANCEL_REPORTED.add(type)) {
+                    System.err.println("Horizon: client EntityTickEvent.Pre canceled for " + type + "; native ticks client entities");
+                }
+            }
+            if ((tick.mask() & EntityFeed.POST) != 0) GameBridge.safely("EntityTickEvent.Post", () -> EventHooks.fireEntityTickPost(view));
+        }
     }
 
     private static RegistryFriendlyByteBuf buffer(ClientLevel level, byte[] packet) {
@@ -154,6 +214,8 @@ public final class ClientEntities {
         if (view == null) return;
         BY_UUID.remove(view.getUUID(), view);
         view.setRemoved(Entity.RemovalReason.DISCARDED);
+        GameBridge.safely("onClientRemoval", view::onClientRemoval);
+        if (LEAVES.remove(id)) GameBridge.safely("EntityLeaveLevelEvent", () -> NeoForge.EVENT_BUS.post(new EntityLeaveLevelEvent(view, view.level())));
     }
 
     public static Entity get(int id) {

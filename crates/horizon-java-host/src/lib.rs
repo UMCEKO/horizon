@@ -99,6 +99,8 @@ impl RunArgs {
             cp_at,
             format!("-Djava.class.path={classpath}{CP_SEP}{host}"),
         );
+        // The host jar's `BusAgent` gives NeoForge's bus the call sites compiled event dispatch aims.
+        options.push(format!("-javaagent:{host}"));
         Ok(RunArgs {
             java,
             options,
@@ -1121,7 +1123,11 @@ mod tests {
         let run = RunArgs::parse(Path::new("/run"), ARGS, None).unwrap();
         assert_eq!(
             run.options,
-            ["-Djava.class.path=/a.jar:/b.jar:/h.jar", "-Dx=1"]
+            [
+                "-Djava.class.path=/a.jar:/b.jar:/h.jar",
+                "-Dx=1",
+                "-javaagent:/h.jar"
+            ]
         );
         assert_eq!(run.prog, ["--gameDir", "/run", "--fml.x", "1"]);
         assert!(run.client);

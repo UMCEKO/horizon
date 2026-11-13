@@ -88,6 +88,8 @@ pub struct VanillaTerrain {
     created: std::time::Instant,
     /// A superflat generator (`FlatLevelSource`).
     flat: bool,
+    /// The seams Java runs for this world, which the worker reaches through the terrain.
+    routes: Arc<horizon_world::worldgen::routes::WorldgenRoutes>,
 }
 /// A proto chunk, or the position of one whose generation failed.
 enum VanillaProto {
@@ -338,6 +340,7 @@ impl VanillaTerrain {
             tick_blocks.push(index);
             block_entity_types.push(crate::lan::chunks::block_entity_type(name));
         }
+        let routes = generator.routes().clone();
         Ok(Self {
             generator,
             biome_map,
@@ -365,7 +368,12 @@ impl VanillaTerrain {
             last_proto: std::sync::atomic::AtomicU64::new(0),
             created: std::time::Instant::now(),
             flat: false,
+            routes,
         })
+    }
+    /// The seams Java runs for this world (`WorldgenRoutes`).
+    pub fn routes(&self) -> &Arc<horizon_world::worldgen::routes::WorldgenRoutes> {
+        &self.routes
     }
     /// The column the dimension's chunks hold (its build range's).
     fn layout(&self) -> ColumnLayout {

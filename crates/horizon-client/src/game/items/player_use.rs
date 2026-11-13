@@ -671,25 +671,104 @@ impl Game<'_> {
             item: stack.item.to_string(),
             can_use_game_master_blocks: self.can_use_game_master_blocks(),
         };
-        let outcome = if self.player_place_canceled(&ctx) {
-            PlaceOutcome::Failed
+        if self.player_place_canceled(&ctx) {
+            return self.place_failed(&stack, &info);
+        }
+        if self.java_hook_place_listened() {
+            self.place_vanilla_block_captured(&ctx, &stack, &info)
         } else {
-            self.with_level(|b, level, ticks| b.place_block(level, ticks, &ctx))
-        };
+            self.place_vanilla_block(&ctx, &stack, &info)
+        }
+    }
+
+    /// `BlockItem.place`, then `ItemStack.useOn`'s tail, in vanilla's order.
+    fn place_vanilla_block(
+        &mut self,
+        ctx: &PlaceContext,
+        stack: &ItemStack,
+        info: &horizon_client::items::ItemInfo,
+    ) -> Result<bool> {
+        let outcome = self.with_level(|b, level, ticks| b.place_block(level, ticks, ctx));
         let PlaceOutcome::Placed { pos, state } = outcome else {
-            self.process_level_events()?;
-            // BlockItem.useOn: a consumable that could not be placed is used,
-            // which ItemStack.useOn counts as a use of the item.
-            if self.start_eating(&info) {
-                self.award_stat("used", &stack.item, 1);
-            } else {
-                // BlockItem.place's FAIL.
-                self.use_failed = true;
-            }
-            return Ok(true);
+            return self.place_failed(stack, info);
         };
         let target = [pos.x, pos.y, pos.z];
-        let state = self.apply_item_block_state(target, state, &stack)?;
+        self.placed_block_entity(target, state, stack)?;
+        // BlockItem.place's SUCCESS: the client swings with its own prediction.
+        self.swing_arm_predicted();
+        let solid_bucket = self.place_sound(pos, stack);
+        self.process_level_events()?;
+        // BlockItem.place: the used statistic and the placed_block trigger.
+        self.award_stat("used", &stack.item, 1);
+        self.trigger_block("minecraft:placed_block", target, stack);
+        self.check_wither_spawn(target)?;
+        self.check_golem_spawn(target)?;
+        self.consume_held();
+        self.place_finished(stack, solid_bucket);
+        Ok(true)
+    }
+
+    /// `CommonHooks.onPlaceItemIntoWorld`: `BlockItem.place` under the capture, then the place event.
+    fn place_vanilla_block_captured(
+        &mut self,
+        ctx: &PlaceContext,
+        stack: &ItemStack,
+        info: &horizon_client::items::ItemInfo,
+    ) -> Result<bool> {
+        let (outcome, snapshots) =
+            self.with_level(|b, level, ticks| b.place_block_captured(level, ticks, ctx));
+        let PlaceOutcome::Placed { pos, state } = outcome else {
+            return self.place_failed(stack, info);
+        };
+        let target = [pos.x, pos.y, pos.z];
+        self.placed_block_entity(target, state, stack)?;
+        self.swing_arm_predicted();
+        let solid_bucket = self.place_sound(pos, stack);
+        self.process_level_events()?;
+        self.trigger_block("minecraft:placed_block", target, stack);
+        let held = self.held().cloned();
+        // BlockItem.place shrinks the stack before the event; a cancel puts it back.
+        self.consume_held();
+        if self.java_hook_place(ctx.face, &snapshots) {
+            self.with_level(|b, level, ticks| b.restore_captured(level, ticks, &snapshots));
+            *self.held_mut() = held;
+            self.process_level_events()?;
+            self.use_failed = true;
+            return Ok(true);
+        }
+        self.with_level(|b, level, ticks| b.finish_captured(level, ticks, &snapshots));
+        self.process_level_events()?;
+        self.award_stat("used", &stack.item, 1);
+        self.check_wither_spawn(target)?;
+        self.check_golem_spawn(target)?;
+        self.place_finished(stack, solid_bucket);
+        Ok(true)
+    }
+
+    /// A placement that did not happen: a consumable is eaten instead, else `BlockItem.place`'s FAIL.
+    fn place_failed(
+        &mut self,
+        stack: &ItemStack,
+        info: &horizon_client::items::ItemInfo,
+    ) -> Result<bool> {
+        self.process_level_events()?;
+        // ItemStack.useOn counts the consumable's use as a use of the item.
+        if self.start_eating(info) {
+            self.award_stat("used", &stack.item, 1);
+        } else {
+            self.use_failed = true;
+        }
+        Ok(true)
+    }
+
+    /// The item's block state, block entity data and `Block.setPlacedBy` work on the placed block.
+    fn placed_block_entity(
+        &mut self,
+        target: [i32; 3],
+        state: BlockStateId,
+        stack: &ItemStack,
+    ) -> Result<()> {
+        let state = self.apply_item_block_state(target, state, stack)?;
         let key = (target[0], target[1], target[2]);
         if !self.world.block_entities.stateful_entity(state.0)
             && let Some(entity) = self.new_block_entity_for_state(state)
@@ -698,7 +777,7 @@ impl Game<'_> {
         }
         if self.world.block_entities.get(&key).is_some() {
             let game_master = self.can_use_game_master_blocks();
-            self.apply_placed_item(target, &stack, game_master);
+            self.apply_placed_item(target, stack, game_master);
             // Block.setPlacedBy.
             match self.world.block_entities.get(&key) {
                 Some(BlockEntity::CommandBlock(_)) => {
@@ -711,15 +790,16 @@ impl Game<'_> {
                 Some(BlockEntity::StructureBlock(_)) => self.structure_block_placed(key),
                 Some(BlockEntity::JigsawBlock(_)) => self.jigsaw_block_placed(key),
                 Some(BlockEntity::TestBlock(_)) => self.test_block_placed(key),
-                Some(BlockEntity::Jukebox(_)) => self.jukebox_placed(target, &stack),
+                Some(BlockEntity::Jukebox(_)) => self.jukebox_placed(target, stack),
                 Some(BlockEntity::Sign(sign)) if !sign.waxed => self.open_sign_editor(key, true),
                 _ => {}
             }
         }
-        // BlockItem.place's SUCCESS: the client swings with its own prediction.
-        self.swing_arm_predicted();
-        // BlockItem.place's sound is among the level events;
-        // SolidBucketItem.getPlaceSound replaces it with the bucket's own.
+        Ok(())
+    }
+
+    /// `SolidBucketItem.getPlaceSound` swaps the queued place sound for the bucket's; whether `stack` is that bucket.
+    fn place_sound(&mut self, pos: BlockPos, stack: &ItemStack) -> bool {
         let solid_bucket = &*stack.item == "minecraft:powder_snow_bucket";
         if solid_bucket {
             for event in &mut self.level_events {
@@ -730,20 +810,14 @@ impl Game<'_> {
                 }
             }
         }
-        self.process_level_events()?;
-        // BlockItem.place: the used statistic and the placed_block trigger.
-        self.award_stat("used", &stack.item, 1);
-        self.trigger_block("minecraft:placed_block", target, &stack);
-        self.check_wither_spawn(target)?;
-        self.check_golem_spawn(target)?;
-        self.consume_held();
-        // SolidBucketItem.useOn: BucketItem.getEmptySuccessItem in hand.
+        solid_bucket
+    }
+
+    /// A placement's end: `SolidBucketItem.useOn`'s empty bucket, then the pre-use stack's cooldown.
+    fn place_finished(&mut self, stack: &ItemStack, solid_bucket: bool) {
         if solid_bucket && !self.creative {
             *self.held_mut() = Some(ItemStack::new("minecraft:bucket", 1));
         }
-        // ItemStack.useOn applies the pre-use stack's component side effects
-        // after the successful placement and its hand replacement.
-        self.apply_use_cooldown(&stack);
-        Ok(true)
+        self.apply_use_cooldown(stack);
     }
 }

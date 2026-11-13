@@ -200,7 +200,7 @@ impl LevelHeight {
 }
 
 /// What Java's worldgen export says about the entries it wrote.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ExportOwners {
     types: BTreeMap<(String, String), Vec<String>>,
     /// Folders (entries and tags) the export holds that no bundle reads.
@@ -223,6 +223,19 @@ impl ExportOwners {
     pub fn with_mod_types(&self) -> usize {
         self.types.values().filter(|t| !t.is_empty()).count()
     }
+
+    /// Every entry that holds mod-owned types: (bundle, id, types).
+    pub fn owned(&self) -> impl Iterator<Item = (&str, &str, &[String])> {
+        self.types
+            .iter()
+            .filter(|(_, types)| !types.is_empty())
+            .map(|((bundle, id), types)| (bundle.as_str(), id.as_str(), types.as_slice()))
+    }
+
+    /// The types of `id` in `bundle`, for a test or a hand-built export.
+    pub fn set_mod_types(&mut self, bundle: &str, id: &str, types: Vec<String>) {
+        self.types.insert((bundle.to_owned(), id.to_owned()), types);
+    }
 }
 
 /// Replacement and added bundle entries, and tag files, from data packs.
@@ -233,6 +246,8 @@ pub struct WorldgenOverrides {
     entries: BTreeMap<String, BTreeMap<String, String>>,
     /// Tag bundle name → (tag id, pack id, tag file text), lowest pack first.
     tags: BTreeMap<String, Vec<(String, String, String)>>,
+    /// The Java export's mod-owned types, for the entries no pack above it replaced.
+    owners: ExportOwners,
 }
 impl WorldgenOverrides {
     /// Lazy gzip NBT entries, retaining their source generation for cache identity.
@@ -257,10 +272,38 @@ impl WorldgenOverrides {
     /// A pack's file for `id` in `bundle`: called for packs from the lowest
     /// to the highest, so the last call for an id wins.
     pub fn set(&mut self, bundle: &str, id: &str, json: String) {
+        if !self.owners.types.is_empty() {
+            self.owners
+                .types
+                .remove(&(bundle.to_owned(), id.to_owned()));
+        }
         self.entries
             .entry(bundle.to_owned())
             .or_default()
             .insert(id.to_owned(), json);
+    }
+    /// The Java export's mod-owned types still in effect: a pack's file for an entry drops its.
+    pub fn owners(&self) -> &ExportOwners {
+        &self.owners
+    }
+    /// Java's export (`from_java_export`) as the lowest layer, below every file added after.
+    pub fn add_export(&mut self, export: &WorldgenOverrides) {
+        for (bundle, entries) in &export.entries {
+            for (id, json) in entries {
+                self.set(bundle, id, json.clone());
+            }
+        }
+        for (bundle, tags) in &export.tags {
+            for (id, pack, json) in tags {
+                self.add_tag(bundle, id, pack, json.clone());
+            }
+        }
+        for (id, template) in &export.templates {
+            self.templates.insert(id.clone(), template.clone());
+        }
+        for (bundle, id, types) in export.owners.owned() {
+            self.owners.set_mod_types(bundle, id, types.to_vec());
+        }
     }
     /// A mod's level: called before any pack's file, so a pack's replaces it.
     pub fn add_mod_dimension(&mut self, dimension: &ModDimension) {
@@ -371,6 +414,7 @@ impl WorldgenOverrides {
         owners.warnings = warnings
             .filter_map(|w| w.as_str().map(str::to_owned))
             .collect();
+        overrides.owners.types = owners.types.clone();
         Ok((overrides, owners))
     }
     /// After the last pack: leaves out the packs' new biomes (`known` says

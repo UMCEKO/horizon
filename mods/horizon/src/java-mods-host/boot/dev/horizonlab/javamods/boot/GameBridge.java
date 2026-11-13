@@ -130,6 +130,8 @@ public final class GameBridge {
         Crossing.game("states", input -> states());
         Crossing.game("commands_roots", (in, out) -> commandsRoots(out));
         Crossing.game("commands_for", ModCommands::commandsFor);
+        Crossing.game("command", ModCommands::command);
+        Crossing.game("console_command", ModCommands::console);
         Crossing.game("refresh", GameBridge::refresh);
         Crossing.game("clear_use", GameBridge::clearUse);
         Crossing.game("block_events", GameBridge::blockEvents);
@@ -176,6 +178,8 @@ public final class GameBridge {
         Crossing.game("destroy_block", (in, out) -> use(in, out, 13));
         Crossing.game("player_tick", (in, out) -> use(in, out, 7));
         Crossing.game("player_left", GameBridge::playerLeft);
+        Crossing.game("menu_open", MenuViews::open);
+        Crossing.game("menu_close", MenuViews::close);
         Crossing.game("remote_join", GameBridge::remoteJoin);
         Crossing.game("remote_in", GameBridge::remoteIn);
         Crossing.game("remote_config", input -> remoteConfig());
@@ -385,6 +389,36 @@ public final class GameBridge {
         return level;
     }
 
+    /** Set by the Clone post: the next `fill` builds a new view for its player and keeps the old one in `original`. */
+    static boolean renewNext;
+    /** The view a respawn replaced, until the Clone event has run. */
+    static ServerPlayer original;
+
+    /** `PlayerList.respawn`'s new `ServerPlayer`: the old view leaves its level and is kept for the Clone event. */
+    private static boolean renewView(UUID id) {
+        var old = PLAYERS.remove(id);
+        if (old == null) return false;
+        var in = JOINED.remove(id);
+        if (in != null) playerLeaves(old, in, Entity.RemovalReason.CHANGED_DIMENSION);
+        PlayerSync.forget(id);
+        original = old;
+        return true;
+    }
+
+    /** The Clone event is done with the old view: it is detached as a logout would. */
+    static void releaseOriginal() {
+        var old = original;
+        original = null;
+        if (old == null) return;
+        safely("detaching the replaced player view", () -> {
+            try {
+                ServerView.detachReplaced(server, old);
+            } catch (ReflectiveOperationException e) {
+                throw new IllegalStateException(e);
+            }
+        });
+    }
+
     static ServerPlayer playerView(UUID id) {
         return PLAYERS.get(id);
     }
@@ -474,9 +508,11 @@ public final class GameBridge {
         var g = PlayerGroups.read(in);
         var level = level(g.key);
         ((ViewLevelData) level.getLevelData()).gameTime = g.gameTime;
-        boolean joined = !PLAYERS.containsKey(g.id);
+        boolean renewed = renewNext && renewView(g.id);
+        renewNext = false;
+        boolean joined = !PLAYERS.containsKey(g.id) && !renewed;
         boolean full = g.has(PlayerGroups.FULL);
-        if (joined && !full) throw new IllegalStateException("Horizon: the player view of " + g.name + " got a delta before its full fill");
+        if ((joined || renewed) && !full) throw new IllegalStateException("Horizon: the player view of " + g.name + " got a delta before its full fill");
         var player = player(g.id, g.name, level);
         if (g.has(PlayerGroups.POSE)) {
             player.setPose(net.minecraft.world.entity.Pose.valueOf(g.pose));
@@ -525,6 +561,7 @@ public final class GameBridge {
             inventory.setItem(g.slots[i], stack);
             synced[g.slots[i]] = stack.copy();
         }
+        MenuViews.filled(player, g);
         PlayerSync.acting(player);
         // `PlayerList.placeNewPlayer`: a connected client gets its login once the player is in place.
         if (Clients.joining(player.getUUID())) safely("the client's login", () -> Menus.login(player));
@@ -789,6 +826,7 @@ public final class GameBridge {
         PLAYERS.clear();
         JOINED.clear();
         PlayerSync.forgetAll();
+        MenuViews.reset();
         SOUNDS.clear();
         nextEntityId = -1;
         ServerView.closeWorld(server);
@@ -895,6 +933,7 @@ public final class GameBridge {
         PlayerSync.forget(left);
         if (player != null) {
             safely("closing the open menu", () -> Menus.close(player));
+            MenuViews.forget(left);
             safely("PlayerLoggedOut", () -> EventHooks.firePlayerLoggedOut(player));
             var in = JOINED.remove(left);
             if (in != null) playerLeaves(player, in, Entity.RemovalReason.UNLOADED_WITH_PLAYER);

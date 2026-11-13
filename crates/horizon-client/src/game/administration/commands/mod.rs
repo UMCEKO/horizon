@@ -2152,13 +2152,28 @@ impl Game<'_> {
         if Some(conn) == self.lan_acting && self.fake_blocks(mod_api::FakeEffect::ChangeDimension) {
             return Ok(true);
         }
-        // A canceled travel keeps the player where they are.
+        #[cfg(feature = "java-mods")]
+        self.player_teleport_of(conn, level, pos, rotation);
+        #[cfg(not(feature = "java-mods"))]
+        self.queue_player_teleport(conn, level, pos, rotation);
+        Ok(true)
+    }
+    /// `ServerPlayer.teleport`'s body for a player of another level: queued to move
+    /// after the command; false when a mod canceled the travel, which keeps the
+    /// player where they are.
+    pub(in crate::game) fn queue_player_teleport(
+        &mut self,
+        conn: u32,
+        level: super::Dim,
+        pos: [f64; 3],
+        rotation: Option<[f32; 2]>,
+    ) -> bool {
         if !self.server_player_travel_allowed(
             conn,
             level,
             super::server_travel::TravelCause::Teleport,
         ) {
-            return Ok(true);
+            return false;
         }
         self.level_teleports
             .push(super::server_travel::LevelTeleport {
@@ -2168,7 +2183,7 @@ impl Game<'_> {
                 rotation,
                 vehicle: None,
             });
-        Ok(true)
+        true
     }
     /// `ServerPlayer.lookAt`: besides turning the player, tell their client
     /// with a `ClientboundPlayerLookAtPacket` (`from` anchor, the point, and

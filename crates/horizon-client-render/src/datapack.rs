@@ -1071,6 +1071,15 @@ pub fn worldgen_overrides(
     worldgen_overrides_over(overrides::mod_dimensions(), packs, biomes)
 }
 
+/// [`worldgen_overrides`] over the Java mods' worldgen export, when there is one: the packs' files win.
+pub fn worldgen_overrides_on(
+    java: Option<&WorldgenOverrides>,
+    packs: &[&DataPack],
+    biomes: impl Fn(&str) -> bool,
+) -> (WorldgenOverrides, Vec<String>) {
+    worldgen_overrides_layered(overrides::mod_dimensions(), java, packs, biomes)
+}
+
 /// [`worldgen_overrides`] over the levels `mods` registered, which sit below
 /// every pack.
 pub fn worldgen_overrides_over(
@@ -1078,9 +1087,21 @@ pub fn worldgen_overrides_over(
     packs: &[&DataPack],
     biomes: impl Fn(&str) -> bool,
 ) -> (WorldgenOverrides, Vec<String>) {
+    worldgen_overrides_layered(mods, None, packs, biomes)
+}
+
+fn worldgen_overrides_layered(
+    mods: &[overrides::ModDimension],
+    java: Option<&WorldgenOverrides>,
+    packs: &[&DataPack],
+    biomes: impl Fn(&str) -> bool,
+) -> (WorldgenOverrides, Vec<String>) {
     let mut out = WorldgenOverrides::default();
     for dimension in mods {
         out.add_mod_dimension(dimension);
+    }
+    if let Some(java) = java {
+        out.add_export(java);
     }
     let mut not_read: BTreeMap<String, usize> = BTreeMap::new();
     let mut warnings = Vec::new();

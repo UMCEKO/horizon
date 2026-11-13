@@ -130,12 +130,13 @@ impl Game<'_> {
         // so their replies go nowhere.
         let mut canceled = false;
         self.native_player_command(uuid, &name, command, &mut canceled, &mut Vec::new());
+        let replaced = Self::java_hook_replaced_command();
         if canceled {
             return false;
         }
         self.run_guest_command(GuestCommand {
             conn,
-            command: command.to_owned(),
+            command: replaced.unwrap_or_else(|| command.to_owned()),
             permission,
             integrated,
             quiet: true,

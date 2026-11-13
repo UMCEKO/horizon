@@ -1,5 +1,5 @@
 //! Entity fluid immersion trackers and current accumulation across update ticks.
-use crate::fluid::{FluidKind, FluidState};
+use crate::fluid::{FluidKind, FluidState, ModFluid, ModFluidEntityRules};
 use horizon_core::{
     geometry::{Aabb, Vec3},
     position::BlockPos,
@@ -157,10 +157,26 @@ pub fn has_fluid_and_loaded<W: FluidInteractionWorld>(
     }
     Ok(present)
 }
+/// A mod fluid type the entity's box is in this tick, over its source and flowing forms.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FluidTypeContact {
+    pub fluid: ModFluid,
+    pub rules: ModFluidEntityRules,
+    /// `getFluidTypeHeight`.
+    pub height: f64,
+    pub eyes_inside: bool,
+}
+#[derive(Clone, Copy)]
+enum CurrentSlot {
+    Tag(usize),
+    Type(usize),
+}
 #[derive(Clone, Default)]
 pub struct EntityFluidInteraction {
     trackers: Vec<FluidTracker>,
     currents: Vec<(FluidTagId, CurrentAccumulator)>,
+    /// Mod fluid types in no tag of `currents` that push entities, in the order the scan met them.
+    type_currents: Vec<(ModFluid, ModFluidEntityRules, CurrentAccumulator)>,
 }
 impl EntityFluidInteraction {
     /// Preserve the caller's tag-set iteration order: a fluid's current belongs
@@ -197,6 +213,45 @@ impl EntityFluidInteraction {
             .iter()
             .any(|t| t.eyes_inside && tags.fluid_in_tag(t.fluid, tag))
     }
+    /// The mod fluid types the box is in (`isInFluidType`), aggregated over each type's forms.
+    pub fn fluid_types(&self) -> Vec<FluidTypeContact> {
+        let mut out: Vec<FluidTypeContact> = Vec::new();
+        for t in &self.trackers {
+            let Some((fluid, rules)) = t.fluid.mod_entity_rules() else {
+                continue;
+            };
+            if t.height <= 0.0 && !t.eyes_inside {
+                continue;
+            }
+            match out.iter_mut().find(|c| c.fluid == fluid) {
+                Some(c) => {
+                    c.height = java_max(c.height, t.height);
+                    c.eyes_inside |= t.eyes_inside;
+                }
+                None => out.push(FluidTypeContact {
+                    fluid,
+                    rules,
+                    height: t.height,
+                    eyes_inside: t.eyes_inside,
+                }),
+            }
+        }
+        out
+    }
+    /// `getFluidTypeHeight` of a mod fluid's type.
+    pub fn fluid_type_height(&self, fluid: ModFluid) -> f64 {
+        self.fluid_types()
+            .iter()
+            .find(|c| c.fluid == fluid)
+            .map_or(0.0, |c| c.height)
+    }
+    /// The current of each mod fluid type that pushes, at its own `getMotionScale`.
+    pub fn apply_type_currents<W: CurrentTarget>(&self, world: &mut W) -> Result<(), W::Error> {
+        for (_, rules, current) in &self.type_currents {
+            current.apply_to(world, rules.motion_scale)?;
+        }
+        Ok(())
+    }
     pub fn apply_current<W: CurrentTarget>(
         &self,
         world: &mut W,
@@ -227,6 +282,7 @@ impl EntityFluidInteraction {
         for (_, c) in &mut self.currents {
             c.reset();
         }
+        self.type_currents.clear();
         let Some(bounds) = world
             .interaction_box()
             .map_err(FluidInteractionError::World)?
@@ -259,7 +315,7 @@ impl EntityFluidInteraction {
         let block_x = world.block_x();
         let eye = world.eye_y().map_err(FluidInteractionError::World)?;
         let block_z = world.block_z();
-        let mut last: Option<(FluidKind, usize, Option<usize>)> = None;
+        let mut last: Option<(FluidKind, usize, Option<CurrentSlot>)> = None;
         for x in low.x..=high.x {
             for y in low.y..=high.y {
                 for z in low.z..=high.z {
@@ -297,10 +353,26 @@ impl EntityFluidInteraction {
                             };
                         let current = if ignore_current {
                             None
+                        } else if let Some(i) = self
+                            .currents
+                            .iter()
+                            .position(|(tag, _)| world.fluid_in_tag(kind, *tag))
+                        {
+                            Some(CurrentSlot::Tag(i))
                         } else {
-                            self.currents
-                                .iter()
-                                .position(|(tag, _)| world.fluid_in_tag(kind, *tag))
+                            kind.mod_entity_rules()
+                                .filter(|(_, rules)| rules.can_push_entity)
+                                .map(|(fluid, rules)| {
+                                    let at = self.type_currents.iter().position(|c| c.0 == fluid);
+                                    CurrentSlot::Type(at.unwrap_or_else(|| {
+                                        self.type_currents.push((
+                                            fluid,
+                                            rules,
+                                            CurrentAccumulator::default(),
+                                        ));
+                                        self.type_currents.len() - 1
+                                    }))
+                                })
                         };
                         let entry = (kind, index, current);
                         last = Some(entry);
@@ -319,10 +391,13 @@ impl EntityFluidInteraction {
                     }
                     self.trackers[index].height =
                         java_max(surface - base_y, self.trackers[index].height);
-                    if let Some(i) = current {
+                    if let Some(slot) = current {
                         let mut flow =
                             world.flow(state, p).map_err(FluidInteractionError::World)?;
-                        let c = &mut self.currents[i].1;
+                        let c = match slot {
+                            CurrentSlot::Tag(i) => &mut self.currents[i].1,
+                            CurrentSlot::Type(i) => &mut self.type_currents[i].2,
+                        };
                         c.height = java_max(self.trackers[index].height, c.height);
                         if c.height < 0.4 {
                             flow = flow.scale(c.height);
@@ -431,6 +506,145 @@ mod tests {
             "{}",
             moving.added.x
         );
+    }
+
+    /// One flowing cell of a mod fluid at the origin, flowing toward +x, around a body.
+    struct Goo {
+        fluid: FluidKind,
+        body: Body,
+    }
+    impl FluidMembership for Goo {
+        fn fluid_in_tag(&self, _: FluidKind, _: FluidTagId) -> bool {
+            false
+        }
+    }
+    impl CurrentTarget for Goo {
+        type Error = std::convert::Infallible;
+        fn is_player_class(&self) -> bool {
+            self.body.is_player_class()
+        }
+        fn velocity(&mut self) -> Result<Vec3, Self::Error> {
+            self.body.velocity()
+        }
+        fn add_delta_movement(&mut self, delta: Vec3) -> Result<(), Self::Error> {
+            self.body.add_delta_movement(delta)
+        }
+    }
+    impl FluidInteractionWorld for Goo {
+        type Error = std::convert::Infallible;
+        type Chunk = ();
+        fn interaction_box(&mut self) -> Result<Option<Aabb>, Self::Error> {
+            Ok(Some(Aabb::new(
+                Vec3::new(0.2, 0.0, 0.2),
+                Vec3::new(0.8, 1.8, 0.8),
+            )))
+        }
+        fn loaded_chunk(&mut self, _: i32, _: i32) -> Result<Option<()>, Self::Error> {
+            Ok(Some(()))
+        }
+        fn chunk_sections(&mut self, _: ()) -> Result<FluidSections<'_>, Self::Error> {
+            Ok(FluidSections {
+                minimum_section_y: 0,
+                has_fluid: &[true],
+            })
+        }
+        fn bounding_box_min_y(&self) -> f64 {
+            0.0
+        }
+        fn block_x(&self) -> i32 {
+            0
+        }
+        fn eye_y(&mut self) -> Result<f64, Self::Error> {
+            Ok(1.62)
+        }
+        fn block_z(&self) -> i32 {
+            0
+        }
+        fn fluid_state(&mut self, p: BlockPos) -> Result<FluidState, Self::Error> {
+            Ok(if p == BlockPos::new(0, 0, 0) {
+                FluidState::new(self.fluid, 4, false)
+            } else {
+                FluidState::EMPTY
+            })
+        }
+        fn fluid_height(&mut self, _: FluidState, _: BlockPos) -> Result<f32, Self::Error> {
+            Ok(4.0 / 9.0)
+        }
+        fn camera_height(&mut self, _: FluidState, _: BlockPos) -> Result<f32, Self::Error> {
+            Ok(4.0 / 9.0)
+        }
+        fn flow(&mut self, _: FluidState, _: BlockPos) -> Result<Vec3, Self::Error> {
+            Ok(Vec3::new(1.0, 0.0, 0.0))
+        }
+    }
+    fn goo(id: &str, push: bool) -> FluidKind {
+        use crate::fluid::{ModFluidEntityRules, ModFluidRules, ModFluidType, register_mod_fluid};
+        FluidKind::ModFlowing(
+            register_mod_fluid(ModFluidType {
+                id: format!("entity_fluid_test:{id}"),
+                flowing_id: format!("entity_fluid_test:flowing_{id}"),
+                bucket: None,
+                rules: ModFluidRules {
+                    tick_delay: 10,
+                    drop_off: 2,
+                    slope_find_distance: 2,
+                    converts_to_source: false,
+                },
+                entity: Some(ModFluidEntityRules {
+                    motion_scale: 0.002,
+                    can_push_entity: push,
+                    can_swim: true,
+                    can_drown: true,
+                    fall_distance_modifier: 0.5,
+                    can_extinguish: true,
+                }),
+            })
+            .unwrap(),
+        )
+    }
+
+    /// Height 4/9 > 0.4 keeps flow (1,0,0) whole; a moving mob takes its direction times 0.002 where water's would be 0.014.
+    #[test]
+    fn a_mod_fluid_type_pushes_by_its_own_motion_scale() {
+        let mut world = Goo {
+            fluid: goo("pushing", true),
+            body: Body {
+                player: false,
+                velocity: Vec3::new(0.1, 0.0, 0.0),
+                added: Vec3::ZERO,
+            },
+        };
+        let mut interaction = EntityFluidInteraction::new([FluidTagId(0), FluidTagId(1)]);
+        assert!(interaction.update(&mut world, false, 1000).unwrap());
+        let contact = interaction.fluid_types()[0];
+        assert!((contact.height - f64::from(4.0f32 / 9.0)).abs() < 1e-12);
+        assert!(!contact.eyes_inside);
+        interaction.apply_type_currents(&mut world).unwrap();
+        assert!(
+            (world.body.added.x - 0.002).abs() < 1e-12,
+            "{}",
+            world.body.added.x
+        );
+        assert_eq!(interaction.currents()[0].1.count, 0, "no water current");
+    }
+
+    /// A type that cannot push entities is still a fluid the body is in, with no current.
+    #[test]
+    fn a_mod_fluid_type_that_cannot_push_only_reports_its_height() {
+        let mut world = Goo {
+            fluid: goo("still", false),
+            body: Body {
+                player: false,
+                velocity: Vec3::new(0.1, 0.0, 0.0),
+                added: Vec3::ZERO,
+            },
+        };
+        let mut interaction = EntityFluidInteraction::new([FluidTagId(0)]);
+        interaction.update(&mut world, false, 1000).unwrap();
+        let fluid = world.fluid.mod_fluid().unwrap();
+        assert!(interaction.fluid_type_height(fluid) > 0.0);
+        interaction.apply_type_currents(&mut world).unwrap();
+        assert_eq!(world.body.added, Vec3::ZERO);
     }
 
     /// `applyTo` returns before reading the velocity with no samples, and when

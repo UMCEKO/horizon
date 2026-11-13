@@ -495,6 +495,8 @@ impl Game<'_> {
             self.res.biomes(),
             &enabled_features,
             &self.pack.additional_data,
+            // The Java export is the server thread's: this table doesn't carry its biomes yet.
+            None,
         ));
         self.world_biomes_base = self.world_biomes.clone();
         let (res, pack, settings) = (self.res.clone(), self.pack.clone(), self.settings.clone());

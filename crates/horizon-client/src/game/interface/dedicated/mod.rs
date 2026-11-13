@@ -2128,7 +2128,15 @@ impl Game<'_> {
                 // A command a native mod registered goes to the mods first,
                 // looked up by the same first word the match above read.
                 if !self.perform_native_console_command(line.trim()) {
-                    self.as_console_in_overworld(|g| g.run_command(line));
+                    self.as_console_in_overworld(|g| match g.java_hook_command(line, false) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => {
+                            g.run_command(line);
+                        }
+                        Err(replaced) => {
+                            g.run_command(&replaced);
+                        }
+                    });
                 }
                 for text in self.chat_capture.take().unwrap_or_default() {
                     self.console_reply(text);

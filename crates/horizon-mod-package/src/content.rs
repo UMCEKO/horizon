@@ -545,7 +545,7 @@ struct FluidFile {
 /// What makes a fluid exist in the world: a block holding it, as `minecraft:water`'s does, and
 /// how it flows. Each value defaults to water's, in `data/<id>/horizon/fluid/` as in code
 /// (`Registrar::declare_world_fluid`).
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct WorldFluid {
     /// Game ticks between two flow steps (`Fluid.getTickDelay`), 1 or more.
@@ -559,6 +559,8 @@ pub struct WorldFluid {
     pub source_conversion: bool,
     /// Whether it has a filled bucket, the item `<id>_bucket`.
     pub bucket: bool,
+    /// How it moves the entities in it; unset, they move through it as through air.
+    pub entity: Option<FluidEntity>,
 }
 impl Default for WorldFluid {
     fn default() -> Self {
@@ -568,6 +570,37 @@ impl Default for WorldFluid {
             slope_find_distance: 4,
             source_conversion: false,
             bucket: true,
+            entity: None,
+        }
+    }
+}
+
+/// How a world fluid moves the entities in it, as NeoForge's `FluidType`; each value defaults to water's.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct FluidEntity {
+    /// The strength of its current (`getMotionScale`).
+    pub motion_scale: f64,
+    /// Whether its current pushes entities (`canPushEntity`).
+    pub push: bool,
+    /// Whether living entities swim in it as in water (`canSwim`).
+    pub swim: bool,
+    /// Whether eyes inside it use up air (`canDrown`).
+    pub drown: bool,
+    /// What each tick in it keeps of the fall distance (`getFallDistanceModifier`).
+    pub fall_distance_modifier: f32,
+    /// Whether it puts out burning entities (`canExtinguish`).
+    pub extinguish: bool,
+}
+impl Default for FluidEntity {
+    fn default() -> Self {
+        Self {
+            motion_scale: 0.014,
+            push: true,
+            swim: true,
+            drown: true,
+            fall_distance_modifier: 0.0,
+            extinguish: true,
         }
     }
 }
@@ -583,6 +616,14 @@ impl WorldFluid {
         if !(1..=4).contains(&self.slope_find_distance) {
             return Err("slope_find_distance is 1 to 4".into());
         }
+        if let Some(entity) = self.entity {
+            if !entity.motion_scale.is_finite() {
+                return Err("entity.motion_scale is a finite number".into());
+            }
+            if !entity.fall_distance_modifier.is_finite() {
+                return Err("entity.fall_distance_modifier is a finite number".into());
+            }
+        }
         Ok(())
     }
 }
@@ -590,7 +631,7 @@ impl WorldFluid {
 /// How a fluid the mod names looks on the client (`data/<id>/horizon/fluid/`), as
 /// NeoForge's `IClientFluidTypeExtensions`: `getStillTexture` and `getTintColor`.
 /// The fluid needs no block, so it can be a fluid only a tank holds.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FluidLook {
     /// `<mod id>:<path>`.
     pub id: String,

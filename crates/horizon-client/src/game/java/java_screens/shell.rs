@@ -1,17 +1,22 @@
 use super::*;
 
 impl Game<'_> {
-    /// The vanilla screen a Java shell stands for: 1 the survival inventory, 2 the creative screen.
+    /// The vanilla screen a Java shell stands for: 1 the survival inventory, 2 the creative screen, 3 the screen of the server's open container menu.
     pub(super) fn java_shell_kind(&self) -> u8 {
         if self.screen == Screen::Creative {
             return 2;
         }
-        u8::from(
-            self.screen == Screen::Inventory
-                && self.container.is_none()
-                && self.craft_size == 2
-                && !self.mount_active()
-                && self.station.is_none(),
+        if self.screen != Screen::Inventory || self.mount_active() || self.station.is_some() {
+            return 0;
+        }
+        let (container, menu) = self.remote_menu();
+        if container == 0 {
+            return u8::from(self.container.is_none() && self.craft_size == 2);
+        }
+        3 * u8::from(
+            super::menus::mirrorable(&menu)
+                && self.native_screen_width().is_none()
+                && self.mod_screen.is_none(),
         )
     }
 
@@ -32,14 +37,15 @@ impl Game<'_> {
             ];
         }
         let (x, y) = self.inventory_origin(&batch);
+        let (_, menu) = self.remote_menu();
         let hovered = self
             .slot_at(&batch, self.cursor.0, self.cursor.1)
-            .and_then(|slot| Self::menu_slot_index("inventory", slot));
+            .and_then(|slot| Self::menu_slot_index(&menu, slot));
         [
             x.floor() as i32,
             y.floor() as i32,
-            176,
-            166,
+            self.native_screen_width().unwrap_or(176.0) as i32,
+            self.screen_height() as i32,
             hovered.map_or(-1, |slot| slot as i32),
         ]
     }
@@ -164,8 +170,10 @@ impl Game<'_> {
         self.paint_shell_segment(batch, index);
     }
 
-    /// `int n` and the inputs, led by the creative screen's state when it differs from what Java last heard.
+    /// `int n` and the inputs: what the window queued since the last tick first, so the Java menu has native's last click before a mod reads it, then the book's and the creative screen's state when they differ from what Java last heard, then `inputs`.
     pub(super) fn java_shell_creative_inputs(&self, inputs: &[Input], out: &mut Out) {
+        let (queue, queued) = CLIENT
+            .with_borrow_mut(|c| (std::mem::take(&mut c.queue), std::mem::take(&mut c.queued)));
         let state = (self.screen == Screen::Creative).then(|| self.java_creative_state());
         let state = state.filter(|state| {
             CLIENT.with_borrow_mut(|c| {
@@ -176,7 +184,22 @@ impl Game<'_> {
                 differs
             })
         });
-        out.int(inputs.len() as i32 + i32::from(state.is_some()));
+        let book = matches!(self.java_shell_kind(), 1 | 3)
+            .then(|| self.recipe_book_visible())
+            .filter(|book| {
+                CLIENT.with_borrow_mut(|c| {
+                    let differs = c.sent.book != Some(*book);
+                    c.sent.book = Some(*book);
+                    differs
+                })
+            });
+        out.int(
+            queued + inputs.len() as i32 + i32::from(state.is_some()) + i32::from(book.is_some()),
+        );
+        out.0.extend(queue);
+        if let Some(book) = book {
+            Input::ShellBook(book).write(out);
+        }
         if let Some((tab, hovered, index, stack)) = &state {
             Input::ShellCreative(tab, *hovered, *index, stack).write(out);
         }

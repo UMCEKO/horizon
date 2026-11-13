@@ -51,7 +51,8 @@ final class Menus {
         // `MinecraftServer.tickServer`: what payload handlers queued for the server thread runs now.
         player.level().getServer().packetProcessor().processQueuedPackets();
         player.containerMenu.broadcastChanges();
-        if (!player.containerMenu.stillValid(player)) {
+        // Native decides when a menu it opened closes.
+        if (!MenuViews.backed(player.containerMenu) && !player.containerMenu.stillValid(player)) {
             player.closeContainer();
             player.containerMenu = player.inventoryMenu;
         }
@@ -202,6 +203,7 @@ final class Menus {
 
     /** The player left: Java's menu closes as a disconnect closes it. */
     static void close(ServerPlayer player) {
-        if (player.containerMenu != player.inventoryMenu) player.closeContainer();
+        if (MenuViews.backed(player.containerMenu)) player.containerMenu = player.inventoryMenu;
+        else if (player.containerMenu != player.inventoryMenu) player.closeContainer();
     }
 }

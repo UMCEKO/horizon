@@ -4,7 +4,7 @@ impl Game<'_> {
     /// `LivingEntity.stopSleeping` and `ServerPlayer.stopSleepInBed` for a
     /// guest who woke up from `head`: stand beside the bed facing it, and
     /// teleport the client there.
-    pub(super) fn wake_guest_from(&mut self, gi: usize, head: [i32; 3]) {
+    pub(super) fn wake_guest_from(&mut self, gi: usize, head: [i32; 3], kind: WakeKind) {
         let Some(host) = self.lan.as_ref() else {
             return;
         };
@@ -13,7 +13,8 @@ impl Game<'_> {
             let g = &host.hub.guests[gi];
             (g.uuid, g.name.clone())
         };
-        self.native_player_bed_leave(player, &name, head);
+        let (wake_immediately, update_level) = kind.flags();
+        self.native_player_bed_leave(player, &name, head, wake_immediately, update_level);
         let Some((stand, yaw)) = self.bed_wake_pose(head, yaw) else {
             return;
         };
@@ -53,12 +54,12 @@ impl Game<'_> {
             if host.hub.here(&host.hub.guests[gi])
                 && let Some(head) = host.hub.guests.update(gi, |g| g.woke_from.take())
             {
-                self.wake_guest_from(gi, head);
+                self.wake_guest_from(gi, head, WakeKind::LeaveBed);
             }
         }
     }
 
-    pub(in crate::game) fn wake_guest(&mut self, gi: usize) {
+    pub(in crate::game) fn wake_guest(&mut self, gi: usize, kind: WakeKind) {
         let Some(host) = self.lan.as_mut() else {
             return;
         };
@@ -66,7 +67,7 @@ impl Game<'_> {
         if host.hub.here(&host.hub.guests[gi])
             && let Some(head) = host.hub.guests.update(gi, |g| g.woke_from.take())
         {
-            self.wake_guest_from(gi, head);
+            self.wake_guest_from(gi, head, kind);
         }
     }
 
@@ -130,7 +131,7 @@ impl Game<'_> {
                 keep_sleeping = may_continue.unwrap_or(problem.is_none());
             }
             if !keep_sleeping {
-                self.wake_guest(gi);
+                self.wake_guest(gi, WakeKind::BedGone);
             } else if let Some(host) = self.lan.as_mut() {
                 // LivingEntity.tick: a sleeper's xRot is 0.
                 host.hub.guests.update(gi, |g| {
@@ -265,7 +266,7 @@ impl Game<'_> {
         };
         let count = host.hub.guests.len();
         for i in 0..count {
-            self.wake_guest(i);
+            self.wake_guest(i, WakeKind::Morning);
         }
     }
 

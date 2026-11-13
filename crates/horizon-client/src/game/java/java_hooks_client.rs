@@ -161,6 +161,17 @@ impl Game<'_> {
 
 #[cfg(not(feature = "java-mods"))]
 impl Game<'_> {
+    pub(super) fn client_continue_attack(&mut self, down: bool) {
+        self.remote_continue_attack(down);
+    }
+    pub(super) fn client_sync_block_state(
+        &mut self,
+        pos: [i32; 3],
+        state: i32,
+        player_pos: Option<[f64; 3]>,
+    ) {
+        self.sync_block_state_body(pos, state, player_pos);
+    }
     pub(super) fn java_click_canceled(&mut self, _click: JavaClick) -> Option<Option<Hand>> {
         None
     }
@@ -238,6 +249,10 @@ impl Game<'_> {
         _seq: u64,
     ) {
     }
+    pub(super) fn java_entity_ticked(&mut self, _index: usize) {}
+    pub(super) fn java_menu_packet(&mut self, _packet: &horizon_protocol::packets::play::Clientbound) {}
+    pub(super) fn java_menu_click(&mut self, _container: i32, _slot: i32, _button: i32, _input: i32) {}
+    pub(super) fn java_menu_closed(&mut self) {}
     pub(super) fn java_shell_open(&self) -> bool {
         false
     }

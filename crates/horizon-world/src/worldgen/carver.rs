@@ -39,10 +39,13 @@ pub enum CarverError<E> {
     Geometry(CarveError<E>),
     IterationLimit,
     InvalidBounds,
+    /// A carver Java runs, whose Java side isn't built yet.
+    NeedsJava(String),
 }
 impl<E: std::fmt::Display> std::fmt::Display for CarverError<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NeedsJava(id) => write!(f, "carver {id} needs Java worldgen (W10 SPEC-10)"),
             Self::Random(e) => e.fmt(f),
             Self::Geometry(e) => e.fmt(f),
             Self::IterationLimit => f.write_str("carver work limit exceeded"),

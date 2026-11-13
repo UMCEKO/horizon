@@ -113,8 +113,11 @@ NeoForge's `IClientFluidTypeExtensions`; the fluid needs no block, and a recipe 
 object makes it exist in the world: `{"world": {}}` adds the block `<id>:<path>`, a copy of `minecraft:water` that flows
 with vanilla's fluid simulation, and the bucket item `<id>:<path>_bucket`, which needs its model as any item does. `world`
 takes `tick_delay` (1 or more, default 5), `drop_off` (1 to 7, default 1), `slope_find_distance` (1 to 4, default 4),
-`source_conversion` (default false) and `bucket` (default true). The fluid is in no vanilla fluid tag, so entities don't
-swim in it or get pushed by it. In the world it draws its `sprite`, a block atlas texture such as `mymod:block/oil`, times
+`source_conversion` (default false), `bucket` (default true) and `entity`. The fluid is in no vanilla fluid tag, so
+without `entity` entities move through it as through air. `entity` makes it move them as NeoForge's `FluidType` does,
+each value water's by default: `motion_scale` (its current's strength, 0.014), `push` (its current pushes entities),
+`swim` (living entities swim in it as in water), `drown` (eyes in it use up air), `fall_distance_modifier` (what each
+tick in it keeps of the fall distance, 0) and `extinguish` (it puts out fire). In the world it draws its `sprite`, a block atlas texture such as `mymod:block/oil`, times
 its `tint`; with neither it looks like water, and a `tint` alone colours water's textures. A client mod's
 `register_fluid_models` hook collects `mod_api::FluidModel` values with separate flowing and overlay sprites.
 It is collected again before each resource bake, so a resource reload can change model identifiers as well as textures. Far terrain (LOD) doesn't draw mod fluids yet. LAN and dedicated server players play with them when they run the same mods: a client whose mods add different

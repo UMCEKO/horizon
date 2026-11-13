@@ -8,10 +8,8 @@ net/minecraft/client/KeyMapping#matchesMouse(Lnet/minecraft/client/input/MouseBu
 net/minecraft/client/KeyMapping#same(Lnet/minecraft/client/KeyMapping;)Z	verdict: java-client
 net/minecraft/client/KeyMapping#set	verdict: java-client
 net/minecraft/client/KeyMapping#setAll()V	verdict: java-client
-net/minecraft/client/KeyboardHandler#handleDebugKeys(Lnet/minecraft/client/input/KeyEvent;)Z	spec: w12-coverage SPEC-22
 net/minecraft/client/KeyboardHandler#keyPress(JILnet/minecraft/client/input/KeyEvent;)V	verdict: java-client
 net/minecraft/client/Minecraft#<init>(Lnet/minecraft/client/main/GameConfig;)V	verdict: java-client
-net/minecraft/client/Minecraft#continueAttack(Z)V	spec: w12-coverage SPEC-22
 net/minecraft/client/Minecraft#handleKeybinds()V	spec: w12-coverage SPEC-22
 net/minecraft/client/Minecraft#pickBlockOrEntity	verdict: java-client
 net/minecraft/client/Minecraft#resizeGui()V	special: screens
@@ -52,7 +50,6 @@ net/minecraft/client/gui/screens/inventory/CreativeModeInventoryScreen#getToolti
 net/minecraft/client/gui/screens/options/controls/KeyBindsList$KeyEntry#updateChangeButtonMessage()V	owner: W5
 net/minecraft/client/model/HumanoidModel#setupAnim(Lnet/minecraft/client/renderer/entity/state/HumanoidRenderState;)V	owner: W2
 net/minecraft/client/multiplayer/ClientConfigurationPacketListenerImpl#handleConfigurationFinished(Lnet/minecraft/network/protocol/configuration/ClientboundFinishConfigurationPacket;)V	verdict: java-client
-net/minecraft/client/multiplayer/ClientLevel#syncBlockState(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/world/phys/Vec3;)V	spec: w12-coverage SPEC-22
 net/minecraft/client/multiplayer/ClientLevel#tickEntities()V	verdict: java-client
 net/minecraft/client/multiplayer/ClientPacketListener#handleRecipeBookAdd(Lnet/minecraft/network/protocol/game/ClientboundRecipeBookAddPacket;)V	verdict: java-client
 net/minecraft/client/multiplayer/ClientPacketListener#handleRecipeBookRemove(Lnet/minecraft/network/protocol/game/ClientboundRecipeBookRemovePacket;)V	verdict: java-client
@@ -80,8 +77,6 @@ net/minecraft/server/commands/EnchantCommand#register(Lcom/mojang/brigadier/Comm
 net/minecraft/server/dedicated/DedicatedServer#initServer()Z	spec: w12-coverage SPEC-20
 net/minecraft/server/level/ChunkMap#anyPlayerCloseEnoughForSpawning(Lnet/minecraft/world/level/ChunkPos;)Z	spec: w12-coverage SPEC-14
 net/minecraft/server/level/ChunkMap#scheduleChunkLoad(Lnet/minecraft/world/level/ChunkPos;)Ljava/util/concurrent/CompletableFuture;	owner: W10
-net/minecraft/server/level/ServerLevel#addPlayer(Lnet/minecraft/server/level/ServerPlayer;)V	spec: w12-coverage SPEC-21
-net/minecraft/server/level/ServerPlayer#teleport(Lnet/minecraft/world/level/portal/TeleportTransition;)Lnet/minecraft/server/level/ServerPlayer;	spec: w12-coverage SPEC-21
 net/minecraft/server/network/ServerConfigurationPacketListenerImpl#handleConfigurationFinished(Lnet/minecraft/network/protocol/configuration/ServerboundFinishConfigurationPacket;)V	owner: W13
 net/minecraft/server/network/ServerConfigurationPacketListenerImpl#startConfiguration()V	owner: W13
 net/minecraft/server/network/ServerGamePacketListenerImpl#handlePickItemFromBlock(Lnet/minecraft/network/protocol/game/ServerboundPickItemFromBlockPacket;)V	spec: w12-coverage SPEC-15

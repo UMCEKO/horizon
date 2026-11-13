@@ -134,13 +134,14 @@ def report(folder, top=15, jfr=True):
         )
     else:
         out.append("no server-ticks.log")
-    be, calls, locks, holds, spans, events, tree, chains = {}, {}, {}, {}, {}, {}, {}, {}
+    be, calls, locks, holds, spans, events, tree, chains, posts = {}, {}, {}, {}, {}, {}, {}, {}, {}
     for j in java:
         merge(be, parse_rows(j.get("be", "-")))
         merge(calls, parse_rows(j.get("calls", "-")))
         merge(locks, parse_rows(j.get("lock", "-")))
         merge(holds, parse_rows(j.get("hold", "-")))
         merge(events, parse_rows(j.get("ev", "-")))
+        merge(posts, parse_rows(j.get("posts", "-")))
         merge(chains, parse_rows(j.get("chains", "-")))
         merge_tree(tree, parse_tree(j.get("tree", "-")))
     dims = int(sum(num(j, "dims") for j in java))
@@ -161,10 +162,18 @@ def report(folder, top=15, jfr=True):
                    f"metaspace {span('jvm_meta_kb')} KiB, class space {span('jvm_class_kb')} KiB, "
                    f"code cache {span('jvm_code_kb')} KiB, direct buffers {span('direct_kb')} KiB; "
                    f"largest Java reply buffer {int(max(num(j, 'reply_high_kb') for j in java))} KiB")
+    crossings = {}
     for s in server:
         merge(spans, parse_rows(s.get("spans", "-")))
+        for row in s.get("event_crossings", "-").split(","):
+            name, _, n = row.partition("|")
+            if n.isdigit():
+                crossings[name] = crossings.get(name, 0) + int(n)
     out += table("Java block entity types (ticker time)", STAT_HEADER, stat_lines(be, top))
     out += table("Java events sent to mods (listener time: server/level ticks, player ticks...)", STAT_HEADER, stat_lines(events, top))
+    out += table("Game bus posts by event class (compiled dispatch, listener time included)", STAT_HEADER, stat_lines(posts, top))
+    out += table("Native hook crossings to Java by event class (none for a class no Java mod listens to)", f"{'event':<48} {'crossings':>9} {'per tick':>9}",
+                 [f"{name[:48]:<48} {n:>9} {n / max(ticks, 1):>9.2f}" for name, n in sorted(crossings.items(), key=lambda kv: -kv[1])[:top]])
     out += table("Native spans (server tick)", STAT_HEADER, stat_lines(spans, top))
     out += table("Java calls from Rust, by kind (includes turn wait)", STAT_HEADER, stat_lines(calls, top))
     out += table("Server-side turn wait (another server-side caller, never the window), by call kind", STAT_HEADER, stat_lines(locks, top))

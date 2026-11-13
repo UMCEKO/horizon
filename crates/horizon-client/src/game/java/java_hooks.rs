@@ -22,7 +22,32 @@ pub(super) struct JavaItemText {
     pub lines: Vec<horizon_client::text::Text>,
 }
 
+/// Who trampled farmland, as `BlockEvent.FarmlandTrampleEvent` is posted for them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TrampleBy {
+    /// The acting player.
+    Player,
+    /// The mob with this entity id.
+    Mob(u32),
+}
+
 impl Game<'_> {
+    /// `BlockEvent.FarmlandTrampleEvent` after the native checks passed; true when a Java mod canceled the trample.
+    pub(super) fn java_hook_trample(
+        &mut self,
+        pos: [i32; 3],
+        distance: f64,
+        who: TrampleBy,
+    ) -> bool {
+        #[cfg(feature = "java-mods")]
+        return self.java_trample(pos, distance, who);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (pos, distance, who);
+            false
+        }
+    }
+
     /// What the Java mods' F3 entries added to the displayer in the Java client's last tick.
     pub(super) fn java_hook_debug_recorded(&self) -> Vec<horizon_client::debug_overlay::Recorded> {
         #[cfg(feature = "java-mods")]
@@ -129,6 +154,40 @@ impl Game<'_> {
         let _ = (sensitivity, smooth, grabbed);
     }
 
+    /// The fog `setup_fog` computed, as the mods' fog event listeners leave it; untouched while none listens.
+    pub(super) fn java_hook_view_fog(
+        &self,
+        fog_type: horizon_client::fog::FogType,
+        environment: horizon_client::fog::FogEnvironmentKind,
+        render_distance_chunks: i32,
+        darken: f32,
+        fog: horizon_client::fog::FogData,
+    ) -> horizon_client::fog::FogData {
+        #[cfg(feature = "java-mods")]
+        {
+            use mod_api::HookId;
+            if super::java_listener::listens(HookId::ComputeFogColor)
+                || super::java_listener::listens(HookId::RenderFog)
+            {
+                super::java_view::hook_fog(super::java_view::FogIn {
+                    fog_type,
+                    environment,
+                    render_distance_chunks,
+                    darken,
+                    fog,
+                })
+            } else {
+                super::java_view::forget_fog();
+                fog
+            }
+        }
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (fog_type, environment, render_distance_chunks, darken);
+            fog
+        }
+    }
+
     /// A world's end, failed open or close: the Java server stops.
     pub(super) fn java_hook_world(&mut self, phase: &WorldPhase) {
         #[cfg(feature = "java-mods")]
@@ -150,6 +209,29 @@ impl Game<'_> {
         }
     }
 
+    /// Whether a Java mod listens to `BlockEvent.EntityPlaceEvent`: a player's placement then runs under NeoForge's capture.
+    pub(super) fn java_hook_place_listened(&self) -> bool {
+        #[cfg(feature = "java-mods")]
+        return self.java_place_listened();
+        #[cfg(not(feature = "java-mods"))]
+        false
+    }
+
+    /// `EntityPlaceEvent` (one snapshot) or `EntityMultiPlaceEvent` over a captured placement: whether it was cancelled.
+    pub(super) fn java_hook_place(
+        &mut self,
+        face: horizon_core::geometry::Direction,
+        snapshots: &[horizon_world::level::Snapshot],
+    ) -> bool {
+        #[cfg(feature = "java-mods")]
+        return self.java_post_place(face, snapshots);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (face, snapshots);
+            false
+        }
+    }
+
     /// `ServerStartedEvent`: the Java server starts with the world.
     pub(super) fn java_hook_server_started(&mut self) {
         #[cfg(feature = "java-mods")]
@@ -160,6 +242,47 @@ impl Game<'_> {
         #[cfg(feature = "java-mods")]
         self.java_server_tick(!matches!(phase, ServerTickPhase::ServerTickStart { .. }));
         let _ = phase;
+    }
+
+    /// Whether a Java mod listens to `PistonEvent.Pre` or `PistonEvent.Post`.
+    pub(super) fn java_hook_piston_listened(&self) -> bool {
+        #[cfg(feature = "java-mods")]
+        return super::java_listener::listens(mod_api::HookId::PistonPre)
+            || super::java_listener::listens(mod_api::HookId::PistonPost);
+        #[cfg(not(feature = "java-mods"))]
+        false
+    }
+
+    /// `PistonEvent.Pre` (`post` false; true when a mod canceled it) or `PistonEvent.Post` for the piston at `pos`.
+    pub(super) fn java_hook_piston(
+        &mut self,
+        pos: BlockPos,
+        direction: horizon_core::geometry::Direction,
+        extend: bool,
+        post: bool,
+    ) -> bool {
+        #[cfg(feature = "java-mods")]
+        {
+            let (hook, event) = if post {
+                (mod_api::HookId::PistonPost, "PistonEvent.Post")
+            } else {
+                (mod_api::HookId::PistonPre, "PistonEvent.Pre")
+            };
+            if !super::java_listener::listens(hook) {
+                return false;
+            }
+            let posted = self.java_post_level_event(event, false, |out| {
+                out.long(pos.pack());
+                out.0.push(direction as u8);
+                out.bool(extend);
+            });
+            !post && posted.is_some_and(|(canceled, _)| canceled)
+        }
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (pos, direction, extend, post);
+            false
+        }
     }
 
     pub(super) fn java_hook_block_ticks(&self, block: &str, ticks: &mut bool) {
@@ -270,6 +393,13 @@ impl Game<'_> {
         return super::java_lockstep::take_fov_target();
         #[cfg(not(feature = "java-mods"))]
         None
+    }
+
+    /// `MovementInputUpdateEvent` on the keys native read; Java's listeners run before native mods'.
+    pub(super) fn java_hook_movement_input(&mut self, keys: &mut horizon_client::sprint::Keys, strafe: &mut f32, forward: &mut f32) {
+        #[cfg(feature = "java-mods")]
+        self.java_lockstep_movement_input(keys, strafe, forward);
+        let _ = (keys, strafe, forward);
     }
 
     /// The window's player step ran, with the tick's `Input` bits: the Java tick goes on from `aiStep` with its result.
@@ -620,6 +750,33 @@ impl Game<'_> {
         let _ = (gi, conn);
     }
 
+    /// Native opened a menu for the acting guest `conn`: its Java view gets the real vanilla menu while a menu route is on.
+    pub(super) fn java_hook_menu_opened(
+        &mut self,
+        conn: u32,
+        window: i32,
+        menu: &str,
+        pos: Option<[i32; 3]>,
+    ) {
+        #[cfg(feature = "java-mods")]
+        self.java_menu_open(conn, window, menu, pos);
+        let _ = (conn, window, menu, pos);
+    }
+
+    /// Native closed the acting guest's menu `window`.
+    pub(super) fn java_hook_menu_closed(&mut self, window: i32) {
+        #[cfg(feature = "java-mods")]
+        self.java_menu_close(window);
+        let _ = window;
+    }
+
+    /// `PlayerRespawnEvent` for the guest in place; `end_conquered` is the return from the End credits, which no native hook reports.
+    pub(super) fn java_hook_respawned(&mut self, end_conquered: bool) {
+        #[cfg(feature = "java-mods")]
+        super::java_listen_respawn::post_respawned(self, end_conquered);
+        let _ = end_conquered;
+    }
+
     /// A guest left the server: its Java player logs out.
     pub(super) fn java_hook_player_left(&mut self, uuid: u128) {
         #[cfg(feature = "java-mods")]
@@ -656,6 +813,45 @@ impl Game<'_> {
         #[cfg(feature = "java-mods")]
         self.profile_tick(wall_ms, spans);
         let _ = (wall_ms, spans);
+    }
+
+    /// A Java mod's command, or `CommandEvent` for a native one: `Some(ok)` when Java ran or stopped it, `Err` a replaced line.
+    pub(super) fn java_hook_command(
+        &mut self,
+        command: &str,
+        quiet: bool,
+    ) -> Result<Option<bool>, String> {
+        #[cfg(feature = "java-mods")]
+        return match self.java_command(command, quiet) {
+            None => Ok(None),
+            Some(super::java_commands::JavaVerdict::Ran) => Ok(Some(true)),
+            Some(super::java_commands::JavaVerdict::Stopped) => Ok(Some(false)),
+            Some(super::java_commands::JavaVerdict::Replaced(text)) => Err(text),
+        };
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (command, quiet);
+            Ok(None)
+        }
+    }
+
+    /// The line a `CommandEvent` listener put in place of the player's command `player_command` just heard.
+    pub(super) fn java_hook_replaced_command() -> Option<String> {
+        #[cfg(feature = "java-mods")]
+        return super::java_commands::java_take_replaced_command();
+        #[cfg(not(feature = "java-mods"))]
+        None
+    }
+
+    /// Whether a Java mod owns `line`'s root command, which any player may send whatever the world allows.
+    pub(super) fn java_hook_owns_command(line: &str) -> bool {
+        #[cfg(feature = "java-mods")]
+        return Self::java_owns_command(line);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = line;
+            false
+        }
     }
 
     /// The JVM's flight recording written now, named by the time (`profile dump`).
@@ -930,4 +1126,35 @@ pub(super) fn java_note_shape_update(
     #[cfg(feature = "java-mods")]
     super::java_mods::note_shape_update(pos, state, direction, neighbour);
     let _ = (pos, state, direction, neighbour);
+}
+
+/// `LivingJumpEvent` for the window's player, after vanilla's jump set the velocity and before native mods hear it.
+pub(crate) fn java_living_jump(entity: u32, kind: &str, player: &mut horizon_client::motion::PlayerMotion) {
+    #[cfg(feature = "java-mods")]
+    if kind == "minecraft:player" {
+        super::java_lockstep::living_jump(player);
+    } else {
+        java_living_jump_server(entity, kind, player);
+    }
+    let _ = (entity, kind, player);
+}
+
+/// The server copy's jump (W9 SPEC-4-6).
+#[cfg(feature = "java-mods")]
+fn java_living_jump_server(_entity: u32, _kind: &str, _player: &mut horizon_client::motion::PlayerMotion) {}
+
+/// `LivingFallEvent` for the window's player before native mods hear it; any other entity is the server's (W9 SPEC-4-6).
+pub(crate) fn java_living_fall(kind: &str, distance: &mut f64, multiplier: &mut f32, cancel: &mut bool) {
+    #[cfg(feature = "java-mods")]
+    if kind == "minecraft:player" {
+        super::java_lockstep::living_fall(false, distance, multiplier, cancel);
+    }
+    let _ = (kind, distance, multiplier, cancel);
+}
+
+/// `PlayerFlyableFallEvent` for the window's player, where `Player.causeFallDamage` returns early for `mayfly`.
+pub(crate) fn java_player_flyable_fall(distance: f64, multiplier: f32) {
+    #[cfg(feature = "java-mods")]
+    super::java_lockstep::living_fall(true, &mut { distance }, &mut { multiplier }, &mut false);
+    let _ = (distance, multiplier);
 }

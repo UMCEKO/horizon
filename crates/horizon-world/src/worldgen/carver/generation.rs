@@ -14,6 +14,8 @@ use std::{collections::BTreeMap, sync::Arc};
 pub enum WorldCarver {
     Cave(CaveCarver),
     Canyon(CanyonCarver),
+    /// A configured carver Java runs (`Seam::Carver`): it keeps its place in the biomes' lists.
+    Java(String),
 }
 impl WorldCarver {
     pub fn from_json(json: &str) -> Result<Self, DecodeError> {
@@ -32,6 +34,8 @@ impl WorldCarver {
         match self {
             Self::Cave(c) => c.is_start_chunk(random),
             Self::Canyon(c) => c.is_start_chunk(random),
+            // Asked to carve, so the chunk fails instead of going on without it.
+            Self::Java(_) => true,
         }
     }
     pub fn carve<O: CarverOutput>(
@@ -45,6 +49,7 @@ impl WorldCarver {
         match self {
             Self::Cave(c) => c.carve(context, random, target, origin, output),
             Self::Canyon(c) => c.carve(context, random, target, origin, output),
+            Self::Java(id) => Err(CarverError::NeedsJava(id.clone())),
         }
     }
 }
@@ -71,6 +76,15 @@ impl CarverCatalog {
         Ok(Self {
             definitions: result,
         })
+    }
+    /// The carvers Java runs, by id, in the slots their names hold.
+    pub fn with_java(mut self, ids: impl IntoIterator<Item = String>) -> Result<Self, DecodeError> {
+        for id in ids {
+            let name = identifier(&id)?;
+            self.definitions
+                .insert(name, Arc::new(WorldCarver::Java(id)));
+        }
+        Ok(self)
     }
     pub fn decode_set(&self, json: &str) -> Result<Vec<Arc<WorldCarver>>, DecodeError> {
         use serde_json::value::RawValue;

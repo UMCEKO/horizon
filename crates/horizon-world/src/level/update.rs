@@ -1,8 +1,8 @@
 //! `Level.setBlock`, `LevelChunk.setBlockState` and the
 //! `CollectingNeighborUpdater` that orders neighbour and shape updates.
 use super::{
-    LevelAccess, LevelEvent, Signals, Sim, classes::Class, flags, orientation::Orientation,
-    states::BlockId,
+    LevelAccess, LevelEvent, Signals, Sim, Snapshot, classes::Class, flags,
+    orientation::Orientation, states::BlockId,
 };
 use crate::{fluid::FluidState, registry::BlockStateId};
 use horizon_core::{
@@ -312,9 +312,33 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         if !self.is_in_valid_bounds(pos) || !self.level.is_loaded(pos) {
             return false;
         }
+        if let Some(capture) = &mut self.capture {
+            capture.push(Snapshot {
+                pos,
+                old: self.level.block_state(pos),
+                flags: update_flags,
+            });
+        }
         let Some(old) = self.chunk_set_block_state(pos, state, update_flags) else {
+            if let Some(capture) = &mut self.capture {
+                capture.pop();
+            }
             return false;
         };
+        if self.capture.is_none() {
+            self.mark_and_notify(pos, old, state, update_flags, limit);
+        }
+        true
+    }
+    /// `Level.markAndNotifyBlock`: the updates of a write that happened, when `state` is still there.
+    pub(crate) fn mark_and_notify(
+        &mut self,
+        pos: BlockPos,
+        old: BlockStateId,
+        state: BlockStateId,
+        update_flags: i32,
+        limit: i32,
+    ) {
         let new = self.state(pos);
         if new == state {
             if update_flags & flags::UPDATE_CLIENTS != 0
@@ -338,7 +362,6 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 self.update_indirect_neighbour_shapes(state, pos, neighbour_flags, limit - 1);
             }
         }
-        true
     }
     /// `LevelChunk.setBlockState`: the previous state when the write happened.
     fn chunk_set_block_state(
@@ -398,7 +421,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         if self.block_of(self.state(pos)) != new_block {
             return None;
         }
-        if update_flags & flags::UPDATE_SKIP_ON_PLACE == 0 {
+        if update_flags & flags::UPDATE_SKIP_ON_PLACE == 0 && self.capture.is_none() {
             self.on_place(state, pos, old, moved);
         }
         let landed = self.state(pos);
@@ -472,7 +495,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         else {
             return;
         };
-        if self.level.game_rules().block_drops {
+        // NeoForge's `Block.popResource` drops nothing while `restoringBlockSnapshots`.
+        if self.level.game_rules().block_drops && !self.restoring {
             self.emit(LevelEvent::DropResources { pos, state });
         }
     }

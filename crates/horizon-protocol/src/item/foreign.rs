@@ -167,4 +167,48 @@ mod tests {
         assert_eq!(out[0].as_deref(), Some(&b"\x06wrench"[..]));
         assert_eq!(out[1], None);
     }
+
+    #[test]
+    fn the_menu_packets_a_client_gets_survive_a_forward_with_a_mods_component() {
+        use crate::packets::play::{
+            Clientbound, ContainerClose, ContainerSetContent, ContainerSetData, ContainerSetSlot,
+            OpenScreen, SetCursorItem,
+        };
+        setup();
+        let mut stack = Stack::new(7, 3);
+        stack.added.push((MODE, foreign("rotate", Some("rotate"))));
+        let packets = [
+            Clientbound::OpenScreen(OpenScreen {
+                container: 3,
+                menu: 2,
+                title: Tag::String("Chest".into()),
+            }),
+            Clientbound::ContainerSetContent(ContainerSetContent {
+                container: 3,
+                state: 5,
+                items: vec![None, Some(stack.clone())],
+                carried: Some(stack.clone()),
+            }),
+            Clientbound::ContainerSetSlot(ContainerSetSlot {
+                container: 3,
+                state: 6,
+                slot: 1,
+                item: Some(stack.clone()),
+            }),
+            Clientbound::ContainerSetData(ContainerSetData {
+                container: 3,
+                id: 2,
+                value: -7,
+            }),
+            Clientbound::SetCursorItem(SetCursorItem { item: Some(stack) }),
+            Clientbound::ContainerClose(ContainerClose { container: 3 }),
+        ];
+        for packet in packets {
+            let bytes = packet.encode();
+            let mut r = Reader::new(&bytes);
+            let id = r.varint().unwrap();
+            assert_eq!(id, packet.id());
+            assert_eq!(Clientbound::decode(id, r.rest()).unwrap(), packet);
+        }
+    }
 }

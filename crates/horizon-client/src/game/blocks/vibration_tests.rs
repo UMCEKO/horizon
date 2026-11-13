@@ -228,7 +228,7 @@ fn a_landing_posts_the_block_game_event_its_rule_posts() {
         game.player = Some(player);
         super::sculk::TEST_POSTED_EVENTS.with(|events| *events.borrow_mut() = Some(Vec::new()));
         for fall in &landing {
-            if let Some(vibration) = game.landing_block_updates(None, fall) {
+            if let Some(vibration) = game.landing_block_updates(None, None, fall) {
                 game.post_landing_vibration(vibration);
             }
         }
@@ -270,7 +270,7 @@ fn a_landing_posts_the_block_game_event_its_rule_posts() {
         state: egg(2),
         with_entity: false,
     };
-    if let Some(vibration) = game.landing_block_updates(None, &queued) {
+    if let Some(vibration) = game.landing_block_updates(None, None, &queued) {
         game.post_landing_vibration(vibration);
     }
     super::sculk::TEST_POSTED_EVENTS.with(|events| {

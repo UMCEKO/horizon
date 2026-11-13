@@ -34,6 +34,7 @@ use super::{
     material_surface::{ClayBandBlocks, MaterialSurface},
     overrides::{self, WorldgenOverrides},
     router::{NoiseRouter, RouterField, RouterSamplers},
+    routes::Seam,
     settings::NoiseSettings,
     spawn_finder::{SpawnTargetPoint, find_spawn_position},
     tags::TagDefinitions,
@@ -208,6 +209,8 @@ pub struct GeneratorData {
     decorations: Mutex<Vec<(String, DecorationSlot)>>,
     /// What `BlendingData` asks of the blocks of an old chunk, by state.
     old_chunk_facts: OnceLock<OldChunkFacts>,
+    /// The seams Java runs, from the Java export's mod-owned types.
+    pub(super) routes: Arc<super::routes::WorldgenRoutes>,
 }
 /// `BlendingData.isGround` and `SURFACE_BLOCKS`, by block state id.
 struct OldChunkFacts {
@@ -243,6 +246,38 @@ fn read_optional_bundle(
     } else {
         Ok(None)
     }
+}
+/// The seams Java runs for the export's owners in `ov`, over `read` and the bundles the routes also follow.
+fn export_routes<const N: usize>(
+    dir: &Path,
+    ov: &WorldgenOverrides,
+    read: [(&'static str, &Bundle); N],
+) -> Result<super::routes::WorldgenRoutes, GeneratorError> {
+    if ov.owners().with_mod_types() == 0 {
+        return Ok(Default::default());
+    }
+    let mut more = Vec::new();
+    for name in [
+        "features",
+        "placed_features",
+        "structures",
+        "structure_sets",
+        "template_pools",
+        "processor_lists",
+    ] {
+        more.push((
+            name,
+            read_optional_bundle(dir, ov, name)?.unwrap_or_default(),
+        ));
+    }
+    let mut bundles: super::routes::Bundles<'_> = read.into_iter().collect();
+    for (name, bundle) in &more {
+        bundles.insert(name, bundle);
+    }
+    Ok(super::routes::WorldgenRoutes::from_export(
+        ov.owners(),
+        &bundles,
+    ))
 }
 /// The tags of the bundle `name`, the data packs' tag files after the
 /// prepared ones. A tag naming what is not there fails on its own, as
@@ -458,8 +493,26 @@ impl GeneratorData {
             |id| biomes.contains_key(id),
         )?;
         let biome_set = biomes.keys().cloned().collect::<BTreeSet<_>>();
+        let conditions = read_bundle(dir, ov, "conditions")?;
+        let carvers = read_bundle(dir, ov, "carvers")?;
+        let rules = read_bundle(dir, ov, "rules")?;
+        let densities = read_bundle(dir, ov, "densities")?;
+        let settings = read_bundle(dir, ov, "settings")?;
+        let dimensions = ov.apply(overrides::DIMENSIONS, BTreeMap::new());
+        let routes = Arc::new(export_routes(
+            dir,
+            ov,
+            [
+                ("conditions", &conditions),
+                ("carvers", &carvers),
+                ("rules", &rules),
+                ("densities", &densities),
+                ("settings", &settings),
+                (overrides::DIMENSIONS, &dimensions),
+            ],
+        )?);
         let conditions = MaterialConditionRegistry::from_json_with_biome_tags(
-            &read_bundle(dir, ov, "conditions")?,
+            &routes.decodable("conditions", &conditions),
             &biome_set,
             &biome_tags,
         )?;
@@ -482,7 +535,10 @@ impl GeneratorData {
         }
         let source_catalog =
             BiomeSourceCatalog::new(&biome_set, &biome_tags, &presets.keys().cloned().collect())?;
-        let carvers = CarverCatalog::from_json(&read_bundle(dir, ov, "carvers")?)?;
+        let java_carver = |id: &str| routes.routes(&super::routes::Seam::Carver(id.to_owned()));
+        let (java, native): (Bundle, Bundle) =
+            carvers.into_iter().partition(|(id, _)| java_carver(id));
+        let carvers = CarverCatalog::from_json(&native)?.with_java(java.into_keys())?;
         let mut biome_names = Vec::new();
         let mut biome_ids = BTreeMap::new();
         let mut biome_json = Vec::new();
@@ -541,11 +597,12 @@ impl GeneratorData {
             states: GenBlockStates(states.into()),
             integers,
             noises: read_bundle(dir, ov, "noises")?,
-            densities: read_bundle(dir, ov, "densities")?,
-            rules: read_bundle(dir, ov, "rules")?,
-            settings: read_bundle(dir, ov, "settings")?,
+            densities,
+            rules,
+            settings,
             world_presets: read_bundle(dir, ov, "world_presets")?,
-            dimensions: ov.apply(overrides::DIMENSIONS, BTreeMap::new()),
+            dimensions,
+            routes,
             dimension_types: ov.apply(overrides::DIMENSION_TYPES, BTreeMap::new()),
             warnings,
             presets,
@@ -647,6 +704,10 @@ impl GeneratorData {
     /// missing), for the log.
     pub fn warnings(&self) -> &[String] {
         &self.warnings
+    }
+    /// The seams Java runs for the world these resources are of.
+    pub fn routes(&self) -> &Arc<super::routes::WorldgenRoutes> {
+        &self.routes
     }
     pub fn block_states(&self) -> &GenBlockStates {
         &self.states
@@ -952,6 +1013,8 @@ struct Pipeline<R: RandomSource> {
     spawn_position: std::sync::OnceLock<[i32; 2]>,
     /// A superflat world: its layers stand where the noise terrain would.
     flat: Option<FlatLayers>,
+    /// The routed seams this dimension's chunks reach before FEATURES, whose Java side isn't built.
+    java_seams: Vec<super::routes::Seam>,
 }
 /// `FlatLevelGeneratorSettings.getLayers` as `FlatLevelSource` reads them: the states from the
 /// level's minimum Y up, with the layers `adjustGenerationSettings` replaced by `null`
@@ -1083,9 +1146,17 @@ where
                 .unwrap_or(false),
         };
         let root = random.fork_positional();
-        let mut densities = DensityRegistry::from_json(&data.noises, &data.densities)?;
+        let routes = data.routes.clone();
+        // A routed part native can't decode fails the level's build with its seam's error.
+        let java_or = |seam: Seam, e: GeneratorError| match routes.routes(&seam) {
+            true => routes.needs_java(&seam),
+            false => e,
+        };
+        let mut densities = DensityRegistry::from_json(&data.noises, &data.densities)
+            .map_err(|e| java_or(Seam::Fill, e.into()))?;
         let router =
-            NoiseRouter::from_json(&settings_json["noise_router"].to_string(), &mut densities)?;
+            NoiseRouter::from_json(&settings_json["noise_router"].to_string(), &mut densities)
+                .map_err(|e| java_or(Seam::Fill, e.into()))?;
         // NoiseGeneratorSettings.debugFunctions: a registered density or an
         // inline one, each with its label.
         let debug_functions = settings_json
@@ -1112,7 +1183,7 @@ where
             .map(|v| AquiferConfig::from_json(&v.to_string(), &mut densities))
             .transpose()?;
         let mut library = MaterialRuleLibrary::from_json(
-            &data.rules,
+            &routes.decodable("rules", &data.rules),
             &data.conditions,
             &codec,
             densities,
@@ -1131,7 +1202,15 @@ where
         let rule_name = settings_json["material_rule"]
             .as_str()
             .ok_or_else(|| resource("material_rule"))?;
-        let rule = library.rule(rule_name)?;
+        let rule_id = match rule_name.contains(':') {
+            true => rule_name.to_owned(),
+            false => format!("minecraft:{rule_name}"),
+        };
+        // Never sampled: every chunk fails at the routed surface first (`java_seams`).
+        let rule = match routes.routes(&Seam::Surface) && routes.skips("rules", &rule_id) {
+            true => MaterialRule::Block(settings.default_block),
+            false => library.rule(rule_name)?,
+        };
         let preliminary = router.get(RouterField::ChunkSurfaceLevel).clone();
         let spawn_target = match settings_json.get("spawn_target") {
             Some(Value::Array(points)) => points
@@ -1157,9 +1236,10 @@ where
         let source_json = generator["biome_source"].to_string();
         let source = data
             .source_catalog
-            .decode(&source_json)?
+            .decode(&source_json)
+            .map_err(|e| java_or(Seam::Biomes, e.into()))?
             .resolve(&data.presets)
-            .map_err(|e| resource(format!("biome source: {e}")))?;
+            .map_err(|e| java_or(Seam::Biomes, resource(format!("biome source: {e}"))))?;
         let climate = router.climate_sampler();
         let mut noises = BTreeMap::new();
         for (name, json) in &data.noises {
@@ -1240,6 +1320,7 @@ where
             debug_density,
             spawn_position: std::sync::OnceLock::new(),
             flat: None,
+            java_seams: Vec::new(),
         };
         pipeline.decoration = pipeline
             .data
@@ -1272,7 +1353,44 @@ where
                 }
             }
         }
+        if !routes.is_empty() {
+            pipeline.java_seams = pipeline.reached_seams(&routes);
+        }
         Ok(pipeline)
+    }
+    /// Routed whole stages, its biomes' routed carvers and its sets' routed starts.
+    fn reached_seams(&self, routes: &super::routes::WorldgenRoutes) -> Vec<Seam> {
+        let mut seams: Vec<Seam> = [
+            Seam::Biomes,
+            Seam::Terrain,
+            Seam::Fill,
+            Seam::Surface,
+            Seam::Beard,
+        ]
+        .into_iter()
+        .filter(|seam| routes.routes(seam))
+        .collect();
+        let mut carvers = BTreeSet::new();
+        for name in self.source.possible_biomes() {
+            let Some(id) = self.data.biome_id(name) else {
+                continue;
+            };
+            for carver in &self.data.biome_carvers[id.0 as usize] {
+                if let WorldCarver::Java(carver) = carver.as_ref() {
+                    carvers.insert(carver.clone());
+                }
+            }
+        }
+        seams.extend(carvers.into_iter().map(Seam::Carver));
+        if let Some(structures) = &self.structures {
+            seams.extend(
+                structures
+                    .possible_structures()
+                    .map(|name| Seam::Start(name.to_owned()))
+                    .filter(|seam| routes.routes(seam)),
+            );
+        }
+        seams
     }
     /// `NoiseBasedChunkGenerator.getOrigin`'s spawn column: the
     /// NoiseSpawnFinder position, or 0 0 when the noise settings have no
@@ -2503,6 +2621,10 @@ trait SeededPipeline: Send + Sync {
         region: &mut [ProtoChunk; 9],
     ) -> Result<DecorateStats, GeneratorError>;
     fn data(&self) -> &Arc<GeneratorData>;
+    /// The routed seams this level's chunks reach before FEATURES.
+    fn java_seams(&self) -> &[Seam] {
+        &[]
+    }
     /// What the shared caches hold, for `horizon-ctl memory`.
     fn cache_census(&self) -> CacheCensus {
         CacheCensus::default()
@@ -2627,6 +2749,9 @@ where
     }
     fn data(&self) -> &Arc<GeneratorData> {
         &self.data
+    }
+    fn java_seams(&self) -> &[Seam] {
+        &self.java_seams
     }
     fn release_caches(&self) {
         // Taken out under the lock, dropped after it.
@@ -3712,6 +3837,10 @@ impl OverworldGenerator {
     pub fn unsupported_features(&self) -> Vec<(String, String)> {
         self.pipeline.unsupported_features()
     }
+    /// The seams Java runs for this world (`WorldgenRoutes`).
+    pub fn routes(&self) -> &Arc<super::routes::WorldgenRoutes> {
+        &self.pipeline.data().routes
+    }
     /// NoiseBasedChunkGenerator.getOrigin: the chunk a new world's spawn
     /// search starts from (NoiseSpawnFinder over the `spawn_target` points).
     pub fn origin(&self) -> Result<ChunkPos, GeneratorError> {
@@ -3783,12 +3912,26 @@ impl GeneratorWorker {
     /// Biomes, noise fill and aquifers, material surface and carvers: the
     /// vanilla statuses up to TERRAIN. Independent of neighbor chunks' state.
     pub fn generate_proto(&mut self, pos: ChunkPos) -> Result<ProtoChunk, GeneratorError> {
+        if let Some(seam) = self.pipeline.java_seams().first() {
+            return Err(self.pipeline.data().routes.needs_java(seam));
+        }
         let result = self.pipeline.generate(&mut self.state, pos);
         self.state.timings.chunks += 1;
         result
     }
+    /// A routed seam the columns' noise terrain needs, or the biomes when `biomes` (never vanilla's in its place).
+    fn java_terrain(&self, biomes: bool) -> Option<&Seam> {
+        self.pipeline.java_seams().iter().find(|seam| match seam {
+            Seam::Biomes | Seam::Fill => true,
+            Seam::Terrain | Seam::Surface => !biomes,
+            _ => false,
+        })
+    }
     /// Noise/aquifer surface and its material rule, without chunks, structures or features.
     pub fn surface_sample(&mut self, x: i32, z: i32) -> Option<SurfaceSample> {
+        if self.java_terrain(false).is_some() {
+            return None;
+        }
         self.pipeline.surface_sample(&mut self.state, x, z, None)
     }
     /// Noise/aquifer material runs, excluding air; bounds are half-open.
@@ -3798,6 +3941,9 @@ impl GeneratorWorker {
         x: i32,
         z: i32,
     ) -> (Option<SurfaceSample>, Vec<(i32, i32, BlockStateId)>) {
+        if self.java_terrain(false).is_some() {
+            return (None, Vec::new());
+        }
         let mut spans = Vec::new();
         let surface = self
             .pipeline
@@ -3839,10 +3985,16 @@ impl GeneratorWorker {
         side: usize,
         approximate: bool,
     ) -> Result<Vec<LodColumn>, GeneratorError> {
+        if let Some(seam) = self.java_terrain(false) {
+            return Err(self.pipeline.data().routes.needs_java(seam));
+        }
         self.pipeline
             .lod_grid(&mut self.state, x, z, width, side, approximate)
     }
     pub fn noise_biomes(&mut self, quarts: &[[i32; 3]]) -> Vec<Option<String>> {
+        if self.java_terrain(true).is_some() {
+            return vec![None; quarts.len()];
+        }
         self.pipeline.noise_biomes(&mut self.state, quarts)
     }
     /// `NoiseBasedChunkGenerator.addDebugScreenInfo`: the `Density` line of
@@ -3853,6 +4005,9 @@ impl GeneratorWorker {
     /// `BiomeSource.findClosestBiome3d`: the first sampled position whose
     /// noise biome passes `allowed`, spiralling out from the origin.
     pub fn find_closest_biome(&mut self, search: &BiomeSearch<'_>) -> Option<(String, [i32; 3])> {
+        if self.java_terrain(true).is_some() {
+            return None;
+        }
         self.pipeline.find_closest_biome(&mut self.state, search)
     }
     /// `JigsawPlacement.addPieces` for `/place jigsaw`, drawing from the

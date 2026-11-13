@@ -332,20 +332,6 @@ impl WorldRequest {
             level.dimension = d.clone();
             level.position = None;
         }
-        // Bone meal's and saplings' features, over the world's data packs like its generator:
-        // a pack's tree is a feature here too. The same entries, so the bundle loads once.
-        growth::install_live_features(
-            res,
-            pack,
-            options,
-            &live_feature_overrides(
-                &save_root,
-                &options.resources,
-                res.biomes(),
-                &level.enabled_features,
-                &pack.additional_data,
-            ),
-        );
         let shapes = level_shapes(
             &save_root,
             &options.resources,
@@ -368,6 +354,21 @@ impl WorldRequest {
             })
             .map_err(|why| format!("Failed to load world \"{folder}\": {why}"))?,
         };
+        // Bone meal's and saplings' features, over the world's data packs like its generator:
+        // a pack's tree is a feature here too. The same entries, so the bundle loads once.
+        growth::install_live_features(
+            res,
+            pack,
+            options,
+            &live_feature_overrides(
+                &save_root,
+                &options.resources,
+                res.biomes(),
+                &level.enabled_features,
+                &pack.additional_data,
+                java_worldgen.as_deref(),
+            ),
+        );
         // The bounded registry-loader leaf slice: fail world preparation before streaming,
         // rather than letting the flat-generator fallback swallow a selected pack's codec error.
         let (overrides, _) = worldgen_overrides_of(
@@ -376,6 +377,7 @@ impl WorldRequest {
             res.biomes(),
             &level.enabled_features,
             &pack.additional_data,
+            java_worldgen.as_deref(),
         );
         overrides.validate_fill_layers(pack.assets.registry)?;
         let dim = Dim::from_id(&level.dimension);
@@ -396,6 +398,9 @@ impl WorldRequest {
             java_worldgen.as_deref(),
         )?;
         drop(streaming_step);
+        if let (Some(java), Some(terrain)) = (java_worldgen.as_deref(), locator.as_ref()) {
+            log_java_worldgen(java, terrain.routes());
+        }
         streaming.radius = settings.render_distance;
         let mut world = World::new(res.facts().air, level.seed);
         world.attachments = save.load_attachments();
@@ -611,6 +616,7 @@ pub(super) fn preload_launch_world(
                 &biomes,
                 &enabled_features,
                 &additional,
+                None,
             );
             if let Ok(data) = horizon_client::vanillagen::shared_data_from(
                 &resources.join("worldgen"),
@@ -674,13 +680,14 @@ pub(super) fn preload_server_loot(resources: &std::path::Path, item_data: &Arc<I
 
 /// The game's biomes with the world's enabled packs over them, from the same
 /// pack list its worldgen is built from (`WorldgenOverrides` keeps only the
-/// biomes this table knows).
+/// biomes this table knows). `java`, the Java mods' export, sits below the packs: its biomes join too.
 pub(super) fn packed_biomes(
     world_root: &std::path::Path,
     resources: &std::path::Path,
     base: &Arc<horizon_client::biome::Biomes>,
     enabled_features: &[String],
     additional: &[Arc<horizon_client::datapack::DataPack>],
+    java: Option<&horizon_world::worldgen::overrides::WorldgenOverrides>,
 ) -> Arc<horizon_client::biome::Biomes> {
     let packs = super::pack_finders::data_repository(world_root, resources, additional);
     let enabled = horizon_client::datapack::enabled_ids(world_root, &packs, enabled_features);
@@ -688,7 +695,7 @@ pub(super) fn packed_biomes(
         .iter()
         .filter_map(|id| packs.iter().find(|p| &p.id == id))
         .collect();
-    let (overrides, _) = horizon_client::datapack::worldgen_overrides(&enabled, |_| true);
+    let (overrides, _) = horizon_client::datapack::worldgen_overrides_on(java, &enabled, |_| true);
     // The mods' spawns too: their biome modifiers go over the packs' biomes.
     let overrides = horizon_client::vanillagen::biome_modifiers_over_packs(
         &resources.join("worldgen"),
@@ -713,9 +720,10 @@ fn live_feature_overrides(
     base: &Arc<horizon_client::biome::Biomes>,
     enabled_features: &[String],
     additional: &[Arc<horizon_client::datapack::DataPack>],
+    java: Option<&horizon_world::worldgen::overrides::WorldgenOverrides>,
 ) -> horizon_world::worldgen::overrides::WorldgenOverrides {
-    let biomes = packed_biomes(world_root, resources, base, enabled_features, additional);
-    worldgen_overrides_of(world_root, resources, &biomes, enabled_features, additional).0
+    let biomes = packed_biomes(world_root, resources, base, enabled_features, additional, java);
+    worldgen_overrides_of(world_root, resources, &biomes, enabled_features, additional, java).0
 }
 /// The Create screen's chosen packs' worldgen entries over the game's own
 /// (`applyNewPackConfig` reloads the world with the new pack config): the
@@ -752,8 +760,7 @@ fn enabled_pack_ids(
     ids
 }
 
-/// The worldgen entries of the world's enabled data packs, logging what
-/// the generator leaves out of them. `java` is the Java mods' export, which SPEC-4 stacks under the packs.
+/// `worldgen_overrides_of`, logging what the generator leaves out.
 fn world_worldgen_overrides(
     world_root: &std::path::Path,
     resources: &std::path::Path,
@@ -762,23 +769,22 @@ fn world_worldgen_overrides(
     additional: &[Arc<horizon_client::datapack::DataPack>],
     java: Option<&horizon_world::worldgen::overrides::WorldgenOverrides>,
 ) -> horizon_world::worldgen::overrides::WorldgenOverrides {
-    let _ = java;
     let (overrides, warnings) =
-        worldgen_overrides_of(world_root, resources, biomes, enabled_features, additional);
+        worldgen_overrides_of(world_root, resources, biomes, enabled_features, additional, java);
     for warning in warnings {
         log::warn!("Horizon: data pack worldgen: {warning}");
     }
     overrides
 }
 
-/// The worldgen entries of the world's enabled data packs, and what the
-/// generator leaves out of them.
+/// The world's enabled packs' worldgen entries over the Java mods' export (`java`), and what the generator leaves out.
 fn worldgen_overrides_of(
     world_root: &std::path::Path,
     resources: &std::path::Path,
     biomes: &horizon_client::biome::Biomes,
     enabled_features: &[String],
     additional: &[Arc<horizon_client::datapack::DataPack>],
+    java: Option<&horizon_world::worldgen::overrides::WorldgenOverrides>,
 ) -> (
     horizon_world::worldgen::overrides::WorldgenOverrides,
     Vec<String>,
@@ -789,7 +795,26 @@ fn worldgen_overrides_of(
         .iter()
         .filter_map(|id| packs.iter().find(|p| &p.id == id))
         .collect();
-    horizon_client::datapack::worldgen_overrides(&enabled, |b| biomes.contains(b))
+    horizon_client::datapack::worldgen_overrides_on(java, &enabled, |b| biomes.contains(b))
+}
+
+/// Once per world with Java mods: what their export adds and which seams Java runs.
+fn log_java_worldgen(
+    java: &horizon_world::worldgen::overrides::WorldgenOverrides,
+    routes: &horizon_world::worldgen::routes::WorldgenRoutes,
+) {
+    let from_mods = |bundle: &str| {
+        java.entries(bundle)
+            .filter(|(id, _)| !id.starts_with("minecraft:"))
+            .count()
+    };
+    log::info!(
+        "Horizon: Java mods' worldgen: {} biomes, {} placed features, {} structures from mods; Java runs: {}",
+        from_mods("biomes"),
+        from_mods("placed_features"),
+        from_mods("structures"),
+        routes.summary()
+    );
 }
 
 /// The shapes of the world's levels: their dimension types, the world's
@@ -1016,7 +1041,7 @@ fn mod_terrain(
         return None;
     }
     let (overrides, _) =
-        worldgen_overrides_of(world_root, resources, biomes, enabled_features, additional);
+        worldgen_overrides_of(world_root, resources, biomes, enabled_features, additional, None);
     let stem = overrides
         .entries(DIMENSIONS)
         .find(|(level, _)| *level == dim.id())
@@ -1070,6 +1095,7 @@ pub(super) fn make_streaming(
         res.biomes(),
         enabled_features,
         &pack.additional_data,
+        java_worldgen,
     );
     let worldgen_dir = options.resources.join("worldgen");
     let terrain_resources = TerrainResources {
@@ -1504,7 +1530,7 @@ mod tests {
         let world =
             std::env::temp_dir().join(format!("horizon-mod-terrain-{}", std::process::id()));
         std::fs::create_dir_all(&world).unwrap();
-        let (overrides, _) = worldgen_overrides_of(&world, &root, &biomes, &[], &[]);
+        let (overrides, _) = worldgen_overrides_of(&world, &root, &biomes, &[], &[], None);
         let shapes = shapes_of(&overrides);
         let open = |dim: Dim| {
             let shape = shapes.get(dim.id());
@@ -1599,6 +1625,7 @@ mod unused_feature_startup_tests {
                 loaded.resources.biomes(),
                 &level.enabled_features,
                 &loaded.pack.additional_data,
+                None,
             );
             assert_eq!(
                 overrides
@@ -1703,6 +1730,7 @@ mod unused_feature_preservation_tests {
             loaded.resources.biomes(),
             &level.enabled_features,
             &loaded.pack.additional_data,
+            None,
         );
         assert_eq!(
             overrides.entries("features").collect::<Vec<_>>(),

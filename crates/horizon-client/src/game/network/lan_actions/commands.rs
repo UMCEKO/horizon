@@ -27,6 +27,8 @@ impl Game<'_> {
                 &mut replies,
             );
         }
+        let replaced = Self::java_hook_replaced_command();
+        let command = replaced.as_deref().unwrap_or(command);
         let Some(host) = self.lan.as_ref() else {
             return;
         };
@@ -99,6 +101,19 @@ impl Game<'_> {
             });
             return;
         }
+        // A Java mod's command, at the player's own level: its nodes' requirements decide, as for native mods'.
+        if Self::java_hook_owns_command(command.trim_start_matches('/'))
+            && let Some(permission) = host.hub.guest(conn).map(|g| g.permission)
+        {
+            host.commands.push(GuestCommand {
+                conn,
+                command: command.trim_start_matches('/').to_owned(),
+                permission,
+                integrated,
+                quiet: false,
+            });
+            return;
+        }
         // An integrated server runs every player's commands at their own
         // permission level (`CommandSourceStack.permissions`); a LAN world
         // follows its Allow Commands, and a dedicated server leaves it to
@@ -150,12 +165,16 @@ impl Game<'_> {
         };
         self.chat_capture = Some(Vec::new());
         let level = std::mem::replace(&mut self.ui.registries.permission, c.permission);
-        let ok = if self.perform_native_command(c.conn, c.permission, &c.command) {
+        let java = self.java_hook_command(&c.command, c.quiet);
+        let line = java.as_ref().err().unwrap_or(&c.command);
+        let ok = if let Ok(Some(ok)) = java {
+            ok
+        } else if self.perform_native_command(c.conn, c.permission, line) {
             true
         } else if c.quiet {
-            self.run_command_quietly(&c.command)
+            self.run_command_quietly(line)
         } else {
-            self.run_command(&c.command)
+            self.run_command(line)
         };
         self.ui.registries.permission = level;
         let mut lines = self.chat_capture.take().unwrap_or_default();

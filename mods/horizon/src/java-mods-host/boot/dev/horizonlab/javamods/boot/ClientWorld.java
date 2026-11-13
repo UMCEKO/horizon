@@ -31,4 +31,14 @@ public final class ClientWorld {
     public static Holder<Biome> biome(int x, int y, int z) {
         throw new IllegalStateException("not bridged");
     }
+
+    /** A client route's `setBlock`: the window's chunk takes the state. */
+    public static void setBlock(BlockPos pos, BlockState state) {
+        throw new IllegalStateException("not bridged");
+    }
+
+    /** A client route's `absSnapTo` of the local player: the window's player goes there. */
+    public static void snapPlayer(double x, double y, double z) {
+        throw new IllegalStateException("not bridged");
+    }
 }

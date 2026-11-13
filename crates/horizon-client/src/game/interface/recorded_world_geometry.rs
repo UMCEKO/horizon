@@ -30,7 +30,11 @@ impl Game<'_> {
             light: &light,
             visible: &visible,
         };
-        world_renders::draw(&frame, world, false);
+        #[cfg(feature = "java-mods")]
+        let pieces = self.java_outline_draw().pieces;
+        #[cfg(not(feature = "java-mods"))]
+        let pieces = false;
+        world_renders::draw(&frame, world, pieces);
         out.append(&mut world.entities);
     }
 }

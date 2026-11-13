@@ -23,6 +23,7 @@ use super::{
         DecorateStats, GenBlockStates, GeneratorData, GeneratorError, ProtoChunk, WorkerState,
     },
     placement::{FeaturePlacer, LayerBlock, PlacementContext, PlacementQueryError},
+    routes::Seam,
     tags::TagDefinitions,
     terrain::PreLightChunkStage,
     write_zone::GenerationWriteZone,
@@ -64,6 +65,8 @@ pub(super) struct Decoration {
     names: Vec<String>,
     /// Executable roots by identity, or why the root cannot be executed.
     features: Vec<Result<PlacedFeatureDefinition, String>>,
+    /// Roots Java runs (`Seam::Feature`), by identity: they keep their index and step.
+    java: Vec<bool>,
     /// Placed features of each biome's generation settings, by BiomeId: a
     /// bit per FeatureIdentity.
     biome_features: Vec<Vec<u64>>,
@@ -220,15 +223,19 @@ impl Decoration {
         let mut ids = BTreeMap::<String, FeatureIdentity>::new();
         let mut names = Vec::new();
         let mut features = Vec::new();
+        let mut java = Vec::new();
         let mut identity = |name: &str| -> FeatureIdentity {
             *ids.entry(name.to_owned()).or_insert_with(|| {
                 let id = FeatureIdentity(names.len() as u32);
                 names.push(name.to_owned());
-                features.push(
-                    catalog
+                let routed = data.routes.routes(&Seam::Feature(name.to_owned()));
+                java.push(routed);
+                features.push(match routed {
+                    true => Err("runs in Java".to_owned()),
+                    false => catalog
                         .placed_feature_with_blocks(&Value::from(name).to_string(), &bindings)
                         .map_err(|e| e.to_string()),
-                );
+                });
                 id
             })
         };
@@ -309,6 +316,7 @@ impl Decoration {
             plan,
             names,
             features,
+            java,
             biome_features,
             weather,
             blocks: FeatureBlocks::from_registry(registry)?,
@@ -496,6 +504,7 @@ impl Decoration {
             [center.x * 16 + 15, min_y + height - 1, center.z * 16 + 15],
         );
         let mut structure_errors = 0;
+        let mut java: Option<Seam> = None;
         let result = self.plan.decorate(
             &mut world,
             center,
@@ -542,6 +551,12 @@ impl Decoration {
             },
             |world, placer, random, id, origin| {
                 if structures_only {
+                    return Ok(false);
+                }
+                if java.is_none() && self.java[id.0 as usize] {
+                    java = Some(Seam::Feature(self.names[id.0 as usize].clone()));
+                }
+                if java.is_some() {
                     return Ok(false);
                 }
                 let Ok(feature) = &self.features[id.0 as usize] else {
@@ -609,6 +624,9 @@ impl Decoration {
             region[index as usize].terrain = terrain;
         }
         result.map_err(|e| GeneratorError::Stage("features", e.to_string()))?;
+        if let Some(seam) = java {
+            return Err(data.routes.needs_java(&seam));
+        }
         stats.failed += structure_errors;
         region[4]
             .terrain

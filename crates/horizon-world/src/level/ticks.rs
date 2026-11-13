@@ -37,6 +37,8 @@ pub struct Ticks {
     pub(crate) next_block_entity_id: u64,
     /// `ServerLevel.blockEvents`, run by `Behaviours::run_block_events`.
     pub block_events: Vec<super::pistons::BlockEventData>,
+    /// The events `next_block_event` kept for a later tick (unticking chunks).
+    pub block_events_aside: Vec<super::pistons::BlockEventData>,
     /// `ServerLevel.isHandlingTick` (true while scheduled ticks run).
     pub(crate) handling_tick: bool,
     /// Worldgen shape updates collect the ticks they schedule here, for the
@@ -80,6 +82,7 @@ impl Ticks {
             piston_pushes: Vec::new(),
             next_block_entity_id: 0,
             block_events: Vec::new(),
+            block_events_aside: Vec::new(),
             handling_tick: false,
             capture: None,
         }

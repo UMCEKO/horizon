@@ -2,13 +2,12 @@
 // java-listener-family
 //! `ExtractBlockOutlineRenderStateEvent` on `block_highlight`: the Java world recording ran the mods' listeners; their cancel hides the outline by the hook's contract.
 
-use super::java_listener::Family;
+use super::java_listener::{Family, Subscriptions};
 use horizon_client::world_renders::{OutlineAnswer, OutlineKind};
-use mod_api::{BlockHighlightEvent, ClientHost, Flow, HookId};
-use std::sync::OnceLock;
+use mod_api::{BlockHighlightEvent, ClientHost, Flow, HookId, Listener};
 
 const HOOKS: &[HookId] = &[HookId::BlockHighlight];
-static SUBSCRIBED: OnceLock<Vec<Option<HookId>>> = OnceLock::new();
+static SUBSCRIBED: Subscriptions = Subscriptions::new();
 
 pub(super) fn family() -> Family {
     Family {
@@ -21,7 +20,11 @@ struct Outline;
 
 impl mod_api::Hooks for Outline {
     fn subscribed(&self) -> &'static [Option<HookId>] {
-        super::java_listener::subscribed(HOOKS, &SUBSCRIBED)
+        super::java_listener::subscribed(HOOKS, &SUBSCRIBED, false)
+    }
+
+    fn listeners(&self) -> &'static [Listener] {
+        super::java_listener::listeners(HOOKS, &SUBSCRIBED, false)
     }
 
     // The recording posts the event on the Java client's thread as it extracts the frame; posting it again here would run its listeners twice and wait on the JVM every frame.

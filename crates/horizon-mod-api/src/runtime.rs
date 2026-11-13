@@ -1,6 +1,10 @@
 //! The installed mods, who is subscribed to what, and the crash marks around a call.
 use crate::*;
 
+#[path = "hook_switches.rs"]
+mod hook_switches;
+pub(crate) use hook_switches::set_hook_enabled;
+
 // no wire: installed hook trait objects and shared dispatch ownership are process-local.
 /// One native mod, with its bundle's `[mod] id` and hook implementation.
 // exhaustive: its fields are private, so mods cannot build or destructure it
@@ -33,6 +37,7 @@ pub(crate) struct Installed {
     pub(crate) mods: Mods,
     pub(crate) subscribers: horizon_mod_runtime::subscribers::Subscribers,
     pub(crate) disabled: Box<[std::sync::atomic::AtomicBool]>,
+    pub(crate) switches: hook_switches::HookSwitches,
 }
 
 impl Installed {
@@ -64,10 +69,12 @@ impl Installed {
             .iter()
             .map(|_| std::sync::atomic::AtomicBool::new(false))
             .collect();
+        let switches = hook_switches::HookSwitches::new(generated::HOOK_COUNT, mods.len());
         Self {
             mods,
             subscribers,
             disabled,
+            switches,
         }
     }
 }
@@ -137,6 +144,7 @@ pub fn subscribed_by(index: usize, hook: Option<generated::HookId>) -> bool {
             index < installed.mods.len()
                 && !installed.disabled[index].load(std::sync::atomic::Ordering::Relaxed)
                 && installed.subscribers.contains(hook as usize, index)
+                && installed.switches.on(hook as usize, index)
         })
     })
 }
@@ -299,6 +307,7 @@ pub(crate) fn listening(
             .subscribers(hook_id as usize)
             .filter(move |subscriber| {
                 !installed.disabled[subscriber.index].load(std::sync::atomic::Ordering::Relaxed)
+                    && installed.switches.on(hook_id as usize, subscriber.index)
             })
             .map(move |subscriber| {
                 (
