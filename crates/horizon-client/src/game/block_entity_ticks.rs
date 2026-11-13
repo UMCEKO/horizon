@@ -13,29 +13,8 @@ use horizon_client::{
     furnace::FurnaceCooking,
 };
 use horizon_core::position::BlockPos;
+use horizon_gameplay::block_entity_ticks::{block_ticking_area, ticker_name};
 use horizon_world::registry::BlockStateId;
-
-/// The block entity type a sample is attributed to while its ticker runs.
-fn ticker_name(entity: &BlockEntity) -> &'static str {
-    match entity {
-        BlockEntity::Chest(_) => "hopper",
-        BlockEntity::Crafter(_) => "crafter",
-        BlockEntity::Jukebox(_) => "jukebox",
-        BlockEntity::Beacon(_) => "beacon",
-        BlockEntity::CreakingHeart(_) => "creaking_heart",
-        BlockEntity::Spawner(_) => "mob_spawner",
-        BlockEntity::TrialSpawner(_) => "trial_spawner",
-        BlockEntity::Vault(_) => "vault",
-        BlockEntity::Beehive(_) => "beehive",
-        BlockEntity::Furnace(_) => "furnace",
-        BlockEntity::Brewing(_) => "brewing_stand",
-        BlockEntity::DaylightDetector => "daylight_detector",
-        BlockEntity::Campfire(_) => "campfire",
-        BlockEntity::Mod(_) => "mod_block_entity",
-        BlockEntity::PotentSulfur(_) => "potent_sulfur",
-        _ => "block_entity",
-    }
-}
 
 impl Game<'_> {
     pub(super) fn tick_block_entities(&mut self) -> Result<()> {
@@ -262,15 +241,7 @@ impl Game<'_> {
     /// every player's tickets (`update_chunk_tickets`), its entities loaded
     /// (`ServerLevel.areEntitiesLoaded`).
     pub(super) fn block_ticking_area(&self) -> impl Fn(i32, i32) -> bool + use<> {
-        let levels = self.tickets.levels();
-        let has_pending = !self.world.entities_pending.is_empty();
-        let pending = has_pending.then(|| self.world.entities_pending.clone());
-        move |x, z| {
-            levels.block_ticking_at(x, z)
-                && pending
-                    .as_ref()
-                    .is_none_or(|p| !p.contains(&(x >> 4, z >> 4)))
-        }
+        block_ticking_area(self.tickets.levels(), &self.world.entities_pending)
     }
     /// `DaylightDetectorBlock.tickEntity` of the detector at `pos`.
     fn tick_daylight_detector(&mut self, pos: Pos) {
