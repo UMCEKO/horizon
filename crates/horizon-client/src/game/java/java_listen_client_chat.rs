@@ -3,9 +3,9 @@
 //! `ClientChatEvent` and `RegisterClientCommandsEvent` from the chat box: the Java client runs a typed line's `sendChat` or a client command, and its names join the chat box's tree.
 
 use super::java_chat::{ChatSend, is_client_command};
-use super::java_listener::{Family, listens, with_client_game};
+use super::java_listener::{Family, Subscriptions, crossed, with_client_game};
 use mod_api::{
-    ClientChatEvent, ClientHost, CommandEvent, Flow, HookId, RegisterClientCommandsEvent,
+    ClientChatEvent, ClientHost, CommandEvent, Flow, HookId, Listener, RegisterClientCommandsEvent,
 };
 use std::sync::OnceLock;
 
@@ -25,7 +25,8 @@ impl mod_api::Hooks for Chat {
     // `command` has no event of its own: a Java mod's client commands come from `RegisterClientCommandsEvent`.
     fn subscribed(&self) -> &'static [Option<HookId>] {
         SUBSCRIBED.get_or_init(|| {
-            let mut hooks = super::java_listener::subscribed(HOOKS, &SUBSCRIBED_BASE).to_vec();
+            let mut hooks =
+                super::java_listener::subscribed(HOOKS, &SUBSCRIBED_BASE, false).to_vec();
             if hooks
                 .iter()
                 .any(|hook| matches!(hook, Some(HookId::RegisterClientCommands)))
@@ -36,11 +37,13 @@ impl mod_api::Hooks for Chat {
         })
     }
 
+    fn listeners(&self) -> &'static [Listener] {
+        super::java_listener::listeners(HOOKS, &SUBSCRIBED_BASE, false)
+    }
+
     // Vanilla's `sendChat` posts the event each time, so every line crosses while a Java mod listens.
     fn client_chat(&self, host: &mut dyn ClientHost, event: &mut ClientChatEvent<'_>) -> Flow {
-        if !listens(HookId::ClientChat) {
-            return Flow::Continue;
-        }
+        crossed(HookId::ClientChat);
         let line = event.message.clone();
         match with_client_game(host, |game| game.java_chat_send(&line)) {
             Some(ChatSend::Nothing) => Flow::Cancel,
@@ -57,6 +60,7 @@ impl mod_api::Hooks for Chat {
         host: &mut dyn ClientHost,
         event: &mut RegisterClientCommandsEvent<'_>,
     ) {
+        crossed(HookId::RegisterClientCommands);
         let names = with_client_game(host, |game| game.java_client_command_names());
         for name in names.into_iter().flatten() {
             event
@@ -78,4 +82,4 @@ impl mod_api::Hooks for Chat {
     }
 }
 
-static SUBSCRIBED_BASE: OnceLock<Vec<Option<HookId>>> = OnceLock::new();
+static SUBSCRIBED_BASE: Subscriptions = Subscriptions::new();

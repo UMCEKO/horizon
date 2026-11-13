@@ -379,6 +379,7 @@ final class ClientLoader {
         ClientHooks.fireResourceLoadFinishedEvent(true);
         ClientResources.take();
         Environments.decide();
+        ClientAttributes.decide();
     }
 
     /** Vanilla's client resolver: the connection's player info first; with no session service, a stranger resolves to nothing. */

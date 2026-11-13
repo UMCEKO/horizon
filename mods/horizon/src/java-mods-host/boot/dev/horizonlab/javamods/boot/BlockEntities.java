@@ -53,11 +53,6 @@ public final class BlockEntities {
         throw new IllegalStateException("not bridged");
     }
 
-    /** Bridged: whether a run's entry `index` may tick: not once an earlier entry wrote into Horizon. */
-    static boolean runEntry(int index) {
-        throw new IllegalStateException("not bridged");
-    }
-
     /** Bridged: the block entity at this position is gone. */
     private static void forget(long pos, long generation) {
         throw new IllegalStateException("not bridged");

@@ -62,6 +62,7 @@ pub mod projected;
 pub mod replace_blobs;
 pub mod root_system;
 pub mod router;
+pub mod routes;
 pub mod rule_test;
 pub mod sculk;
 pub mod settings;

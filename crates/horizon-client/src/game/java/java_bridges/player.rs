@@ -94,6 +94,21 @@ horizon_java_host::java_bridges! { table for Game<'static> {
         game.java_refresh_player();
     }
 
+    route "net/minecraft/server/level/ServerLevel".addPlayer
+    "(Lnet/minecraft/server/level/ServerPlayer;)V" =>
+    fn route_level_add_player(game, _player: Skip) -> () {
+        game.level_add_player_body(game.dim);
+    }
+
+    route "net/minecraft/server/level/ServerPlayer".teleport
+    "(Lnet/minecraft/world/level/portal/TeleportTransition;)Lnet/minecraft/server/level/ServerPlayer;" =>
+    fn route_player_teleport(game, transition: Bytes) -> i32 {
+        let Some((at, turn, level)) = java_players::parse_transition(&transition.0) else {
+            return 0;
+        };
+        i32::from(game.player_teleport_body(level, at, Some(turn)))
+    }
+
     "net/minecraft/server/level/ServerPlayer".teleportTo
     "(DDD)V" =>
     fn player_teleport_to(game, x: f64, y: f64, z: f64) -> () {

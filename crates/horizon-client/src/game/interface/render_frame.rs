@@ -255,9 +255,20 @@ impl Game<'_> {
             })
         };
         // visual/water_fog_color: no dimension sets it, its default is #050533.
-        let water_fog = horizon_client::biome::blend_rgb(&weights, |b| {
+        let mut water_fog = horizon_client::biome::blend_rgb(&weights, |b| {
             horizon_client::biome::rgb(biomes.get(b).water_fog)
         });
+        // A mod patched the attribute system: Java's probe holds the values, weather in them.
+        let probed = self
+            .client_env_routed()
+            .then(horizon_client::world_renders::probed)
+            .flatten();
+        if let Some(horizon_world::environment_attributes::Value::Rgb(color)) = probed
+            .as_ref()
+            .and_then(|p| p.lerp("visual/water_fog_color", alpha as f32))
+        {
+            water_fog = color;
+        }
         // The attribute stack, with the camera's biome mix in the probe's order; the biome
         // maps as the packs left them.
         let attributes_of = |b: u16| {
@@ -325,15 +336,18 @@ impl Game<'_> {
             polytone_frame = Some(frame.clone());
             environment.set_frame(frame);
         }
-        let mut sky = environment.sample(&horizon_client::environment::Sample {
-            day_time: self.view_day_time(),
-            rain,
-            thunder,
-            blend: Some(&blend),
-            biome: Some(attributes_of(biome)),
-            post_blend: Some(&post_blend),
-            post_biome: Some(post_of(biome)),
-        });
+        let mut sky = match &probed {
+            Some(probed) => probed.sky_from_probe(alpha as f32),
+            None => environment.sample(&horizon_client::environment::Sample {
+                day_time: self.view_day_time(),
+                rain,
+                thunder,
+                blend: Some(&blend),
+                biome: Some(attributes_of(biome)),
+                post_blend: Some(&post_blend),
+                post_biome: Some(post_of(biome)),
+            }),
+        };
         self.end_flash_sky(&mut sky, alpha);
         if self.flash > 0 && !self.settings.file.bool("hideLightningFlashes") {
             // ClientLevel's flash layer while skyFlashTime > 0: the sky colour
@@ -400,19 +414,26 @@ impl Game<'_> {
         // screen does not hide it: vanilla checks the HUD and the game mode, not the screen.
         let adventure = self.mode == horizon_client::command::args::GameMode::Adventure;
         let can_build = self.may_build() || adventure;
-        let outline = if block_outline_drawn(
+        let drawn = block_outline_drawn(
             self.ui.hide_gui,
             self.entity_targeted(),
             can_build,
             self.shows_panorama(),
-        ) {
+        );
+        let mut native_canceled = !drawn;
+        #[cfg(feature = "java-mods")]
+        let java_lines = self.java_outline_draw().lines;
+        #[cfg(not(feature = "java-mods"))]
+        let java_lines = true;
+        let outline = if drawn {
             self.pick()
                 .filter(|h| self.vanilla_outline_gate(h.pos))
                 .filter(|h| {
                     let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
                     let mut canceled = false;
                     self.native_block_highlight(h.pos, state, alpha as f32, &mut canceled);
-                    !canceled
+                    native_canceled |= canceled;
+                    !canceled && java_lines
                 })
                 .map(|h| {
                     let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
@@ -474,6 +495,10 @@ impl Game<'_> {
         } else {
             Vec::new()
         };
+        #[cfg(feature = "java-mods")]
+        self.java_outline_native_off(native_canceled);
+        #[cfg(not(feature = "java-mods"))]
+        let _ = native_canceled;
         pr.lap("pr_outline");
         let title = self.shows_panorama();
         let (yaw, pitch) = if title {

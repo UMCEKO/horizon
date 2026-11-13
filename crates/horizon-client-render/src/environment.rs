@@ -1142,6 +1142,101 @@ impl Environment {
     }
 }
 
+/// One attribute's last-tick and new-tick values from Java's probe.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Probed {
+    Float(f32, f32),
+    Rgb([f32; 3], [f32; 3]),
+    Argb([f32; 4], [f32; 4]),
+    Angle(f32, f32),
+}
+
+/// JOML's `lerp`: `fma(to - from, t, from)` per channel.
+fn lerp_channels<const N: usize>(t: f32, from: [f32; N], to: [f32; N]) -> [f32; N] {
+    std::array::from_fn(|i| (to[i] - from[i]).mul_add(t, from[i]))
+}
+
+/// `Mth.wrapDegrees` for a float.
+fn wrap_degrees(angle: f32) -> f32 {
+    let mut wrapped = angle % 360.0;
+    if wrapped >= 180.0 {
+        wrapped -= 360.0;
+    }
+    if wrapped < -180.0 {
+        wrapped += 360.0;
+    }
+    wrapped
+}
+
+impl Probed {
+    /// The type's `partialTickLerp`: `Mth.lerp`, JOML's vector lerp, `LerpFunction.ofDegrees(90)`.
+    pub fn lerp(&self, partial: f32) -> Value {
+        match *self {
+            Probed::Float(from, to) => Value::Float(from + partial * (to - from)),
+            Probed::Rgb(from, to) => Value::Rgb(lerp_channels(partial, from, to)),
+            Probed::Argb(from, to) => Value::Argb(lerp_channels(partial, from, to)),
+            Probed::Angle(from, to) => {
+                let delta = wrap_degrees(to - from);
+                Value::Float(if delta.abs() >= 90.0 {
+                    to
+                } else {
+                    from + partial * delta
+                })
+            }
+        }
+    }
+}
+
+/// What Java's patched `EnvironmentAttributeProbe` holds for the camera, by the ids `Environment::value` takes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProbedValues {
+    pub values: Vec<(String, Probed)>,
+}
+
+impl ProbedValues {
+    pub fn lerp(&self, id: &str, partial: f32) -> Option<Value> {
+        self.values
+            .iter()
+            .find(|(name, _)| name == id)
+            .map(|(_, probed)| probed.lerp(partial))
+    }
+
+    /// The `Sky` `Environment::sample` builds, from the probe's values; weather is already inside them.
+    pub fn sky_from_probe(&self, partial: f32) -> Sky {
+        let float = |id: &str| match self.lerp(id, partial) {
+            Some(Value::Float(f)) => f,
+            _ => 0.0,
+        };
+        let rgb = |id: &str| match self.lerp(id, partial) {
+            Some(Value::Rgb(c)) => c,
+            _ => [0.0; 3],
+        };
+        let argb = |id: &str| match self.lerp(id, partial) {
+            Some(Value::Argb(c)) => c,
+            _ => [0.0; 4],
+        };
+        Sky {
+            sky_color: rgb("visual/sky_color"),
+            fog_color: rgb("visual/fog_color"),
+            sky_light_factor: float("visual/sky_light_factor"),
+            sky_light_color: rgb("visual/sky_light_color"),
+            block_light_tint: rgb("visual/block_light_tint"),
+            ambient_light_color: rgb("visual/ambient_light_color"),
+            sun_angle: float("visual/sun_angle"),
+            moon_angle: float("visual/moon_angle"),
+            star_angle: float("visual/star_angle"),
+            star_brightness: float("visual/star_brightness"),
+            sunrise_color: argb("visual/sunrise_sunset_color"),
+            cloud_color: argb("visual/cloud_color"),
+            sky_light_level: float("gameplay/sky_light_level") / 15.0,
+            fog_start: float("visual/fog_start_distance"),
+            fog_end: float("visual/fog_end_distance"),
+            cloud_fog_end: float("visual/cloud_fog_end_distance"),
+            cloud_height: float("visual/cloud_height"),
+        }
+    }
+}
+
 /// `Level.updateSkyBrightness`'s darkening: from the sky light level, a dimension value.
 pub fn sky_darken(environment: &Environment, day_time: i64, rain: f32, thunder: f32) -> i32 {
     let level = match environment.value(
@@ -1166,6 +1261,49 @@ mod tests {
 
     /// The level table is global, so the tests that set it take turns.
     static LEVEL_TABLE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn probe_lerps_as_the_attribute_types_do() {
+        let rgb = Probed::Rgb([0.0, 0.5, 1.0], [1.0, 0.5, 0.0]);
+        assert_eq!(rgb.lerp(0.0), Value::Rgb([0.0, 0.5, 1.0]));
+        assert_eq!(rgb.lerp(0.5), Value::Rgb([0.5, 0.5, 0.5]));
+        assert_eq!(rgb.lerp(1.0), Value::Rgb([1.0, 0.5, 0.0]));
+        let argb = Probed::Argb([0.0, 0.0, 0.0, 1.0], [1.0, 0.5, 0.25, 0.0]);
+        assert_eq!(argb.lerp(0.5), Value::Argb([0.5, 0.25, 0.125, 0.5]));
+        // ofDegrees(90): 350 to 10 steps 20 degrees across the wrap; 0 to 100 is past the limit and snaps.
+        let angle = Probed::Angle(350.0, 10.0);
+        assert_eq!(angle.lerp(0.0), Value::Float(350.0));
+        assert_eq!(angle.lerp(0.5), Value::Float(360.0));
+        assert_eq!(angle.lerp(1.0), Value::Float(370.0));
+        assert_eq!(Probed::Angle(0.0, 100.0).lerp(0.25), Value::Float(100.0));
+        assert_eq!(Probed::Float(2.0, 4.0).lerp(0.25), Value::Float(2.5));
+    }
+
+    #[test]
+    fn sky_from_probe_fills_each_field_from_its_attribute() {
+        let probed = ProbedValues {
+            values: vec![
+                ("visual/sky_color".into(), Probed::Rgb([0.1; 3], [0.3; 3])),
+                ("visual/sun_angle".into(), Probed::Angle(10.0, 20.0)),
+                (
+                    "visual/cloud_color".into(),
+                    Probed::Argb([1.0; 4], [1.0; 4]),
+                ),
+                ("visual/cloud_height".into(), Probed::Float(192.0, 192.0)),
+                ("gameplay/sky_light_level".into(), Probed::Float(15.0, 15.0)),
+            ],
+        };
+        let sky = probed.sky_from_probe(0.5);
+        assert!(sky.sky_color.iter().all(|c| (c - 0.2).abs() < 1e-6));
+        assert_eq!(sky.sun_angle, 15.0);
+        assert_eq!(sky.cloud_color, [1.0; 4]);
+        assert_eq!(sky.cloud_height, 192.0);
+        assert_eq!(sky.sky_light_level, 1.0);
+        assert_eq!(
+            sky.fog_color, [0.0; 3],
+            "an attribute the probe did not send"
+        );
+    }
 
     #[test]
     fn resolved_dimension_data_and_raw_darkening_need_no_files() {

@@ -400,6 +400,8 @@ pub struct PlayerMotion {
     pub fall_distance: f64,
     /// The block fallOn currently running, consumed by its damage call.
     pub(crate) block_landing: Option<(BlockStateId, BlockPos, f64)>,
+    /// The fall distance of a farmland trample whose block write is next.
+    pub(crate) trample: Option<f64>,
     pub stuck_multiplier: Vec3,
     /// `Entity.pistonDeltas` and `pistonDeltasGameTime`: how far a moving
     /// block has pushed this entity this tick (0.51 at most on any axis).
@@ -674,6 +676,7 @@ impl PlayerMotion {
             history: MovementHistory::default(),
             fall_distance: 0.0,
             block_landing: None,
+            trample: None,
             stuck_multiplier: Vec3::ZERO,
             piston: Default::default(),
             yaw: 0.0,
@@ -863,7 +866,14 @@ impl PlayerMotion {
     ) -> Result<bool> {
         use crate::living_attributes as live;
         let found = match kind {
-            0 => live::put_modifier(&mut self.attributes, attribute, id, amount, operation, permanent)?,
+            0 => live::put_modifier(
+                &mut self.attributes,
+                attribute,
+                id,
+                amount,
+                operation,
+                permanent,
+            )?,
             1 => live::take_modifier(&mut self.attributes, attribute, id)?,
             _ => live::put_base(&mut self.attributes, attribute, amount)?,
         };
@@ -1538,7 +1548,9 @@ impl MotionWorld<'_, '_, '_> {
         }
         let flying_y = self.player.flying.then_some(self.player.velocity.y);
         if !self.player.flying
-            && (self.player.fluids.was_touching_water || self.player.is_in_lava())
+            && (self.player.fluids.was_touching_water
+                || self.player.is_in_lava()
+                || self.player.swim_fluid_type().is_some())
         {
             horizon_world::living_fluid::travel_in_fluid(self, input)?;
         } else if self.player.fall_flying {
@@ -2234,6 +2246,11 @@ impl MotionWorld<'_, '_, '_> {
     pub fn jump_from_ground(&mut self) -> Result<()> {
         living_motion::jump_from_ground(self)?;
         if !self.player.replaying {
+            crate::native_client_hooks::living_jump_motion(
+                self.player.entity_id as u32,
+                "minecraft:player",
+                self.player,
+            );
             native_living_jump(
                 self.loop_context,
                 self.player.entity_id as u32,
@@ -3562,18 +3579,32 @@ mod tests {
         let mut p = PlayerMotion::new(&resources, Vec3::ZERO).unwrap();
         let step = "minecraft:step_height";
         let base = p.attribute(step).unwrap();
-        assert!(p.write_attribute(step, 0, "test:stilts", 0.5, 0, false).unwrap());
+        assert!(
+            p.write_attribute(step, 0, "test:stilts", 0.5, 0, false)
+                .unwrap()
+        );
         // Adding again replaces, as the nested calls of one mod write do.
-        assert!(p.write_attribute(step, 0, "test:stilts", 0.5, 0, false).unwrap());
+        assert!(
+            p.write_attribute(step, 0, "test:stilts", 0.5, 0, false)
+                .unwrap()
+        );
         assert!((p.attribute(step).unwrap() - (base + 0.5)).abs() < 1e-9);
-        assert!(p.write_attribute(step, 1, "test:stilts", 0.0, 0, false).unwrap());
+        assert!(
+            p.write_attribute(step, 1, "test:stilts", 0.0, 0, false)
+                .unwrap()
+        );
         assert_eq!(p.attribute(step).unwrap(), base);
         assert!(p.write_attribute(step, 2, "", 2.0, 0, false).unwrap());
         assert_eq!(p.attribute(step).unwrap(), 2.0);
-        assert!(!p.write_attribute("test:unknown", 0, "test:a", 1.0, 0, false).unwrap());
+        assert!(
+            !p.write_attribute("test:unknown", 0, "test:a", 1.0, 0, false)
+                .unwrap()
+        );
         // A permanent modifier saves with the player; a transient one does not.
-        p.write_attribute(step, 0, "test:kept", 1.0, 0, true).unwrap();
-        p.write_attribute(step, 0, "test:lost", 1.0, 0, false).unwrap();
+        p.write_attribute(step, 0, "test:kept", 1.0, 0, true)
+            .unwrap();
+        p.write_attribute(step, 0, "test:lost", 1.0, 0, false)
+            .unwrap();
         let saved = format!("{:?}", p.saved_attributes());
         let bytes = |text: &str| format!("{:?}", text.as_bytes());
         assert!(saved.contains(&bytes("test:kept")) && !saved.contains(&bytes("test:lost")));

@@ -8,10 +8,8 @@ net/minecraft/client/KeyMapping#matchesMouse(Lnet/minecraft/client/input/MouseBu
 net/minecraft/client/KeyMapping#same(Lnet/minecraft/client/KeyMapping;)Z	verdict: java-client
 net/minecraft/client/KeyMapping#set	verdict: java-client
 net/minecraft/client/KeyMapping#setAll()V	verdict: java-client
-net/minecraft/client/KeyboardHandler#handleDebugKeys(Lnet/minecraft/client/input/KeyEvent;)Z	spec: w12-coverage SPEC-22
 net/minecraft/client/KeyboardHandler#keyPress(JILnet/minecraft/client/input/KeyEvent;)V	verdict: java-client
 net/minecraft/client/Minecraft#<init>(Lnet/minecraft/client/main/GameConfig;)V	verdict: java-client
-net/minecraft/client/Minecraft#continueAttack(Z)V	spec: w12-coverage SPEC-22
 net/minecraft/client/Minecraft#handleKeybinds()V	spec: w12-coverage SPEC-22
 net/minecraft/client/Minecraft#pickBlockOrEntity	verdict: java-client
 net/minecraft/client/Minecraft#resizeGui()V	special: screens
@@ -52,13 +50,12 @@ net/minecraft/client/gui/screens/inventory/CreativeModeInventoryScreen#getToolti
 net/minecraft/client/gui/screens/options/controls/KeyBindsList$KeyEntry#updateChangeButtonMessage()V	owner: W5
 net/minecraft/client/model/HumanoidModel#setupAnim(Lnet/minecraft/client/renderer/entity/state/HumanoidRenderState;)V	owner: W2
 net/minecraft/client/multiplayer/ClientConfigurationPacketListenerImpl#handleConfigurationFinished(Lnet/minecraft/network/protocol/configuration/ClientboundFinishConfigurationPacket;)V	verdict: java-client
-net/minecraft/client/multiplayer/ClientLevel#syncBlockState(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/world/phys/Vec3;)V	spec: w12-coverage SPEC-22
 net/minecraft/client/multiplayer/ClientLevel#tickEntities()V	verdict: java-client
 net/minecraft/client/multiplayer/ClientPacketListener#handleRecipeBookAdd(Lnet/minecraft/network/protocol/game/ClientboundRecipeBookAddPacket;)V	verdict: java-client
 net/minecraft/client/multiplayer/ClientPacketListener#handleRecipeBookRemove(Lnet/minecraft/network/protocol/game/ClientboundRecipeBookRemovePacket;)V	verdict: java-client
 net/minecraft/client/multiplayer/ClientSuggestionProvider#getSelectedEntities()Ljava/util/Collection;	owner: W6
 net/minecraft/client/renderer/blockentity/ChestRenderer#submit*	owner: W1
-net/minecraft/client/renderer/extract/LevelExtractor#extractBlockOutline(Lnet/minecraft/client/Camera;Lnet/minecraft/client/renderer/state/level/LevelRenderState;)V	owner: W1
+net/minecraft/client/renderer/extract/LevelExtractor#extractBlockOutline(Lnet/minecraft/client/Camera;Lnet/minecraft/client/renderer/state/level/LevelRenderState;)V	special: world_frame
 net/minecraft/client/renderer/fog/FogRenderer#setupFog(Lnet/minecraft/client/Camera;ILnet/minecraft/client/DeltaTracker;FLnet/minecraft/client/multiplayer/ClientLevel;)Lnet/minecraft/client/renderer/fog/FogData;	owner: W4
 net/minecraft/client/resources/language/LanguageManager#onResourceManagerReload(Lnet/minecraft/server/packs/resources/ResourceManager;)V	verdict: java-client
 net/minecraft/client/resources/model/BlockStateDefinitions#<clinit>	verdict: java-client
@@ -76,14 +73,10 @@ net/minecraft/server/MinecraftServer#createLevels()V	spec: w12-coverage SPEC-20
 net/minecraft/server/MinecraftServer#reloadResources(Ljava/util/Collection;)Ljava/util/concurrent/CompletableFuture;	spec: w12-coverage SPEC-20
 net/minecraft/server/ReloadableServerResources#loadResources(Lnet/minecraft/server/packs/resources/ResourceManager;Lnet/minecraft/core/LayeredRegistryAccess;Ljava/util/List;Lnet/minecraft/world/flag/FeatureFlagSet;Lnet/minecraft/commands/Commands$CommandSelection;Lnet/minecraft/server/permissions/PermissionSet;Ljava/util/concurrent/Executor;Ljava/util/concurrent/Executor;)Ljava/util/concurrent/CompletableFuture;	spec: w12-coverage SPEC-20
 net/minecraft/server/ReloadableServerResources#updateComponentsAndStaticRegistryTags	verdict: java-boot
-net/minecraft/server/ServerScoreboard#addPlayerToTeam(Ljava/lang/String;Lnet/minecraft/world/scores/PlayerTeam;)Z	spec: w12-coverage SPEC-6
-net/minecraft/server/ServerScoreboard#removePlayerFromTeam(Ljava/lang/String;Lnet/minecraft/world/scores/PlayerTeam;)V	spec: w12-coverage SPEC-6
 net/minecraft/server/commands/EnchantCommand#register(Lcom/mojang/brigadier/CommandDispatcher;Lnet/minecraft/commands/CommandBuildContext;)V	owner: W13
 net/minecraft/server/dedicated/DedicatedServer#initServer()Z	spec: w12-coverage SPEC-20
 net/minecraft/server/level/ChunkMap#anyPlayerCloseEnoughForSpawning(Lnet/minecraft/world/level/ChunkPos;)Z	spec: w12-coverage SPEC-14
 net/minecraft/server/level/ChunkMap#scheduleChunkLoad(Lnet/minecraft/world/level/ChunkPos;)Ljava/util/concurrent/CompletableFuture;	owner: W10
-net/minecraft/server/level/ServerLevel#addPlayer(Lnet/minecraft/server/level/ServerPlayer;)V	spec: w12-coverage SPEC-21
-net/minecraft/server/level/ServerPlayer#teleport(Lnet/minecraft/world/level/portal/TeleportTransition;)Lnet/minecraft/server/level/ServerPlayer;	spec: w12-coverage SPEC-21
 net/minecraft/server/network/ServerConfigurationPacketListenerImpl#handleConfigurationFinished(Lnet/minecraft/network/protocol/configuration/ServerboundFinishConfigurationPacket;)V	owner: W13
 net/minecraft/server/network/ServerConfigurationPacketListenerImpl#startConfiguration()V	owner: W13
 net/minecraft/server/players/PlayerList#placeNewPlayer(Lnet/minecraft/network/Connection;Lnet/minecraft/server/level/ServerPlayer;Lnet/minecraft/server/network/CommonListenerCookie;)V	spec: w12-coverage SPEC-21
@@ -92,10 +85,6 @@ net/minecraft/world/RandomizableContainer#setLootTable(Lnet/minecraft/resources/
 net/minecraft/world/RandomizableContainer#tryLoadLootTable(Lnet/minecraft/world/level/storage/ValueInput;)Z	spec: w12-coverage SPEC-19
 net/minecraft/world/RandomizableContainer#unpackLootTable(Lnet/minecraft/world/entity/player/Player;)V	spec: w12-coverage SPEC-19
 net/minecraft/world/SimpleContainer#setChanged()V	spec: w12-coverage SPEC-17
-net/minecraft/world/attribute/EnvironmentAttributeProbe#tick(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/phys/Vec3;)V	owner: W7
-net/minecraft/world/attribute/EnvironmentAttributeSystem#addDynamicLayers(Lnet/minecraft/world/attribute/EnvironmentAttributeSystem$Builder;Lnet/minecraft/world/level/Level;)V	owner: W7
-net/minecraft/world/attribute/EnvironmentAttributeSystem$ValueSampler#computeValueNotPositional()Ljava/lang/Object;	owner: W7
-net/minecraft/world/attribute/EnvironmentAttributeSystem$ValueSampler#computeValuePositional(Lnet/minecraft/world/phys/Vec3;Lnet/minecraft/world/attribute/SpatialAttributeInterpolator;)Ljava/lang/Object;	owner: W7
 net/minecraft/world/effect/MobEffectInstance#onEffectAdded(Lnet/minecraft/world/entity/LivingEntity;)V	spec: w12-coverage SPEC-10
 net/minecraft/world/effect/MobEffectInstance#update(Lnet/minecraft/world/effect/MobEffectInstance;)Z	spec: w12-coverage SPEC-10
 net/minecraft/world/entity/Entity#getDismountLocationForPassenger(Lnet/minecraft/world/entity/LivingEntity;)Lnet/minecraft/world/phys/Vec3;	spec: w12-coverage SPEC-11
@@ -222,7 +211,3 @@ net/minecraft/world/level/levelgen/structure/templatesystem/StructureTemplate#pl
 net/minecraft/world/level/storage/loot/LootTable#fill(Lnet/minecraft/world/Container;Lnet/minecraft/world/level/storage/loot/LootParams;J)V	spec: w12-coverage SPEC-19
 net/minecraft/world/phys/shapes/Shapes#joinIsNotEmpty(Lnet/minecraft/world/phys/shapes/VoxelShape;Lnet/minecraft/world/phys/shapes/VoxelShape;Lnet/minecraft/world/phys/shapes/BooleanOp;)Z	spec: w12-coverage SPEC-14
 net/minecraft/world/phys/shapes/Shapes#joinUnoptimized(Lnet/minecraft/world/phys/shapes/VoxelShape;Lnet/minecraft/world/phys/shapes/VoxelShape;Lnet/minecraft/world/phys/shapes/BooleanOp;)Lnet/minecraft/world/phys/shapes/VoxelShape;	spec: w12-coverage SPEC-14
-net/minecraft/world/scores/Scoreboard#addPlayerToTeam(Ljava/lang/String;Lnet/minecraft/world/scores/PlayerTeam;)Z	spec: w12-coverage SPEC-6
-net/minecraft/world/scores/Scoreboard#onTeamAdded(Lnet/minecraft/world/scores/PlayerTeam;)V	spec: w12-coverage SPEC-6
-net/minecraft/world/scores/Scoreboard#onTeamRemoved(Lnet/minecraft/world/scores/PlayerTeam;)V	spec: w12-coverage SPEC-6
-net/minecraft/world/scores/Scoreboard#removePlayerFromTeam(Ljava/lang/String;Lnet/minecraft/world/scores/PlayerTeam;)V	spec: w12-coverage SPEC-6

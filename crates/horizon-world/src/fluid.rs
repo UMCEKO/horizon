@@ -20,9 +20,26 @@ pub struct ModFluidRules {
     pub converts_to_source: bool,
 }
 
+/// How a mod's fluid moves the entities in it, as NeoForge's `FluidType` answers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModFluidEntityRules {
+    /// `FluidType.getMotionScale`: the strength of its current (water's is 0.014).
+    pub motion_scale: f64,
+    /// `FluidType.canPushEntity`.
+    pub can_push_entity: bool,
+    /// `FluidType.canSwim`: a living entity travels in it as in water.
+    pub can_swim: bool,
+    /// `FluidType.canDrown`: eyes inside it use up air.
+    pub can_drown: bool,
+    /// `FluidType.getFallDistanceModifier`: what each tick in it keeps of the fall distance.
+    pub fall_distance_modifier: f32,
+    /// `FluidType.canExtinguish`.
+    pub can_extinguish: bool,
+}
+
 /// A world fluid a mod registered: its two registry names, the block that holds it in the
 /// world and the bucket that carries it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ModFluidType {
     /// `<namespace>:<path>`, which is also its block's id.
     pub id: String,
@@ -31,6 +48,8 @@ pub struct ModFluidType {
     /// The filled bucket, when the fluid has one.
     pub bucket: Option<String>,
     pub rules: ModFluidRules,
+    /// None: entities move through it as through air.
+    pub entity: Option<ModFluidEntityRules>,
 }
 
 /// A registered [`ModFluidType`]: small and copied around as vanilla's kinds are. Saved and
@@ -131,6 +150,17 @@ impl ModFluid {
     /// What was registered for this fluid.
     pub fn get(self) -> &'static ModFluidType {
         mod_fluid_table()[usize::from(self.0)]
+    }
+    /// How it moves entities, if it does.
+    pub fn entity_rules(self) -> Option<ModFluidEntityRules> {
+        self.get().entity
+    }
+}
+impl FluidKind {
+    /// The entity rules of a mod fluid's type; None for vanilla's fluids and inert mod fluids.
+    pub fn mod_entity_rules(self) -> Option<(ModFluid, ModFluidEntityRules)> {
+        let fluid = self.mod_fluid()?;
+        Some((fluid, fluid.entity_rules()?))
     }
 }
 impl serde::Serialize for ModFluid {
@@ -359,6 +389,11 @@ impl FluidState {
         amount: 8,
         falling: false,
     };
+    pub const LAVA: Self = Self {
+        kind: FluidKind::Lava,
+        amount: 8,
+        falling: false,
+    };
     pub const fn kind(self) -> FluidKind {
         self.kind
     }
@@ -445,6 +480,12 @@ impl FluidState {
                 | "minecraft:bubble_column"
         ) {
             return Ok(Self::WATER);
+        }
+        match state.properties.get("fluid_logged").map(String::as_str) {
+            Some("water") => return Ok(Self::WATER),
+            Some("lava") => return Ok(Self::LAVA),
+            Some("empty") | None => {}
+            Some(_) => return Err(invalid("invalid fluid_logged block property")),
         }
         match state.properties.get("waterlogged").map(String::as_str) {
             Some("true") => {
@@ -588,6 +629,7 @@ mod mod_fluid_tests {
                 slope_find_distance: 2,
                 converts_to_source: false,
             },
+            entity: None,
         })
         .unwrap()
     }
@@ -666,6 +708,26 @@ mod mod_fluid_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_fluid_logged_state_holds_its_fluid() {
+        let logged = |value: &str| BlockState {
+            name: "gem:tank".into(),
+            properties: [("fluid_logged".to_string(), value.to_string())].into(),
+        };
+        assert_eq!(
+            FluidState::from_block(&logged("water")).unwrap().kind(),
+            FluidKind::Water
+        );
+        assert_eq!(
+            FluidState::from_block(&logged("lava")).unwrap().kind(),
+            FluidKind::Lava
+        );
+        assert_eq!(
+            FluidState::from_block(&logged("empty")).unwrap(),
+            FluidState::EMPTY
+        );
     }
 
     fn block(name: &str, level: u8) -> BlockState {

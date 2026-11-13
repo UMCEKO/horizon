@@ -54,12 +54,15 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelAccessor;
 import net.minecraft.world.level.LevelReader;
 import net.minecraft.world.level.ServerLevelAccessor;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.portal.TeleportTransition;
 import net.minecraft.world.level.storage.TagValueInput;
 import net.minecraft.world.level.storage.TagValueOutput;
 import net.minecraft.world.level.storage.ValueInput;
 import net.minecraft.world.level.storage.ValueOutput;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.scores.PlayerTeam;
 
 /** The install's routing (`routing.json`) confirmed against the mixins merged at boot, as `routes.bin`; see docs/java-mods-map.md. */
 public final class Routing {
@@ -127,6 +130,12 @@ public final class Routing {
     /** Whether a call's receiver is a server player's inventory, which is all Horizon's native serves; the Java client's own is not. */
     public static boolean serverInventory(Object receiver) {
         return receiver instanceof net.minecraft.world.entity.player.Inventory inventory && inventory.player instanceof net.minecraft.server.level.ServerPlayer;
+    }
+
+    /** Whether a call's receiver is the server's scoreboard, which Horizon's native serves; the Java client's own is not. */
+    public static boolean serverScoreboard(Object receiver) {
+        var server = GameBridge.server();
+        return server != null && receiver == server.getScoreboard();
     }
 
     /** The route's id, -1 when the key is unknown or the route is off. */
@@ -458,6 +467,56 @@ public final class Routing {
         run(KEYS[id], PLANS[id], STATICS[id], HANDLES[id], in, out);
     }
 
+    /** The `client_route` op's call, on the thread standing in for the Java client: the receiver is the client's object for the owner, and only the status and the value answer (the route acted on the window's game itself). */
+    static void callClient(Crossing.In in, Crossing.Out out, java.util.function.BiFunction<Class<?>, String, Object> receiver) throws Exception {
+        int id = in.readInt();
+        String key = KEYS[id];
+        Plan plan = PLANS[id];
+        MethodHandle handle = HANDLES[id];
+        byte recv = in.readByte();
+        if (recv != 9) throw new IllegalStateException("route " + key + ": receiver " + recv + " is not the Java client's");
+        if (refused(key, plan, handle, out)) return;
+        var args = new ArrayList<Object>();
+        if (!STATICS[id]) {
+            Object target = receiver.apply(plan.owner(), key);
+            // 2: the client holds no such object now (between levels), so the window's body runs alone.
+            if (target == null) {
+                out.writeByte(2);
+                return;
+            }
+            args.add(target);
+        }
+        var call = new Args(key);
+        for (var reader : plan.args()) args.add(reader.read(in, call));
+        Object result;
+        try {
+            result = handle.invokeWithArguments(args);
+        } catch (Throwable t) {
+            thrown(t, out);
+            return;
+        }
+        out.writeByte(0);
+        plan.ret().write(result, out);
+    }
+
+    /** A route with no table answers as a mod's throw would, so Rust panics naming it. */
+    private static boolean refused(String key, Plan plan, MethodHandle handle, Crossing.Out out) throws IOException {
+        if (plan != null && plan.unreadable() == null && handle != null) return false;
+        String why = plan == null ? "its method" : plan.unreadable();
+        if (TOLD.add(key)) System.err.println("Horizon: route " + key + ": no argument reader for " + why);
+        out.writeByte(1);
+        GameBridge.writeText(out, "unknown");
+        GameBridge.writeText(out, "no argument reader for " + why);
+        return true;
+    }
+
+    private static void thrown(Throwable t, Crossing.Out out) throws IOException {
+        out.writeByte(1);
+        GameBridge.writeText(out, modOf(t));
+        var first = t.getStackTrace().length > 0 ? " at " + t.getStackTrace()[0] : "";
+        GameBridge.writeText(out, t + first);
+    }
+
     private static MethodHandle noop;
 
     static void noop() {}
@@ -532,6 +591,9 @@ public final class Routing {
             };
         }
         if (type == Vec3.class) return (in, c) -> new Vec3(in.readDouble(), in.readDouble(), in.readDouble());
+        if (type == PlayerTeam.class) return (in, c) -> ScoreboardView.team(in.text(), in.readNBytes(in.readInt()));
+        if (type == BlockState.class) return (in, c) -> Block.stateById(in.readInt());
+        if (type.getName().equals("net.minecraft.client.input.KeyEvent")) return (in, c) -> ClientRoutes.keyEvent(in);
         if (Entity.class.isAssignableFrom(type)) return entity(type);
         if (type == DamageSource.class) return (in, c) -> Flat.toDamageSource(in.readNBytes(in.readInt()), c.level());
         if (type == MobEffectInstance.class) {
@@ -596,6 +658,7 @@ public final class Routing {
             };
         }
         if (type == String.class) return (v, o) -> GameBridge.writeText(o, (String) v);
+        if (type == ServerPlayer.class) return (v, o) -> o.writeBoolean(v != null);
         if (type == ResourceKey.class) return (v, o) -> GameBridge.writeText(o, ((ResourceKey<?>) v).identifier().toString());
         if (type == InteractionResult.class) {
             return (v, o) -> {
@@ -652,8 +715,10 @@ public final class Routing {
         var readers = new ArgReader[types.length];
         String unreadable = null;
         int outputs = 0;
+        // The client's methods take a `@Nullable Vec3` (`syncBlockState`'s player position): a present flag goes first.
+        boolean client = method.getDeclaringClass().getName().startsWith("net.minecraft.client.");
         for (int i = 0; i < types.length; i++) {
-            readers[i] = reader(types[i]);
+            readers[i] = client && types[i] == Vec3.class ? (in, c) -> in.readBoolean() ? new Vec3(in.readDouble(), in.readDouble(), in.readDouble()) : null : reader(types[i]);
             if (readers[i] == null && unreadable == null) unreadable = types[i].getName();
             if (types[i] == ValueOutput.class) outputs++;
         }
@@ -666,14 +731,7 @@ public final class Routing {
 
     private static void run(String key, Plan plan, boolean isStatic, MethodHandle handle, Crossing.In in, Crossing.Out out) throws Exception {
         byte recv = in.readByte();
-        if (plan == null || plan.unreadable() != null || handle == null) {
-            String why = plan == null ? "its method" : plan.unreadable();
-            if (TOLD.add(key)) System.err.println("Horizon: route " + key + ": no argument reader for " + why);
-            out.writeByte(1);
-            GameBridge.writeText(out, "unknown");
-            GameBridge.writeText(out, "no argument reader for " + why);
-            return;
-        }
+        if (refused(key, plan, handle, out)) return;
         Object receiver = null;
         var call = new Args(key);
         switch (recv) {
@@ -690,7 +748,10 @@ public final class Routing {
                 receiver = level;
             }
             case 3 -> receiver = GameBridge.server();
-            case 4 -> receiver = GameBridge.server().getScoreboard();
+            case 4 -> {
+                ScoreboardView.read(in);
+                receiver = GameBridge.server().getScoreboard();
+            }
             case 5 -> {
                 var level = GameBridge.level(in.text());
                 ((ViewLevelData) level.getLevelData()).gameTime = in.readLong();
@@ -710,10 +771,7 @@ public final class Routing {
             result = handle.invokeWithArguments(args);
         } catch (Throwable t) {
             if (GameBridge.outermost()) GameBridge.abandonCall();
-            out.writeByte(1);
-            GameBridge.writeText(out, modOf(t));
-            var first = t.getStackTrace().length > 0 ? " at " + t.getStackTrace()[0] : "";
-            GameBridge.writeText(out, t + first);
+            thrown(t, out);
             return;
         }
         if (Profile.ON) Profile.event("route:" + key, System.nanoTime() - started);

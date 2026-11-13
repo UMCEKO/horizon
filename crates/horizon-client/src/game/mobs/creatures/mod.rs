@@ -15,6 +15,7 @@ mod residency;
 mod retained_limits_tests;
 use super::api_values::{TryIntoApi, TryIntoEngine};
 
+use super::java_hooks::TrampleBy;
 use super::level_sounds::LevelSound;
 use super::{
     Dim, Game, Hand, InteractTarget, entity_culling::EntityCullDecision,
@@ -883,8 +884,8 @@ impl Game<'_> {
             .map(|t| t.name.clone());
         if let Some(team) = team {
             let new_name = uuid_text(self.uuid_for(to));
-            self.score.board.add_to_team(&new_name, &team);
-            self.score.board.remove_from_team(&old_name);
+            self.server_team_join(&new_name, &team);
+            self.server_team_leave_member(&old_name);
         }
     }
     /// Finalize a converted frog or witch before it joins the level.
@@ -2861,6 +2862,12 @@ impl Game<'_> {
                     source,
                     state,
                 } => {
+                    // A canceled trample left the block as it was: nothing changed.
+                    if event == "minecraft:block_change"
+                        && self.world.block(at[0], at[1], at[2]) != state
+                    {
+                        continue;
+                    }
                     let who = source.map(Who::Mob);
                     self.post_block_game_event(event, at, who, Some(state));
                 }
@@ -3487,6 +3494,16 @@ impl Game<'_> {
                 // `Level.setBlockAndUpdate`: neighbour and shape updates, so a crop
                 // above trampled farmland breaks and drops.
                 MobEvent::SetBlock { pos, state } => self.level_set(pos, state)?,
+                MobEvent::Trample {
+                    pos,
+                    state,
+                    mob,
+                    distance,
+                } => {
+                    if !self.java_hook_trample(pos, distance, TrampleBy::Mob(mob)) {
+                        self.level_set(pos, state)?
+                    }
+                }
                 MobEvent::EndermanPlaceBlock {
                     mob,
                     pos,

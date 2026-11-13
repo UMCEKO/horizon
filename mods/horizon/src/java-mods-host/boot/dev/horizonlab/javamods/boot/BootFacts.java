@@ -29,7 +29,7 @@ public final class BootFacts {
 
     /** The registries whose mod entries are kept: content, and the worldgen type registries `WorldgenExport` names owners by. */
     private static List<Registry<?>> registries() {
-        var all = new java.util.ArrayList<Registry<?>>(List.of(BuiltInRegistries.BLOCK, BuiltInRegistries.ITEM, BuiltInRegistries.BLOCK_ENTITY_TYPE, BuiltInRegistries.DATA_COMPONENT_TYPE, BuiltInRegistries.FLUID, BuiltInRegistries.PARTICLE_TYPE, BuiltInRegistries.RECIPE_SERIALIZER, BuiltInRegistries.LOOT_FUNCTION_TYPE, BuiltInRegistries.LOOT_CONDITION_TYPE));
+        var all = new java.util.ArrayList<Registry<?>>(List.of(BuiltInRegistries.BLOCK, BuiltInRegistries.ITEM, BuiltInRegistries.BLOCK_ENTITY_TYPE, BuiltInRegistries.DATA_COMPONENT_TYPE, BuiltInRegistries.FLUID, BuiltInRegistries.PARTICLE_TYPE, BuiltInRegistries.RECIPE_SERIALIZER, BuiltInRegistries.LOOT_FUNCTION_TYPE, BuiltInRegistries.LOOT_CONDITION_TYPE, BuiltInRegistries.COMMAND_ARGUMENT_TYPE));
         all.addAll(WorldgenExport.typeRegistries());
         return List.copyOf(all);
     }

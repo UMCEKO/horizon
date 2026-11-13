@@ -1,5 +1,6 @@
 //! Where entities joining, leaving and saving reach Java mods; each does nothing without `--features java-mods`.
 use super::Game;
+use super::explosion::BlastEntity;
 use super::native_entities::Removal;
 use std::collections::HashSet;
 
@@ -58,5 +59,75 @@ impl Game<'_> {
         #[cfg(feature = "java-mods")]
         self.java_entities_save(keys);
         let _ = keys;
+    }
+
+    /// A server blast starts going off: Java notes it for its events (`interaction` is `Explosion.BlockInteraction`'s ordinal); whether it did, for [`Self::java_hook_blast_leave`].
+    pub(super) fn java_hook_blast_enter(
+        &self,
+        center: [f64; 3],
+        radius: f32,
+        fire: bool,
+        interaction: u8,
+        damage_type: &str,
+    ) -> bool {
+        #[cfg(feature = "java-mods")]
+        return self.java_blast_enter(center, radius, fire, interaction, damage_type);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (center, radius, fire, interaction, damage_type);
+            false
+        }
+    }
+
+    /// The blast [`Self::java_hook_blast_enter`] noted is over.
+    pub(super) fn java_hook_blast_leave(&self, entered: bool) {
+        #[cfg(feature = "java-mods")]
+        self.java_blast_leave(entered);
+        let _ = entered;
+    }
+
+    /// The entities `ExplosionEvent.Detonate` left for the blast going off; None when Java did not post it.
+    pub(super) fn java_hook_blast_survivors(&self) -> Option<Vec<BlastEntity>> {
+        #[cfg(feature = "java-mods")]
+        return self.java_blast_survivors();
+        #[cfg(not(feature = "java-mods"))]
+        None
+    }
+}
+
+impl Game<'_> {
+    /// `ItemTossEvent` for a stack `Player.drop` threw: `None` when no mod listens, `Some(None)` when it is gone, `Some(Some(id))` when Java spawned the item.
+    pub(super) fn java_hook_item_toss(
+        &mut self,
+        stack: &horizon_client::items::ItemStack,
+        at: [f64; 3],
+        motion: [f64; 3],
+        delay: i32,
+        named: bool,
+    ) -> Option<Option<u32>> {
+        #[cfg(feature = "java-mods")]
+        return self.java_item_toss(stack, at, motion, delay, named);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (stack, at, motion, delay, named);
+            None
+        }
+    }
+
+    /// `ArrowLooseEvent`: the charge the mods left, `charge` itself when none listens; negative cancels the shot.
+    pub(super) fn java_hook_arrow_loose(
+        &mut self,
+        hand: super::Hand,
+        charge: i32,
+        has_ammo: bool,
+        crossbow: bool,
+    ) -> i32 {
+        #[cfg(feature = "java-mods")]
+        return self.java_arrow_loose(hand, charge, has_ammo, crossbow);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (hand, has_ammo, crossbow);
+            charge
+        }
     }
 }

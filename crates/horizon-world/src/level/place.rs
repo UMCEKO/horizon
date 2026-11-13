@@ -5,6 +5,7 @@ use super::{
     Behaviours, LevelAccess, LevelEvent, Sim, Ticks,
     classes::Class,
     data::ItemKind,
+    flags,
     query::{axis_of, clockwise, counter_clockwise, is_horizontal},
     states::BlockId,
     update::{HORIZONTAL, above, below, rel},
@@ -45,6 +46,14 @@ pub enum PlaceOutcome {
     Placed { pos: BlockPos, state: BlockStateId },
     /// `InteractionResult.FAIL`.
     Failed,
+}
+
+/// A block write NeoForge's placement capture recorded: where, what was there, the write's flags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Snapshot {
+    pub pos: BlockPos,
+    pub old: BlockStateId,
+    pub flags: i32,
 }
 
 /// What a placement would write (`Behaviours::placement_preview`): the block,
@@ -1795,6 +1804,55 @@ impl Behaviours {
         ctx: &PlaceContext,
     ) -> PlaceOutcome {
         self.sim(level, ticks).place(ctx)
+    }
+    /// `BlockItem.place` under NeoForge's snapshot capture: written, `setPlacedBy` run, no `onPlace`, no updates.
+    pub fn place_block_captured<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        ctx: &PlaceContext,
+    ) -> (PlaceOutcome, Vec<Snapshot>) {
+        let mut sim = self.sim(level, ticks);
+        sim.capture = Some(Vec::new());
+        let outcome = sim.place(ctx);
+        (outcome, sim.capture.take().unwrap_or_default())
+    }
+    /// After the event let it: `onPlace` then `markAndNotifyBlock(…, 512)` per snapshot, in order.
+    pub fn finish_captured<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        snapshots: &[Snapshot],
+    ) {
+        let mut sim = self.sim(level, ticks);
+        for snapshot in snapshots {
+            let new = sim.state(snapshot.pos);
+            sim.on_place(new, snapshot.pos, snapshot.old, false);
+            sim.mark_and_notify(
+                snapshot.pos,
+                snapshot.old,
+                new,
+                snapshot.flags,
+                flags::UPDATE_LIMIT,
+            );
+        }
+    }
+    /// After a cancel: each snapshot's old state written back with `flags | UPDATE_CLIENTS`, last first.
+    pub fn restore_captured<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        snapshots: &[Snapshot],
+    ) {
+        let mut sim = self.sim(level, ticks);
+        sim.restoring = true;
+        for snapshot in snapshots.iter().rev() {
+            sim.set_block(
+                snapshot.pos,
+                snapshot.old,
+                snapshot.flags | flags::UPDATE_CLIENTS,
+            );
+        }
     }
     /// `DirectionalPlaceContext.canPlace`: whether the block at the clicked
     /// position can be replaced by the item (a dispenser places only there).

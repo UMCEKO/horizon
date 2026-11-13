@@ -14,6 +14,8 @@ public final class RouteState {
     public static boolean runRan;
     public static boolean initBeforeRun;
     public static int mayInteractCalls;
+    /** The scoreboard handlers that ran, in order, for team `red`. */
+    public static final java.util.List<String> teamLog = new java.util.ArrayList<>();
 
     /** The Java client's own inventory runs the same handlers; only the server's is routed. */
     public static boolean server(Inventory inventory) {

@@ -1,12 +1,15 @@
 package dev.horizonlab.javamods.testmod;
 
+import net.minecraft.client.Minecraft;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
+import net.neoforged.neoforge.client.event.ClientChatReceivedEvent;
 import net.neoforged.neoforge.client.event.RenderGuiLayerEvent;
 import net.neoforged.neoforge.client.event.sound.PlaySoundEvent;
 import net.neoforged.neoforge.client.gui.VanillaGuiLayers;
 import net.neoforged.neoforge.common.NeoForge;
 
-/** Client events native posts from its hooks: a sound it is about to play, and a HUD layer's `Pre`. */
+/** Client events native posts from its hooks: a sound it is about to play, a HUD layer's `Pre`, and the chat lines it shows. */
 final class ClientEvents {
     private ClientEvents() {}
 
@@ -14,6 +17,16 @@ final class ClientEvents {
     private static boolean sound, layer;
 
     static void register() {
+        NeoForge.EVENT_BUS.addListener((ClientChatReceivedEvent.System event) -> {
+            String text = event.getMessage().getString();
+            if (text.contains("horizon recv cancel")) event.setCanceled(true);
+            else if (text.contains("horizon recv edit")) event.setMessage(Component.literal("horizon recv edited"));
+            else if (event.isOverlay() && text.contains("horizon recv bar")) Checks.check("chat_received_overlay", () -> true);
+        });
+        NeoForge.EVENT_BUS.addListener((ClientChatReceivedEvent.Player event) -> {
+            if (!event.getPlayerChatMessage().signedContent().equals("horizon recv player")) return;
+            Checks.check("chat_received_player", () -> event.getSender().equals(Minecraft.getInstance().player.getUUID()));
+        });
         NeoForge.EVENT_BUS.addListener((PlaySoundEvent event) -> {
             if (sound || event.getSound() == null || !event.getSound().getIdentifier().equals(BELL)) return;
             sound = true;

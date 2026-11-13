@@ -82,6 +82,8 @@ pub(super) struct Trip {
     /// The level the player left for another one: the mods are told they
     /// changed dimension when the trip ends (`tell_mods_changed_dimension`).
     pub(super) left: Option<Dim>,
+    /// The return from the End credits: the player respawns in this trip (`PlayerRespawnEvent` with `isEndConquered`).
+    respawn_end_conquered: bool,
 }
 
 /// A vehicle a player rides: an animal, a boat or a minecart. It travels
@@ -831,6 +833,7 @@ impl Game<'_> {
             finder: None,
             placed: false,
             left: Some(source),
+            respawn_end_conquered: credits_respawn,
         });
         if let Err(e) = self.enter_level(source) {
             log::error!("could not reopen {}: {e}", source.id());
@@ -856,6 +859,7 @@ impl Game<'_> {
             finder: None,
             placed: false,
             left: None,
+            respawn_end_conquered: false,
         });
     }
 
@@ -921,6 +925,7 @@ impl Game<'_> {
             finder: None,
             placed: false,
             left: None,
+            respawn_end_conquered: false,
         });
     }
 
@@ -978,6 +983,7 @@ impl Game<'_> {
             finder: None,
             placed: false,
             left: None,
+            respawn_end_conquered: false,
         });
     }
 
@@ -1188,6 +1194,9 @@ impl Game<'_> {
             } else {
                 host.hub.teleport(i, Some(at));
             }
+            if trip.respawn_end_conquered {
+                self.as_guest(trip.conn, |g| g.java_hook_respawned(true));
+            }
             self.tell_mods_changed_dimension(trip.conn, trip.left, trip.dim);
         }
     }
@@ -1335,6 +1344,7 @@ impl Game<'_> {
                 finder: None,
                 placed: true,
                 left: Some(source),
+                respawn_end_conquered: false,
             });
             if let Err(e) = self.enter_level(source) {
                 log::error!("could not reopen {}: {e}", source.id());
@@ -1361,7 +1371,8 @@ impl Game<'_> {
         // `removePlayerImmediately(CHANGED_DIMENSION)` in the old level, then `addDuringTeleport` in the new one.
         let changed = super::native_entities::Removal::ChangedDimension;
         self.java_hook_player_level(uuid, from.id(), false, changed);
-        self.java_hook_player_level(uuid, to.id(), true, changed);
+        #[cfg(feature = "java-mods")]
+        self.as_guest(conn, |g| g.level_add_player(to));
         self.as_guest(conn, |g| {
             g.native_player_changed_dimension(uuid, &name, from.id(), to.id());
         });
@@ -1859,6 +1870,7 @@ mod credits_respawn_tests {
 
         game.lan = Some(host);
         game.handle_server_portal(2);
+        assert!(game.server_trips.iter().any(|t| t.is(2) && t.respawn_end_conquered));
         let host = game.lan.take().unwrap();
         assert!(!host.play[&2].won_game, "the credits are over");
         let guest = &host.hub.guests[0];

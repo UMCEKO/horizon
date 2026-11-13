@@ -3,27 +3,92 @@
 
 use super::*;
 use horizon_client::block_entities::Pos;
-use horizon_java_host::wire::{In, Out};
+use horizon_java_host::bulk;
+use java_mods::JavaSound;
 use native_hooks::TakenModBlockEntity;
 use std::cell::{Cell, RefCell};
 
 /// Most entries one run carries, so its hold of Java's server turn stays bounded.
 const RUN_CAP: usize = 64;
-/// Most request bytes one run carries.
-const RUN_BYTES: usize = 4096;
-/// Request bytes per entry: its packed position.
-const ENTRY_BYTES: usize = 8;
-/// An entry's status in the reply: 0 Java held none there, 1 held and ticked, 2 its tick threw.
-const GONE: u8 = 0;
+/// Java's time for one run before it stops at the next entry: about 44 crusher ticks at POC-TICK's 6.84 µs each, under one `level_tick`'s lock wait.
+const RUN_BUDGET_US: u32 = 300;
 
-/// A run's entries while its crossing is out: which one Java ticks, and the first write back into Horizon.
-struct Run {
+/// What Java did with a run: refused it whole, or ticked a prefix, each entry's (held, sounds) in order.
+enum RunReply {
+    Rejected,
+    Ticked(Vec<(bool, Vec<JavaSound>)>),
+}
+
+/// Reads the reply to a run of `sent` entries, checked whole before any entry's effects are used.
+fn java_be_run_reply(bytes: &[u8], sent: usize) -> std::result::Result<RunReply, bulk::Error> {
+    let reply = bulk::read_reply(bytes, sent)?;
+    if reply.rejected {
+        return Ok(RunReply::Rejected);
+    }
+    Ok(RunReply::Ticked(
+        reply
+            .items()
+            .map(|(status, mut effects)| {
+                let sounds = match status {
+                    bulk::Status::Threw => Vec::new(),
+                    _ => java_mods::java_read_effects(&mut effects).unwrap_or_default(),
+                };
+                (java_be_run_entry(status), sounds)
+            })
+            .collect(),
+    ))
+}
+
+/// A run's entries while its crossing is out, and the first write back into Horizon.
+pub(super) struct Run {
     positions: Vec<Pos>,
-    current: usize,
     /// Entries before this one are back in the world.
     done: usize,
     /// The entry that wrote, taken out of the world before its first write, as the scalar path has it for its whole tick.
     wrote: Option<(usize, Option<TakenModBlockEntity>)>,
+}
+
+impl Run {
+    pub(super) fn new(positions: Vec<Pos>) -> Run {
+        Run {
+            positions,
+            done: 0,
+            wrote: None,
+        }
+    }
+
+    /// Whether a native that `ends` runs, called now, is the first write back into Horizon.
+    pub(super) fn stops_at(&self, ends: bool) -> bool {
+        ends && self.wrote.is_none()
+    }
+
+    /// The entry that wrote back into Horizon, if one did.
+    #[cfg(test)]
+    pub(super) fn wrote_at(&self) -> Option<usize> {
+        self.wrote.as_ref().map(|(k, _)| *k)
+    }
+
+    /// Entries before this one are back in the world already.
+    #[cfg(test)]
+    pub(super) fn done(&self) -> usize {
+        self.done
+    }
+
+    /// The first write, made while Java is on `item`: the entries to put back into the world now, and the one that wrote.
+    pub(super) fn stop(&mut self, item: usize) -> (std::ops::Range<usize>, usize) {
+        let item = item
+            .min(self.positions.len().saturating_sub(1))
+            .max(self.done);
+        let finish = self.done..item;
+        self.done = item;
+        self.wrote = Some((item, None));
+        (finish, item)
+    }
+}
+
+/// How many entries a run of `len` ticked: those Java replied for, at least the first (a failed crossing is its failed scalar call), and the one that wrote whatever the reply says.
+pub(super) fn java_be_run_processed(replied: usize, wrote_at: Option<usize>, len: usize) -> usize {
+    replied.max(1).max(wrote_at.map_or(0, |k| k + 1)).min(len)
 }
 
 thread_local! {
@@ -34,17 +99,6 @@ thread_local! {
 /// The entry `java_block_entity_tick` is about to tick was ticked by its run: whether Java held it.
 pub(super) fn take_preticked() -> Option<bool> {
     PRETICKED.take()
-}
-
-/// `BlockEntities.runEntry`: whether entry `index` may tick, which it may until an earlier one wrote into Horizon.
-pub(super) fn run_entry(index: i32) -> bool {
-    RUN.with_borrow_mut(|run| match run {
-        Some(run) if run.wrote.is_none() => {
-            run.current = usize::try_from(index).unwrap_or(0);
-            true
-        }
-        _ => false,
-    })
 }
 
 /// The cap of a run: `HORIZON_JAVA_BE_RUN_CAP` when set (1 is the scalar path), else `RUN_CAP`.
@@ -58,9 +112,20 @@ fn run_cap() -> usize {
     })
 }
 
-/// How many entries a run whose fixed fields take `header` bytes may carry under `cap`.
-pub(super) fn java_be_run_cap(cap: usize, header: usize) -> usize {
-    cap.min(RUN_BYTES.saturating_sub(header) / ENTRY_BYTES)
+/// The work budget of a run in µs: `HORIZON_JAVA_BE_RUN_BUDGET_US` when set, else `RUN_BUDGET_US`.
+fn run_budget_us() -> u32 {
+    static BUDGET: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *BUDGET.get_or_init(|| {
+        std::env::var("HORIZON_JAVA_BE_RUN_BUDGET_US")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .map_or(RUN_BUDGET_US, |us| us.clamp(1, i32::MAX as u32))
+    })
+}
+
+/// How many entries a run may carry under `cap` and the envelope's count and byte bounds.
+pub(super) fn java_be_run_cap(cap: usize) -> usize {
+    cap.min(bulk::Op::BlockEntityTick.max_items())
 }
 
 /// How many slots from the start of `slots` one run takes: each that `joins` (told its index), up to `cap`.
@@ -77,9 +142,9 @@ pub(super) fn java_be_run_len<S: Copy>(
         .count()
 }
 
-/// One entry of a run's reply: whether Java held it (a throw reads as held, as the scalar path's empty reply does).
-pub(super) fn java_be_run_entry(reply: &mut In<'_>) -> Option<bool> {
-    Some(reply.byte()? != GONE)
+/// Whether Java held an entry (a throw reads as held, as the scalar path's empty reply does).
+pub(super) fn java_be_run_entry(status: bulk::Status) -> bool {
+    status != bulk::Status::Gone
 }
 
 impl Game<'_> {
@@ -104,9 +169,11 @@ impl Game<'_> {
         {
             return 0;
         }
-        let dim = self.dim.id();
-        let cap = java_be_run_cap(run_cap(), 4 + dim.len() + 8 + 4);
-        let len = java_be_run_len(slots, cap, |i, slot| {
+        // A run's callbacks tick nothing else as a run: one run per thread, so `RUN` is never shared across depths.
+        if RUN.with_borrow(Option::is_some) {
+            return 0;
+        }
+        let len = java_be_run_len(slots, java_be_run_cap(run_cap()), |i, slot| {
             (i == 0 || self.block_entity_slot_ticks(slot, ticking))
                 && self.java_runs_block_entity(slot.0)
         });
@@ -114,42 +181,55 @@ impl Game<'_> {
             return 0;
         }
         let positions: Vec<Pos> = slots[..len].iter().map(|s| s.0).collect();
+        let packed: Vec<i64> = positions
+            .iter()
+            .map(|p| BlockPos::new(p.0, p.1, p.2).pack())
+            .collect();
+        let (level, time) = (self.java_level_key(), self.world.game_time);
         // As `java_request` does before each scalar tick.
         self.java_push_stale();
-        let mut out = Out::default();
-        out.text(self.dim.id());
-        out.long(self.world.game_time);
-        out.int(len as i32);
-        for p in &positions {
-            out.long(BlockPos::new(p.0, p.1, p.2).pack());
-        }
-        RUN.set(Some(Run {
-            positions: positions.clone(),
-            current: 0,
-            done: 0,
-            wrote: None,
-        }));
+        RUN.set(Some(Run::new(positions.clone())));
         let reply = horizon_java_host::bridge::with_active(self, || {
-            host.request("block_entity_tick_run", &out.0)
+            host.call_with(
+                "block_entity_tick_run",
+                |out| {
+                    // Within the cap and budget bounds this can't fail; if it did, Java refuses the empty envelope.
+                    let _ = bulk::block_entity_tick(out, run_budget_us(), level, time, &packed);
+                },
+                |reply| Some(java_be_run_reply(reply.0, len)),
+            )
         });
         let run = RUN.take();
         let (done, wrote) = run.map_or((0, None), |r| (r.done, r.wrote));
-        let mut reply = In(reply.as_deref().unwrap_or_default());
-        // A failed crossing is the first entry's failed scalar call: held, no effects.
-        let processed = reply.int().map_or(0, |n| n.clamp(0, len as i32) as usize);
         let (wrote_at, mut taken) = wrote.map_or((None, None), |(k, t)| (Some(k), t));
-        // The entry that wrote was ticked, whatever the reply says.
-        let processed = processed.max(1).max(wrote_at.map_or(0, |k| (k + 1).min(len)));
+        let mut entries = match reply {
+            // Nothing ran in Java and nothing called back, so the loop ticks the first entry on its own.
+            Some(Ok(RunReply::Rejected)) if wrote_at.is_none() => return 0,
+            Some(Ok(RunReply::Rejected)) => Vec::new(),
+            Some(Ok(RunReply::Ticked(entries))) => entries,
+            Some(Err(error)) => {
+                log::error!("Horizon: Java's reply to a block entity run is malformed: {error}");
+                Vec::new()
+            }
+            // A failed crossing is the first entry's failed scalar call: held, no effects.
+            None => Vec::new(),
+        }
+        .into_iter();
+        let processed = java_be_run_processed(entries.len(), wrote_at, len);
         for (j, &pos) in positions.iter().enumerate().take(processed) {
-            let held = java_be_run_entry(&mut reply).unwrap_or(true);
-            self.java_apply_effects(&mut reply);
+            let (held, sounds) = entries.next().unwrap_or((true, Vec::new()));
+            self.java_play_effects(sounds);
             if j < done {
                 if !held {
                     java_mods::java_warn_unheld(BlockPos::new(pos.0, pos.1, pos.2));
                 }
                 continue;
             }
-            let taken = if Some(j) == wrote_at { taken.take() } else { None };
+            let taken = if Some(j) == wrote_at {
+                taken.take()
+            } else {
+                None
+            };
             self.java_finish_preticked(pos, held, taken);
         }
         if profile_on() {
@@ -172,21 +252,27 @@ impl Game<'_> {
         PRETICKED.set(None);
     }
 
-    /// Before each native Java calls: the first that `ends_run` during a run puts the entries before its own back and takes its own out, as the scalar path has them.
+    /// Before each native Java calls: the first that `ends_run` during a run stops Java before its next entry, puts the entries before its own back and takes its own out, as the scalar path has them.
     pub(super) fn java_run_native(&mut self, native: &str) {
-        let start = RUN.with_borrow_mut(|run| {
-            let run = run.as_mut()?;
-            if run.wrote.is_some() || !java_bridges::ends_run(native) {
-                return None;
-            }
-            run.wrote = Some((run.current, None));
-            Some((run.done, run.current, run.positions.clone()))
+        let stops = RUN.with_borrow(|run| {
+            run.as_ref()
+                .is_some_and(|run| run.stops_at(java_bridges::ends_run(native)))
         });
-        let Some((done, current, positions)) = start else {
+        if !stops {
+            return;
+        }
+        // Java names the entry it is on only now, so entries that don't write cost no callback.
+        let item = horizon_java_host::get()
+            .and_then(horizon_java_host::Host::bulk_stop)
+            .unwrap_or(0);
+        let Some(((finish, current), positions)) = RUN.with_borrow_mut(|run| {
+            let run = run.as_mut()?;
+            Some((run.stop(item), run.positions.clone()))
+        }) else {
             return;
         };
         // Held is the reply's to say; one not held warns when the reply comes.
-        for &pos in positions.iter().take(current).skip(done) {
+        for &pos in &positions[finish] {
             self.java_finish_preticked(pos, true, None);
         }
         let taken = positions
@@ -194,7 +280,6 @@ impl Game<'_> {
             .and_then(|&pos| self.take_ticking_mod_block_entity(pos));
         RUN.with_borrow_mut(|run| {
             if let Some(run) = run {
-                run.done = current;
                 run.wrote = Some((current, taken));
             }
         });
@@ -247,8 +332,9 @@ mod java_be_run_tests {
         let slots = [J; 10];
         assert_eq!(run(&slots, 4), 4);
         assert_eq!(run(&slots, 1), 1);
-        assert_eq!(java_be_run_cap(64, 4096 - 3 * ENTRY_BYTES), 3);
-        assert_eq!(java_be_run_cap(2, 0), 2);
+        assert_eq!(java_be_run_cap(64), 64);
+        assert_eq!(java_be_run_cap(2), 2);
+        assert_eq!(java_be_run_cap(100_000), bulk::MAX_ITEMS);
     }
 
     #[test]
@@ -275,11 +361,83 @@ mod java_be_run_tests {
 
     #[test]
     fn java_be_run_reply_entries_read_held_gone_and_threw() {
-        let bytes = [1u8, 0, 2];
-        let mut reply = In(&bytes);
-        assert_eq!(java_be_run_entry(&mut reply), Some(true));
-        assert_eq!(java_be_run_entry(&mut reply), Some(false));
-        assert_eq!(java_be_run_entry(&mut reply), Some(true));
-        assert_eq!(java_be_run_entry(&mut reply), None);
+        assert!(java_be_run_entry(bulk::Status::Done));
+        assert!(!java_be_run_entry(bulk::Status::Gone));
+        assert!(java_be_run_entry(bulk::Status::Threw));
+    }
+
+    /// `GameBridge.writeEffects` with `n` sounds.
+    fn effects(n: usize) -> Vec<u8> {
+        let mut out = horizon_java_host::wire::Out::default();
+        out.int(n as i32);
+        for i in 0..n {
+            out.text(&format!("mod:sound_{i}"));
+            out.double(1.0);
+            out.double(2.0);
+            out.double(3.0);
+            out.float(1.0);
+            out.float(0.5);
+        }
+        out.0
+    }
+
+    fn ticked(bytes: &[u8], sent: usize) -> Vec<(bool, usize)> {
+        match java_be_run_reply(bytes, sent) {
+            Ok(RunReply::Ticked(entries)) => {
+                entries.into_iter().map(|(h, s)| (h, s.len())).collect()
+            }
+            Ok(RunReply::Rejected) => panic!("rejected"),
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    #[test]
+    fn java_be_run_reply_gives_each_entry_its_own_sounds_once() {
+        let (none, one, two) = (effects(0), effects(1), effects(2));
+        let mut out = horizon_java_host::wire::Out::default();
+        bulk::write_reply(
+            &mut out,
+            &[
+                (bulk::Status::Done, one.as_slice()),
+                (bulk::Status::Gone, none.as_slice()),
+                (bulk::Status::Done, two.as_slice()),
+            ],
+        );
+        assert_eq!(ticked(&out.0, 3), [(true, 1), (false, 0), (true, 2)]);
+    }
+
+    #[test]
+    fn java_be_run_reply_keeps_the_prefix_before_a_throw_and_nothing_after() {
+        let one = effects(1);
+        let mut out = horizon_java_host::wire::Out::default();
+        bulk::write_reply(
+            &mut out,
+            &[
+                (bulk::Status::Done, one.as_slice()),
+                (bulk::Status::Threw, &[]),
+            ],
+        );
+        assert_eq!(ticked(&out.0, 4), [(true, 1), (true, 0)]);
+    }
+
+    #[test]
+    fn java_be_run_reply_refused_or_malformed_runs_nothing() {
+        let mut out = horizon_java_host::wire::Out::default();
+        bulk::write_rejected(&mut out);
+        assert!(matches!(
+            java_be_run_reply(&out.0, 3),
+            Ok(RunReply::Rejected)
+        ));
+        let mut out = horizon_java_host::wire::Out::default();
+        let none = effects(0);
+        bulk::write_reply(&mut out, &[(bulk::Status::Done, none.as_slice()); 3]);
+        assert!(
+            java_be_run_reply(&out.0, 2).is_err(),
+            "more entries than were sent"
+        );
+        assert!(
+            java_be_run_reply(&out.0[..out.0.len() - 1], 3).is_err(),
+            "a cut reply"
+        );
     }
 }

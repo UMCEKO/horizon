@@ -47,6 +47,7 @@ final class LoopEdges {
             if (h.loop().equals("<init>") && inject && !s.at().isEmpty() && s.at().stream().allMatch(a -> a.equals("RETURN") || a.equals("TAIL"))) inits.add(h);
             else if (h.loop().equals("run") && inject && !s.at().isEmpty() && s.at().stream().allMatch(a -> a.equals("HEAD")) && h.method().getParameterCount() == 1) runs.add(h);
             else if (h.loop().equals("runTick") && s.kind().equals("modify_arg") && s.atTargets().contains(PAUSE) && h.method().getParameterCount() == 1) pause.add(h);
+            else if (h.loop().equals("run") && inject && s.at().stream().anyMatch(a -> a.equals("RETURN") || a.equals("TAIL"))) throw new IllegalStateException("route Minecraft#run: changes after a main loop are not supported (" + mods.getOrDefault(s.mixin(), s.mixin()) + " " + s.mixin() + ")");
             else System.err.println(unrouted(mods.getOrDefault(s.mixin(), s.mixin()), s.kind(), h.loop(), String.join(",", s.at())));
         }
         for (Method m : Minecraft.class.getDeclaredMethods()) {

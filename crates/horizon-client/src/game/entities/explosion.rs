@@ -229,6 +229,14 @@ fn blast_direction(center: [f64; 3], origin: [f64; 3]) -> [f64; 3] {
 struct ExplosionHookContext<'a> {
     center: [f64; 3],
     blocks: &'a [[i32; 3]],
+    only: Option<&'a [BlastEntity]>,
+}
+
+/// An entity a blast reaches, as `ExplosionEvent.Detonate` lists it: a player by uuid, anything else by id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BlastEntity {
+    Entity(u32),
+    Player([i32; 4]),
 }
 
 /// An entity in the blast's reach: how far (as a share of the blast's
@@ -498,7 +506,14 @@ impl Game<'_> {
         attacker: Option<&(u32, Text)>,
         cause: Option<&horizon_client::advancements::EntityView>,
     ) -> Option<[f64; 3]> {
-        let ExplosionHookContext { center, blocks } = *context;
+        let ExplosionHookContext {
+            center,
+            blocks,
+            only,
+        } = *context;
+        if only.is_some_and(|only| !only.contains(&BlastEntity::Player(self.acting_uuid()))) {
+            return None;
+        }
         let diameter = f64::from(radius * 2.0);
         // Blast protection: `EXPLOSION_KNOCKBACK_RESISTANCE` (0.15 per level and
         // piece, so two Blast Protection IV pieces cancel it).
@@ -658,6 +673,7 @@ impl Game<'_> {
         damage_type: &str,
         interaction: BlockInteraction,
         blocks: &[[i32; 3]],
+        only: Option<&[BlastEntity]>,
     ) -> Vec<(u32, [f64; 3])> {
         if radius < 1.0e-5 {
             return Vec::new();
@@ -682,7 +698,11 @@ impl Game<'_> {
         // same for all of them (`onExplosionHit(this.source)`).
         let attacker = self.blast_attacker();
         let blast_source = self.combat.explosion_cause.clone();
-        let context = ExplosionHookContext { center, blocks };
+        let context = ExplosionHookContext {
+            center,
+            blocks,
+            only,
+        };
         let own = self.explosion_hurt_player(
             &context,
             radius,
@@ -771,7 +791,10 @@ impl Game<'_> {
                 EntityHandle::Cart(i) => EntityHandle::Cart(i - carts_gone),
                 other => other,
             };
-            let hit = with_entity!(self, handle, e => self.blast_hit(e, center, diameter, &blast));
+            let hit = with_entity!(self, handle, e => {
+                let listed = only.is_none_or(|only| only.contains(&BlastEntity::Entity(e.id())));
+                listed.then(|| self.blast_hit(e, center, diameter, &blast)).flatten()
+            });
             let mut destroyed = false;
             if let Some(Hit {
                 dist,
@@ -923,6 +946,64 @@ impl Game<'_> {
         self.explosion_breaks_frames(center, diameter, interaction);
         self.explosion_breaks_decorations(center, diameter, interaction);
         pushed
+    }
+    /// The entities `ServerExplosion.hurtEntities` lists for `ExplosionEvent.Detonate`: the player,
+    /// the guests, then each kind in the walk's order, those in the blast's box (source left out).
+    pub(super) fn explosion_entities(&mut self, center: [f64; 3], radius: f32) -> Vec<BlastEntity> {
+        let reach = f64::from(radius * 2.0) + 1.0;
+        let low = center.map(|c| (c - reach).floor());
+        let high = center.map(|c| (c + reach).floor());
+        let inside = |lo: Vec3, hi: Vec3| {
+            lo.x < high[0]
+                && hi.x > low[0]
+                && lo.y < high[1]
+                && hi.y > low[1]
+                && lo.z < high[2]
+                && hi.z > low[2]
+        };
+        let mut found: Vec<BlastEntity> = self
+            .explosion_listed_player(&inside)
+            .into_iter()
+            .collect();
+        if let Some(host) = self.lan.as_ref() {
+            let guests: Vec<u32> = host
+                .hub
+                .guests
+                .iter()
+                .filter(|g| host.hub.here(g) && g.loaded && !g.dead)
+                .map(|g| g.conn)
+                .collect();
+            for conn in guests {
+                found.extend(
+                    self.as_guest(conn, |g| g.explosion_listed_player(&inside))
+                        .flatten(),
+                );
+            }
+        }
+        let spared = self
+            .combat
+            .explosion_source
+            .filter(|_| self.combat.explosion_source_named);
+        for handle in self.entity_handles() {
+            let (id, bounds) = with_entity!(self, handle, e => (e.id(), e.explosion_box()));
+            if spared != Some(id) && inside(bounds.min_position(), bounds.max_position()) {
+                found.push(BlastEntity::Entity(id));
+            }
+        }
+        found
+    }
+    /// The player standing in the box `inside` tests, as a list entry.
+    fn explosion_listed_player(&self, inside: &dyn Fn(Vec3, Vec3) -> bool) -> Option<BlastEntity> {
+        let p = self.player.as_ref()?;
+        let w = f64::from(p.dimensions.width) / 2.0;
+        let h = f64::from(p.dimensions.height);
+        let at = p.position;
+        (!p.health.dead_or_dying()
+            && inside(
+                Vec3::new(at.x - w, at.y, at.z - w),
+                Vec3::new(at.x + w, at.y + h, at.z + w),
+            ))
+        .then(|| BlastEntity::Player(self.acting_uuid()))
     }
     /// `ServerExplosion.getIndirectSourceEntity`: the causing living entity,
     /// including a TNT igniter or the player who broke an end crystal.
@@ -1145,7 +1226,44 @@ impl Game<'_> {
         resists: Option<([i32; 3], f32)>,
         source: ExplosionSource,
     ) -> Result<()> {
-        if self.serving.is_some() || self.options.dedicated.is_some() {
+        let server = self.serving.is_some() || self.options.dedicated.is_some();
+        let entered = server
+            && self.java_hook_blast_enter(
+                center,
+                radius,
+                fire,
+                match interaction {
+                    BlockInteraction::Keep => 0,
+                    BlockInteraction::Destroy => 1,
+                    BlockInteraction::DestroyWithDecay => 2,
+                },
+                damage_type,
+            );
+        let done = self.server_explode_run(
+            center,
+            radius,
+            interaction,
+            fire,
+            damage_type,
+            resists,
+            source,
+            server,
+        );
+        self.java_hook_blast_leave(entered);
+        done
+    }
+    fn server_explode_run(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        interaction: BlockInteraction,
+        fire: bool,
+        damage_type: &str,
+        resists: Option<([i32; 3], f32)>,
+        source: ExplosionSource,
+        server: bool,
+    ) -> Result<()> {
+        if server {
             let start = ExplosionStart::from(mod_api::__private::built::ExplosionStart {
                 dimension: self.dim.id(),
                 center,
@@ -1186,8 +1304,15 @@ impl Game<'_> {
         let mut targets = self.exploded_positions(center, radius, resists);
         let dimension = self.dim.id();
         self.native_explosion_detonate(dimension, center, &mut targets);
-        let pushed =
-            self.explosion_hurt_entities(center, radius, damage_type, interaction, &targets);
+        let survivors = self.java_hook_blast_survivors();
+        let pushed = self.explosion_hurt_entities(
+            center,
+            radius,
+            damage_type,
+            interaction,
+            &targets,
+            survivors.as_deref(),
+        );
         if interaction != BlockInteraction::Keep {
             // Util.shuffle(list, level.random)
             for i in (2..=targets.len()).rev() {
@@ -1550,6 +1675,7 @@ impl Game<'_> {
                     "minecraft:explosion",
                     BlockInteraction::Destroy,
                     &[],
+                    None,
                 );
                 let mut remaining: Vec<_> = self
                     .dropped

@@ -13,6 +13,7 @@ use super::{
     level_sounds::LevelSound,
     respawn_anchor::RespawnConfig,
 };
+use crate::game::WakeKind;
 use horizon_client::{
     containers::BlockEntity,
     entities::Experience,

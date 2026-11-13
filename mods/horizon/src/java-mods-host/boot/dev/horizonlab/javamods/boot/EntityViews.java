@@ -232,7 +232,11 @@ public final class EntityViews implements LevelEntityGetter<Entity> {
     }
 
     private static ItemStack stack(DataInputStream in, ServerLevel level) throws IOException {
-        byte[] nbt = in.readNBytes(in.readInt());
+        return stack(in.readNBytes(in.readInt()), level);
+    }
+
+    /** An item stack from its saved form; empty for no bytes. */
+    static ItemStack stack(byte[] nbt, ServerLevel level) throws IOException {
         if (nbt.length == 0) return ItemStack.EMPTY;
         Tag tag = decode(nbt);
         return ItemStack.CODEC.parse(level.registryAccess().createSerializationContext(NbtOps.INSTANCE), tag).getOrThrow();

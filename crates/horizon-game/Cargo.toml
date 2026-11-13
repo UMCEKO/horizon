@@ -11,5 +11,9 @@ horizon-client = { path = "../horizon-client" }
 horizon-threads = { path = "../horizon-threads" }
 horizon-mod-package = { path = "../horizon-mod-package", default-features = false, features = ["index"] }
 
+[features]
+# Real Java mods in an embedded JVM (docs/java-mods.md).
+java-mods = ["horizon-client/java-mods"]
+
 [lints]
 workspace = true

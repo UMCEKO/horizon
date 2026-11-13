@@ -1539,6 +1539,10 @@ impl EntityFluidTickWorld for Ticker<'_, '_, '_, '_> {
         self.p.moving.fall_distance = 0.0;
         Ok(())
     }
+    fn scale_fall_distance(&mut self, by: f32) -> Result<(), Error> {
+        self.p.moving.fall_distance *= f64::from(by);
+        Ok(())
+    }
     fn was_touching_water(&self) -> bool {
         self.st.was_touching_water
     }

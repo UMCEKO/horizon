@@ -178,3 +178,20 @@ impl FeatureDecorationPlan {
             .map_err(DecorationError::World)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_root_java_runs_keeps_its_slot_and_the_next_roots_seed_index() {
+        let (java, native) = (FeatureIdentity(0), FeatureIdentity(1));
+        let plan = FeatureDecorationPlan::new(vec![
+            (DecorationBiome(0), vec![vec![java, native]]),
+            (DecorationBiome(1), vec![vec![native]]),
+        ])
+        .unwrap();
+        assert_eq!(plan.seed(java), Some((0, 0)));
+        assert_eq!(plan.seed(native), Some((1, 0)));
+    }
+}

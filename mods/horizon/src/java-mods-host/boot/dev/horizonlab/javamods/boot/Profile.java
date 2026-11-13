@@ -7,7 +7,7 @@ import java.util.Map;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 
-/** `HORIZON_PROFILE`: per-second time of mods' block entity tickers and of the wait for the server side's turn (`lock=`) and its hold (`hold=`), and JFR dumps. */
+/** `HORIZON_PROFILE`: per-second time of mods' block entity tickers, the wait for the server side's turn (`lock=`), its hold (`hold=`), game bus posts by event class (`posts=`), and JFR dumps. */
 final class Profile {
     static final boolean ON = System.getenv("HORIZON_PROFILE") != null && !System.getenv("HORIZON_PROFILE").isEmpty();
     private static final int TOP = 15;
@@ -15,6 +15,7 @@ final class Profile {
     private static final HashMap<String, long[]> WAITS = new HashMap<>();
     private static final HashMap<String, long[]> EVENTS = new HashMap<>();
     private static final HashMap<String, long[]> HOLDS = new HashMap<>();
+    private static final IdentityHashMap<Class<?>, long[]> POSTS = new IdentityHashMap<>();
 
     private Profile() {}
 
@@ -30,6 +31,11 @@ final class Profile {
 
     static synchronized void event(String what, long ns) {
         add(EVENTS.computeIfAbsent(what, k -> new long[3]), ns);
+    }
+
+    /** One post on the game bus of an event of `type`, its listeners' time included (`CompiledEvents`). */
+    static synchronized void post(Class<?> type, long ns) {
+        add(POSTS.computeIfAbsent(type, k -> new long[3]), ns);
     }
 
     static synchronized void wait(String op, long ns) {
@@ -62,11 +68,14 @@ final class Profile {
             a[2] = Math.max(a[2], b[2]);
             return a;
         }));
-        String line = "be=" + rows(ticks) + " lock=" + rows(WAITS) + " ev=" + rows(EVENTS) + " hold=" + rows(HOLDS);
+        var posts = new HashMap<String, long[]>();
+        POSTS.forEach((type, s) -> posts.put(type.getName().substring(type.getName().lastIndexOf('.') + 1), s));
+        String line = "be=" + rows(ticks) + " lock=" + rows(WAITS) + " ev=" + rows(EVENTS) + " hold=" + rows(HOLDS) + " posts=" + rows(posts);
         TICKS.clear();
         WAITS.clear();
         EVENTS.clear();
         HOLDS.clear();
+        POSTS.clear();
         return line;
     }
 

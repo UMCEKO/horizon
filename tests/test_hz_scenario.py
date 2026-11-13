@@ -55,6 +55,8 @@ def default_handler(world):
             return {'body': {'block': world.get(tuple(map(int, args[1:4])), 'air'), 'state': 'x'}}
         if cmd == 'inventory':
             return {'body': {'held': {'item': 'stone', 'count': 4}, 'hotbar': [{'slot': 0, 'item': 'stone', 'count': 4}] + [{'item': None}] * 8, 'main': [{'item': None}] * 27}}
+        if cmd == 'menu':
+            return {'body': {'carried': {'item': 'minecraft:blaze_rod', 'count': 1}, 'level': 3, 'slots': [{'slot': 650, 'stack': {'item': 'minecraft:map', 'count': 1}}]}}
         if cmd == 'state':
             return {'body': {'player': {'position': [1.0, 64.0, 1.0]}}}
         if cmd == 'command':
@@ -100,6 +102,17 @@ class StepTests(Base):
                                              ['tp', '1', '2', '3'], ['look', '90', '10'], ['look-at', '1.5', '2', '3'], ['key', 'e', 'tap'], ['close']])
         self.assertEqual(result['steps'][0]['name'], 'go')
 
+    def test_station_steps_are_ctl_lines(self):
+        result = self.run_script([{'interact': [0, 100, 2]}, {'click_item': {'item': 'minecraft:stone', 'shift': True}}, {'erase': 2}, {'type': 'w11'}, {'click_slot': 650}])
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(self.server.calls, [['interact', '0', '100', '2'], ['wait-for', 'screen', 'station', '--timeout', '10'], ['inventory'], ['click-slot', '0', 'shift'],
+                                             ['type-back'], ['type-back'], ['type', 'w11'], ['click-slot', '650']])
+
+    def test_click_item_fails_without_the_item(self):
+        result = self.run_script([{'click_item': {'item': 'minecraft:stick'}}])
+        self.assertFalse(result['ok'])
+        self.assertEqual(self.server.calls, [['inventory']])
+
     def test_ctl_failure_stops_the_run(self):
         result = self.run_script([{'wait': 1}, {'fail': 1}, {'wait': 2}])
         self.assertFalse(result['ok'])
@@ -131,6 +144,12 @@ class CheckTests(Base):
         self.assertTrue(self.check({'slot': 1, 'item': 'air', 'within': 0})['ok'])
         self.assertTrue(self.check({'near': [2, 64, 1], 'radius': 2, 'within': 0})['ok'])
         self.assertFalse(self.check({'near': [20, 64, 1], 'radius': 2, 'within': 0})['ok'])
+
+    def test_menu(self):
+        self.assertTrue(self.check({'menu': {'carried': 'blaze_rod', 'level': 3, 'slots': {'650': 'minecraft:map', '600': None}}, 'within': 0})['ok'])
+        self.assertFalse(self.check({'menu': {'carried': None}, 'within': 0})['ok'])
+        self.assertFalse(self.check({'menu': {'level': 10}, 'within': 0})['ok'])
+        self.assertFalse(self.check({'menu': {'slots': {'650': 'stick'}}, 'within': 0})['ok'])
 
     def test_output_of_the_last_command(self):
         result = self.run_script([{'command': '/give'}, {'check': {'output': 'Gave 4', 'within': 0}}, {'check': {'output': 'Unknown', 'within': 0}}])

@@ -9,6 +9,8 @@ pub enum TravelFluidTag {
 }
 pub trait LivingFluidWorld: LivingAirWorld {
     fn in_water(&mut self) -> Result<bool, Self::Error>;
+    /// Out of lava, in a mod fluid type it can swim in (`canSwimInFluidType`): it travels as in water.
+    fn swims_in_fluid_type(&mut self) -> Result<bool, Self::Error>;
     fn sprinting(&mut self) -> Result<bool, Self::Error>;
     fn water_slow_down(&mut self) -> Result<f32, Self::Error>;
     fn water_movement_efficiency(&mut self) -> Result<f64, Self::Error>;
@@ -145,7 +147,7 @@ pub fn travel_in_fluid<W: LivingFluidWorld>(world: &mut W, input: Vec3) -> Resul
     let falling = world.velocity().y <= 0.0;
     let old_y = world.y();
     let gravity = world.effective_gravity()?;
-    if world.in_water()? {
+    if world.in_water()? || world.swims_in_fluid_type()? {
         travel_in_water(world, input, gravity, falling, old_y)?;
     } else {
         travel_in_lava(world, input, gravity, falling, old_y)?;

@@ -1,7 +1,7 @@
 // game-module-cfg: feature java-mods
 //! The Java client's entities, fed from what the window applied of the server's entity packets: Java never ticks, moves or draws them.
 
-use super::java_screens::live::{java_client_remote, java_seen};
+use super::java_screens::live::{java_client_remote, java_seen, java_seen_now};
 use super::*;
 use horizon_java_host::wire::Out;
 use horizon_protocol::buf::{Codec, Writer, unpack_degrees};
@@ -20,7 +20,17 @@ enum Entry {
     Move,
     Event,
     Remove,
+    Tick,
 }
+
+/// The `EntityJoinLevelEvent` and `EntityLeaveLevelEvent` bits of an ADD's last byte: which of them the client's listeners hear for the type.
+const JOIN_BIT: u8 = 1;
+const LEAVE_BIT: u8 = 2;
+const JOIN_EVENT: &str = "net/neoforged/neoforge/event/entity/EntityJoinLevelEvent";
+const LEAVE_EVENT: &str = "net/neoforged/neoforge/event/entity/EntityLeaveLevelEvent";
+/// The `EntityTickEvent` bits of a TICK's last byte.
+const PRE_BIT: u8 = 1;
+const POST_BIT: u8 = 2;
 
 /// An entity's place, look, motion and footing as the window last applied them.
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
@@ -39,6 +49,8 @@ trait Applied {
     fn position(&self, id: i32) -> Option<[f64; 3]>;
     /// The vehicle `SetPassengers` seated `passenger` in.
     fn vehicle(&self, passenger: i32) -> Option<i32>;
+    /// The join and leave bits for entities of this type on the client.
+    fn joins_and_leaves(&self, type_id: &str) -> u8;
 }
 
 impl Applied for remote::Remote {
@@ -56,6 +68,15 @@ impl Applied for remote::Remote {
             .get(&(passenger as u32))
             .map(|&v| v as i32)
     }
+    fn joins_and_leaves(&self, type_id: &str) -> u8 {
+        let heard = |event: &str| {
+            // Without an analysis every listener hears every type, as on the server.
+            horizon_java_host::entity_facts::get()
+                .is_none_or(|f| f.event(event).is_some_and(|e| f.admits(e, type_id, true)))
+        };
+        let bit = |event: &str, bit: u8| if heard(event) { bit } else { 0 };
+        bit(JOIN_EVENT, JOIN_BIT) | bit(LEAVE_EVENT, LEAVE_BIT)
+    }
 }
 
 thread_local! {
@@ -65,8 +86,7 @@ thread_local! {
 impl Game<'_> {
     /// Whether the Java client hears of this packet once the window applied it: from the connection's start to a Java client that connects with it, the window's own server's or one over the connection.
     pub(in crate::game) fn java_feeds(&self, packet: &C) -> bool {
-        horizon_java_host::get().is_some()
-            && (self.integrated.is_some() || java_client_remote())
+        self.java_feeding()
             && matches!(
                 packet,
                 C::AddEntity(_)
@@ -85,6 +105,37 @@ impl Game<'_> {
             )
     }
 
+    fn java_feeding(&self) -> bool {
+        horizon_java_host::get().is_some() && (self.integrated.is_some() || java_client_remote())
+    }
+
+    /// The window ticked the mob at `index` of its client entities: the Java client posts the tick events its listeners hear for the type, in the order the window ticked them.
+    pub(in crate::game) fn java_entity_ticked(&mut self, index: usize) {
+        if !self.java_feeding() {
+            return;
+        }
+        let Some(m) = self.mobs.get(index) else {
+            return;
+        };
+        let id = m.id as i32;
+        let mask = tick_mask(&m.kind.id);
+        if mask == 0 || !POSES.with_borrow(|poses| poses.contains_key(&id)) {
+            return;
+        }
+        let mut out = Out::default();
+        out.int(id);
+        out.0.push(mask);
+        let mut entry = vec![Entry::Tick as u8];
+        entry.extend(out.0);
+        self.java_entity_entry(java_seen_now(), &entry);
+    }
+
+    /// The Java client's listeners refused these entities' joins: its level never had them, so neither does the window.
+    pub(in crate::game) fn java_entities_refused(&mut self, ids: &[i32]) {
+        POSES.with_borrow_mut(|poses| ids.iter().for_each(|id| _ = poses.remove(id)));
+        self.remove_entities(ids);
+    }
+
     /// The window applied the play packet at `seq`; `packet` is it when the Java client hears of it.
     pub(in crate::game) fn java_feed(&mut self, packet: Option<&C>, seq: u64) {
         let entry = packet.and_then(|packet| {
@@ -101,6 +152,16 @@ impl Game<'_> {
 /// The Java client's world is gone: what it was told of entities with it.
 pub(in crate::game) fn java_client_entities_left() {
     POSES.with_borrow_mut(HashMap::clear);
+}
+
+/// The `EntityTickEvent` bits the client's listeners hear for entities of this type; both without an analysis, as for the joins.
+fn tick_mask(type_id: &str) -> u8 {
+    use horizon_java_host::entity_facts::Hook;
+    let Some(f) = horizon_java_host::entity_facts::get() else {
+        return PRE_BIT | POST_BIT;
+    };
+    let bit = |hook: Hook, bit: u8| if f.hook_admits(hook, type_id, true) { bit } else { 0 };
+    bit(Hook::EntityTickPre, PRE_BIT) | bit(Hook::EntityTickPost, POST_BIT)
 }
 
 fn body<T: Codec<T>>(packet: &T) -> Vec<u8> {
@@ -131,13 +192,15 @@ fn entry(
             out.int(p.id);
             out.long((p.uuid >> 64) as i64);
             out.long(p.uuid as i64);
-            out.text(&applied.type_name(p.kind)?);
+            let type_id = applied.type_name(p.kind)?;
+            out.text(&type_id);
             pose.position.iter().for_each(|v| out.double(*v));
             out.float(pose.pitch);
             out.float(pose.yaw);
             out.float(pose.head);
             pose.motion.iter().for_each(|v| out.double(*v));
             out.int(p.data);
+            out.0.push(applied.joins_and_leaves(&type_id));
             Entry::Add
         }
         C::SetEntityData(p) if p.id != me => {
@@ -277,6 +340,9 @@ mod tests {
         fn vehicle(&self, passenger: i32) -> Option<i32> {
             self.vehicles.get(&passenger).copied()
         }
+        fn joins_and_leaves(&self, type_id: &str) -> u8 {
+            if type_id == "minecraft:pig" { JOIN_BIT | LEAVE_BIT } else { 0 }
+        }
     }
 
     fn world() -> World {
@@ -301,7 +367,7 @@ mod tests {
     }
 
     /// `ClientEntities.read`'s order for an ADD.
-    fn read_add(entry: &[u8]) -> (i32, u128, String, [f64; 3], [f32; 3], [f64; 3], i32) {
+    fn read_add(entry: &[u8]) -> (i32, u128, String, [f64; 3], [f32; 3], [f64; 3], i32, u8) {
         assert_eq!(entry[0], Entry::Add as u8);
         let mut r = In(&entry[1..]);
         let id = r.int().unwrap();
@@ -319,16 +385,18 @@ mod tests {
             r.double().unwrap(),
         ];
         let data = r.int().unwrap();
+        let events = r.byte().unwrap();
         assert!(r.0.is_empty());
-        (id, uuid, kind, position, look, motion, data)
+        (id, uuid, kind, position, look, motion, data, events)
     }
 
     #[test]
     fn add_entry_carries_the_packet_with_its_angles_in_degrees() {
         let mut poses = HashMap::new();
         let entry = entry(&add(7), 1, &world(), &mut poses).unwrap();
-        let (id, uuid, kind, position, look, motion, data) = read_add(&entry);
+        let (id, uuid, kind, position, look, motion, data, events) = read_add(&entry);
         assert_eq!((id, kind.as_str(), data), (7, "minecraft:pig", 3));
+        assert_eq!(events, JOIN_BIT | LEAVE_BIT);
         assert_eq!(uuid, 0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10);
         assert_eq!(position, [1.5, 64.0, -2.5]);
         // Pitch, yaw, head yaw: 64/256 of a turn is 90 degrees, -128 is -180.

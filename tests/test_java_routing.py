@@ -39,6 +39,14 @@ class Lint(unittest.TestCase):
         bare = GOOD.replace(GOOD[GOOD.index('        route!'):GOOD.index('        self.set')], '')
         self.assertTrue(any('unrouted' in e for e in problems(bare)))
 
+    def test_a_client_gate_belongs_to_the_window(self):
+        client = GOOD.replace('Recv::Player', 'Recv::Client')
+        self.assertEqual('window', jr.scan_text(client, 'f.rs')[0]['kind'])
+        outside = jr.lint(jr.scan_text(client, 'crates/horizon-client/src/game/levels.rs'), PACK, [], set(), {BRIDGE}, set())
+        self.assertEqual(1, sum('a window gate (Recv::Client) outside the window' in e for e in outside))
+        inside = jr.lint(jr.scan_text(client, 'crates/horizon-client/src/game/java/java_window_routes.rs'), PACK, [], set(), {BRIDGE}, set())
+        self.assertEqual([], inside)
+
     def test_a_gate_outside_impl_game_fails(self):
         other = GOOD.replace("impl Game<'_>", 'impl Other')
         self.assertTrue(any('gate not first in a Game method' in e for e in problems(other)))

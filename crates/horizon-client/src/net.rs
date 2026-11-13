@@ -120,10 +120,7 @@ pub enum Event {
     /// `ClientboundTransferPacket`: the server sent us to another address.
     /// The connection ends right after; the game reconnects there with the
     /// stored cookies.
-    Transfer {
-        host: String,
-        port: i32,
-    },
+    Transfer { host: String, port: i32 },
     /// `ClientboundServerLinksPacket`: the links the pause menu's "Server
     /// Links..." lists (ClientCommonPacketListenerImpl.handleServerLinks).
     ServerLinks(Vec<cfg::ServerLink>),

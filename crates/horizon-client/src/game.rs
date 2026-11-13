@@ -167,11 +167,35 @@ use horizon_core::{
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use horizon_mod_package::selection::{Argument, LaunchArguments};
-pub(crate) use java_hooks::{
-    java_hook_loot_condition, java_hook_loot_function, java_hook_loot_rolled, java_hook_loot_wanted,
-};
+use java_hooks::TrampleBy;
 #[cfg(feature = "java-mods")]
 pub(crate) use java_hooks::java_hook_resolve;
+
+/// The vanilla `stopSleepInBed` caller a wake-up mirrors, by the flags it passes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WakeKind {
+    /// `ServerLevel.wakeUpAllPlayers`.
+    Morning,
+    /// A player leaving the bed.
+    LeaveBed,
+    /// `Player.tick`: the bed is gone, or it is day.
+    BedGone,
+}
+
+impl WakeKind {
+    /// `wakeImmediately` and `updateLevelForSleepingPlayers`.
+    pub(crate) fn flags(self) -> (bool, bool) {
+        match self {
+            Self::Morning => (false, false),
+            Self::LeaveBed => (false, true),
+            Self::BedGone => (true, true),
+        }
+    }
+}
+pub(crate) use java_hooks::{
+    java_hook_loot_condition, java_hook_loot_function, java_hook_loot_rolled,
+    java_hook_loot_wanted, java_living_fall, java_living_jump, java_player_flyable_fall,
+};
 pub use native_block_entity_draw::BlockEntityDraw;
 pub use native_claimed_items::{HeldItemSlot, ModEvent};
 pub use native_components::NativeComponentError;
@@ -4059,15 +4083,43 @@ impl Game<'_> {
         let sent = self.lan_broadcast_changes();
         laps.lap("tb_broadcast");
         self.save_chunks_eagerly();
-        self.with_level(|b, level, ticks| {
-            b.run_block_events(level, ticks);
-        });
+        if self.java_hook_piston_listened() {
+            self.run_block_events_stepped();
+        } else {
+            self.with_level(|b, level, ticks| {
+                b.run_block_events(level, ticks);
+            });
+        }
         laps.lap("tb_block_events");
         self.process_level_events()?;
         laps.lap("tb_level_events");
         self.sync_moving_pistons();
         laps.lap("tb_pistons");
         Ok(sent)
+    }
+
+    /// `ServerLevel.runBlockEvents` one event at a time, so a piston's NeoForge events cross with no level borrowed.
+    fn run_block_events_stepped(&mut self) {
+        use horizon_world::level::BlockEventStep;
+        while let Some(step) = self.with_level(|b, l, t| b.next_block_event(l, t)) {
+            let BlockEventStep::Piston {
+                event,
+                state,
+                direction,
+                extend,
+            } = step
+            else {
+                continue;
+            };
+            if self.java_hook_piston(event.pos, direction, extend, false) {
+                continue;
+            }
+            let moved = self.with_level(|b, l, t| b.finish_piston_event(l, t, event, state));
+            if moved {
+                self.java_hook_piston(event.pos, direction, extend, true);
+            }
+        }
+        self.with_level(|b, _, t| b.end_block_events(t));
     }
 
     fn tick_blocks(&mut self) -> Result<Option<usize>> {
@@ -5086,6 +5138,12 @@ impl Game<'_> {
             self.native_item_toss(player, &thrown.item, thrown.count, &mut canceled);
             if canceled {
                 return None;
+            }
+            let at = [eye[0], y, eye[2]];
+            match self.java_hook_item_toss(&thrown, at, v, 40, thrown_from_hand) {
+                Some(None) => return None,
+                Some(Some(id)) => return Some(id),
+                None => {}
             }
         }
         self.spawn_item(thrown, [eye[0], y, eye[2]], v, 40);
@@ -7313,19 +7371,25 @@ impl Game<'_> {
     fn landing_block_updates(
         &mut self,
         player: Option<u128>,
+        conn: Option<u32>,
         event: &horizon_client::landing::FallEvent,
     ) -> Option<LandingVibration> {
         use horizon_client::landing::FallEvent;
         use horizon_world::block_landing::LandingEvent;
         let mut vibration = None;
         // The block the landing changed, what it replaced, and what it became.
+        let mut trample = None;
         let (position, from, to, flags) = match *event {
             FallEvent::Write {
                 position,
                 from,
                 state,
                 flags,
-            } => (position, from, state, flags as i32),
+                trample: distance,
+            } => {
+                trample = distance;
+                (position, from, state, flags as i32)
+            }
             FallEvent::Destroy {
                 position, state, ..
             } => {
@@ -7377,7 +7441,9 @@ impl Game<'_> {
             }
             _ => return None,
         };
-        if self.landing_change_cancelled(player, position, from, to) {
+        if self.landing_change_cancelled(player, position, from, to)
+            || self.landing_trample_cancelled(conn, position, trample)
+        {
             self.world
                 .set(position.x, position.y, position.z, from)
                 .ok();
@@ -7411,6 +7477,24 @@ impl Game<'_> {
             .registry
             .default_state("minecraft:air")
             .unwrap_or(BlockStateId(0))
+    }
+    /// Whether a Java mod cancelled the farmland trample a player's landing recorded
+    /// (`BlockEvent.FarmlandTrampleEvent`), posted as that player.
+    fn landing_trample_cancelled(
+        &mut self,
+        conn: Option<u32>,
+        position: BlockPos,
+        trample: Option<f64>,
+    ) -> bool {
+        let Some(distance) = trample else {
+            return false;
+        };
+        let at = [position.x, position.y, position.z];
+        let post = |game: &mut Self| game.java_hook_trample(at, distance, TrampleBy::Player);
+        match conn {
+            Some(conn) => self.as_guest(conn, post).unwrap_or(false),
+            None => post(self),
+        }
     }
     /// Whether a mod cancelled a landing's block change
     /// (`native_entity_change_block_pre`): asked with the two blocks' names and
@@ -11739,6 +11823,10 @@ impl Game<'_> {
         let mut charge = i32::try_from(ticks).unwrap_or(i32::MAX);
         let mut canceled = false;
         self.native_arrow_loose(stack, ammo.is_some(), &mut charge, &mut canceled);
+        if !canceled {
+            charge = self.java_hook_arrow_loose(self.hand, charge, ammo.is_some(), false);
+            canceled = charge < 0;
+        }
         let power = item_use::bow_release_power(ammo.is_some(), charge, canceled);
         let (Some(power), Some(ammo)) = (power, ammo) else {
             return;
@@ -12529,6 +12617,10 @@ impl Game<'_> {
         true
     }
     fn wake_up(&mut self) {
+        self.wake_up_as(WakeKind::LeaveBed);
+    }
+    /// `wake_up` for the vanilla `stopSleepInBed` caller `kind` names.
+    fn wake_up_as(&mut self, kind: WakeKind) {
         if self.remote.is_some() {
             // InBedChatScreen.sendWakeUp: the server wakes the player.
             self.remote_stop_sleeping();
@@ -12577,7 +12669,8 @@ impl Game<'_> {
             }
         }
         if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
-            self.native_player_bed_leave(player, &name, head);
+            let (wake_immediately, update_level) = kind.flags();
+            self.native_player_bed_leave(player, &name, head, wake_immediately, update_level);
         }
     }
     fn tick_sleep(&mut self) {
@@ -12596,7 +12689,11 @@ impl Game<'_> {
                     .as_ref()
                     .is_none_or(|p| p.health.dead_or_dying())
             {
-                self.wake_up();
+                self.wake_up_as(if bed_gone {
+                    WakeKind::BedGone
+                } else {
+                    WakeKind::LeaveBed
+                });
                 return;
             }
             // setPosToBed: the bed's top (`getSleepHeight`) and 0.125 above
@@ -12652,7 +12749,7 @@ impl Game<'_> {
                 self.world.weather.thunder_time = 0;
             }
             if self.sleeping.is_some() {
-                self.wake_up();
+                self.wake_up_as(WakeKind::Morning);
             }
             self.wake_guests();
             // SleepStatus.removeAllSleepers: waking everyone is not announced.

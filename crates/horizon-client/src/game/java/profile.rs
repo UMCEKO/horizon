@@ -44,6 +44,8 @@ struct Window {
     java_ns: u64,
     /// Entity saved forms built and loaded back for Java views.
     entity_nbt: (u64, u64),
+    /// Crossings to Java for an event, by its class: none for a class no Java mod listens to.
+    event_crossings: std::collections::BTreeMap<&'static str, u64>,
 }
 
 impl Window {
@@ -53,6 +55,9 @@ impl Window {
         let (builds, loads) = super::java_entities::take_nbt_counts();
         self.entity_nbt.0 += builds;
         self.entity_nbt.1 += loads;
+        for (event, n) in super::java_listener::take_crossings() {
+            *self.event_crossings.entry(event).or_default() += n;
+        }
         for span in spans {
             let row = self.spans.entry(span.name).or_default();
             row.0 += 1;
@@ -97,8 +102,17 @@ impl Window {
         } else {
             spans.join(",")
         };
+        let crossings: Vec<String> = std::mem::take(&mut self.event_crossings)
+            .into_iter()
+            .map(|(event, n)| format!("{event}|{n}"))
+            .collect();
+        let crossings = if crossings.is_empty() {
+            "-".into()
+        } else {
+            crossings.join(",")
+        };
         format!(
-            "t={unix_ms} ticks={} mean_ms={mean:.2} max_ms={max:.2} p99_ms={p99:.2} players={} chunks={} mobs={} items={} orbs={} block_entities={} java_ms={java_ms:.2} java_pct={java_pct:.1} entity_nbt_builds={nbt_builds} entity_nbt_loads={nbt_loads} spans={spans}",
+            "t={unix_ms} ticks={} mean_ms={mean:.2} max_ms={max:.2} p99_ms={p99:.2} players={} chunks={} mobs={} items={} orbs={} block_entities={} java_ms={java_ms:.2} java_pct={java_pct:.1} entity_nbt_builds={nbt_builds} entity_nbt_loads={nbt_loads} event_crossings={crossings} spans={spans}",
             ticks.len(),
             load.players,
             load.chunks,

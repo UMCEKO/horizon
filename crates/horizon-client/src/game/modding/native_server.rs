@@ -2017,6 +2017,7 @@ impl Game<'_> {
         };
         host.hub.refresh_permissions();
         self.native_filter_commands(None);
+        self.java_hook_player_commands(None, true);
         if let Some(host) = self.lan.as_mut() {
             host.hub.resend_commands();
         }

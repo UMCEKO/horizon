@@ -1,6 +1,7 @@
 //! Real NeoForge and real mod jars in a JVM embedded in this process (`docs/java-mods.md`).
 
 pub mod bridge;
+pub mod bulk;
 pub mod entity_facts;
 pub mod profile;
 pub mod routes;
@@ -11,10 +12,10 @@ pub mod wire;
 pub use jni;
 
 use jni::objects::{
-    GlobalRef, JByteArray, JByteBuffer, JClass, JObject, JObjectArray, JStaticMethodID, JString,
-    JValue,
+    GlobalRef, JByteArray, JByteBuffer, JClass, JObject, JObjectArray, JStaticFieldID,
+    JStaticMethodID, JString, JValue,
 };
-use jni::signature::ReturnType;
+use jni::signature::{JavaType, Primitive, ReturnType};
 use jni::sys::{jint, jvalue};
 use jni::{InitArgsBuilder, JNIEnv, JNIVersion, JavaVM, NativeMethod};
 use std::cell::{Cell, RefCell};
@@ -98,6 +99,8 @@ impl RunArgs {
             cp_at,
             format!("-Djava.class.path={classpath}{CP_SEP}{host}"),
         );
+        // The host jar's `BusAgent` gives NeoForge's bus the call sites compiled event dispatch aims.
+        options.push(format!("-javaagent:{host}"));
         Ok(RunArgs {
             java,
             options,
@@ -304,12 +307,14 @@ impl Hasher for Fnv {
     }
 }
 
-/// What a request crosses with: Host's class, its `dispatch`, `arena` and `overflow`, and the ops by their index in Java's table.
+/// What a request crosses with: Host's class, its `dispatch`, `arena` and `overflow`, the bulk cell, and the ops by their index in Java's table.
 struct Entry {
     class: GlobalRef,
     dispatch: JStaticMethodID,
     arena: JStaticMethodID,
     overflow: JStaticMethodID,
+    bulk_item: JStaticFieldID,
+    bulk_stop: JStaticFieldID,
     ops: HashMap<Box<str>, jint, BuildHasherDefault<Fnv>>,
 }
 
@@ -766,6 +771,24 @@ impl Host {
         })
     }
 
+    /// Ends this thread's bulk call before its next item (`Host.bulkStop`) and says which item Java is on (`Host.bulkItem`); field accesses, not a crossing.
+    pub fn bulk_stop(&self) -> Option<usize> {
+        let mut env = self.vm.get_env().ok()?;
+        // SAFETY: the global reference is Host's class and lives as long as `self`.
+        let class = unsafe { JClass::from_raw(self.entry.class.as_raw()) };
+        let item = env
+            .get_static_field_unchecked(
+                &class,
+                self.entry.bulk_item,
+                JavaType::Primitive(Primitive::Int),
+            )
+            .and_then(|item| item.i())
+            .ok()?;
+        env.set_static_field(&class, self.entry.bulk_stop, JValue::Bool(1))
+            .ok()?;
+        usize::try_from(item).ok()
+    }
+
     fn timed<R>(&self, op: &str, f: impl FnOnce() -> R) -> R {
         let started = profile::dir().map(|_| std::time::Instant::now());
         let _node = profile::cross(profile::Way::Request, op);
@@ -905,6 +928,12 @@ impl Entry {
         let dispatch = find(env, &class, "dispatch", "(ILjava/nio/ByteBuffer;I)I")?;
         let arena = find(env, &class, "arena", "(I)Ljava/nio/ByteBuffer;")?;
         let overflow = find(env, &class, "overflow", "()[B")?;
+        let bulk_item = env
+            .get_static_field_id(&class, "bulkItem", "I")
+            .map_err(|e| e.to_string())?;
+        let bulk_stop = env
+            .get_static_field_id(&class, "bulkStop", "Z")
+            .map_err(|e| e.to_string())?;
         let names = env
             .call_static_method(&class, "ops", "()[Ljava/lang/String;", &[])
             .and_then(|names| names.l())
@@ -923,6 +952,8 @@ impl Entry {
             dispatch,
             arena,
             overflow,
+            bulk_item,
+            bulk_stop,
             ops,
         })
     }
@@ -1075,7 +1106,11 @@ mod tests {
         let run = RunArgs::parse(Path::new("/run"), ARGS, None).unwrap();
         assert_eq!(
             run.options,
-            ["-Djava.class.path=/a.jar:/b.jar:/h.jar", "-Dx=1"]
+            [
+                "-Djava.class.path=/a.jar:/b.jar:/h.jar",
+                "-Dx=1",
+                "-javaagent:/h.jar"
+            ]
         );
         assert_eq!(run.prog, ["--gameDir", "/run", "--fml.x", "1"]);
         assert!(run.client);

@@ -1081,8 +1081,15 @@ pub(crate) fn install_stack_hooks() {
             if !mod_api::__private::listened(mod_api::HookId::ItemAttributeModifier) {
                 return;
             }
-            if let Ok(stack) = stack.try_into_api() {
-                mod_api::item::item_attributes::native_item_attribute_modifier(&stack, value);
+            if let Ok(api) = stack.try_into_api() {
+                #[cfg_attr(feature = "java-mods", allow(unused_mut))]
+                let mut post = || {
+                    mod_api::item::item_attributes::native_item_attribute_modifier(&api, value)
+                };
+                #[cfg(feature = "java-mods")]
+                crate::game::java_listen_item_attributes::with_engine_stack(stack, post);
+                #[cfg(not(feature = "java-mods"))]
+                post();
             }
         },
     });

@@ -19,6 +19,10 @@ horizon-official-servers = { path = "../horizon-official-servers" }
 horizon-discord = { path = "../horizon-discord" }
 log = "0.4"
 
+[features]
+# Real Java mods in an embedded JVM (docs/java-mods.md).
+java-mods = ["horizon-game/java-mods"]
+
 [build-dependencies]
 # The build script runs on the host, but embeds resources based on the target OS.
 winresource = "0.1"

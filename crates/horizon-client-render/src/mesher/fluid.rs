@@ -524,6 +524,7 @@ mod tests {
                 slope_find_distance: 4,
                 converts_to_source: false,
             },
+            entity: None,
         })
         .unwrap();
         let air = Info {

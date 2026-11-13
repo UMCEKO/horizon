@@ -2,10 +2,11 @@
 //! Vanilla methods Java mods reach, served by Horizon's own ports (`docs/java-mods.md`).
 
 use super::*;
-pub(super) use horizon_java_host::bridge::{Bytes, Dir, LevelOn, Point, Pos, Skip, State, Text};
+pub(super) use horizon_java_host::bridge::{Bytes, Dir, LevelOn, Point, Pos, Skip, State, TeamName, Text};
 pub(super) use horizon_world::registry::BlockStateId;
 
 mod block_entities;
+mod client_window;
 pub(super) mod client_world;
 mod effects;
 mod entities;
@@ -13,6 +14,7 @@ mod level_api;
 mod packets;
 mod player;
 mod rules;
+mod scoreboard;
 mod server;
 mod values;
 mod world;
@@ -24,6 +26,7 @@ pub(super) fn bridges() -> Vec<horizon_java_host::bridge::Bridge> {
     horizon_java_host::bridge::before_native::<Game<'static>>(Game::java_run_native);
     [
         block_entities::table(),
+        client_window::table(),
         client_world::table(),
         effects::table(),
         entities::table(),
@@ -31,6 +34,7 @@ pub(super) fn bridges() -> Vec<horizon_java_host::bridge::Bridge> {
         packets::table(),
         player::table(),
         rules::table(),
+        scoreboard::table(),
         server::table(),
         values::table(),
         world::table(),
@@ -46,10 +50,8 @@ pub(super) fn bridges() -> Vec<horizon_java_host::bridge::Bridge> {
 pub(super) fn ends_run(native: &str) -> bool {
     !matches!(
         native,
-        // The run's own question before each entry.
-        "block_entity_run_entry"
         // Does nothing in Horizon.
-        | "level_send_block_updated"
+        "level_send_block_updated"
         // Reads of blocks, chunks, signals, height and light.
         | "level_get_block_state"
         | "level_is_loaded"

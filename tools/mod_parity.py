@@ -2,7 +2,7 @@
 """Mod coverage: which events and mixin handlers run on a real NeoForge client and on Horizon, step by step through one scripted session.
 
     mod_parity.py mixins --install DIR --out OUT         the static list of every mixin handler of the install's mods
-    mod_parity.py compare --forge F --horizon H --mixins M --out OUT
+    mod_parity.py compare --forge F --horizon H --mixins M [--listened LOG] --out OUT
     mod_parity.py explain --run DIR    adds "Where to fix" to a finished run's report: vanilla callers of the gaps and Horizon's place for each
     mod_parity.py run --install DIR --scenario basic --out OUT   Parts 1 to 4: real client, then Horizon, then the comparison
 """
@@ -353,7 +353,21 @@ def frame_listened_of(install):
     return {key.replace('/', '.') for key, value in events.items() if value.get('changes')} & FRAME_EVENTS
 
 
-def compare_events(forge, horizon, frame_listened=None):
+CENSUS = re.compile(r'Horizon: server event (\S+) (listened by|not listened)')
+
+
+def census(path):
+    """{event class: listened} from a Horizon game log's census lines."""
+    found = {}
+    for line in Path(path).read_text(errors='replace').splitlines():
+        m = CENSUS.search(line)
+        if m:
+            found[m.group(1)] = m.group(2) == 'listened by'
+    return found
+
+
+def compare_events(forge, horizon, frame_listened=None, listened=None):
+    listened = listened or {}
     frame_listened = set(FRAME_EVENTS if frame_listened is None else frame_listened)
     steps = forge['steps']
     totals = {side: [collections.Counter(), collections.Counter()] for side in SIDES}
@@ -391,10 +405,14 @@ def compare_events(forge, horizon, frame_listened=None):
     frame_unlistened = [{'event': c, 'count': n} for c, n in sorted(forge_all.items()) if c in FRAME_EVENTS and c not in horizon_all and c not in frame_listened]
     frame_present = sorted(c for c in FRAME_EVENTS if c in forge_all and c in horizon_all)
     extra = [{'event': c, 'count': n} for c, n in horizon_all.items() if c not in forge_all]
+    unlistened = [m for m in missing if listened.get(m['event']) is False]
+    missing = [m for m in missing if listened.get(m['event']) is not False]
+    counts = [m for m in counts if listened.get(m['event']) is not False]
+    unlistened = [{'event': m['event'], 'count': m['count'], 'first_step': m['first_step']} for m in unlistened]
     missing.sort(key=lambda m: -m['count'])
     extra.sort(key=lambda m: -m['count'])
     return {'missing': missing, 'extra': extra, 'count_mismatches': counts, 'order_differences': orders,
-            'frame_unlistened': frame_unlistened, 'frame_present': frame_present}
+            'frame_unlistened': frame_unlistened, 'frame_present': frame_present, 'unlistened': sorted(unlistened, key=lambda m: -m['count'])}
 
 
 def resolve_handler(known, mixin, name):
@@ -431,9 +449,9 @@ def compare_mixins(forge, horizon, mixins):
     return rows, other
 
 
-def compare(forge, horizon, mixins, frame_listened=None):
+def compare(forge, horizon, mixins, frame_listened=None, listened=None):
     rows, other = compare_mixins(forge, horizon, mixins)
-    return {'events': compare_events(forge, horizon, frame_listened), 'mixins': rows, 'other_merged_calls': other, 'steps': forge['steps']}
+    return {'events': compare_events(forge, horizon, frame_listened, listened), 'mixins': rows, 'other_merged_calls': other, 'steps': forge['steps']}
 
 
 def table(headers, rows):
@@ -455,6 +473,7 @@ def report_markdown(result, forge, horizon):
     frame = [f'{c.rsplit(".", 1)[-1]} {"present" if c in ev["frame_present"] else "not fired (no listener)" if any(u["event"] == c for u in ev["frame_unlistened"]) else "missing (listened)"}'
              for c in sorted(FRAME_EVENTS) if c in ev['frame_present'] or any(m['event'] == c for m in ev['missing']) or any(u['event'] == c for u in ev['frame_unlistened'])]
     lines += ['', f'Frame events (by presence, HUD rule): {", ".join(frame) or "none in the run"}']
+    lines += ['', '## Not listened (Horizon builds none)', ''] + (table(['event', 'count', 'first step'], [[m['event'], m['count'], m['first_step']] for m in ev['unlistened']]) if ev['unlistened'] else ['none'])
     lines += ['', '## Extra events (Horizon only)', ''] + table(['event', 'count'], [[m['event'], m['count']] for m in ev['extra']])
     lines += ['', '## Count mismatches', ''] + table(['step', 'side', 'event', 'forge', 'horizon'],
                                                      [[m['step'], m['side'], m['event'], m['forge'], m['horizon']] for m in ev['count_mismatches']])
@@ -499,7 +518,8 @@ def explain_run(out, install=None, cache=None):
 def compare_command(args):
     forge, horizon = load_run(args.forge, args.java), load_run(args.horizon, args.java)
     mixins = json.loads(Path(args.mixins).read_text())
-    write_report(compare(forge, horizon, mixins, frame_listened_of(getattr(args, 'install', None))), forge, horizon, args.out)
+    listened = census(args.listened) if getattr(args, 'listened', None) else None
+    write_report(compare(forge, horizon, mixins, frame_listened_of(getattr(args, 'install', None)), listened), forge, horizon, args.out)
     print(Path(args.out) / 'report.md')
 
 
@@ -525,7 +545,7 @@ def flatten(scenario):
     return steps
 
 
-KEYS = {'key.inventory': 'e', 'key.jump': 'space', 'key.sprint': 'ctrl', 'key.forward': 'w', 'key.togglePerspective': 'f5'}
+KEYS = {'key.inventory': 'e', 'key.jump': 'space', 'key.sprint': 'ctrl', 'key.forward': 'w', 'key.togglePerspective': 'f5', 'key.drop': 'q'}
 
 
 def ctl_commands(kind, arg):
@@ -547,6 +567,8 @@ def ctl_commands(kind, arg):
         return [['key', KEYS[arg], 'down' if kind == 'press' else 'up']]
     if kind == 'close':
         return [['close']]
+    if kind == 'respawn':
+        return [['respawn']]
     raise ValueError(f'unknown step {kind}')
 
 
@@ -767,6 +789,8 @@ def run_horizon(install, scenario, out, world, parity_jar, host_jars, game_dir, 
             subprocess.run([f'{java}/bin/jcmd', str(pid), 'JFR.dump', 'name=parity', f'filename={out / "horizon.jfr"}'], capture_output=True, text=True)
         ctl('quit')
         time.sleep(5)
+        sources = [out / 'launch.log', out / 'ctl.log', homes / 'horizon' / 'logs' / 'latest.log']
+        (out / 'game.log').write_text('\n'.join(f.read_text(errors='replace') for f in sources if f.is_file()))
         (out / 'driver-errors.txt').write_text('\n'.join(errors))
         return {'ok': True, 'errors': errors}
     finally:
@@ -796,7 +820,8 @@ def run_command(args):
         print('horizon:', result)
     horizon = build_aggregate(out / 'horizon', java, out / 'horizon' / 'horizon.jfr') if (out / 'horizon' / 'horizon.jfr').is_file() else None
     if forge and horizon:
-        write_report(compare(forge, horizon, entries, frame_listened_of(install)), forge, horizon, out)
+        census_log = Path(args.listened) if args.listened else out / 'horizon' / 'game.log'
+        write_report(compare(forge, horizon, entries, frame_listened_of(install), census(census_log) if census_log.is_file() else None), forge, horizon, out)
         explain_run(out, install)
         print(out / 'report.md')
 
@@ -812,6 +837,7 @@ def main():
     c.add_argument('--horizon', required=True)
     c.add_argument('--mixins', required=True)
     c.add_argument('--out', required=True)
+    c.add_argument('--listened', help='a Horizon game log whose census lines say which server events have a listener')
     c.add_argument('--install', help='the install whose analysis/replaces.json says which frame events a mod listens to')
     c.add_argument('--java', default=os.environ.get('JAVA_HOME'))
     e = sub.add_parser('explain', help='regenerate the "Where to fix" section of a finished run')
@@ -825,6 +851,7 @@ def main():
     r.add_argument('--jars', help='where the parity jars are built (default HORIZON_JAVA_MODS_DIR)')
     r.add_argument('--host-jars', help='the built horizon-java-{host,boot,plugin}.jar (default: the install\'s)')
     r.add_argument('--game-dir', help='the folder with the built horizon-ctl and horizon-client (needed unless --skip-horizon)')
+    r.add_argument('--listened', help='the census log (default: the Horizon run\'s game log)')
     r.add_argument('--skip-real', action='store_true')
     r.add_argument('--skip-horizon', action='store_true')
     args = parser.parse_args()

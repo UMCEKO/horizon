@@ -13,6 +13,22 @@ pub(in crate::game) enum Recv {
     Scoreboard,
     /// The block entity at this position of the current level.
     BlockEntity(horizon_core::position::BlockPos),
+    /// A level's view.
+    Level(crate::game::Dim),
+    /// The Java client's object for the route's owner (`Minecraft`, its keyboard and mouse handlers, level, player): only from the window's frame or input.
+    Client,
+}
+
+/// What a route's body fn calls to mark one of vanilla's early returns.
+pub(in crate::game) mod route {
+    /// Marks the route stub only when a bridge runs the body; a native call of it leaves nothing behind.
+    pub(in crate::game) fn early<T>(value: T) -> T {
+        if horizon_java_host::bridge::has_active() {
+            horizon_java_host::bridge::early(value)
+        } else {
+            value
+        }
+    }
 }
 
 #[cfg(feature = "java-mods")]
@@ -46,8 +62,37 @@ macro_rules! gui_route {
     ($key:literal) => {};
 }
 
+/// Marks the native site that serves an environment attribute key from Java's probe; expands to nothing.
+#[allow(unused_macros)]
+macro_rules! env_route {
+    ($key:literal) => {};
+}
+
 #[allow(unused_imports)]
-pub(in crate::game) use {gui_route, route_gate as route};
+pub(in crate::game) use {env_route, gui_route, route_gate as route};
+
+/// Whether a mod patches the attribute system in this install, so the window's sky is Java's probe values.
+#[cfg(feature = "java-mods")]
+pub(in crate::game) fn client_env_routed() -> bool {
+    env_route!("net/minecraft/world/attribute/EnvironmentAttributeProbe#tick(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/phys/Vec3;)V");
+    env_route!("net/minecraft/world/attribute/EnvironmentAttributeSystem#addDynamicLayers(Lnet/minecraft/world/attribute/EnvironmentAttributeSystem$Builder;Lnet/minecraft/world/level/Level;)V");
+    env_route!("net/minecraft/world/attribute/EnvironmentAttributeSystem$ValueSampler#computeValueNotPositional()Ljava/lang/Object;");
+    env_route!("net/minecraft/world/attribute/EnvironmentAttributeSystem$ValueSampler#computeValuePositional(Lnet/minecraft/world/phys/Vec3;Lnet/minecraft/world/attribute/SpatialAttributeInterpolator;)Ljava/lang/Object;");
+    let Some(routes) = horizon_java_host::routes::get() else {
+        return false;
+    };
+    ENV_KEYS
+        .iter()
+        .any(|key| routes.id(key).is_some_and(|id| routes.get(id).on))
+}
+
+#[cfg(feature = "java-mods")]
+const ENV_KEYS: [&str; 4] = [
+    "net/minecraft/world/attribute/EnvironmentAttributeProbe#tick(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/phys/Vec3;)V",
+    "net/minecraft/world/attribute/EnvironmentAttributeSystem#addDynamicLayers(Lnet/minecraft/world/attribute/EnvironmentAttributeSystem$Builder;Lnet/minecraft/world/level/Level;)V",
+    "net/minecraft/world/attribute/EnvironmentAttributeSystem$ValueSampler#computeValueNotPositional()Ljava/lang/Object;",
+    "net/minecraft/world/attribute/EnvironmentAttributeSystem$ValueSampler#computeValuePositional(Lnet/minecraft/world/phys/Vec3;Lnet/minecraft/world/attribute/SpatialAttributeInterpolator;)Ljava/lang/Object;",
+];
 
 /// A routed `Component` argument: its saved form.
 pub(in crate::game) struct ComponentArg<'a>(pub &'a horizon_core::nbt::Tag);
@@ -78,6 +123,21 @@ pub(in crate::game) struct HolderArg<'a>(pub &'a str);
 #[allow(dead_code)] // gated routes construct it
 pub(in crate::game) struct KeyArg<'a>(pub &'a str, pub &'a str);
 
+/// A routed `PlayerTeam`: its name, then its packed tag (empty for a team the board no longer has), which builds the team the view dropped.
+pub(in crate::game) struct TeamArg(pub String, pub Option<horizon_client::scoreboard::Team>);
+
+impl TeamArg {
+    /// The board's team of that name, as it stands now.
+    pub(in crate::game) fn named(board: &horizon_client::scoreboard::Scoreboard, name: &str) -> Self {
+        Self(name.to_owned(), board.team(name).cloned())
+    }
+
+    /// A team the call removed: its packed form from before.
+    pub(in crate::game) fn removed(team: horizon_client::scoreboard::Team) -> Self {
+        Self(team.name.clone(), Some(team))
+    }
+}
+
 /// A routed `Level`: its dimension's id.
 #[allow(dead_code)] // gated routes construct it
 pub(in crate::game) struct LevelArg<'a>(pub &'a str);
@@ -89,6 +149,19 @@ pub(in crate::game) struct TransitionArg(pub Vec<u8>);
 /// A routed `ValueInput`: a compound tag.
 #[allow(dead_code)] // gated routes construct it
 pub(in crate::game) struct InputArg<'a>(pub &'a horizon_core::nbt::Tag);
+
+/// A routed `KeyEvent`, as `ClientBridge.events` builds one: the key's name, the modifiers, SDL's keycode.
+pub(in crate::game) struct KeyEventArg {
+    pub name: String,
+    pub modifiers: i32,
+    pub keycode: i32,
+}
+
+/// A routed `BlockState`: Java's id of a native state.
+pub(in crate::game) struct StateArg(pub horizon_world::registry::BlockStateId);
+
+/// A routed `@Nullable Vec3` of a client method.
+pub(in crate::game) struct NullableVec3(pub Option<[f64; 3]>);
 
 /// A routed `ValueOutput`: nothing crosses in; the reply carries what Java wrote.
 #[allow(dead_code)] // gated routes construct it
@@ -396,6 +469,15 @@ mod gate {
             out.text(self.1);
         }
     }
+    impl RouteArg for super::TeamArg {
+        fn put(&self, out: &mut Out) {
+            out.text(&self.0);
+            match &self.1 {
+                Some(team) => out.bytes(&crate::game::java_mods::write_tag(team.pack()).expect("a team encodes as NBT")),
+                None => out.bytes(&[]),
+            }
+        }
+    }
     impl RouteArg for super::LevelArg<'_> {
         fn put(&self, out: &mut Out) {
             out.text(self.0);
@@ -441,6 +523,30 @@ mod gate {
     }
     impl RouteArg for super::OutputArg {
         fn put(&self, _out: &mut Out) {}
+    }
+    impl RouteArg for super::KeyEventArg {
+        fn put(&self, out: &mut Out) {
+            out.text(&self.name);
+            out.int(self.modifiers);
+            out.int(self.keycode);
+        }
+    }
+    impl RouteArg for super::StateArg {
+        fn put(&self, out: &mut Out) {
+            let java = horizon_java_host::bridge::STATES
+                .get()
+                .and_then(|m| m.to_java.get(self.0.0 as usize).copied())
+                .unwrap_or(horizon_java_host::bridge::UNMAPPED);
+            out.int(java);
+        }
+    }
+    impl RouteArg for super::NullableVec3 {
+        fn put(&self, out: &mut Out) {
+            out.bool(self.0.is_some());
+            if let Some(at) = self.0 {
+                RouteArg::put(&at, out);
+            }
+        }
     }
     impl RouteArg for &horizon_client::items::ItemStack {
         fn put(&self, out: &mut Out) {
@@ -571,6 +677,9 @@ mod gate {
             outputs: usize,
             args: impl FnOnce(&mut Out),
         ) -> Option<(R, Vec<Tag>)> {
+            if recv == Recv::Client {
+                return self.client_route_call(id, args).map(|value| (value, Vec::new()));
+            }
             horizon_java_host::get()?;
             let key = &*routes::get()?.get(id).key;
             self.java_bind_states();
@@ -583,7 +692,10 @@ mod gate {
                 }
                 Recv::Static => out.0.push(2),
                 Recv::Server => out.0.push(3),
-                Recv::Scoreboard => out.0.push(4),
+                Recv::Scoreboard => {
+                    out.0.push(4);
+                    self.java_scoreboard_fill(&mut out);
+                }
                 Recv::BlockEntity(pos) => {
                     self.java_level_key();
                     out.0.push(5);
@@ -591,6 +703,13 @@ mod gate {
                     out.long(self.world.game_time);
                     out.long(pos.pack());
                 }
+                Recv::Level(dim) => {
+                    self.java_register_level(dim);
+                    out.0.push(1);
+                    out.int(dim.key().slot() as i32);
+                    out.long(self.world.game_time);
+                }
+                Recv::Client => unreachable!("client routes take client_route"),
             }
             args(&mut out);
             let Some(reply) = self.java_request("route", &out.0) else {
@@ -612,6 +731,36 @@ mod gate {
             }
             self.java_drain_block_events();
             Some((value, written))
+        }
+
+        /// A [`Recv::Client`] route: op `client_route`, which the Java client runs while its own thread holds still, so the route's natives act on this window's game; `None` before the Java client joined.
+        pub(in crate::game) fn client_route_call<R: RouteRet>(
+            &mut self,
+            id: RouteId,
+            args: impl FnOnce(&mut Out),
+        ) -> Option<R> {
+            if !crate::game::java_screens::java_client_joined() {
+                return None;
+            }
+            horizon_java_host::get()?;
+            let key = &*routes::get()?.get(id).key;
+            self.java_bind_states();
+            let mut out = Out::default();
+            out.int(id.0 as i32);
+            // `Recv::Client`'s wire byte.
+            out.0.push(9);
+            args(&mut out);
+            let reply = self
+                .java_request("client_route", &out.0)
+                .filter(|reply| !reply.is_empty());
+            let Some(reply) = reply else {
+                panic!("Horizon: route {key} failed in the Java client (its stack trace is above)");
+            };
+            // 2: the Java client holds no receiver now (between levels): the window's body runs alone.
+            if reply[0] == 2 {
+                return None;
+            }
+            Some(read_value::<R>(key, &mut In(&reply)))
         }
     }
 
@@ -809,6 +958,29 @@ mod gate {
             assert_eq!(out.0, want);
             let hex: String = out.0.iter().map(|b| format!("{b:02x}")).collect();
             println!("ROUTE_ARGS_2 {hex}");
+        }
+
+        #[test]
+        fn client_args_write_as_java_reads_them() {
+            let key = super::super::KeyEventArg {
+                name: "key.keyboard.b".into(),
+                modifiers: 2,
+                keycode: 98,
+            };
+            let mut out = Out::default();
+            RouteArg::put(&key, &mut out);
+            RouteArg::put(&super::super::NullableVec3(None), &mut out);
+            RouteArg::put(&super::super::NullableVec3(Some([0.5, 64.0, -3.0])), &mut out);
+            let mut want = vec![0, 0, 0, 14];
+            want.extend(b"key.keyboard.b");
+            want.extend([0, 0, 0, 2, 0, 0, 0, 98]);
+            // `ClientRoutes.keyEvent`, then `Routing.plan`'s nullable `Vec3`: absent, then present.
+            want.push(0);
+            want.push(1);
+            for v in [0.5f64, 64.0, -3.0] {
+                want.extend(v.to_be_bytes());
+            }
+            assert_eq!(out.0, want);
         }
 
         #[test]

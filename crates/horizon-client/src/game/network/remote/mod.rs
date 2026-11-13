@@ -138,7 +138,7 @@ fn chat_type_decorate(
 }
 
 /// A text component the server sent, for the HUD.
-pub(super) fn remote_text(tag: &Tag) -> horizon_client::text::Text {
+pub(in crate::game) fn remote_text(tag: &Tag) -> horizon_client::text::Text {
     use horizon_client::scoreboard::{comp_text, tag_to_json};
     comp_text(&tag_to_json(tag))
 }
@@ -227,6 +227,36 @@ struct QueuedChat {
     sender: u128,
     /// The chat type's network ID (`ChatType.Bound.chatType`).
     chat_type: i32,
+    /// The packet's bound chat type, for the Java client's `ClientChatReceivedEvent`.
+    bound: play::ChatTypeBound,
+    /// The signed message's fields, for a player message only.
+    body: Option<ChatBody>,
+}
+
+/// What `PlayerChatMessage` holds of a player message beyond its decorated line, as the packet sent it.
+#[derive(Clone)]
+#[cfg_attr(not(feature = "java-mods"), expect(dead_code, reason = "only the Java client reads it"))]
+pub(in crate::game) struct ChatBody {
+    pub(in crate::game) index: i32,
+    pub(in crate::game) signature: Option<Vec<u8>>,
+    pub(in crate::game) content: String,
+    pub(in crate::game) timestamp: i64,
+    pub(in crate::game) salt: i64,
+    pub(in crate::game) unsigned: Option<Tag>,
+    pub(in crate::game) filtered: bool,
+}
+
+/// A message's bound chat type and body, while mods are told it arrived.
+pub(in crate::game) type EventChat = (play::ChatTypeBound, Option<ChatBody>);
+
+thread_local! {
+    static EVENT_CHAT: std::cell::RefCell<Option<EventChat>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The message `ClientChatReceivedEvent` is being posted for; `None` for a system message.
+#[cfg_attr(not(feature = "java-mods"), expect(dead_code, reason = "only the Java client reads it"))]
+pub(in crate::game) fn event_chat() -> Option<EventChat> {
+    EVENT_CHAT.with_borrow(Clone::clone)
 }
 
 /// `ChatTrustLevel`; a modified message keeps the signed content it was
@@ -1973,6 +2003,8 @@ impl Game<'_> {
             narration,
             sender: 0,
             chat_type: chat_type.chat_type,
+            bound: chat_type.clone(),
+            body: None,
         });
     }
 
@@ -2074,6 +2106,8 @@ impl Game<'_> {
             narration,
             sender,
             chat_type,
+            bound,
+            body,
         } = chat;
         // ChatListener.showMessageToPlayer: Only Show Secure Chat drops what is not secure.
         if matches!(trust, ChatTrust::NotSecure) && self.settings.file.bool("onlyShowSecureChat") {
@@ -2081,7 +2115,16 @@ impl Game<'_> {
         }
         // handleChatMessageError says its line as system chat, and mods are not told of it.
         let error = matches!(trust, ChatTrust::Error);
-        if !error && !self.chat_received(false, false, sender, Some(chat_type), &mut line) {
+        if !error
+            && !self.chat_received(
+                false,
+                false,
+                sender,
+                Some(chat_type),
+                Some((&bound, body.as_ref())),
+                &mut line,
+            )
+        {
             return false;
         }
         let source = horizon_client::chat::ChatSource::Player;
@@ -2103,17 +2146,20 @@ impl Game<'_> {
         overlay: bool,
         sender: u128,
         chat_type: Option<i32>,
+        message: Option<(&play::ChatTypeBound, Option<&ChatBody>)>,
         line: &mut horizon_client::text::Text,
     ) -> bool {
         if !mod_api::__private::listened(mod_api::HookId::ClientChatReceived) {
             return true;
         }
+        EVENT_CHAT.set(message.map(|(bound, body)| (bound.clone(), body.cloned())));
         let registries = self.remote.as_ref().map(|r| Arc::clone(&r.registries));
         let name = chat_type
             .zip(registries.as_deref())
             .and_then(|(id, registries)| registries.name("minecraft:chat_type", id));
         let mut cancel = false;
         self.native_client_chat_received(system, overlay, sender, name, line, &mut cancel);
+        EVENT_CHAT.set(None);
         !cancel
     }
 
@@ -2282,263 +2328,6 @@ impl Game<'_> {
             self.sync_moving_pistons();
         }
         polled
-    }
-    fn poll_remote_events(&mut self) -> Result<()> {
-        let Some(r) = self.remote.as_mut() else {
-            return Ok(());
-        };
-        let mut events = std::mem::take(&mut r.backlog);
-        // Chunk packets start decoding now; the frame that reaches one in
-        // order inserts its column.
-        for event in r.session.poll() {
-            events.push_back(match event {
-                Event::Packet(p, seq) if matches!(*p, C::LevelChunkWithLight(_)) => {
-                    match r.decoder.submit(r.chunk_format.clone(), p) {
-                        None => Received::Chunk(r.chunk_format.clone(), seq),
-                        Some(p) => Received::Event(Event::Packet(p, seq)),
-                    }
-                }
-                event => Received::Event(event),
-            });
-        }
-        let overdue = r
-            .backlog_since
-            .is_some_and(|since| since.elapsed() >= BACKLOG_LIMIT);
-        let mut chunks = Duration::ZERO;
-        // A run of ForgetLevelChunk (thousands when the server's view moves far: a
-        // teleport at 32 chunks) is forgotten at once, before whatever follows it.
-        let mut forgotten = horizon_client::fast_hash::FxHashSet::default();
-        while let Some(item) = events.pop_front() {
-            if let Received::Event(Event::Packet(packet, seq)) = &item
-                && let C::ForgetLevelChunk(p) = &**packet
-            {
-                self.observe_client_packet(packet);
-                forgotten.insert((p.pos[0], p.pos[1]));
-                self.java_feed(None, *seq);
-                continue;
-            }
-            self.forget_remote_columns(&mut forgotten, true);
-            let chunk = matches!(item, Received::Chunk(..));
-            if chunk && !overdue && chunks >= CHUNK_PACKETS_PER_FRAME {
-                events.push_front(item);
-                break;
-            }
-            let started = chunk.then(Instant::now);
-            let event = match item {
-                Received::Event(event) => event,
-                Received::Chunk(format, seq) => {
-                    // A column still decoding waits for the next frame, with
-                    // what came after it, overdue or not.
-                    let Some(next) = self.remote.as_ref().map(|r| r.decoder.next()) else {
-                        break;
-                    };
-                    let (packet, column) = match next {
-                        Next::Ready(decoded) => decoded,
-                        Next::Decoding => {
-                            events.push_front(Received::Chunk(format, seq));
-                            break;
-                        }
-                        Next::Lost => {
-                            log::warn!("Horizon: the chunk decoder stopped; a column is missing");
-                            continue;
-                        }
-                    };
-                    self.observe_client_packet(&packet);
-                    if let C::LevelChunkWithLight(p) = *packet {
-                        self.remote_chunk(&p, Some((&format, column)));
-                    }
-                    self.java_feed(None, seq);
-                    chunks += started.map_or(Duration::ZERO, |t| t.elapsed());
-                    continue;
-                }
-            };
-            match event {
-                Event::Status(s) => {
-                    if let Some(r) = self.remote.as_mut() {
-                        r.status = s;
-                    }
-                }
-                Event::Joined {
-                    registries,
-                    name,
-                    uuid,
-                    java,
-                } => {
-                    self.java_remote_joined(java);
-                    self.set_registries(registries);
-                    self.extras_joined();
-                    // handleLogin: the level loading screen replaces any dialog.
-                    self.close_dialogs();
-                    if let Some(r) = self.remote.as_mut() {
-                        r.joined = true;
-                        // handleLogin: startWaitingForNewLevel with Reason.OTHER.
-                        r.profile = uuid;
-                        r.profile_name = name.clone();
-                        // LevelLoadingScreen's line: no player name.
-                        r.status = horizon_client::lang::get_or(
-                            "multiplayer.downloadingTerrain",
-                            "Loading terrain...",
-                        );
-                    }
-                }
-                Event::Features(features) => {
-                    if let Some(remote) = &mut self.remote {
-                        remote.features = features.into();
-                    }
-                }
-                Event::Brand(brand) => {
-                    if let Some(remote) = &mut self.remote {
-                        remote.brand = brand;
-                    }
-                }
-                Event::QuietCommands => {
-                    if let Some(remote) = &mut self.remote {
-                        remote.quiet_commands = true;
-                    }
-                }
-                Event::Java(frame, seq) => self.java_wire_in(&frame, seq),
-                Event::ModNet => {
-                    if let Some(remote) = &mut self.remote {
-                        remote.mod_net = true;
-                    }
-                }
-                Event::FarTerrain(offer) => {
-                    if let Some(remote) = &mut self.remote {
-                        remote.far_terrain = Some(offer);
-                    }
-                }
-                Event::Reconfiguring => {
-                    // handleConfigurationStart: the held-back chat shows, then
-                    // clearClientLevel opens ServerReconfigScreen over no level.
-                    self.flush_chat_queue();
-                    self.send_chat_acknowledgement();
-                    self.close_dialogs();
-                    // A proxy's next server offers its own far terrain and quiet commands, if any.
-                    if let Some(remote) = &mut self.remote {
-                        remote.far_terrain = None;
-                        remote.quiet_commands = false;
-                        remote.mod_net = false;
-                    }
-                    self.clear_lod();
-                    if let Some(remote) = &self.remote {
-                        remote.session.reset_far_terrain();
-                    }
-                    self.remove_local_player_body();
-                    self.set_screen(Screen::Playing);
-                    self.capture(false);
-                    // clearClientLevel drops the client level now, so its
-                    // unload comes before the configuration screen, not
-                    // after the next login's load.
-                    self.forget_all_remote_columns();
-                    if let Some(old) = self.remote.as_mut().and_then(|r| r.heard_level.take()) {
-                        self.native_client_level_unload(&old);
-                    }
-                    self.native_lifecycle.begin_close();
-                    self.native_lifecycle_world_closed();
-                    let ticks = self.ticks;
-                    if let Some(r) = self.remote.as_mut() {
-                        r.reconfiguring = Some(ticks);
-                        r.chat_tree_received = false;
-                    }
-                }
-                Event::Reconfigured(registries) => {
-                    // handleConfigurationStart → clearClientLevel, and the next
-                    // ClientPacketListener starts with no players or scoreboard,
-                    // no waypoints (its own ClientWaypointManager: a proxy's next
-                    // server never untracks the last one's), and its new
-                    // ClientSuggestionProvider with no custom chat completions.
-                    // clearClientLevel clears the narrator.
-                    self.clear_narrator();
-                    self.hud_disconnected();
-                    self.score.board = Default::default();
-                    self.clear_waypoints();
-                    if let Some(r) = self.remote.as_mut() {
-                        r.attachments.clear();
-                        r.players.clear();
-                        r.tab_players.clear();
-                        r.listed.clear();
-                        r.signatures = Default::default();
-                        r.custom_completions.clear();
-                    }
-                    self.ui.registries.custom_completions.clear();
-                    self.set_registries(registries);
-                }
-                // handleTransfer: "Cannot transfer to server from
-                // singleplayer" (no ServerData), so the world just closes.
-                Event::Transfer { host, port } => {
-                    if let Some(r) = self.remote.as_mut()
-                        && r.session.address != "local"
-                    {
-                        r.transfer = Some(format!("{host}:{port}"));
-                    }
-                }
-                Event::PackPush(p) => self.handle_pack_push(p),
-                Event::PackPop(id) => self.handle_pack_pop(id),
-                Event::ServerLinks(links) => {
-                    if let Some(r) = self.remote.as_mut() {
-                        r.server_links = super::server_links::trusted(links);
-                    }
-                }
-                Event::ShowDialog(dialog) => self.show_dialog(&dialog),
-                Event::ClearDialog => self.clear_dialog(),
-                Event::CodeOfConduct(text) => self.handle_code_of_conduct(text),
-                Event::DecodeError(e) => {
-                    if let Some(r) = self.remote.as_mut() {
-                        r.decode_errors += 1;
-                        if r.decode_errors <= 20 {
-                            log::warn!("Horizon: skipped undecodable packet {e}");
-                        }
-                    }
-                }
-                Event::Disconnected {
-                    reason,
-                    key,
-                    from_server,
-                } => {
-                    log::info!("Horizon: disconnected: {reason}");
-                    // ClientboundTransferPacket left a target: connect there
-                    // instead of showing the disconnect, the stored cookies
-                    // carried over (ClientCommonPacketListenerImpl.
-                    // handleTransfer → ConnectScreen.startConnecting).
-                    let transfer = self.remote.as_mut().and_then(|r| {
-                        r.transfer.take().map(|address| {
-                            (address, r.session.name.clone(), r.session.cookies.clone())
-                        })
-                    });
-                    if let Some((address, name, cookies)) = transfer {
-                        self.leave_server(None)?;
-                        self.connect_server_with_cookies(&address, &name, Some(cookies))?;
-                        return Ok(());
-                    }
-                    let retry = self.reconnect_after(&reason, key.as_deref(), from_server);
-                    self.leave_server(Some(reason))?;
-                    self.offer_reconnect(retry);
-                    return Ok(());
-                }
-                Event::Packet(packet, seq) => {
-                    let fed = self.java_feeds(&packet).then(|| packet.clone());
-                    self.handle_packet(*packet)?;
-                    self.java_feed(fed.as_deref(), seq);
-                }
-            }
-            chunks += started.map_or(Duration::ZERO, |t| t.elapsed());
-            if self.remote.is_none() {
-                break;
-            }
-        }
-        if self.remote.is_some() {
-            self.forget_remote_columns(&mut forgotten, true);
-        }
-        if let Some(r) = self.remote.as_mut() {
-            r.backlog_since = if events.is_empty() {
-                None
-            } else {
-                Some(r.backlog_since.unwrap_or_else(Instant::now))
-            };
-            r.backlog = events;
-        }
-        self.send_suggestion_request();
-        Ok(())
     }
     /// ClientSuggestionProvider.customSuggestion: the chat's completion
     /// request for an `ask_server` node goes to the server.
@@ -3167,17 +2956,9 @@ impl Game<'_> {
             if let Some(r) = self.remote.as_mut() {
                 r.predictions.remove(&pos);
             }
-            if self.world.block(pos[0], pos[1], pos[2]).0 as i32 == prediction.state {
-                continue;
-            }
-            self.set_block(pos, prediction.state);
-            // ClientLevel.syncBlockState: the block that comes back may now hold
-            // the player, and then it goes to the position the prediction
-            // remembered.
-            let meets = self.block_meets_player(pos, prediction.state);
-            if let Some(at) = snap_target(prediction.player_pos, last_teleport, sequence, meets) {
-                self.snap_player_to(at);
-            }
+            // No position to go back to once a later teleport moved the player.
+            let at = snap_target(prediction.player_pos, last_teleport, sequence, true);
+            self.client_sync_block_state(pos, prediction.state, at);
         }
     }
     /// The player's position, for `retainKnownServerState`'s `player.position()`.
@@ -3191,7 +2972,7 @@ impl Game<'_> {
     }
     /// `Entity.isColliding(pos, state)` for the local player: the state's own
     /// collision shape, at the player's pose, against the player's box.
-    fn block_meets_player(&self, pos: [i32; 3], state: i32) -> bool {
+    pub(super) fn block_meets_player(&self, pos: [i32; 3], state: i32) -> bool {
         let Some(player) = self.player.as_ref() else {
             return false;
         };
@@ -3225,7 +3006,7 @@ impl Game<'_> {
     /// `Entity.absSnapTo`: the remembered point, clamped to the level's edge.
     /// The velocity is left alone, and the player has no separate previous
     /// position to reset (its box is drawn from `position`).
-    fn snap_player_to(&mut self, at: [f64; 3]) {
+    pub(super) fn snap_player_to(&mut self, at: [f64; 3]) {
         let Some(player) = self.player.as_mut() else {
             return;
         };
@@ -3244,7 +3025,7 @@ impl Game<'_> {
             horizon_client::dynamic_renders::remove(pos);
         }
     }
-    fn set_block(&mut self, pos: [i32; 3], state: i32) {
+    pub(super) fn set_block(&mut self, pos: [i32; 3], state: i32) {
         // A state we don't have (a server with mods we lack) reads as air, as in its chunks.
         let state = state.max(0) as u32;
         let known = horizon_client::chunk::known_block_state(state);
@@ -5463,7 +5244,7 @@ impl Game<'_> {
                 // language; mods may change or cancel it. ChatListener.handleOverlay
                 // for the action bar.
                 let mut text = remote_text(&p.content);
-                if !self.chat_received(true, p.overlay, 0, None, &mut text) {
+                if !self.chat_received(true, p.overlay, 0, None, None, &mut text) {
                     return Ok(());
                 }
                 if p.overlay {
@@ -5580,6 +5361,15 @@ impl Game<'_> {
                     }
                     return Ok(());
                 };
+                let body = ChatBody {
+                    index: p.index,
+                    signature: p.signature.clone().filter(|_| signature.is_some()),
+                    content: p.content.clone(),
+                    timestamp: p.timestamp,
+                    salt: p.salt,
+                    unsigned: p.unsigned_content.clone(),
+                    filtered: p.filter.0 == 1,
+                };
                 self.handle_player_chat(QueuedChat {
                     line,
                     signature,
@@ -5587,6 +5377,8 @@ impl Game<'_> {
                     narration,
                     sender: p.sender,
                     chat_type: p.chat_type.chat_type,
+                    bound: p.chat_type.clone(),
+                    body: Some(body),
                 });
             }
             C::DisguisedChat(p) => {
@@ -5602,6 +5394,8 @@ impl Game<'_> {
                     narration,
                     sender: 0,
                     chat_type: p.chat_type.chat_type,
+                    bound: p.chat_type.clone(),
+                    body: None,
                 });
             }
             C::DeleteChat(p) => self.handle_delete_chat(&p.signature)?,
@@ -6961,6 +6755,7 @@ impl Game<'_> {
             keys.analog = None;
         }
         let [mut strafe, mut forward] = keys.direction();
+        self.java_hook_movement_input(&mut keys, &mut strafe, &mut forward);
         let original = [strafe, forward];
         self.native_movement_input(&mut forward, &mut strafe, &mut keys.jump, &mut keys.shift);
         if [strafe, forward] != original {
@@ -7890,6 +7685,7 @@ impl Game<'_> {
             if let Some(player) = player_ref {
                 self.native_player_tick_post(mod_api::__private::PlayerTickPostCall { player });
             }
+            self.java_entity_ticked(i);
         }
         // ExperienceOrb.tick runs on a client too (all but the merges and the
         // push out of a block, which are the server's): gravity, buoyancy,
@@ -10542,7 +10338,7 @@ impl Game<'_> {
             .ok()
     }
 
-    fn remote_continue_attack(&mut self, down: bool) {
+    pub(super) fn remote_continue_attack(&mut self, down: bool) {
         if !down {
             self.clicks.miss_time = 0;
         }
@@ -10936,81 +10732,6 @@ impl Game<'_> {
         });
         self.send_clicks(container, sent);
     }
-    fn send_clicks(&mut self, container: i32, clicks: Vec<Predicted>) {
-        // A result the engine claims to have changed is the one the server
-        // agrees to (`click_agreed`), so it sends none: keep it. A result the
-        // engine doesn't claim (a recipe it doesn't know) the server sends.
-        if matches!(
-            self.remote_menu().1.as_str(),
-            "inventory" | "minecraft:crafting"
-        ) && let Some(r) = self.remote.as_mut()
-        {
-            for (.., changed, _) in &clicks {
-                if let Some((_, result)) = changed.iter().find(|(slot, _)| *slot == 0) {
-                    r.craft_result = result.clone();
-                }
-            }
-        }
-        let state = self.remote.as_ref().map_or(0, |r| r.state_id);
-        let hashed = |g: &Self, s: &Option<ItemStack>| g.hashed_stack(s);
-        for (slot, button, input, changed, carried) in clicks {
-            let changed = changed.iter().map(|(i, s)| (*i, hashed(self, s))).collect();
-            let carried = hashed(self, &carried);
-            self.send(S::ContainerClick(play::ContainerClick {
-                container,
-                state,
-                slot,
-                button: button as i8,
-                input: input_ordinal(input),
-                changed,
-                carried,
-            }));
-        }
-    }
-    /// The server's open menu is the inventory or a chest-like container
-    /// (chests, barrels, ender chests: `generic_9xN`; shulker boxes).
-    pub(super) fn remote_storage_open(&self) -> bool {
-        match self.remote.as_ref().and_then(|r| r.menu.as_ref()) {
-            None => true,
-            Some((_, name)) => {
-                name == "inventory"
-                    || name.starts_with("minecraft:generic_9x")
-                    || name == "minecraft:shulker_box"
-            }
-        }
-    }
-    /// A click outside a server's window (slot -999): predicted like
-    /// `MultiPlayerGameMode.handleContainerInput` (the carried stack after
-    /// `doClick`; the server drops the stack and swings the hand).
-    pub(super) fn remote_throw(&mut self, right: bool, input: horizon_client::menu::Input) {
-        use horizon_client::menu::Input;
-        let container = self
-            .remote
-            .as_ref()
-            .and_then(|r| r.menu.as_ref())
-            .map_or(0, |m| m.0);
-        if input == Input::Pickup
-            && let Some(c) = self.carried.as_mut()
-        {
-            if right && c.count > 1 {
-                c.count -= 1;
-            } else {
-                self.carried = None;
-            }
-            self.swing_arm();
-        }
-        let carried = self.hashed_stack(&self.carried);
-        let state = self.remote.as_ref().map_or(0, |r| r.state_id);
-        self.send(S::ContainerClick(play::ContainerClick {
-            container,
-            state,
-            slot: -999,
-            button: i8::from(right),
-            input: if input == Input::Throw { 4 } else { 0 },
-            changed: Vec::new(),
-            carried,
-        }));
-    }
     /// `CreativeModeInventoryScreen.slotClicked` outside the window: the server knows nothing of
     /// a stack picked from the creative screen, so the carried stack (an item tab's right click:
     /// one of it) is dropped through `handleCreativeModeItemDrop`, a SetCreativeModeSlot to slot
@@ -11080,35 +10801,6 @@ impl Game<'_> {
             self.capture(true);
         }
         self.send(S::ContainerClose(play::ContainerClose { container }));
-    }
-    fn remote_close_local(&mut self) {
-        // `Gui.setScreen` clears the focus of the screen it takes down: the
-        // container's keyboard focus must not outlive it (a Tab bound to the
-        // inventory moves the focus and closes the container in one press).
-        self.pad_clear_focus();
-        self.recipe_ui.reset_screen();
-        if let Some(r) = self.remote.as_mut() {
-            r.menu.set(None);
-            r.set_menu_title(None);
-            r.craft_result = None;
-        }
-        self.mount_menu_reset();
-        // The client's menu has no level access: what it holds is the server's.
-        self.station = None;
-        // AbstractContainerMenu.removed: the server gives the grid and the
-        // carried stack back to the inventory and syncs it; the copies here
-        // are stale the moment the window closes.
-        self.craft_grid.fill(None);
-        self.carried = None;
-        self.craft_size = 2;
-        if let Some(key) = self.container.take() {
-            // Server containers stay renderable but lose their copied slots.
-            if let Some(entity) = self.world.block_entities.get_mut(&key) {
-                for s in entity.slots_mut() {
-                    *s = None;
-                }
-            }
-        }
     }
     /// A server's trading window (MerchantScreen over a ClientSideMerchant).
     fn remote_open_merchant(
@@ -12288,7 +11980,7 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
         self.0.use_delay
     }
     fn continue_attack(&mut self, down: bool) {
-        self.0.remote_continue_attack(down);
+        self.0.client_continue_attack(down);
     }
 }
 
@@ -12618,6 +12310,8 @@ fn in_storage_range(view_distance: i32, center: (i32, i32), x: i32, z: i32) -> b
 
 // A packet's removals (`RemoveEntities`), apart: this file may not grow.
 mod own_profile;
+mod events;
+mod menu_clicks;
 
 #[cfg(test)]
 mod interaction_event_tests;

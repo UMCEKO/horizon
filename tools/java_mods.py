@@ -88,9 +88,10 @@ def build(java_only=False):
             sources += [str(SOURCES / 'parity' / 'scan' / 'dev' / 'horizonlab' / 'javamods' / 'parity' / 'MixinScanner.java')]
         subprocess.run(['javac', '--release', '25', '-proc:none', '-nowarn', '-cp', f'{cp}:{extra}', '-d', str(classes), *sources], check=True)
         jar_args = ['jar', 'cf', str(jar), '-C', str(classes), '.']
-        if name == 'plugin':
-            manifest = JARS / 'plugin.manifest'
-            manifest.write_text('FMLModType: LIBRARY\n')
+        if name in ('plugin', 'host'):
+            manifest = JARS / f'{name}.manifest'
+            # The host jar is also the JVM's `-javaagent` (`BusAgent`): Rust starts every JVM with it.
+            manifest.write_text('FMLModType: LIBRARY\n' if name == 'plugin' else 'Premain-Class: dev.horizonlab.javamods.host.BusAgent\n')
             jar_args = ['jar', 'cfm', str(jar), str(manifest), '-C', str(classes), '.']
         if (SOURCES / name / 'res').exists():
             jar_args += ['-C', str(SOURCES / name / 'res'), '.']
@@ -119,7 +120,7 @@ def unit():
     for source in sources:
         if source.stem.endswith('Check'):
             name = '.'.join(source.relative_to(SOURCES / 'unit').with_suffix('').parts)
-            failed += subprocess.run(['java', '-cp', f'{cp}:{built}:{classes}', name]).returncode != 0
+            failed += subprocess.run(['java', f'-javaagent:{HOST_JAR}', '-cp', f'{cp}:{built}:{classes}', name]).returncode != 0
     sys.exit(1 if failed else 0)
 
 
@@ -358,6 +359,13 @@ def bridges(args):
         # The test mod drops this sound in its PlaySoundEvent, which native posts from play_sound.
         send('command playsound minecraft:block.note_block.bell master @s')
         send('wait 5')
+        # The test mod cancels, edits and sees these in ClientChatReceivedEvent, which native posts as it shows each line.
+        for line in ('command tellraw @s "horizon recv cancel"', 'command tellraw @s "horizon recv edit"', 'command title @s actionbar "horizon recv bar"', 'chat horizon recv player'):
+            send(line)
+        send('wait 5')
+        shown = send('messages 20')
+        if 'horizon recv cancel' in shown or 'horizon recv edited' not in shown or re.search(r'^\W*horizon recv edit\W*$', shown, re.M) or 'horizon recv player' not in shown:
+            wrong.append('chat_received_lines')
         # ctl counts slots from 1: the server's setSelectedSlot sees 1, 7 (the test mod cancels it), then 2.
         for slot in (2, 8, 3):
             send(f'select {slot}')
@@ -397,6 +405,15 @@ def bridges(args):
         send('wait 20')
         send('command clear @s horizon_java_test:rocket')
         send('wait 40')
+        # Movement events of the local player: a spring jump, a compass walk with no key down, a feather fall.
+        for item, action in (('spring', 'key space tap'), ('compass', 'wait 20'), ('feather', f'command tp @s {x} {y + 6} {z}')):
+            send(f'command fill {x - 3} {y} {z - 3} {x + 3} {y + 19} {z + 6} air')
+            send(f'command fill {x - 3} {y - 1} {z - 3} {x + 3} {y - 1} {z + 6} minecraft:stone')
+            send(f'give horizon_java_test:{item}')
+            send(f'select horizon_java_test:{item}')
+            send(action)
+            send('wait 40')
+            send(f'command clear @s horizon_java_test:{item}')
         send('give horizon_java_test:wand')
         send('wait 20')
         send('select horizon_java_test:wand')
@@ -434,6 +451,21 @@ def bridges(args):
                          ('client_chat_event_edit', 'horizon chat edited' in lines),
                          ('client_chat_event_cancel', not any('horizon chat cancel' in row for row in lines.splitlines()))):
             print(f"  {name}: {'ok' if ok else 'WRONG ' + lines[:200]}", flush=True)
+            wrong.extend([] if ok else [name])
+        # Commands through the window's chat: Java's own run in Java, native ones post CommandEvent once.
+        def diamonds():
+            held = json.loads(send('inventory'))
+            counts = held.get('inventory', held).get('counts', {})
+            return sum(n for item, n in counts.items() if item.split(':')[-1] == 'diamond')
+        before = diamonds()
+        for line in ('horizon_java_test ping', 'horizon_java_test op', 'horizon_java_test refuse', 'time horizon_java_test_sub', 'time query daytime', 'horizon_java_test give_probe'):
+            send(f'command {line}')
+        send('wait 5')
+        said = send('messages 20')
+        for name, ok in (('mod_command_feedback', re.search(r'pong \S', said) is not None), ('mod_command_permission', 'op ok' in said),
+                         ('command_event_cancels', 'refuse ran' not in said), ('mixed_root_sub_runs', 'sub ran' in said),
+                         ('mixed_root_native_runs', re.search(r'The time is \d', said) is not None), ('mod_command_gives', diamonds() == before + 1)):
+            print(f"  {name}: {'ok' if ok else 'WRONG'}", flush=True)
             wrong.extend([] if ok else [name])
         # A real click on a mod's block, then the machine after it has run.
         send(f'command tp @s {machine - 2} {y} {z}')
@@ -527,6 +559,25 @@ def bridges(args):
         ok = 'minecraft:air' in send(f'block {x + 2} {y + 1} {z + 1}')
         print(f"  snow_layer_instant: {'ok' if ok else 'WRONG'}", flush=True)
         wrong.extend([] if ok else ['snow_layer_instant'])
+        # Survival placements the test mod hears: it cancels the diamond block's EntityPlaceEvent, the door's is a multi-place.
+        def diamond_blocks():
+            reply = json.loads(send('inventory'))
+            counts = reply.get('inventory', reply).get('counts', {})
+            return counts.get('minecraft:diamond_block', counts.get('diamond_block', 0))
+        for dz in (-1, 1):
+            send(f'command setblock {x + 4} {y - 1} {z + dz} minecraft:stone')
+            send(f'command setblock {x + 4} {y} {z + dz} minecraft:air')
+        send('give minecraft:diamond_block 2')
+        send('give minecraft:oak_door 1')
+        send('wait 5')
+        before = diamond_blocks()
+        print(send(f'place {x + 4} {y} {z - 1} --item minecraft:diamond_block')[:160], flush=True)
+        print(send(f'place {x + 4} {y} {z + 1} --item minecraft:oak_door')[:160], flush=True)
+        send('wait 5')
+        for name, ok in (('place_cancel_restores', 'minecraft:air' in send(f'block {x + 4} {y} {z - 1}') and before == 2 and diamond_blocks() == 2),
+                         ('door_placed', 'minecraft:oak_door' in send(f'block {x + 4} {y + 1} {z + 1}'))):
+            print(f"  {name}: {'ok' if ok else 'WRONG'}", flush=True)
+            wrong.extend([] if ok else [name])
         # A mod block whose drops come from code, then one that refuses its removal.
         send(f'command setblock {x + 2} {y} {z - 3} horizon_java_test:dropper')
         send('wait 5')
@@ -559,28 +610,30 @@ def bridges(args):
         ok = 'Unknown particle' in send('command particle horizon_java_test:nope ~ ~1 ~')
         print(f"  particle_unknown: {'ok' if ok else 'WRONG'}", flush=True)
         wrong.extend([] if ok else ['particle_unknown'])
-        # The pick and use-on handlers run as Java's merged methods: the test mod picks cobblestone from stone, refuses a diamond block's pick and wraps mayInteract.
-        send(f'command tp @s {x + 0.5} {y} {z + 0.5}')
-        send(f'command fill {x + 3} {y} {z - 2} {x + 4} {y + 2} {z - 2} air')
-        send(f'command setblock {x + 3} {y} {z - 2} minecraft:stone')
-        send(f'command setblock {x + 4} {y} {z - 2} minecraft:diamond_block')
+        # Vanilla menus native opens: with the test mod's doClick route on, the player's Java view holds the real anvil and chest menus.
+        send(f'command fill {x - 3} {y} {z - 1} {x - 2} {y + 2} {z + 3} air')
+        send(f'command fill {x - 3} {y - 1} {z - 1} {x - 2} {y - 1} {z + 3} minecraft:stone')
+        send(f'command setblock {x - 2} {y} {z} minecraft:anvil')
+        send(f'command setblock {x - 2} {y} {z + 2} minecraft:chest')
         send('command clear @s')
+        send('give minecraft:iron_sword')
+        send('wait 5')
+        send('select minecraft:iron_sword')
+        send(f'look-at-block {x - 2} {y} {z} east')
         send('wait 3')
-        for name, at, want, refused in (('pick_stone_gives_cobble', x + 3, 'cobblestone', '"minecraft:stone"'), ('pick_diamond_cancelled', x + 4, None, 'diamond_block')):
-            send(f'look-at-block {at} {y} {z - 2} up')
-            send('mouse middle click')
-            send('wait 3')
-            held = json.dumps(json.loads(send('inventory')))
-            ok = refused not in held and (want is None or want in held)
-            print(f"  {name}: {'ok' if ok else 'WRONG ' + held[:160]}", flush=True)
-            wrong.extend([] if ok else [name])
-        send('give minecraft:dirt 1')
+        send('use-item')
+        send('wait 5')
+        # The anvil's hotbar starts at menu slot 30: a shift-click moves the sword into input slot 0.
+        print(send('click-slot 30 shift')[:160], flush=True)
+        send('wait 5')
+        send('close')
         send('wait 3')
-        print(send(f'place {x + 3} {y + 1} {z - 2} --item minecraft:dirt')[:160], flush=True)
-        send('wait 10')
-        ok = 'minecraft:dirt' in send(f'block {x + 3} {y + 1} {z - 2}')
-        print(f"  use_item_on_still_places: {'ok' if ok else 'WRONG'}", flush=True)
-        wrong.extend([] if ok else ['use_item_on_still_places'])
+        send(f'look-at-block {x - 2} {y} {z + 2} east')
+        send('wait 3')
+        send('use-item')
+        send('wait 5')
+        send('close')
+        send('wait 5')
         positions.append((x, y, z, base))
 
     def again(send):
@@ -605,7 +658,7 @@ def bridges(args):
     shutil.copy(Path(args.scratch) / 'ctl.log', Path(args.scratch) / 'first-session.log')
     paused = re.findall(r'^Horizon: pause sources: \[(.*)\]$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks.append(('pause_sources_from_handler', 'ok' if paused == ['music'] else f'FAILED {paused}'))
-    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'player_stack_keeps_identity', 'player_view_sees_native_give', 'play_sound_posted_from_native', 'gui_layer_pre_cancel', 'lockstep_order', 'lockstep_post_sees_this_tick', 'glyph_shadow_from_patch', 'loop_init_then_run', 'mod_command_registered', 'commands_selection_follows_dist', 'server_chat_event_player', 'client_commands_registered', 'client_command_runs', 'client_level_sees_the_pig', 'client_level_finds_the_pig_in_its_box', 'client_level_loses_the_removed_pig', 'debug_entry_lines_recorded', 'rocket_moves_in_its_own_tick', 'rocket_lifts_five_blocks', 'pre_write_moves_without_lerp_start','window_resize_fired', 'render_frame_paired', 'master_volume_follows', 'may_interact_wrapped') if (name, 'ok') not in checks)
+    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'team_join_routed', 'team_leave_routed', 'team_view_matches', 'team_join_inner_sees_member', 'team_leave_inner_sees_member_gone', 'player_stack_keeps_identity', 'player_view_sees_native_give', 'play_sound_posted_from_native', 'gui_layer_pre_cancel', 'chat_received_overlay', 'chat_received_player', 'lockstep_order', 'lockstep_post_sees_this_tick', 'glyph_shadow_from_patch', 'loop_init_then_run', 'mod_command_registered', 'commands_selection_follows_dist', 'server_chat_event_player', 'client_commands_registered', 'client_command_runs', 'client_level_sees_the_pig', 'client_level_finds_the_pig_in_its_box', 'client_level_loses_the_removed_pig', 'debug_entry_lines_recorded', 'rocket_moves_in_its_own_tick', 'rocket_lifts_five_blocks', 'pre_write_moves_without_lerp_start', 'spring_jump_apex', 'input_event_walks', 'input_event_seen_every_tick', 'fall_canceled_client','window_resize_fired', 'render_frame_paired', 'master_volume_follows', 'door_is_multi_place', 'mod_command_runs_in_java', 'command_event_for_native', 'command_event_once', 'client_join_once', 'client_leave_once', 'client_tick_post_per_tick', 'anvil_view_matches', 'chest_view_is_the_block_entity', 'menu_view_closed', 'pick_stone_gives_cobble', 'pick_diamond_cancelled', 'use_item_on_still_places', 'may_interact_wrapped') if (name, 'ok') not in checks)
     session(args, again)
     second = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks += [(name + ' (second session)', result) for name, result in second]
@@ -1412,6 +1465,11 @@ def main():
     except ImportError:
         import mod_replaces
     mod_replaces.add_arguments(rp)
+    rl = sub.add_parser('release', help='the two Linux release folders and archives with Java mods support, built and checked in an Ubuntu 22.04 container (docs/java-mods.md)')
+    rl.add_argument('--out', required=True)
+    rl.add_argument('--keep-target', action='store_true', help='keep the container build folder (about 10 GB)')
+    rl.add_argument('--no-smoke', action='store_true', help='skip the game and server runs')
+    rl.add_argument('--install', default='/home/umceko/hz-poc/play/install-rs', help='a Java mods install whose run folders the smoke runs use')
     n = sub.add_parser('launch', allow_abbrev=False, help='starts the game from an install; other arguments go to the game (--dedicated starts the server)')
     n.add_argument('--install', required=True)
     n.add_argument('--game', help='the horizon-client built with --features java-mods')
@@ -1422,6 +1480,12 @@ def main():
         parser.error(f'unrecognized arguments: {" ".join(extra)}')
     if args.command == 'install':
         return install_pack(args)
+    if args.command == 'release':
+        try:
+            from . import java_mods_release
+        except ImportError:
+            import java_mods_release
+        return java_mods_release.release(args, NEOFORGE)
     if args.command == 'mixins':
         try:
             from . import mod_parity

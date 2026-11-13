@@ -12,6 +12,11 @@ pub fn set_mod_enabled(id: &str, on: bool) -> bool {
     crate::set_mod_enabled(id, on)
 }
 
+/// Switch installed mod `id`'s subscription to `hook` on or off, returning whether it subscribes to it.
+pub fn set_hook_enabled(id: &str, hook: HookId, on: bool) -> bool {
+    crate::runtime::set_hook_enabled(id, hook, on)
+}
+
 /// Resolve a listener's owner once at load, for dispatch through [`mod_index_on`].
 pub fn mod_index(id: &str) -> Option<usize> {
     crate::mods().iter().position(|entry| entry.id == id)

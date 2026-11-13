@@ -11,16 +11,19 @@ OUT/matrix.json and OUT/matrix.md (the table, then the distinct failures to file
 
 The install is only read: its home/ and client config are copied into OUT. Steps (a {"name": ...} entry labels the next step):
   {"wait": TICKS} {"command": "/fill ..."} {"look": [yaw, pitch]} {"lookat": [x, y, z]} {"slot": 0-8} {"use": TICKS} {"attack": TICKS}
+  {"interact": [x, y, z]} (right-click a block and wait for its station) {"click_item": {"item": "minecraft:stick", "shift": true}} {"click_slot": 650} {"type": "text"} {"erase": N}
   {"key": "key.inventory"} {"close": true} {"pick": true} (a middle click) {"tp": [x, y, z]} or {"tp": [x, y, z, yaw, pitch]} {"screenshot": "name"} {"camera": [x, y, z, yaw, pitch]} {"hud": false} {"quit": true}
   {"check": {...}} with one of:
     {"block": [x,y,z], "is": "stone", "state": "oak_stairs[facing=east]"}   the loaded block at a position
     {"looking_at": "stone"}                                                  the block under the crosshair
     {"held": "item"}  {"slot": 0, "item": "stone", "count": 4}               the held item, or a slot's (0-8 hotbar, 9-35 main)
     {"near": [x,y,z], "radius": 2}                                           the player's position
+    {"menu": {"carried": "item"|null, "level": 3, "slots": {"650": "item"|null}}}   the open menu's carried stack, the player's levels and slots by id
     {"output": "regex", "present": true}                                     the chat lines the last command returned
     {"log": "regex", "present": true}  {"no_exceptions": true, "ignore": "regex"}   the log since the last step started
     {"java_heap": {"max_live_mb": 450, "max_metaspace_mb": 260}}             the game JVM's live heap after a full GC, and its Metaspace
-  Every check takes "within" (seconds to keep trying, default 3) and the log checks take "since": "start".
+  {"respawn": true} presses the death screen's button. A script may be {"env": {"NAME": "value"}, "steps": [...]}: the env is added to the game's.
+  Every check takes "within" (seconds to keep trying, default 3) and the log checks take "since": "start" or a step's name.
 """
 import argparse
 import collections
@@ -86,8 +89,18 @@ def ctl_commands(kind, arg):
         if arg.startswith('key.') and arg not in KEYS:
             raise ValueError(f'unknown key {arg}')
         return [['key', KEYS.get(arg, arg), 'down' if kind == 'press' else 'up']]
+    if kind == 'interact':
+        return [['interact', *map(str, arg)], ['wait-for', 'screen', 'station', '--timeout', '10']]
+    if kind == 'click_slot':
+        return [['click-slot', str(arg)]]
+    if kind == 'type':
+        return [['type', arg]]
+    if kind == 'erase':
+        return [['type-back']] * arg
     if kind == 'close':
         return [['close']]
+    if kind == 'respawn':
+        return [['respawn']]
     if kind == 'pick':
         return [['mouse', 'middle', 'click']]
     if kind == 'tp':
@@ -107,7 +120,7 @@ def ctl_commands(kind, arg):
 class Log:
     """Reads a growing log by offset; its text is only ever matched, never returned to the caller's output."""
     def __init__(self, path):
-        self.path, self.mark_at = Path(path), 0
+        self.path, self.mark_at, self.named = Path(path), 0, {}
 
     def size(self):
         try:
@@ -115,11 +128,16 @@ class Log:
         except OSError:
             return 0
 
-    def mark(self):
+    def mark(self, name=None):
         self.mark_at = self.size()
+        if name is not None:
+            self.named[name] = self.mark_at
 
     def text(self, since='step'):
-        start = 0 if since == 'start' or self.size() < self.mark_at else self.mark_at
+        if since not in ('step', 'start'):
+            start = self.named.get(since, 0)
+        else:
+            start = 0 if since == 'start' or self.size() < self.mark_at else self.mark_at
         try:
             with open(self.path, 'rb') as f:
                 f.seek(start)
@@ -134,9 +152,9 @@ class Logs:
         self.logs = [Log(p) for p in paths]
         self.path = self.logs[0].path
 
-    def mark(self):
+    def mark(self, name=None):
         for log in self.logs:
-            log.mark()
+            log.mark(name)
 
     def text(self, since='step'):
         return '\n'.join(log.text(since) for log in self.logs)
@@ -195,6 +213,29 @@ class Ctl:
             return r.returncode, json.loads(r.stdout)
         except ValueError:
             return r.returncode, text
+
+
+def menu_view(data, want):
+    """What `want` (a menu check) names, as the `menu` reply shows it: items without their namespace, none as None."""
+    got = {}
+    if 'carried' in want:
+        got['carried'] = stack_item(data.get('carried'))
+    if 'level' in want:
+        got['level'] = data.get('level')
+    if 'slots' in want:
+        shown = {str(s['slot']): stack_item(s['stack']) for s in data.get('slots', [])}
+        got['slots'] = {str(slot): shown.get(str(slot)) for slot in want['slots']}
+    return got
+
+
+def menu_want(want):
+    """The same check with item ids as `stack_item` shows them."""
+    out = dict(want)
+    if want.get('carried') is not None:
+        out['carried'] = want['carried'].removeprefix('minecraft:')
+    if 'slots' in want:
+        out['slots'] = {str(k): (v.removeprefix('minecraft:') if v else None) for k, v in want['slots'].items()}
+    return out
 
 
 def stack_item(stack):
@@ -281,6 +322,13 @@ def read_check(ctl, check, timeout):
         if 'count' in check:
             return want == got and stack.get('count') == check['count'], [want, check['count']], [got, stack.get('count')]
         return want == got, want, got
+    if 'menu' in check:
+        code, data = ctl('menu', timeout=timeout)
+        if code != 0 or not isinstance(data, dict):
+            return False, check['menu'], f'ctl: {str(data)[:120]}'
+        want = menu_want(check['menu'])
+        got = menu_view(data, want)
+        return got == want, want, got
     if 'near' in check:
         code, data = ctl('state', timeout=timeout)
         player = data.get('player') if isinstance(data, dict) else None
@@ -335,8 +383,19 @@ def run_steps(ctl, steps, out, log, deadline, step_timeout=120, sleep=time.sleep
             if remaining <= 0:
                 entry.update(ok=False, error='run timeout')
             elif kind == 'check':
-                entry['checks'] = [dict(evaluate(arg, ctl, log, last_output, timeout, sleep), check=next(k for k in ('block', 'looking_at', 'held', 'slot', 'near', 'output', 'log', 'no_exceptions', 'java_heap') if k in arg))]
+                entry['checks'] = [dict(evaluate(arg, ctl, log, last_output, timeout, sleep), check=next(k for k in ('block', 'looking_at', 'held', 'slot', 'menu', 'near', 'output', 'log', 'no_exceptions', 'java_heap') if k in arg))]
                 entry['ok'] = all(c['ok'] for c in entry['checks'])
+            elif kind == 'click_item':
+                code, data = ctl('inventory', timeout=timeout)
+                want = arg['item'].removeprefix('minecraft:')
+                stacks = (data['hotbar'] + data['main']) if code == 0 and isinstance(data, dict) else []
+                found = next((s['slot'] for s in stacks if s and stack_item(s) == want), None)
+                if found is None:
+                    entry.update(ok=False, error=f'no {want} in the inventory')
+                else:
+                    code, data = ctl('click-slot', str(found), *(['shift'] if arg.get('shift') else []), timeout=timeout)
+                    if code != 0:
+                        entry.update(ok=False, error=f'click-slot: {str(data)[:200]}')
             elif kind == 'screenshot':
                 path = Path(out) / f'{re.sub(r"[^\w.-]", "_", str(arg) if isinstance(arg, str) else name)}.png'
                 code, data = ctl('screenshot', str(path), timeout=timeout)
@@ -345,7 +404,7 @@ def run_steps(ctl, steps, out, log, deadline, step_timeout=120, sleep=time.sleep
                 else:
                     entry['path'] = str(path)
             else:
-                log.mark()
+                log.mark(name)
                 for command in ctl_commands(kind, arg):
                     wait = max(step_timeout, int(command[1]) / 20 * 4 + 30) if command[0] == 'wait' else step_timeout
                     code, data = ctl(*command, timeout=max(0.5, min(wait, deadline - time.monotonic())))
@@ -446,8 +505,9 @@ def run(args):
     out = Path(args.out).resolve()
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
-    steps = flatten(json.loads(Path(args.script).read_text()))
-    game = Path(args.game or ROOT / 'target' / 'fast' / 'horizon-client').resolve()
+    script = json.loads(Path(args.script).read_text())
+    steps = flatten(script)
+    game =Path(args.game or ROOT / 'target' / 'fast' / 'horizon-client').resolve()
     if not game.is_file():
         sys.exit(f'{game} is not a file: pass --game')
     try:
@@ -459,6 +519,7 @@ def run(args):
     saves = homes / 'horizon' / 'saves'
     world = args.world or next((p.name for p in sorted(saves.glob('*')) if (p / 'level.dat').is_file()), 'scenario')
     extra = {'HORIZON_JAVA_MODS_DIR': str(args.jars)} if args.jars else {}
+    extra.update(script.get('env', {}) if isinstance(script, dict) else {})
     base = lab.game_env({**os.environ, **gfx_env()}, TMPDIR=out, HZ_SCENARIO_MARKER=out, HORIZON_HOME=homes / 'horizon', HORIZON_LAUNCHER_HOME=homes / 'launcher',
                         XDG_DATA_HOME=homes / 'xdg-data', XDG_CONFIG_HOME=homes / 'xdg-config', **extra)
     env = jm.launch_env(scratch, record, False, base)

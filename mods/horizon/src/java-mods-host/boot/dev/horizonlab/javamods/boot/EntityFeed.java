@@ -17,11 +17,18 @@ public final class EntityFeed {
     static final byte MOVE = 4;
     static final byte EVENT = 5;
     static final byte REMOVE = 6;
+    static final byte TICK = 7;
+    /** An ADD's event bits: the client's listeners hear this entity's join and leave. */
+    static final int JOIN = 1;
+    static final int LEAVE = 2;
+    /** A TICK's bits: its Pre and Post. */
+    static final int PRE = 1;
+    static final int POST = 2;
 
     /** One change, as `java_client_entities.rs` writes it. */
-    public sealed interface Change permits Add, Data, Equip, Passengers, Move, Event, Remove {}
+    public sealed interface Change permits Add, Data, Equip, Passengers, Move, Event, Remove, Tick {}
 
-    public record Add(int id, UUID uuid, String type, double x, double y, double z, float pitch, float yaw, float head, double dx, double dy, double dz, int data) implements Change {}
+    public record Add(int id, UUID uuid, String type, double x, double y, double z, float pitch, float yaw, float head, double dx, double dy, double dz, int data, int events) implements Change {}
 
     /** `ClientboundSetEntityDataPacket` as it came. */
     public record Data(int id, byte[] packet) implements Change {}
@@ -36,6 +43,9 @@ public final class EntityFeed {
     public record Event(int id, byte event) implements Change {}
 
     public record Remove(int[] ids) implements Change {}
+
+    /** The window ticked the entity: the Java client posts the tick events `mask` names. */
+    public record Tick(int id, int mask) implements Change {}
 
     private record Entry(long seq, byte[] body) {}
 
@@ -81,13 +91,14 @@ public final class EntityFeed {
         byte kind = in.readByte();
         return switch (kind) {
             case ADD -> new Add(in.readInt(), new UUID(in.readLong(), in.readLong()), new String(in.readNBytes(in.readInt()), java.nio.charset.StandardCharsets.UTF_8),
-                    in.readDouble(), in.readDouble(), in.readDouble(), in.readFloat(), in.readFloat(), in.readFloat(), in.readDouble(), in.readDouble(), in.readDouble(), in.readInt());
+                    in.readDouble(), in.readDouble(), in.readDouble(), in.readFloat(), in.readFloat(), in.readFloat(), in.readDouble(), in.readDouble(), in.readDouble(), in.readInt(), in.readUnsignedByte());
             case DATA -> new Data(in.readInt(), in.readNBytes(in.readInt()));
             case EQUIP -> new Equip(in.readInt(), in.readNBytes(in.readInt()));
             case PASSENGERS -> new Passengers(in.readInt(), ints(in));
             case MOVE -> new Move(in.readInt(), in.readDouble(), in.readDouble(), in.readDouble(), in.readFloat(), in.readFloat(), in.readFloat(), in.readDouble(), in.readDouble(), in.readDouble(), in.readBoolean());
             case EVENT -> new Event(in.readInt(), in.readByte());
             case REMOVE -> new Remove(ints(in));
+            case TICK -> new Tick(in.readInt(), in.readUnsignedByte());
             default -> throw new IOException("entity feed entry " + kind);
         };
     }

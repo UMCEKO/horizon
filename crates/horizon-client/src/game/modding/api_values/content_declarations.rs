@@ -470,6 +470,7 @@ impl TryIntoEngine<()> for (String, mod_api::WorldFluid) {
                 slope_find_distance: fluid.slope_find_distance,
                 source_conversion: fluid.source_conversion,
                 bucket: fluid.bucket,
+                entity: None,
             }),
         })
     }

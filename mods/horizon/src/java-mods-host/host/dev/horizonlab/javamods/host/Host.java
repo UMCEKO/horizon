@@ -18,6 +18,10 @@ public final class Host extends Entrypoint {
     /** The methods the class processor serves from Rust, set before FML starts. */
     public static volatile String[] bridges = new String[0];
     static long t0;
+    /** The item this thread's bulk call is on, which Rust reads when a callback ends the call (`Host::bulk_stop`). */
+    public static volatile int bulkItem;
+    /** Set by Rust at a callback that ends this thread's bulk call: no further item starts. */
+    public static volatile boolean bulkStop;
 
     /** Rust's requests, as the boot sets them: an int op and a direct buffer holding the request, which the reply replaces. */
     public interface Dispatcher {

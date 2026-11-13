@@ -128,11 +128,15 @@ public final class GameBridge {
         Crossing.free("bench_echo_free", input -> input);
         Crossing.free("listener_census", EventPosts::census);
         Crossing.free("wg_probe", WorldgenLevels::probe);
+        Crossing.game("item_attribute_modifiers", ItemAttributes::modifiers);
         Crossing.game("prepare", input -> prepare());
         Crossing.game("worldgen_export", GameBridge::worldgenExport);
         Crossing.game("items", input -> items());
         Crossing.game("states", input -> states());
         Crossing.game("commands_roots", (in, out) -> commandsRoots(out));
+        Crossing.game("commands_for", ModCommands::commandsFor);
+        Crossing.game("command", ModCommands::command);
+        Crossing.game("console_command", ModCommands::console);
         Crossing.game("refresh", GameBridge::refresh);
         Crossing.game("clear_use", GameBridge::clearUse);
         Crossing.game("block_events", GameBridge::blockEvents);
@@ -141,6 +145,7 @@ public final class GameBridge {
         Crossing.game("block_entity_tick_run", GameBridge::blockEntityTickRun);
         Crossing.game("block_entity_load", GameBridge::blockEntityLoad);
         Crossing.game("block_entity_drop", GameBridge::blockEntityDrop);
+        Crossing.game("scoreboard_view", (in, out) -> ScoreboardView.read(in));
         Crossing.game("entity_view", GameBridge::entityView);
         Crossing.game("entity_added", GameBridge::entityAdded);
         Crossing.game("entity_left", GameBridge::entityLeft);
@@ -178,6 +183,8 @@ public final class GameBridge {
         Crossing.game("destroy_block", (in, out) -> use(in, out, 13));
         Crossing.game("player_tick", (in, out) -> use(in, out, 7));
         Crossing.game("player_left", GameBridge::playerLeft);
+        Crossing.game("menu_open", MenuViews::open);
+        Crossing.game("menu_close", MenuViews::close);
         Crossing.game("remote_join", GameBridge::remoteJoin);
         Crossing.game("remote_in", GameBridge::remoteIn);
         Crossing.game("remote_config", input -> remoteConfig());
@@ -387,6 +394,36 @@ public final class GameBridge {
         return level;
     }
 
+    /** Set by the Clone post: the next `fill` builds a new view for its player and keeps the old one in `original`. */
+    static boolean renewNext;
+    /** The view a respawn replaced, until the Clone event has run. */
+    static ServerPlayer original;
+
+    /** `PlayerList.respawn`'s new `ServerPlayer`: the old view leaves its level and is kept for the Clone event. */
+    private static boolean renewView(UUID id) {
+        var old = PLAYERS.remove(id);
+        if (old == null) return false;
+        var in = JOINED.remove(id);
+        if (in != null) playerLeaves(old, in, Entity.RemovalReason.CHANGED_DIMENSION);
+        PlayerSync.forget(id);
+        original = old;
+        return true;
+    }
+
+    /** The Clone event is done with the old view: it is detached as a logout would. */
+    static void releaseOriginal() {
+        var old = original;
+        original = null;
+        if (old == null) return;
+        safely("detaching the replaced player view", () -> {
+            try {
+                ServerView.detachReplaced(server, old);
+            } catch (ReflectiveOperationException e) {
+                throw new IllegalStateException(e);
+            }
+        });
+    }
+
     static ServerPlayer playerView(UUID id) {
         return PLAYERS.get(id);
     }
@@ -476,9 +513,11 @@ public final class GameBridge {
         var g = PlayerGroups.read(in);
         var level = level(g.key);
         ((ViewLevelData) level.getLevelData()).gameTime = g.gameTime;
-        boolean joined = !PLAYERS.containsKey(g.id);
+        boolean renewed = renewNext && renewView(g.id);
+        renewNext = false;
+        boolean joined = !PLAYERS.containsKey(g.id) && !renewed;
         boolean full = g.has(PlayerGroups.FULL);
-        if (joined && !full) throw new IllegalStateException("Horizon: the player view of " + g.name + " got a delta before its full fill");
+        if ((joined || renewed) && !full) throw new IllegalStateException("Horizon: the player view of " + g.name + " got a delta before its full fill");
         var player = player(g.id, g.name, level);
         if (g.has(PlayerGroups.POSE)) {
             player.setPose(net.minecraft.world.entity.Pose.valueOf(g.pose));
@@ -527,6 +566,7 @@ public final class GameBridge {
             inventory.setItem(g.slots[i], stack);
             synced[g.slots[i]] = stack.copy();
         }
+        MenuViews.filled(player, g);
         PlayerSync.acting(player);
         // `PlayerList.placeNewPlayer`: a connected client gets its login once the player is in place.
         if (Clients.joining(player.getUUID())) safely("the client's login", () -> Menus.login(player));
@@ -791,6 +831,7 @@ public final class GameBridge {
         PLAYERS.clear();
         JOINED.clear();
         PlayerSync.forgetAll();
+        MenuViews.reset();
         SOUNDS.clear();
         nextEntityId = -1;
         ServerView.closeWorld(server);
@@ -897,6 +938,7 @@ public final class GameBridge {
         PlayerSync.forget(left);
         if (player != null) {
             safely("closing the open menu", () -> Menus.close(player));
+            MenuViews.forget(left);
             safely("PlayerLoggedOut", () -> EventHooks.firePlayerLoggedOut(player));
             var in = JOINED.remove(left);
             if (in != null) playerLeaves(player, in, Entity.RemovalReason.UNLOADED_WITH_PLAYER);
@@ -924,8 +966,10 @@ public final class GameBridge {
 
     /** `levelOf` for a block entity's tick: the tick cache goes once per game tick, as at `ServerLevel.tick`'s start. */
     private static ServerLevel tickingLevelOf(Crossing.In in) throws Exception {
-        var level = level(in.readInt());
-        long gameTime = in.readLong();
+        return ticking(level(in.readInt()), in.readLong());
+    }
+
+    private static ServerLevel ticking(ServerLevel level, long gameTime) {
         var data = (ViewLevelData) level.getLevelData();
         if (data.invalidatedAt != gameTime) return invalidated(level, gameTime);
         data.gameTime = gameTime;
@@ -1023,31 +1067,54 @@ public final class GameBridge {
         writeEffects(out);
     }
 
-    /** #268: a run of adjacent held block entities in one crossing, ticked in order until one wrote into Horizon (`runEntry` says so) or threw. */
+    /** #268 on #262's envelope: adjacent held block entities ticked in order until one wrote into Horizon (`Bulk.enter`), made a sound, threw, or the work budget ran out. */
     private static void blockEntityTickRun(Crossing.In in, Crossing.Out out) throws Exception {
-        var level = tickingLevelOf(in);
-        int count = in.readInt();
-        out.writeInt(0);
-        int processed = 0;
-        while (processed < count) {
-            var pos = BlockPos.of(in.readLong());
-            if (processed > 0 && !BlockEntities.runEntry(processed)) break;
-            processed++;
-            boolean held;
-            try {
-                held = BlockEntities.tick(level, pos);
-            } catch (Throwable t) {
-                // As `game` reports a scalar tick that threw: its own effects go, the entries before keep theirs.
-                t.printStackTrace();
-                if (outermost()) abandonCall();
-                out.writeByte(2);
-                out.writeInt(0);
-                break;
+        Bulk.Request request;
+        ServerLevel level;
+        long gameTime;
+        long[] positions;
+        try {
+            request = Bulk.read(in, Bulk.Op.BLOCK_ENTITY_TICK);
+            int key = in.readInt();
+            gameTime = in.readLong();
+            if (key < 0 || key >= levels.length || levels[key] == null) throw new Bulk.Rejected("no level for key " + key);
+            level = levels[key];
+            positions = new long[request.count()];
+            for (int i = 0; i < positions.length; i++) {
+                positions[i] = in.readLong();
+                if (level.isOutsideBuildHeight(BlockPos.getY(positions[i]))) throw new Bulk.Rejected("position " + BlockPos.of(positions[i]) + " outside the level");
             }
-            out.writeByte(held ? 1 : 0);
-            writeEffects(out);
+        } catch (Bulk.Rejected why) {
+            Bulk.reject(out, why);
+            return;
         }
-        out.patchInt(0, processed);
+        long cell = Bulk.open();
+        try {
+            ticking(level, gameTime);
+            var reply = new Bulk.Reply(out);
+            for (int i = 0; i < positions.length; i++) {
+                if (i > 0 && (request.spent() || !Bulk.enter(i))) break;
+                boolean held;
+                try {
+                    held = BlockEntities.tick(level, BlockPos.of(positions[i]));
+                } catch (Throwable t) {
+                    // As `game` reports a scalar tick that threw: its own effects go, the entries before keep theirs.
+                    t.printStackTrace();
+                    if (outermost()) abandonCall();
+                    reply.begin(Bulk.THREW);
+                    reply.end();
+                    break;
+                }
+                // Rust plays an entry's sounds when the reply comes, so one that made any ends the run before a later entry's callback.
+                boolean sounded = !SOUNDS.isEmpty();
+                reply.begin(held ? Bulk.DONE : Bulk.GONE);
+                writeEffects(out);
+                reply.end();
+                if (sounded) break;
+            }
+        } finally {
+            Bulk.close(cell);
+        }
     }
 
     private static byte[] tracking(byte[] input) throws Exception {

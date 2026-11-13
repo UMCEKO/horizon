@@ -241,7 +241,7 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   block is not `pos`, since a block that refuses the fluid passes it there; the fluid may still go into `pos`.
 - **`native_player_bed_enter(player, name, pos, cancel)`**: a server player passed the sleep checks and is about to
   enter the bed at its head position. Set `cancel` to keep them out.
-- **`native_player_bed_leave(player, name, pos)`**: A server player woke or stood up from a bed, after their sleeping state changed. The head position is `pos`.
+- **`native_player_bed_leave(player, name, pos, wake_immediately, update_level)`**: A server player woke or stood up from a bed, after their sleeping state changed. The head position is `pos`; the flags are those of vanilla's `stopSleepInBed` caller.
 - **`native_player_edit_book(player, name, pages, signing, cancel)`**: A server player book-and-quill edit or signing packet is about to be applied. `pages` is its page count and `signing` says it has a title. Set `cancel` to drop the packet.
 - **`native_player_shear_entity(player, name, entity_id, off_hand, cancel)`**: A server player is about to shear a sheep, mooshroom, snow golem or bogged. The hook gives the mob entity id and whether the shears are in the off hand. Set `cancel` to leave the mob and shears unchanged.
 - **`native_player_advancement_done(player, name, advancement)`**: A server player completed an advancement after its progress was recorded. `advancement` is its identifier, such as `minecraft:story/mine_stone`.
