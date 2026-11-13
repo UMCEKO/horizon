@@ -35,6 +35,8 @@ struct State {
     stage: Stage,
     /// This tick's `animateTick` picks, sent with the release at M.
     picks: Option<Vec<[i32; 3]>>,
+    /// The field-of-view modifier the Java camera tick's event left, until `tick_fov` takes it.
+    fov_target: Option<f32>,
 }
 
 thread_local! {
@@ -171,8 +173,23 @@ pub(in crate::game) fn start() -> LockstepTick {
         s.lockstep = true;
         s.stage = Stage::Sent;
         s.picks = None;
+        s.fov_target = None;
     });
     LockstepTick
+}
+
+/// The park record's motion log (`int len`, bytes), then `bool present` and `float target`; nothing from an empty or short record.
+fn fov_target_of(record: &[u8]) -> Option<f32> {
+    let mut r = In(record);
+    r.bytes()?;
+    let present = r.bool()?;
+    let target = r.float()?;
+    present.then_some(target)
+}
+
+/// The Java camera tick's modifier for this window tick, once; None outside lockstep or when Java sent none.
+pub(in crate::game) fn take_fov_target() -> Option<f32> {
+    LOCKSTEP.with_borrow_mut(|s| s.fov_target.take())
 }
 
 pub(in crate::game) fn in_lockstep() -> bool {
@@ -348,7 +365,11 @@ impl Game<'_> {
         if stage() != Stage::KeysReleased {
             return None;
         }
-        match horizon_client::spans::time("lockstep_m", || wait(Point::M)) {
+        let waited = horizon_client::spans::time("lockstep_m", || wait(Point::M));
+        if let Some((_, record)) = &waited {
+            LOCKSTEP.with_borrow_mut(|s| s.fov_target = fov_target_of(record));
+        }
+        match waited {
             Some((true, record)) => {
                 set_stage(Stage::PlayerHeld);
                 Some(record)
@@ -611,6 +632,21 @@ mod tests {
         assert_eq!(applied.abilities, vec![2]);
         assert!(m.flying && m.may_fly);
         assert_eq!(applied.old, None);
+    }
+
+    #[test]
+    fn the_park_record_carries_the_fov_target_when_java_decided_one() {
+        let mut out = Out::default();
+        out.int(0);
+        out.bool(true);
+        out.float(0.5);
+        assert_eq!(fov_target_of(&out.0), Some(0.5));
+        let mut none = Out::default();
+        none.int(0);
+        none.bool(false);
+        none.float(0.0);
+        assert_eq!(fov_target_of(&none.0), None);
+        assert_eq!(fov_target_of(&[]), None);
     }
 
     #[test]

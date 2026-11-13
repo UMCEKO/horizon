@@ -1150,8 +1150,20 @@ impl LevelAccess for GameLevel<'_> {
         let mut cancel = false;
         if self.native_authoritative {
             self.native_fluid_tick(self.dimension, pos, fluid, &mut cancel);
+            if !cancel {
+                let state = self.block_state(pos);
+                if let Some(owned) = self.behaviours.fluid(state).kind().mod_fluid()
+                    && java_hooks::java_owns_fluid(self.behaviours, owned)
+                {
+                    java_hooks::java_note_fluid_tick(pos, state);
+                    cancel = true;
+                }
+            }
         }
         !cancel
+    }
+    fn fluid_runs_elsewhere(&self, fluid: horizon_world::fluid::ModFluid) -> bool {
+        self.native_authoritative && java_hooks::java_owns_fluid(self.behaviours, fluid)
     }
     fn allow_fluid_level_change(
         &self,
@@ -1182,6 +1194,7 @@ impl LevelAccess for GameLevel<'_> {
         if !self.native_authoritative {
             return registered;
         }
+        let registered = java_hooks::java_fluid_rules(self.dimension, fluid).unwrap_or(registered);
         Self::answered_fluid_rules(self.dimension, pos, fluid, registered, |call| {
             self.native_fluid_rules(call)
         })
@@ -15337,12 +15350,17 @@ impl Game<'_> {
                 let more = self.with_level(|b, level, ticks| {
                     loop {
                         let more = b.scheduled_step(level, ticks, fluids);
-                        if !more || !level.events.is_empty() || !level.spill.is_empty() {
+                        if !more
+                            || !level.events.is_empty()
+                            || !level.spill.is_empty()
+                            || java_hooks::java_has_block_events()
+                        {
                             break more;
                         }
                     }
                 });
-                if !self.level_events.is_empty() {
+                // A Java mod's block or fluid tick runs before the next due tick, as vanilla's inline one does.
+                if !self.level_events.is_empty() || java_hooks::java_has_block_events() {
                     self.process_level_events()?;
                 }
                 if !more {
