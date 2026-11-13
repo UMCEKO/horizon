@@ -444,6 +444,12 @@ pub trait LevelAccess {
     fn create_fluid_source(&self, _pos: BlockPos, _state: BlockStateId, vanilla: bool) -> bool {
         vanilla
     }
+    /// Whether a mod's fluid runs its `LiquidBlock` and `FlowingFluid` code outside this library
+    /// (a Java mod's): its ticks are the level's to run, so the liquid block's own updates here
+    /// schedule nothing. The default runs every fluid here.
+    fn fluid_runs_elsewhere(&self, _fluid: crate::fluid::ModFluid) -> bool {
+        false
+    }
     /// What a mod's fluid does at `pos`, given what it registered (its `FluidPart`s).
     fn mod_fluid_rules(
         &self,

@@ -226,6 +226,8 @@ impl Game<'_> {
             | Target::Other(id)
             | Target::Fangs(id)
             | Target::Cloud(id)
+            | Target::Potion(id)
+            | Target::Eye(id)
             | Target::Hook(id) => Some(uuid_text(self.uuid_for(id))),
             // It keeps its UUID with itself.
             Target::Spawner(id) => self
@@ -279,6 +281,8 @@ impl Game<'_> {
             | Target::Other(id)
             | Target::Fangs(id)
             | Target::Cloud(id)
+            | Target::Potion(id)
+            | Target::Eye(id)
             | Target::Hook(id) => self.persist.raw.get(&id),
             Target::DragonPart(_) => None,
             Target::Player => self.level.player_extra.as_ref(),

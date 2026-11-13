@@ -1916,14 +1916,14 @@ mod tests {
                     Vec3::new(0.0, -1.0, 0.0),
                     None,
                 );
-                let id = *game.potions.thrown_ids().last().unwrap();
+                let id = game.potions.thrown.last().unwrap().id;
                 set_silent(&mut game, id, silent);
                 game.audio.heard.clear();
                 let particles = particle_count(&game);
                 let clouds = game.breath_clouds.len();
                 let xp: u32 = game.orbs.iter().map(|o| o.points() * o.count).sum();
                 game.tick_effects(true);
-                assert_eq!(game.potions.thrown_ids().count(), 0);
+                assert_eq!(game.potions.thrown.len(), 0);
                 assert!(particle_count(&game) > particles, "{kind} keeps its splash");
                 assert_eq!(
                     sound_count(&game, "minecraft:entity.splash_potion.break"),

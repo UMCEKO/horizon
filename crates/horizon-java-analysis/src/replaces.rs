@@ -16,7 +16,7 @@ use crate::lambdas::{Impl, Vanilla, fold_lambdas, lambda_event, lambda_impl};
 use crate::libraries::{entry_names, library_jars, load_library_index, spi_names};
 use crate::mixins::{self, MixinEntry};
 
-const ROUTING_ORDER: [&str; 6] = [
+pub const ROUTING_ORDER: [&str; 6] = [
     "java",
     "java-own-type",
     "undecided",
@@ -507,7 +507,12 @@ pub fn analyse_with(
                 ) else {
                     continue;
                 };
-                hier.add(&head.name, head.sup.clone(), head.ifaces.clone());
+                hier.add(
+                    &head.name,
+                    head.sup.clone(),
+                    head.ifaces.clone(),
+                    Some(head.access),
+                );
                 let listens =
                     contains(&data, b"addListener") || contains(&data, b"addGenericListener");
                 classes.push(ModClass {

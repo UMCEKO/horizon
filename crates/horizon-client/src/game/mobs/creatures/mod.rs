@@ -1976,10 +1976,12 @@ impl Game<'_> {
     /// (on the server thread that is every player, the window's too), so
     /// Looting on their weapon counts.
     fn killer_loot_entity(&mut self, guest: Option<u32>) -> horizon_world::loot::LootEntity {
-        let own = |g: &Self| {
+        let own = |g: &mut Self| {
             let mut e = horizon_world::loot::LootEntity::new("minecraft:player");
+            let held = g.stack_in(g.selected).cloned();
+            let swapped = g.java_hook_tool_for_loot(held.as_ref());
             let slots = [
-                ("mainhand", g.stack_in(g.selected)),
+                ("mainhand", swapped.as_ref().or(held.as_ref())),
                 ("offhand", g.stack_in(super::shield::OFFHAND_SLOT)),
                 ("head", g.armor[0].as_ref()),
                 ("chest", g.armor[1].as_ref()),
@@ -1994,7 +1996,7 @@ impl Game<'_> {
             e
         };
         if let Some(conn) = guest.filter(|_| self.lan_acting.is_none())
-            && let Some(entity) = self.as_guest(conn, |g| own(g))
+            && let Some(entity) = self.as_guest(conn, own)
         {
             return entity;
         }

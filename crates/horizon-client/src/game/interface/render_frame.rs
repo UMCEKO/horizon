@@ -3,6 +3,17 @@ use super::*;
 use horizon_world::dimension_type::Skybox;
 
 impl Game<'_> {
+    /// `GameRenderer.shouldRenderBlockOutline`, for a block at `pos`.
+    pub(in crate::game) fn vanilla_outline_gate(&self, pos: [i32; 3]) -> bool {
+        let adventure = self.mode == horizon_client::command::args::GameMode::Adventure;
+        !self.ui.hide_gui
+            && !self.shows_panorama()
+            && (self.may_build() || adventure)
+            && (self.may_build()
+                || !self.block_action_restricted(pos)
+                || self.can_place_on_in_adventure(pos))
+    }
+
     /// Build the complete frame before handing its borrowed geometry and lighting to
     /// the consumer. Tests use the same boundary as GPU submission.
     pub(super) fn render_with(
@@ -396,11 +407,7 @@ impl Game<'_> {
             self.shows_panorama(),
         ) {
             self.pick()
-                .filter(|h| {
-                    self.may_build()
-                        || !self.block_action_restricted(h.pos)
-                        || self.can_place_on_in_adventure(h.pos)
-                })
+                .filter(|h| self.vanilla_outline_gate(h.pos))
                 .filter(|h| {
                     let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
                     let mut canceled = false;
@@ -777,12 +784,7 @@ impl Game<'_> {
             },
             title,
             sky_blocked: horizon_client::fog::sky_pass_skipped(
-                horizon_client::fog::fog_type(
-                    &self.world,
-                    self.res.facts(),
-                    [camera.x, camera.y, camera.z],
-                    &self.near_plane(),
-                ),
+                self.camera_fog_type([camera.x, camera.y, camera.z]),
                 self.potions.effects.get("blindness").is_some()
                     || self.potions.effects.get("darkness").is_some(),
                 self.boss_overlay.should_create_world_fog(),

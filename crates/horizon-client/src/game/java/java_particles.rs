@@ -1,7 +1,8 @@
 // game-module-cfg: feature java-mods
 //! The Java registry's particle types: names by id, and the ones mods registered.
 
-use horizon_java_host::wire::In;
+use super::Game;
+use horizon_java_host::wire::{In, Out};
 use horizon_world::registry::BlockStateId;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -106,6 +107,70 @@ pub(super) fn direction(face: [i32; 3]) -> u8 {
     }
 }
 
+/// Whether a Java mod registered this particle type.
+pub(super) fn java_particle_owned(name: &str) -> bool {
+    java_particle_facts().is_some_and(|facts| facts.owned_names().any(|owned| owned == name))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn server_particles_request(
+    dim: &str,
+    spec: &str,
+    pos: [f64; 3],
+    delta: [f32; 3],
+    speed: f32,
+    count: i32,
+    force: bool,
+    viewers: &[u128],
+) -> Vec<u8> {
+    let mut out = Out::default();
+    out.text(dim);
+    out.text(spec);
+    pos.into_iter().for_each(|v| out.double(v));
+    delta.into_iter().for_each(|v| out.float(v));
+    out.float(speed);
+    out.int(count);
+    out.bool(force);
+    out.int(viewers.len() as i32);
+    for uuid in viewers {
+        out.long((uuid >> 64) as i64);
+        out.long(*uuid as i64);
+    }
+    out.0
+}
+
+/// The players reached, or the codec's message after `-1`.
+fn parse_server_particles(reply: &[u8]) -> Result<i32, String> {
+    let malformed = || "the Java particle reply was malformed".to_owned();
+    let mut reply = In(reply);
+    match reply.int().ok_or_else(malformed)? {
+        n if n >= 0 => Ok(n),
+        _ => Err(reply.text().ok_or_else(malformed)?.to_owned()),
+    }
+}
+
+impl Game<'_> {
+    /// `ParticleCommand.sendParticles` for players Horizon chose, in Java.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn java_server_particles(
+        &mut self,
+        dim: &str,
+        spec: &str,
+        pos: [f64; 3],
+        delta: [f32; 3],
+        speed: f32,
+        count: i32,
+        force: bool,
+        viewers: &[u128],
+    ) -> Result<i32, String> {
+        let request = server_particles_request(dim, spec, pos, delta, speed, count, force, viewers);
+        let reply = self
+            .java_request("server_particles", &request)
+            .ok_or_else(|| "no Java".to_owned())?;
+        parse_server_particles(&reply)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,5 +222,45 @@ mod tests {
         assert_eq!(table.len(), 2);
         assert_eq!(table[&BlockStateId(40)], 1);
         assert_eq!(table[&BlockStateId(41)], 3);
+    }
+
+    #[test]
+    fn the_server_particles_request_has_the_documented_layout() {
+        let bytes = server_particles_request(
+            "overworld",
+            "x:spark",
+            [1.0, 2.0, 3.0],
+            [0.0; 3],
+            0.5,
+            4,
+            false,
+            &[(1u128 << 64) | 2],
+        );
+        let mut want = Out::default();
+        want.text("overworld");
+        want.text("x:spark");
+        for v in [1.0f64, 2.0, 3.0] {
+            want.double(v);
+        }
+        for v in [0.0f32, 0.0, 0.0, 0.5] {
+            want.float(v);
+        }
+        want.int(4);
+        want.bool(false);
+        want.int(1);
+        want.long(1);
+        want.long(2);
+        assert_eq!(bytes, want.0);
+    }
+
+    #[test]
+    fn a_particle_reply_is_a_count_or_the_codecs_message() {
+        let mut ok = Out::default();
+        ok.int(3);
+        assert_eq!(parse_server_particles(&ok.0), Ok(3));
+        let mut bad = Out::default();
+        bad.int(-1);
+        bad.text("bad");
+        assert_eq!(parse_server_particles(&bad.0), Err("bad".to_owned()));
     }
 }

@@ -4,10 +4,19 @@
 use super::*;
 
 impl Game<'_> {
-    /// Whether native's inventory acts on a key (`AbstractContainerScreen.keyPressed`, the recipe book's search box) or the window does: Escape, the inventory key, a hotbar, swap or drop key over a slot, any key while the book's search is focused, and the window's own function keys and modifiers.
+    /// Whether native's search box takes typed text: the creative search tab's (`charTyped` drops it after the chat key opened the tab) or the recipe book's.
+    pub(in crate::game) fn native_text_focused(&self) -> bool {
+        if self.screen == Screen::Creative {
+            return self.creative_screen.tab().search && !self.creative_ignore_text;
+        }
+        self.recipe_search_focused()
+    }
+
+    /// Whether native's inventory or creative screen acts on a key (`AbstractContainerScreen.keyPressed`, the recipe book's search box, `CreativeModeInventoryScreen.keyPressed`) or the window does: Escape, the inventory key, a hotbar, swap or drop key over a slot, any key while a search box is focused, and the window's own function keys and modifiers.
     pub(in crate::game) fn native_inventory_key(&self, code: KeyCode) -> bool {
         use KeyCode::*;
         if self.recipe_search_focused()
+            || (self.screen == Screen::Creative && self.creative_screen.tab().search)
             || matches!(
                 code,
                 Escape
@@ -48,7 +57,7 @@ impl Game<'_> {
             .into_iter()
             .any(|mapped| match mapped {
                 Ok(KeyE) => true,
-                Ok(KeyT) => self.recipe_search_focused(),
+                Ok(KeyT) => self.recipe_search_focused() || self.screen == Screen::Creative,
                 Ok(key) => hovered && (HOTBAR_DIGITS.contains(&key) || matches!(key, KeyF | KeyQ)),
                 Err(_) => false,
             })

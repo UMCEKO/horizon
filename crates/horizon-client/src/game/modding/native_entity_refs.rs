@@ -315,6 +315,8 @@ impl Game<'_> {
         if let Some(entity) = entity {
             self.native_entity_target(entity)?;
         }
+        let swapped = entity.and_then(|_| self.java_hook_tool_for_loot(tool));
+        let tool = swapped.as_ref().or(tool);
         let state = self.world.block(pos[0], pos[1], pos[2]);
         let at = horizon_core::position::BlockPos::new(pos[0], pos[1], pos[2]);
         Some(self.with_level(|_, level, _| level.block_drops_of(at, state, tool, entity)))

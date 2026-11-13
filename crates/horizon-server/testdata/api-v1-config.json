@@ -13,6 +13,7 @@
           "webhook": "(set)"
         },
         "engine": {
+          "java_mods": "",
           "low_memory": false,
           "path": "",
           "resources": "",

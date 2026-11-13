@@ -201,6 +201,13 @@ pub(in crate::game) fn java_forget_client_world() {
 }
 
 horizon_java_host::java_bridges! { table for () {
+    "dev/horizonlab/javamods/boot/Clients".sent
+    "(JJ)J" =>
+    fn clients_sent(_game, most: i64, least: i64) -> i64 {
+        let uuid = (u128::from(most as u64) << 64) | u128::from(least as u64);
+        horizon_client::lan::conn::memory_sent(uuid).map_or(0, |n| n as i64)
+    }
+
     "dev/horizonlab/javamods/boot/ClientWorld".state
     "(Lnet/minecraft/core/BlockPos;)Lnet/minecraft/world/level/block/state/BlockState;" =>
     fn client_world_state(_game, pos: Pos) -> BlockStateId {

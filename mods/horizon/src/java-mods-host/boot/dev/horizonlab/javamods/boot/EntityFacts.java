@@ -68,7 +68,17 @@ public final class EntityFacts {
         var facts = JsonParser.parseString(Files.readString(Path.of(path))).getAsJsonObject();
         bin = build(facts, new Live(), line -> System.err.println("Horizon: entity facts: " + line), serializedAttachments());
         reflectiveWarnings(facts);
+        var writers = facts.has("player_writes") ? facts.getAsJsonArray("player_writes") : new JsonArray();
+        playerMotionWriters = !writers.isEmpty();
+        if (playerMotionWriters) {
+            var mods = new TreeSet<String>();
+            for (JsonElement w : writers) for (JsonElement m : w.getAsJsonObject().getAsJsonArray("mods")) mods.add(m.getAsString());
+            System.err.println("Horizon: entity facts: " + writers.size() + " player motion writers (" + String.join(", ", mods) + ")");
+        }
     }
+
+    /** A mod writes a player's motion (`player_writes`): the client's ticks run in lockstep so the writes reach the window's step. */
+    static volatile boolean playerMotionWriters;
 
     private static void reflectiveWarnings(JsonObject facts) {
         for (var e : facts.getAsJsonObject("reflective_entity_access").entrySet()) {

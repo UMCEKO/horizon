@@ -10,4 +10,7 @@ import org.spongepowered.asm.mixin.gen.Invoker;
 public interface SynchedAccess {
     @Invoker("getItem")
     <T> SynchedEntityData.DataItem<T> horizon$item(EntityDataAccessor<T> accessor);
+
+    @org.spongepowered.asm.mixin.gen.Accessor("itemsById")
+    SynchedEntityData.DataItem<?>[] horizon$items();
 }

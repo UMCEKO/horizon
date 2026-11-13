@@ -1,0 +1,1 @@
+package net.minecraft.world.level.block.state; public class BlockState { public net.minecraft.world.level.block.Block getBlock() { return null; } }

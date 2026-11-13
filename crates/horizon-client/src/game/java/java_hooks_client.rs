@@ -204,13 +204,40 @@ impl Game<'_> {
     }
     pub(super) fn java_window_input(&mut self, _event: &winit::event::WindowEvent) {}
     pub(super) fn java_key_input(&mut self, _code: KeyCode, _pressed: bool, _repeat: bool) {}
+    pub(super) fn java_music_owned(&self) -> bool {
+        false
+    }
+    pub(super) fn java_music_instance(&self) -> Option<horizon_client::sound_engine::InstanceId> {
+        None
+    }
+    pub(super) fn java_music_toasts(&mut self) -> Vec<bool> {
+        Vec::new()
+    }
+    pub(super) fn java_music_send(
+        &mut self,
+        _music: Option<&horizon_client::music::Music>,
+        _volume: f32,
+        _loading: bool,
+        _frequency: horizon_client::music::MusicFrequency,
+    ) {
+    }
     pub(super) fn java_client_tick_send(&mut self) {}
     pub(super) fn java_client_frame(&mut self) {}
+    pub(super) fn java_render_frame(&mut self, _phase: u8) {}
     pub(super) fn java_client_left(&mut self) {}
     pub(super) fn java_client_font(&self) {}
     pub(super) fn java_remote_joined(&mut self, _java: bool) {}
     pub(super) fn java_apply_mod_keys(&self) {}
-    pub(super) fn java_wire_in(&mut self, _frame: &[u8]) {}
+    pub(super) fn java_wire_in(&mut self, _frame: &[u8], _seq: u64) {}
+    pub(super) fn java_feeds(&self, _packet: &horizon_protocol::packets::play::Clientbound) -> bool {
+        false
+    }
+    pub(super) fn java_feed(
+        &mut self,
+        _packet: Option<&horizon_protocol::packets::play::Clientbound>,
+        _seq: u64,
+    ) {
+    }
     pub(super) fn java_shell_open(&self) -> bool {
         false
     }

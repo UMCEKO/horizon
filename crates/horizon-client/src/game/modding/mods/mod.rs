@@ -2246,7 +2246,10 @@ mod tests {
                         &horizon_mod_package::content::FluidLook {
                             id: "reload_fluid:oil".into(),
                             sprite: None,
+                            flowing: None,
+                            overlay: None,
                             tint: None,
+                            screen_overlay: None,
                             world: Some(Default::default()),
                         },
                     ]);

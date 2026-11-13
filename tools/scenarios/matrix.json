@@ -1,0 +1,5 @@
+[
+  {"name": "tick"},
+  {"wait": 100},
+  {"check": {"no_exceptions": true}}
+]

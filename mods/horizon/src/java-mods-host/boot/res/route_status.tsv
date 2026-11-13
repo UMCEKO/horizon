@@ -14,7 +14,7 @@ net/minecraft/client/Minecraft#<init>(Lnet/minecraft/client/main/GameConfig;)V	v
 net/minecraft/client/Minecraft#continueAttack(Z)V	spec: w12-coverage SPEC-22
 net/minecraft/client/Minecraft#handleKeybinds()V	spec: w12-coverage SPEC-22
 net/minecraft/client/Minecraft#pickBlockOrEntity	verdict: java-client
-net/minecraft/client/Minecraft#resizeGui()V	spec: w12-coverage SPEC-22
+net/minecraft/client/Minecraft#resizeGui()V	special: screens
 net/minecraft/client/Minecraft#run()V	special: loop
 net/minecraft/client/Minecraft#startAttack()Z	verdict: java-client
 net/minecraft/client/Minecraft#startUseItem()V	verdict: java-client
@@ -63,9 +63,8 @@ net/minecraft/client/renderer/fog/FogRenderer#setupFog(Lnet/minecraft/client/Cam
 net/minecraft/client/resources/language/LanguageManager#onResourceManagerReload(Lnet/minecraft/server/packs/resources/ResourceManager;)V	verdict: java-client
 net/minecraft/client/resources/model/BlockStateDefinitions#<clinit>	verdict: java-client
 net/minecraft/client/server/IntegratedServer#initServer()Z	spec: w12-coverage SPEC-20
-net/minecraft/client/sounds/MusicManager#tick()V	owner: W8
-net/minecraft/client/sounds/SoundEngine#refreshCategoryVolume(Lnet/minecraft/sounds/SoundSource;)V	owner: W8
-net/minecraft/client/sounds/SoundEngine#reload()V	owner: W8
+net/minecraft/client/sounds/SoundEngine#refreshCategoryVolume(Lnet/minecraft/sounds/SoundSource;)V	special: sounds
+net/minecraft/client/sounds/SoundEngine#reload()V	special: sounds
 net/minecraft/core/component/BlockTransformer#transformBlock(Lnet/minecraft/world/item/context/UseOnContext;)Lnet/minecraft/world/InteractionResult;	spec: w12-coverage SPEC-13
 net/minecraft/core/component/BlockTransformer#transformBlock(Lnet/minecraft/world/item/context/UseOnContext;Lnet/minecraft/core/Holder;)Lnet/minecraft/world/InteractionResult;	spec: w12-coverage SPEC-13
 net/minecraft/data/tags/TagsProvider#run	verdict: inert

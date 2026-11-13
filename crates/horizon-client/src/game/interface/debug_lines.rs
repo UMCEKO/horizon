@@ -43,14 +43,38 @@ impl Game<'_> {
     /// Every enabled entry's lines, by identifier.
     pub(super) fn debug_entry_lines(&self, d: &mut Displayer, framebuffer: [i32; 2]) {
         let reduced = self.reduced_debug_info();
-        let mut paths: Vec<&str> = ENTRIES
+        let mut order: Vec<(&str, &str)> = ENTRIES
             .iter()
             .map(|e| e.path)
             .filter(|path| self.debug_entries.enabled(path, self.debug, reduced))
+            .map(|path| (path, "minecraft"))
             .collect();
-        paths.sort_unstable();
-        let server = self.server_debug(paths.iter().any(|p| SERVER_ENTRIES.contains(p)));
-        for path in paths {
+        let java: Vec<&str> = debug_entries::java_entries()
+            .iter()
+            .map(|e| e.id.as_str())
+            .filter(|id| self.debug_entries.enabled(id, self.debug, reduced))
+            .collect();
+        order.extend(java.iter().filter_map(|id| id.split_once(':')).map(|(ns, path)| (path, ns)));
+        // `Identifier`'s natural order: the path, then the namespace.
+        order.sort_unstable();
+        let recorded = if java.is_empty() {
+            Vec::new()
+        } else {
+            self.java_hook_debug_recorded()
+        };
+        let server = self.server_debug(
+            order
+                .iter()
+                .any(|(path, ns)| *ns == "minecraft" && SERVER_ENTRIES.contains(path)),
+        );
+        for (path, namespace) in order {
+            if namespace != "minecraft" {
+                let id = format!("{namespace}:{path}");
+                if let Some(entry) = recorded.iter().find(|r| r.id == id) {
+                    entry.replay(d);
+                }
+                continue;
+            }
             match path {
                 "biome" => self.debug_biome_line(d),
                 "chunk_render_stats" => self.debug_chunk_render_line(d),

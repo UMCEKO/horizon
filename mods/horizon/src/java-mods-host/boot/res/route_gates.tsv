@@ -2,6 +2,7 @@
 net/minecraft/client/Minecraft#runTick(Z)V	crates/horizon-client/src/game/java/java_routing.rs:136	java_pause_sources	gui	0
 net/minecraft/client/gui/Font$PreparedTextBuilder#accept(ILnet/minecraft/network/chat/Style;Lnet/minecraft/client/gui/font/glyphs/BakedGlyph;)Z	crates/horizon-client/src/game/java/java_screens/draw.rs:283	glyphs	gui	0
 net/minecraft/client/gui/Font$PreparedTextBuilder#getShadowColor(Lnet/minecraft/network/chat/Style;I)I	crates/horizon-client/src/game/java/java_screens/draw.rs:284	glyphs	gui	0
+net/minecraft/client/sounds/MusicManager#tick()V	crates/horizon-client/src/game/interface/music.rs:20	tick_music	gui	0
 net/minecraft/server/ServerScoreboard#addPlayerToTeam(Ljava/lang/String;Lnet/minecraft/world/scores/PlayerTeam;)Z	crates/horizon-client/src/game/java/scoreboard_routes.rs:17	server_team_join	game	0
 net/minecraft/server/ServerScoreboard#removePlayerFromTeam(Ljava/lang/String;Lnet/minecraft/world/scores/PlayerTeam;)V	crates/horizon-client/src/game/java/scoreboard_routes.rs:39	server_team_leave	game	0
 net/minecraft/world/entity/player/Inventory#addAndPickItem(Lnet/minecraft/world/item/ItemStack;)V	crates/horizon-client/src/game/java/inventory.rs:63	add_and_pick_item	game	0

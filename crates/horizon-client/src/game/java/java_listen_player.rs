@@ -25,12 +25,8 @@ fn post(host: &mut dyn ServerHost, hook: HookId, event: &str, fields: Out) -> Fl
     if !listens(hook) {
         return Flow::Continue;
     }
-    let cancelled = with_game(host, |game| {
-        let mut cancelled = false;
-        game.java_post_server_event(event, fields.0, &mut cancelled);
-        cancelled
-    });
-    if cancelled == Some(true) {
+    let posted = with_game(host, |game| game.java_post_player_event(event, fields.0));
+    if posted.flatten().is_some_and(|(cancelled, _)| cancelled) {
         Flow::Cancel
     } else {
         Flow::Continue

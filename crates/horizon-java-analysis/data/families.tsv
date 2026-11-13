@@ -1,0 +1,12 @@
+# family	root class; a route's family is the first whose roots its owner is one of (mod_routing.FAMILIES order)
+player	net/minecraft/world/entity/player/Player
+player	net/minecraft/world/entity/player/Inventory
+entity	net/minecraft/world/entity/Entity
+block_entity	net/minecraft/world/level/block/entity/BlockEntity
+block_entity	net/minecraft/world/RandomizableContainer
+block	net/minecraft/world/level/block/Block
+block	net/minecraft/world/level/block/state/BlockBehaviour$BlockStateBase
+item	net/minecraft/world/item/Item
+level	net/minecraft/world/level/Level
+scoreboard	net/minecraft/world/scores/Scoreboard
+menu	net/minecraft/world/inventory/AbstractContainerMenu

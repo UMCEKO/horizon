@@ -1,6 +1,7 @@
 //! The creative inventory screen (`CreativeModeInventoryScreen`): its tabs, pages, tooltips,
 //! trash slot, search box and clicks.
 use super::*;
+use super::java_hooks_client::Leaf;
 
 impl Game<'_> {
     /// `CreativeModeInventoryScreen.hasPermissions` (`canUseGameMasterBlocks`
@@ -122,205 +123,248 @@ impl Game<'_> {
                 t.column + 1
             )
         };
-        self.render_transparent_background("creative", batch);
-        // Unselected tabs behind the panel, then the panel, then the selected tab.
-        for (i, t) in tabs.iter().enumerate() {
-            if i != selected && self.creative_screen.on_page(t) {
-                let (tx, ty) = Creative::tab_position(t);
-                batch.sprite(&self.gui.atlas, &tab_sprite(t, false), ox + tx, oy + ty);
-                let mouse = (self.cursor.0 - ox, self.cursor.1 - oy);
-                if Creative::tab_wants_hand(t, false, mouse) {
-                    horizon_client::widgets::request_cursor(
-                        horizon_client::widgets::Cursor::PointingHand,
-                    );
-                }
-            }
-        }
-        let background = tab.look.background.as_deref().unwrap_or(if tab.search {
-            "gui/container/creative_inventory/tab_item_search"
-        } else if tab.inventory {
-            "gui/container/creative_inventory/tab_inventory"
-        } else {
-            "gui/container/creative_inventory/tab_items"
-        });
-        if let Some(mut r) = self.gui.atlas.sprites.get(background).copied() {
-            r.u1 = r.u0 + (r.u1 - r.u0) * Creative::WIDTH / r.w as f32;
-            r.v1 = r.v0 + (r.v1 - r.v0) * Creative::HEIGHT / r.h as f32;
-            batch.rect_uv(ox, oy, Creative::WIDTH, Creative::HEIGHT, r, u32::MAX);
-        }
-        let (tx, ty) = Creative::tab_position(tab);
-        batch.sprite(&self.gui.atlas, &tab_sprite(tab, true), ox + tx, oy + ty);
-        for t in tabs.iter().filter(|t| self.creative_screen.on_page(t)) {
-            let (tx, ty) = Creative::tab_position(t);
-            let stack = t.look.icon.clone().unwrap_or_else(|| ItemStack {
-                item: Arc::from(t.icon.as_str()),
-                count: 1,
-                damage: 0,
-                extra: None,
-            });
-            self.draw_item(
-                batch,
-                &stack,
-                ox + tx + 5.0,
-                oy + ty + if t.top { 9.0 } else { 7.0 },
-            );
-        }
-        let atlas = &self.gui.atlas;
-        if !tab.inventory && !tab.look.hide_title {
-            let title = self.creative_tab_title(tab);
-            batch.text(
-                atlas,
-                &title,
-                ox + 8.0,
-                oy + 6.0,
-                tab.name
-                    .as_ref()
-                    .and_then(|n| n.1)
-                    .or(tab.look.label_color)
-                    .map_or(rgba(64, 64, 64, 255), |c| {
-                        rgba((c >> 16) as u8, (c >> 8) as u8, c as u8, 255)
-                    }),
-                false,
-            );
-        }
-        if tab.search {
-            // CreativeModeInventoryScreen: an unbordered EditBox of 50 at (82, 6).
-            let search = &mut self.creative_screen.search;
-            search.x = ox + 82.0;
-            search.y = oy + 6.0;
-            search.width = 80.0;
-            search.bordered = false;
-            search.focused = true;
-            search.text_color = u32::MAX;
-            search.max_length = clipboard::CREATIVE_SEARCH_CHARS;
-            if horizon_client::widgets::narrating() {
-                search.message = screen_info::tr("itemGroup.search", &[]);
-            }
-            search.draw(batch, atlas, None);
-        }
         // The hovered stack, and whether it is a grid slot (`CustomCreativeSlot`).
         let mut hovered: Option<(ItemStack, bool)> = None;
         // Use the same padded slot bounds as clicks and the other menus, so
         // highlights and tooltips remain visible between adjacent items.
         let hovered_slot = self.slot_at(batch, self.cursor.0, self.cursor.1);
-        if tab.inventory {
-            self.draw_player_preview(
-                batch,
-                ox + 73.0,
-                oy + 6.0,
-                ox + 105.0,
-                oy + 49.0,
-                20.0,
-                0.0625,
-            );
-            let trash = Self::creative_trash_hovered(batch, self.cursor);
-            let (tx, ty) = Creative::TRASH_POSITION;
-            if trash {
-                self.draw_slot_highlight(batch, false, ox + tx, oy + ty);
+        let items = self.creative_screen.items(&self.pack.names);
+        let first = self.creative_screen.first_row(&self.pack.names);
+        // The grid cell or hotbar slot under the cursor that gets a highlight, as its screen position.
+        let mut highlighted = None;
+        if !tab.inventory {
+            for r in 0..5 {
+                for c in 0..9 {
+                    let Some(stack) = items.get((first + r) * 9 + c).filter(|s| s.count > 0) else {
+                        continue;
+                    };
+                    if hovered_slot == Some(Creative::DISPLAY + r * 9 + c) {
+                        highlighted =
+                            Some((ox + 9.0 + c as f32 * 18.0, oy + 18.0 + r as f32 * 18.0));
+                        hovered = Some((stack.clone(), true));
+                    }
+                }
             }
-            self.draw_hovered_slot_highlight(batch, false, ox, oy);
-            self.draw_inventory_slots(batch, ox, oy);
-            if trash {
-                self.draw_slot_highlight(batch, true, ox + tx, oy + ty);
+            for c in 0..9 {
+                if hovered_slot == Some(c) {
+                    highlighted = Some((ox + 9.0 + c as f32 * 18.0, oy + 112.0));
+                    hovered = self.inventory[c].clone().map(|s| (s, false));
+                }
             }
-            self.draw_hovered_slot_highlight(batch, true, ox, oy);
-        } else {
-            let items = self.creative_screen.items(&self.pack.names);
-            let first = self.creative_screen.first_row(&self.pack.names);
+        }
+        let trash = tab.inventory && Self::creative_trash_hovered(batch, self.cursor);
+        self.java_shell_frame();
+        self.shell_leaf(batch, Leaf::Start, |_, _| {});
+        self.shell_leaf(batch, Leaf::Background, |this, batch| {
+            this.render_transparent_background("creative", batch);
+            // Unselected tabs behind the panel, then the panel, then the selected tab.
+            for (i, t) in tabs.iter().enumerate() {
+                if i != selected && this.creative_screen.on_page(t) {
+                    let (tx, ty) = Creative::tab_position(t);
+                    batch.sprite(&this.gui.atlas, &tab_sprite(t, false), ox + tx, oy + ty);
+                    let mouse = (this.cursor.0 - ox, this.cursor.1 - oy);
+                    if Creative::tab_wants_hand(t, false, mouse) {
+                        horizon_client::widgets::request_cursor(
+                            horizon_client::widgets::Cursor::PointingHand,
+                        );
+                    }
+                }
+            }
+            let background = tab.look.background.as_deref().unwrap_or(if tab.search {
+                "gui/container/creative_inventory/tab_item_search"
+            } else if tab.inventory {
+                "gui/container/creative_inventory/tab_inventory"
+            } else {
+                "gui/container/creative_inventory/tab_items"
+            });
+            if let Some(mut r) = this.gui.atlas.sprites.get(background).copied() {
+                r.u1 = r.u0 + (r.u1 - r.u0) * Creative::WIDTH / r.w as f32;
+                r.v1 = r.v0 + (r.v1 - r.v0) * Creative::HEIGHT / r.h as f32;
+                batch.rect_uv(ox, oy, Creative::WIDTH, Creative::HEIGHT, r, u32::MAX);
+            }
+            if !tab.inventory {
+                let scrollable = this.creative_screen.rows(&this.pack.names) > 5;
+                let scroller = if scrollable {
+                    tab.look
+                        .scroller
+                        .as_deref()
+                        .unwrap_or("gui/sprites/container/creative_inventory/scroller")
+                } else {
+                    "gui/sprites/container/creative_inventory/scroller_disabled"
+                };
+                batch.sprite(
+                    &this.gui.atlas,
+                    scroller,
+                    ox + Creative::SCROLL_X,
+                    oy + Creative::SCROLL_Y + this.creative_screen.scroller_offset(),
+                );
+            }
+            let (tx, ty) = Creative::tab_position(tab);
+            batch.sprite(&this.gui.atlas, &tab_sprite(tab, true), ox + tx, oy + ty);
+            for t in tabs.iter().filter(|t| this.creative_screen.on_page(t)) {
+                let (tx, ty) = Creative::tab_position(t);
+                let stack = t.look.icon.clone().unwrap_or_else(|| ItemStack {
+                    item: Arc::from(t.icon.as_str()),
+                    count: 1,
+                    damage: 0,
+                    extra: None,
+                });
+                this.draw_item(
+                    batch,
+                    &stack,
+                    ox + tx + 5.0,
+                    oy + ty + if t.top { 9.0 } else { 7.0 },
+                );
+            }
+            if tab.inventory {
+                this.draw_player_preview(
+                    batch,
+                    ox + 73.0,
+                    oy + 6.0,
+                    ox + 105.0,
+                    oy + 49.0,
+                    20.0,
+                    0.0625,
+                );
+            }
+        });
+        let mut effect_tip = None;
+        self.shell_leaf(batch, Leaf::Effects, |this, batch| {
+            effect_tip = this.draw_inventory_effects(batch, (ox, oy), Creative::WIDTH as i32);
+        });
+        self.shell_leaf(batch, Leaf::Widgets, |this, batch| {
+            if tab.search {
+                // CreativeModeInventoryScreen: an unbordered EditBox of 50 at (82, 6).
+                let search = &mut this.creative_screen.search;
+                search.x = ox + 82.0;
+                search.y = oy + 6.0;
+                search.width = 80.0;
+                search.bordered = false;
+                search.focused = true;
+                search.text_color = u32::MAX;
+                search.max_length = clipboard::CREATIVE_SEARCH_CHARS;
+                if horizon_client::widgets::narrating() {
+                    search.message = screen_info::tr("itemGroup.search", &[]);
+                }
+                search.draw(batch, &this.gui.atlas, None);
+            }
+            this.draw_creative_pages(batch, ox, oy);
+        });
+        self.shell_leaf(batch, Leaf::Labels, |this, batch| {
+            if !tab.inventory && !tab.look.hide_title {
+                let title = this.creative_tab_title(tab);
+                batch.text(
+                    &this.gui.atlas,
+                    &title,
+                    ox + 8.0,
+                    oy + 6.0,
+                    tab.name
+                        .as_ref()
+                        .and_then(|n| n.1)
+                        .or(tab.look.label_color)
+                        .map_or(rgba(64, 64, 64, 255), |c| {
+                            rgba((c >> 16) as u8, (c >> 8) as u8, c as u8, 255)
+                        }),
+                    false,
+                );
+            }
+        });
+        let (trash_x, trash_y) = Creative::TRASH_POSITION;
+        self.shell_leaf(batch, Leaf::HighlightBack, |this, batch| {
+            if trash {
+                this.draw_slot_highlight(batch, false, ox + trash_x, oy + trash_y);
+            }
+            if tab.inventory {
+                this.draw_hovered_slot_highlight(batch, false, ox, oy);
+            } else if let Some((x, y)) = highlighted {
+                this.draw_slot_highlight(batch, false, x, y);
+            }
+        });
+        self.shell_leaf(batch, Leaf::Slots, |this, batch| {
+            if tab.inventory {
+                this.draw_inventory_slots(batch, ox, oy);
+                return;
+            }
             for r in 0..5 {
                 for c in 0..9 {
                     let Some(stack) = items.get((first + r) * 9 + c).filter(|s| s.count > 0) else {
                         continue;
                     };
                     let (x, y) = (ox + 9.0 + c as f32 * 18.0, oy + 18.0 + r as f32 * 18.0);
-                    let over = hovered_slot == Some(Creative::DISPLAY + r * 9 + c);
-                    if over {
-                        self.draw_slot_highlight(batch, false, x, y);
-                    }
-                    self.draw_item(batch, stack, x, y);
-                    if over {
-                        self.draw_slot_highlight(batch, true, x, y);
-                        hovered = Some((stack.clone(), true));
-                    }
+                    this.draw_item(batch, stack, x, y);
                 }
             }
-            let drag = self.drag_view();
+            let drag = this.drag_view();
             for c in 0..9 {
                 let (x, y) = (ox + 9.0 + c as f32 * 18.0, oy + 112.0);
-                let over = hovered_slot == Some(c);
-                if over {
-                    self.draw_slot_highlight(batch, false, x, y);
-                }
-                self.draw_slot_item(batch, drag.as_ref(), c, &self.inventory[c], x, y);
-                if over {
-                    self.draw_slot_highlight(batch, true, x, y);
-                    hovered = self.inventory[c].clone().map(|s| (s, false));
+                this.draw_slot_item(batch, drag.as_ref(), c, &this.inventory[c], x, y);
+            }
+        });
+        self.shell_leaf(batch, Leaf::HighlightFront, |this, batch| {
+            if trash {
+                this.draw_slot_highlight(batch, true, ox + trash_x, oy + trash_y);
+            }
+            if tab.inventory {
+                this.draw_hovered_slot_highlight(batch, true, ox, oy);
+            } else if let Some((x, y)) = highlighted {
+                this.draw_slot_highlight(batch, true, x, y);
+            }
+        });
+        self.shell_leaf(batch, Leaf::Carried, |this, batch| this.draw_carried(batch));
+        self.shell_leaf(batch, Leaf::Tooltip, |this, batch| {
+            for t in tabs.iter().filter(|t| this.creative_screen.on_page(t)) {
+                let (tx, ty) = Creative::tab_position(t);
+                if this.cursor.0 >= ox + tx
+                    && this.cursor.0 < ox + tx + 26.0
+                    && this.cursor.1 >= oy + ty
+                    && this.cursor.1 < oy + ty + 32.0
+                {
+                    this.tooltip(
+                        batch,
+                        &this.creative_tab_title(t),
+                        this.cursor.0,
+                        this.cursor.1,
+                    );
                 }
             }
-            let scrollable = self.creative_screen.rows(&self.pack.names) > 5;
-            let scroller = if scrollable {
-                tab.look
-                    .scroller
-                    .as_deref()
-                    .unwrap_or("gui/sprites/container/creative_inventory/scroller")
-            } else {
-                "gui/sprites/container/creative_inventory/scroller_disabled"
-            };
-            batch.sprite(
-                &self.gui.atlas,
-                scroller,
-                ox + Creative::SCROLL_X,
-                oy + Creative::SCROLL_Y + self.creative_screen.scroller_offset(),
-            );
-        }
-        let effect_tip = self.draw_inventory_effects(batch, (ox, oy), Creative::WIDTH as i32);
-        self.draw_creative_pages(batch, ox, oy);
-        for t in tabs.iter().filter(|t| self.creative_screen.on_page(t)) {
-            let (tx, ty) = Creative::tab_position(t);
-            if self.cursor.0 >= ox + tx
-                && self.cursor.0 < ox + tx + 26.0
-                && self.cursor.1 >= oy + ty
-                && self.cursor.1 < oy + ty + 32.0
+            if tab.inventory {
+                if trash {
+                    // `CreativeModeInventoryScreen`: the destroy slot's tooltip is `inventory.binSlot`.
+                    let destroy = this.translate_with_fallback("inventory.binSlot", "Destroy Item");
+                    this.tooltip(batch, &destroy, this.cursor.0, this.cursor.1);
+                } else if let Some(slot) = this.slot_at(batch, this.cursor.0, this.cursor.1)
+                    && let Some(stack) = this.slot_view(slot)
+                    && this.tooltip_with_carried(&stack)
+                {
+                    let tabs = this.creative_tooltip_tabs(&stack, false);
+                    this.draw_stack_tooltip_with(
+                        batch,
+                        &stack,
+                        false,
+                        this.cursor.0,
+                        this.cursor.1,
+                        tabs,
+                    );
+                }
+            } else if let Some((item, grid)) = hovered
+                && this.tooltip_with_carried(&item)
             {
-                self.tooltip(
+                let tabs = this.creative_tooltip_tabs(&item, grid);
+                // A `CustomCreativeSlot`: TooltipFlag.asCreative.
+                this.draw_stack_tooltip_with(
                     batch,
-                    &self.creative_tab_title(t),
-                    self.cursor.0,
-                    self.cursor.1,
-                );
-            }
-        }
-        self.draw_carried(batch);
-        if tab.inventory {
-            if Self::creative_trash_hovered(batch, self.cursor) {
-                // `CreativeModeInventoryScreen`: the destroy slot's tooltip is
-                // `inventory.binSlot`, not an English literal.
-                let destroy = self.translate_with_fallback("inventory.binSlot", "Destroy Item");
-                self.tooltip(batch, &destroy, self.cursor.0, self.cursor.1);
-            } else if let Some(slot) = self.slot_at(batch, self.cursor.0, self.cursor.1)
-                && let Some(stack) = self.slot_view(slot)
-                && self.tooltip_with_carried(&stack)
-            {
-                let tabs = self.creative_tooltip_tabs(&stack, false);
-                self.draw_stack_tooltip_with(
-                    batch,
-                    &stack,
-                    false,
-                    self.cursor.0,
-                    self.cursor.1,
+                    &item,
+                    grid,
+                    this.cursor.0,
+                    this.cursor.1,
                     tabs,
                 );
             }
-        } else if let Some((item, grid)) = hovered
-            && self.tooltip_with_carried(&item)
-        {
-            let tabs = self.creative_tooltip_tabs(&item, grid);
-            // A `CustomCreativeSlot`: TooltipFlag.asCreative.
-            self.draw_stack_tooltip_with(batch, &item, grid, self.cursor.0, self.cursor.1, tabs);
-        }
-        if let Some(lines) = effect_tip {
-            self.draw_tooltip_lines(batch, &lines, self.cursor.0, self.cursor.1);
-        }
+            if let Some(lines) = effect_tip {
+                this.draw_tooltip_lines(batch, &lines, this.cursor.0, this.cursor.1);
+            }
+        });
+        self.shell_leaf(batch, Leaf::Deferred, |_, _| {});
     }
     pub(super) fn creative_trash_hovered(batch: &HudBatch, cursor: (f32, f32)) -> bool {
         let (ox, oy) = Self::creative_origin(batch);
@@ -469,16 +513,37 @@ impl Game<'_> {
             self.inventory_press(right);
         }
     }
-    /// A click on the search tab's box (`EditBox.onClick`).
-    pub(super) fn creative_search_click(&mut self, ox: f32, oy: f32) -> bool {
+    /// The search box's bounds (x, y, width, height) when the selected tab has one and the cursor is over it.
+    fn creative_search_bounds(&self, ox: f32, oy: f32) -> Option<(f32, f32, f32, f32)> {
         if !self.creative_screen.tab().search {
-            return false;
+            return None;
         }
         let (x, y, w, h) = (ox + 82.0, oy + 6.0, 80.0, 9.0);
         let (mx, my) = self.cursor;
-        if mx < x || my < y || mx >= x + w || my >= y + h {
+        (mx >= x && my >= y && mx < x + w && my < y + h).then_some((x, y, w, h))
+    }
+    /// The cursor is over the search box or a page button, which native's click takes before a mod's widget.
+    #[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+    pub(super) fn creative_widget_hit(&self) -> bool {
+        let Some(size) = self
+            .renderer
+            .as_ref()
+            .map(|r| [r.config.width, r.config.height])
+        else {
             return false;
-        }
+        };
+        let batch = HudBatch::new(size, self.settings.gui_scale_inputs());
+        let (ox, oy) = Self::creative_origin(&batch);
+        self.creative_search_bounds(ox, oy).is_some()
+            || Self::creative_page_button(ox, oy, self.cursor, self.creative_screen.pages())
+                .is_some()
+    }
+    /// A click on the search tab's box (`EditBox.onClick`).
+    pub(super) fn creative_search_click(&mut self, ox: f32, oy: f32) -> bool {
+        let Some((x, y, w, _)) = self.creative_search_bounds(ox, oy) else {
+            return false;
+        };
+        let mx = self.cursor.0;
         let shift = self.has_shift_down();
         let search = &mut self.creative_screen.search;
         search.x = x;
