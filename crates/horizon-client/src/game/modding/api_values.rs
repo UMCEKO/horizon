@@ -1082,6 +1082,7 @@ pub(crate) fn install_stack_hooks() {
                 return;
             }
             if let Ok(api) = stack.try_into_api() {
+                #[cfg_attr(feature = "java-mods", allow(unused_mut))]
                 let mut post = || {
                     mod_api::item::item_attributes::native_item_attribute_modifier(&api, value)
                 };
