@@ -98,4 +98,37 @@ impl Game<'_> {
             }
         }
     }
+    /// The server's open menu is the inventory or a chest-like container
+    /// (chests, barrels, ender chests: `generic_9xN`; shulker boxes).
+    pub(in crate::game) fn remote_storage_open(&self) -> bool {
+        match self.remote.as_ref().and_then(|r| r.menu.as_ref()) {
+            None => true,
+            Some((_, name)) => {
+                name == "inventory"
+                    || name.starts_with("minecraft:generic_9x")
+                    || name == "minecraft:shulker_box"
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_click_kind_goes_out_as_the_ordinal_vanilla_declares() {
+        use super::super::input_ordinal;
+        use horizon_client::menu::Input;
+        // ContainerInput: PICKUP, QUICK_MOVE, SWAP, CLONE, THROW, QUICK_CRAFT, PICKUP_ALL.
+        for (name, ordinal) in [
+            ("PICKUP", 0),
+            ("QUICK_MOVE", 1),
+            ("SWAP", 2),
+            ("CLONE", 3),
+            ("THROW", 4),
+            ("QUICK_CRAFT", 5),
+            ("PICKUP_ALL", 6),
+        ] {
+            assert_eq!(input_ordinal(Input::parse(name).unwrap()), ordinal, "{name}");
+        }
+    }
 }
