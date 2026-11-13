@@ -47,6 +47,7 @@ abstract class ClientLevelEntitiesMixin extends Level {
     @Inject(method = "tickEntities", at = @At("HEAD"))
     private void horizon$tickEntities(CallbackInfo info) {
         assert ClientEntities.noneTicking((ClientLevel) (Object) this) : "the Java client ticks an entity the window ticks";
+        ClientEntities.tickEvents();
     }
 
     @Override

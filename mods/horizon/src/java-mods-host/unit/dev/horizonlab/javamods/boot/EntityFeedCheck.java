@@ -41,6 +41,7 @@ public final class EntityFeedCheck {
             out.writeDouble(-0.08);
             out.writeDouble(0);
             out.writeInt(3);
+            out.writeByte(EntityFeed.JOIN | EntityFeed.LEAVE);
         });
     }
 
@@ -56,9 +57,16 @@ public final class EntityFeedCheck {
         check(add.id() == 7 && add.type().equals("minecraft:pig") && add.data() == 3, "an ADD's id, type and data");
         check(add.uuid().equals(new UUID(0x0102030405060708L, 0x090a0b0c0d0e0f10L)), "an ADD's UUID");
         check(add.x() == 1.5 && add.y() == 64 && add.z() == -2.5 && add.dy() == -0.08, "an ADD's position and motion");
+        check(add.events() == (EntityFeed.JOIN | EntityFeed.LEAVE), "an ADD's join and leave bits");
         check(add.pitch() == 0 && add.yaw() == 90 && add.head() == -180, "an ADD's look: pitch, yaw, head yaw");
         var removed = (EntityFeed.Remove) EntityFeed.read(remove(7, 9));
         check(removed.ids().length == 2 && removed.ids()[0] == 7 && removed.ids()[1] == 9, "a REMOVE's ids");
+
+        var tick = (EntityFeed.Tick) EntityFeed.read(entry(EntityFeed.TICK, out -> {
+            out.writeInt(7);
+            out.writeByte(EntityFeed.PRE | EntityFeed.POST);
+        }));
+        check(tick.id() == 7 && tick.mask() == (EntityFeed.PRE | EntityFeed.POST), "a TICK's id and its Pre and Post bits");
 
         var feed = new EntityFeed();
         feed.feed(3, add(7));

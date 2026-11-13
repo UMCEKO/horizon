@@ -249,6 +249,7 @@ impl Game<'_> {
         _seq: u64,
     ) {
     }
+    pub(super) fn java_entity_ticked(&mut self, _index: usize) {}
     pub(super) fn java_shell_open(&self) -> bool {
         false
     }

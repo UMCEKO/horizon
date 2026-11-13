@@ -69,6 +69,7 @@ public final class TestMod {
             ClientMotion.register();
             ClientMovement.register();
             ClientChecks.register();
+            ClientEntityEvents.register();
             ClientTextures.register(bus);
             Goo.registerClient(bus);
             ClientWorldBox.register();

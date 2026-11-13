@@ -644,6 +644,8 @@ public final class ClientBridge {
                 Animate.next();
                 minecraft.tick();
             }
+            // A tick the level didn't run (paused) still tells its listeners what the window ticked.
+            ClientEntities.tickEvents();
             windowTicks++;
             DebugLines.record(minecraft);
             if (HUD_DEBUG && minecraft.particleEngine != null) ClientParticles.debug(minecraft);
@@ -1275,6 +1277,9 @@ public final class ClientBridge {
         out.writeBoolean(ViewFrame.animating);
         DebugLines.write(out);
         ClientAttributes.write(out, Minecraft.getInstance());
+        int[] refused = ClientEntities.takeRefused();
+        out.writeInt(refused.length);
+        for (int id : refused) out.writeInt(id);
         shellSegments = null;
         shellChanged = false;
         return bytes.toByteArray();

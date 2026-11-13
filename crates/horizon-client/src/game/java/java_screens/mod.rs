@@ -18,7 +18,7 @@ use self::hud::*;
 pub(in crate::game) mod live {
     pub(in crate::game) use super::{
         java_client_joined, java_client_remote, java_client_running, java_hud_layer_cancelled,
-        java_seen, java_shape_generation,
+        java_seen, java_seen_now, java_shape_generation,
     };
 }
 
@@ -837,6 +837,11 @@ pub(in crate::game) fn java_seen(seq: u64) {
     CLIENT.with_borrow_mut(|c| c.seen = c.seen.max(seq));
 }
 
+/// The place among the play packets of the last one the window applied.
+pub(in crate::game) fn java_seen_now() -> u64 {
+    CLIENT.with_borrow(|c| c.seen)
+}
+
 /// Whether a background client tick is running, during which the window doesn't wait on Java.
 pub(in crate::game) fn java_client_running() -> bool {
     RUNNING.load(std::sync::atomic::Ordering::Acquire) > 0
@@ -964,6 +969,10 @@ impl Game<'_> {
         if super::java_world_renders::java_probe_status(reply).is_none() {
             log::warn!("Horizon: a status's attribute probe ended in pieces");
         }
+        let mut dropped = Vec::new();
+        for _ in 0..reply.int()? {
+            dropped.push(reply.int()?);
+        }
         super::java_world_renders::java_world_status(
             world.as_deref(),
             world_animating,
@@ -1001,6 +1010,9 @@ impl Game<'_> {
             self.java_creative_tabs_built();
         }
         self.java_chat_lines(chat);
+        if !dropped.is_empty() {
+            self.java_entities_refused(&dropped);
+        }
         if open && self.screen != Screen::Java {
             self.screen = Screen::Java;
             self.capture(false);

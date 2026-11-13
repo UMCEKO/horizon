@@ -7942,6 +7942,7 @@ impl Game<'_> {
             if let Some(player) = player_ref {
                 self.native_player_tick_post(mod_api::__private::PlayerTickPostCall { player });
             }
+            self.java_entity_ticked(i);
         }
         // ExperienceOrb.tick runs on a client too (all but the merges and the
         // push out of a block, which are the server's): gravity, buoyancy,
