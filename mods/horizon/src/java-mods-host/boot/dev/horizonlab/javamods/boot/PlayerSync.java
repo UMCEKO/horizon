@@ -125,6 +125,10 @@ public final class PlayerSync {
         actingAttributes = player == null ? null : player.getAttributes();
     }
 
+    static ServerPlayer actingPlayer() {
+        return acting;
+    }
+
     private static boolean acting(Object entity) {
         return entity != null && entity == acting;
     }

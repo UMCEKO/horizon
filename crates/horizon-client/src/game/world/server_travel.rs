@@ -1347,7 +1347,8 @@ impl Game<'_> {
         // `removePlayerImmediately(CHANGED_DIMENSION)` in the old level, then `addDuringTeleport` in the new one.
         let changed = super::native_entities::Removal::ChangedDimension;
         self.java_hook_player_level(uuid, from.id(), false, changed);
-        self.java_hook_player_level(uuid, to.id(), true, changed);
+        #[cfg(feature = "java-mods")]
+        self.as_guest(conn, |g| g.level_add_player(to));
         self.as_guest(conn, |g| {
             g.native_player_changed_dimension(uuid, &name, from.id(), to.id());
         });

@@ -285,8 +285,8 @@ impl Game<'_> {
         };
         let (respawned, name) = (host.hub.guests[i].uuid, host.hub.guests[i].name.clone());
         // `addRespawnedPlayer`, before PlayerRespawnEvent.
-        let added = crate::game::native_entities::Removal::Discarded;
-        self.java_hook_player_level(respawned, level.id(), true, added);
+        #[cfg(feature = "java-mods")]
+        self.as_guest(conn, |g| g.level_add_player(level));
         self.as_guest(conn, |g| g.native_player_respawned(respawned, &name));
         // The player left another level for the respawn point's: placed for
         // good they tell the mods now, else the trip that is still carrying

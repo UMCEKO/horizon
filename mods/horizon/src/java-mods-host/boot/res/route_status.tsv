@@ -80,8 +80,6 @@ net/minecraft/server/commands/EnchantCommand#register(Lcom/mojang/brigadier/Comm
 net/minecraft/server/dedicated/DedicatedServer#initServer()Z	spec: w12-coverage SPEC-20
 net/minecraft/server/level/ChunkMap#anyPlayerCloseEnoughForSpawning(Lnet/minecraft/world/level/ChunkPos;)Z	spec: w12-coverage SPEC-14
 net/minecraft/server/level/ChunkMap#scheduleChunkLoad(Lnet/minecraft/world/level/ChunkPos;)Ljava/util/concurrent/CompletableFuture;	owner: W10
-net/minecraft/server/level/ServerLevel#addPlayer(Lnet/minecraft/server/level/ServerPlayer;)V	spec: w12-coverage SPEC-21
-net/minecraft/server/level/ServerPlayer#teleport(Lnet/minecraft/world/level/portal/TeleportTransition;)Lnet/minecraft/server/level/ServerPlayer;	spec: w12-coverage SPEC-21
 net/minecraft/server/network/ServerConfigurationPacketListenerImpl#handleConfigurationFinished(Lnet/minecraft/network/protocol/configuration/ServerboundFinishConfigurationPacket;)V	owner: W13
 net/minecraft/server/network/ServerConfigurationPacketListenerImpl#startConfiguration()V	owner: W13
 net/minecraft/server/network/ServerGamePacketListenerImpl#handlePickItemFromBlock(Lnet/minecraft/network/protocol/game/ServerboundPickItemFromBlockPacket;)V	spec: w12-coverage SPEC-15
