@@ -124,17 +124,22 @@ impl CommandTree {
             dedicated,
             builtin,
             extra,
+            &Value::Null,
             &[],
             &crate::gamerules::rule_registry(),
         )
     }
 
+    /// [`CommandTree::packet_with`] with the Java server's roots too: `java` is a root in the
+    /// report's format (`Value::Null` for none) that replaces vanilla's roots of the same names.
+    #[allow(clippy::too_many_arguments)]
     pub fn packet_with_features(
         &self,
         level: u8,
         dedicated: bool,
         builtin: &Builtin,
         extra: &Value,
+        java: &Value,
         features: &[String],
         registry: &crate::gamerules::RuleRegistry,
     ) -> Commands {
@@ -189,13 +194,17 @@ impl CommandTree {
             }
             gamerule["children"] = Value::Object(rules);
         }
-        if let (Some(children), Some(mods)) = (
-            root.get_mut("children").and_then(Value::as_object_mut),
-            extra.get("children").and_then(Value::as_object),
-        ) {
-            children.retain(|name, _| !mods.contains_key(name));
+        for mods in [extra, java] {
+            if let (Some(children), Some(mods)) = (
+                root.get_mut("children").and_then(Value::as_object_mut),
+                mods.get("children").and_then(Value::as_object),
+            ) {
+                children.retain(|name, _| !mods.contains_key(name));
+            }
         }
-        for root in [&root, extra, &horizon] {
+        let argument_types = builtin.get("minecraft:command_argument_type");
+        let known = |parser: &str| argument_types.is_none_or(|t| t.id(parser).is_some());
+        for root in [&root, extra, java, &horizon] {
             fill(
                 root,
                 0,
@@ -203,6 +212,7 @@ impl CommandTree {
                 level,
                 dedicated,
                 &suggestions,
+                &known,
                 &mut nodes,
                 &mut paths,
             );
@@ -223,7 +233,6 @@ impl CommandTree {
                 queue.push_back(*target);
             }
         }
-        let argument_types = builtin.get("minecraft:command_argument_type");
         let out = order
             .iter()
             .map(|&n| {
@@ -263,6 +272,7 @@ fn fill(
     level: u8,
     dedicated: bool,
     suggestions: &HashMap<&str, &'static str>,
+    known: &dyn Fn(&str) -> bool,
     nodes: &mut Vec<Node>,
     paths: &mut HashMap<Vec<String>, usize>,
 ) {
@@ -300,15 +310,19 @@ fn fill(
         {
             continue;
         }
-        path.push(name.clone());
         let argument = child["type"] == "argument";
+        if argument && !known(child["parser"].as_str().unwrap_or_default()) {
+            warn_left_out(child["parser"].as_str().unwrap_or_default());
+            continue;
+        }
+        path.push(name.clone());
         let index = nodes.len();
         nodes.push(Node {
             name: name.clone(),
             kind: if argument { 2 } else { 1 },
             executable: child["executable"].as_bool().unwrap_or(false)
                 && child["execution_level"].as_u64().unwrap_or(0) <= u64::from(level),
-            restricted: required > 0,
+            restricted: child["restricted"].as_bool().unwrap_or(required > 0),
             children: Vec::new(),
             redirect: redirect(child),
             parser: argument.then(|| {
@@ -342,10 +356,21 @@ fn fill(
             level,
             dedicated,
             suggestions,
+            known,
             nodes,
             paths,
         );
         path.pop();
+    }
+}
+
+/// A node whose argument type the client has no id for is left out; the log names each type once.
+fn warn_left_out(parser: &str) {
+    static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if !seen.iter().any(|p| p == parser) {
+        eprintln!("Horizon: a command node with parser {parser} was left out");
+        seen.push(parser.to_owned());
     }
 }
 
@@ -508,6 +533,147 @@ mod tests {
         let alone = tree.packet_with(4, true, &builtin, &Value::Null);
         let stop = alone.nodes.iter().find(|n| n.name == "stop").unwrap();
         assert!(stop.executable, "without a mod's root vanilla's is sent");
+    }
+
+    fn builtin_with_argument_types() -> Builtin {
+        let mut builtin = Builtin::default();
+        builtin.registries.insert(
+            "minecraft:command_argument_type".into(),
+            horizon_protocol::registry::Ids::from_names(
+                horizon_protocol::packets::play::ARGUMENT_TYPES
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect(),
+            ),
+        );
+        builtin
+    }
+
+    fn child<'a>(packet: &'a Commands, of: &CommandNode, name: &str) -> Option<&'a CommandNode> {
+        of.children
+            .iter()
+            .map(|&c| &packet.nodes[c as usize])
+            .find(|n| n.name == name)
+    }
+
+    /// Java's roots take vanilla's place by name, keep their own `restricted` and suggestions, and a parser the client lacks is left out.
+    #[test]
+    fn java_roots_replace_vanillas_and_carry_their_flags() {
+        let report: Value = serde_json::from_str(
+            r#"{"type":"root","children":{
+                "time":{"type":"literal","children":{"query":{"type":"literal","children":{"daytime":{"type":"literal","executable":true}}}}},
+                "give":{"type":"literal","executable":true}}}"#,
+        )
+        .unwrap();
+        let java: Value = serde_json::from_str(
+            r#"{"type":"root","children":{
+                "time":{"type":"literal","children":{
+                    "query":{"type":"literal","executable":true},
+                    "horizon_java_test_sub":{"type":"literal","executable":true}}},
+                "mek":{"type":"literal","children":{
+                    "give":{"type":"literal","children":{
+                        "amount":{"type":"argument","parser":"brigadier:integer","properties":{"min":1},"executable":true,"suggestions":"minecraft:ask_server"}}},
+                    "word":{"type":"literal","children":{
+                        "w":{"type":"argument","parser":"horizon_java_test:word","executable":true}}},
+                    "admin":{"type":"literal","restricted":true,"executable":true}}}}}"#,
+        )
+        .unwrap();
+        let builtin = builtin_with_argument_types();
+        let tree = CommandTree { root: report };
+        let packet = tree.packet_with_features(
+            0,
+            true,
+            &builtin,
+            &Value::Null,
+            &java,
+            &[],
+            &crate::gamerules::rule_registry(),
+        );
+        let root = &packet.nodes[packet.root as usize];
+        let top: Vec<_> = root
+            .children
+            .iter()
+            .map(|&c| packet.nodes[c as usize].name.as_str())
+            .collect();
+        assert_eq!(top.iter().filter(|n| **n == "time").count(), 1);
+        assert!(top.contains(&"give") && top.contains(&"mek"));
+        let time = child(&packet, root, "time").unwrap();
+        assert!(child(&packet, time, "query").is_some());
+        assert!(child(&packet, time, "horizon_java_test_sub").is_some());
+        let mek = child(&packet, root, "mek").unwrap();
+        let give = child(&packet, mek, "give").unwrap();
+        let amount = child(&packet, give, "amount").unwrap();
+        let integer = horizon_protocol::packets::play::ARGUMENT_TYPES
+            .iter()
+            .position(|n| *n == "brigadier:integer")
+            .unwrap() as i32;
+        assert_eq!(amount.parser.as_ref().unwrap().0, integer);
+        assert_eq!(amount.suggestions.as_deref(), Some("minecraft:ask_server"));
+        assert!(child(&packet, mek, "admin").unwrap().restricted);
+        assert!(child(&packet, mek, "word").unwrap().children.is_empty());
+        assert!(
+            !packet
+                .nodes
+                .iter()
+                .any(|n| n.name == "w" && n.parser.is_some())
+        );
+        let untouched = child(&packet, root, "give").unwrap();
+        assert!(untouched.executable && !untouched.restricted);
+    }
+
+    /// A client decoding the packet parses Java's root and offers its subcommands.
+    #[test]
+    fn java_roots_join_the_chat_tree() {
+        let java: Value = serde_json::from_str(
+            r#"{"type":"root","children":{"mek":{"type":"literal","children":{
+                "give":{"type":"literal","children":{"amount":{"type":"argument","parser":"brigadier:integer","properties":{"min":1},"executable":true}}},
+                "admin":{"type":"literal","executable":true}}}}}"#,
+        )
+        .unwrap();
+        let tree = CommandTree {
+            root: serde_json::json!({"type":"root","children":{}}),
+        };
+        let packet = tree.packet_with_features(
+            0,
+            true,
+            &builtin_with_argument_types(),
+            &Value::Null,
+            &java,
+            &[],
+            &crate::gamerules::rule_registry(),
+        );
+        let client =
+            crate::command::network::from_packet(&packet, &crate::command::Dispatcher::new());
+        let regs = crate::command::Registries::default();
+        assert!(client.parse("mek give 3", &regs).executable().is_ok());
+        let line = "mek ";
+        let offered: Vec<String> = client
+            .client_suggestions(&client.parse(line, &regs), line.len(), &regs)
+            .1
+            .into_iter()
+            .map(|s| s.text)
+            .collect();
+        assert_eq!(offered, ["admin", "give"]);
+    }
+
+    #[test]
+    fn no_java_roots_leave_the_packet_as_it_was() {
+        let report: Value = serde_json::from_str(
+            r#"{"type":"root","children":{"time":{"type":"literal","children":{"query":{"type":"literal","executable":true}}}}}"#,
+        )
+        .unwrap();
+        let tree = CommandTree { root: report };
+        let builtin = Builtin::default();
+        let with = tree.packet_with_features(
+            4,
+            true,
+            &builtin,
+            &Value::Null,
+            &Value::Null,
+            &[],
+            &crate::gamerules::rule_registry(),
+        );
+        assert_eq!(with, tree.packet_with(4, true, &builtin, &Value::Null));
     }
 
     #[test]

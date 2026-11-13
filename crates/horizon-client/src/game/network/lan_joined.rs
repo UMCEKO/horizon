@@ -160,5 +160,15 @@ impl Game<'_> {
         if elsewhere && let Err(e) = self.enter_level(back) {
             log::error!("could not reopen {}: {e}", back.id());
         }
+        // Java's view of the player exists once it is placed, so its native client gets a second tree.
+        self.java_hook_player_commands(Some(conn), false);
+        if let Some(host) = self.lan.as_ref()
+            && host
+                .hub
+                .guest(conn)
+                .is_some_and(|g| !g.java_commands.is_null())
+        {
+            host.hub.send_commands_to(conn);
+        }
     }
 }

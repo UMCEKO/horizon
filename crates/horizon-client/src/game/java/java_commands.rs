@@ -2,7 +2,7 @@
 //! Which root commands the Java server runs, or holds Java's nodes in, as it told at the server's start.
 
 use super::*;
-use horizon_java_host::wire::In;
+use horizon_java_host::wire::{In, Out};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -56,7 +56,6 @@ thread_local! {
     static JAVA_COMMANDS: RefCell<JavaCommands> = RefCell::default();
 }
 
-#[allow(dead_code)]
 pub(super) fn java_commands<T>(f: impl FnOnce(&JavaCommands) -> T) -> T {
     JAVA_COMMANDS.with_borrow(f)
 }
@@ -66,6 +65,54 @@ pub(super) fn java_commands_reset() {
 }
 
 impl Game<'_> {
+    /// Each placed guest's Java roots (or `only` that guest's), as Java's dispatcher gives them to that player; `send` also sends its Java client the permission packet and tree.
+    pub(super) fn java_player_commands(&mut self, only: Option<u32>, send: bool) {
+        let conns: Vec<u32> = match self.lan.as_ref() {
+            Some(host) => host
+                .hub
+                .guests
+                .iter()
+                .filter(|g| g.placed && only.is_none_or(|conn| g.conn == conn))
+                .map(|g| g.conn)
+                .collect(),
+            None => return,
+        };
+        let any = java_commands(|commands| !commands.names().is_empty());
+        for conn in conns {
+            let tree = if !any {
+                None
+            } else if self.lan_acting == Some(conn) {
+                self.java_commands_for(send)
+            } else {
+                self.as_guest(conn, |g| g.java_commands_for(send)).flatten()
+            };
+            if let Some(host) = self.lan.as_mut() {
+                host.hub
+                    .set_java_commands(conn, tree.unwrap_or(serde_json::Value::Null));
+            }
+        }
+    }
+
+    /// `commands_for` for the acting player: the tree Java gives it, `None` when Java has none or the call failed.
+    fn java_commands_for(&mut self, send: bool) -> Option<serde_json::Value> {
+        let mut request = Out(self.java_use_request()?);
+        request.bool(send);
+        let reply = self.java_request("commands_for", &request.0)?;
+        let mut reply = In(&reply);
+        let text = reply.text()?.to_owned();
+        self.java_apply_effects(&mut reply)?;
+        if text.is_empty() {
+            return None;
+        }
+        match serde_json::from_str(&text) {
+            Ok(tree) => Some(tree),
+            Err(e) => {
+                eprintln!("Horizon: a player's Java command tree is unreadable: {e}");
+                None
+            }
+        }
+    }
+
     /// Asks the Java server which root commands are its own, once per server start.
     pub(super) fn java_read_commands(&mut self) {
         let table = self

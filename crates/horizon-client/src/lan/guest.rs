@@ -447,6 +447,8 @@ pub struct Guest {
     /// Root command names the mods took out of this player's command tree
     /// (`native_player_commands_sent`); their tree is sent without them.
     pub hidden_commands: Vec<String>,
+    /// The Java server's roots for this player, in the report's format (`Null` for none).
+    pub java_commands: serde_json::Value,
     /// `Player.getAbilities`: set from the game mode when it changes, and
     /// written by server mods. Saved with the player.
     pub abilities: super::abilities::PlayerAbilities,
@@ -752,6 +754,7 @@ impl Guest {
             quiet_leave: false,
             released: false,
             hidden_commands: Vec::new(),
+            java_commands: serde_json::Value::Null,
             abilities: Default::default(),
             dimension: "minecraft:overworld".into(),
             menu: None,
