@@ -382,6 +382,36 @@ public final class GameBridge {
         return level;
     }
 
+    /** Set by the Clone post: the next `fill` builds a new view for its player and keeps the old one in `original`. */
+    static boolean renewNext;
+    /** The view a respawn replaced, until the Clone event has run. */
+    static ServerPlayer original;
+
+    /** `PlayerList.respawn`'s new `ServerPlayer`: the old view leaves its level and is kept for the Clone event. */
+    private static boolean renewView(UUID id) {
+        var old = PLAYERS.remove(id);
+        if (old == null) return false;
+        var in = JOINED.remove(id);
+        if (in != null) playerLeaves(old, in, Entity.RemovalReason.CHANGED_DIMENSION);
+        PlayerSync.forget(id);
+        original = old;
+        return true;
+    }
+
+    /** The Clone event is done with the old view: it is detached as a logout would. */
+    static void releaseOriginal() {
+        var old = original;
+        original = null;
+        if (old == null) return;
+        safely("detaching the replaced player view", () -> {
+            try {
+                ServerView.detachReplaced(server, old);
+            } catch (ReflectiveOperationException e) {
+                throw new IllegalStateException(e);
+            }
+        });
+    }
+
     static ServerPlayer playerView(UUID id) {
         return PLAYERS.get(id);
     }
@@ -471,9 +501,11 @@ public final class GameBridge {
         var g = PlayerGroups.read(in);
         var level = level(g.key);
         ((ViewLevelData) level.getLevelData()).gameTime = g.gameTime;
-        boolean joined = !PLAYERS.containsKey(g.id);
+        boolean renewed = renewNext && renewView(g.id);
+        renewNext = false;
+        boolean joined = !PLAYERS.containsKey(g.id) && !renewed;
         boolean full = g.has(PlayerGroups.FULL);
-        if (joined && !full) throw new IllegalStateException("Horizon: the player view of " + g.name + " got a delta before its full fill");
+        if ((joined || renewed) && !full) throw new IllegalStateException("Horizon: the player view of " + g.name + " got a delta before its full fill");
         var player = player(g.id, g.name, level);
         if (g.has(PlayerGroups.POSE)) {
             player.setPose(net.minecraft.world.entity.Pose.valueOf(g.pose));

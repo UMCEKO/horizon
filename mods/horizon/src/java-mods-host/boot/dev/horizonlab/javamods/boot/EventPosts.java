@@ -11,7 +11,12 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.Level;
+import net.neoforged.neoforge.event.EventHooks;
 import net.neoforged.bus.ListenerList;
 import net.neoforged.bus.api.Event;
 import net.neoforged.bus.api.IEventBus;
@@ -43,7 +48,13 @@ public final class EventPosts {
     }
 
     /** The server events Rust posts through `post_event`, each with the acting player's view filled. */
-    private static final Map<String, PlayerPost> PLAYER = Map.of("BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity);
+    private static final Map<String, PlayerPost> PLAYER = Map.of(
+        "BreakBlockEvent", EventPosts::breakBlock,
+        "AttackEntityEvent", EventPosts::attackEntity,
+        "PlayerEvent.Clone", EventPosts::playerClone,
+        "PlayerEvent.PlayerRespawnEvent", EventPosts::playerRespawn,
+        "EntityTravelToDimensionEvent", EventPosts::travelToDimension,
+        "PlayerEvent.PlayerChangedDimensionEvent", EventPosts::changedDimension);
 
     /** The server events Rust posts through `post_level_event`. */
     private static final Map<String, LevelPost> LEVEL = Map.of();
@@ -156,6 +167,7 @@ public final class EventPosts {
         String name = in.text();
         PlayerPost post = PLAYER.get(name);
         if (post == null) throw new IllegalArgumentException("no server post for " + name);
+        GameBridge.renewNext = name.equals("PlayerEvent.Clone");
         var call = GameBridge.fill(in, false);
         // A view keeps no use between calls, as in `GameBridge.use`.
         Using.clear(call.player());
@@ -207,6 +219,51 @@ public final class EventPosts {
     private static Posted attackEntity(GameBridge.Call call) {
         var target = call.level().getEntity(call.in().readInt());
         return new Posted(target != null && !CommonHooks.onPlayerAttackTarget(call.player(), target), Posted.NONE.result());
+    }
+
+    private static boolean debug() {
+        return System.getenv("HORIZON_JAVA_DEBUG") != null;
+    }
+
+    /** `PlayerList.respawn`'s `restoreFrom`: the new view and the old one, which NeoForge's own listener copies attachments between. */
+    private static Posted playerClone(GameBridge.Call call) throws IOException {
+        boolean wasDeath = call.in().readBoolean();
+        var original = GameBridge.original;
+        try {
+            if (original != null) {
+                if (debug()) System.err.println("Horizon: server event PlayerEvent.Clone wasDeath=" + wasDeath + " same=" + (original == call.player()));
+                EventHooks.onPlayerClone(call.player(), original, wasDeath);
+            }
+        } finally {
+            GameBridge.releaseOriginal();
+        }
+        return Posted.NONE;
+    }
+
+    private static Posted playerRespawn(GameBridge.Call call) throws IOException {
+        boolean endConquered = call.in().readBoolean();
+        if (debug()) System.err.println("Horizon: server event PlayerEvent.PlayerRespawnEvent endConquered=" + endConquered);
+        EventHooks.firePlayerRespawnEvent(call.player(), endConquered);
+        return Posted.NONE;
+    }
+
+    private static ResourceKey<Level> dimension(Crossing.In in) {
+        return ResourceKey.create(Registries.DIMENSION, Identifier.parse(GameBridge.text(in)));
+    }
+
+    private static Posted travelToDimension(GameBridge.Call call) {
+        var to = dimension(call.in());
+        boolean canceled = !CommonHooks.onTravelToDimension(call.player(), to);
+        if (debug()) System.err.println("Horizon: server event EntityTravelToDimensionEvent to=" + to.identifier() + " canceled=" + canceled);
+        return new Posted(canceled, Posted.NONE.result());
+    }
+
+    private static Posted changedDimension(GameBridge.Call call) {
+        var from = dimension(call.in());
+        var to = dimension(call.in());
+        if (debug()) System.err.println("Horizon: server event PlayerEvent.PlayerChangedDimensionEvent " + from.identifier() + " -> " + to.identifier());
+        EventHooks.firePlayerChangedDimensionEvent(call.player(), from, to);
+        return Posted.NONE;
     }
 
     /** `client_post_event`: the event's name, then its fields, posted on the Java client's thread. */

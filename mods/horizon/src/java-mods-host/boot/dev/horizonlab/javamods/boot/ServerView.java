@@ -266,6 +266,14 @@ final class ServerView {
         ((Map<UUID, ServerPlayer>) get(PlayerList.class, list, "playersByUUID")).remove(player.getUUID());
     }
 
+    /** `detach` for a view its player's new one replaced: the by-uuid entry is the new view's, so it stays. */
+    @SuppressWarnings("unchecked")
+    static void detachReplaced(MinecraftServer server, ServerPlayer old) throws ReflectiveOperationException {
+        ((List<ServerPlayer>) get(ServerLevel.class, old.level(), "players")).remove(old);
+        ((net.minecraft.server.level.PlayerMap) get(ChunkMap.class, old.level().getChunkSource().chunkMap, "playerMap")).removePlayer(old);
+        ((List<ServerPlayer>) get(PlayerList.class, server.getPlayerList(), "players")).remove(old);
+    }
+
     /** `ChunkMap.updatePlayerStatus` on both levels of a player's change of level. */
     @SuppressWarnings("unchecked")
     static void moved(ServerPlayer player, ServerLevel to) throws ReflectiveOperationException {
