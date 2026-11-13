@@ -5,7 +5,7 @@ use super::*;
 use horizon_world::{
     entity_fluid::{
         CurrentTarget, EntityFluidInteraction, FluidInteractionWorld, FluidMembership,
-        FluidSections, FluidTagId,
+        FluidSections, FluidTagId, FluidTypeContact,
     },
     entity_fluid_tick::{self, EntityFluidTickWorld},
     fluid::{FluidHeightWorld, FluidKind, FluidState, FluidStateTable},
@@ -137,6 +137,32 @@ impl PlayerMotion {
     /// `Entity.isInLava`.
     pub fn is_in_lava(&self) -> bool {
         !self.fluids.first_tick && self.fluids.interaction.is_in_fluid(&FluidTags, LAVA)
+    }
+    /// The first mod fluid type the body is in whose rules `which` picks.
+    pub fn fluid_type_where(
+        &self,
+        which: impl Fn(&FluidTypeContact) -> bool,
+    ) -> Option<FluidTypeContact> {
+        self.fluids
+            .interaction
+            .fluid_types()
+            .into_iter()
+            .find(|c| c.height > 0.0 && which(c))
+    }
+    /// Out of water and lava, in a mod fluid type it can swim in: it travels and jumps as in water.
+    pub fn swim_fluid_type(&self) -> Option<FluidTypeContact> {
+        if self.fluids.was_touching_water || self.is_in_lava() {
+            return None;
+        }
+        self.fluid_type_where(|c| c.rules.can_swim)
+    }
+    /// The eyes are in a mod fluid type that drowns.
+    pub fn is_eye_in_drowning_fluid_type(&self) -> bool {
+        self.fluids
+            .interaction
+            .fluid_types()
+            .iter()
+            .any(|c| c.eyes_inside && c.rules.can_drown)
     }
 }
 /// `BubbleColumnBlock.entityInside` for an entity that is not the player (a mob,
@@ -306,6 +332,13 @@ impl MotionWorld<'_, '_, '_> {
                     )
             };
         self.tick_remaining_fire()?;
+        if self
+            .player
+            .fluid_type_where(|c| c.rules.can_extinguish)
+            .is_some()
+        {
+            self.player.fire_ticks = self.player.fire_ticks.min(0);
+        }
         if self.player.is_in_lava() {
             self.player.fall_distance *= 0.5;
         }
@@ -424,6 +457,10 @@ impl EntityFluidTickWorld for MotionWorld<'_, '_, '_> {
     }
     fn reset_fall_distance(&mut self) -> Result<()> {
         self.player.fall_distance = 0.0;
+        Ok(())
+    }
+    fn scale_fall_distance(&mut self, by: f32) -> Result<()> {
+        self.player.fall_distance *= f64::from(by);
         Ok(())
     }
     fn was_touching_water(&self) -> bool {

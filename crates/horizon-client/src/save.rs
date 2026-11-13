@@ -7545,6 +7545,7 @@ mod tests {
                 slope_find_distance: 4,
                 converts_to_source: false,
             },
+            entity: None,
         });
         let fluid = fluid.unwrap();
         let tick = |kind: FluidKind| SavedTick {
