@@ -11,7 +11,10 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ChunkLevel;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.ChunkPos;
+import net.neoforged.neoforge.event.EventHooks;
 import net.neoforged.bus.ListenerList;
 import net.neoforged.bus.api.Event;
 import net.neoforged.bus.api.IEventBus;
@@ -46,7 +49,7 @@ public final class EventPosts {
     private static final Map<String, PlayerPost> PLAYER = Map.of("BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity);
 
     /** The server events Rust posts through `post_level_event`. */
-    private static final Map<String, LevelPost> LEVEL = Map.of();
+    private static final Map<String, LevelPost> LEVEL = Map.of("ChunkTicketLevelUpdatedEvent", EventPosts::chunkTicketLevel);
 
     /** The client events Rust posts through `client_post_event`. */
     private static final Map<String, ClientPost> CLIENT = Map.of("PlaySoundEvent", NativeSounds::ask);
@@ -207,6 +210,18 @@ public final class EventPosts {
     private static Posted attackEntity(GameBridge.Call call) {
         var target = call.level().getEntity(call.in().readInt());
         return new Posted(target != null && !CommonHooks.onPlayerAttackTarget(call.player(), target), Posted.NONE.result());
+    }
+
+    /** The level of a chunk no ticket reaches (`ChunkLevel.MAX_LEVEL + 1`). */
+    private static final int UNLOADED_LEVEL = ChunkLevel.MAX_LEVEL + 1;
+
+    /** `int x`, `int z`, `int old`, `int new` of a chunk's ticket level, posted with the holder it had and, once unloaded, loses. */
+    private static Posted chunkTicketLevel(ServerLevel level, Crossing.In in) {
+        int x = in.readInt(), z = in.readInt(), old = in.readInt(), now = in.readInt();
+        var holder = ChunkViews.holder(level, x, z, old, now);
+        EventHooks.fireChunkTicketLevelUpdated(level, ChunkPos.pack(x, z), old, now, holder);
+        if (now >= UNLOADED_LEVEL) ChunkViews.dropHolder(level, x, z);
+        return Posted.NONE;
     }
 
     /** `client_post_event`: the event's name, then its fields, posted on the Java client's thread. */
