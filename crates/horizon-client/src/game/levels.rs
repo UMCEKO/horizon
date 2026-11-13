@@ -842,7 +842,8 @@ impl Game<'_> {
             // stepping the world (and its mobs) through the fade.
             self.world.weather.settle_levels();
         }
-        let _ = horizon_client::spans::time("player_autosaves", || self.finish_player_autosaves(false));
+        let _ =
+            horizon_client::spans::time("player_autosaves", || self.finish_player_autosaves(false));
         // MinecraftServer.tickServer's countdown, then autoSave: three
         // hundred seconds of ticks at the rate the server runs at now.
         self.ticks_until_autosave -= 1;

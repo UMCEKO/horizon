@@ -14,6 +14,9 @@ use horizon_client::server_perf::{
     world::{LevelCounts, MobCost, MobCosts, WorkerJobs},
 };
 use horizon_client::streaming::job_stats;
+use horizon_gameplay::dedicated::report::span_cost_nanos;
+pub(super) use horizon_gameplay::dedicated::report::{Command, MAX_SECONDS, parse, parse_trace};
+pub(in crate::game) use horizon_gameplay::dedicated::report::{LOOSE_ENTITIES, Recording};
 use horizon_perf_format::{
     files,
     v1::{GpuMode, HorizonOptions, Start, StopReason, Trigger},
@@ -23,9 +26,6 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
-pub(in crate::game) use horizon_gameplay::dedicated::report::{LOOSE_ENTITIES, Recording};
-pub(super) use horizon_gameplay::dedicated::report::{Command, MAX_SECONDS, parse, parse_trace};
-use horizon_gameplay::dedicated::report::span_cost_nanos;
 
 /// What a capture is asked to record, and how it was asked.
 pub(super) struct Plan {
