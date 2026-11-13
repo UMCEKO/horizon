@@ -54,6 +54,8 @@ pub(super) fn target_id(t: Target) -> Option<u32> {
         | Target::Trident(id)
         | Target::Spawner(id)
         | Target::Cloud(id)
+        | Target::Potion(id)
+        | Target::Eye(id)
         | Target::Hook(id)
         | Target::Knot(id) => Some(id),
         Target::Player | Target::Guest(_) => None,
@@ -176,6 +178,11 @@ enum Apart {
     Cushion(usize),
     Painting(usize),
     Frame(usize),
+    Fangs(usize),
+    Cloud(usize),
+    Spawner(usize),
+    Potion(usize),
+    Eye(usize),
     Dragon,
     Hook(u32),
     Knot(usize),
@@ -306,6 +313,21 @@ impl Game<'_> {
         for (i, f) in self.item_frames.iter().enumerate() {
             offer(Slot::Apart(Apart::Frame(i)), f.id, f.join);
         }
+        for (i, f) in self.fangs.list.iter().enumerate() {
+            offer(Slot::Apart(Apart::Fangs(i)), f.id, f.join);
+        }
+        for (i, c) in self.breath_clouds.iter().enumerate() {
+            offer(Slot::Apart(Apart::Cloud(i)), c.id, c.join);
+        }
+        for (i, s) in self.ominous_spawners.iter().enumerate() {
+            offer(Slot::Apart(Apart::Spawner(i)), s.id, s.join);
+        }
+        for (i, t) in self.potions.thrown.iter().enumerate() {
+            offer(Slot::Apart(Apart::Potion(i)), t.id, t.join);
+        }
+        for (i, e) in self.end.eyes.iter().enumerate() {
+            offer(Slot::Apart(Apart::Eye(i)), e.id, e.join);
+        }
         if let Some(d) = self.dragon.as_ref() {
             offer(Slot::Apart(Apart::Dragon), d.id, d.join);
         }
@@ -358,6 +380,31 @@ impl Game<'_> {
                 };
                 (kind.into(), block(f.pos))
             }
+            Slot::Apart(Apart::Fangs(i)) => {
+                let [x, y, z] = self.fangs.list[i].pos;
+                ("minecraft:evoker_fangs".into(), Vec3::new(x, y, z))
+            }
+            Slot::Apart(Apart::Cloud(i)) => {
+                let [x, y, z] = self.breath_clouds[i].at;
+                ("minecraft:area_effect_cloud".into(), Vec3::new(x, y, z))
+            }
+            Slot::Apart(Apart::Spawner(i)) => {
+                let [x, y, z] = self.ominous_spawners[i].position;
+                ("minecraft:ominous_item_spawner".into(), Vec3::new(x, y, z))
+            }
+            Slot::Apart(Apart::Potion(i)) => {
+                let t = &self.potions.thrown[i];
+                let kind = match &*t.stack.item {
+                    "minecraft:lingering_potion" => "minecraft:lingering_potion",
+                    "minecraft:experience_bottle" => "minecraft:experience_bottle",
+                    _ => "minecraft:splash_potion",
+                };
+                (kind.into(), t.position)
+            }
+            Slot::Apart(Apart::Eye(i)) => {
+                let p = self.end.eyes[i].position;
+                ("minecraft:eye_of_ender".into(), Vec3::new(p.x, p.y, p.z))
+            }
             Slot::Apart(Apart::Dragon) => (
                 "minecraft:ender_dragon".into(),
                 self.dragon.as_ref().map_or(Vec3::ZERO, |d| d.position),
@@ -382,6 +429,11 @@ impl Game<'_> {
             Slot::Apart(Apart::Cushion(i)) => drop(self.cushions.remove(i)),
             Slot::Apart(Apart::Painting(i)) => drop(self.paintings.remove(i)),
             Slot::Apart(Apart::Frame(i)) => drop(self.item_frames.remove(i)),
+            Slot::Apart(Apart::Fangs(i)) => drop(self.fangs.list.remove(i)),
+            Slot::Apart(Apart::Cloud(i)) => drop(self.breath_clouds.remove(i)),
+            Slot::Apart(Apart::Spawner(i)) => drop(self.ominous_spawners.remove(i)),
+            Slot::Apart(Apart::Potion(i)) => drop(self.potions.thrown.remove(i)),
+            Slot::Apart(Apart::Eye(i)) => drop(self.end.eyes.remove(i)),
             Slot::Apart(Apart::Dragon) => self.dragon.discard(),
             Slot::Apart(Apart::Hook(id)) => self.remove_fishing_hook(id),
             Slot::Apart(Apart::Knot(i)) => {
@@ -415,7 +467,12 @@ impl Game<'_> {
     }
     /// Why announced entity `id`, about to go, leaves: read by its leave, else it leaves `DISCARDED`.
     pub(super) fn stamp_leave(&mut self, id: u32, why: Removal) {
-        if self.persist.live.binary_search_by_key(&id, |l| l.0).is_err() {
+        if self
+            .persist
+            .live
+            .binary_search_by_key(&id, |l| l.0)
+            .is_err()
+        {
             return;
         }
         match self.persist.leaving.iter_mut().find(|(at, _)| *at == id) {
@@ -474,6 +531,11 @@ impl Game<'_> {
         self.cushions.iter().for_each(|c| seen(c.id));
         self.paintings.iter().for_each(|p| seen(p.id));
         self.item_frames.iter().for_each(|f| seen(f.id));
+        self.fangs.list.iter().for_each(|f| seen(f.id));
+        self.breath_clouds.iter().for_each(|c| seen(c.id));
+        self.ominous_spawners.iter().for_each(|s| seen(s.id));
+        self.potions.thrown.iter().for_each(|t| seen(t.id));
+        self.end.eyes.iter().for_each(|e| seen(e.id));
         if let Some(d) = self.dragon.as_ref() {
             seen(d.id);
         }
@@ -515,6 +577,39 @@ mod tests {
             owner.id = 0;
             $list.push(owner);
         }};
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources"]
+    fn a_thrown_potion_and_an_eye_are_announced_by_type_and_can_be_kept_out() {
+        super::super::native_entity_refs::tests::with_game(|game| {
+            game.persist.joined_seq = horizon_client::join_seq::JoinSeq::latest();
+            let at = Vec3::new(2.5, 70.0, 3.5);
+            game.launch_thrown(
+                horizon_client::items::ItemStack::new("minecraft:lingering_potion", 1),
+                at,
+                Vec3::ZERO,
+                None,
+            );
+            game.next_entity += 1;
+            let eye = game.next_entity;
+            game.end.add_remote_eye(eye, [2.5, 71.0, 3.5], [0.0; 3]);
+            let mut told = Vec::new();
+            while let Some((slot, id, seq)) = game.next_unannounced() {
+                game.persist.joined_seq = seq;
+                let (kind, position) = game.slot_kind_and_position(slot);
+                told.push((id, kind.into_owned(), position));
+                game.discard_slot(slot);
+            }
+            assert_eq!(told.len(), 2);
+            assert_eq!(told[0].1, "minecraft:lingering_potion");
+            assert_eq!(told[0].2, at);
+            assert_eq!(
+                (told[1].0, told[1].1.as_str()),
+                (eye, "minecraft:eye_of_ender")
+            );
+            assert!(game.potions.thrown.is_empty() && game.end.eyes.is_empty());
+        });
     }
 
     #[test]

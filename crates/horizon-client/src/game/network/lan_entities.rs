@@ -698,12 +698,6 @@ impl Game<'_> {
         assign_resident_ids!(self.crystals, c, next, None);
         assign_resident_ids!(self.bolts, b, next, None);
         assign_resident_ids!(self.ominous_spawners, o, next, None);
-        self.potions.thrown_ids().for_each(|id| {
-            assign_entity_id(next, id);
-        });
-        self.end.eye_ids().for_each(|id| {
-            assign_entity_id(next, id);
-        });
         assign_resident_ids!(self.breath_clouds, b, next, None);
     }
 
@@ -1095,13 +1089,6 @@ mod tests {
             pending!(game.ominous_spawners);
             pending!(game.breath_clouds);
             game.spawn_remote_bolt(0, [1.0, 70.0, 1.0]);
-            game.potions.add_remote_thrown(
-                0,
-                "minecraft:splash_potion",
-                Default::default(),
-                Default::default(),
-            );
-            game.end.add_remote_eye(0, [1.0, 70.0, 1.0], [0.0; 3]);
             let base = game.next_entity;
             let joined = game.persist.joined_seq;
             let announced = game.persist.live.clone();
@@ -1117,15 +1104,10 @@ mod tests {
                     game.crystals[0].id,
                     game.bolts[0].id,
                     game.ominous_spawners[0].id,
-                    *game.potions.thrown_ids().next().unwrap(),
-                    *game.end.eye_ids().next().unwrap(),
                     game.breath_clouds[0].id,
                 ];
-                assert_eq!(
-                    ids,
-                    std::array::from_fn::<_, 11, _>(|i| base + i as u32 + 1)
-                );
-                assert_eq!(game.next_entity, base + 11);
+                assert_eq!(ids, std::array::from_fn::<_, 9, _>(|i| base + i as u32 + 1));
+                assert_eq!(game.next_entity, base + 9);
                 assert_eq!(game.persist.joined_seq, joined);
                 assert_eq!(game.persist.live, announced);
                 let epoch = game.native_lifecycle.epoch().unwrap();

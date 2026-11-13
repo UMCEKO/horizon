@@ -44,6 +44,7 @@ final class ChecksServer {
                 throw new IllegalStateException(e);
             }
         });
+        Checks.check("loot_modify", ChecksServer::lootModify);
     }
 
     private static final String STONE = "{\"id\":\"minecraft:stone\",\"count\":1}";
@@ -124,6 +125,69 @@ final class ChecksServer {
         } catch (ReflectiveOperationException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    private static final long MULTIPLIER = 0x5DEECE66DL;
+
+    /** `loot_modify` on hand-built requests: the sand modifier adds a nugget and draws nothing; the gravel one draws vanilla's one float. */
+    private static boolean lootModify() {
+        try {
+            var sand = lootCall("minecraft:blocks/sand", "minecraft:sand", 12345);
+            if (sand.state != 12345 || !sand.items.equals(java.util.List.of("minecraft:sand", "minecraft:gold_nugget"))) return false;
+            for (long seed = 1; seed <= 8; seed++) {
+                long state = seed * 0x9E3779B97F4AL & (1L << 48) - 1;
+                var gravel = lootCall("minecraft:blocks/gravel", "minecraft:gravel", state);
+                var expected = new net.minecraft.world.level.levelgen.LegacyRandomSource(0);
+                expected.setSeed(state ^ MULTIPLIER);
+                boolean flint = expected.nextFloat() < 0.5f;
+                var want = flint ? java.util.List.of("minecraft:gravel", "minecraft:flint") : java.util.List.of("minecraft:gravel");
+                var after = new net.minecraft.world.level.levelgen.LegacyRandomSource(0);
+                after.setSeed(gravel.state ^ MULTIPLIER);
+                if (!gravel.items.equals(want) || after.nextLong() != expected.nextLong()) return false;
+            }
+            return true;
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private record LootReply(long state, java.util.List<String> items) {}
+
+    private static LootReply lootCall(String table, String item, long state) throws Exception {
+        var bytes = new java.io.ByteArrayOutputStream();
+        var out = new java.io.DataOutputStream(bytes);
+        writeText(out, table);
+        writeText(out, "minecraft:overworld");
+        out.writeByte(1);
+        out.writeLong(state);
+        out.writeBoolean(false);
+        out.writeInt(-1);
+        out.writeLong(0);
+        out.writeLong(0);
+        out.writeBoolean(false);
+        out.writeLong(0);
+        out.writeLong(0);
+        out.writeBoolean(false);
+        writeText(out, "");
+        out.writeInt(-1);
+        out.writeInt(0);
+        out.writeBoolean(false);
+        out.writeFloat(0);
+        out.writeInt(1);
+        writeText(out, "{\"id\":\"" + item + "\",\"count\":1}");
+        var type = Class.forName("dev.horizonlab.javamods.boot.LootModifiers", true, ClassLoader.getSystemClassLoader());
+        var in = new java.io.DataInputStream(new java.io.ByteArrayInputStream((byte[]) type.getMethod("call", byte[].class).invoke(null, (Object) bytes.toByteArray())));
+        if (in.readByte() != 1) throw new IllegalStateException("loot_modify answered another random kind");
+        long after = in.readLong();
+        var items = new java.util.ArrayList<String>();
+        for (int n = in.readInt(); n > 0; n--) items.add(com.google.gson.JsonParser.parseString(text(in)).getAsJsonObject().get("id").getAsString());
+        return new LootReply(after, items);
+    }
+
+    private static void writeText(java.io.DataOutputStream out, String value) throws java.io.IOException {
+        byte[] bytes = value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        out.writeInt(bytes.length);
+        out.write(bytes);
     }
 
     private static String text(java.io.DataInputStream in) throws java.io.IOException {

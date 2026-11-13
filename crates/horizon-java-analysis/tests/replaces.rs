@@ -516,7 +516,7 @@ fn the_class_helpers_read_the_fixture_classes_directly() {
     };
     let mut hier = hier;
     let one = parse("fixture/One.class");
-    hier.add(&one.name, one.sup.clone(), one.ifaces.clone());
+    hier.add(&one.name, one.sup.clone(), one.ifaces.clone(), None);
     let overrides = override_records(&one, "fix", &hier);
     let keys: Vec<_> = overrides
         .iter()

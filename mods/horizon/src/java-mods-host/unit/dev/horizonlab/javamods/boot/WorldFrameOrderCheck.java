@@ -19,8 +19,16 @@ public final class WorldFrameOrderCheck {
 
     private static List<String> run(boolean sky, boolean oit) {
         SEEN.clear();
-        var frame = new WorldFrame.Frame(null, null, null, null, null, null, null, null, null, new Matrix4f(), List.of(), new RecordingRenderPass(new RecordingDevice()), sky, oit);
-        WorldFrame.fire(frame, (what, event) -> NeoForge.EVENT_BUS.post(event), () -> SEEN.add("Particles@" + WorldFrame.stage));
+        var frame = new WorldFrame.Frame(null, null, null, null, null, null, null, null, null, new Matrix4f(), List.of(), new RecordingRenderPass(new RecordingDevice()), sky, oit, false);
+        WorldFrame.fire(frame, (what, event) -> NeoForge.EVENT_BUS.post(event), () -> SEEN.add("Particles@" + WorldFrame.stage), new WorldFrame.Outline() {
+            @Override
+            public void extract(WorldFrame.Frame f) {}
+
+            @Override
+            public boolean submit(WorldFrame.Frame f) {
+                return false;
+            }
+        });
         return new ArrayList<>(SEEN);
     }
 

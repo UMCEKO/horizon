@@ -42,7 +42,7 @@ public final class RecordingDevice implements GpuDevice {
     /** One draw call with the state it was made under. */
     record RecordedDraw(RecordingPipeline pipeline, long vertexId, int vertexVersion, byte[] vertex, long vertexOffset, long indexId, int indexVersion, byte[] index,
             com.mojang.renderpearl.api.pipeline.IndexType indexType, int first, int count, int base, net.minecraft.resources.Identifier texture, boolean textured,
-            DynamicGpuData.Transform transform, int stage) {}
+            DynamicGpuData.Transform transform, int stage, boolean outline) {}
 
     long nextId() {
         return nextId++;

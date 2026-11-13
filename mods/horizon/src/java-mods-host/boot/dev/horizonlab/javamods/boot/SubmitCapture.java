@@ -62,6 +62,7 @@ final class SubmitCapture implements SubmitNodeCollector {
         void begin(Draw d, PrimitiveTopology topology, Identifier texture, boolean blended) {
             finish();
             draw = d;
+            d.outline = WorldFrame.outlining;
             draws.add(d);
             this.texture = texture;
             this.topology = topology;

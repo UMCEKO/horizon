@@ -864,6 +864,96 @@ impl Game<'_> {
 
     // ---- /particle ----------------------------------------------------------------------
 
+    /// `ParticleCommand.sendParticles`' viewers: the ones reached, each within 32 blocks (512 with `force`).
+    fn particle_viewers(&mut self, ctx: &Context, pos: [f64; 3], force: bool) -> R<Vec<Target>> {
+        // ParticleCommand.sendParticles: the viewers it reached, each within
+        // 32 blocks (512 with `force`) of the particle's block centre.
+        // Without viewers, every player (PlayerList.getPlayers).
+        let viewers = if ctx.get("viewers").is_some() {
+            self.entities(ctx, "viewers", true)?
+        } else {
+            let acting = self.lan_acting;
+            let guests = self.lan.iter().flat_map(|h| h.hub.online_players());
+            self.player
+                .as_ref()
+                .filter(|_| !self.lan_acting_fake)
+                .map(|_| Target::Player)
+                .into_iter()
+                .chain(
+                    guests
+                        .filter(|g| Some(g.conn) != acting)
+                        .map(|g| Target::Guest(g.conn)),
+                )
+                .collect()
+        };
+        let limit = if force { 512.0 } else { 32.0 };
+        let reached: Vec<Target> = viewers
+            .into_iter()
+            .filter(|&t| {
+                self.target_position(t).is_some_and(|p| {
+                    let c = p.map(|v| v.floor() + 0.5);
+                    (c[0] - pos[0]).powi(2) + (c[1] - pos[1]).powi(2) + (c[2] - pos[2]).powi(2)
+                        < limit * limit
+                })
+            })
+            .collect();
+        if reached.is_empty() {
+            return Err(err("commands.particle.failed", &[]));
+        }
+        Ok(reached)
+    }
+
+    /// `/particle` of a Java mod's type: vanilla's options codec and per-player sends run in Java.
+    fn java_command_particle(&mut self, ctx: &Context, spec: &str) -> R<i32> {
+        let pos = self
+            .position_arg(ctx, "pos")
+            .unwrap_or_else(|| self.source_position());
+        let delta = self.position_arg(ctx, "delta").unwrap_or([0.0; 3]);
+        let speed = match ctx.get("speed") {
+            Some(Arg::Float(v)) => *v,
+            _ => 0.0,
+        };
+        let count = match ctx.get("count") {
+            Some(Arg::Int(c)) => *c,
+            _ => 0,
+        };
+        let force = ctx.has("force");
+        let reached = self.particle_viewers(ctx, pos, force)?;
+        let uuids: Vec<u128> = reached
+            .into_iter()
+            .filter_map(|t| self.target_uuid(t))
+            .collect();
+        let dim = self.dimension();
+        let reached = self
+            .java_hook_server_particles(dim, spec, pos, delta.map(|d| d as f32), speed, count, force, &uuids)
+            .map_err(|message| err("particle.invalidOptions", &[&message]))?;
+        if reached <= 0 {
+            return Err(err("commands.particle.failed", &[]));
+        }
+        let name = spec.split('{').next().unwrap_or(spec);
+        self.feedback(Text::translate(
+            "commands.particle.success",
+            &[Text::literal(name.to_owned())],
+        ));
+        Ok(reached)
+    }
+
+    /// The UUID of a player a command reaches.
+    fn target_uuid(&mut self, t: Target) -> Option<u128> {
+        let conn = match t {
+            Target::Guest(conn) => Some(conn),
+            Target::Player => self.lan_acting,
+            _ => return None,
+        };
+        match conn {
+            Some(conn) => self.command_guest(conn).map(|g| g.uuid),
+            None => {
+                let [a, b, c, d] = self.level.ensure_player_uuid().map(|v| u128::from(v as u32));
+                Some(a << 96 | b << 64 | c << 32 | d)
+            }
+        }
+    }
+
     pub(super) fn cmd_particle(&mut self, ctx: &Context) -> R<i32> {
         use horizon_client::particles::{ParticleOptions, ParticleType};
         let Some(Arg::Str(spec)) = ctx.get("name").cloned() else {
@@ -874,6 +964,9 @@ impl Game<'_> {
             Some(i) => (&spec[..i], &spec[i..]),
             None => (spec.as_str(), ""),
         };
+        if self.java_hook_particle_owned(name) {
+            return self.java_command_particle(ctx, &spec);
+        }
         let ty = ParticleType::from_name(name).ok_or_else(|| err("particle.notFound", &[&name]))?;
         let opts = match horizon_client::command::snbt::parse_fully(options_text) {
             Ok(Tag::Compound(c)) if !options_text.is_empty() => Some(c),
@@ -1001,41 +1094,8 @@ impl Game<'_> {
             Some(Arg::Int(c)) => *c,
             _ => 0,
         };
-        // ParticleCommand.sendParticles: the viewers it reached, each within
-        // 32 blocks (512 with `force`) of the particle's block centre.
-        // Without viewers, every player (PlayerList.getPlayers).
-        let viewers = if ctx.get("viewers").is_some() {
-            self.entities(ctx, "viewers", true)?
-        } else {
-            let acting = self.lan_acting;
-            let guests = self.lan.iter().flat_map(|h| h.hub.online_players());
-            self.player
-                .as_ref()
-                .filter(|_| !self.lan_acting_fake)
-                .map(|_| Target::Player)
-                .into_iter()
-                .chain(
-                    guests
-                        .filter(|g| Some(g.conn) != acting)
-                        .map(|g| Target::Guest(g.conn)),
-                )
-                .collect()
-        };
         let force = ctx.has("force");
-        let limit = if force { 512.0 } else { 32.0 };
-        let reached: Vec<Target> = viewers
-            .into_iter()
-            .filter(|&t| {
-                self.target_position(t).is_some_and(|p| {
-                    let c = p.map(|v| v.floor() + 0.5);
-                    (c[0] - pos[0]).powi(2) + (c[1] - pos[1]).powi(2) + (c[2] - pos[2]).powi(2)
-                        < limit * limit
-                })
-            })
-            .collect();
-        if reached.is_empty() {
-            return Err(err("commands.particle.failed", &[]));
-        }
+        let reached = self.particle_viewers(ctx, pos, force)?;
         // ServerLevel.sendParticles: each viewer a server serves is sent the
         // particles (the player in place too when it is a guest); the
         // window's own player draws them.

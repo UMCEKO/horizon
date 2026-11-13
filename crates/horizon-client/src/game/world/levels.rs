@@ -79,6 +79,8 @@ pub(super) struct Parked {
     breath_clouds: horizon_client::join_seq::ResidentList<dragon::Breath>,
     tridents: horizon_client::join_seq::JoinList<trident::ThrownTrident>,
     rockets: horizon_client::join_seq::JoinList<fireworks::Rocket>,
+    thrown_potions: horizon_client::join_seq::JoinList<super::potions::ThrownPotion>,
+    eyes: horizon_client::join_seq::JoinList<super::end::EyeOfEnder>,
     ominous_spawners:
         horizon_client::join_seq::ResidentList<ominous_item_spawner::OminousItemSpawner>,
     tnts: horizon_client::join_seq::JoinList<tnt::PrimedTnt>,
@@ -116,7 +118,14 @@ pub(super) struct Parked {
 }
 
 impl Parked {
-    resident_owners!(define_resident_access, self, projectiles, knots);
+    resident_owners!(
+        define_resident_access,
+        self,
+        projectiles,
+        knots,
+        thrown_potions,
+        eyes
+    );
 }
 
 impl Game<'_> {
@@ -356,6 +365,11 @@ impl Levels {
             .map(|(_, level)| &mut level.world)
     }
 
+    /// The save of the level not in place whose dimension is `dimension`.
+    pub(super) fn parked_save_of(&self, dimension: &str) -> Option<&Arc<SaveDir>> {
+        self.parked_of(dimension).map(|level| &level.save)
+    }
+
     /// The streaming of the level not in place whose dimension is `dimension`.
     pub(super) fn parked_streaming_of(&self, dimension: &str) -> Option<&Streaming> {
         self.parked
@@ -531,6 +545,8 @@ impl Game<'_> {
             breath_clouds: Default::default(),
             tridents: Default::default(),
             rockets: Default::default(),
+            thrown_potions: Default::default(),
+            eyes: Default::default(),
             ominous_spawners: Default::default(),
             tnts: Default::default(),
             hoppers: HashMap::new(),
@@ -681,6 +697,8 @@ impl Game<'_> {
         swap(&mut self.breath_clouds, &mut p.breath_clouds);
         swap(&mut self.tridents, &mut p.tridents);
         swap(&mut self.rockets, &mut p.rockets);
+        swap(&mut self.potions.thrown, &mut p.thrown_potions);
+        swap(&mut self.end.eyes, &mut p.eyes);
         swap(&mut self.ominous_spawners, &mut p.ominous_spawners);
         swap(&mut self.tnts, &mut p.tnts);
         swap(&mut self.hoppers, &mut p.hoppers);

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use horizon_java_analysis::class::{self, Parse};
 use horizon_java_analysis::knowledge::{self, Knowledge};
 use horizon_java_analysis::lambdas::{self, Vanilla};
-use horizon_java_analysis::{entity_facts, jars, libraries, mixins, replaces};
+use horizon_java_analysis::{entity_facts, jars, libraries, mixins, replaces, routing};
 use serde_json::json;
 
 fn main() -> ExitCode {
@@ -60,7 +60,7 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!(
-                "usage: horizon-java-analysis dump-classes JAR... | dump-libraries --install DIR [--cache C] | dump-jars --install DIR | mixins --install DIR --out OUT | replaces --install DIR --boot-jar JAR --out OUT [--cache C] | dump-entity-guards --install DIR | dump-knowledge --boot-jar JAR KEY... | dump-folds --install DIR KEY..."
+                "usage: horizon-java-analysis dump-classes JAR... | dump-libraries --install DIR [--cache C] | dump-jars --install DIR | mixins --install DIR --out OUT | replaces --install DIR --boot-jar JAR --out OUT [--cache C] [--bridges F] [--gates F] [--deferred F] [--verdicts F] [--routes-out F] | dump-entity-guards --install DIR | dump-knowledge --boot-jar JAR KEY... | dump-folds --install DIR KEY..."
             );
             ExitCode::from(2)
         }
@@ -235,30 +235,61 @@ fn write_mixins(args: &[String]) -> Result<(), String> {
     mixins::write_mixins(&out, &entries, classes, &warnings)
 }
 
-/// `replaces --install DIR --boot-jar JAR --out OUT [--cache C]`: writes `replaces.json`, `entity-facts.json` and `mixins/`; fails after writing on unclassified entity methods.
+/// `replaces --install DIR --boot-jar JAR --out OUT [--cache C] [--bridges F] [--gates F] [--deferred F] [--verdicts F] [--routes-out F]`: writes `replaces.json`, `replaces.md`, `routing.json`, `routing.tsv`, `entity-facts.json` and `mixins/`; fails after writing on unclassified entity methods.
 fn write_replaces(args: &[String]) -> Result<(), String> {
     let (mut install, mut boot, mut out, mut cache) = (None, None, None, None);
+    let (mut bridges, mut gated, mut deferred, mut verdicts, mut routes_out) =
+        (None, None, None, None, None);
     let mut it = args.iter();
     while let Some(flag) = it.next() {
         let value = it.next().ok_or_else(|| format!("{flag} needs a value"))?;
-        match flag.as_str() {
-            "--install" => install = Some(PathBuf::from(value)),
-            "--boot-jar" => boot = Some(PathBuf::from(value)),
-            "--out" => out = Some(PathBuf::from(value)),
-            "--cache" => cache = Some(PathBuf::from(value)),
+        let slot = match flag.as_str() {
+            "--install" => &mut install,
+            "--boot-jar" => &mut boot,
+            "--out" => &mut out,
+            "--cache" => &mut cache,
+            "--bridges" => &mut bridges,
+            "--gates" => &mut gated,
+            "--deferred" => &mut deferred,
+            "--verdicts" => &mut verdicts,
+            "--routes-out" => &mut routes_out,
             other => return Err(format!("unknown argument {other}")),
-        }
+        };
+        *slot = Some(PathBuf::from(value));
     }
     let install = install.ok_or("--install DIR is required")?;
     let boot = boot.ok_or("--boot-jar JAR is required")?;
     let out = out.ok_or("--out OUT is required")?;
+    let read = |path: &Option<PathBuf>| -> Result<String, String> {
+        path.as_ref().map_or(Ok(String::new()), |p| {
+            std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))
+        })
+    };
+    let bridges = routing::read_bridges(&read(&bridges)?);
+    let gates = routing::read_gates(&read(&gated)?, &read(&deferred)?, &read(&verdicts)?);
     let started = std::time::Instant::now();
     let knowledge = Knowledge::from_boot_jar(&boot)?;
     let mut result = replaces::analyse(&install, &knowledge, cache.as_deref(), &mut |line| {
         eprintln!("{line}");
     })?;
     let facts = entity_facts::facts::analyse(&mut result)?;
-    entity_facts::facts::write_boot_files(&out, &facts)?;
+    let vanilla = Vanilla::new(&result.hierarchy.jars)?;
+    let report = routing::routing(
+        &mut result,
+        &vanilla,
+        &knowledge,
+        &bridges,
+        &routing::view_classes(),
+    )?;
+    entity_facts::facts::write_boot_files(&out, &facts, &report)?;
+    if let Some(path) = routes_out {
+        let label = install
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        std::fs::write(&path, routing::routes_tsv(&report, &label))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+    }
     mixins::write_mixins(
         &out.join("mixins"),
         &result.entries,
@@ -267,6 +298,7 @@ fn write_replaces(args: &[String]) -> Result<(), String> {
     )?;
     let seconds = started.elapsed().as_secs_f64();
     replaces::write_replaces(&out, &result, &install, seconds)?;
+    routing::write_markdown(&out, &result, &install, &report, &gates)?;
     println!(
         "{}: {} mods, {} methods, {} events in {seconds:.1}s",
         out.join("replaces.json").display(),

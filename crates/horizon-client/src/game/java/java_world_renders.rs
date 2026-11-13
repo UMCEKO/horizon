@@ -75,6 +75,28 @@ fn camera_for_java(
     (view.position != [0.0; 3]).then_some((view.position, [view.y_rot, view.x_rot, fov, far]))
 }
 
+/// The window's crosshair target as Java's block outline sees it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct OutlineHit {
+    /// The hit block's position, face normal and point; none for an entity or a miss.
+    pub block: Option<([i32; 3], [i32; 3], [f64; 3])>,
+    /// `GameRenderer.shouldRenderBlockOutline` for that block.
+    pub render: bool,
+    pub high_contrast: bool,
+}
+
+/// `WorldFrame.writeHit`'s layout.
+pub(super) fn write_hit(out: &mut Out, hit: &OutlineHit) {
+    out.bool(hit.block.is_some());
+    if let Some((pos, face, point)) = hit.block {
+        out.long(horizon_core::position::BlockPos::new(pos[0], pos[1], pos[2]).pack());
+        out.int(super::java_screens::face_index(face));
+        point.iter().for_each(|v| out.double(*v));
+    }
+    out.bool(hit.render);
+    out.bool(hit.high_contrast);
+}
+
 /// The window's world recordings and registry end with its server.
 pub(super) fn java_world_left() {
     horizon_client::world_renders::clear();
@@ -108,7 +130,22 @@ impl Game<'_> {
         out.float(self.clock.fraction() as f32);
         at.iter().for_each(|v| out.double(*v));
         view.iter().for_each(|v| out.float(*v));
+        write_hit(&mut out, &self.java_outline_hit());
         Some(out.0)
+    }
+
+    /// The block the crosshair is on, as `Minecraft.hitResult` would hold it, with the outline's gate and option.
+    pub(super) fn java_outline_hit(&self) -> OutlineHit {
+        let block = if self.entity_targeted() {
+            None
+        } else {
+            self.pick().map(|h| (h.pos, h.face, h.point))
+        };
+        OutlineHit {
+            block,
+            render: block.is_some_and(|(pos, _, _)| self.vanilla_outline_gate(pos)),
+            high_contrast: self.settings.file.bool("highContrastBlockOutline"),
+        }
     }
 }
 

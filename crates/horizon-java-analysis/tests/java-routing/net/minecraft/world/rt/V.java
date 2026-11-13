@@ -1,0 +1,1 @@
+package net.minecraft.world.rt; public class V extends T { public void hook() { super.hook(); } }

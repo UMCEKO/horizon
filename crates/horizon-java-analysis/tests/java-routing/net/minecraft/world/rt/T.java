@@ -1,0 +1,1 @@
+package net.minecraft.world.rt; public class T extends Target { public void hook() {} }

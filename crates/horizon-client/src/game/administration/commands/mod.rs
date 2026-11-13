@@ -88,6 +88,10 @@ pub(super) enum Target {
     Spawner(u32),
     /// A simulated lingering, creeper or dragon area-effect cloud.
     Cloud(u32),
+    /// A thrown splash or lingering potion, or experience bottle, by its entity id.
+    Potion(u32),
+    /// An eye of ender in flight, by its entity id (`minecraft:eye_of_ender`).
+    Eye(u32),
     /// A cast fishing hook (`minecraft:fishing_bobber`), which lives with the
     /// player who cast it. Only a mod's handle names one.
     Hook(u32),
@@ -242,6 +246,8 @@ pub(in crate::game) fn non_player_entity_id(t: Target) -> Option<i32> {
     | Target::Trident(id)
     | Target::Spawner(id)
     | Target::Cloud(id)
+    | Target::Potion(id)
+    | Target::Eye(id)
     | Target::Hook(id)
     | Target::Knot(id)) = t
     else {
@@ -678,6 +684,18 @@ impl Game<'_> {
                 .find(|r| r.id == id)
                 .map(|r| [r.position.x, r.position.y, r.position.z]),
             Target::Cloud(id) => self.breath_clouds.iter().find(|c| c.id == id).map(|c| c.at),
+            Target::Potion(id) => self
+                .potions
+                .thrown
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| [t.position.x, t.position.y, t.position.z]),
+            Target::Eye(id) => self
+                .end
+                .eyes
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.position.to_array()),
             Target::Hook(id) => self.fishing_hook_by_id(id).map(|(h, _)| {
                 let p = h.position;
                 [p.x, p.y, p.z]
@@ -753,6 +771,21 @@ impl Game<'_> {
             Target::Fangs(_) => "minecraft:evoker_fangs".into(),
             Target::Spawner(_) => "minecraft:ominous_item_spawner".into(),
             Target::Cloud(_) => "minecraft:area_effect_cloud".into(),
+            Target::Potion(id) => {
+                self.potions
+                    .thrown
+                    .iter()
+                    .find(|t| t.id == id)
+                    .map_or_else(String::new, |t| {
+                        match &*t.stack.item {
+                            "minecraft:lingering_potion" => "minecraft:lingering_potion",
+                            "minecraft:experience_bottle" => "minecraft:experience_bottle",
+                            _ => "minecraft:splash_potion",
+                        }
+                        .into()
+                    })
+            }
+            Target::Eye(_) => "minecraft:eye_of_ender".into(),
             Target::Hook(_) => "minecraft:fishing_bobber".into(),
             Target::Knot(_) => "minecraft:leash_knot".into(),
         }
@@ -1102,6 +1135,8 @@ impl Game<'_> {
                 .filter(|c| c.id != 0)
                 .map(|c| Target::Cloud(c.id)),
         );
+        candidates.extend(self.potions.thrown.iter().map(|t| Target::Potion(t.id)));
+        candidates.extend(self.end.eyes.iter().map(|e| Target::Eye(e.id)));
         candidates.extend(self.natural_knot_ids().into_iter().map(Target::Knot));
         // `isRemoved` from a mod's call on, though the sweep has not taken it out.
         if !self.persist.removals.is_empty() {
@@ -2020,6 +2055,18 @@ impl Game<'_> {
                     });
                 }
             }
+            Target::Potion(id) => {
+                if let Some(t) = self.potions.thrown.iter_mut().find(|t| t.id == id) {
+                    t.position = v;
+                    t.previous = v;
+                }
+            }
+            Target::Eye(id) => {
+                if let Some(e) = self.end.eyes.iter_mut().find(|e| e.id == id) {
+                    e.position = glam::DVec3::new(v.x, v.y, v.z);
+                    e.previous = e.position;
+                }
+            }
             // Wall-mounted entities do not move; a hook follows its own tick and a
             // dragon part its dragon's.
             Target::Frame(_)
@@ -2682,6 +2729,8 @@ impl Game<'_> {
             Target::Trident(id) => self.tridents.retain(|t| t.id != id),
             Target::Spawner(id) => self.ominous_spawners.retain(|s| s.id != id),
             Target::Cloud(id) => self.breath_clouds.retain(|c| c.id != id),
+            Target::Potion(id) => self.potions.thrown.retain(|t| t.id != id),
+            Target::Eye(id) => self.end.eyes.retain(|e| e.id != id),
             Target::Hook(id) => self.remove_fishing_hook(id),
             Target::Knot(_) => {}
             // No command names a part, and `kill` on one would not stop its dragon.
@@ -4869,6 +4918,8 @@ mod look_at_tests {
             Target::Trident(7),
             Target::Spawner(7),
             Target::Cloud(7),
+            Target::Potion(7),
+            Target::Eye(7),
         ] {
             assert_eq!(non_player_entity_id(t), Some(7), "{t:?}");
         }

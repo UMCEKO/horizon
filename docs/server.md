@@ -563,6 +563,7 @@ hardcore = false
 path = ""                    # the game program; empty: the one installed beside horizon-server
 resources = ""               # the prepared game files; empty: resources/ here, else the usual places
 restart_on_crash = true
+java_mods = ""               # a Java mods run folder, relative to this folder (the launcher writes "java"); empty: none
 
 [backups]
 every = "6h"                 # automatic backups while the server runs: 30m, 6h, 1d...; "0" turns them off

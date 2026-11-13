@@ -74,6 +74,21 @@ impl Game<'_> {
                 .iter()
                 .find(|e| e.id == id)
                 .map(|e| e.bounds()),
+            // Both are 0.25 by 0.25 (`EntityType.SPLASH_POTION`, `EYE_OF_ENDER`).
+            Target::Potion(id) => self.potions.thrown.iter().find(|e| e.id == id).map(|e| {
+                let p = e.position;
+                Aabb::new(
+                    Vec3::new(p.x - 0.125, p.y, p.z - 0.125),
+                    Vec3::new(p.x + 0.125, p.y + 0.25, p.z + 0.125),
+                )
+            }),
+            Target::Eye(id) => self.end.eyes.iter().find(|e| e.id == id).map(|e| {
+                let p = e.position;
+                Aabb::new(
+                    Vec3::new(p.x - 0.125, p.y, p.z - 0.125),
+                    Vec3::new(p.x + 0.125, p.y + 0.25, p.z + 0.125),
+                )
+            }),
             Target::Other(_)
             | Target::Fangs(_)
             | Target::Dragon(_)

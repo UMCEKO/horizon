@@ -1,0 +1,1 @@
+package fixture; public class FakeBackpackItem extends net.minecraft.world.item.Item {}

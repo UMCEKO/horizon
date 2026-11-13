@@ -58,6 +58,26 @@ pub(super) fn java_read_effects(reply: &mut In<'_>) -> Option<Vec<JavaSound>> {
     Some(sounds)
 }
 
+/// A posted server event's answer (`EventPosts.write`): whether a listener cancelled it, then what its site reads back.
+pub(super) fn java_read_posted(reply: &mut In<'_>) -> Option<(bool, Vec<u8>)> {
+    Some((reply.bool()?, reply.bytes()?.to_vec()))
+}
+
+#[cfg(test)]
+mod posted_tests {
+    use super::*;
+
+    #[test]
+    fn an_event_reply_reads_canceled_and_result_then_leaves_the_tail() {
+        let reply = [1, 0, 0, 0, 2, 7, 9, 0, 0, 0, 0];
+        let mut reply = In(&reply);
+        assert_eq!(java_read_posted(&mut reply), Some((true, vec![7, 9])));
+        assert_eq!(java_read_effects(&mut reply), Some(Vec::new()));
+        assert!(reply.0.is_empty());
+        assert_eq!(java_read_posted(&mut In(&[0, 0, 0, 0, 3, 1])), None);
+    }
+}
+
 use horizon_client::lan::abilities::PlayerAbilities;
 
 /// The player groups before STACKS, in mask order: pose, mode, selected, experience, vitals, effects, motion.
@@ -396,17 +416,6 @@ impl Game<'_> {
         self.java_call_use(what, op, out.0, claimed)
     }
 
-    /// One use call; the ticks the player has been using an item when the call leaves it using one.
-    fn java_call_use(
-        &mut self,
-        what: &str,
-        op: &str,
-        tail: Vec<u8>,
-        claimed: &mut bool,
-    ) -> Option<u32> {
-        self.java_call_use_after(what, op, Vec::new(), tail, claimed)
-    }
-
     /// A guest's chat message through NeoForge's chat decorator (`server_chat`), as the acting player; unchanged when Java did not answer.
     pub(super) fn java_server_chat(&mut self, raw: &str) -> ChatVerdict {
         self.java_bind_states();
@@ -440,30 +449,16 @@ impl Game<'_> {
         verdict
     }
 
-    /// A server event posted on the acting player's view (`post_event`): `cancelled` is what its listeners left.
-    pub(super) fn java_post_server_event(
-        &mut self,
-        event: &str,
-        fields: Vec<u8>,
-        cancelled: &mut bool,
-    ) {
-        let mut head = Out::default();
-        head.text(event);
-        self.java_call_use_after(event, "post_event", head.0, fields, cancelled);
-    }
-
-    /// [`Self::java_call_use`] with `head` before the player's view.
-    fn java_call_use_after(
+    /// One use call; the ticks the player has been using an item when the call leaves it using one.
+    fn java_call_use(
         &mut self,
         what: &str,
         op: &str,
-        head: Vec<u8>,
         tail: Vec<u8>,
         claimed: &mut bool,
     ) -> Option<u32> {
         self.java_bind_states();
-        let mut request = head;
-        request.extend(self.java_use_request()?);
+        let mut request = self.java_use_request()?;
         request.extend(tail);
         let reply = self.java_player_request(op, &request)?;
         let using = self.java_apply_use(&reply, claimed);
@@ -472,6 +467,51 @@ impl Game<'_> {
         }
         self.java_drain_block_events();
         using.flatten()
+    }
+
+    /// A server event posted on the acting player's view (`post_event`): whether a listener cancelled it, and what its site reads back.
+    pub(super) fn java_post_player_event(
+        &mut self,
+        event: &str,
+        fields: Vec<u8>,
+    ) -> Option<(bool, Vec<u8>)> {
+        self.java_bind_states();
+        let mut head = Out::default();
+        head.text(event);
+        let mut request = head.0;
+        request.extend(self.java_use_request()?);
+        request.extend(fields);
+        let reply = self.java_player_request("post_event", &request)?;
+        let mut reply = In(&reply);
+        let posted = java_read_posted(&mut reply);
+        let applied = posted.and_then(|posted| self.java_apply_use_tail(&mut reply).map(|()| posted));
+        if applied.is_none() {
+            log::warn!("Horizon: Java's answer to {event} came in pieces");
+        }
+        self.java_drain_block_events();
+        applied
+    }
+
+    /// A server event posted on this level with no acting player (`post_level_event`): `fields` follow its name.
+    #[allow(dead_code)] // The level events' sites post through it (W13 SPEC-3 onward).
+    pub(super) fn java_post_level_event(
+        &mut self,
+        event: &str,
+        fields: impl FnOnce(&mut Out),
+    ) -> Option<(bool, Vec<u8>)> {
+        let posted = self.java_level_reply(
+            "post_level_event",
+            |out| {
+                out.text(event);
+                fields(out);
+            },
+            java_read_posted,
+        );
+        if posted.is_none() && horizon_java_host::get().is_some() {
+            log::warn!("Horizon: Java's answer to {event} came in pieces");
+        }
+        self.java_drain_block_events();
+        posted
     }
 
     /// Fills the acting player's view again, for a bridge that changed something its getters read.
@@ -706,10 +746,15 @@ impl Game<'_> {
         *claimed = reply.bool()?;
         let using = reply.bool()?;
         let ticks = reply.int()?;
-        let level = reply.int()?;
-        self.java_apply_changes(level, &mut reply)?;
-        self.java_apply_effects(&mut reply)?;
+        self.java_apply_use_tail(&mut reply)?;
         Some(using.then_some(ticks.max(0) as u32))
+    }
+
+    /// The end of every reply that filled the acting player's view (`GameBridge.writeUseTail`): its experience, changed slots and the call's effects.
+    fn java_apply_use_tail(&mut self, reply: &mut In<'_>) -> Option<()> {
+        let level = reply.int()?;
+        self.java_apply_changes(level, reply)?;
+        self.java_apply_effects(reply)
     }
 
     /// The acting player's experience and changed slots from a reply, after its `level`; its view holds them already.
@@ -780,24 +825,34 @@ impl Game<'_> {
     }
 
     /// Calls `GameBridge`'s `op` for this level, with what it does to the world applied after.
-    fn java_level_call(&mut self, op: &str, body: impl FnOnce(&mut Out)) {
-        if horizon_java_host::get().is_none() {
-            return;
-        }
+    pub(super) fn java_level_call(&mut self, op: &str, body: impl FnOnce(&mut Out)) {
+        self.java_level_reply(op, body, |_| Some(()));
+    }
+
+    /// [`Self::java_level_call`] whose reply holds `read`'s fields ahead of the effects.
+    fn java_level_reply<R>(
+        &mut self,
+        op: &str,
+        body: impl FnOnce(&mut Out),
+        read: impl FnOnce(&mut In<'_>) -> Option<R>,
+    ) -> Option<R> {
+        horizon_java_host::get()?;
         self.java_bind_states();
         let (key, time) = (self.java_level_key(), self.world.game_time);
-        let sounds = self.java_call_with(
+        let (got, sounds) = self.java_call_with(
             op,
             |out| {
                 out.int(key as i32);
                 out.long(time);
                 body(out);
             },
-            java_read_effects,
-        );
-        if let Some(sounds) = sounds {
-            self.java_play_effects(sounds);
-        }
+            |reply| {
+                let got = read(reply)?;
+                Some((got, java_read_effects(reply)?))
+            },
+        )?;
+        self.java_play_effects(sounds);
+        Some(got)
     }
 
     /// One request into Java's server side, after the block entities Horizon changed since Java last heard reached it.
@@ -886,6 +941,8 @@ impl Game<'_> {
             | Target::Trident(id)
             | Target::Spawner(id)
             | Target::Cloud(id)
+            | Target::Potion(id)
+            | Target::Eye(id)
             | Target::DragonPart(id)
             | Target::Cushion(id)
             | Target::Hook(id)
@@ -1001,45 +1058,6 @@ impl Game<'_> {
             out.long(pos.pack());
             out.bytes(&bytes);
         });
-    }
-
-    /// NeoForge's `VanillaInventoryCodeHooks` for a hopper and the item handler of the block at `target`, if it has one.
-    pub(in crate::game) fn java_hopper(
-        &mut self,
-        hopper: (i32, i32, i32),
-        target: (i32, i32, i32),
-        side: horizon_core::geometry::Direction,
-        insert: bool,
-    ) -> Option<bool> {
-        horizon_java_host::get()?;
-        self.java_bind_states();
-        if !horizon_java_host::bridge::java_block(self.world.block(target.0, target.1, target.2)) {
-            return None;
-        }
-        // A hopper minecart's view is keyed off the world: only a block hopper reaches Java.
-        let at = self.world.block(hopper.0, hopper.1, hopper.2);
-        if &*self.res.facts().get(at).name != "minecraft:hopper" {
-            return None;
-        }
-        let pos = |p: (i32, i32, i32)| BlockPos::new(p.0, p.1, p.2).pack();
-        let (key, time) = (self.java_level_key(), self.world.game_time);
-        let (found, moved, sounds) = self.java_call_with(
-            "hopper_transfer",
-            |out| {
-                out.int(key as i32);
-                out.long(time);
-                out.long(pos(hopper));
-                out.long(pos(target));
-                out.int(side as i32);
-                out.bool(insert);
-            },
-            |reply| {
-                let (found, moved) = (reply.bool()?, reply.bool()?);
-                Some((found, moved, java_read_effects(reply).unwrap_or_default()))
-            },
-        )?;
-        self.java_play_effects(sounds);
-        found.then_some(moved)
     }
 
     /// Java made a block entity: its place in the chunk, which saves it and gives it its turn to tick.
@@ -1412,6 +1430,7 @@ impl Game<'_> {
         if open {
             horizon_java_host::bridge::with_active(self, super::java_content::entity_types);
             horizon_java_host::bridge::with_active(self, super::java_crafting::load);
+            super::java_listener::census_at_server_start();
         }
     }
 
@@ -1424,6 +1443,9 @@ impl Game<'_> {
 
     /// `LevelTickEvent`, with this level in place.
     pub(super) fn java_level_tick(&mut self, post: bool) {
+        if !post {
+            self.java_capture_fluid_rules();
+        }
         self.java_level_call("level_tick", |out| out.bool(post));
         self.java_drain_block_events();
         self.java_wire_flush_lan();
@@ -1628,6 +1650,106 @@ pub(super) fn note_neighbor_changed(
 pub(super) fn note_block_tick(pos: BlockPos, state: BlockStateId, random: bool) {
     if horizon_java_host::bridge::java_block(state) {
         push_event(if random { 3 } else { 2 }, pos, java_id(state), 0, 0);
+    }
+}
+
+/// Kind 5: Java's `ServerLevel.tickFluid` runs the fluid's own `FluidState.tick` at the drain.
+pub(super) fn note_fluid_tick(pos: BlockPos, state: BlockStateId) {
+    push_event(5, pos, java_id(state), 0, 0);
+}
+
+pub(super) fn owns_fluid(
+    behaviours: &horizon_world::level::Behaviours,
+    fluid: horizon_world::fluid::ModFluid,
+) -> bool {
+    use horizon_world::fluid::{FluidKind, FluidState};
+    horizon_java_host::bridge::java_block(
+        behaviours.legacy_block(FluidState::new(FluidKind::Mod(fluid), 8, false)),
+    )
+}
+
+/// Java's own fluids' getters per dimension, by `ModFluid::index`; None where Java has no `FlowingFluid` of that id.
+type FluidRulesOf = Vec<(
+    horizon_core::dimension::Dimension,
+    Vec<Option<horizon_world::fluid::ModFluidRules>>,
+)>;
+
+thread_local! {
+    static FLUID_RULES: std::cell::RefCell<FluidRulesOf> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+pub(super) fn fluid_rules(
+    dimension: horizon_core::dimension::Dimension,
+    fluid: horizon_world::fluid::ModFluid,
+) -> Option<horizon_world::fluid::ModFluidRules> {
+    FLUID_RULES.with_borrow(|known| {
+        known
+            .iter()
+            .find(|(of, _)| *of == dimension)
+            .and_then(|(_, rules)| rules.get(fluid.index()).copied().flatten())
+    })
+}
+
+impl Game<'_> {
+    /// Asks Java once per level what its fluids' `getTickDelay`, `getDropOff`, `getSlopeFindDistance` and `canConvertToSource` answer there.
+    fn java_capture_fluid_rules(&mut self) {
+        let dimension = self.dim.level();
+        if horizon_java_host::get().is_none()
+            || FLUID_RULES.with_borrow(|known| known.iter().any(|(of, _)| *of == dimension))
+        {
+            return;
+        }
+        self.java_bind_states();
+        let fluids = horizon_world::fluid::mod_fluids();
+        let behaviours = self.res.behaviours();
+        let owned: Vec<bool> = fluids
+            .iter()
+            .map(|(fluid, _)| owns_fluid(behaviours, *fluid))
+            .collect();
+        let mut rules = vec![None; fluids.len()];
+        if owned.iter().any(|owned| *owned) {
+            let (key, time) = (self.java_level_key(), self.world.game_time);
+            let asked: Vec<_> = fluids
+                .iter()
+                .zip(&owned)
+                .filter(|(_, owned)| **owned)
+                .map(|((fluid, ty), _)| (*fluid, ty.id.as_str()))
+                .collect();
+            let answers = self.java_call_with(
+                "fluid_rules",
+                |out| {
+                    out.int(key as i32);
+                    out.long(time);
+                    out.int(asked.len() as i32);
+                    asked.iter().for_each(|(_, id)| out.text(id));
+                },
+                |reply| {
+                    asked
+                        .iter()
+                        .map(|_| {
+                            let known = reply.bool()?;
+                            let read = horizon_world::fluid::ModFluidRules {
+                                tick_delay: reply.int()?,
+                                drop_off: reply.int()?,
+                                slope_find_distance: reply.int()?,
+                                converts_to_source: reply.bool()?,
+                            };
+                            Some(known.then_some(read))
+                        })
+                        .collect::<Option<Vec<_>>>()
+                },
+            );
+            if answers.is_none() {
+                log::warn!("Horizon: Java's fluids did not answer their flow rules; their registered ones stand");
+            }
+            for ((fluid, id), answer) in asked.iter().zip(answers.unwrap_or_default()) {
+                if answer.is_none() {
+                    log::warn!("Horizon: Java has no flowing fluid {id}; its registered flow rules stand");
+                }
+                rules[fluid.index()] = answer;
+            }
+        }
+        FLUID_RULES.with_borrow_mut(|known| known.push((dimension, rules)));
     }
 }
 

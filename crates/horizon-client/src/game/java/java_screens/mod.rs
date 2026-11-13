@@ -7,7 +7,7 @@ use super::java_hooks_client::{HudLayer, JavaClick, JavaKeyAction, Leaf};
 use super::*;
 
 mod draw;
-mod hud;
+pub(in crate::game) mod hud;
 mod input;
 mod menus;
 mod shell;
@@ -38,6 +38,8 @@ use std::sync::mpsc::TryRecvError;
 #[derive(Default)]
 pub(in crate::game) struct Client {
     joined: bool,
+    /// What the window's last `tick_fov` computed: the base modifier, whether a spyglass scopes, the effect scale.
+    pub(in crate::game) fov_base: Option<(f32, bool, f32)>,
     /// What the Java client's `useItemOn` answered for the last click: 0 none, 1 passed, 2 success, 3 consumed.
     block_use: u8,
     /// Columns holding block entity models wait for the Java client's answer.
@@ -86,6 +88,8 @@ pub(in crate::game) struct Client {
     screens_heard: bool,
     /// The container id of the menu whose packets go to the Java client, while one does.
     mirrored: Option<i32>,
+    /// A mod listens to `RenderFrameEvent`: each window frame posts it in the Java client.
+    frame_events: bool,
 }
 
 /// What the Java client's music tick last said: whether it runs the music, its track's handle and the Now Playing toasts it asked for.
@@ -191,6 +195,16 @@ enum Input<'a> {
     Entity(u64, &'a [u8]),
     /// The place of the last play packet the window applied.
     Seen(u64),
+    /// The window's camera values the view events read.
+    View(&'a super::java_view::ViewInputs),
+    /// Whether debug info is reduced, and the Java mods' F3 entries native has enabled now.
+    DebugLines(bool, &'a [String]),
+    /// The window's crosshair target for the block outline, told when it changes.
+    Hit(&'a super::java_world_renders::OutlineHit),
+    /// Each sound source's volume by its vanilla name, master first.
+    Volumes(Vec<(&'static str, f32)>),
+    /// `Camera.tickFov`'s inputs: the base modifier, whether the player scopes, the effect scale.
+    FovBase(f32, bool, f32),
 }
 
 impl Input<'_> {
@@ -223,6 +237,11 @@ impl Input<'_> {
             Input::Music(..) => 40,
             Input::Entity(..) => 17,
             Input::Seen(_) => 18,
+            Input::View(_) => 36,
+            Input::DebugLines(..) => 42,
+            Input::Hit(_) => 28,
+            Input::Volumes(_) => 41,
+            Input::FovBase(..) => 35,
         };
         out.0.push(kind);
         match *self {
@@ -316,6 +335,25 @@ impl Input<'_> {
                 out.bool(loading);
                 out.0.push(frequency);
             }
+            Input::View(inputs) => inputs.write(out),
+            Input::DebugLines(reduced, ids) => {
+                out.bool(reduced);
+                out.int(ids.len() as i32);
+                ids.iter().for_each(|id| out.text(id));
+            }
+            Input::Hit(hit) => super::java_world_renders::write_hit(out, hit),
+            Input::Volumes(ref volumes) => {
+                out.int(volumes.len() as i32);
+                for (name, value) in volumes {
+                    out.text(name);
+                    out.float(*value);
+                }
+            }
+            Input::FovBase(base, scoping, scale) => {
+                out.float(base);
+                out.bool(scoping);
+                out.float(scale);
+            }
         }
     }
 }
@@ -360,6 +398,9 @@ struct Sent {
     particles: Option<i32>,
     notification_time: Option<f64>,
     seen: Option<u64>,
+    hit: Option<super::java_world_renders::OutlineHit>,
+    volumes: Option<Vec<(&'static str, f32)>>,
+    fov_base: Option<(f32, bool, f32)>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -621,6 +662,7 @@ struct FrameJob {
     hud: Option<Vec<u8>>,
     world: Option<Vec<u8>>,
     toasts: Option<Vec<u8>>,
+    view: Option<Vec<u8>>,
 }
 
 /// A frame request's replies, each with what the request took.
@@ -629,6 +671,7 @@ struct FrameDone {
     hud: Option<(Vec<u8>, u128)>,
     world: Option<(Vec<u8>, u128)>,
     toasts: Option<(Vec<u8>, u128)>,
+    view: Option<(Vec<u8>, u128)>,
 }
 
 impl FrameJob {
@@ -643,6 +686,7 @@ impl FrameJob {
             hud: record("client_hud_frame", self.hud),
             world: record("client_world_frame", self.world),
             toasts: record("client_toast_frame", self.toasts),
+            view: record("client_view_frame", self.view),
         }
     }
 }
@@ -842,6 +886,23 @@ impl Game<'_> {
         [size[0] as i32, size[1] as i32, batch.scale as i32]
     }
 
+    /// The player's volumes as `Options` keeps them: `master`, then every other source in `SOUND_SOURCES` order.
+    fn java_sound_volumes(&self) -> Vec<(&'static str, f32)> {
+        let settings = &self.settings;
+        horizon_client::settings::SOUND_SOURCES
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let value = if i == 0 {
+                    settings.master_volume
+                } else {
+                    settings.volumes[i]
+                };
+                (*name, value)
+            })
+            .collect()
+    }
+
     fn java_client_size(&self, out: &mut Out) {
         for value in self.java_client_window() {
             out.int(value);
@@ -891,6 +952,8 @@ impl Game<'_> {
         }
         let environment = reply.int()?;
         let lockstep = reply.bool()?;
+        let frame_events = reply.bool()?;
+        CLIENT.with_borrow_mut(|c| c.frame_events = frame_events);
         if lockstep != super::java_lockstep::lockstep_next()
             && std::env::var_os("HORIZON_JAVA_DEBUG").is_some()
         {
@@ -904,6 +967,15 @@ impl Game<'_> {
             c.music.toasts.extend(music.toasts);
         });
         let chat = super::java_chat::read_lines(reply)?;
+        let view = if reply.bool()? {
+            Some(super::java_view::read_view_effects(reply)?)
+        } else {
+            None
+        };
+        super::java_view::java_view_status(view, reply.bool()?);
+        if super::java_debug::java_debug_status(reply).is_none() {
+            log::warn!("Horizon: a status's F3 entry lines ended in pieces");
+        }
         super::java_world_renders::java_world_status(
             world.as_deref(),
             world_animating,
@@ -1139,6 +1211,7 @@ impl Game<'_> {
         horizon_client::dynamic_models::clear();
         horizon_client::dynamic_renders::clear();
         super::java_world_renders::java_world_left();
+        super::java_view::java_view_left();
         super::java_toasts::java_toasts_left();
         self.particles.set_java(Default::default());
         CLIENT.with_borrow_mut(|c| {
@@ -1150,6 +1223,7 @@ impl Game<'_> {
             c.told.clear();
             c.hud = HudRecording::default();
             c.hud_animating = false;
+            c.frame_events = false;
             c.shell = Shell::default();
             c.owed = 0;
             c.animate.clear();
@@ -1314,6 +1388,8 @@ impl Game<'_> {
         let book = matches!(kind, 1 | 3).then(|| self.recipe_book_visible());
         let camera = self.java_world_camera();
         let camera_type = self.camera_type as u8;
+        let (debug_reduced, debug_wanted) = self.java_debug_wanted();
+        let hit = self.java_outline_hit();
         self.java_publish_client_world();
         let (left, arrived) = self.java_client_chunk_changes();
         CLIENT.with_borrow_mut(|c| {
@@ -1384,14 +1460,40 @@ impl Game<'_> {
                 Input::Camera(at, view, camera_type).write(&mut events);
                 count += 1;
             }
+            if c.sent.hit != Some(hit) {
+                c.sent.hit = Some(hit);
+                Input::Hit(&hit).write(&mut events);
+                count += 1;
+            }
             for group in c.animate.drain(..) {
                 Input::Animate(&group).write(&mut events);
+                count += 1;
+            }
+            if let Some(view) = super::java_view::batch_input() {
+                Input::View(&view).write(&mut events);
                 count += 1;
             }
             let notification_time = f64::from(self.settings.notification_display_time);
             if c.sent.notification_time != Some(notification_time) {
                 c.sent.notification_time = Some(notification_time);
                 Input::NotificationTime(notification_time).write(&mut events);
+                count += 1;
+            }
+            if super::java_debug::should_send(&debug_wanted) {
+                Input::DebugLines(debug_reduced, &debug_wanted).write(&mut events);
+                count += 1;
+            }
+            let volumes = self.java_sound_volumes();
+            if c.sent.volumes.as_ref() != Some(&volumes) {
+                c.sent.volumes = Some(volumes.clone());
+                Input::Volumes(volumes).write(&mut events);
+                count += 1;
+            }
+            if let Some((base, scoping, scale)) = c.fov_base
+                && c.sent.fov_base != c.fov_base
+            {
+                c.sent.fov_base = c.fov_base;
+                Input::FovBase(base, scoping, scale).write(&mut events);
                 count += 1;
             }
             let toasts = super::java_toasts::java_toasts_turns();
@@ -1458,6 +1560,9 @@ impl Game<'_> {
             if let Some((reply, _)) = frame.toasts {
                 super::java_toasts::java_toasts_frame_apply(&reply);
             }
+            if let Some((reply, _)) = frame.view {
+                super::java_view::java_view_frame_apply(&reply);
+            }
         }
     }
 
@@ -1482,6 +1587,7 @@ impl Game<'_> {
         };
         if !CLIENT.with_borrow_mut(|c| std::mem::replace(&mut c.joined, true)) {
             self.java_apply_mod_keys();
+            self.java_debug_entries_take();
         }
         // A status answers once the Java client's login is done: until then nothing is held for it.
         if !tick.is_empty() && !CLIENT.with_borrow(|c| c.armed) {
@@ -1524,7 +1630,7 @@ fn trimmed_advances(mut advances: Vec<f32>, missing: f32) -> Vec<f32> {
 }
 
 /// `Direction.get3DDataValue` of a face's normal.
-fn face_index(face: [i32; 3]) -> i32 {
+pub(super) fn face_index(face: [i32; 3]) -> i32 {
     match face {
         [0, -1, 0] => 0,
         [0, 1, 0] => 1,
@@ -1589,7 +1695,14 @@ mod tests {
         assert_eq!(super::read_music(&mut In(&[1, 0, 0])), None);
     }
 
-        #[test]
+    #[test]
+    fn fov_base_is_kind_35_then_the_float_the_bool_and_the_float() {
+        let mut out = Out::default();
+        super::Input::FovBase(1.0, true, 0.5).write(&mut out);
+        assert_eq!(out.0, [35, 0x3f, 0x80, 0, 0, 1, 0x3f, 0, 0, 0]);
+    }
+
+    #[test]
     fn the_font_table_ends_at_the_last_code_point_java_cannot_guess() {
         let mut table = vec![6.0; 0x11_0000];
         table[0x41] = 5.0;
@@ -1648,12 +1761,44 @@ mod tests {
     }
 
     #[test]
+    fn a_volumes_input_names_each_source_with_its_value() {
+        let mut out = Out::default();
+        Input::Volumes(vec![("master", 0.25), ("music", 1.0)]).write(&mut out);
+        assert_eq!(out.0[0], 41);
+        let mut read = In(&out.0[1..]);
+        assert_eq!(read.int(), Some(2));
+        assert_eq!((read.text(), read.float()), (Some("master"), Some(0.25)));
+        assert_eq!((read.text(), read.float()), (Some("music"), Some(1.0)));
+        assert_eq!(read.int(), None);
+    }
+
+    #[test]
     fn a_camera_input_carries_the_perspective_after_the_seven_numbers() {
         let mut out = Out::default();
         Input::Camera([1.0, 2.0, 3.0], [4.0, 5.0, 6.0, 7.0], 2).write(&mut out);
         assert_eq!(out.0[0], 13);
         assert_eq!(out.0.len(), 1 + 3 * 8 + 4 * 4 + 1);
         assert_eq!(out.0[41], 2);
+    }
+
+    #[test]
+    fn a_hit_input_is_its_kind_then_the_block_and_the_outline_gate() {
+        let hit = super::super::java_world_renders::OutlineHit {
+            block: Some(([1, 64, -2], [0, 1, 0], [1.5, 65.0, -1.5])),
+            render: true,
+            high_contrast: false,
+        };
+        let mut out = Out::default();
+        Input::Hit(&hit).write(&mut out);
+        let mut expected = vec![28u8, 1];
+        // `BlockPos.asLong` of (1, 64, -2): x << 38 | (z & 0x3FFFFFF) << 12 | y.
+        expected.extend(((1i64 << 38) | ((-2i64 & 0x3FF_FFFF) << 12) | 64).to_be_bytes());
+        expected.extend(1i32.to_be_bytes());
+        for v in [1.5f64, 65.0, -1.5] {
+            expected.extend(v.to_be_bytes());
+        }
+        expected.extend([1, 0]);
+        assert_eq!(out.0, expected);
     }
 
     fn segments_of(sizes: &[(usize, u8)]) -> Out {

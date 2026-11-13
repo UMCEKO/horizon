@@ -1,0 +1,1 @@
+package fixture; public class FakeChestBlock extends net.minecraft.world.level.block.Block {}

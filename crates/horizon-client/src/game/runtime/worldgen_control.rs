@@ -9,7 +9,52 @@ use std::time::{Duration, Instant};
 
 pub(super) const HELP: &[&str] = &[
     "worldgen biomes|starts|chunks [JSON]  the overworld generator's biomes, structure starts or chunk hashes (tools/worldgen_compare.py)",
+    "worldgen probe LEVEL X,Z[,Y]...  the Java mods' generator of LEVEL: its classes, heights and noise biomes",
 ];
+
+/// The probe's default biome height, as `wg_probe` samples it.
+const PROBE_Y: i32 = 64;
+
+/// `worldgen probe LEVEL X,Z[,Y]...`: block points, Y defaulting to [`PROBE_Y`].
+fn probe_points(args: &[&str]) -> Result<(String, Vec<[i32; 3]>)> {
+    const USAGE: &str = "worldgen probe LEVEL X,Z[,Y]...";
+    let (level, points) = args.split_first().ok_or(USAGE)?;
+    let level = if level.contains(':') {
+        (*level).to_owned()
+    } else {
+        format!("minecraft:{level}")
+    };
+    let points = points
+        .iter()
+        .map(|point| {
+            let parts: Vec<i32> = point
+                .split(',')
+                .map(|n| n.trim().parse::<i32>())
+                .collect::<std::result::Result<_, _>>()
+                .map_err(|_| format!("{USAGE}: {point} is not X,Z[,Y]"))?;
+            match parts[..] {
+                [x, z] => Ok([x, PROBE_Y, z]),
+                [x, z, y] => Ok([x, y, z]),
+                _ => Err(format!("{USAGE}: {point} is not X,Z[,Y]")),
+            }
+        })
+        .collect::<std::result::Result<Vec<_>, String>>()?;
+    if points.is_empty() {
+        return Err(USAGE.into());
+    }
+    Ok((level, points))
+}
+
+fn worldgen_probe(args: &[&str]) -> Result<Value> {
+    let (level, points) = probe_points(args)?;
+    #[cfg(feature = "java-mods")]
+    return super::java_worldgen::java_worldgen_probe(&level, &points).map_err(Into::into);
+    #[cfg(not(feature = "java-mods"))]
+    {
+        let _ = (level, points);
+        Err("worldgen probe needs a build with Java mods".into())
+    }
+}
 
 const BIOME_Y: [i32; 3] = [-32, 64, 160];
 const FULL_TIMEOUT: Duration = Duration::from_secs(300);
@@ -81,6 +126,9 @@ impl Game<'_> {
         }
         self.require_world()?;
         let part = words.get(1).copied().ok_or("worldgen biomes|starts|chunks [JSON]")?;
+        if part == "probe" {
+            return worldgen_probe(&words[2..]).map(Some);
+        }
         let rest = line
             .trim_start()
             .strip_prefix("worldgen")
@@ -296,6 +344,16 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_points_take_an_optional_y_and_a_bare_level_name() {
+        let (level, points) = probe_points(&["overworld", "0,0", "2839,-1509,75"]).unwrap();
+        assert_eq!(level, "minecraft:overworld");
+        assert_eq!(points, vec![[0, 64, 0], [2839, 75, -1509]]);
+        assert!(probe_points(&["minecraft:the_nether"]).is_err());
+        assert!(probe_points(&["minecraft:the_nether", "1"]).is_err());
+        assert!(probe_points(&["minecraft:the_nether", "1,2,3,4"]).is_err());
+    }
 
     #[test]
     fn empty_request_is_the_defaults() {

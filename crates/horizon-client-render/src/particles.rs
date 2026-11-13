@@ -5003,6 +5003,22 @@ impl ParticleEngine {
                 }
             }
         }
+        let mut keep = |center: FVec3, size: f32| {
+            if !CULL {
+                return true;
+            }
+            let radius = f64::from(size.abs()) * std::f64::consts::SQRT_2 + 0.05;
+            let world = (camera + center.as_dvec3()).to_array();
+            frustum.is_none_or(|f| f.intersects_sphere(center, radius as f32))
+                && !below_half_pixel(
+                    radius,
+                    f64::from(center.length_squared()),
+                    pixel_focal_length,
+                )
+                && !occluded(world.map(|v| v - radius), world.map(|v| v + radius))
+        };
+        self.java
+            .draw(camera, base, partial, &self.atlas, &mut keep, out);
         for store in &self.polytone_gpu {
             store.render(
                 &self.atlas,

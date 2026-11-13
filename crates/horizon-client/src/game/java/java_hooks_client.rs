@@ -223,6 +223,7 @@ impl Game<'_> {
     }
     pub(super) fn java_client_tick_send(&mut self) {}
     pub(super) fn java_client_frame(&mut self) {}
+    pub(super) fn java_render_frame(&mut self, _phase: u8) {}
     pub(super) fn java_client_left(&mut self) {}
     pub(super) fn java_client_font(&self) {}
     pub(super) fn java_remote_joined(&mut self, _java: bool) {}

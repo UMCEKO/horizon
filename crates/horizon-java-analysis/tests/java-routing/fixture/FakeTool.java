@@ -1,0 +1,1 @@
+package fixture; public class FakeTool extends net.minecraft.world.item.Item {}

@@ -1,0 +1,1 @@
+package net.minecraft.world.item; public class ItemStack { public Item getItem() { return null; } }
