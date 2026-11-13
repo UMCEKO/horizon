@@ -2493,6 +2493,13 @@ pub enum MobEvent {
         pos: [i32; 3],
         state: horizon_world::registry::BlockStateId,
     },
+    /// `FarmlandBlock.turnToBaseBlock` by a mob: a `SetBlock` that Java's `FarmlandTrampleEvent` may cancel.
+    Trample {
+        pos: [i32; 3],
+        state: horizon_world::registry::BlockStateId,
+        mob: u32,
+        distance: f64,
+    },
     /// A mob placing a block (such as a snow golem's trail): `entity_place`
     /// may refuse it. Enderman leave-block attempts use `EndermanPlaceBlock`.
     PlaceBlock {

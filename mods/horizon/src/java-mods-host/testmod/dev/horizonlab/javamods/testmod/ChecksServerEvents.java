@@ -5,6 +5,8 @@ import java.util.Map;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.item.context.UseOnContext;
 import net.neoforged.neoforge.common.NeoForge;
+import net.minecraft.world.level.block.Blocks;
+import net.neoforged.neoforge.event.entity.player.BonemealEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.level.ExplosionEvent;
 
@@ -16,6 +18,12 @@ final class ChecksServerEvents {
     static void listen() {
         NeoForge.EVENT_BUS.addListener((BlockEvent.EntityPlaceEvent event) -> {});
         NeoForge.EVENT_BUS.addListener((ExplosionEvent.Start event) -> {});
+        NeoForge.EVENT_BUS.addListener((BlockEvent.FarmlandTrampleEvent event) -> event.setCanceled(true));
+        NeoForge.EVENT_BUS.addListener((BonemealEvent event) -> {
+            if (!event.getState().is(Blocks.OAK_SAPLING)) return;
+            event.setSuccessful(true);
+            event.setCanceled(true);
+        });
     }
 
     static void run(UseOnContext context, BlockPos area) {

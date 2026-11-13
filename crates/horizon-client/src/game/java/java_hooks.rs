@@ -22,7 +22,32 @@ pub(super) struct JavaItemText {
     pub lines: Vec<horizon_client::text::Text>,
 }
 
+/// Who trampled farmland, as `BlockEvent.FarmlandTrampleEvent` is posted for them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TrampleBy {
+    /// The acting player.
+    Player,
+    /// The mob with this entity id.
+    Mob(u32),
+}
+
 impl Game<'_> {
+    /// `BlockEvent.FarmlandTrampleEvent` after the native checks passed; true when a Java mod canceled the trample.
+    pub(super) fn java_hook_trample(
+        &mut self,
+        pos: [i32; 3],
+        distance: f64,
+        who: TrampleBy,
+    ) -> bool {
+        #[cfg(feature = "java-mods")]
+        return self.java_trample(pos, distance, who);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (pos, distance, who);
+            false
+        }
+    }
+
     /// What the Java mods' F3 entries added to the displayer in the Java client's last tick.
     pub(super) fn java_hook_debug_recorded(&self) -> Vec<horizon_client::debug_overlay::Recorded> {
         #[cfg(feature = "java-mods")]

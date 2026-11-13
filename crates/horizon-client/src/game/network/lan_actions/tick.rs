@@ -730,7 +730,7 @@ impl Game<'_> {
                     // landing it was (`FarmlandBlock.turnToBaseBlock`'s change,
                     // `TurtleEggBlock.decreaseEggs`' destroy): a sculk sensor, a
                     // calibrated sensor and a warden hear it.
-                    if let Some(vibration) = self.landing_block_updates(player, &event) {
+                    if let Some(vibration) = self.landing_block_updates(player, Some(conn), &event) {
                         self.as_guest(conn, |game| game.post_landing_vibration(vibration));
                     }
                 }

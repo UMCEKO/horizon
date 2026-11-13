@@ -76,6 +76,8 @@
   {"command": "/gamerule randomTickSpeed 3"},
   {"name": "leave"},
   {"wait": 20},
+  {"check": {"log": "Horizon: server event BlockEvent.FarmlandTrampleEvent", "since": "start"}},
+  {"check": {"log": "Horizon: server event BonemealEvent", "since": "start"}},
   {"check": {"log": "Horizon: server event .* listened by", "since": "start"}},
   {"check": {"no_exceptions": true, "since": "start"}}
 ]}
