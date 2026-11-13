@@ -73,6 +73,23 @@ pub(crate) fn dropped_state(
         .map(|(_, piston)| piston.moved_state)
 }
 
+/// What `triggerEvent` does before NeoForge's `PistonEvent.Pre`.
+pub enum PistonStep {
+    Done(bool),
+    Move { direction: Direction, extend: bool },
+}
+
+/// One step of the stepped `runBlockEvents`.
+pub enum BlockEventStep {
+    Ran,
+    Piston {
+        event: BlockEventData,
+        state: BlockStateId,
+        direction: Direction,
+        extend: bool,
+    },
+}
+
 /// `BlockEventData`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockEventData {
@@ -137,6 +154,18 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             param_a,
             param_b,
             note_override: None,
+        });
+    }
+    fn run_block_event(&mut self, state: BlockStateId, event: &BlockEventData) -> bool {
+        self.trigger_event(state, event.pos, event.param_a, event.param_b)
+    }
+    /// `ServerLevel.runBlockEvents` broadcasts a handled event to the clients (`ClientboundBlockEventPacket`); their copy re-runs `triggerEvent`.
+    fn emit_block_event(&mut self, state: BlockStateId, event: &BlockEventData) {
+        self.emit(LevelEvent::BlockEntityEvent {
+            pos: event.pos,
+            state,
+            a: event.param_a,
+            b: event.param_b,
         });
     }
     /// `BlockState.triggerEvent`.
@@ -693,6 +722,40 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         a: i32,
         param_b: i32,
     ) -> bool {
+        match self.piston_trigger_begin(pos, state, a) {
+            PistonStep::Done(handled) => handled,
+            PistonStep::Move { .. } => self.piston_trigger_finish(pos, state, a, param_b),
+        }
+    }
+    fn piston_trigger_begin(&mut self, pos: BlockPos, state: BlockStateId, a: i32) -> PistonStep {
+        let b = self.b;
+        let p = b.props;
+        let direction = b.facing(state);
+        let extended_state = b.table.set_bool(state, p.extended, true);
+        // The signal re-check is server-only (`!level.isClientSide`): a
+        // client trusts the event as sent.
+        if !self.level.is_client_side() {
+            let extend = self.piston_neighbor_signal(pos, direction);
+            if extend && (a == 1 || a == 2) {
+                self.set_block(pos, extended_state, 2);
+                return PistonStep::Done(false);
+            }
+            if !extend && a == 0 {
+                return PistonStep::Done(false);
+            }
+        }
+        PistonStep::Move {
+            direction,
+            extend: a == 0,
+        }
+    }
+    fn piston_trigger_finish(
+        &mut self,
+        pos: BlockPos,
+        state: BlockStateId,
+        a: i32,
+        param_b: i32,
+    ) -> bool {
         let b = self.b;
         let p = b.props;
         let direction = b.facing(state);
@@ -701,18 +764,6 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         // A pull the level refused isn't sent: clients, who aren't asked,
         // would replay it, so they get the blocks' changes instead.
         let mut refused = false;
-        // The signal re-check is server-only (`!level.isClientSide`): a
-        // client trusts the event as sent.
-        if !self.level.is_client_side() {
-            let extend = self.piston_neighbor_signal(pos, direction);
-            if extend && (a == 1 || a == 2) {
-                self.set_block(pos, extended_state, 2);
-                return false;
-            }
-            if !extend && a == 0 {
-                return false;
-            }
-        }
         if a == 0 {
             if self.piston_move_blocks(pos, direction, true, sticky) != Some(true) {
                 return false;
@@ -823,37 +874,69 @@ impl Behaviours {
     /// `ServerLevel.runBlockEvents`: run queued block events (piston moves).
     /// Call once per tick after scheduled and random ticks.
     pub fn run_block_events<L: LevelAccess + ?Sized>(&self, level: &mut L, ticks: &mut Ticks) {
-        let mut reschedule = Vec::new();
+        while let Some(step) = self.next_block_event(level, ticks) {
+            if let BlockEventStep::Piston { event, state, .. } = step {
+                self.finish_piston_event(level, ticks, event, state);
+            }
+        }
+        self.end_block_events(ticks);
+    }
+    /// One queued block event of `runBlockEvents`, or `None` when the queue is empty (rescheduled ones are kept aside).
+    pub fn next_block_event<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+    ) -> Option<BlockEventStep> {
         while !ticks.block_events.is_empty() {
             let event = ticks.block_events.remove(0);
             if !level.should_tick_blocks_at(event.pos.chunk()) {
-                reschedule.push(event);
+                ticks.block_events_aside.push(event);
                 continue;
             }
             let mut sim = self.sim(level, ticks);
             let state = sim.state(event.pos);
-            if self.block(state) == event.block
-                && sim.trigger_event(
-                    event.note_override.map_or(state, |(instrument, note)| {
-                        sim.note_played_state(state, instrument, note)
-                    }),
-                    event.pos,
-                    event.param_a,
-                    event.param_b,
-                )
+            if self.block(state) != event.block {
+                continue;
+            }
+            let state = event.note_override.map_or(state, |(instrument, note)| {
+                sim.note_played_state(state, instrument, note)
+            });
+            if sim.b.data(state).is(super::classes::Class::PistonBase)
+                && let PistonStep::Move { direction, extend } =
+                    sim.piston_trigger_begin(event.pos, state, event.param_a)
             {
-                // ServerLevel.runBlockEvents broadcasts a handled event to
-                // the clients (`ClientboundBlockEventPacket`); their copy of
-                // the block re-runs `triggerEvent` (a piston's `moveBlocks`).
-                sim.emit(LevelEvent::BlockEntityEvent {
-                    pos: event.pos,
+                return Some(BlockEventStep::Piston {
+                    event,
                     state,
-                    a: event.param_a,
-                    b: event.param_b,
+                    direction,
+                    extend,
                 });
             }
+            if sim.run_block_event(state, &event) {
+                sim.emit_block_event(state, &event);
+            }
+            return Some(BlockEventStep::Ran);
         }
-        for event in reschedule {
+        None
+    }
+    /// Runs the rest of a piston event after `PistonEvent.Pre` let it; true when it moved (broadcast and `Post`).
+    pub fn finish_piston_event<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        event: BlockEventData,
+        state: BlockStateId,
+    ) -> bool {
+        let mut sim = self.sim(level, ticks);
+        let moved = sim.piston_trigger_finish(event.pos, state, event.param_a, event.param_b);
+        if moved {
+            sim.emit_block_event(state, &event);
+        }
+        moved
+    }
+    /// Puts back the events `next_block_event` set aside (unticking chunks), as the loop's end does.
+    pub fn end_block_events(&self, ticks: &mut Ticks) {
+        for event in std::mem::take(&mut ticks.block_events_aside) {
             ticks.queue_block_event(event);
         }
     }

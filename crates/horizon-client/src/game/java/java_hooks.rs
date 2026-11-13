@@ -187,6 +187,47 @@ impl Game<'_> {
         let _ = phase;
     }
 
+    /// Whether a Java mod listens to `PistonEvent.Pre` or `PistonEvent.Post`.
+    pub(super) fn java_hook_piston_listened(&self) -> bool {
+        #[cfg(feature = "java-mods")]
+        return super::java_listener::listens(mod_api::HookId::PistonPre)
+            || super::java_listener::listens(mod_api::HookId::PistonPost);
+        #[cfg(not(feature = "java-mods"))]
+        false
+    }
+
+    /// `PistonEvent.Pre` (`post` false; true when a mod canceled it) or `PistonEvent.Post` for the piston at `pos`.
+    pub(super) fn java_hook_piston(
+        &mut self,
+        pos: BlockPos,
+        direction: horizon_core::geometry::Direction,
+        extend: bool,
+        post: bool,
+    ) -> bool {
+        #[cfg(feature = "java-mods")]
+        {
+            let (hook, event) = if post {
+                (mod_api::HookId::PistonPost, "PistonEvent.Post")
+            } else {
+                (mod_api::HookId::PistonPre, "PistonEvent.Pre")
+            };
+            if !super::java_listener::listens(hook) {
+                return false;
+            }
+            let posted = self.java_post_level_event(event, |out| {
+                out.long(pos.pack());
+                out.0.push(direction as u8);
+                out.bool(extend);
+            });
+            !post && posted.is_some_and(|(canceled, _)| canceled)
+        }
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (pos, direction, extend, post);
+            false
+        }
+    }
+
     pub(super) fn java_hook_block_ticks(&self, block: &str, ticks: &mut bool) {
         #[cfg(feature = "java-mods")]
         if let Some(host) = horizon_java_host::get() {

@@ -4744,3 +4744,96 @@ fn fresh_chunk_sculk_charge_does_not_wait_for_ticking_readiness() {
 mod barrel;
 mod fluid_tick;
 mod observe;
+
+/// A piston and a redstone block, a sticky piston pulling stone, a piston against obsidian, a note block event: queued, none run.
+fn piston_scene(f: &Fixture) -> World<'_> {
+    let mut w = World::new(f);
+    w.floor(0, 20, "stone");
+    let block = w.id("redstone_block", &[]);
+    let piston = w.id("piston", &[("facing", "east")]);
+    let sticky = w.id("sticky_piston", &[("facing", "east")]);
+    let note = w.id("note_block", &[]);
+    w.set(BlockPos::new(0, 1, 0), piston);
+    w.set(BlockPos::new(-1, 1, 0), block);
+    w.set(BlockPos::new(0, 1, 5), sticky);
+    w.set(BlockPos::new(1, 1, 5), w.id("stone", &[]));
+    w.set(BlockPos::new(-1, 1, 5), block);
+    w.set(BlockPos::new(0, 1, 10), piston);
+    w.set(BlockPos::new(1, 1, 10), w.id("obsidian", &[]));
+    w.set(BlockPos::new(-1, 1, 10), block);
+    w.set(BlockPos::new(0, 1, 15), note);
+    w.ticks.queue_block_event(BlockEventData {
+        pos: BlockPos::new(0, 1, 15),
+        block: w.f.behaviours.block(note),
+        param_a: 0,
+        param_b: 0,
+        note_override: None,
+    });
+    w
+}
+
+fn scene_state(w: &World) -> (Vec<String>, String, usize) {
+    let names = [(0, 0), (1, 0), (0, 5), (1, 5), (0, 10), (1, 10)]
+        .map(|(x, z)| w.name(BlockPos::new(x, 1, z)))
+        .to_vec();
+    (
+        names,
+        format!("{:?}", w.level.events),
+        w.ticks.block_events.len(),
+    )
+}
+
+#[test]
+fn the_stepped_queue_matches_the_loop() {
+    let Some(f) = fixture() else {
+        return;
+    };
+    for ready in [true, false] {
+        let mut looped = piston_scene(f);
+        looped.level.block_events_ready = ready;
+        looped
+            .f
+            .behaviours
+            .run_block_events(&mut looped.level, &mut looped.ticks);
+        let mut stepped = piston_scene(f);
+        stepped.level.block_events_ready = ready;
+        while let Some(step) = stepped
+            .f
+            .behaviours
+            .next_block_event(&mut stepped.level, &mut stepped.ticks)
+        {
+            if let BlockEventStep::Piston { event, state, .. } = step {
+                stepped.f.behaviours.finish_piston_event(
+                    &mut stepped.level,
+                    &mut stepped.ticks,
+                    event,
+                    state,
+                );
+            }
+        }
+        stepped.f.behaviours.end_block_events(&mut stepped.ticks);
+        assert_eq!(scene_state(&looped), scene_state(&stepped), "ready={ready}");
+    }
+}
+
+#[test]
+fn a_failed_move_posts_no_post() {
+    let mut w = world!();
+    w.floor(0, 10, "stone");
+    let piston = w.id("piston", &[("facing", "east")]);
+    let obsidian = w.id("obsidian", &[]);
+    let block = w.id("redstone_block", &[]);
+    w.set(BlockPos::new(0, 1, 0), piston);
+    w.set(BlockPos::new(1, 1, 0), obsidian);
+    w.set(BlockPos::new(-1, 1, 0), block);
+    let mut moved = Vec::new();
+    while let Some(step) = w.f.behaviours.next_block_event(&mut w.level, &mut w.ticks) {
+        if let BlockEventStep::Piston { event, state, .. } = step {
+            moved.push(
+                w.f.behaviours
+                    .finish_piston_event(&mut w.level, &mut w.ticks, event, state),
+            );
+        }
+    }
+    assert_eq!(moved, [false]);
+}

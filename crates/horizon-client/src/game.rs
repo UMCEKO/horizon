@@ -4060,15 +4060,43 @@ impl Game<'_> {
         let sent = self.lan_broadcast_changes();
         laps.lap("tb_broadcast");
         self.save_chunks_eagerly();
-        self.with_level(|b, level, ticks| {
-            b.run_block_events(level, ticks);
-        });
+        if self.java_hook_piston_listened() {
+            self.run_block_events_stepped();
+        } else {
+            self.with_level(|b, level, ticks| {
+                b.run_block_events(level, ticks);
+            });
+        }
         laps.lap("tb_block_events");
         self.process_level_events()?;
         laps.lap("tb_level_events");
         self.sync_moving_pistons();
         laps.lap("tb_pistons");
         Ok(sent)
+    }
+
+    /// `ServerLevel.runBlockEvents` one event at a time, so a piston's NeoForge events cross with no level borrowed.
+    fn run_block_events_stepped(&mut self) {
+        use horizon_world::level::BlockEventStep;
+        while let Some(step) = self.with_level(|b, l, t| b.next_block_event(l, t)) {
+            let BlockEventStep::Piston {
+                event,
+                state,
+                direction,
+                extend,
+            } = step
+            else {
+                continue;
+            };
+            if self.java_hook_piston(event.pos, direction, extend, false) {
+                continue;
+            }
+            let moved = self.with_level(|b, l, t| b.finish_piston_event(l, t, event, state));
+            if moved {
+                self.java_hook_piston(event.pos, direction, extend, true);
+            }
+        }
+        self.with_level(|b, _, t| b.end_block_events(t));
     }
 
     fn tick_blocks(&mut self) -> Result<Option<usize>> {
