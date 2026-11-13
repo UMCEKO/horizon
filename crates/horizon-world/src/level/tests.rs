@@ -4830,10 +4830,12 @@ fn a_failed_move_posts_no_post() {
     let mut moved = Vec::new();
     while let Some(step) = w.f.behaviours.next_block_event(&mut w.level, &mut w.ticks) {
         if let BlockEventStep::Piston { event, state, .. } = step {
-            moved.push(
-                w.f.behaviours
-                    .finish_piston_event(&mut w.level, &mut w.ticks, event, state),
-            );
+            moved.push(w.f.behaviours.finish_piston_event(
+                &mut w.level,
+                &mut w.ticks,
+                event,
+                state,
+            ));
         }
     }
     assert_eq!(moved, [false]);
