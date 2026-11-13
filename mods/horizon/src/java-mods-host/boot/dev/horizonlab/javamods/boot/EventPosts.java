@@ -49,7 +49,7 @@ public final class EventPosts {
     private static final Map<String, LevelPost> LEVEL = Map.of();
 
     /** The client events Rust posts through `client_post_event`. */
-    private static final Map<String, ClientPost> CLIENT = Map.of("PlaySoundEvent", NativeSounds::ask);
+    private static final Map<String, ClientPost> CLIENT = Map.of("PlaySoundEvent", NativeSounds::ask, "ClientChatReceivedEvent", ChatReceived::ask);
 
     /** The last census: each listened name with its listeners' owners. */
     private static volatile Map<String, List<String>> listened = Map.of();
