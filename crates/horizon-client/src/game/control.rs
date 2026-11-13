@@ -180,7 +180,7 @@ impl Game<'_> {
     }
 
     fn add_async_occlusion_stats(&self, summary: &mut Value) {
-        if let Some(culler) = &self.async_occlusion_culler {
+        if let Some(culler) = self.occlusion.asynchronous() {
             summary["async_occlusion_culling"] = culler.stats_value();
         }
     }
@@ -204,7 +204,7 @@ impl Game<'_> {
     }
     fn reset_frame_stats(&mut self) {
         self.frame_stats.reset();
-        if let Some(culler) = &self.async_occlusion_culler {
+        if let Some(culler) = self.occlusion.asynchronous() {
             culler.reset_stats();
         }
     }

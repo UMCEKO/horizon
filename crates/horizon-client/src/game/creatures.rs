@@ -7304,7 +7304,7 @@ impl Game<'_> {
                 && self.cull_entity_camera_bounds(lo, hi)
                 && let Some((mark, _)) = skinned
             {
-                if self.pack_shadow_casters.0 {
+                if self.occlusion.shadow_casters.0 {
                     let mut frame = self.skin_frame.borrow_mut();
                     let end = frame.vertices as usize;
                     horizon_client::gfx::pack_draw::EntitySpan::hide(
