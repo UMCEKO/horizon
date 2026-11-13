@@ -39,6 +39,7 @@ public final class TestMod {
         for (String view : new String[] {"tilt", "zoom", "slow_mouse", "far_camera"}) ITEMS.registerSimpleItem(view, p -> p.stacksTo(1));
         ITEMS.registerItem("rocket", Item::new);
         ITEMS.registerSimpleItem("lens");
+        for (String name : new String[] {"spring", "compass", "feather"}) ITEMS.registerSimpleItem(name);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.entity.player.PlayerEvent.HarvestCheck event) -> {
             if (event.getTargetBlock().is(Blocks.STONE) && event.getEntity().getMainHandItem().getItem() instanceof Digger) event.setCanHarvest(true);
         });
@@ -68,6 +69,7 @@ public final class TestMod {
         if (net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) {
             ClientKeys.register(bus);
             ClientMotion.register();
+            ClientMovement.register();
             ClientChecks.register();
             ClientTextures.register(bus);
             Goo.registerClient(bus);

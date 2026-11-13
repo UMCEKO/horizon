@@ -168,7 +168,8 @@ use horizon_core::{
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use horizon_mod_package::selection::{Argument, LaunchArguments};
 pub(crate) use java_hooks::{
-    java_hook_loot_condition, java_hook_loot_function, java_hook_loot_rolled, java_hook_loot_wanted,
+    java_hook_loot_condition, java_hook_loot_function, java_hook_loot_rolled,
+    java_hook_loot_wanted, java_living_fall, java_living_jump, java_player_flyable_fall,
 };
 #[cfg(feature = "java-mods")]
 pub(crate) use java_hooks::java_hook_resolve;

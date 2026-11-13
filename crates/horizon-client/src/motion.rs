@@ -2234,6 +2234,11 @@ impl MotionWorld<'_, '_, '_> {
     pub fn jump_from_ground(&mut self) -> Result<()> {
         living_motion::jump_from_ground(self)?;
         if !self.player.replaying {
+            crate::native_client_hooks::living_jump_motion(
+                self.player.entity_id as u32,
+                "minecraft:player",
+                self.player,
+            );
             native_living_jump(
                 self.loop_context,
                 self.player.entity_id as u32,

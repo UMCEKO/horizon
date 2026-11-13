@@ -336,12 +336,18 @@ pub(crate) fn install_client_hooks() {
             );
         },
         living_fall: |context, entity, kind, distance, multiplier, cancel| {
-            if !mod_api::__private::listened(mod_api::HookId::LivingFall) {
-                return;
+            crate::game::java_living_fall(kind, distance, multiplier, cancel);
+            if mod_api::__private::listened(mod_api::HookId::LivingFall) {
+                let reader = horizon_client_render::api_context::LoopReader(context);
+                let context = reader.context();
+                mod_api::dispatch_living_fall(&context, entity, kind, distance, multiplier, cancel);
             }
-            let reader = horizon_client_render::api_context::LoopReader(context);
-            let context = reader.context();
-            mod_api::dispatch_living_fall(&context, entity, kind, distance, multiplier, cancel);
+        },
+        living_jump_motion: |entity, kind, player| {
+            crate::game::java_living_jump(entity, kind, player)
+        },
+        player_flyable_fall: |distance, multiplier| {
+            crate::game::java_player_flyable_fall(distance, multiplier);
         },
         living_jump: |context, entity, kind| {
             if !mod_api::__private::listened(mod_api::HookId::LivingJump) {
