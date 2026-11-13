@@ -154,6 +154,40 @@ impl Game<'_> {
         let _ = (sensitivity, smooth, grabbed);
     }
 
+    /// The fog `setup_fog` computed, as the mods' fog event listeners leave it; untouched while none listens.
+    pub(super) fn java_hook_view_fog(
+        &self,
+        fog_type: horizon_client::fog::FogType,
+        environment: horizon_client::fog::FogEnvironmentKind,
+        render_distance_chunks: i32,
+        darken: f32,
+        fog: horizon_client::fog::FogData,
+    ) -> horizon_client::fog::FogData {
+        #[cfg(feature = "java-mods")]
+        {
+            use mod_api::HookId;
+            if super::java_listener::listens(HookId::ComputeFogColor)
+                || super::java_listener::listens(HookId::RenderFog)
+            {
+                super::java_view::hook_fog(super::java_view::FogIn {
+                    fog_type,
+                    environment,
+                    render_distance_chunks,
+                    darken,
+                    fog,
+                })
+            } else {
+                super::java_view::forget_fog();
+                fog
+            }
+        }
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (fog_type, environment, render_distance_chunks, darken);
+            fog
+        }
+    }
+
     /// A world's end, failed open or close: the Java server stops.
     pub(super) fn java_hook_world(&mut self, phase: &WorldPhase) {
         #[cfg(feature = "java-mods")]

@@ -2,18 +2,20 @@ package dev.horizonlab.javamods.testmod;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.util.Mth;
+import net.minecraft.world.level.material.FogType;
 import net.neoforged.neoforge.client.event.CalculateDetachedCameraDistanceEvent;
 import net.neoforged.neoforge.client.event.CalculatePlayerTurnEvent;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.ViewportEvent;
 import net.neoforged.neoforge.common.NeoForge;
 
-/** The view events: each of the items `tilt`, `zoom`, `slow_mouse` and `far_camera` acts only while held. */
+/** The view events: each of the items `tilt`, `zoom`, `slow_mouse`, `far_camera` and `fog_lens` acts only while held. */
 final class ClientView {
     private ClientView() {}
 
     private static int angles, fovs, ticks;
-    private static boolean checkedInputs;
+    private static boolean checkedInputs, colourSeen, checkedFog, checkedOrder;
 
     private static boolean held(String item) {
         var player = Minecraft.getInstance().player;
@@ -41,6 +43,33 @@ final class ClientView {
         });
         NeoForge.EVENT_BUS.addListener((CalculateDetachedCameraDistanceEvent event) -> {
             if (held("far_camera")) event.setDistance(8f);
+        });
+        NeoForge.EVENT_BUS.addListener((ViewportEvent.ComputeFogColor event) -> {
+            colourSeen = true;
+            if (!held("fog_lens")) return;
+            event.setRed(1f);
+            event.setGreen(0f);
+            event.setBlue(0f);
+        });
+        NeoForge.EVENT_BUS.addListener((ViewportEvent.RenderFog event) -> {
+            boolean lens = held("fog_lens");
+            var minecraft = Minecraft.getInstance();
+            if (!checkedOrder && lens) {
+                checkedOrder = true;
+                boolean ordered = colourSeen;
+                float red = event.getFogData().color.x;
+                Checks.check("fog_events_order", () -> ordered && red == 1f);
+            }
+            if (!checkedFog && !lens && event.getType() == FogType.ATMOSPHERIC) {
+                checkedFog = true;
+                float rd = minecraft.options.getEffectiveRenderDistance() * 16f;
+                var data = event.getFogData();
+                String environment = event.getEnvironment().getClass().getSimpleName();
+                float end = data.renderDistanceEnd, start = data.renderDistanceStart;
+                Checks.check("fog_inputs_vanilla", () -> environment.equals("AtmosphericFogEnvironment") && end == rd && start == rd - Mth.clamp(rd / 10f, 4f, 64f));
+            }
+            colourSeen = false;
+            if (lens) event.getFogData().environmentalEnd = 8f;
         });
         NeoForge.EVENT_BUS.addListener((ClientTickEvent.Post event) -> tick());
     }

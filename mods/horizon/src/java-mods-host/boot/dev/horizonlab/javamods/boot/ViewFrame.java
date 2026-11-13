@@ -1,13 +1,19 @@
 package dev.horizonlab.javamods.boot;
 
 import dev.horizonlab.javamods.boot.mixin.CameraAccess;
+import dev.horizonlab.javamods.boot.mixin.FogRendererAccess;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.List;
+import java.util.Set;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.fog.FogData;
+import net.minecraft.client.renderer.fog.environment.FogEnvironment;
+import net.minecraft.world.level.material.FogType;
 import net.minecraft.world.phys.Vec3;
+import org.joml.Vector4f;
 import net.neoforged.bus.api.Event;
 import net.neoforged.neoforge.client.ClientHooks;
 import net.neoforged.neoforge.client.event.CalculateDetachedCameraDistanceEvent;
@@ -19,15 +25,27 @@ import net.neoforged.neoforge.common.NeoForge;
 final class ViewFrame {
     private ViewFrame() {}
 
+    /** What native's `setupFog` computed: its type and environment by wire value, the render distance, the boss darkening, the colour, then the six distances. */
+    record FogIn(byte type, byte environment, int renderDistance, float darken, float[] rgb, float[] distances) {}
+
     /** The window's values this frame, as `Input` 36 and `client_view_frame` carry them. */
     record Inputs(float partial, double x, double y, double z, float yaw, float pitch, byte mode, boolean minecart, float[] detached, float fov, float hudFov,
-            double sensitivity, boolean smooth, boolean grabbed) {}
+            double sensitivity, boolean smooth, boolean grabbed, FogIn fog) {}
 
-    static final int ANGLES = 1, DISTANCE = 2, FOV = 4, HUD_FOV = 8, TURN = 16;
+    static final int ANGLES = 1, DISTANCE = 2, FOV = 4, HUD_FOV = 8, TURN = 16, FOG_COLOR = 32, FOG = 64;
 
     private static final List<Class<? extends Event>> EVENTS = List.of(ViewportEvent.ComputeCameraAngles.class, CalculateDetachedCameraDistanceEvent.class,
             ViewportEvent.ComputeFov.class, CalculatePlayerTurnEvent.class);
 
+    private static final List<Class<? extends Event>> FOG_EVENTS = List.of(ViewportEvent.ComputeFogColor.class, ViewportEvent.RenderFog.class);
+    private static final Set<String> FOG_HEARD = new java.util.HashSet<>();
+    private static final String[] ENVIRONMENTS = {"LavaFogEnvironment", "PowderedSnowFogEnvironment", "BlindnessFogEnvironment", "DarknessFogEnvironment",
+            "WaterFogEnvironment", "AtmosphericFogEnvironment"};
+    private static final FogType[] FOG_TYPES = {FogType.ATMOSPHERIC, FogType.WATER, FogType.LAVA, FogType.POWDER_SNOW};
+    private static boolean missingLogged;
+
+    /** Whether a loaded mod listens to a fog event; decided once when the mods have loaded. */
+    static volatile boolean fogWanted;
     /** Whether a loaded mod listens to a view event; decided once when the mods have loaded. Without one nothing runs. */
     static volatile boolean needed;
     /** The newest inputs the window sent. */
@@ -35,7 +53,8 @@ final class ViewFrame {
 
     /** Called once the mods have loaded. */
     static void decide() {
-        needed = EVENTS.stream().anyMatch(event -> Listeners.listened(NeoForge.EVENT_BUS, event));
+        fogWanted = Listeners.modListens(NeoForge.EVENT_BUS, FOG_EVENTS, FOG_HEARD, "fog events");
+        needed = fogWanted || EVENTS.stream().anyMatch(event -> Listeners.listened(NeoForge.EVENT_BUS, event));
         if (needed && System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: view events heard by the mods; the camera values run through them");
     }
 
@@ -47,7 +66,64 @@ final class ViewFrame {
         boolean minecart = in.readBoolean();
         float[] detached = null;
         if (mode != 0) detached = new float[] {in.readFloat(), in.readFloat(), in.readFloat(), in.readFloat()};
-        return new Inputs(partial, x, y, z, yaw, pitch, mode, minecart, detached, in.readFloat(), in.readFloat(), in.readDouble(), in.readBoolean(), in.readBoolean());
+        float fov = in.readFloat(), hudFov = in.readFloat();
+        double sensitivity = in.readDouble();
+        boolean smooth = in.readBoolean(), grabbed = in.readBoolean();
+        FogIn fog = null;
+        if (in.readBoolean()) {
+            byte type = in.readByte(), environment = in.readByte();
+            int renderDistance = in.readInt();
+            float darken = in.readFloat();
+            float[] rgb = {in.readFloat(), in.readFloat(), in.readFloat()};
+            float[] distances = {in.readFloat(), in.readFloat(), in.readFloat(), in.readFloat(), in.readFloat(), in.readFloat()};
+            fog = new FogIn(type, environment, renderDistance, darken, rgb, distances);
+        }
+        return new Inputs(partial, x, y, z, yaw, pitch, mode, minecart, detached, fov, hudFov, sensitivity, smooth, grabbed, fog);
+    }
+
+    /** The patched list's instance of vanilla's `index`th environment; when it is gone, the first one applicable to the camera's entity. */
+    static FogEnvironment environment(int index, FogType type) {
+        var list = FogRendererAccess.horizon$environments();
+        String name = ENVIRONMENTS[Math.max(0, Math.min(index, ENVIRONMENTS.length - 1))];
+        for (var environment : list) if (environment.getClass().getSimpleName().equals(name)) return environment;
+        if (!missingLogged) {
+            missingLogged = true;
+            System.err.println("Horizon: fog environment " + name + " not in the patched list");
+        }
+        var entity = Minecraft.getInstance().gameRenderer.mainCamera().entity();
+        for (var environment : list) if (environment.isApplicable(type, entity)) return environment;
+        return list.get(list.size() - 1);
+    }
+
+    /** `ComputeFogColor` then `RenderFog` on the inputs, as vanilla's `setupFog` posts them; the mask bits and values of what changed are returned through `out`. */
+    static int fog(FogIn in, float partial, DataOutputStream out) throws IOException {
+        var minecraft = Minecraft.getInstance();
+        var camera = minecraft.gameRenderer.mainCamera();
+        var type = FOG_TYPES[Math.max(0, Math.min(in.type(), FOG_TYPES.length - 1))];
+        var dest = new Vector4f(in.rgb()[0], in.rgb()[1], in.rgb()[2], 1.0F);
+        ClientHooks.getFogColor(camera, partial, minecraft.level, in.renderDistance(), in.darken(), in.rgb()[0], in.rgb()[1], in.rgb()[2], dest);
+        var fog = new FogData();
+        fog.color.set(dest.x, dest.y, dest.z, 1.0F);
+        float[] d = in.distances();
+        fog.environmentalStart = d[0];
+        fog.environmentalEnd = d[1];
+        fog.renderDistanceStart = d[2];
+        fog.renderDistanceEnd = d[3];
+        fog.skyEnd = d[4];
+        fog.cloudEnd = d[5];
+        ClientHooks.onSetupFog(environment(in.environment(), type), type, camera, partial, (float) in.renderDistance(), fog);
+        int mask = 0;
+        if (dest.x != in.rgb()[0] || dest.y != in.rgb()[1] || dest.z != in.rgb()[2]) mask |= FOG_COLOR;
+        float[] after = {fog.environmentalStart, fog.environmentalEnd, fog.renderDistanceStart, fog.renderDistanceEnd, fog.skyEnd, fog.cloudEnd};
+        boolean changed = fog.color.x != dest.x || fog.color.y != dest.y || fog.color.z != dest.z || fog.color.w != 1.0F;
+        for (int i = 0; i < 6; i++) changed |= Float.compare(after[i], d[i]) != 0;
+        if (changed) mask |= FOG;
+        if ((mask & FOG_COLOR) != 0) for (float c : new float[] {dest.x, dest.y, dest.z}) out.writeFloat(c);
+        if ((mask & FOG) != 0) {
+            for (float c : new float[] {fog.color.x, fog.color.y, fog.color.z, fog.color.w}) out.writeFloat(c);
+            for (float v : after) out.writeFloat(v);
+        }
+        return mask;
     }
 
     /** The camera as a frame's listeners find it: where the window put it, looking as the entity does; no `alignWithEntity`, no `update`. */
@@ -61,7 +137,7 @@ final class ViewFrame {
         camera.horizon$initialized(true);
     }
 
-    /** The events in vanilla's frame order, then what changed: `int mask`, then in bit order the angles (3 floats), distance, fov, hud fov, and the turn (sensitivity, smooth camera). */
+    /** The events in vanilla's frame order, then what changed: `int mask`, then in bit order the angles (3 floats), distance, fov, hud fov, the turn (sensitivity, smooth camera), the fog colour (3 floats) and the fog (colour, then the six distances). */
     static byte[] take(Inputs in) throws IOException {
         var minecraft = Minecraft.getInstance();
         var out = new ByteArrayOutputStream();
@@ -97,6 +173,8 @@ final class ViewFrame {
         ((CameraAccess) camera).horizon$hudFov(hudFov);
         if (fov != in.fov()) mask |= FOV;
         if (hudFov != in.hudFov()) mask |= HUD_FOV;
+        var fogBytes = new ByteArrayOutputStream();
+        if (in.fog() != null && fogWanted) mask |= fog(in.fog(), in.partial(), new DataOutputStream(fogBytes));
         data.writeInt(mask);
         if ((mask & ANGLES) != 0) for (float a : angles) data.writeFloat(a);
         if ((mask & DISTANCE) != 0) data.writeFloat(distance);
@@ -106,6 +184,7 @@ final class ViewFrame {
             data.writeDouble(sensitivity);
             data.writeBoolean(smooth);
         }
+        data.write(fogBytes.toByteArray());
         return out.toByteArray();
     }
 

@@ -456,6 +456,37 @@ pub fn clear_distance_fog(fog: &mut FogData, input: &FogInputs) {
         (fog.environmental_start, fog.environmental_end) = (1e9, 2e9);
     }
 }
+/// `FogRenderer.FOG_ENVIRONMENTS`, in vanilla's list order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FogEnvironmentKind {
+    Lava,
+    PowderedSnow,
+    Blindness,
+    Darkness,
+    Water,
+    #[default]
+    Atmospheric,
+}
+/// The first of `FOG_ENVIRONMENTS` whose `isApplicable` holds, given the camera's fog type and its entity's effects.
+pub fn fog_environment(
+    fog_type: FogType,
+    entity_blind: bool,
+    entity_dark: bool,
+) -> FogEnvironmentKind {
+    if fog_type == FogType::Lava {
+        FogEnvironmentKind::Lava
+    } else if fog_type == FogType::PowderSnow {
+        FogEnvironmentKind::PowderedSnow
+    } else if entity_blind {
+        FogEnvironmentKind::Blindness
+    } else if entity_dark {
+        FogEnvironmentKind::Darkness
+    } else if fog_type == FogType::Water {
+        FogEnvironmentKind::Water
+    } else {
+        FogEnvironmentKind::Atmospheric
+    }
+}
 /// What `AtmosphericFogEnvironment.updateRainFogState` eases the rain fog toward: the rain, where
 /// the sky reaches the eye, halved in a biome without precipitation.
 pub fn rain_fog_target(rain: f32, sky_light: u8, biome_rains: bool) -> f32 {
@@ -935,5 +966,25 @@ mod tests {
         // Out of the water both lose it 10 a tick.
         spectator.tick(false, true);
         assert_eq!(spectator.water_vision_time, 590);
+    }
+
+    #[test]
+    fn the_first_applicable_environment_in_vanilla_order_wins() {
+        use FogEnvironmentKind::*;
+        let table = [
+            (FogType::Atmospheric, false, false, Atmospheric),
+            (FogType::Water, false, false, Water),
+            (FogType::Water, true, false, Blindness),
+            (FogType::Water, false, true, Darkness),
+            (FogType::Water, true, true, Blindness),
+            (FogType::Lava, true, false, Lava),
+            (FogType::Lava, false, true, Lava),
+            (FogType::PowderSnow, true, true, PowderedSnow),
+            (FogType::Atmospheric, true, true, Blindness),
+        ];
+        for (fog_type, blind, dark, want) in table {
+            assert_eq!(fog_environment(fog_type, blind, dark), want);
+        }
+        assert_eq!(FogEnvironmentKind::Water as u8, 4);
     }
 }
