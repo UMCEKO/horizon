@@ -732,7 +732,7 @@ impl Game<'_> {
     }
 
     /// A request that fills the acting player's view; a failed one leaves that view unknown, so the next is full.
-    fn java_player_request(&mut self, op: &str, input: &[u8]) -> Option<Vec<u8>> {
+    pub(super) fn java_player_request(&mut self, op: &str, input: &[u8]) -> Option<Vec<u8>> {
         let reply = self.java_request(op, input);
         if reply.is_none() {
             java_player_view_reset(Some(self.acting_uuid()));
@@ -852,6 +852,21 @@ impl Game<'_> {
         )?;
         self.java_play_effects(sounds);
         Some(got)
+    }
+
+    /// [`java_level_call`](Self::java_level_call)'s header and request, its reply left for the caller to read.
+    pub(super) fn java_level_request(
+        &mut self,
+        op: &str,
+        body: impl FnOnce(&mut Out),
+    ) -> Option<Vec<u8>> {
+        horizon_java_host::get()?;
+        self.java_bind_states();
+        let mut out = Out::default();
+        out.int(self.java_level_key() as i32);
+        out.long(self.world.game_time);
+        body(&mut out);
+        self.java_request(op, &out.0)
     }
 
     /// One request into Java's server side, after the block entities Horizon changed since Java last heard reached it.

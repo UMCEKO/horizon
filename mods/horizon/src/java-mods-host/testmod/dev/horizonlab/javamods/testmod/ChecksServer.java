@@ -34,7 +34,7 @@ final class ChecksServer {
             return net.neoforged.neoforge.common.util.FakePlayerFactory.get((net.minecraft.server.level.ServerLevel) level, profile).getUUID().equals(profile.id());
         });
         Checks.check("mod_command_registered", () -> server.getCommands().getDispatcher().getRoot().getChild("horizon_java_test") != null);
-        Checks.check("commands_selection_follows_dist", () -> TestMod.commandSelection == (net.neoforged.fml.loading.FMLEnvironment.getDist().isClient() ? net.minecraft.commands.Commands.CommandSelection.INTEGRATED : net.minecraft.commands.Commands.CommandSelection.DEDICATED));
+        Checks.check("commands_selection_follows_dist", () -> TestCommands.selection == (net.neoforged.fml.loading.FMLEnvironment.getDist().isClient() ? net.minecraft.commands.Commands.CommandSelection.INTEGRATED : net.minecraft.commands.Commands.CommandSelection.DEDICATED));
         Checks.check("craft_facts", () -> craftFacts(server));
         Checks.check("tool_enchantments", () -> toolEnchantments(level));
         Checks.check("loot_kinds_isolated", () -> {

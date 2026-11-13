@@ -40,5 +40,12 @@ public final class ModCommandsCheck {
         check(ModCommands.owner(Vanilla.RUN).endsWith("$Vanilla"), "vanilla lambda owner");
         check(ModCommands.owner("x").equals("java.lang.String"), "plain class owner");
         System.out.println("ModCommands ok");
+
+        var source = new Object();
+        check(ModCommands.javaRuns(dispatcher.parse("c sub", source), VANILLA), "a parse ending in a Java node runs in Java");
+        check(!ModCommands.javaRuns(dispatcher.parse("c", source), VANILLA), "a parse ending in a vanilla node runs natively");
+        check(!ModCommands.javaRuns(dispatcher.parse("c nope", source), VANILLA), "a parse with an error runs natively");
+        check(ModCommands.javaRuns(dispatcher.parse("b", source), VANILLA), "a Java root's parse runs in Java");
+        System.out.println("ModCommandsPerform ok");
     }
 }
