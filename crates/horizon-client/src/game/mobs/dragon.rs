@@ -4647,10 +4647,11 @@ impl Game<'_> {
             .retain(|c| c.position.distance_squared(at) > 0.01);
         let drawn = self.world.random.next_int_bound(100_000).unwrap_or(0);
         let time = Crystal::start_time(at, drawn, self.clock.still());
+        let id = self.take_entity_id();
         self.crystals.push(Crystal {
             attachment_lifetime: Default::default(),
             join: Default::default(),
-            id: 0,
+            id,
             position: at,
             show_bottom: true,
             time,
