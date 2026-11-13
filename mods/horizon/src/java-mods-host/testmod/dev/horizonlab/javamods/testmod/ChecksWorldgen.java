@@ -31,7 +31,7 @@ final class ChecksWorldgen {
         if (!(context.getLevel() instanceof ServerLevel level)) return false;
         ServerLevel overworld = level.getServer().getLevel(Level.OVERWORLD);
         var chunks = overworld.getChunkSource();
-        overworld.structureManager().hasAnyStructureAt(area);
+        overworld.structureManager().getAllStructuresAt(area);
         return chunks.getGenerator() instanceof NoiseBasedChunkGenerator && chunks.randomState() != null && chunks.getGeneratorState() != null;
     }
 

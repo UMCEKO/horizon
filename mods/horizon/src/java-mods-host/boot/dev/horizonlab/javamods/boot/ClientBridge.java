@@ -1410,7 +1410,7 @@ public final class ClientBridge {
         receive();
         chunkEvents();
         recordShell(Minecraft.getInstance(), Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false));
-        return status(null, null, null);
+        return status(null, null, null, null);
     }
 
     /** Dev: how many of the code-built block models the reload baked have parts. */
