@@ -5,6 +5,7 @@ import java.util.Map;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.item.context.UseOnContext;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.entity.player.PlayerXpEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.level.ExplosionEvent;
 
@@ -16,11 +17,15 @@ final class ChecksServerEvents {
     static void listen() {
         NeoForge.EVENT_BUS.addListener((BlockEvent.EntityPlaceEvent event) -> {});
         NeoForge.EVENT_BUS.addListener((ExplosionEvent.Start event) -> {});
+        NeoForge.EVENT_BUS.addListener((PlayerXpEvent.PickupXp event) -> {});
+        NeoForge.EVENT_BUS.addListener((PlayerXpEvent.XpChange event) -> {});
+        NeoForge.EVENT_BUS.addListener((PlayerXpEvent.LevelChange event) -> {});
     }
 
     static void run(UseOnContext context, BlockPos area) {
         Checks.check("census_sees_base_listener", () -> census().containsKey("BlockEvent.EntityPlaceEvent") && census().containsKey("BlockEvent.EntityMultiPlaceEvent"));
         Checks.check("census_sees_direct_listener", () -> census().getOrDefault("ExplosionEvent.Start", List.of()).stream().anyMatch(owner -> owner.startsWith("dev.horizonlab.javamods.testmod.")));
+        Checks.check("census_sees_xp_events", () -> census().keySet().containsAll(List.of("PlayerXpEvent.PickupXp", "PlayerXpEvent.XpChange", "PlayerXpEvent.LevelChange")));
         Checks.check("census_skips_horizon", () -> census().values().stream().flatMap(List::stream).noneMatch(owner -> owner.startsWith("dev.horizonlab.javamods.boot.")));
     }
 

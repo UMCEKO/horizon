@@ -12,11 +12,13 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.ExperienceOrb;
 import net.neoforged.bus.ListenerList;
 import net.neoforged.bus.api.Event;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.common.CommonHooks;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.entity.player.PlayerXpEvent;
 
 /** NeoForge events Rust posts where its hook fires (`game/java/java_listener.rs`): which ones a mod listens to, and the post ops. */
 public final class EventPosts {
@@ -43,7 +45,7 @@ public final class EventPosts {
     }
 
     /** The server events Rust posts through `post_event`, each with the acting player's view filled. */
-    private static final Map<String, PlayerPost> PLAYER = Map.of("BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity);
+    private static final Map<String, PlayerPost> PLAYER = Map.of("BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity, "PlayerXpEvent.PickupXp", EventPosts::pickupXp, "PlayerXpEvent.XpChange", EventPosts::xpChange, "PlayerXpEvent.LevelChange", EventPosts::levelChange);
 
     /** The server events Rust posts through `post_level_event`. */
     private static final Map<String, LevelPost> LEVEL = Map.of();
@@ -207,6 +209,38 @@ public final class EventPosts {
     private static Posted attackEntity(GameBridge.Call call) {
         var target = call.level().getEntity(call.in().readInt());
         return new Posted(target != null && !CommonHooks.onPlayerAttackTarget(call.player(), target), Posted.NONE.result());
+    }
+
+    private static Posted pickupXp(GameBridge.Call call) {
+        int id = call.in().readInt();
+        if (!(EntityViews.byId(id) instanceof ExperienceOrb orb)) throw new IllegalStateException("no experience orb view " + id);
+        boolean canceled = NeoForge.EVENT_BUS.post(new PlayerXpEvent.PickupXp(call.player(), orb)).isCanceled();
+        debug("PickupXp orb=" + id + " canceled=" + canceled);
+        return new Posted(canceled, Posted.NONE.result());
+    }
+
+    private static Posted xpChange(GameBridge.Call call) throws IOException {
+        int amount = call.in().readInt();
+        var event = NeoForge.EVENT_BUS.post(new PlayerXpEvent.XpChange(call.player(), amount));
+        debug("XpChange " + amount + "->" + event.getAmount() + " canceled=" + event.isCanceled());
+        return new Posted(event.isCanceled(), intBytes(event.getAmount()));
+    }
+
+    private static Posted levelChange(GameBridge.Call call) throws IOException {
+        int levels = call.in().readInt();
+        var event = NeoForge.EVENT_BUS.post(new PlayerXpEvent.LevelChange(call.player(), levels));
+        debug("LevelChange " + levels + "->" + event.getLevels() + " canceled=" + event.isCanceled());
+        return new Posted(event.isCanceled(), intBytes(event.getLevels()));
+    }
+
+    private static byte[] intBytes(int value) throws IOException {
+        var bytes = new ByteArrayOutputStream();
+        new DataOutputStream(bytes).writeInt(value);
+        return bytes.toByteArray();
+    }
+
+    private static void debug(String line) {
+        if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: server event PlayerXpEvent." + line);
     }
 
     /** `client_post_event`: the event's name, then its fields, posted on the Java client's thread. */

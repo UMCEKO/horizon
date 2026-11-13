@@ -1,0 +1,10 @@
+[
+  {"command": "/gamemode survival"},
+  {"command": "/summon minecraft:experience_orb ~ ~ ~ {Value:5}"},
+  {"wait": 40},
+  {"check": {"log": "Horizon: server event PlayerXpEvent.PickupXp orb=", "since": "start"}},
+  {"check": {"log": "Horizon: server event PlayerXpEvent.XpChange 5->", "since": "start"}},
+  {"command": "/xp add @s 7 points"},
+  {"wait": 10},
+  {"check": {"log": "Horizon: server event PlayerXpEvent.LevelChange 1->", "since": "start"}}
+]
