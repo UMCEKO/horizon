@@ -287,6 +287,29 @@ impl Game<'_> {
         self.java_shell_input(&inputs, hit, true) == ShellOwner::Native
     }
 
+    /// A move with a button down over a shell whose mods hear drags: true when native's drag step runs for it.
+    pub(in crate::game) fn java_shell_drag(&mut self) -> bool {
+        let held = self
+            .drag_button
+            .is_some_and(|b| self.physical_buttons.contains(&b));
+        if !held || !self.java_shell_accepts() || !CLIENT.with_borrow(|c| c.drags_heard) {
+            return true;
+        }
+        let Some(moved) = self.java_cursor() else {
+            return true;
+        };
+        // AbstractContainerScreen.mouseDragged answers true unless it is over no slot with nothing carried.
+        let over_slot = self.renderer.as_ref().is_some_and(|r| {
+            let batch = HudBatch::new(
+                [r.config.width, r.config.height],
+                self.settings.gui_scale_inputs(),
+            );
+            self.slot_at(&batch, self.cursor.0, self.cursor.1).is_some()
+        });
+        let handles = over_slot || self.carried.is_some();
+        self.java_shell_input(&[moved], false, handles) == ShellOwner::Native
+    }
+
     /// The wheel over the shell: true when native scrolls.
     pub(in crate::game) fn java_shell_wheel(&mut self, x: f64, y: f64) -> bool {
         let handles = if self.screen == Screen::Creative {

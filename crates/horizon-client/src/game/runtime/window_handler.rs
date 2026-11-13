@@ -696,7 +696,9 @@ impl Game<'_> {
                             self.station_drag();
                             self.recipe_book_drag();
                         }
-                        if matches!(self.screen, Screen::Inventory | Screen::Creative) {
+                        if matches!(self.screen, Screen::Inventory | Screen::Creative)
+                            && self.java_shell_drag()
+                        {
                             self.inventory_drag_move();
                         }
                         if self.title_input_active()

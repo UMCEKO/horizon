@@ -83,6 +83,7 @@ public final class TestMod {
             ClientView.register();
             ClientDebug.register(bus);
             ClientWindowProbe.register();
+            ClientShellClick.register();
         }
     }
 

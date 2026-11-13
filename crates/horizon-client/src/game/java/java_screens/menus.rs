@@ -219,7 +219,7 @@ impl Game<'_> {
         CLIENT.with_borrow_mut(|c| c.mirrored = None);
     }
 
-    /// A click native made on a menu, replayed through the Java client's `handleContainerInput` while it mirrors that menu (or, for the inventory, while a shell is open or the method is patched).
+    /// A click native made on a menu, replayed through the Java client's `handleContainerInput` while it mirrors that menu (or, for the inventory, while a shell is open or the method is patched); never one the Java client sent, which it already predicted.
     pub(in crate::game) fn java_menu_click(
         &mut self,
         container: i32,
@@ -229,6 +229,7 @@ impl Game<'_> {
     ) {
         let replay = CLIENT.with_borrow(|c| {
             c.joined
+                && !c.performing
                 && if container == 0 {
                     c.shell.kind != 0 || on_routes().any(input_patched)
                 } else {

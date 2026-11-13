@@ -333,6 +333,8 @@ def bridges(args):
     for extra in Path(args.extra_jars).rglob('*.jar') if args.extra_jars else ():
         (jars / extra.name).symlink_to(extra.resolve())
     args.jars, args.scratch, args.dev_mod = str(jars), args.scratch, [str(SOURCES / 'testmod' / 'content')]
+    # The test mod's own click on the inventory shell (`ClientShellClick`).
+    args.opts = f'{args.opts} -Dhorizon.test.shellclick=1'.strip()
     wrong, positions = [], []
 
     def drive(send):
@@ -413,6 +415,22 @@ def bridges(args):
             send(action)
             send('wait 40')
             send(f'command clear @s horizon_java_test:{item}')
+        # The test mod quick-moves hotbar slot 0 when the inventory shell opens: native performs it, the server moves the stack.
+        send('command clear @s')
+        send('select 1')
+        send('give minecraft:cobblestone 64')
+        send('wait 3')
+        send('key e tap')
+        send('wait 10')
+        send('key escape tap')
+        send('wait 5')
+        send('command data get entity @s Inventory')
+        send('wait 2')
+        listed = send('messages 5')
+        slots = [int(m.group(1)) for entry in re.findall(r'\{[^{}]*\}', listed) if 'minecraft:cobblestone' in entry for m in [re.search(r'Slot: (\d+)b', entry)] if m]
+        if not slots or any(not 9 <= slot < 36 for slot in slots):
+            wrong.append('shell_mod_click_reaches_native')
+        send('command clear @s minecraft:cobblestone')
         send('give horizon_java_test:wand')
         send('wait 20')
         send('select horizon_java_test:wand')
@@ -633,7 +651,7 @@ def bridges(args):
     shutil.copy(Path(args.scratch) / 'ctl.log', Path(args.scratch) / 'first-session.log')
     paused = re.findall(r'^Horizon: pause sources: \[(.*)\]$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks.append(('pause_sources_from_handler', 'ok' if paused == ['music'] else f'FAILED {paused}'))
-    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'team_join_routed', 'team_leave_routed', 'team_view_matches', 'team_join_inner_sees_member', 'team_leave_inner_sees_member_gone', 'player_stack_keeps_identity', 'player_view_sees_native_give', 'play_sound_posted_from_native', 'gui_layer_pre_cancel', 'chat_received_overlay', 'chat_received_player', 'lockstep_order', 'lockstep_post_sees_this_tick', 'glyph_shadow_from_patch', 'loop_init_then_run', 'mod_command_registered', 'commands_selection_follows_dist', 'server_chat_event_player', 'client_commands_registered', 'client_command_runs', 'client_level_sees_the_pig', 'client_level_finds_the_pig_in_its_box', 'client_level_loses_the_removed_pig', 'debug_entry_lines_recorded', 'rocket_moves_in_its_own_tick', 'rocket_lifts_five_blocks', 'pre_write_moves_without_lerp_start', 'spring_jump_apex', 'input_event_walks', 'input_event_seen_every_tick', 'fall_canceled_client','window_resize_fired', 'render_frame_paired', 'master_volume_follows', 'door_is_multi_place', 'mod_command_runs_in_java', 'command_event_for_native', 'command_event_once', 'client_join_once', 'client_leave_once', 'client_tick_post_per_tick') if (name, 'ok') not in checks)
+    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'team_join_routed', 'team_leave_routed', 'team_view_matches', 'team_join_inner_sees_member', 'team_leave_inner_sees_member_gone', 'player_stack_keeps_identity', 'player_view_sees_native_give', 'play_sound_posted_from_native', 'gui_layer_pre_cancel', 'chat_received_overlay', 'chat_received_player', 'lockstep_order', 'lockstep_post_sees_this_tick', 'glyph_shadow_from_patch', 'loop_init_then_run', 'mod_command_registered', 'commands_selection_follows_dist', 'server_chat_event_player', 'client_commands_registered', 'client_command_runs', 'client_level_sees_the_pig', 'client_level_finds_the_pig_in_its_box', 'client_level_loses_the_removed_pig', 'debug_entry_lines_recorded', 'rocket_moves_in_its_own_tick', 'rocket_lifts_five_blocks', 'pre_write_moves_without_lerp_start', 'spring_jump_apex', 'input_event_walks', 'input_event_seen_every_tick', 'fall_canceled_client','window_resize_fired', 'render_frame_paired', 'master_volume_follows', 'door_is_multi_place', 'mod_command_runs_in_java', 'command_event_for_native', 'command_event_once', 'client_join_once', 'client_leave_once', 'client_tick_post_per_tick', 'shell_mod_click_reaches_native') if (name, 'ok') not in checks)
     session(args, again)
     second = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks += [(name + ' (second session)', result) for name, result in second]

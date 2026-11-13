@@ -12,7 +12,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-/** The screen vanilla builds for a menu native forwarded: a shell when a mod listens to screen events, else the window's stand-in. */
+/** The screen vanilla builds for a menu native forwarded: a mod's own class opens as a Java screen, vanilla's is a shell when a mod listens to screen events, else the window's stand-in. */
 @Mixin(Gui.class)
 abstract class ShellAdoptMixin {
     @Inject(method = "setScreen", at = @At("HEAD"), cancellable = true)
@@ -20,8 +20,12 @@ abstract class ShellAdoptMixin {
         if (!Shells.forwarding || !(screen instanceof AbstractContainerScreen<?> container)) return;
         var player = Minecraft.getInstance().player;
         if (player == null || container.getMenu() != player.containerMenu) return;
-        if (Shells.isMods(screen.getClass())) Shells.modScreen(screen.getClass(), container.getMenu());
-        else if (Shells.wantedNow()) {
+        Shells.forwarded(container.getMenu());
+        if (Shells.isMods(screen.getClass())) {
+            Shells.modScreen(Minecraft.getInstance());
+            return;
+        }
+        if (Shells.wantedNow()) {
             Shells.adopt(screen);
             return;
         }

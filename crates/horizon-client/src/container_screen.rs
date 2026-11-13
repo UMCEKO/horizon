@@ -149,6 +149,17 @@ impl Clicks {
         self.quick_crafting
     }
 
+    /// `skipNextRelease`: the next release clicks nothing.
+    pub fn skips_next_release(&self) -> bool {
+        self.skip_next_release
+    }
+
+    /// The state a Java mod left in the screen's fields through its accessors.
+    pub fn restore(&mut self, quick_crafting: Option<Button>, skip_next_release: bool) {
+        self.quick_crafting = quick_crafting;
+        self.skip_next_release = skip_next_release;
+    }
+
     /// A press another screen control handled (such as a book button or
     /// double click's `PICKUP_ALL`): its release clicks nothing more.
     pub fn skip_release(&mut self) {

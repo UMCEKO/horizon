@@ -4,11 +4,17 @@ import dev.horizonlab.javamods.boot.mixin.CreativeShellAccess;
 import dev.horizonlab.javamods.boot.mixin.RecipeBookComponentAccess;
 import dev.horizonlab.javamods.boot.mixin.RecipeBookScreenAccess;
 import dev.horizonlab.javamods.boot.mixin.ShellAccess;
+import dev.horizonlab.javamods.boot.mixin.ShellInputAccess;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -21,9 +27,21 @@ import net.minecraft.client.gui.screens.inventory.InventoryScreen;
 import net.minecraft.client.input.CharacterEvent;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
+import net.minecraft.network.protocol.Packet;
+import net.minecraft.network.protocol.game.ServerboundContainerButtonClickPacket;
+import net.minecraft.network.protocol.game.ServerboundContainerClickPacket;
+import net.minecraft.network.protocol.game.ServerboundContainerClosePacket;
+import net.minecraft.network.protocol.game.ServerboundContainerSlotStateChangedPacket;
+import net.minecraft.network.protocol.game.ServerboundPlaceRecipePacket;
+import net.minecraft.network.protocol.game.ServerboundRenameItemPacket;
+import net.minecraft.network.protocol.game.ServerboundSelectBundleItemPacket;
+import net.minecraft.network.protocol.game.ServerboundSelectTradePacket;
+import net.minecraft.network.protocol.game.ServerboundSetBeaconPacket;
+import net.minecraft.network.protocol.game.ServerboundSetCreativeModeSlotPacket;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.SimpleContainer;
+import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.CreativeModeTabs;
 import net.minecraft.world.item.ItemStack;
@@ -62,7 +80,7 @@ public final class Shells {
     private static int written = -1;
     private static final Slot DESTROY = new Slot(new SimpleContainer(1), 0, 173, 112);
     private static final Set<String> HEARD = new java.util.HashSet<>();
-    private static boolean cancelledLogged, notCreative, unknownTab, modScreenLogged;
+    private static boolean cancelledLogged, notCreative, unknownTab;
     /** A packet native forwarded is being handled: the screen it opens is vanilla's own for the menu. */
     public static boolean forwarding;
     /** A click native made is being replayed; its packet is native's already. */
@@ -106,6 +124,7 @@ public final class Shells {
     public static void adopt(Screen screen) {
         current = screen;
         kind = 3;
+        opened();
         last = new byte[SEGMENTS][];
         lastRouted = 0;
         animating = false;
@@ -119,17 +138,9 @@ public final class Shells {
         kind = 0;
     }
 
-    /** A mod's own screen class opened for a vanilla menu type: SPEC-6 shows it, until then the window's screen does. */
-    public static void modScreen(Class<?> screen, net.minecraft.world.inventory.AbstractContainerMenu menu) {
-        if (modScreenLogged) return;
-        modScreenLogged = true;
-        String type;
-        try {
-            type = String.valueOf(BuiltInRegistries.MENU.getKey(menu.getType()));
-        } catch (UnsupportedOperationException e) {
-            type = "a menu with no type";
-        }
-        System.err.println("Horizon: " + screen.getName() + " stands for the vanilla screen of " + type + "; SPEC-6 opens it");
+    /** A mod's own screen class opened for a vanilla menu type is a Java screen over native's menu: the displayed shell, if any, is given up to it. */
+    public static void modScreen(Minecraft minecraft) {
+        retire(minecraft);
     }
 
     /** `Input::ShellBook`: whether native's recipe book is showing. */
@@ -162,6 +173,7 @@ public final class Shells {
         }
         current = shell;
         kind = which;
+        opened();
         last = new byte[SEGMENTS][];
         lastRouted = 0;
         animating = false;
@@ -195,6 +207,139 @@ public final class Shells {
         release(minecraft);
         current = null;
         kind = 0;
+    }
+
+    // --- What mods do through a shell reaches native
+
+    /** The menu native forwarded that the Java client opened: its packets are native's to perform. */
+    private static AbstractContainerMenu forwardedMenu;
+    /** Mods' packets for native's menus, in sending order, until a reply or a status carries them. */
+    private static final List<byte[]> OUTBOX = new ArrayList<>();
+    private static final List<Class<? extends Event>> DRAGS = List.of(ScreenEvent.MouseDragged.Pre.class, ScreenEvent.MouseDragged.Post.class);
+    private static final Set<String> DRAGS_HEARD = new java.util.HashSet<>();
+    /** A mod listens to drags, as read when the open shell opened: moves with a button down are inputs then. */
+    static boolean drags;
+    private static final Map<Class<?>, Boolean> STATE_READERS = new HashMap<>();
+    /** The input state native last wrote: quick crafting, its type and button, skip next release, then the quick craft slots, sorted. */
+    private static int[] wrote;
+
+    private static void opened() {
+        drags = Listeners.modListens(NeoForge.EVENT_BUS, DRAGS, DRAGS_HEARD, "drag events");
+        wrote = null;
+    }
+
+    /** The menu of a packet native forwarded got its screen, a shell's or a mod's. */
+    public static void forwarded(AbstractContainerMenu menu) {
+        forwardedMenu = menu;
+    }
+
+    /** The inventory menu, or the forwarded menu while it is the player's: native owns them. */
+    static boolean nativeMenu(int id) {
+        if (id == 0) return true;
+        var player = Minecraft.getInstance().player;
+        return forwardedMenu != null && forwardedMenu.containerId == id && player != null && player.containerMenu == forwardedMenu;
+    }
+
+    /** `ClientBridge.send`: a packet acting on a native menu goes to the outbox instead of the Java server, which doesn't have the menu. */
+    static boolean toNative(Packet<?> packet) {
+        var player = Minecraft.getInstance().player;
+        int open = player == null ? -1 : player.containerMenu.containerId;
+        int id;
+        if (packet instanceof ServerboundContainerClickPacket p) id = p.containerId();
+        else if (packet instanceof ServerboundContainerClosePacket p) id = p.getContainerId();
+        else if (packet instanceof ServerboundContainerButtonClickPacket p) id = p.containerId();
+        else if (packet instanceof ServerboundContainerSlotStateChangedPacket p) id = p.containerId();
+        else if (packet instanceof ServerboundPlaceRecipePacket p) id = p.containerId();
+        else if (packet instanceof ServerboundSetCreativeModeSlotPacket) id = 0;
+        else if (packet instanceof ServerboundSelectBundleItemPacket || packet instanceof ServerboundRenameItemPacket || packet instanceof ServerboundSelectTradePacket
+                || packet instanceof ServerboundSetBeaconPacket) id = open;
+        else return false;
+        if (!nativeMenu(id)) return false;
+        try {
+            OUTBOX.add(Wire.toNative(packet));
+        } catch (Throwable t) {
+            System.err.println("Horizon: a mod's " + packet.getClass().getSimpleName() + " for native's menu didn't encode; dropped");
+            t.printStackTrace();
+        }
+        return true;
+    }
+
+    /** `int n` and the outbox's packets, which it then forgets. */
+    static void writeOutbox(DataOutputStream out) throws IOException {
+        out.writeInt(OUTBOX.size());
+        for (byte[] packet : OUTBOX) {
+            out.writeInt(packet.length);
+            out.write(packet);
+        }
+        OUTBOX.clear();
+    }
+
+    /** Whether a loaded mod reads or writes the open shell's input fields: one of its interfaces (an accessor or invoker mixin adds one) on the screen's vanilla classes. */
+    static boolean stateWanted() {
+        if (!(current instanceof AbstractContainerScreen<?>) || kind == 2 || !is(Minecraft.getInstance().gui.screen())) return false;
+        return STATE_READERS.computeIfAbsent(current.getClass(), type -> {
+            for (Class<?> c = type; c != null && c != Screen.class; c = c.getSuperclass()) {
+                for (var face : c.getInterfaces()) if (isMods(face)) return true;
+            }
+            return false;
+        });
+    }
+
+    /** `Input::ShellState`: native's quick craft and release state, written into the shell's own fields for mods to read. */
+    static void state(DataInputStream in) throws IOException {
+        boolean quick = in.readBoolean();
+        int type = in.readInt(), button = in.readInt();
+        int[] slots = new int[in.readInt()];
+        for (int i = 0; i < slots.length; i++) slots[i] = in.readInt();
+        boolean skip = in.readBoolean();
+        Arrays.sort(slots);
+        int[] state = new int[4 + slots.length];
+        state[0] = quick ? 1 : 0;
+        state[1] = type;
+        state[2] = button;
+        state[3] = skip ? 1 : 0;
+        System.arraycopy(slots, 0, state, 4, slots.length);
+        wrote = state;
+        if (current instanceof AbstractContainerScreen<?> screen) writeState(screen, state);
+    }
+
+    private static void writeState(AbstractContainerScreen<?> screen, int[] state) {
+        var access = (ShellInputAccess) screen;
+        access.horizon$setQuickCrafting(state[0] != 0);
+        access.horizon$setQuickCraftingType(state[1]);
+        access.horizon$setQuickCraftingButton(state[2]);
+        access.horizon$setSkipNextRelease(state[3] != 0);
+        var set = access.horizon$quickCraftSlots();
+        set.clear();
+        var slots = screen.getMenu().slots;
+        for (int i = 4; i < state.length; i++) if (state[i] >= 0 && state[i] < slots.size()) set.add(slots.get(state[i]));
+    }
+
+    private static int[] readState(AbstractContainerScreen<?> screen) {
+        var access = (ShellInputAccess) screen;
+        int[] slots = access.horizon$quickCraftSlots().stream().mapToInt(slot -> slot.index).sorted().toArray();
+        int[] state = new int[4 + slots.length];
+        state[0] = access.horizon$quickCrafting() ? 1 : 0;
+        state[1] = access.horizon$quickCraftingType();
+        state[2] = access.horizon$quickCraftingButton();
+        state[3] = access.horizon$skipNextRelease() ? 1 : 0;
+        System.arraycopy(slots, 0, state, 4, slots.length);
+        return state;
+    }
+
+    /** `bool changed`, then the state block when a mod changed what native wrote. */
+    private static void writeStateChange(DataOutputStream out) throws IOException {
+        int[] now = wrote != null && current instanceof AbstractContainerScreen<?> screen && stateWanted() ? readState(screen) : null;
+        boolean changed = now != null && !Arrays.equals(now, wrote);
+        out.writeBoolean(changed);
+        if (!changed) return;
+        wrote = now;
+        out.writeBoolean(now[0] != 0);
+        out.writeInt(now[1]);
+        out.writeInt(now[2]);
+        out.writeInt(now.length - 4);
+        for (int i = 4; i < now.length; i++) out.writeInt(now[i]);
+        out.writeBoolean(now[3] != 0);
     }
 
     // --- Init bookkeeping
@@ -461,13 +606,15 @@ public final class Shells {
         out.writeInt(routed);
     }
 
-    /** `ShellReply`: who owns the input, the fresh recording, whether it animates. */
+    /** `ShellReply`: who owns the input, the fresh recording, whether it animates, the outbox, a mod's change to the input state. */
     static byte[] reply(int answer, byte[][] segments, boolean changed) throws IOException {
         var bytes = new java.io.ByteArrayOutputStream();
         var out = new java.io.DataOutputStream(bytes);
         out.writeByte(answer);
         write(out, segments, changed, false);
         out.writeBoolean(animating);
+        writeOutbox(out);
+        writeStateChange(out);
         return bytes.toByteArray();
     }
 }

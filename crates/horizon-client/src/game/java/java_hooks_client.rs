@@ -271,6 +271,9 @@ impl Game<'_> {
     pub(super) fn java_shell_wheel(&mut self, _x: f64, _y: f64) -> bool {
         true
     }
+    pub(super) fn java_shell_drag(&mut self) -> bool {
+        true
+    }
     pub(super) fn java_shell_key(&mut self, _event: &winit::event::KeyEvent) -> bool {
         true
     }

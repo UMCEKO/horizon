@@ -89,6 +89,19 @@ public final class Wire {
         return serverbound;
     }
 
+    private static RegistryAccess nativeAccess;
+    private static ProtocolInfo<ServerGamePacketListener> toNative;
+
+    /** The client's packet as native's own serverbound codec reads it: vanilla's bytes (`OTHER`), id first, no phase. */
+    static synchronized byte[] toNative(Packet<?> packet) {
+        if (toNative == null || nativeAccess != Clients.registries) {
+            toNative = GameProtocols.SERVERBOUND_TEMPLATE.bind(RegistryFriendlyByteBuf.decorator(Clients.registries, ConnectionType.OTHER), CLIENT_CONTEXT);
+            nativeAccess = Clients.registries;
+        }
+        byte[] framed = frame(PLAY, toNative.codec(), packet);
+        return java.util.Arrays.copyOfRange(framed, 1, framed.length);
+    }
+
     /** `PlayerList.placeNewPlayer`'s inbound protocol: what the player's creative state allows is decided by their server-side view. */
     private static synchronized ProtocolInfo<ServerGamePacketListener> serverSide(UUID player) {
         return SERVER_SIDE.computeIfAbsent(player, id -> GameProtocols.SERVERBOUND_TEMPLATE.bind(RegistryFriendlyByteBuf.decorator(GameBridge.registries(), ConnectionType.NEOFORGE), new GameProtocols.Context() {

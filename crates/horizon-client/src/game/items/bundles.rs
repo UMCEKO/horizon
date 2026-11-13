@@ -68,7 +68,7 @@ impl Game<'_> {
     }
 
     /// `BundleMouseActions.toggleSelectedBundleItem`: the stack here and, on a server, there.
-    fn select_bundle(&mut self, slot: usize, index: i32) {
+    pub(super) fn select_bundle(&mut self, slot: usize, index: i32) {
         if let Some(stack) = self.slot_mut(slot) {
             toggle_selected(stack, index);
         }

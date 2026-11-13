@@ -9,11 +9,13 @@ use super::*;
 mod draw;
 pub(in crate::game) mod hud;
 mod input;
+mod menu_actions;
 mod menus;
 mod shell;
 
 use self::draw::*;
 use self::hud::*;
+use self::menu_actions::ShellState;
 
 /// The Java client's liveness, where `super::java_screens::live::` paths expect it.
 pub(in crate::game) mod live {
@@ -90,6 +92,14 @@ pub(in crate::game) struct Client {
     mirrored: Option<i32>,
     /// A mod listens to `RenderFrameEvent`: each window frame posts it in the Java client.
     frame_events: bool,
+    /// The Java client's own menu packets are being performed: native's clicks they make are not replayed to it.
+    performing: bool,
+    /// The quick craft clicks of a mod's drag so far, performed together at its end.
+    quick_craft: Vec<menu_actions::Op>,
+    /// A mod reads or writes the open shell's input fields: native sends them before each input and frame.
+    shell_state_wanted: bool,
+    /// A mod listens to drags on the open shell: moves with a button down are shell inputs.
+    drags_heard: bool,
 }
 
 /// What the Java client's music tick last said: whether it runs the music, its track's handle and the Now Playing toasts it asked for.
@@ -185,6 +195,8 @@ enum Input<'a> {
     MenuClick(i32, i32, i32, i32),
     /// Whether native's recipe book is open, for the shell's book component.
     ShellBook(bool),
+    /// The screen's input state native keeps, for a mod's accessors.
+    ShellState(&'a ShellState),
     /// Each shown mod toast's `(id, finished, fully visible for)`.
     Toasts(&'a [(i32, bool, i64)]),
     /// The music the game answers this tick (`getSituationalMusic`), `getMusicVolume`, whether native shows its level loading screen, and the Music Frequency option.
@@ -232,6 +244,7 @@ impl Input<'_> {
             Input::Packet(_) => 20,
             Input::MenuClick(..) => 21,
             Input::ShellBook(_) => 22,
+            Input::ShellState(_) => 23,
             Input::Toasts(_) => 26,
             Input::NotificationTime(_) => 27,
             Input::Music(..) => 40,
@@ -314,6 +327,7 @@ impl Input<'_> {
                 out.int(input);
             }
             Input::ShellBook(visible) => out.bool(visible),
+            Input::ShellState(state) => state.write(out),
             Input::Toasts(turns) => {
                 out.int(turns.len() as i32);
                 for (id, finished, fully_for) in turns {
@@ -391,6 +405,7 @@ struct Sent {
     layout: Option<[i32; 5]>,
     creative: Option<CreativeState>,
     book: Option<bool>,
+    shell_state: Option<ShellState>,
     focused: Option<bool>,
     camera: Option<([i32; 3], [f32; 4], u8)>,
     cursor: Option<(f64, f64)>,
@@ -997,6 +1012,12 @@ impl Game<'_> {
         for _ in 0..reply.int()? {
             dropped.push(reply.int()?);
         }
+        let outbox = menu_actions::read_outbox(reply)?;
+        let (state_wanted, drags_heard) = (reply.bool()?, reply.bool()?);
+        CLIENT.with_borrow_mut(|c| {
+            c.shell_state_wanted = state_wanted;
+            c.drags_heard = drags_heard;
+        });
         super::java_world_renders::java_world_status(
             world.as_deref(),
             world_animating,
@@ -1056,6 +1077,7 @@ impl Game<'_> {
         {
             log::info!("Horizon: no shell opened for the screen; native's screen stays alone");
         }
+        self.java_perform(outbox);
         Some(())
     }
 

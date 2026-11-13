@@ -317,6 +317,7 @@ public final class ClientBridge {
         if (player == null || sentByWindow(packet)) return;
         // Native already sent this click; its replay only keeps the Java menu right.
         if (Shells.echo && packet instanceof net.minecraft.network.protocol.game.ServerboundContainerClickPacket) return;
+        if (Shells.toNative(packet)) return;
         if (RemoteClient.active()) RemoteClient.outbound(Wire.toServer(packet));
         else Clients.toServer(player, packet);
     }
@@ -946,6 +947,7 @@ public final class ClientBridge {
     private static final byte PACKET = 20;
     private static final byte MENU_CLICK = 21;
     private static final byte SHELL_BOOK = 22;
+    private static final byte SHELL_STATE = 23;
     private static final byte TOASTS = 26;
     private static final byte NOTIFICATION_TIME = 27;
     private static final byte MUSIC = 40;
@@ -1018,6 +1020,7 @@ public final class ClientBridge {
                 case PACKET -> forward(in.readNBytes(in.readInt()));
                 case MENU_CLICK -> menuClick(in.readInt(), in.readInt(), in.readInt(), in.readInt());
                 case SHELL_BOOK -> Shells.book(in.readBoolean());
+                case SHELL_STATE -> Shells.state(in);
                 case FOCUS -> set(Window.class, minecraft.getWindow(), "focused", in.readBoolean());
                 case DROP -> {
                     boolean all = in.readBoolean();
@@ -1329,6 +1332,9 @@ public final class ClientBridge {
         int[] refused = ClientEntities.takeRefused();
         out.writeInt(refused.length);
         for (int id : refused) out.writeInt(id);
+        Shells.writeOutbox(out);
+        out.writeBoolean(Shells.stateWanted());
+        out.writeBoolean(Shells.is(Minecraft.getInstance().gui.screen()) && Shells.drags);
         shellSegments = null;
         shellChanged = false;
         return bytes.toByteArray();
@@ -1361,10 +1367,13 @@ public final class ClientBridge {
         if (!Shells.is(minecraft.gui.screen())) return Shells.reply(Shells.NONE, null, false);
         receive();
         advance(minecraft, partial);
-        minecraft.mouseHandler.onMove(minecraft.getWindow().handle(), x, y, x - cursorX, y - cursorY);
-        cursorX = x;
-        cursorY = y;
-        minecraft.mouseHandler.handleAccumulatedMovement();
+        // Moves with a button down came as inputs while a mod hears drags: replaying them would drag twice.
+        if (!(Shells.drags && buttonDown(minecraft))) {
+            minecraft.mouseHandler.onMove(minecraft.getWindow().handle(), x, y, x - cursorX, y - cursorY);
+            cursorX = x;
+            cursorY = y;
+            minecraft.mouseHandler.handleAccumulatedMovement();
+        }
         recordShell(minecraft, partial);
         return Shells.reply(Shells.NONE, shellSegments, shellChanged);
     }
@@ -1377,11 +1386,18 @@ public final class ClientBridge {
         Shells.nativeHandles = in.readBoolean();
         Shells.owner = Shells.EVENT;
         events(in);
+        Minecraft minecraft = Minecraft.getInstance();
+        // A drag is a move with a button down: `runTick` posts it from the accumulated movement.
+        if (Shells.drags && buttonDown(minecraft) && Shells.is(minecraft.gui.screen())) minecraft.mouseHandler.handleAccumulatedMovement();
         receive();
         chunkEvents();
-        Minecraft minecraft = Minecraft.getInstance();
         recordShell(minecraft, minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(false));
         return Shells.reply(Shells.owner, shellSegments, shellChanged);
+    }
+
+    private static boolean buttonDown(Minecraft minecraft) {
+        var mouse = minecraft.mouseHandler;
+        return mouse.isLeftPressed() || mouse.isRightPressed() || mouse.isMiddlePressed();
     }
 
     /** The open screen's drawing this frame, as Rust draws it. */
@@ -1410,7 +1426,7 @@ public final class ClientBridge {
         receive();
         chunkEvents();
         recordShell(Minecraft.getInstance(), Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false));
-        return status(null, null, null);
+        return status(null, null, null, null);
     }
 
     /** Dev: how many of the code-built block models the reload baked have parts. */

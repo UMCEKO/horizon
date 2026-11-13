@@ -84,8 +84,8 @@ impl Game<'_> {
         kind != 0 && kind == self.java_shell_kind()
     }
 
-    /// Applies a `ShellReply`: its recording, its animation; returns who took the input.
-    pub(super) fn java_shell_apply(&self, reply: &mut In) -> Option<ShellOwner> {
+    /// Applies a `ShellReply`: its recording, its animation, a mod's change to the input state, then the mods' menu packets; returns who took the input.
+    pub(super) fn java_shell_apply(&mut self, reply: &mut In) -> Option<ShellOwner> {
         let (owner, recording, animating) = read_shell_reply(reply)?;
         let at = self.cursor;
         CLIENT.with_borrow_mut(|c| {
@@ -96,6 +96,16 @@ impl Game<'_> {
                 c.shell.routed = routed;
             }
         });
+        let outbox = super::menu_actions::read_outbox(reply);
+        let state = super::menu_actions::read_state_change(reply);
+        if outbox.is_none() || state.is_none() {
+            log::warn!("Horizon: a shell reply's outbox or input state ended in pieces");
+        }
+        if let Some(state) = state.flatten() {
+            self.java_shell_state_back(&state);
+            CLIENT.with_borrow_mut(|c| c.sent.shell_state = Some(state));
+        }
+        self.java_perform(outbox.unwrap_or_default());
         Some(owner)
     }
 
@@ -170,7 +180,7 @@ impl Game<'_> {
         self.paint_shell_segment(batch, index);
     }
 
-    /// `int n` and the inputs: what the window queued since the last tick first, so the Java menu has native's last click before a mod reads it, then the book's and the creative screen's state when they differ from what Java last heard, then `inputs`.
+    /// `int n` and the inputs: what the window queued since the last tick first, so the Java menu has native's last click before a mod reads it, then the book's, the input state's and the creative screen's when they differ from what Java last heard, then `inputs`.
     pub(super) fn java_shell_creative_inputs(&self, inputs: &[Input], out: &mut Out) {
         let (queue, queued) = CLIENT
             .with_borrow_mut(|c| (std::mem::take(&mut c.queue), std::mem::take(&mut c.queued)));
@@ -180,6 +190,15 @@ impl Game<'_> {
                 let differs = c.sent.creative.as_ref() != Some(state);
                 if differs {
                     c.sent.creative = Some(state.clone());
+                }
+                differs
+            })
+        });
+        let shell_state = self.java_shell_state().filter(|state| {
+            CLIENT.with_borrow_mut(|c| {
+                let differs = c.sent.shell_state.as_ref() != Some(state);
+                if differs {
+                    c.sent.shell_state = Some(state.clone());
                 }
                 differs
             })
@@ -194,11 +213,18 @@ impl Game<'_> {
                 })
             });
         out.int(
-            queued + inputs.len() as i32 + i32::from(state.is_some()) + i32::from(book.is_some()),
+            queued
+                + inputs.len() as i32
+                + i32::from(state.is_some())
+                + i32::from(book.is_some())
+                + i32::from(shell_state.is_some()),
         );
         out.0.extend(queue);
         if let Some(book) = book {
             Input::ShellBook(book).write(out);
+        }
+        if let Some(shell_state) = &shell_state {
+            Input::ShellState(shell_state).write(out);
         }
         if let Some((tab, hovered, index, stack)) = &state {
             Input::ShellCreative(tab, *hovered, *index, stack).write(out);
