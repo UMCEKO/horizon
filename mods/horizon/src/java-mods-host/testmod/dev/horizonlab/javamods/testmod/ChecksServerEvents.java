@@ -10,6 +10,10 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.piston.PistonBaseBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.event.level.PistonEvent;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.item.context.UseOnContext;
+import net.neoforged.neoforge.event.entity.item.ItemTossEvent;
+import net.neoforged.neoforge.event.entity.player.ArrowLooseEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.entity.player.BonemealEvent;
 import net.neoforged.neoforge.event.entity.player.AdvancementEvent;
@@ -43,6 +47,13 @@ final class ChecksServerEvents {
         });
         NeoForge.EVENT_BUS.addListener((PistonEvent.Post event) -> {
             if (event.getLevel() instanceof Level level && !level.isClientSide() && event.getPos().equals(moving)) postedFront = level.getBlockState(event.getPos().relative(event.getDirection()));
+        });
+        NeoForge.EVENT_BUS.addListener((ItemTossEvent event) -> {
+            if (event.getEntity().getItem().is(Items.DIAMOND)) event.setCanceled(true);
+            else event.getEntity().setPickUpDelay(0);
+        });
+        NeoForge.EVENT_BUS.addListener((ArrowLooseEvent event) -> {
+            if (event.getBow().is(Items.BOW)) event.setCharge(20);
         });
     }
 

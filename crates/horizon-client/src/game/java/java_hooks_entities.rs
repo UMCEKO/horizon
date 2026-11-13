@@ -60,3 +60,40 @@ impl Game<'_> {
         let _ = keys;
     }
 }
+
+impl Game<'_> {
+    /// `ItemTossEvent` for a stack `Player.drop` threw: `None` when no mod listens, `Some(None)` when it is gone, `Some(Some(id))` when Java spawned the item.
+    pub(super) fn java_hook_item_toss(
+        &mut self,
+        stack: &horizon_client::items::ItemStack,
+        at: [f64; 3],
+        motion: [f64; 3],
+        delay: i32,
+        named: bool,
+    ) -> Option<Option<u32>> {
+        #[cfg(feature = "java-mods")]
+        return self.java_item_toss(stack, at, motion, delay, named);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (stack, at, motion, delay, named);
+            None
+        }
+    }
+
+    /// `ArrowLooseEvent`: the charge the mods left, `charge` itself when none listens; negative cancels the shot.
+    pub(super) fn java_hook_arrow_loose(
+        &mut self,
+        hand: super::Hand,
+        charge: i32,
+        has_ammo: bool,
+        crossbow: bool,
+    ) -> i32 {
+        #[cfg(feature = "java-mods")]
+        return self.java_arrow_loose(hand, charge, has_ammo, crossbow);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (hand, has_ammo, crossbow);
+            charge
+        }
+    }
+}

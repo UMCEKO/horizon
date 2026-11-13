@@ -290,6 +290,9 @@ impl Game<'_> {
     }
     /// `CrossbowItem.performShooting`.
     fn shoot_crossbow(&mut self) {
+        if self.java_hook_arrow_loose(self.hand, 1, true, true) < 0 {
+            return;
+        }
         let Some(eye) = self.eye_position() else {
             return;
         };
