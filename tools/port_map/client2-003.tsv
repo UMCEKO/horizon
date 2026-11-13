@@ -102,4 +102,4 @@ FeatureRenderDispatcher.prepareFrame	skip:other		feature dispatcher; the frame's
 FeatureRenderDispatcher.prepareFrameWithContext	skip:other		feature dispatcher; the frame's draw order is fixed in Renderer::draw_frame
 FeatureRenderDispatcher.renderAllFeatures	port	crates/horizon-client-render/src/gfx.rs::Renderer::draw_frame	draws the frame's passes; gap: minor: the order is fixed, not taken from a feature list
 FeatureRenderDispatcher.PhaseSubmitGrouper	skip:other		groups feature submissions per phase for vanilla's dispatcher; Horizon submits in fixed passes
-LevelExtractor.extractBlockOutline	inline	crates/horizon-client/src/game/interface/render_frame.rs::Game::render_with	w12-coverage: W1
+LevelExtractor.extractBlockOutline	inline	crates/horizon-client/src/game.rs::Game::render	the aimed block's outline (pick, gate, shape, translucency) is native; mods' hooks on it run in the Java client's world recording with the window's hit (W1)

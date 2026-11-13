@@ -58,7 +58,7 @@ net/minecraft/client/multiplayer/ClientPacketListener#handleRecipeBookAdd(Lnet/m
 net/minecraft/client/multiplayer/ClientPacketListener#handleRecipeBookRemove(Lnet/minecraft/network/protocol/game/ClientboundRecipeBookRemovePacket;)V	verdict: java-client
 net/minecraft/client/multiplayer/ClientSuggestionProvider#getSelectedEntities()Ljava/util/Collection;	owner: W6
 net/minecraft/client/renderer/blockentity/ChestRenderer#submit*	owner: W1
-net/minecraft/client/renderer/extract/LevelExtractor#extractBlockOutline(Lnet/minecraft/client/Camera;Lnet/minecraft/client/renderer/state/level/LevelRenderState;)V	owner: W1
+net/minecraft/client/renderer/extract/LevelExtractor#extractBlockOutline(Lnet/minecraft/client/Camera;Lnet/minecraft/client/renderer/state/level/LevelRenderState;)V	special: world_frame
 net/minecraft/client/renderer/fog/FogRenderer#setupFog(Lnet/minecraft/client/Camera;ILnet/minecraft/client/DeltaTracker;FLnet/minecraft/client/multiplayer/ClientLevel;)Lnet/minecraft/client/renderer/fog/FogData;	owner: W4
 net/minecraft/client/resources/language/LanguageManager#onResourceManagerReload(Lnet/minecraft/server/packs/resources/ResourceManager;)V	verdict: java-client
 net/minecraft/client/resources/model/BlockStateDefinitions#<clinit>	verdict: java-client
