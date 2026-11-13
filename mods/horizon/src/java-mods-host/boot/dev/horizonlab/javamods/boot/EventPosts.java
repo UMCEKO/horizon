@@ -99,6 +99,11 @@ public final class EventPosts {
         PLAYER.put("BlockEvent.EntityPlaceEvent", EventPosts::place);
         PLAYER.put("PlayerEvent.Clone", EventPosts::playerClone);
         PLAYER.put("PlayerEvent.PlayerRespawnEvent", EventPosts::playerRespawn);
+        PLAYER.put("AnvilUpdateEvent", StationEvents::anvilUpdate);
+        PLAYER.put("AnvilCraftEvent.Pre", StationEvents::anvilCraftPre);
+        PLAYER.put("AnvilCraftEvent.Post", StationEvents::anvilCraftPost);
+        PLAYER.put("GrindstoneEvent.OnPlaceItem", StationEvents::grindstonePlace);
+        PLAYER.put("GrindstoneEvent.OnTakeItem", StationEvents::grindstoneTake);
         PLAYER.put("EntityTravelToDimensionEvent", EventPosts::travelToDimension);
         PLAYER.put("PlayerEvent.PlayerChangedDimensionEvent", EventPosts::changedDimension);
     }

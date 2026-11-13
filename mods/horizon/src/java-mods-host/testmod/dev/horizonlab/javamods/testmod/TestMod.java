@@ -49,6 +49,7 @@ public final class TestMod {
             if (event.getState().is(Blocks.GRAVEL)) event.setNewSpeed(event.getNewSpeed() * 0.5f);
         });
         ChecksServerEvents.listen(bus);
+        Stations.register();
         // A plain food, so the boot's facts carry a food item.
         ITEMS.registerSimpleItem("snack", p -> p.food(new net.minecraft.world.food.FoodProperties.Builder().nutrition(5).saturationModifier(0.7f).build()).stacksTo(16));
         ITEMS.register(bus);
