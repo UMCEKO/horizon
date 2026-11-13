@@ -366,6 +366,7 @@ impl Levels {
     }
 
     /// The save of the level not in place whose dimension is `dimension`.
+    #[cfg(feature = "java-mods")]
     pub(super) fn parked_save_of(&self, dimension: &str) -> Option<&Arc<SaveDir>> {
         self.parked_of(dimension).map(|level| &level.save)
     }
