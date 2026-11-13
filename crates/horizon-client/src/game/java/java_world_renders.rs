@@ -35,6 +35,39 @@ pub(super) fn java_world_status(blob: Option<&[u8]>, animating: bool, environmen
     });
 }
 
+/// A status's attribute tail: whether a mod patched the probe, then its values by attribute, as the last tick and this one left them.
+pub(super) fn java_probe_status(reply: &mut In) -> Option<()> {
+    use horizon_client::environment::{Probed, ProbedValues};
+    let routed = reply.bool()?;
+    let mut values = Vec::new();
+    for _ in 0..reply.int()? {
+        let id = reply.text()?.to_owned();
+        let tag = reply.int()?;
+        fn pair<const N: usize>(reply: &mut In) -> Option<([f32; N], [f32; N])> {
+            let mut read = || -> Option<[f32; N]> {
+                let mut out = [0.0; N];
+                for c in &mut out {
+                    *c = reply.float()?;
+                }
+                Some(out)
+            };
+            Some((read()?, read()?))
+        }
+        let probed = match tag {
+            0 => pair::<1>(reply).map(|(a, b)| Probed::Float(a[0], b[0])),
+            1 => pair::<3>(reply).map(|(a, b)| Probed::Rgb(a, b)),
+            2 => pair::<4>(reply).map(|(a, b)| Probed::Argb(a, b)),
+            3 => pair::<1>(reply).map(|(a, b)| Probed::Angle(a[0], b[0])),
+            _ => None,
+        }?;
+        values.push((id, probed));
+    }
+    horizon_client::world_renders::set_probed(
+        (routed && !values.is_empty()).then_some(ProbedValues { values }),
+    );
+    Some(())
+}
+
 /// A frame recording's reply: whether the world still animates, and the recording if it differs from the last.
 pub(super) fn java_world_frame_apply(reply: &[u8], spent: u128) {
     let mut reply = In(reply);

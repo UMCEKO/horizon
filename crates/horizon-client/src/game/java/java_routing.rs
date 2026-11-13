@@ -46,8 +46,37 @@ macro_rules! gui_route {
     ($key:literal) => {};
 }
 
+/// Marks the native site that serves an environment attribute key from Java's probe; expands to nothing.
+#[allow(unused_macros)]
+macro_rules! env_route {
+    ($key:literal) => {};
+}
+
 #[allow(unused_imports)]
-pub(in crate::game) use {gui_route, route_gate as route};
+pub(in crate::game) use {env_route, gui_route, route_gate as route};
+
+/// Whether a mod patches the attribute system in this install, so the window's sky is Java's probe values.
+#[cfg(feature = "java-mods")]
+pub(in crate::game) fn client_env_routed() -> bool {
+    env_route!("net/minecraft/world/attribute/EnvironmentAttributeProbe#tick(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/phys/Vec3;)V");
+    env_route!("net/minecraft/world/attribute/EnvironmentAttributeSystem#addDynamicLayers(Lnet/minecraft/world/attribute/EnvironmentAttributeSystem$Builder;Lnet/minecraft/world/level/Level;)V");
+    env_route!("net/minecraft/world/attribute/EnvironmentAttributeSystem$ValueSampler#computeValueNotPositional()Ljava/lang/Object;");
+    env_route!("net/minecraft/world/attribute/EnvironmentAttributeSystem$ValueSampler#computeValuePositional(Lnet/minecraft/world/phys/Vec3;Lnet/minecraft/world/attribute/SpatialAttributeInterpolator;)Ljava/lang/Object;");
+    let Some(routes) = horizon_java_host::routes::get() else {
+        return false;
+    };
+    ENV_KEYS
+        .iter()
+        .any(|key| routes.id(key).is_some_and(|id| routes.get(id).on))
+}
+
+#[cfg(feature = "java-mods")]
+const ENV_KEYS: [&str; 4] = [
+    "net/minecraft/world/attribute/EnvironmentAttributeProbe#tick(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/phys/Vec3;)V",
+    "net/minecraft/world/attribute/EnvironmentAttributeSystem#addDynamicLayers(Lnet/minecraft/world/attribute/EnvironmentAttributeSystem$Builder;Lnet/minecraft/world/level/Level;)V",
+    "net/minecraft/world/attribute/EnvironmentAttributeSystem$ValueSampler#computeValueNotPositional()Ljava/lang/Object;",
+    "net/minecraft/world/attribute/EnvironmentAttributeSystem$ValueSampler#computeValuePositional(Lnet/minecraft/world/phys/Vec3;Lnet/minecraft/world/attribute/SpatialAttributeInterpolator;)Ljava/lang/Object;",
+];
 
 /// A routed `Component` argument: its saved form.
 pub(in crate::game) struct ComponentArg<'a>(pub &'a horizon_core::nbt::Tag);

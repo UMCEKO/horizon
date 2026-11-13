@@ -63,7 +63,6 @@ net/minecraft/client/renderer/fog/FogRenderer#setupFog(Lnet/minecraft/client/Cam
 net/minecraft/client/resources/language/LanguageManager#onResourceManagerReload(Lnet/minecraft/server/packs/resources/ResourceManager;)V	verdict: java-client
 net/minecraft/client/resources/model/BlockStateDefinitions#<clinit>	verdict: java-client
 net/minecraft/client/server/IntegratedServer#initServer()Z	spec: w12-coverage SPEC-20
-net/minecraft/client/sounds/MusicManager#tick()V	owner: W8
 net/minecraft/client/sounds/SoundEngine#refreshCategoryVolume(Lnet/minecraft/sounds/SoundSource;)V	special: sounds
 net/minecraft/client/sounds/SoundEngine#reload()V	special: sounds
 net/minecraft/core/component/BlockTransformer#transformBlock(Lnet/minecraft/world/item/context/UseOnContext;)Lnet/minecraft/world/InteractionResult;	spec: w12-coverage SPEC-13
@@ -97,10 +96,6 @@ net/minecraft/world/RandomizableContainer#setLootTable(Lnet/minecraft/resources/
 net/minecraft/world/RandomizableContainer#tryLoadLootTable(Lnet/minecraft/world/level/storage/ValueInput;)Z	spec: w12-coverage SPEC-19
 net/minecraft/world/RandomizableContainer#unpackLootTable(Lnet/minecraft/world/entity/player/Player;)V	spec: w12-coverage SPEC-19
 net/minecraft/world/SimpleContainer#setChanged()V	spec: w12-coverage SPEC-17
-net/minecraft/world/attribute/EnvironmentAttributeProbe#tick(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/phys/Vec3;)V	owner: W7
-net/minecraft/world/attribute/EnvironmentAttributeSystem#addDynamicLayers(Lnet/minecraft/world/attribute/EnvironmentAttributeSystem$Builder;Lnet/minecraft/world/level/Level;)V	owner: W7
-net/minecraft/world/attribute/EnvironmentAttributeSystem$ValueSampler#computeValueNotPositional()Ljava/lang/Object;	owner: W7
-net/minecraft/world/attribute/EnvironmentAttributeSystem$ValueSampler#computeValuePositional(Lnet/minecraft/world/phys/Vec3;Lnet/minecraft/world/attribute/SpatialAttributeInterpolator;)Ljava/lang/Object;	owner: W7
 net/minecraft/world/effect/MobEffectInstance#onEffectAdded(Lnet/minecraft/world/entity/LivingEntity;)V	spec: w12-coverage SPEC-10
 net/minecraft/world/effect/MobEffectInstance#update(Lnet/minecraft/world/effect/MobEffectInstance;)Z	spec: w12-coverage SPEC-10
 net/minecraft/world/entity/Entity#getDismountLocationForPassenger(Lnet/minecraft/world/entity/LivingEntity;)Lnet/minecraft/world/phys/Vec3;	spec: w12-coverage SPEC-11

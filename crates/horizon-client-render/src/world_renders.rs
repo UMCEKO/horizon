@@ -179,8 +179,20 @@ pub fn environment() -> Environment {
     Environment::from_bits(i32::from(ENVIRONMENT.load(Ordering::Relaxed)))
 }
 
+static PROBED: RwLock<Option<crate::environment::ProbedValues>> = RwLock::new(None);
+
+/// The values of Java's patched attribute probe, from the last tick's status; `None` serves native sampling.
+pub fn set_probed(values: Option<crate::environment::ProbedValues>) {
+    *PROBED.write().unwrap() = values;
+}
+
+pub fn probed() -> Option<crate::environment::ProbedValues> {
+    PROBED.read().unwrap().clone()
+}
+
 pub fn clear() {
     ENVIRONMENT.store(0, Ordering::Relaxed);
+    set_probed(None);
     let mut r = REGISTRY.write().unwrap();
     r.meshes.clear();
     r.pieces.clear();

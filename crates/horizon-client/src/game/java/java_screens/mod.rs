@@ -952,6 +952,9 @@ impl Game<'_> {
         if super::java_debug::java_debug_status(reply).is_none() {
             log::warn!("Horizon: a status's F3 entry lines ended in pieces");
         }
+        if super::java_world_renders::java_probe_status(reply).is_none() {
+            log::warn!("Horizon: a status's attribute probe ended in pieces");
+        }
         super::java_world_renders::java_world_status(
             world.as_deref(),
             world_animating,

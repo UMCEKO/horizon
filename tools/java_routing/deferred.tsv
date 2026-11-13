@@ -67,10 +67,6 @@ net/minecraft/world/RandomizableContainer#setLootTable(Lnet/minecraft/resources/
 net/minecraft/world/RandomizableContainer#tryLoadLootTable(Lnet/minecraft/world/level/storage/ValueInput;)Z	spec: w12-coverage SPEC-19
 net/minecraft/world/RandomizableContainer#unpackLootTable(Lnet/minecraft/world/entity/player/Player;)V	spec: w12-coverage SPEC-19
 net/minecraft/world/SimpleContainer#setChanged()V	spec: w12-coverage SPEC-17
-net/minecraft/world/attribute/EnvironmentAttributeProbe#tick(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/phys/Vec3;)V	owner: W7
-net/minecraft/world/attribute/EnvironmentAttributeSystem#addDynamicLayers(Lnet/minecraft/world/attribute/EnvironmentAttributeSystem$Builder;Lnet/minecraft/world/level/Level;)V	owner: W7
-net/minecraft/world/attribute/EnvironmentAttributeSystem$ValueSampler#computeValueNotPositional()Ljava/lang/Object;	owner: W7
-net/minecraft/world/attribute/EnvironmentAttributeSystem$ValueSampler#computeValuePositional(Lnet/minecraft/world/phys/Vec3;Lnet/minecraft/world/attribute/SpatialAttributeInterpolator;)Ljava/lang/Object;	owner: W7
 net/minecraft/world/effect/MobEffectInstance#onEffectAdded(Lnet/minecraft/world/entity/LivingEntity;)V	spec: w12-coverage SPEC-10
 net/minecraft/world/effect/MobEffectInstance#update(Lnet/minecraft/world/effect/MobEffectInstance;)Z	spec: w12-coverage SPEC-10
 net/minecraft/world/entity/Entity#getDismountLocationForPassenger(Lnet/minecraft/world/entity/LivingEntity;)Lnet/minecraft/world/phys/Vec3;	spec: w12-coverage SPEC-11
