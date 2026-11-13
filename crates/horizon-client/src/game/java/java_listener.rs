@@ -181,6 +181,26 @@ pub(super) fn listeners(
     census_rows(hooks, cell, carries_cancel).1
 }
 
+/// Per hook, by its index: whether the last census found a listener of one of its events.
+fn listened_hooks() -> &'static [AtomicBool] {
+    static TABLE: OnceLock<Box<[AtomicBool]>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let count = mod_api::neoforge_events::EVENTS
+            .iter()
+            .map(|(_, hook)| *hook as usize + 1)
+            .max()
+            .unwrap_or(0);
+        (0..count).map(|_| AtomicBool::new(false)).collect()
+    })
+}
+
+/// Whether a booted Java mod listens to `hook`'s event: false until a census is in.
+pub(super) fn listens(hook: HookId) -> bool {
+    listened_hooks()
+        .get(hook as usize)
+        .is_some_and(|cell| cell.load(Ordering::Relaxed))
+}
+
 /// Per hook, by index: how many times a family crossed to Java for its event.
 fn crossings() -> &'static [AtomicU64] {
     static TABLE: OnceLock<Box<[AtomicU64]>> = OnceLock::new();
@@ -224,6 +244,9 @@ fn switch(census: Option<&Census>) {
     for family in FAMILIES.iter().map(|family| family()) {
         for hook in family.hooks {
             let on = census.is_some_and(|census| heard_of(census, *hook).is_some());
+            if let Some(cell) = listened_hooks().get(*hook as usize) {
+                cell.store(on, Ordering::Relaxed);
+            }
             mod_api::__private::set_hook_enabled(ID, *hook, on);
         }
     }

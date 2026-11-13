@@ -2,19 +2,19 @@
 // java-listener-family
 //! `ItemAttributeModifierEvent` from `item_attribute_modifier`: a stack's modifiers as Java computes them, asked once per distinct stack.
 
-use super::java_listener::{Family, listens};
+use super::java_listener::{Family, Subscriptions, crossed};
 use horizon_items::items::ItemStack;
 use horizon_java_host::wire::In;
 use mod_api::{
     AttributeModifier, AttributeOperation, EquipmentSlotGroup, HookId, Identifier,
-    ItemAttributeModifier, ItemAttributeModifierEvent, ItemAttributeModifiers,
+    ItemAttributeModifier, Listener, ItemAttributeModifierEvent, ItemAttributeModifiers,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 const HOOKS: &[HookId] = &[HookId::ItemAttributeModifier];
-static SUBSCRIBED: OnceLock<Vec<Option<HookId>>> = OnceLock::new();
+static SUBSCRIBED: Subscriptions = Subscriptions::new();
 const REMEMBERED: usize = 4096;
 
 thread_local! {
@@ -48,14 +48,19 @@ struct ItemAttributes;
 
 impl mod_api::Hooks for ItemAttributes {
     fn subscribed(&self) -> &'static [Option<HookId>] {
-        super::java_listener::subscribed(HOOKS, &SUBSCRIBED)
+        super::java_listener::subscribed(HOOKS, &SUBSCRIBED, false)
+    }
+
+    fn listeners(&self) -> &'static [Listener] {
+        super::java_listener::listeners(HOOKS, &SUBSCRIBED, false)
     }
 
     fn item_attribute_modifier(&self, event: &mut ItemAttributeModifierEvent<'_>) {
         // A client's tooltip is Java's own; only the server's equipment asks.
-        if !listens(HookId::ItemAttributeModifier) || !super::java_mods::java_server_started() {
+        if !super::java_mods::java_server_started() {
             return;
         }
+        crossed(HookId::ItemAttributeModifier);
         let Some(java) = CURRENT.with_borrow(|stack| stack.as_ref().and_then(modifiers_of)) else {
             return;
         };

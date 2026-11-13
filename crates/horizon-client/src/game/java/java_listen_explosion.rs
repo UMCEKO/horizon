@@ -4,21 +4,20 @@
 
 use super::Game;
 use super::explosion::BlastEntity;
-use super::java_listener::{Family, listens, with_game};
+use super::java_listener::{Family, Subscriptions, crossed, listens, with_game};
 use horizon_core::position::BlockPos;
 use horizon_java_host::wire::{In, Out};
 use mod_api::{
-    ExplosionDetonateEvent, ExplosionKnockbackEvent, ExplosionStartEvent, Flow, HookId, ServerHost,
+    ExplosionDetonateEvent, ExplosionKnockbackEvent, ExplosionStartEvent, Flow, HookId, Listener, ServerHost,
 };
 use std::cell::{Cell, RefCell};
-use std::sync::OnceLock;
 
 const HOOKS: &[HookId] = &[
     HookId::ExplosionStart,
     HookId::ExplosionDetonate,
     HookId::ExplosionKnockback,
 ];
-static SUBSCRIBED: OnceLock<Vec<Option<HookId>>> = OnceLock::new();
+static SUBSCRIBED: Subscriptions = Subscriptions::new();
 
 pub(super) fn family() -> Family {
     Family {
@@ -180,9 +179,7 @@ fn post(
     event: &str,
     fields: impl FnOnce(&mut Out, &mut Game<'static>, &Blast),
 ) -> Option<(bool, Vec<u8>)> {
-    if !listens(hook) {
-        return None;
-    }
+    crossed(hook);
     let Some(blast) = current() else {
         log::error!("Horizon: {event} fired outside a blast Horizon noted; it is not posted");
         return None;
@@ -191,14 +188,18 @@ fn post(
         let mut body = Out::default();
         write_header(&mut body, &blast);
         fields(&mut body, game, &blast);
-        game.java_post_level_event(event, |out| out.0.extend(body.0))
+        game.java_post_level_event(event, false, |out| out.0.extend(body.0))
     })
     .flatten()
 }
 
 impl mod_api::Hooks for Explosions {
     fn subscribed(&self) -> &'static [Option<HookId>] {
-        super::java_listener::subscribed(HOOKS, &SUBSCRIBED)
+        super::java_listener::subscribed(HOOKS, &SUBSCRIBED, false)
+    }
+
+    fn listeners(&self) -> &'static [Listener] {
+        super::java_listener::listeners(HOOKS, &SUBSCRIBED, false)
     }
 
     fn explosion_start(&self, host: &mut dyn ServerHost, _: &mut ExplosionStartEvent<'_>) -> Flow {

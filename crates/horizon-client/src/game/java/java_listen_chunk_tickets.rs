@@ -2,12 +2,11 @@
 // java-listener-family
 //! `ChunkTicketLevelUpdatedEvent` on `chunk_ticket_level_updated`: a chunk's loading level changed, posted to the Java mods with a chunk holder.
 
-use super::java_listener::{Family, listens, with_game};
-use mod_api::{ChunkTicketLevel, ChunkTicketLevelUpdatedEvent, HookId, ServerHost};
-use std::sync::OnceLock;
+use super::java_listener::{Family, Subscriptions, crossed, with_game};
+use mod_api::{ChunkTicketLevel, ChunkTicketLevelUpdatedEvent, HookId, Listener, ServerHost};
 
 const HOOKS: &[HookId] = &[HookId::ChunkTicketLevelUpdated];
-static SUBSCRIBED: OnceLock<Vec<Option<HookId>>> = OnceLock::new();
+static SUBSCRIBED: Subscriptions = Subscriptions::new();
 
 /// `ChunkLevel.MAX_LEVEL + 1`: the level of a chunk no ticket reaches.
 const UNLOADED: i32 = 45;
@@ -28,7 +27,11 @@ fn vanilla_level(level: ChunkTicketLevel) -> i32 {
 
 impl mod_api::Hooks for ChunkTickets {
     fn subscribed(&self) -> &'static [Option<HookId>] {
-        super::java_listener::subscribed(HOOKS, &SUBSCRIBED)
+        super::java_listener::subscribed(HOOKS, &SUBSCRIBED, false)
+    }
+
+    fn listeners(&self) -> &'static [Listener] {
+        super::java_listener::listeners(HOOKS, &SUBSCRIBED, false)
     }
 
     fn chunk_ticket_level_updated(
@@ -36,13 +39,11 @@ impl mod_api::Hooks for ChunkTickets {
         host: &mut dyn ServerHost,
         event: &mut ChunkTicketLevelUpdatedEvent,
     ) {
-        if !listens(HookId::ChunkTicketLevelUpdated) {
-            return;
-        }
+        crossed(HookId::ChunkTicketLevelUpdated);
         let [x, z] = event.chunk.pos();
         let (old, new) = (vanilla_level(event.old), vanilla_level(event.new));
         with_game(host, |game| {
-            game.java_post_level_event("ChunkTicketLevelUpdatedEvent", |out| {
+            game.java_post_level_event("ChunkTicketLevelUpdatedEvent", false, |out| {
                 out.int(x);
                 out.int(z);
                 out.int(old);

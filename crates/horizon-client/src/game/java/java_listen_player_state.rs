@@ -2,15 +2,14 @@
 // java-listener-family
 //! A player's spawn point, wake-up and advancements, and a changed game rule, posted to the Java mods' NeoForge events.
 
-use super::java_listener::{Family, listens, with_game};
+use super::java_listener::{Family, Subscriptions, crossed, with_game};
 use crate::game::Game;
 use horizon_core::position::BlockPos;
 use horizon_java_host::wire::Out;
 use mod_api::{
     Flow, GameRuleChangedEvent, HookId, PlayerAdvancementDoneEvent, PlayerAdvancementProgressEvent,
-    PlayerBedLeaveEvent, PlayerSetSpawnEvent, ProgressType, ServerHost,
+    PlayerBedLeaveEvent, PlayerSetSpawnEvent, ProgressType, ServerHost, Listener,
 };
-use std::sync::OnceLock;
 
 const HOOKS: &[HookId] = &[
     HookId::PlayerSetSpawn,
@@ -19,7 +18,7 @@ const HOOKS: &[HookId] = &[
     HookId::PlayerAdvancementProgress,
     HookId::GameRuleChanged,
 ];
-static SUBSCRIBED: OnceLock<Vec<Option<HookId>>> = OnceLock::new();
+static SUBSCRIBED: Subscriptions = Subscriptions::new();
 
 pub(super) fn family() -> Family {
     Family {
@@ -38,10 +37,10 @@ fn earns_event(display: bool, done_now: bool) -> bool {
 /// Posts `event` on `player`'s view, running it as that guest when another player is in place: whether a listener cancelled it.
 fn post_for(game: &mut Game<'static>, player: u128, event: &str, fields: Out) -> Option<bool> {
     let posted = if game.lan_acting_uuid == Some(player) {
-        game.java_post_player_event(event, fields.0)
+        game.java_post_player_event(event, false, fields.0)
     } else {
         let conn = game.lan.as_ref()?.hub.guests.iter().find(|g| g.uuid == player)?.conn;
-        let posted = game.as_guest(conn, |game| game.java_post_player_event(event, fields.0));
+        let posted = game.as_guest(conn, |game| game.java_post_player_event(event, false, fields.0));
         if posted.is_none() {
             log::warn!("Horizon: {event} was not posted: its player is in a turn already");
         }
@@ -52,13 +51,15 @@ fn post_for(game: &mut Game<'static>, player: u128, event: &str, fields: Out) ->
 
 impl mod_api::Hooks for PlayerState {
     fn subscribed(&self) -> &'static [Option<HookId>] {
-        super::java_listener::subscribed(HOOKS, &SUBSCRIBED)
+        super::java_listener::subscribed(HOOKS, &SUBSCRIBED, false)
+    }
+
+    fn listeners(&self) -> &'static [Listener] {
+        super::java_listener::listeners(HOOKS, &SUBSCRIBED, false)
     }
 
     fn player_set_spawn(&self, host: &mut dyn ServerHost, event: &mut PlayerSetSpawnEvent<'_>) -> Flow {
-        if !listens(HookId::PlayerSetSpawn) {
-            return Flow::Continue;
-        }
+        crossed(HookId::PlayerSetSpawn);
         let mut fields = Out::default();
         fields.bool(event.pos.is_some());
         if let Some([x, y, z]) = event.pos {
@@ -74,9 +75,7 @@ impl mod_api::Hooks for PlayerState {
     }
 
     fn player_bed_leave(&self, host: &mut dyn ServerHost, event: &mut PlayerBedLeaveEvent<'_>) {
-        if !listens(HookId::PlayerBedLeave) {
-            return;
-        }
+        crossed(HookId::PlayerBedLeave);
         let mut fields = Out::default();
         fields.bool(event.wake_immediately);
         fields.bool(event.update_level);
@@ -85,9 +84,7 @@ impl mod_api::Hooks for PlayerState {
     }
 
     fn player_advancement_done(&self, host: &mut dyn ServerHost, event: &mut PlayerAdvancementDoneEvent<'_>) {
-        if !listens(HookId::PlayerAdvancementDone) {
-            return;
-        }
+        crossed(HookId::PlayerAdvancementDone);
         let (player, id) = (event.player, event.advancement);
         with_game(host, |game| {
             let displayed = game
@@ -105,9 +102,7 @@ impl mod_api::Hooks for PlayerState {
     }
 
     fn player_advancement_progress(&self, host: &mut dyn ServerHost, event: &mut PlayerAdvancementProgressEvent<'_>) {
-        if !listens(HookId::PlayerAdvancementProgress) {
-            return;
-        }
+        crossed(HookId::PlayerAdvancementProgress);
         let mut fields = Out::default();
         fields.text(event.advancement);
         fields.text(event.criterion);
@@ -126,12 +121,10 @@ impl mod_api::Hooks for PlayerState {
     }
 
     fn game_rule_changed(&self, host: &mut dyn ServerHost, event: &mut GameRuleChangedEvent<'_>) {
-        if !listens(HookId::GameRuleChanged) {
-            return;
-        }
+        crossed(HookId::GameRuleChanged);
         let (rule, value) = (event.rule, event.value.to_string());
         with_game(host, |game| {
-            game.java_post_level_event("GameRuleChangedEvent", |out| {
+            game.java_post_level_event("GameRuleChangedEvent", false, |out| {
                 out.text(rule);
                 out.text(&value);
             })

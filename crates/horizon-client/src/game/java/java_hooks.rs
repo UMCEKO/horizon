@@ -271,7 +271,7 @@ impl Game<'_> {
             if !super::java_listener::listens(hook) {
                 return false;
             }
-            let posted = self.java_post_level_event(event, |out| {
+            let posted = self.java_post_level_event(event, false, |out| {
                 out.long(pos.pack());
                 out.0.push(direction as u8);
                 out.bool(extend);
