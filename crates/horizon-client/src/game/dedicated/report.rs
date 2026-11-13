@@ -13,7 +13,7 @@ use horizon_client::server_perf::{
     traffic::{Conn, Wire},
     world::{LevelCounts, MobCost, MobCosts, WorkerJobs},
 };
-use horizon_client::{spans, streaming::job_stats};
+use horizon_client::streaming::job_stats;
 use horizon_perf_format::{
     files,
     v1::{GpuMode, HorizonOptions, Start, StopReason, Trigger},
@@ -22,7 +22,6 @@ use horizon_world::level::BlockId;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
 };
 pub(in crate::game) use horizon_gameplay::dedicated::report::{LOOSE_ENTITIES, Recording};
 pub(super) use horizon_gameplay::dedicated::report::{Command, MAX_SECONDS, parse, parse_trace};
@@ -345,6 +344,8 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horizon_client::spans;
+    use std::time::Instant;
 
     fn server_game(root: &Path) -> Game<'static> {
         use super::super::super::{Audio, Options, Progress, Settings, load_resources};

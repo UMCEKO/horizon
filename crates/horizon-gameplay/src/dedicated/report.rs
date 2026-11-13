@@ -22,6 +22,7 @@ pub enum Command {
 const TRACE_DEFAULT_SECONDS: u32 = 30;
 
 /// The words after `horizon-trace`: `[SECONDS | stop]`, a timeline-only capture.
+#[expect(clippy::result_unit_err, reason = "a bad word only prints the usage line")]
 pub fn parse_trace(words: &[&str]) -> Result<Command, ()> {
     match words {
         [] => Ok(Command::Record {
@@ -43,6 +44,7 @@ pub fn parse_trace(words: &[&str]) -> Result<Command, ()> {
 }
 
 /// The words after `horizon-report`: `[SECONDS | stop | status] [--no-samples] [--timeline] [--profile]`, flags anywhere.
+#[expect(clippy::result_unit_err, reason = "a bad word only prints the usage line")]
 pub fn parse(words: &[&str]) -> Result<Command, ()> {
     let mut samples = true;
     let mut timeline = false;
