@@ -3,6 +3,7 @@ package dev.horizonlab.javamods.boot.mixin;
 import java.util.HashSet;
 import java.util.Set;
 import net.minecraft.network.protocol.Packet;
+import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket;
 import dev.horizonlab.javamods.boot.Clients;
 import net.minecraft.server.network.ServerCommonPacketListenerImpl;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
@@ -20,6 +21,10 @@ abstract class ConnectionMixin {
     @Inject(method = "send(Lnet/minecraft/network/protocol/Packet;)V", at = @At("HEAD"), cancellable = true)
     private void horizon$send(Packet<?> packet, CallbackInfo info) {
         info.cancel();
+        if (packet instanceof ClientboundBlockUpdatePacket update && (Object) this instanceof ServerGamePacketListenerImpl game) {
+            var id = game.player.getUUID();
+            Clients.nativeBlockUpdate(id.getMostSignificantBits(), id.getLeastSignificantBits(), update.getPos().asLong());
+        }
         if ((Object) this instanceof ServerGamePacketListenerImpl game && Clients.toClient(game.player.getUUID(), packet)) return;
         String name = packet instanceof net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket custom ? custom.payload().type().id().toString() : packet.getClass().getName();
         if (HORIZON$DROPPED.add(name)) System.err.println("Horizon: a Java mod's packet doesn't reach clients yet: " + name);

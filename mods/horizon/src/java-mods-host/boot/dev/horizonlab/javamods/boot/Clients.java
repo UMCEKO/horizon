@@ -80,6 +80,11 @@ public final class Clients {
         TO_SERVER.remove(player);
     }
 
+    /** Bridged: a block update a Java handler sends a native player, which Horizon sends with its own state of the block. */
+    public static void nativeBlockUpdate(long most, long least, long pos) {
+        throw new IllegalStateException("not bridged");
+    }
+
     /** False when the player has no Java client to take it. */
     public static synchronized boolean toClient(UUID player, Packet<?> packet) {
         var queue = TO_CLIENT.get(player);

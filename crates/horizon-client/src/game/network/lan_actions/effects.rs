@@ -3,7 +3,7 @@ use super::*;
 impl Game<'_> {
     /// `level.playSound(player, ...)` of a guest's use it predicted (`remote::hand_operated`
     /// blocks only, as the guest decides): the others hear it now, the guest already did.
-    pub(super) fn guest_use_sounds(&mut self, conn: u32, logged: usize, heard: usize) {
+    pub(in crate::game) fn guest_use_sounds(&mut self, conn: u32, logged: usize, heard: usize) {
         if self.lan.is_none() {
             return;
         }
@@ -205,7 +205,7 @@ impl Game<'_> {
     /// client does not run uses itself, so it does not predict the swing; a
     /// client that did (a block placed) is still in the first half of its
     /// swing and ignores it (`SwingState.startIfAble`).
-    pub(super) fn lan_swing_back(&mut self, conn: u32, swung: Option<bool>) {
+    pub(in crate::game) fn lan_swing_back(&mut self, conn: u32, swung: Option<bool>) {
         let Some(host) = self.lan.as_ref() else {
             return;
         };

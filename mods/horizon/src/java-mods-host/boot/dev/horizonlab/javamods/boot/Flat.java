@@ -377,6 +377,38 @@ public final class Flat {
         return ShapeHandles.of(shape);
     }
 
+    /** What `toBlockHitResult` reads. */
+    public static double[] raw(net.minecraft.world.phys.BlockHitResult hit) {
+        var at = hit.getLocation();
+        var pos = hit.getBlockPos();
+        return new double[] {at.x, at.y, at.z, hit.getDirection().get3DDataValue(), hit.isInside() ? 1 : 0, pos.getX(), pos.getY(), pos.getZ()};
+    }
+
+    /** A player by its id, as `raw(Entity)`. */
+    public static int raw(net.minecraft.world.entity.player.Player player) {
+        return raw((net.minecraft.world.entity.Entity) player);
+    }
+
+    /** A stack's saved tag; empty bytes for the empty stack. */
+    public static net.minecraft.world.item.ItemStack toItemStack(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) return net.minecraft.world.item.ItemStack.EMPTY;
+        try {
+            return GameBridge.decode(bytes);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** 0 `PASS`, 1 `FAIL`, 2 `TRY_WITH_EMPTY_HAND`, 3 `CONSUME`. */
+    public static net.minecraft.world.InteractionResult toInteractionResult(int kind) {
+        return switch (kind) {
+            case 1 -> net.minecraft.world.InteractionResult.FAIL;
+            case 2 -> net.minecraft.world.InteractionResult.TRY_WITH_EMPTY_HAND;
+            case 3 -> net.minecraft.world.InteractionResult.CONSUME;
+            default -> net.minecraft.world.InteractionResult.PASS;
+        };
+    }
+
     /** The hit's x y z, its face's ordinal, 1 if inside, then the block's x y z; empty for a miss. */
     public static net.minecraft.world.phys.BlockHitResult toBlockHitResult(double[] hit) {
         if (hit == null || hit.length == 0) return null;

@@ -95,21 +95,19 @@ pub(in crate::game) struct InputArg<'a>(pub &'a horizon_core::nbt::Tag);
 pub(in crate::game) struct OutputArg;
 
 /// A `ServerboundPickItemFromBlockPacket`: its position and `includeData`.
-#[allow(dead_code)] // the pick handlers' gates construct it
 pub(in crate::game) struct PickBlockArg {
     pub pos: horizon_core::position::BlockPos,
     pub include_data: bool,
 }
 
 /// A `ServerboundPickItemFromEntityPacket`: the entity's id and `includeData`.
-#[allow(dead_code)] // the pick handlers' gates construct it
 pub(in crate::game) struct PickEntityArg {
     pub id: i32,
     pub include_data: bool,
 }
 
 /// A `ServerboundUseItemOnPacket`: the hand's ordinal, the hit and the sequence.
-#[allow(dead_code)] // the use-on handler's gate constructs it
+#[derive(Clone, Copy)]
 pub(in crate::game) struct UseOnArg {
     pub hand: i32,
     pub point: [f64; 3],
@@ -120,7 +118,6 @@ pub(in crate::game) struct UseOnArg {
 }
 
 /// `Direction`'s ordinal (`Direction.from3DDataValue`) of a face's unit vector.
-#[allow(dead_code)] // the use-on handler's gate constructs it
 fn face_ordinal(face: [i32; 3]) -> f64 {
     match face {
         [0, -1, 0] => 0.0,
@@ -130,6 +127,13 @@ fn face_ordinal(face: [i32; 3]) -> f64 {
         [-1, 0, 0] => 4.0,
         _ => 5.0,
     }
+}
+
+/// Who ran a routed handler that returns nothing: Java's merged method, or nobody yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::game) enum Ran {
+    Java,
+    Native,
 }
 
 /// `InteractionResult` as a routed use method answers it.
@@ -145,6 +149,14 @@ pub(in crate::game) enum UseResult {
 
 #[cfg(feature = "java-mods")]
 pub(in crate::game) use gate::{Gate, RouteArg};
+
+/// Whether a mod patches the method of `key` and its route is on.
+#[cfg(feature = "java-mods")]
+pub(in crate::game) fn route_live(key: &str) -> bool {
+    horizon_java_host::routes::get()
+        .and_then(|routes| routes.id(key).map(|id| routes.get(id).on))
+        .unwrap_or(false)
+}
 
 #[cfg(feature = "java-mods")]
 impl crate::game::Game<'_> {
@@ -502,6 +514,12 @@ mod gate {
             }
             let tag = crate::game::java_mods::read_tag(bytes)?;
             horizon_client::save::item_from_nbt(&tag).map(Some)
+        }
+    }
+    /// A handler that returns nothing answers only that Java ran it.
+    impl RouteRet for super::Ran {
+        fn read(_reply: &mut In<'_>) -> Option<Self> {
+            Some(Self::Java)
         }
     }
     /// An `InteractionResult`: the kind, then the `SwingSource`'s ordinal.

@@ -9,4 +9,7 @@ import org.spongepowered.asm.mixin.gen.Accessor;
 public interface GameModeAccessor {
     @Accessor("gameModeForPlayer")
     void horizon$type(GameType type);
+
+    @Accessor("player")
+    net.minecraft.server.level.ServerPlayer horizon$player();
 }

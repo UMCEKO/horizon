@@ -86,9 +86,6 @@ net/minecraft/server/level/ServerLevel#addPlayer(Lnet/minecraft/server/level/Ser
 net/minecraft/server/level/ServerPlayer#teleport(Lnet/minecraft/world/level/portal/TeleportTransition;)Lnet/minecraft/server/level/ServerPlayer;	spec: w12-coverage SPEC-21
 net/minecraft/server/network/ServerConfigurationPacketListenerImpl#handleConfigurationFinished(Lnet/minecraft/network/protocol/configuration/ServerboundFinishConfigurationPacket;)V	owner: W13
 net/minecraft/server/network/ServerConfigurationPacketListenerImpl#startConfiguration()V	owner: W13
-net/minecraft/server/network/ServerGamePacketListenerImpl#handlePickItemFromBlock(Lnet/minecraft/network/protocol/game/ServerboundPickItemFromBlockPacket;)V	spec: w12-coverage SPEC-15
-net/minecraft/server/network/ServerGamePacketListenerImpl#handlePickItemFromEntity(Lnet/minecraft/network/protocol/game/ServerboundPickItemFromEntityPacket;)V	spec: w12-coverage SPEC-15
-net/minecraft/server/network/ServerGamePacketListenerImpl#handleUseItemOn(Lnet/minecraft/network/protocol/game/ServerboundUseItemOnPacket;)V	spec: w12-coverage SPEC-15
 net/minecraft/server/players/PlayerList#placeNewPlayer(Lnet/minecraft/network/Connection;Lnet/minecraft/server/level/ServerPlayer;Lnet/minecraft/server/network/CommonListenerCookie;)V	spec: w12-coverage SPEC-21
 net/minecraft/util/filefix/fixes/DimensionStorageFileFix#makeFixer	verdict: out-of-scope
 net/minecraft/world/RandomizableContainer#setLootTable(Lnet/minecraft/resources/ResourceKey;J)V	spec: w12-coverage SPEC-19

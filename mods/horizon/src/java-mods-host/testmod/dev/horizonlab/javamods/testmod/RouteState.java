@@ -13,6 +13,7 @@ public final class RouteState {
     public static boolean initRan;
     public static boolean runRan;
     public static boolean initBeforeRun;
+    public static int mayInteractCalls;
 
     /** The Java client's own inventory runs the same handlers; only the server's is routed. */
     public static boolean server(Inventory inventory) {

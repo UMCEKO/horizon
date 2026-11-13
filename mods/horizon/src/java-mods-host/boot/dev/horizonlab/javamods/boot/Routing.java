@@ -105,6 +105,25 @@ public final class Routing {
         JAVA_EARLY.get()[0] = true;
     }
 
+    private static final ThreadLocal<boolean[]> JAVA_USE_ON = ThreadLocal.withInitial(() -> new boolean[1]);
+
+    /** The bridge guard of `ServerPlayerGameMode.useItemOn`: native's for Horizon's players, except in native's own call of Java's for mod content. */
+    public static boolean nativeUseItemOn(Object gameMode) {
+        return !JAVA_USE_ON.get()[0] && GameBridge.viewed(((dev.horizonlab.javamods.boot.mixin.GameModeAccessor) gameMode).horizon$player());
+    }
+
+    /** `ServerPlayerGameMode.useItemOn` in Java, for the mod blocks and items native hands it. */
+    static InteractionResult javaUseItemOn(ServerPlayer player, Level level, ItemStack held, InteractionHand hand, net.minecraft.world.phys.BlockHitResult hit) {
+        boolean[] flag = JAVA_USE_ON.get();
+        boolean was = flag[0];
+        flag[0] = true;
+        try {
+            return player.gameMode.useItemOn(player, level, held, hand, hit);
+        } finally {
+            flag[0] = was;
+        }
+    }
+
     /** Whether a call's receiver is a server player's inventory, which is all Horizon's native serves; the Java client's own is not. */
     public static boolean serverInventory(Object receiver) {
         return receiver instanceof net.minecraft.world.entity.player.Inventory inventory && inventory.player instanceof net.minecraft.server.level.ServerPlayer;

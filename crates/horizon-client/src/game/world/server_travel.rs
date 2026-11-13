@@ -295,17 +295,31 @@ impl Game<'_> {
         }
     }
 
+    /// Whether the block at `pos` is a `Portal` (Nether portal, End portal, End gateway).
+    pub(in crate::game) fn portal_block_at(&self, pos: [i32; 3]) -> bool {
+        let name = self.block_name(pos);
+        matches!(
+            name.trim_start_matches("minecraft:"),
+            "nether_portal" | "end_portal" | "end_gateway"
+        )
+    }
+
     /// `ServerPlayerGameMode.useItemOn` for a spectator: a `Portal` block
     /// (Nether portal, End portal, End gateway) takes the player to its
     /// destination (`getPortalDestination`, `Entity.teleportToPortalDestination`)
     /// after the camera goes back to the player, or says `spectator.cannot_teleport`
     /// when it has none. Returns whether the block was a portal (`CONSUME`).
-    pub(super) fn spectator_use_portal(&mut self, conn: u32, gi: usize, pos: [i32; 3]) -> bool {
-        let name = self.block_name(pos);
-        let name = name.trim_start_matches("minecraft:");
-        if !matches!(name, "nether_portal" | "end_portal" | "end_gateway") {
+    pub(in crate::game) fn spectator_use_portal(
+        &mut self,
+        conn: u32,
+        gi: usize,
+        pos: [i32; 3],
+    ) -> bool {
+        if !self.portal_block_at(pos) {
             return false;
         }
+        let name = self.block_name(pos);
+        let name = name.trim_start_matches("minecraft:");
         if self.on_server_trip(conn) {
             return true;
         }

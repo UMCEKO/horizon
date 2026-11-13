@@ -10,6 +10,7 @@ pub(super) mod client_world;
 mod effects;
 mod entities;
 mod level_api;
+mod packets;
 mod player;
 mod rules;
 mod server;
@@ -27,6 +28,7 @@ pub(super) fn bridges() -> Vec<horizon_java_host::bridge::Bridge> {
         effects::table(),
         entities::table(),
         level_api::table(),
+        packets::table(),
         player::table(),
         rules::table(),
         server::table(),

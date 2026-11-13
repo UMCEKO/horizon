@@ -101,6 +101,11 @@ public final class GameBridge {
         return registries;
     }
 
+    /** Whether the player is the view of one of Horizon's players, not a mod's own (a fake player). */
+    static boolean viewed(ServerPlayer player) {
+        return player != null && PLAYERS.get(player.getUUID()) == player;
+    }
+
     private static volatile MinecraftServer server;
 
     static MinecraftServer server() {
@@ -600,7 +605,7 @@ public final class GameBridge {
                 var face = Direction.from3DDataValue(in.readInt());
                 var hit = new BlockHitResult(new Vec3(in.readDouble(), in.readDouble(), in.readDouble()), face, pos, false);
                 if (kind == 1) result = held.useOn(new UseOnContext(player, hand, hit));
-                else if (kind == 2) result = player.gameMode.useItemOn(player, level, held, hand, hit);
+                else if (kind == 2) result = Routing.javaUseItemOn(player, level, held, hand, hit);
                 else if (CommonHooks.onRightClickBlock(player, hand, pos, hit).isCanceled()) result = InteractionResult.SUCCESS;
             }
             case 4 -> {

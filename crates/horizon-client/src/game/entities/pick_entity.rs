@@ -115,7 +115,7 @@ impl Game<'_> {
     /// `Entity.getPickResult` of the entity `id`: a mob's spawn egg, the item
     /// of a boat, minecart, armor stand, cushion, painting, item frame (the
     /// framed item when it holds one) or end crystal.
-    pub(super) fn entity_pick_result(&self, id: i32) -> Option<ItemStack> {
+    pub(in crate::game) fn entity_pick_result(&self, id: i32) -> Option<ItemStack> {
         let id = u32::try_from(id).ok()?;
         let item = if let Some(m) = self.mobs.iter().find(|m| m.id == id) {
             // Mob.getPickResult: SpawnEggItem.byId.
@@ -146,9 +146,8 @@ impl Game<'_> {
         Some(ItemStack::new(&item, 1))
     }
 
-    /// `Player.isWithinEntityInteractionRange(entity, 3.0)`: the entity's box
-    /// within the interaction range plus 3 of the eyes.
-    pub(super) fn within_entity_range(&self, id: i32) -> bool {
+    /// `Player.isWithinEntityInteractionRange(entity, buffer)`: the entity's box within the reach plus `buffer` of the eyes.
+    pub(in crate::game) fn within_entity_range(&self, id: i32, buffer: f64) -> bool {
         let Some(eye) = self.eye_position() else {
             return false;
         };
@@ -171,7 +170,7 @@ impl Game<'_> {
         let d2: f64 = (0..3)
             .map(|a| (eye[a] - eye[a].clamp(b.0[a], b.1[a])).powi(2))
             .sum();
-        let range = self.entity_reach + 3.0;
+        let range = self.entity_reach + buffer;
         d2 < range * range
     }
 }

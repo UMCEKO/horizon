@@ -295,10 +295,7 @@ impl Game<'_> {
         if self.under_spawn_protection(gi, hit.pos) {
             self.spawn_protection_message(conn, hit.pos);
             refused = Some(ActionRefused::Protected);
-        } else if self
-            .border
-            .contains(f64::from(hit.pos[0]), f64::from(hit.pos[2]))
-        {
+        } else if self.may_interact(gi, hit.pos) {
             if spectator && self.spectator_use_portal(conn, gi, hit.pos) {
                 return Ok(true);
             }
@@ -307,29 +304,8 @@ impl Game<'_> {
             let used = self
                 .as_guest_at(gi, conn, |g| {
                     let attempt = g.was_block_placement_attempt(hand);
-                    let saved = (g.forced_hit, g.guest_use);
-                    g.forced_hit = Some(hit);
-                    g.guest_use = Some(GuestUse::OnBlock(hand));
-                    let swings = g.swings_started;
-                    let predicted = g.predicted_swings;
-                    let consumed = matches!(g.use_item(), Ok(Some(_)));
-                    // handleUseItemOn: a consuming useItemOn triggers
-                    // ANY_BLOCK_USE with the hand's stack as it now is.
-                    if consumed && !g.use_failed {
-                        let stack = g
-                            .with_hand(hand, |g| g.held().cloned())
-                            .unwrap_or_else(|| ItemStack::new("minecraft:air", 0));
-                        horizon_client::spans::time("use_advancements", || {
-                            g.trigger_any_block_use(hit.pos, &stack);
-                        });
-                    }
-                    (g.forced_hit, g.guest_use) = saved;
-                    reset_use_attack_strength(&mut g.attack_ticks, swings, g.swings_started);
-                    (
-                        g.swings_started != swings && g.predicted_swings == predicted,
-                        consumed,
-                        attempt,
-                    )
+                    let used = g.use_item_on_in_turn(hit, hand);
+                    (used.swung, used.consumed, attempt)
                 })
                 .ok();
             consumed = used.is_some_and(|u| u.1);
@@ -369,6 +345,32 @@ impl Game<'_> {
                 .send_to(conn, &C::BlockUpdate(play::BlockUpdate { pos, state }));
         }
         refused.map_or(Ok(consumed), Err)
+    }
+
+    /// `ServerPlayerGameMode.useItemOn` for the guest in place, then ANY_BLOCK_USE when it consumed.
+    pub(in crate::game) fn use_item_on_in_turn(&mut self, hit: Hit, hand: Hand) -> UsedOn {
+        let saved = (self.forced_hit, self.guest_use);
+        self.forced_hit = Some(hit);
+        self.guest_use = Some(GuestUse::OnBlock(hand));
+        let swings = self.swings_started;
+        let predicted = self.predicted_swings;
+        let consumed = matches!(self.use_item(), Ok(Some(_)));
+        // handleUseItemOn: a consuming useItemOn triggers ANY_BLOCK_USE with the hand's stack as it now is.
+        if consumed && !self.use_failed {
+            let stack = self
+                .with_hand(hand, |g| g.held().cloned())
+                .unwrap_or_else(|| ItemStack::new("minecraft:air", 0));
+            horizon_client::spans::time("use_advancements", || {
+                self.trigger_any_block_use(hit.pos, &stack);
+            });
+        }
+        (self.forced_hit, self.guest_use) = saved;
+        reset_use_attack_strength(&mut self.attack_ticks, swings, self.swings_started);
+        UsedOn {
+            swung: self.swings_started != swings && self.predicted_swings == predicted,
+            consumed,
+            failed: consumed && self.use_failed,
+        }
     }
 
     /// `ServerGamePacketListenerImpl.handleUseItem` for guest `conn` (at `gi`) using the item in
@@ -694,4 +696,15 @@ impl Game<'_> {
         }
         Ok(true)
     }
+}
+
+/// What `ServerPlayerGameMode.useItemOn` did for the guest in place.
+#[derive(Clone, Copy)]
+pub(in crate::game) struct UsedOn {
+    /// The hand swung on the server, not predicted by the client.
+    pub(in crate::game) swung: bool,
+    pub(in crate::game) consumed: bool,
+    /// The use ended the click with `FAIL`.
+    #[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+    pub(in crate::game) failed: bool,
 }

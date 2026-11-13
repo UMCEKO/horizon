@@ -1,16 +1,33 @@
+use super::pick::{PICKING, PickSource};
 use super::*;
 
 impl Game<'_> {
     /// DedicatedServer.isUnderSpawnProtection: no operators, an operator or a
     /// radius of 0 or less is never under it; else a block within the radius
     /// of the world spawn (square, in the Overworld) is.
-    pub(super) fn under_spawn_protection(&self, gi: usize, pos: [i32; 3]) -> bool {
+    pub(in crate::game) fn under_spawn_protection(&self, gi: usize, pos: [i32; 3]) -> bool {
         let Some(host) = self.lan.as_ref() else {
             return false;
         };
         let g = &host.hub.guests[gi];
         self.spawn_protection_for(host, g.uuid)
             .is_some_and(|radius| self.spawn_protects(radius, &g.dimension, pos))
+    }
+
+    /// `ServerLevel.mayInteract` for guest `gi`: not under spawn protection, and inside the world border.
+    pub(in crate::game) fn may_interact(&self, gi: usize, pos: [i32; 3]) -> bool {
+        !self.under_spawn_protection(gi, pos)
+            && self.border.contains(f64::from(pos[0]), f64::from(pos[2]))
+    }
+
+    /// The guest whose player has network id `id`.
+    pub(in crate::game) fn guest_with_entity_id(&self, id: i32) -> Option<usize> {
+        self.lan
+            .as_ref()?
+            .hub
+            .guests
+            .iter()
+            .position(|g| g.entity_id == id)
     }
 
     pub(super) fn spawn_protection_for(&self, host: &LanHost, uuid: u128) -> Option<i32> {
@@ -37,7 +54,7 @@ impl Game<'_> {
     }
 
     /// ServerPlayer.sendSpawnProtectionMessage.
-    pub(super) fn spawn_protection_message(&self, conn: u32, pos: [i32; 3]) {
+    pub(in crate::game) fn spawn_protection_message(&self, conn: u32, pos: [i32; 3]) {
         let Some(host) = self.lan.as_ref() else {
             return;
         };
@@ -77,7 +94,7 @@ impl Game<'_> {
     }
 
     /// `ServerPlayer.sendBuildLimitMessage`: the red overlay with the limit.
-    pub(super) fn build_limit_message(&self, conn: u32, too_high: bool, limit: i32) {
+    pub(in crate::game) fn build_limit_message(&self, conn: u32, too_high: bool, limit: i32) {
         let Some(host) = self.lan.as_ref() else {
             return;
         };
@@ -490,10 +507,6 @@ impl Game<'_> {
                 self.native_player_arm_swing(player, &name, "mainhand");
             }
             S::UseItemOn(p) => {
-                let Some(host) = self.lan.as_mut() else {
-                    return;
-                };
-                host.hub.ack(conn, p.sequence);
                 let hit = Hit {
                     pos: p.pos,
                     face: direction(p.face),
@@ -505,6 +518,14 @@ impl Game<'_> {
                     inside: p.inside,
                 };
                 let hand = if p.hand == 1 { Hand::Off } else { Hand::Main };
+                #[cfg(feature = "java-mods")]
+                if self.java_handle_use_item_on(conn, gi, hit, hand, p.sequence) {
+                    return;
+                }
+                let Some(host) = self.lan.as_mut() else {
+                    return;
+                };
+                host.hub.ack(conn, p.sequence);
                 let _ = self.guest_use_item_on(conn, gi, hit, hand);
             }
             S::UseItem(p) => {
@@ -1035,52 +1056,26 @@ impl Game<'_> {
                     .unwrap_or_default();
                 host.hub.send_stats(conn, &stats);
             }
-            // handlePickItemFromBlock: a block within the block reach plus 1, its
-            // data only with infinite materials.
             S::PickItemFromBlock(p) => {
-                self.guest_pick_item(conn, false, p.pos, 0, |g| {
-                    // handlePickItemFromBlock: within reach and loaded.
-                    if !g.world.loaded(p.pos[0], p.pos[2]) {
-                        return None;
-                    }
-                    let eye = g.eye_position()?;
-                    let d2: f64 = (0..3)
-                        .map(|a| {
-                            let lo = f64::from(p.pos[a]);
-                            (eye[a] - eye[a].clamp(lo, lo + 1.0)).powi(2)
-                        })
-                        .sum();
-                    let range = g.reach() + 1.0;
-                    if d2 >= range * range {
-                        return None;
-                    }
-                    // The block's item, a part's in its place, then the block
-                    // entity's data on whichever won (addBlockDataToItem).
-                    let include_data = g.creative && p.include_data;
-                    let stack = g.clone_stack(p.pos, include_data);
-                    let state = g.world.block(p.pos[0], p.pos[1], p.pos[2]);
-                    let mut replacement = None;
-                    g.native_clone_item_stack(
-                        g.dim.level(),
-                        horizon_core::position::BlockPos::new(p.pos[0], p.pos[1], p.pos[2]),
-                        &g.res.facts().get(state).name,
-                        state,
-                        include_data,
-                        &mut replacement,
-                    );
-                    let mut stack = replacement.or(stack)?;
-                    if include_data {
-                        g.add_block_data(p.pos, &mut stack);
-                    }
-                    Some(stack)
+                PICKING.set(PickSource::Block(p.pos));
+                #[cfg(feature = "java-mods")]
+                self.as_guest(conn, |g| {
+                    g.handle_pick_item_from_block(p.pos, p.include_data)
+                });
+                #[cfg(not(feature = "java-mods"))]
+                self.as_guest(conn, |g| {
+                    g.handle_pick_item_from_block_body(p.pos, p.include_data)
                 });
             }
-            // handlePickItemFromEntity.
             S::PickItemFromEntity(p) => {
-                self.guest_pick_item(conn, true, [0; 3], p.id, |g| {
-                    g.within_entity_range(p.id)
-                        .then(|| g.entity_pick_result(p.id))
-                        .flatten()
+                PICKING.set(PickSource::Entity(p.id));
+                #[cfg(feature = "java-mods")]
+                self.as_guest(conn, |g| {
+                    g.handle_pick_item_from_entity(p.id, p.include_data)
+                });
+                #[cfg(not(feature = "java-mods"))]
+                self.as_guest(conn, |g| {
+                    g.handle_pick_item_from_entity_body(p.id, p.include_data)
                 });
             }
             _ => {}
@@ -1111,62 +1106,6 @@ impl Game<'_> {
             c.remove(&"id".into());
         }
         Some(tag)
-    }
-
-    /// `ServerGamePacketListenerImpl.tryPickItem` for the guest: a matching stack
-    /// is selected, else a creative player gets the item; the held slot is sent
-    /// back and the changed slots follow with the tick's inventory changes.
-    pub(super) fn guest_pick_item(
-        &mut self,
-        conn: u32,
-        from_entity: bool,
-        pos: [i32; 3],
-        entity_id: i32,
-        stack: impl FnOnce(&mut Self) -> Option<ItemStack>,
-    ) {
-        let Some((uuid, name)) = self
-            .lan
-            .as_ref()
-            .and_then(|host| host.hub.guest(conn))
-            .map(|g| (g.uuid, g.name.clone()))
-        else {
-            return;
-        };
-        let picked = self.as_guest(conn, |g| {
-            let stack = stack(g)?;
-            #[cfg(not(feature = "java-mods"))]
-            let infinite = g.creative;
-            let mut cancel = false;
-            g.native_player_pick_item(uuid, &name, from_entity, pos, entity_id, &mut cancel);
-            if cancel {
-                return None;
-            }
-            #[cfg(feature = "java-mods")]
-            g.try_pick_item(&stack);
-            #[cfg(not(feature = "java-mods"))]
-            horizon_client::pick_item::pick(
-                &mut g.inventory[..36],
-                &mut g.selected,
-                &stack,
-                infinite,
-            );
-            Some(())
-        });
-        // With mods, `try_pick_item` sends the held slot itself, as `tryPickItem` does.
-        #[cfg(not(feature = "java-mods"))]
-        if picked.flatten().is_some()
-            && let Some(host) = self.lan.as_ref()
-            && let Some(g) = host.hub.guests.iter().find(|g| g.conn == conn)
-        {
-            host.hub.send_to(
-                conn,
-                &C::SetHeldSlot(play::SetHeldSlot {
-                    slot: g.selected as i32,
-                }),
-            );
-        }
-        #[cfg(feature = "java-mods")]
-        let _ = picked;
     }
 
     /// Whether the mods let a creative player set `slot` to `stack`
