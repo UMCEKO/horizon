@@ -3,6 +3,8 @@ net/minecraft/client/Minecraft#runTick(Z)V	crates/horizon-client/src/game/java/j
 net/minecraft/client/gui/Font$PreparedTextBuilder#accept(ILnet/minecraft/network/chat/Style;Lnet/minecraft/client/gui/font/glyphs/BakedGlyph;)Z	crates/horizon-client/src/game/java/java_screens/draw.rs:283	glyphs	gui	0
 net/minecraft/client/gui/Font$PreparedTextBuilder#getShadowColor(Lnet/minecraft/network/chat/Style;I)I	crates/horizon-client/src/game/java/java_screens/draw.rs:284	glyphs	gui	0
 net/minecraft/client/sounds/MusicManager#tick()V	crates/horizon-client/src/game/interface/music.rs:20	tick_music	gui	0
+net/minecraft/server/ServerScoreboard#addPlayerToTeam(Ljava/lang/String;Lnet/minecraft/world/scores/PlayerTeam;)Z	crates/horizon-client/src/game/java/scoreboard_routes.rs:17	server_team_join	game	0
+net/minecraft/server/ServerScoreboard#removePlayerFromTeam(Ljava/lang/String;Lnet/minecraft/world/scores/PlayerTeam;)V	crates/horizon-client/src/game/java/scoreboard_routes.rs:39	server_team_leave	game	0
 net/minecraft/world/attribute/EnvironmentAttributeProbe#tick(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/phys/Vec3;)V	crates/horizon-client/src/game/java/java_routing.rs:61	client_env_routed	gui	0
 net/minecraft/world/attribute/EnvironmentAttributeSystem#addDynamicLayers(Lnet/minecraft/world/attribute/EnvironmentAttributeSystem$Builder;Lnet/minecraft/world/level/Level;)V	crates/horizon-client/src/game/java/java_routing.rs:62	client_env_routed	gui	0
 net/minecraft/world/attribute/EnvironmentAttributeSystem$ValueSampler#computeValueNotPositional()Ljava/lang/Object;	crates/horizon-client/src/game/java/java_routing.rs:63	client_env_routed	gui	0
@@ -13,3 +15,7 @@ net/minecraft/world/entity/player/Inventory#pickSlot(I)V	crates/horizon-client/s
 net/minecraft/world/entity/player/Inventory#setSelectedSlot(I)V	crates/horizon-client/src/game/java/inventory.rs:11	set_selected_slot	game	0
 net/minecraft/world/level/block/entity/BaseContainerBlockEntity#sendChestLockedNotifications(Lnet/minecraft/world/phys/Vec3;Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/network/chat/Component;)V	crates/horizon-client/src/game/java/java_containers.rs:15	send_chest_locked_notifications	game	0
 net/minecraft/world/level/block/entity/BaseContainerBlockEntity#sendChestLockedNotifications(Lnet/minecraft/world/phys/Vec3;Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/network/chat/Component;)V	crates/horizon-client/src/game/java/java_containers.rs:30	send_chest_locked_here	game	0
+net/minecraft/world/scores/Scoreboard#addPlayerToTeam(Ljava/lang/String;Lnet/minecraft/world/scores/PlayerTeam;)Z	crates/horizon-client/src/game/java/scoreboard_routes.rs:28	team_join	game	0
+net/minecraft/world/scores/Scoreboard#onTeamAdded(Lnet/minecraft/world/scores/PlayerTeam;)V	crates/horizon-client/src/game/java/scoreboard_routes.rs:61	team_added	game	0
+net/minecraft/world/scores/Scoreboard#onTeamRemoved(Lnet/minecraft/world/scores/PlayerTeam;)V	crates/horizon-client/src/game/java/scoreboard_routes.rs:71	team_removed	game	0
+net/minecraft/world/scores/Scoreboard#removePlayerFromTeam(Ljava/lang/String;Lnet/minecraft/world/scores/PlayerTeam;)V	crates/horizon-client/src/game/java/scoreboard_routes.rs:50	team_leave	game	0

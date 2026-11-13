@@ -137,7 +137,7 @@ impl Game<'_> {
         }
     }
     /// `ScoreboardSaveData` read from `data/minecraft/scoreboard.dat`.
-    pub(super) fn load_scoreboard(&mut self) {
+    pub(in crate::game) fn load_scoreboard(&mut self) {
         if self.score.loaded || self.remote.is_some() {
             return;
         }
@@ -1076,6 +1076,18 @@ impl Env for GameEnv<'_, '_> {
     fn feedback(&mut self, message: Text) {
         self.g.feedback(message);
     }
+    fn team_add(&mut self, name: &str) {
+        self.g.server_team_add(name);
+    }
+    fn team_remove(&mut self, name: &str) {
+        self.g.server_team_remove(name);
+    }
+    fn team_join(&mut self, member: &str, team: &str) -> bool {
+        self.g.server_team_join(member, team)
+    }
+    fn team_leave(&mut self, member: &str) -> bool {
+        self.g.server_team_leave_member(member)
+    }
 }
 
 #[cfg(test)]
@@ -1253,6 +1265,8 @@ mod team_tests {
         );
     }
 }
+
+mod teams;
 
 #[cfg(test)]
 mod criterion_tests;

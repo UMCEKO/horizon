@@ -1842,7 +1842,9 @@ impl Game<'_> {
     fn join_saved_team(&mut self, id: u32, tag: &Tag) {
         if tag.get("Team").is_some() {
             let name = uuid_text(self.uuid_for(id));
-            join_saved_team(&mut self.score.board, &name, tag);
+            if let Some(team) = saved_team(&self.score.board, tag) {
+                self.server_team_join(&name, &team);
+            }
         }
     }
     /// The entity a UUID read back from a save names, while it is in the level:
@@ -2260,7 +2262,7 @@ impl Game<'_> {
         let alive = self.live_entity_ids();
         for (id, uuid) in candidates {
             if !alive.contains(&id) {
-                self.score.board.entity_removed(&uuid_text(uuid));
+                self.scoreboard_entity_removed(&uuid_text(uuid));
             }
         }
     }
@@ -2653,16 +2655,21 @@ fn drop_unleashable_leash(tag: &mut Tag, kind: &str, is_mob: bool) {
         c.remove(&"leash".into());
     }
 }
-/// `Entity.load`: a string `Team` adds the entity (`name`, its UUID) to that
-/// team when the scoreboard has it; else vanilla only logs a warning.
-fn join_saved_team(board: &mut Scoreboard, name: &str, tag: &Tag) -> bool {
-    let Some(team) = text(tag.get("Team")) else {
-        return false;
-    };
+/// `Entity.load`: a string `Team` names the team the entity joins when the
+/// scoreboard has it; else vanilla only logs a warning.
+fn saved_team(board: &Scoreboard, tag: &Tag) -> Option<String> {
+    let team = text(tag.get("Team"))?;
     if board.team(&team).is_none() {
         log::warn!("Unable to add mob to team \"{team}\" (that team probably doesn't exist)");
-        return false;
+        return None;
     }
+    Some(team)
+}
+#[cfg(test)]
+fn join_saved_team(board: &mut Scoreboard, name: &str, tag: &Tag) -> bool {
+    let Some(team) = saved_team(board, tag) else {
+        return false;
+    };
     board.add_to_team(name, &team);
     true
 }

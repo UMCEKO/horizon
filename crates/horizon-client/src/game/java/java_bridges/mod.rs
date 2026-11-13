@@ -2,7 +2,7 @@
 //! Vanilla methods Java mods reach, served by Horizon's own ports (`docs/java-mods.md`).
 
 use super::*;
-pub(super) use horizon_java_host::bridge::{Bytes, Dir, LevelOn, Point, Pos, Skip, State, Text};
+pub(super) use horizon_java_host::bridge::{Bytes, Dir, LevelOn, Point, Pos, Skip, State, TeamName, Text};
 pub(super) use horizon_world::registry::BlockStateId;
 
 mod block_entities;
@@ -12,6 +12,7 @@ mod entities;
 mod level_api;
 mod player;
 mod rules;
+mod scoreboard;
 mod server;
 mod values;
 mod world;
@@ -29,6 +30,7 @@ pub(super) fn bridges() -> Vec<horizon_java_host::bridge::Bridge> {
         level_api::table(),
         player::table(),
         rules::table(),
+        scoreboard::table(),
         server::table(),
         values::table(),
         world::table(),

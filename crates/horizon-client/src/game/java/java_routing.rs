@@ -107,6 +107,21 @@ pub(in crate::game) struct HolderArg<'a>(pub &'a str);
 #[allow(dead_code)] // gated routes construct it
 pub(in crate::game) struct KeyArg<'a>(pub &'a str, pub &'a str);
 
+/// A routed `PlayerTeam`: its name, then its packed tag (empty for a team the board no longer has), which builds the team the view dropped.
+pub(in crate::game) struct TeamArg(pub String, pub Option<horizon_client::scoreboard::Team>);
+
+impl TeamArg {
+    /// The board's team of that name, as it stands now.
+    pub(in crate::game) fn named(board: &horizon_client::scoreboard::Scoreboard, name: &str) -> Self {
+        Self(name.to_owned(), board.team(name).cloned())
+    }
+
+    /// A team the call removed: its packed form from before.
+    pub(in crate::game) fn removed(team: horizon_client::scoreboard::Team) -> Self {
+        Self(team.name.clone(), Some(team))
+    }
+}
+
 /// A routed `Level`: its dimension's id.
 #[allow(dead_code)] // gated routes construct it
 pub(in crate::game) struct LevelArg<'a>(pub &'a str);
@@ -375,6 +390,15 @@ mod gate {
             out.text(self.1);
         }
     }
+    impl RouteArg for super::TeamArg {
+        fn put(&self, out: &mut Out) {
+            out.text(&self.0);
+            match &self.1 {
+                Some(team) => out.bytes(&crate::game::java_mods::write_tag(team.pack()).expect("a team encodes as NBT")),
+                None => out.bytes(&[]),
+            }
+        }
+    }
     impl RouteArg for super::LevelArg<'_> {
         fn put(&self, out: &mut Out) {
             out.text(self.0);
@@ -529,7 +553,10 @@ mod gate {
                 }
                 Recv::Static => out.0.push(2),
                 Recv::Server => out.0.push(3),
-                Recv::Scoreboard => out.0.push(4),
+                Recv::Scoreboard => {
+                    out.0.push(4);
+                    self.java_scoreboard_fill(&mut out);
+                }
                 Recv::BlockEntity(pos) => {
                     self.java_level_key();
                     out.0.push(5);

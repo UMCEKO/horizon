@@ -138,6 +138,7 @@ public final class GameBridge {
         Crossing.game("block_entity_tick_run", GameBridge::blockEntityTickRun);
         Crossing.game("block_entity_load", GameBridge::blockEntityLoad);
         Crossing.game("block_entity_drop", GameBridge::blockEntityDrop);
+        Crossing.game("scoreboard_view", (in, out) -> ScoreboardView.read(in));
         Crossing.game("entity_view", GameBridge::entityView);
         Crossing.game("entity_added", GameBridge::entityAdded);
         Crossing.game("entity_left", GameBridge::entityLeft);

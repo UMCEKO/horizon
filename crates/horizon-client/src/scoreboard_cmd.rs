@@ -46,6 +46,22 @@ pub trait Env {
         c
     }
     fn feedback(&mut self, message: Text);
+    /// `Scoreboard.addPlayerTeam` for a name no team has.
+    fn team_add(&mut self, name: &str) {
+        self.sb_mut().add_team(name);
+    }
+    /// `Scoreboard.removePlayerTeam`.
+    fn team_remove(&mut self, name: &str) {
+        self.sb_mut().remove_team(name);
+    }
+    /// `Scoreboard.addPlayerToTeam`: false when the team already listed the member.
+    fn team_join(&mut self, member: &str, team: &str) -> bool {
+        self.sb_mut().add_to_team(member, team)
+    }
+    /// `Scoreboard.removePlayerFromTeam`: false when the member had no team.
+    fn team_leave(&mut self, member: &str) -> bool {
+        self.sb_mut().remove_from_team(member)
+    }
 }
 
 pub fn err(key: &str, args: &[&dyn std::fmt::Display]) -> CommandError {
@@ -870,7 +886,10 @@ fn team(id: &str, ctx: &Context, env: &mut dyn Env) -> CmdResult<i32> {
             } else {
                 literal(&name)
             };
-            env.sb_mut().add_team(&name).display_name = display;
+            env.team_add(&name);
+            if let Some(team) = env.sb_mut().team_mut(&name) {
+                team.display_name = display;
+            }
             let shown = formatted(env, &name);
             env.feedback(tr("commands.team.add.success", &[shown]));
             Ok(env.sb().teams.len() as i32)
@@ -878,7 +897,7 @@ fn team(id: &str, ctx: &Context, env: &mut dyn Env) -> CmdResult<i32> {
         "team.remove" => {
             let name = team_name(ctx, env, "team")?;
             let shown = formatted(env, &name);
-            env.sb_mut().remove_team(&name);
+            env.team_remove(&name);
             env.feedback(tr("commands.team.remove.success", &[shown]));
             Ok(env.sb().teams.len() as i32)
         }
@@ -893,7 +912,7 @@ fn team(id: &str, ctx: &Context, env: &mut dyn Env) -> CmdResult<i32> {
                 return Err(err("commands.team.empty.unchanged", &[]));
             }
             for m in &members {
-                env.sb_mut().remove_from_team(m);
+                env.team_leave(m);
             }
             let shown = formatted(env, &name);
             env.feedback(tr(
@@ -914,7 +933,7 @@ fn team(id: &str, ctx: &Context, env: &mut dyn Env) -> CmdResult<i32> {
             };
             let mut tracker = Tracker::default();
             for m in &members {
-                let joined = env.sb_mut().add_to_team(&m.name, &name);
+                let joined = env.team_join(&m.name, &name);
                 // The message reads the display name after the change.
                 tracker.track(&env.named(&m.name), i32::from(joined));
             }
@@ -941,7 +960,7 @@ fn team(id: &str, ctx: &Context, env: &mut dyn Env) -> CmdResult<i32> {
             let members = holders(ctx, "members", env, true)?;
             let mut tracker = Tracker::default();
             for m in &members {
-                let left = env.sb_mut().remove_from_team(&m.name);
+                let left = env.team_leave(&m.name);
                 tracker.track(&env.named(&m.name), i32::from(left));
             }
             tracker.send(
