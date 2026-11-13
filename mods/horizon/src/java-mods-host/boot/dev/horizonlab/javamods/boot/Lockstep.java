@@ -203,6 +203,17 @@ public final class Lockstep {
         return bytes.toByteArray();
     }
 
+    /** Waits while a lockstep job runs between its parks; whether it is now parked, so its thread holds still until the window releases it. */
+    static boolean heldStill() {
+        LOCK.lock();
+        try {
+            while (inFlight() && parked == Point.NONE) CHANGED.awaitUninterruptibly();
+            return inFlight() && (parked == Point.K || parked == Point.M);
+        } finally {
+            LOCK.unlock();
+        }
+    }
+
     /** A request of `kind` run on the parked thread, waiting for its reply; null when no lockstep tick is in flight. */
     static byte[] call(byte kind, byte[] in) throws ExecutionException, InterruptedException {
         var reply = new CompletableFuture<byte[]>();

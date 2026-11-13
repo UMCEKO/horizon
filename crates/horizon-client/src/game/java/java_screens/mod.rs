@@ -879,6 +879,15 @@ impl Game<'_> {
             .collect()
     }
 
+    /// A key as a routed `KeyEvent`, built as the window's input to the Java client builds it.
+    pub(in crate::game) fn java_key_event_arg(&self, name: &str) -> super::java_routing::KeyEventArg {
+        super::java_routing::KeyEventArg {
+            name: name.to_owned(),
+            modifiers: self.java_modifiers(),
+            keycode: sdl_keycode_of(name, None),
+        }
+    }
+
     fn java_client_size(&self, out: &mut Out) {
         for value in self.java_client_window() {
             out.int(value);

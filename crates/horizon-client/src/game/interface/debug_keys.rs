@@ -64,9 +64,33 @@ impl DebugHost for Host<'_, '_> {
     fn debug_action(&mut self, action: DebugAction, shift: bool) -> bool {
         self.game.run_debug_action(action, shift)
     }
+    #[cfg(feature = "java-mods")]
+    fn handle_debug_keys(
+        &mut self,
+        crash_key_time: i64,
+        _binds: &keybinds::KeyBinds,
+        key: &str,
+        _shift: bool,
+        _now: i64,
+    ) -> bool {
+        // The keys' state is out of the game while they run: the body reads the crash time from here.
+        self.game.debug_keys.crash_key_time = crash_key_time;
+        self.game.client_debug_keys(key)
+    }
 }
 
 impl Game<'_> {
+    /// `handleDebugKeys`' body for a key name, with the keyboard as it is now.
+    #[cfg(feature = "java-mods")]
+    pub(in crate::game) fn debug_keys_body(&mut self, key: &str) -> bool {
+        let shift = self.physical_keys.contains(&KeyCode::ShiftLeft)
+            || self.physical_keys.contains(&KeyCode::ShiftRight);
+        let now = self.debug_millis();
+        let binds = self.settings.keys.clone();
+        let crash = self.debug_keys.crash_key_time;
+        horizon_client::debug_keys::debug_keys_body(crash, &mut Host { game: self }, &binds, key, shift, now)
+    }
+
     /// `DebugScreenEntryList.setOverlayVisible`: rebuild on each visibility transition.
     fn set_debug_overlay(&mut self, visible: bool) {
         if self.debug != visible {

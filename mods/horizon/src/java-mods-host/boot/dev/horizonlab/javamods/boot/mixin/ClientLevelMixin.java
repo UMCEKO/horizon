@@ -37,6 +37,7 @@ abstract class ClientLevelMixin extends Level {
     @Override
     public boolean setBlock(BlockPos pos, BlockState state, int flags, int limit) {
         ClientBridge.setBlock(pos, state);
+        if (dev.horizonlab.javamods.boot.ClientRoutes.active()) ClientWorld.setBlock(pos, state);
         return true;
     }
 

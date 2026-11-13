@@ -528,6 +528,17 @@ impl Arg for TeamName {
     }
 }
 
+/// A `KeyEvent`, by its key's name (`Flat.keyName`): `key.keyboard.f3`.
+pub struct KeyName(pub String);
+impl Arg for KeyName {
+    type Raw = jstring;
+    const RAW: &'static str = "Ljava/lang/String;";
+    const FLAT: &'static str = "keyName";
+    fn from_raw(env: &mut JNIEnv, raw: jstring) -> KeyName {
+        KeyName(Text::from_raw(env, raw).0)
+    }
+}
+
 /// `BlockPos`, by `BlockPos.asLong`.
 pub struct Pos(pub BlockPos);
 impl Arg for Pos {
