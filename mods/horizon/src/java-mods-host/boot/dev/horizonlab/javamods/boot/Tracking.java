@@ -5,9 +5,8 @@ import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.util.HashMap;
-import java.util.HashSet;
+import java.util.Arrays;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import java.util.function.Predicate;
 import net.minecraft.network.protocol.Packet;
@@ -30,11 +29,38 @@ public final class Tracking {
     }
 
     private static final Map<UUID, Seen> PLAYERS = new HashMap<>();
-    private static final Int2ObjectOpenHashMap<Set<UUID>> SEEN_BY = new Int2ObjectOpenHashMap<>();
+    /** Who sees each entity, an array copied on change: a few players each, read far more than written. */
+    private static final Int2ObjectOpenHashMap<UUID[]> SEEN_BY = new Int2ObjectOpenHashMap<>();
 
     static void reset() {
         PLAYERS.clear();
         SEEN_BY.clear();
+    }
+
+    private static UUID[] with(UUID[] by, UUID id) {
+        if (by == null) return new UUID[] {id};
+        for (UUID known : by) if (known.equals(id)) return by;
+        UUID[] grown = Arrays.copyOf(by, by.length + 1);
+        grown[by.length] = id;
+        return grown;
+    }
+
+    /** `by` without `id`; null once nobody is left. */
+    private static UUID[] without(UUID[] by, UUID id) {
+        for (int i = 0; i < by.length; i++) {
+            if (!by[i].equals(id)) continue;
+            if (by.length == 1) return null;
+            UUID[] shrunk = new UUID[by.length - 1];
+            System.arraycopy(by, 0, shrunk, 0, i);
+            System.arraycopy(by, i + 1, shrunk, i, by.length - i - 1);
+            return shrunk;
+        }
+        return by;
+    }
+
+    private static void seenBy(int entity, UUID[] by) {
+        if (by == null) SEEN_BY.remove(entity);
+        else SEEN_BY.put(entity, by);
     }
 
     private static Seen seen(UUID player) {
@@ -96,16 +122,13 @@ public final class Tracking {
                 case 3 -> seen(id).sent.clear();
                 case 4 -> {
                     int entity = in.readInt();
-                    if (in.readBoolean()) {
-                        SEEN_BY.computeIfAbsent(entity, e -> new HashSet<>()).add(id);
-                    } else {
-                        var by = SEEN_BY.get(entity);
-                        if (by != null && by.remove(id) && by.isEmpty()) SEEN_BY.remove(entity);
-                    }
+                    var by = SEEN_BY.get(entity);
+                    if (in.readBoolean()) seenBy(entity, with(by, id));
+                    else if (by != null) seenBy(entity, without(by, id));
                 }
                 default -> {
                     PLAYERS.remove(id);
-                    SEEN_BY.values().removeIf(by -> by.remove(id) && by.isEmpty());
+                    for (int entity : SEEN_BY.keySet().toIntArray()) seenBy(entity, without(SEEN_BY.get(entity), id));
                 }
             }
         }

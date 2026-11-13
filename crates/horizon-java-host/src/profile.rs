@@ -226,6 +226,8 @@ pub struct Tree {
     pub nodes: HashMap<String, Node>,
     pub chains: HashMap<String, Stat>,
     pub scratch_high: u64,
+    /// The highest bytes a thread's arenas and scratch still held once a request had given back its oversize buffers.
+    pub scratch_kept: u64,
 }
 
 static TREE: Mutex<Option<Tree>> = Mutex::new(None);
@@ -289,6 +291,13 @@ pub fn note_scratch(bytes: usize) {
     let mut tree = TREE.lock().unwrap_or_else(|e| e.into_inner());
     let tree = tree.get_or_insert_with(Tree::default);
     tree.scratch_high = tree.scratch_high.max(bytes as u64);
+}
+
+/// What this thread's arenas and scratch buffers keep once a request is done: the window keeps the highest.
+pub fn note_scratch_kept(bytes: usize) {
+    let mut tree = TREE.lock().unwrap_or_else(|e| e.into_inner());
+    let tree = tree.get_or_insert_with(Tree::default);
+    tree.scratch_kept = tree.scratch_kept.max(bytes as u64);
 }
 
 impl Drop for Crossed {
@@ -379,7 +388,7 @@ pub fn java_line(
     )
 }
 
-/// [`java_line`] followed by the call tree [`take_tree`] gave: `tree=`, `chains=` and `scratch_kb=`.
+/// [`java_line`] followed by the call tree [`take_tree`] gave: `tree=`, `chains=`, `scratch_kb=` and `scratch_kept_kb=`.
 pub fn java_tree_line(
     unix_ms: u128,
     calls: Vec<(String, Stat)>,
@@ -389,11 +398,12 @@ pub fn java_tree_line(
     tree: Tree,
 ) -> String {
     format!(
-        "{} tree={} chains={} scratch_kb={}",
+        "{} tree={} chains={} scratch_kb={} scratch_kept_kb={}",
         java_line(unix_ms, calls, dims, runs, java),
         format_tree(tree.nodes.into_iter().collect()),
         format_stats(tree.chains),
-        tree.scratch_high / 1024
+        tree.scratch_high / 1024,
+        tree.scratch_kept / 1024
     )
 }
 

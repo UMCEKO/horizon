@@ -122,8 +122,28 @@ public final class Crossing {
             return n;
         } finally {
             frame.in.release();
+            frame.out.release();
             state.depth--;
         }
+    }
+
+    private static final java.util.concurrent.atomic.AtomicLong HIGH = new java.util.concurrent.atomic.AtomicLong();
+
+    /** The bytes this thread's reply buffers keep between requests. */
+    static long held() {
+        long bytes = 0;
+        for (Frame frame : STATE.get().frames) if (frame != null) bytes += frame.out.capacity();
+        return bytes;
+    }
+
+    /** The largest reply buffer any thread had at a request's end since the last take. */
+    static long takeHigh() {
+        return HIGH.getAndSet(0);
+    }
+
+    private static void noteHigh(int capacity) {
+        long high = HIGH.get();
+        while (capacity > high && !HIGH.compareAndSet(high, capacity)) high = HIGH.get();
     }
 
     /** The reply that did not fit its arena, for the thread that just got OVERFLOW. */
@@ -284,7 +304,17 @@ public final class Crossing {
         void reset() {
             written = 0;
             sink.length = 0;
+            release();
+        }
+
+        /** Gives back a buffer one large reply grew past `KEEP`, once its bytes are copied out. */
+        void release() {
+            noteHigh(sink.buffer.length);
             if (sink.buffer.length > KEEP) sink.buffer = new byte[512];
+        }
+
+        int capacity() {
+            return sink.buffer.length;
         }
 
         int length() {

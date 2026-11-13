@@ -763,7 +763,7 @@ impl Host {
                 if c.scratch.len() <= level {
                     c.scratch.resize_with(level + 1, Vec::new);
                 }
-                c.scratch[level] = out.0;
+                c.scratch[level] = kept_scratch(out.0);
             });
             reply
         })
@@ -879,10 +879,7 @@ impl Host {
         if profile::dir().is_some() {
             profile::note_bytes(input.len(), n.max(0) as usize);
             profile::note_copy(input.len());
-            profile::note_scratch(CROSSING.with_borrow(|c| {
-                c.arenas.iter().map(|a| a.capacity).sum::<usize>()
-                    + c.scratch.iter().map(Vec::capacity).sum::<usize>()
-            }));
+            profile::note_scratch(CROSSING.with_borrow(Crossing::held));
         }
         let result = match n {
             // SAFETY: Java wrote `n` bytes to the arena's start, and a request nested in `read` uses the next level's.
@@ -899,6 +896,9 @@ impl Host {
             _ => None,
         };
         self.shrink(&mut env, level);
+        if profile::dir().is_some() {
+            profile::note_scratch_kept(CROSSING.with_borrow(Crossing::held));
+        }
         result
     }
 
@@ -1011,6 +1011,14 @@ struct Crossing {
     attached: Option<Attached>,
 }
 
+impl Crossing {
+    /// The bytes this thread's arenas and request buffers hold now.
+    fn held(&self) -> usize {
+        self.arenas.iter().map(|a| a.capacity).sum::<usize>()
+            + self.scratch.iter().map(Vec::capacity).sum::<usize>()
+    }
+}
+
 /// A reply longer than this takes the overflow path without growing the arena.
 const ARENA_CAP: usize = 16 << 20;
 const ARENA: usize = 64 << 10;
@@ -1032,6 +1040,15 @@ fn capacity_after(capacity: usize) -> usize {
         ARENA
     } else {
         capacity
+    }
+}
+
+/// A level's request buffer as it is kept for the next request: one past [`ARENA_KEEP`] is given back.
+fn kept_scratch(scratch: Vec<u8>) -> Vec<u8> {
+    if scratch.capacity() > ARENA_KEEP {
+        Vec::new()
+    } else {
+        scratch
     }
 }
 
@@ -1214,6 +1231,17 @@ mod tests {
         assert!(capacity_after(capacity_for(10 << 20)) <= 1 << 20);
         assert_eq!(capacity_after(capacity_for(1 << 20)), 1 << 20);
         assert_eq!(capacity_after(capacity_for(1000)), ARENA);
+    }
+
+    #[test]
+    fn a_large_request_buffer_is_not_kept() {
+        let small = Vec::with_capacity(4096);
+        assert_eq!(kept_scratch(small).capacity(), 4096);
+        let large = Vec::with_capacity(ARENA_KEEP + 1);
+        assert_eq!(kept_scratch(large).capacity(), 0);
+        let mut grown = Vec::with_capacity(16);
+        grown.extend(std::iter::repeat_n(0u8, 8 << 20));
+        assert_eq!(kept_scratch(grown).capacity(), 0);
     }
 
     #[test]

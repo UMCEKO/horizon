@@ -62,12 +62,33 @@ final class Profile {
             a[2] = Math.max(a[2], b[2]);
             return a;
         }));
-        String line = "be=" + rows(ticks) + " lock=" + rows(WAITS) + " ev=" + rows(EVENTS) + " hold=" + rows(HOLDS);
+        String line = "be=" + rows(ticks) + " lock=" + rows(WAITS) + " ev=" + rows(EVENTS) + " hold=" + rows(HOLDS) + " " + runtime();
         TICKS.clear();
         WAITS.clear();
         EVENTS.clear();
         HOLDS.clear();
         return line;
+    }
+
+    /** The JVM's own costs, apart from the bridge's objects: loaded classes, metaspace and code cache, direct buffers, and the largest reply buffer. */
+    static String runtime() {
+        long meta = 0, classSpace = 0, code = 0, direct = 0;
+        for (var pool : java.lang.management.ManagementFactory.getMemoryPoolMXBeans()) {
+            long used = pool.getUsage().getUsed();
+            switch (pool.getName()) {
+                case "Metaspace" -> meta = used;
+                case "Compressed Class Space" -> classSpace = used;
+                default -> {
+                    if (pool.getName().startsWith("CodeHeap") || pool.getName().equals("Code Cache")) code += used;
+                }
+            }
+        }
+        for (var pool : java.lang.management.ManagementFactory.getPlatformMXBeans(java.lang.management.BufferPoolMXBean.class)) {
+            if (pool.getName().equals("direct")) direct = pool.getTotalCapacity();
+        }
+        int classes = java.lang.management.ManagementFactory.getClassLoadingMXBean().getLoadedClassCount();
+        return "jvm_classes=" + classes + " jvm_meta_kb=" + meta / 1024 + " jvm_class_kb=" + classSpace / 1024 + " jvm_code_kb=" + code / 1024
+            + " direct_kb=" + direct / 1024 + " reply_high_kb=" + Crossing.takeHigh() / 1024;
     }
 
     /** Writes the running recording, `Recording.dump`: the JVM keeps recording. */

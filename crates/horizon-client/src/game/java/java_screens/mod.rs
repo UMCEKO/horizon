@@ -1218,6 +1218,7 @@ impl Game<'_> {
         }
         super::java_bridges::client_world::java_forget_client_world();
         super::java_client_entities::java_client_entities_left();
+        super::java_shapes::java_shapes_left();
     }
 
     /// Whether the Java client's `MusicManager.tick` runs the music.

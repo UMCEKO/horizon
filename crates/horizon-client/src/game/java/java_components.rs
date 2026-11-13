@@ -13,7 +13,34 @@ const REMEMBERED: usize = 4096;
 
 #[derive(Default)]
 struct Codecs {
-    written: Mutex<HashMap<(String, Vec<u8>), Option<Arc<[u8]>>>>,
+    written: Mutex<Written>,
+}
+
+/// Java's encodings by component type, then by saved value: looked up by borrowed keys, so a hit allocates nothing.
+#[derive(Default)]
+struct Written {
+    by_type: HashMap<String, HashMap<Vec<u8>, Option<Arc<[u8]>>>>,
+    len: usize,
+}
+
+impl Written {
+    fn get(&self, name: &str, value: &[u8]) -> Option<Option<Arc<[u8]>>> {
+        self.by_type.get(name)?.get(value).cloned()
+    }
+
+    fn insert(&mut self, name: &str, value: &[u8], answer: Option<Arc<[u8]>>) {
+        if self.len >= REMEMBERED {
+            self.by_type.clear();
+            self.len = 0;
+        }
+        let values = match self.by_type.get_mut(name) {
+            Some(values) => values,
+            None => self.by_type.entry(name.to_owned()).or_default(),
+        };
+        if values.insert(value.to_vec(), answer).is_none() {
+            self.len += 1;
+        }
+    }
 }
 
 // `NbtIo` takes a compound at the root, and a value can be any tag.
@@ -74,7 +101,7 @@ impl StreamCodecs for Codecs {
             let written = self.written.lock().unwrap();
             saved
                 .iter()
-                .map(|(name, value)| written.get(&(name.to_string(), value.clone())).cloned())
+                .map(|(name, value)| written.get(name, value))
                 .collect()
         };
         if let Some(known) = known {
@@ -83,11 +110,8 @@ impl StreamCodecs for Codecs {
         // Not under the lock: a codec is mod code, and it may take its time.
         let answers = ask(&saved).unwrap_or_else(|| vec![None; saved.len()]);
         let mut written = self.written.lock().unwrap();
-        if written.len() >= REMEMBERED {
-            written.clear();
-        }
         for ((name, value), answer) in saved.iter().zip(&answers) {
-            written.insert((name.to_string(), value.clone()), answer.clone());
+            written.insert(name, value, answer.clone());
         }
         answers
     }
@@ -160,5 +184,21 @@ mod tests {
         assert!(!horizon_java_host::configured());
         assert!(!horizon_client::net::java_link_installed());
         assert!(horizon_java_host::get().is_none());
+    }
+
+    #[test]
+    fn remembered_encodings_stay_bounded_and_keyed_by_type_and_value() {
+        let mut written = super::Written::default();
+        let answer: std::sync::Arc<[u8]> = std::sync::Arc::from(&[7u8][..]);
+        written.insert("mod:a", &[1], Some(answer.clone()));
+        written.insert("mod:b", &[1], None);
+        assert_eq!(written.get("mod:a", &[1]), Some(Some(answer)));
+        assert_eq!(written.get("mod:b", &[1]), Some(None));
+        assert_eq!(written.get("mod:a", &[2]), None);
+        for i in 0..super::REMEMBERED as u32 {
+            written.insert("mod:c", &i.to_be_bytes(), None);
+        }
+        assert!(written.len <= super::REMEMBERED);
+        assert_eq!(written.get("mod:a", &[1]), None);
     }
 }

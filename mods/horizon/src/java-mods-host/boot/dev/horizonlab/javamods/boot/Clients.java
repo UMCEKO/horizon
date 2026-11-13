@@ -121,9 +121,11 @@ public final class Clients {
 
     private static final java.util.Map<net.minecraft.server.level.ServerLevel, it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet> RESHAPED = new java.util.IdentityHashMap<>();
 
+    /** A world closed: its block changes, and the players on other processes, who could only have been its own. */
     static synchronized void reset() {
         CHANGED.clear();
         RESHAPED.clear();
+        for (UUID player : List.copyOf(REMOTE)) leave(player);
     }
 
     /** `ChunkHolder.blockChanged`: the position is sent at the level's next `broadcastChanges`. */

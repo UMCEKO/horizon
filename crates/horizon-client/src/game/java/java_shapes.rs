@@ -18,6 +18,12 @@ thread_local! {
     static COLLISIONS_TAKEN: Cell<Option<i32>> = const { Cell::new(None) };
 }
 
+/// The Java client's world is gone: its blocks' shapes with it, so a busy client in the next world never gets one of them.
+pub(in crate::game) fn java_shapes_left() {
+    CACHE.with_borrow_mut(HashMap::clear);
+    COLLISIONS_TAKEN.set(None);
+}
+
 /// Java's `VoxelShape.toAabbs`, six doubles a box, as one shape.
 fn boxes_shape(boxes: &[f64]) -> Option<VoxelShape> {
     let mut shape = VoxelShape::empty();

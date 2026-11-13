@@ -152,7 +152,15 @@ def report(folder, top=15, jfr=True):
         copied = sum(r["copied"] for r in tree.values())
         scratch = int(max(num(j, "scratch_kb") for j in java))
         out.append(f"crossings: {requests} Rust to Java, {natives} Java to Rust; {moved / 1024:.1f} KiB on the wire, "
-                   f"{copied / 1024:.1f} KiB copied; scratch high-water {scratch} KiB (top rows of each second only)")
+                   f"{copied / 1024:.1f} KiB copied; scratch high-water {scratch} KiB, kept after requests "
+                   f"{int(max(num(j, 'scratch_kept_kb') for j in java))} KiB (top rows of each second only)")
+    if java and "jvm_classes" in java[-1]:
+        first, last = java[0], java[-1]
+        span = lambda key: f"{int(num(first, key))} -> {int(num(last, key))}"
+        out.append(f"JVM runtime (not bridge objects), first -> last second: classes {span('jvm_classes')}, "
+                   f"metaspace {span('jvm_meta_kb')} KiB, class space {span('jvm_class_kb')} KiB, "
+                   f"code cache {span('jvm_code_kb')} KiB, direct buffers {span('direct_kb')} KiB; "
+                   f"largest Java reply buffer {int(max(num(j, 'reply_high_kb') for j in java))} KiB")
     for s in server:
         merge(spans, parse_rows(s.get("spans", "-")))
     out += table("Java block entity types (ticker time)", STAT_HEADER, stat_lines(be, top))

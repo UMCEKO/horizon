@@ -157,6 +157,23 @@ public final class CrossingCheck {
         }
         check(Arrays.equals(Crossing.call("t_echo", new byte[] {9}), new byte[] {9}), "the next request succeeds after a throw");
 
+        long small = Crossing.held();
+        Crossing.takeHigh();
+        var huge = new Crossing.Out();
+        huge.writeInt(3 << 20);
+        check(Crossing.call("t_big", huge.toByteArray()).length == 3 << 20, "a reply past the kept size arrives whole");
+        check(Crossing.takeHigh() >= 3 << 20, "the high-water mark saw the large reply");
+        check(Crossing.held() <= small + (2 << 20), "a large reply's buffer is not kept after its request: " + Crossing.held());
+        for (int cycle = 0; cycle < 5; cycle++) {
+            check(Crossing.call("t_big", huge.toByteArray()).length == 3 << 20, "large reply, cycle " + cycle);
+            var outer = new Crossing.Out();
+            outer.writeInt(cycle);
+            outer.writeInt(cycle + 100);
+            var both = ByteBuffer.wrap(Crossing.call("t_outer", outer.toByteArray()));
+            check(both.getInt() == cycle && both.getInt() == cycle + 1 && both.getInt() == cycle + 100, "small nested reply after a large one, cycle " + cycle);
+        }
+        check(Crossing.held() <= small + (2 << 20), "repeated large and small requests plateau: " + Crossing.held());
+
         int inner = Arrays.asList(Crossing.seal()).indexOf("t_inner");
         ByteBuffer arena = ByteBuffer.allocateDirect(64);
         var threads = (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
