@@ -922,8 +922,10 @@ public final class GameBridge {
 
     /** `levelOf` for a block entity's tick: the tick cache goes once per game tick, as at `ServerLevel.tick`'s start. */
     private static ServerLevel tickingLevelOf(Crossing.In in) throws Exception {
-        var level = level(in.readInt());
-        long gameTime = in.readLong();
+        return ticking(level(in.readInt()), in.readLong());
+    }
+
+    private static ServerLevel ticking(ServerLevel level, long gameTime) {
         var data = (ViewLevelData) level.getLevelData();
         if (data.invalidatedAt != gameTime) return invalidated(level, gameTime);
         data.gameTime = gameTime;
@@ -1021,31 +1023,54 @@ public final class GameBridge {
         writeEffects(out);
     }
 
-    /** #268: a run of adjacent held block entities in one crossing, ticked in order until one wrote into Horizon (`runEntry` says so) or threw. */
+    /** #268 on #262's envelope: adjacent held block entities ticked in order until one wrote into Horizon (`Bulk.enter`), made a sound, threw, or the work budget ran out. */
     private static void blockEntityTickRun(Crossing.In in, Crossing.Out out) throws Exception {
-        var level = tickingLevelOf(in);
-        int count = in.readInt();
-        out.writeInt(0);
-        int processed = 0;
-        while (processed < count) {
-            var pos = BlockPos.of(in.readLong());
-            if (processed > 0 && !BlockEntities.runEntry(processed)) break;
-            processed++;
-            boolean held;
-            try {
-                held = BlockEntities.tick(level, pos);
-            } catch (Throwable t) {
-                // As `game` reports a scalar tick that threw: its own effects go, the entries before keep theirs.
-                t.printStackTrace();
-                if (outermost()) abandonCall();
-                out.writeByte(2);
-                out.writeInt(0);
-                break;
+        Bulk.Request request;
+        ServerLevel level;
+        long gameTime;
+        long[] positions;
+        try {
+            request = Bulk.read(in, Bulk.Op.BLOCK_ENTITY_TICK);
+            int key = in.readInt();
+            gameTime = in.readLong();
+            if (key < 0 || key >= levels.length || levels[key] == null) throw new Bulk.Rejected("no level for key " + key);
+            level = levels[key];
+            positions = new long[request.count()];
+            for (int i = 0; i < positions.length; i++) {
+                positions[i] = in.readLong();
+                if (level.isOutsideBuildHeight(BlockPos.getY(positions[i]))) throw new Bulk.Rejected("position " + BlockPos.of(positions[i]) + " outside the level");
             }
-            out.writeByte(held ? 1 : 0);
-            writeEffects(out);
+        } catch (Bulk.Rejected why) {
+            Bulk.reject(out, why);
+            return;
         }
-        out.patchInt(0, processed);
+        long cell = Bulk.open();
+        try {
+            ticking(level, gameTime);
+            var reply = new Bulk.Reply(out);
+            for (int i = 0; i < positions.length; i++) {
+                if (i > 0 && (request.spent() || !Bulk.enter(i))) break;
+                boolean held;
+                try {
+                    held = BlockEntities.tick(level, BlockPos.of(positions[i]));
+                } catch (Throwable t) {
+                    // As `game` reports a scalar tick that threw: its own effects go, the entries before keep theirs.
+                    t.printStackTrace();
+                    if (outermost()) abandonCall();
+                    reply.begin(Bulk.THREW);
+                    reply.end();
+                    break;
+                }
+                // Rust plays an entry's sounds when the reply comes, so one that made any ends the run before a later entry's callback.
+                boolean sounded = !SOUNDS.isEmpty();
+                reply.begin(held ? Bulk.DONE : Bulk.GONE);
+                writeEffects(out);
+                reply.end();
+                if (sounded) break;
+            }
+        } finally {
+            Bulk.close(cell);
+        }
     }
 
     private static byte[] tracking(byte[] input) throws Exception {
