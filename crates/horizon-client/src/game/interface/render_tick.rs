@@ -199,6 +199,19 @@ impl Game<'_> {
             fluid_fog: self.pack.polytone_colors.fluid_fog,
         };
         let mut fog = horizon_client::fog::setup_fog(tables, &self.fog, &input);
+        if self.title.is_none() {
+            fog = self.java_hook_view_fog(
+                fog_type,
+                horizon_client::fog::fog_environment(
+                    fog_type,
+                    input.blindness.is_some(),
+                    input.darkness.is_some(),
+                ),
+                input.render_distance_chunks,
+                input.darken_world,
+                fog,
+            );
+        }
         if !self.settings.horizon.fog {
             horizon_client::fog::clear_distance_fog(&mut fog, &input);
         }

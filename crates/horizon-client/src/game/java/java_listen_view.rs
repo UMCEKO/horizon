@@ -1,6 +1,6 @@
 // game-module-cfg: feature java-mods
 // java-listener-family
-//! `ViewportEvent.ComputeFov`, `CalculateDetachedCameraDistanceEvent` and `CalculatePlayerTurnEvent`: native's values go to the Java client with the tick, and the answer of its last firing applies.
+//! `ViewportEvent.ComputeFov`, `ComputeFogColor`, `RenderFog`, `CalculateDetachedCameraDistanceEvent` and `CalculatePlayerTurnEvent`: native's values go to the Java client with the tick, and the answer of its last firing applies.
 
 use super::java_listener::Family;
 use super::java_view;
@@ -13,6 +13,9 @@ const HOOKS: &[HookId] = &[
     HookId::ComputeFov,
     HookId::CameraDistance,
     HookId::CalculatePlayerTurn,
+    // Posted from `frame_fog` through the view job, not from these hooks' own sites.
+    HookId::ComputeFogColor,
+    HookId::RenderFog,
 ];
 static SUBSCRIBED: OnceLock<Vec<Option<HookId>>> = OnceLock::new();
 

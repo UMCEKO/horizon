@@ -1,8 +1,19 @@
 // game-module-cfg: feature java-mods
 //! The view events (camera angles, detached distance, field of view, mouse turn) on native's camera: the window's values go to the Java client once a tick and per frame only while the answers change.
 
+use horizon_client::fog::{FogData, FogEnvironmentKind, FogType};
 use horizon_java_host::wire::{In, Out};
 use std::cell::RefCell;
+
+/// What `FogRenderer.setupFog` computed, as the fog events start from it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(in crate::game) struct FogIn {
+    pub(in crate::game) fog_type: FogType,
+    pub(in crate::game) environment: FogEnvironmentKind,
+    pub(in crate::game) render_distance_chunks: i32,
+    pub(in crate::game) darken: f32,
+    pub(in crate::game) fog: FogData,
+}
 
 /// The window's camera values as the Java client's view events read them.
 #[derive(Clone, Copy, PartialEq, Default, Debug)]
@@ -21,6 +32,7 @@ pub(in crate::game) struct ViewInputs {
     sensitivity: f64,
     smooth: bool,
     grabbed: bool,
+    fog: Option<FogIn>,
 }
 
 /// What the mods changed, each `None` when no listener did.
@@ -31,6 +43,8 @@ pub(in crate::game) struct ViewEffects {
     pub(in crate::game) fov: Option<f32>,
     pub(in crate::game) hud_fov: Option<f32>,
     pub(in crate::game) turn: Option<(f64, bool)>,
+    pub(in crate::game) fog_color: Option<[f32; 3]>,
+    pub(in crate::game) fog: Option<FogData>,
 }
 
 /// The values `align_with_entity` reads when a living entity gives none.
@@ -58,7 +72,68 @@ impl ViewInputs {
         out.double(self.sensitivity);
         out.bool(self.smooth);
         out.bool(self.grabbed);
+        out.bool(self.fog.is_some());
+        if let Some(f) = &self.fog {
+            out.0.push(match f.fog_type {
+                FogType::Atmospheric => 0,
+                FogType::Water => 1,
+                FogType::Lava => 2,
+                FogType::PowderSnow => 3,
+            });
+            out.0.push(f.environment as u8);
+            out.int(f.render_distance_chunks);
+            out.float(f.darken);
+            f.fog.color[..3].iter().for_each(|v| out.float(*v));
+            [
+                f.fog.environmental_start,
+                f.fog.environmental_end,
+                f.fog.render_distance_start,
+                f.fog.render_distance_end,
+                f.fog.sky_end,
+                f.fog.cloud_end,
+            ]
+            .iter()
+            .for_each(|v| out.float(*v));
+        }
     }
+}
+
+/// `native` with the mods' fog colour and fog applied; values that are not numbers or have an end below its start keep native's.
+fn fog_answered(native: FogData, effects: &ViewEffects) -> FogData {
+    let mut fog = native;
+    if let Some(rgb) = effects.fog_color.filter(|c| c.iter().all(|v| v.is_finite())) {
+        fog.color = [rgb[0], rgb[1], rgb[2], native.color[3]];
+    }
+    if let Some(a) = effects.fog {
+        let ten = a.color.iter().chain([
+            &a.environmental_start,
+            &a.environmental_end,
+            &a.render_distance_start,
+            &a.render_distance_end,
+            &a.sky_end,
+            &a.cloud_end,
+        ]);
+        if ten.into_iter().all(|v| v.is_finite())
+            && a.environmental_end >= a.environmental_start
+            && a.render_distance_end >= a.render_distance_start
+        {
+            fog = a;
+        }
+    }
+    fog
+}
+
+/// This frame's fog inputs, recorded for the Java client, and `fog` as its last firing left it.
+pub(in crate::game) fn hook_fog(input: FogIn) -> FogData {
+    VIEW.with_borrow_mut(|v| {
+        v.inputs.fog = Some(input);
+        fog_answered(input.fog, &v.effects)
+    })
+}
+
+/// No fog event is heard: the inputs carry no fog.
+pub(in crate::game) fn forget_fog() {
+    VIEW.with_borrow_mut(|v| v.inputs.fog = None);
 }
 
 /// The outputs the Java client answers: a mask of the values mods changed, then those in bit order.
@@ -79,6 +154,20 @@ pub(in crate::game) fn read_view_effects(reply: &mut In) -> Option<ViewEffects> 
     }
     if mask & 16 != 0 {
         effects.turn = Some((reply.double()?, reply.bool()?));
+    }
+    if mask & 32 != 0 {
+        effects.fog_color = Some([reply.float()?, reply.float()?, reply.float()?]);
+    }
+    if mask & 64 != 0 {
+        effects.fog = Some(FogData {
+            color: [reply.float()?, reply.float()?, reply.float()?, reply.float()?],
+            environmental_start: reply.float()?,
+            environmental_end: reply.float()?,
+            render_distance_start: reply.float()?,
+            render_distance_end: reply.float()?,
+            sky_end: reply.float()?,
+            cloud_end: reply.float()?,
+        });
     }
     Some(effects)
 }
@@ -227,6 +316,7 @@ mod tests {
             sensitivity: 0.5,
             smooth: false,
             grabbed: true,
+            fog: None,
         };
         let mut out = Out::default();
         inputs.write(&mut out);
@@ -242,8 +332,100 @@ mod tests {
             expected.extend(v.to_be_bytes());
         }
         expected.extend(0.5f64.to_be_bytes());
-        expected.extend([0, 1]);
+        expected.extend([0, 1, 0]);
         assert_eq!(out.0, expected);
+    }
+
+    fn sample_fog() -> FogData {
+        FogData {
+            color: [0.1, 0.2, 0.3, 1.0],
+            environmental_start: -8.0,
+            environmental_end: 96.0,
+            render_distance_start: 100.0,
+            render_distance_end: 128.0,
+            sky_end: 128.0,
+            cloud_end: 256.0,
+        }
+    }
+
+    #[test]
+    fn fog_inputs_follow_the_documented_bytes() {
+        let inputs = ViewInputs {
+            fog: Some(FogIn {
+                fog_type: FogType::Lava,
+                environment: FogEnvironmentKind::Water,
+                render_distance_chunks: 8,
+                darken: 0.5,
+                fog: sample_fog(),
+            }),
+            ..Default::default()
+        };
+        let mut with = Out::default();
+        inputs.write(&mut with);
+        let mut without = Out::default();
+        ViewInputs::default().write(&mut without);
+        let tail = &with.0[without.0.len() - 1..];
+        let mut expected = vec![1, 2, 4];
+        expected.extend(8i32.to_be_bytes());
+        for v in [0.5f32, 0.1, 0.2, 0.3, -8.0, 96.0, 100.0, 128.0, 128.0, 256.0] {
+            expected.extend(v.to_be_bytes());
+        }
+        assert_eq!(tail, expected);
+    }
+
+    #[test]
+    fn fog_colour_alone_changes_only_the_rgb() {
+        let effects = ViewEffects {
+            fog_color: Some([1.0, 0.0, 0.0]),
+            ..Default::default()
+        };
+        let mut native = sample_fog();
+        native.color[3] = 0.75;
+        let fog = fog_answered(native, &effects);
+        assert_eq!(fog.color, [1.0, 0.0, 0.0, 0.75]);
+        assert_eq!(fog.environmental_end, 96.0);
+    }
+
+    #[test]
+    fn fog_answer_replaces_all_ten_values_unless_one_is_unusable() {
+        let mut answer = sample_fog();
+        answer.environmental_end = 8.0;
+        answer.color = [1.0, 0.0, 0.0, 1.0];
+        let effects = ViewEffects {
+            fog: Some(answer),
+            ..Default::default()
+        };
+        assert_eq!(fog_answered(sample_fog(), &effects), answer);
+        answer.sky_end = f32::NAN;
+        let bad = ViewEffects {
+            fog: Some(answer),
+            ..Default::default()
+        };
+        assert_eq!(fog_answered(sample_fog(), &bad), sample_fog());
+        answer.sky_end = 1.0;
+        answer.environmental_end = -100.0;
+        let inverted = ViewEffects {
+            fog: Some(answer),
+            ..Default::default()
+        };
+        assert_eq!(fog_answered(sample_fog(), &inverted), sample_fog());
+    }
+
+    #[test]
+    fn fog_bits_read_after_the_turn() {
+        let mut out = Out::default();
+        out.int(32 | 64);
+        for v in [1.0f32, 0.0, 0.0] {
+            out.float(v);
+        }
+        for v in [0.5f32, 0.5, 0.5, 1.0, 1.0, 8.0, 50.0, 60.0, 70.0, 80.0] {
+            out.float(v);
+        }
+        let effects = read_view_effects(&mut In(&out.0)).unwrap();
+        assert_eq!(effects.fog_color, Some([1.0, 0.0, 0.0]));
+        let fog = effects.fog.unwrap();
+        assert_eq!(fog.color, [0.5, 0.5, 0.5, 1.0]);
+        assert_eq!((fog.environmental_start, fog.cloud_end), (1.0, 80.0));
     }
 
     #[test]
@@ -278,6 +460,8 @@ mod tests {
                 fov: Some(35.0),
                 hud_fov: None,
                 turn: Some((0.25, true)),
+                fog_color: None,
+                fog: None,
             }
         );
         assert_eq!(read_view_effects(&mut In(&out.0[..out.0.len() - 1])), None);
