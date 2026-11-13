@@ -5,18 +5,29 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.Explosion;
+import net.minecraft.world.level.ServerExplosion;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.ListenerList;
 import net.neoforged.bus.api.Event;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.common.CommonHooks;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.EventHooks;
 
 /** NeoForge events Rust posts where its hook fires (`game/java/java_listener.rs`): which ones a mod listens to, and the post ops. */
 public final class EventPosts {
@@ -46,7 +57,15 @@ public final class EventPosts {
     private static final Map<String, PlayerPost> PLAYER = Map.of("BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity);
 
     /** The server events Rust posts through `post_level_event`. */
-    private static final Map<String, LevelPost> LEVEL = Map.of();
+    private static final Map<String, LevelPost> LEVEL = Map.of("ExplosionEvent.Start", EventPosts::explosionStart, "ExplosionEvent.Detonate", EventPosts::explosionDetonate, "ExplosionKnockbackEvent", EventPosts::explosionKnockback);
+
+    /** The blasts in flight, by Rust's serial: Start, Detonate and every Knockback of one blast share one object. */
+    private static final Map<Long, ServerExplosion> EXPLOSIONS = new LinkedHashMap<>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<Long, ServerExplosion> eldest) {
+            return size() > 8;
+        }
+    };
 
     /** The client events Rust posts through `client_post_event`. */
     private static final Map<String, ClientPost> CLIENT = Map.of("PlaySoundEvent", NativeSounds::ask);
@@ -207,6 +226,99 @@ public final class EventPosts {
     private static Posted attackEntity(GameBridge.Call call) {
         var target = call.level().getEntity(call.in().readInt());
         return new Posted(target != null && !CommonHooks.onPlayerAttackTarget(call.player(), target), Posted.NONE.result());
+    }
+
+    /** Reads a blast's header and gives its explosion: the one its serial built before, else a new one. */
+    private static ServerExplosion explosion(ServerLevel level, Crossing.In in) {
+        long serial = in.readLong();
+        var center = new Vec3(in.readDouble(), in.readDouble(), in.readDouble());
+        float radius = in.readFloat();
+        boolean fire = in.readBoolean();
+        var interaction = Explosion.BlockInteraction.values()[in.readByte()];
+        int source = in.readInt();
+        int owner = in.readInt();
+        String damageType = in.text();
+        var known = EXPLOSIONS.get(serial);
+        if (known != null) return known;
+        var key = ResourceKey.create(Registries.DAMAGE_TYPE, Identifier.parse(damageType));
+        var type = level.registryAccess().lookupOrThrow(Registries.DAMAGE_TYPE).getOrThrow(key);
+        Entity sourceView = source < 0 ? null : EntityViews.byId(source);
+        Entity ownerView = owner < 0 ? null : EntityViews.byId(owner);
+        var made = new ServerExplosion(level, sourceView, new DamageSource(type, sourceView, ownerView), null, center, radius, fire, interaction);
+        EXPLOSIONS.put(serial, made);
+        return made;
+    }
+
+    private static List<BlockPos> blocks(Crossing.In in) {
+        int n = in.readInt();
+        var blocks = new ArrayList<BlockPos>(n);
+        for (int i = 0; i < n; i++) blocks.add(BlockPos.of(in.readLong()));
+        return blocks;
+    }
+
+    private static Posted explosionStart(ServerLevel level, Crossing.In in) {
+        var explosion = explosion(level, in);
+        return new Posted(EventHooks.onExplosionStart(level, explosion), Posted.NONE.result());
+    }
+
+    /** The blocks and entities as listeners left them, both written back. */
+    private static Posted explosionDetonate(ServerLevel level, Crossing.In in) throws IOException {
+        var explosion = explosion(level, in);
+        var blocks = blocks(in);
+        var entities = new ArrayList<Entity>();
+        int m = in.readInt();
+        for (int i = 0; i < m; i++) entities.add(entityRef(in));
+        int before = blocks.size();
+        int entitiesBefore = entities.size();
+        EventHooks.onExplosionDetonate(level, explosion, entities, blocks);
+        if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: server event ExplosionEvent.Detonate blocks " + before + "->" + blocks.size() + " entities " + entitiesBefore + "->" + entities.size());
+        var bytes = new ByteArrayOutputStream();
+        var out = new DataOutputStream(bytes);
+        out.writeInt(blocks.size());
+        for (BlockPos pos : blocks) out.writeLong(pos.asLong());
+        out.writeInt(entities.size());
+        for (Entity entity : entities) {
+            if (entity instanceof net.minecraft.server.level.ServerPlayer player) {
+                out.writeByte(1);
+                out.writeLong(player.getUUID().getMostSignificantBits());
+                out.writeLong(player.getUUID().getLeastSignificantBits());
+            } else {
+                out.writeByte(0);
+                out.writeInt(entity.getId());
+            }
+        }
+        return new Posted(false, bytes.toByteArray());
+    }
+
+    private static Posted explosionKnockback(ServerLevel level, Crossing.In in) throws IOException {
+        var explosion = explosion(level, in);
+        var entity = entityRef(in);
+        var push = new Vec3(in.readDouble(), in.readDouble(), in.readDouble());
+        var pushed = EventHooks.getExplosionKnockback(level, explosion, entity, push, blocks(in));
+        var bytes = new ByteArrayOutputStream();
+        var out = new DataOutputStream(bytes);
+        out.writeDouble(pushed.x);
+        out.writeDouble(pushed.y);
+        out.writeDouble(pushed.z);
+        return new Posted(false, bytes.toByteArray());
+    }
+
+    /** An entity ref: `byte 0` and an id (a native entity), or `byte 1` and a uuid (a player). */
+    private static Entity entityRef(Crossing.In in) {
+        boolean player = in.readByte() == 1;
+        Entity view;
+        String ref;
+        if (player) {
+            var uuid = new java.util.UUID(in.readLong(), in.readLong());
+            view = GameBridge.playerView(uuid);
+            ref = "player " + uuid;
+        } else {
+            int id = in.readInt();
+            view = EntityViews.byId(id);
+            ref = "id " + id;
+        }
+        if (view == null) throw new IllegalStateException("Horizon: no view for entity " + ref);
+        return view;
     }
 
     /** `client_post_event`: the event's name, then its fields, posted on the Java client's thread. */
