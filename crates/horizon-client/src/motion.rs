@@ -863,7 +863,14 @@ impl PlayerMotion {
     ) -> Result<bool> {
         use crate::living_attributes as live;
         let found = match kind {
-            0 => live::put_modifier(&mut self.attributes, attribute, id, amount, operation, permanent)?,
+            0 => live::put_modifier(
+                &mut self.attributes,
+                attribute,
+                id,
+                amount,
+                operation,
+                permanent,
+            )?,
             1 => live::take_modifier(&mut self.attributes, attribute, id)?,
             _ => live::put_base(&mut self.attributes, attribute, amount)?,
         };
@@ -3562,18 +3569,32 @@ mod tests {
         let mut p = PlayerMotion::new(&resources, Vec3::ZERO).unwrap();
         let step = "minecraft:step_height";
         let base = p.attribute(step).unwrap();
-        assert!(p.write_attribute(step, 0, "test:stilts", 0.5, 0, false).unwrap());
+        assert!(
+            p.write_attribute(step, 0, "test:stilts", 0.5, 0, false)
+                .unwrap()
+        );
         // Adding again replaces, as the nested calls of one mod write do.
-        assert!(p.write_attribute(step, 0, "test:stilts", 0.5, 0, false).unwrap());
+        assert!(
+            p.write_attribute(step, 0, "test:stilts", 0.5, 0, false)
+                .unwrap()
+        );
         assert!((p.attribute(step).unwrap() - (base + 0.5)).abs() < 1e-9);
-        assert!(p.write_attribute(step, 1, "test:stilts", 0.0, 0, false).unwrap());
+        assert!(
+            p.write_attribute(step, 1, "test:stilts", 0.0, 0, false)
+                .unwrap()
+        );
         assert_eq!(p.attribute(step).unwrap(), base);
         assert!(p.write_attribute(step, 2, "", 2.0, 0, false).unwrap());
         assert_eq!(p.attribute(step).unwrap(), 2.0);
-        assert!(!p.write_attribute("test:unknown", 0, "test:a", 1.0, 0, false).unwrap());
+        assert!(
+            !p.write_attribute("test:unknown", 0, "test:a", 1.0, 0, false)
+                .unwrap()
+        );
         // A permanent modifier saves with the player; a transient one does not.
-        p.write_attribute(step, 0, "test:kept", 1.0, 0, true).unwrap();
-        p.write_attribute(step, 0, "test:lost", 1.0, 0, false).unwrap();
+        p.write_attribute(step, 0, "test:kept", 1.0, 0, true)
+            .unwrap();
+        p.write_attribute(step, 0, "test:lost", 1.0, 0, false)
+            .unwrap();
         let saved = format!("{:?}", p.saved_attributes());
         let bytes = |text: &str| format!("{:?}", text.as_bytes());
         assert!(saved.contains(&bytes("test:kept")) && !saved.contains(&bytes("test:lost")));

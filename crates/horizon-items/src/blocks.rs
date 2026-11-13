@@ -454,6 +454,8 @@ impl BlockFacts {
                 | "minecraft:kelp_plant"
                 | "minecraft:seagrass"
                 | "minecraft:tall_seagrass" => (Fluid::Water, 8, false),
+                _ if prop("fluid_logged") == Some("water") => (Fluid::Water, 8, false),
+                _ if prop("fluid_logged") == Some("lava") => (Fluid::Lava, 8, false),
                 _ if prop("waterlogged") == Some("true") => (Fluid::Water, 8, false),
                 name if horizon_world::fluid::mod_fluid_named(name).is_some() => {
                     let level: u8 = prop("level").and_then(|v| v.parse().ok()).unwrap_or(0);

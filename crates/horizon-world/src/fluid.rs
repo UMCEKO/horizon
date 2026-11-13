@@ -359,6 +359,11 @@ impl FluidState {
         amount: 8,
         falling: false,
     };
+    pub const LAVA: Self = Self {
+        kind: FluidKind::Lava,
+        amount: 8,
+        falling: false,
+    };
     pub const fn kind(self) -> FluidKind {
         self.kind
     }
@@ -445,6 +450,12 @@ impl FluidState {
                 | "minecraft:bubble_column"
         ) {
             return Ok(Self::WATER);
+        }
+        match state.properties.get("fluid_logged").map(String::as_str) {
+            Some("water") => return Ok(Self::WATER),
+            Some("lava") => return Ok(Self::LAVA),
+            Some("empty") | None => {}
+            Some(_) => return Err(invalid("invalid fluid_logged block property")),
         }
         match state.properties.get("waterlogged").map(String::as_str) {
             Some("true") => {
@@ -666,6 +677,26 @@ mod mod_fluid_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_fluid_logged_state_holds_its_fluid() {
+        let logged = |value: &str| BlockState {
+            name: "gem:tank".into(),
+            properties: [("fluid_logged".to_string(), value.to_string())].into(),
+        };
+        assert_eq!(
+            FluidState::from_block(&logged("water")).unwrap().kind(),
+            FluidKind::Water
+        );
+        assert_eq!(
+            FluidState::from_block(&logged("lava")).unwrap().kind(),
+            FluidKind::Lava
+        );
+        assert_eq!(
+            FluidState::from_block(&logged("empty")).unwrap(),
+            FluidState::EMPTY
+        );
     }
 
     fn block(name: &str, level: u8) -> BlockState {
