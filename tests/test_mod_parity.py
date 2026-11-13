@@ -128,6 +128,29 @@ class Comparison(unittest.TestCase):
         r = self.events({(1, 'client'): {'A': 100}, (2, 'client'): {'A': 100}}, {(1, 'client'): {'A': 122}, (2, 'client'): {'A': 123}})
         self.assertEqual([(m['step'], m['forge'], m['horizon']) for m in r['count_mismatches']], [('b', 100, 123)])
 
+    def test_unlistened_events_are_not_missing(self):
+        forge = {(1, 'server'): {'A': 5, 'B': 3}}
+        r = mp.compare_events(run_of(self.STEPS, forge), run_of(self.STEPS, {}), listened={'A': False})
+        self.assertEqual([m['event'] for m in r['missing']], ['B'])
+        self.assertEqual([(u['event'], u['count'], u['first_step']) for u in r['unlistened']], [('A', 5, 'a')])
+        report = mp.report_markdown({'events': r, 'mixins': [], 'other_merged_calls': {'forge': 0, 'horizon': 0}, 'steps': self.STEPS}, None, None)
+        self.assertIn('## Not listened (Horizon builds none)', report)
+
+    def test_listened_events_still_count(self):
+        r = mp.compare_events(run_of(self.STEPS, {(1, 'server'): {'A': 10}}), run_of(self.STEPS, {(1, 'server'): {'A': 2}}), listened={'A': True})
+        self.assertEqual([(m['event'], m['forge'], m['horizon']) for m in r['count_mismatches']], [('A', 10, 2)])
+        self.assertEqual(r['unlistened'], [])
+
+    def test_census_reads_both_line_kinds(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / 'game.log'
+            log.write_text('Horizon: server event a.A listened by [m.Handler]\nHorizon: server event a.B$C not listened\nHorizon: server event a.A canceled=false result=0 bytes\n')
+            self.assertEqual(mp.census(log), {'a.A': True, 'a.B$C': False})
+
+    def test_flatten_keeps_new_step_kinds(self):
+        steps = mp.flatten([{'name': 'die'}, {'respawn': True}, {'key': 'key.drop'}])
+        self.assertEqual([mp.ctl_commands(kind, arg) for _, kind, arg in steps], [[['respawn']], [['key', 'q', 'tap']]])
+
     def test_frame_events_compare_by_presence(self):
         fov = 'net.neoforged.neoforge.client.event.ViewportEvent$ComputeFov'
         forge = {(1, 'client'): {fov: 600, 'A': 600}}
