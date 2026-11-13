@@ -2,6 +2,9 @@
 //! it reads, the spawning chunks and caps of `ServerChunkCache.tickChunks`,
 //! and the mobs it adds (finalized with the game's `finalizeSpawn`).
 use super::{Dim, Game};
+
+#[path = "custom_spawner.rs"]
+mod custom_spawner;
 use horizon_client::vanillagen::VanillaTerrain;
 use horizon_client::{
     biome::{BiomeInfo, SpawnEntry},
