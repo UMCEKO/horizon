@@ -5,6 +5,8 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import dev.horizonlab.javamods.boot.mixin.BlockSnapshotAccess;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -36,6 +38,7 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.neoforged.neoforge.event.EventHooks;
 import net.neoforged.neoforge.event.entity.item.ItemTossEvent;
+import net.minecraft.world.level.block.Block;
 import net.neoforged.bus.ListenerList;
 import net.neoforged.bus.api.Event;
 import net.neoforged.bus.api.IEventBus;
@@ -44,6 +47,7 @@ import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.EventHooks;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.entity.player.AdvancementEvent.AdvancementProgressEvent.ProgressType;
+import net.neoforged.neoforge.common.util.BlockSnapshot;
 
 /** NeoForge events Rust posts where its hook fires (`game/java/java_listener.rs`): which ones a mod listens to, and the post ops. */
 public final class EventPosts {
@@ -70,11 +74,20 @@ public final class EventPosts {
     }
 
     /** The server events Rust posts through `post_event`, each with the acting player's view filled. */
-    private static final Map<String, PlayerPost> PLAYER = Map.of(
-        "BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity, "BlockEvent.FarmlandTrampleEvent", EventPosts::playerTrample, "BonemealEvent", EventPosts::playerBonemeal,
-        "PlayerSetSpawnEvent", EventPosts::setSpawn, "PlayerWakeUpEvent", EventPosts::wakeUp, "AdvancementEvent.AdvancementEarnEvent", EventPosts::advancementEarn,
-        "AdvancementEvent.AdvancementProgressEvent", EventPosts::advancementProgress,
-        "ItemTossEvent", EventPosts::itemToss, "ArrowLooseEvent", EventPosts::arrowLoose);
+    private static final Map<String, PlayerPost> PLAYER = new java.util.HashMap<>();
+    static {
+        PLAYER.put("BreakBlockEvent", EventPosts::breakBlock);
+        PLAYER.put("AttackEntityEvent", EventPosts::attackEntity);
+        PLAYER.put("BlockEvent.FarmlandTrampleEvent", EventPosts::playerTrample);
+        PLAYER.put("BonemealEvent", EventPosts::playerBonemeal);
+        PLAYER.put("PlayerSetSpawnEvent", EventPosts::setSpawn);
+        PLAYER.put("PlayerWakeUpEvent", EventPosts::wakeUp);
+        PLAYER.put("AdvancementEvent.AdvancementEarnEvent", EventPosts::advancementEarn);
+        PLAYER.put("AdvancementEvent.AdvancementProgressEvent", EventPosts::advancementProgress);
+        PLAYER.put("ItemTossEvent", EventPosts::itemToss);
+        PLAYER.put("ArrowLooseEvent", EventPosts::arrowLoose);
+        PLAYER.put("BlockEvent.EntityPlaceEvent", EventPosts::place);
+    }
 
     /** The server events Rust posts through `post_level_event`. */
     private static final Map<String, LevelPost> LEVEL = Map.of("BlockEvent.FarmlandTrampleEvent", EventPosts::mobTrample, "BonemealEvent", EventPosts::levelBonemeal, "PistonEvent.Pre", EventPosts::pistonPre, "PistonEvent.Post", EventPosts::pistonPost, "GameRuleChangedEvent", EventPosts::gameRuleChanged);
@@ -433,6 +446,23 @@ public final class EventPosts {
         int out = crossbow ? EventHooks.onArrowLoose(stack, call.level(), call.player(), 1) : EventHooks.onArrowLoose(stack, call.level(), call.player(), charge, hasAmmo);
         if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: server event ArrowLooseEvent " + charge + "->" + out);
         return intResult(false, out);
+    }
+
+    /** `CommonHooks.onPlaceItemIntoWorld`'s event over Rust's captured writes: `byte face`, `int n` x (`long pos`, `int oldState`, `int flags`). */
+    private static Posted place(GameBridge.Call call) {
+        var in = call.in();
+        var face = Direction.from3DDataValue(in.readByte());
+        int n = in.readInt();
+        var level = call.level();
+        var snapshots = new ArrayList<BlockSnapshot>(n);
+        for (int i = 0; i < n; i++) {
+            var pos = BlockPos.of(in.readLong());
+            var old = Block.stateById(in.readInt());
+            snapshots.add(BlockSnapshotAccess.horizon$create(level.dimension(), level, pos, old, null, in.readInt()));
+        }
+        boolean canceled = n > 1 ? EventHooks.onMultiBlockPlace(call.player(), snapshots, face) : n == 1 && EventHooks.onBlockPlace(call.player(), snapshots.get(0), face);
+        if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: server event BlockEvent.EntityPlaceEvent n=" + n + " canceled=" + canceled);
+        return new Posted(canceled, Posted.NONE.result());
     }
 
     /** `client_post_event`: the event's name, then its fields, posted on the Java client's thread. */

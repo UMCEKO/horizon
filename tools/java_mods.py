@@ -534,6 +534,25 @@ def bridges(args):
         ok = 'minecraft:air' in send(f'block {x + 2} {y + 1} {z + 1}')
         print(f"  snow_layer_instant: {'ok' if ok else 'WRONG'}", flush=True)
         wrong.extend([] if ok else ['snow_layer_instant'])
+        # Survival placements the test mod hears: it cancels the diamond block's EntityPlaceEvent, the door's is a multi-place.
+        def diamond_blocks():
+            reply = json.loads(send('inventory'))
+            counts = reply.get('inventory', reply).get('counts', {})
+            return counts.get('minecraft:diamond_block', counts.get('diamond_block', 0))
+        for dz in (-1, 1):
+            send(f'command setblock {x + 4} {y - 1} {z + dz} minecraft:stone')
+            send(f'command setblock {x + 4} {y} {z + dz} minecraft:air')
+        send('give minecraft:diamond_block 2')
+        send('give minecraft:oak_door 1')
+        send('wait 5')
+        before = diamond_blocks()
+        print(send(f'place {x + 4} {y} {z - 1} --item minecraft:diamond_block')[:160], flush=True)
+        print(send(f'place {x + 4} {y} {z + 1} --item minecraft:oak_door')[:160], flush=True)
+        send('wait 5')
+        for name, ok in (('place_cancel_restores', 'minecraft:air' in send(f'block {x + 4} {y} {z - 1}') and before == 2 and diamond_blocks() == 2),
+                         ('door_placed', 'minecraft:oak_door' in send(f'block {x + 4} {y + 1} {z + 1}'))):
+            print(f"  {name}: {'ok' if ok else 'WRONG'}", flush=True)
+            wrong.extend([] if ok else [name])
         # A mod block whose drops come from code, then one that refuses its removal.
         send(f'command setblock {x + 2} {y} {z - 3} horizon_java_test:dropper')
         send('wait 5')
@@ -590,7 +609,7 @@ def bridges(args):
     shutil.copy(Path(args.scratch) / 'ctl.log', Path(args.scratch) / 'first-session.log')
     paused = re.findall(r'^Horizon: pause sources: \[(.*)\]$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks.append(('pause_sources_from_handler', 'ok' if paused == ['music'] else f'FAILED {paused}'))
-    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'team_join_routed', 'team_leave_routed', 'team_view_matches', 'team_join_inner_sees_member', 'team_leave_inner_sees_member_gone', 'player_stack_keeps_identity', 'player_view_sees_native_give', 'play_sound_posted_from_native', 'gui_layer_pre_cancel', 'chat_received_overlay', 'chat_received_player', 'lockstep_order', 'lockstep_post_sees_this_tick', 'glyph_shadow_from_patch', 'loop_init_then_run', 'mod_command_registered', 'commands_selection_follows_dist', 'server_chat_event_player', 'client_commands_registered', 'client_command_runs', 'client_level_sees_the_pig', 'client_level_finds_the_pig_in_its_box', 'client_level_loses_the_removed_pig', 'debug_entry_lines_recorded', 'rocket_moves_in_its_own_tick', 'rocket_lifts_five_blocks', 'pre_write_moves_without_lerp_start','window_resize_fired', 'render_frame_paired', 'master_volume_follows') if (name, 'ok') not in checks)
+    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'team_join_routed', 'team_leave_routed', 'team_view_matches', 'team_join_inner_sees_member', 'team_leave_inner_sees_member_gone', 'player_stack_keeps_identity', 'player_view_sees_native_give', 'play_sound_posted_from_native', 'gui_layer_pre_cancel', 'chat_received_overlay', 'chat_received_player', 'lockstep_order', 'lockstep_post_sees_this_tick', 'glyph_shadow_from_patch', 'loop_init_then_run', 'mod_command_registered', 'commands_selection_follows_dist', 'server_chat_event_player', 'client_commands_registered', 'client_command_runs', 'client_level_sees_the_pig', 'client_level_finds_the_pig_in_its_box', 'client_level_loses_the_removed_pig', 'debug_entry_lines_recorded', 'rocket_moves_in_its_own_tick', 'rocket_lifts_five_blocks', 'pre_write_moves_without_lerp_start','window_resize_fired', 'render_frame_paired', 'master_volume_follows', 'door_is_multi_place') if (name, 'ok') not in checks)
     session(args, again)
     second = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks += [(name + ' (second session)', result) for name, result in second]
