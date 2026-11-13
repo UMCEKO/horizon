@@ -22,6 +22,8 @@ The install is only read: its home/ and client config are copied into OUT. Steps
     {"output": "regex", "present": true}                                     the chat lines the last command returned
     {"log": "regex", "present": true}  {"no_exceptions": true, "ignore": "regex"}   the log since the last step started
     {"java_heap": {"max_live_mb": 450, "max_metaspace_mb": 260}}             the game JVM's live heap after a full GC, and its Metaspace
+  "output" and "log" checks also take "capture": NAME (keep int of group 1 of the last match) and "equals": NAME with "times": K (default 1):
+    the check passes only if group 1 of the last match times K equals the number captured under NAME, both above 0.
   {"respawn": true} presses the death screen's button. A script may be {"env": {"NAME": "value"}, "steps": [...]}: the env is added to the game's.
   Every check takes "within" (seconds to keep trying, default 3) and the log checks take "since": "start" or a step's name.
 """
@@ -343,7 +345,7 @@ def read_check(ctl, check, timeout):
     raise ValueError(f'unknown check {sorted(check)}')
 
 
-def evaluate(check, ctl, log, last_output, timeout, sleep=time.sleep):
+def evaluate(check, ctl, log, last_output, timeout, sleep=time.sleep, captured=None):
     """One check as {"ok", "want", "got"}; state checks keep trying for `within` seconds."""
     if 'output' in check or 'log' in check or 'no_exceptions' in check:
         within = check.get('within', 3 if check.get('present', 'no_exceptions' not in check) else 0)
@@ -364,6 +366,16 @@ def evaluate(check, ctl, log, last_output, timeout, sleep=time.sleep):
             present = check.get('present', True)
             found = re.search(pattern, text)
             result = (bool(found) == present, ('' if present else 'no ') + f'match of {pattern}', 'matched' if found else 'no match')
+            last = None
+            for last in re.finditer(pattern, text):
+                pass
+            number = int(last.group(1)) if last and last.groups() and last.group(1).isdigit() else None
+            if 'capture' in check and number is not None and captured is not None:
+                captured[check['capture']] = number
+            if 'equals' in check:
+                times, want = check.get('times', 1), (captured or {}).get(check['equals'])
+                result = (bool(found) and want is not None and want > 0 and number is not None and number > 0 and number * times == want,
+                          f'{times} x match of {pattern} = {want}', f'{number} x {times}' if number is not None else 'no match')
         if result[0] or time.monotonic() >= end:
             return {'ok': bool(result[0]), 'want': result[1], 'got': result[2]}
         sleep(0.25)
@@ -373,7 +385,7 @@ def evaluate(check, ctl, log, last_output, timeout, sleep=time.sleep):
 
 def run_steps(ctl, steps, out, log, deadline, step_timeout=120, sleep=time.sleep):
     """Each step's result; stops at the first failure, and at the whole-run deadline."""
-    results, last_output = [], []
+    results, last_output, captured = [], [], {}
     for i, (name, kind, arg) in enumerate(steps):
         started = time.monotonic()
         entry = {'i': i, 'name': name, 'ok': True, 'checks': []}
@@ -383,7 +395,7 @@ def run_steps(ctl, steps, out, log, deadline, step_timeout=120, sleep=time.sleep
             if remaining <= 0:
                 entry.update(ok=False, error='run timeout')
             elif kind == 'check':
-                entry['checks'] = [dict(evaluate(arg, ctl, log, last_output, timeout, sleep), check=next(k for k in ('block', 'looking_at', 'held', 'slot', 'menu', 'near', 'output', 'log', 'no_exceptions', 'java_heap') if k in arg))]
+                entry['checks'] = [dict(evaluate(arg, ctl, log, last_output, timeout, sleep, captured), check=next(k for k in ('block', 'looking_at', 'held', 'slot', 'menu', 'near', 'output', 'log', 'no_exceptions', 'java_heap') if k in arg))]
                 entry['ok'] = all(c['ok'] for c in entry['checks'])
             elif kind == 'click_item':
                 code, data = ctl('inventory', timeout=timeout)

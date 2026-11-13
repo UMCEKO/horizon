@@ -155,6 +155,20 @@ class CheckTests(Base):
         result = self.run_script([{'command': '/give'}, {'check': {'output': 'Gave 4', 'within': 0}}, {'check': {'output': 'Unknown', 'within': 0}}])
         self.assertEqual([s['ok'] for s in result['steps']], [True, True, False])
 
+    def test_capture_keeps_the_last_match_and_equals_compares_it(self):
+        self.log.path.write_text('after_translucent=12\nafter_translucent=150\n')
+        captured = {}
+
+        def ev(check, out=(), cap=captured):
+            return hs.evaluate(check, self.ctl, self.log, list(out), 5, lambda s: None, cap)
+        self.assertTrue(ev({'log': r'after_translucent=(\d+)', 'since': 'start', 'capture': 'ghost', 'within': 0})['ok'])
+        self.assertEqual(captured, {'ghost': 150})
+        equals = {'output': r'filled (\d+) block', 'equals': 'ghost', 'times': 6, 'within': 0}
+        self.assertTrue(ev(equals, ['Successfully filled 25 blocks'])['ok'])
+        self.assertFalse(ev(equals, ['Successfully filled 24 blocks'])['ok'])
+        self.assertFalse(ev(equals, ['Successfully filled 25 blocks'], {})['ok'])
+        self.assertFalse(ev(equals, ['Successfully filled 0 blocks'], {'ghost': 0})['ok'])
+
     def test_log_since_the_last_step_started(self):
         self.log.path.write_text('old line Exception\n')
         script = [{'wait': 1}, {'check': {'log': 'Exception', 'present': False, 'within': 0}}]

@@ -932,6 +932,20 @@ public final class WorldFrame {
         System.err.println("Horizon: outline " + KINDS[answer.kind()] + " at " + (pos == null ? "-" : pos.getX() + " " + pos.getY() + " " + pos.getZ()));
     }
 
+    /** With `HORIZON_JAVA_DEBUG`, the quads of the visible pieces by pass, for the ghost-preview scenario. */
+    private static void tally(Recording recording, List<Piece> visible) {
+        long[] quads = new long[LINES_ON_TOP + 1];
+        long lines = 0;
+        for (var p : visible) {
+            var mesh = recording.meshes().get(p.mesh());
+            if (mesh == null) continue;
+            quads[p.pass()] += mesh.quads().size();
+            if (p.pass() == LINES || p.pass() == LINES_ON_TOP) lines += mesh.lines().size();
+        }
+        System.err.println("Horizon: world recording opaque=" + quads[OPAQUE] + " translucent=" + quads[TRANSLUCENT] + " after_translucent=" + quads[AFTER_TRANSLUCENT]
+                + " additive=" + quads[ADDITIVE] + " see_through=" + quads[SEE_THROUGH] + " lines=" + lines);
+    }
+
     static byte[] blob(Recording recording) throws IOException {
         byte[] trailer = trailer(recording.outline());
         byte[] bare = bytes(recording.pieces());
@@ -977,6 +991,7 @@ public final class WorldFrame {
         // A piece whose mesh waits for the next tick is held back with it.
         var visible = new ArrayList<Piece>();
         for (var p : recording.pieces()) if (SENT.contains(p.mesh())) visible.add(p);
+        if (System.getenv("HORIZON_JAVA_DEBUG") != null) tally(recording, visible);
         var bytes = new ByteArrayOutputStream();
         var out = new DataOutputStream(bytes);
         out.writeInt(++generation);
