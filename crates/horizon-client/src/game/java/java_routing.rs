@@ -4,7 +4,7 @@
 /// Who a routed method's receiver is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)] // the specs that gate these families construct them
-pub(in crate::game) enum Recv {
+pub(in crate::game) enum Recv<'a> {
     Player,
     Static,
     /// `GameBridge.server`.
@@ -17,6 +17,10 @@ pub(in crate::game) enum Recv {
     Level(crate::game::Dim),
     /// The Java client's object for the route's owner (`Minecraft`, its keyboard and mouse handlers, level, player): only from the window's frame or input.
     Client,
+    /// The server's loot table of this id.
+    LootTable(&'a str),
+    /// The item of the call's stack argument, with the acting player filled for the call.
+    UsedItem,
 }
 
 /// What a route's body fn calls to mark one of vanilla's early returns.
@@ -99,6 +103,26 @@ pub(in crate::game) struct ComponentArg<'a>(pub &'a horizon_core::nbt::Tag);
 
 /// A routed `Player` argument: the acting player, as a call fills its view.
 pub(in crate::game) struct PlayerArg(pub Option<Vec<u8>>);
+
+/// A routed `@Nullable Player` argument that is null.
+pub(in crate::game) struct NoPlayer;
+
+/// A routed `Entity` argument that is the player a [`Recv::UsedItem`] call filled.
+pub(in crate::game) struct FilledPlayerEntity;
+
+/// A routed `Container`: the block entity at a position of a level.
+pub(in crate::game) struct ContainerArg {
+    pub dim: &'static str,
+    pub pos: horizon_core::position::BlockPos,
+}
+
+/// A routed `LootParams` of the `CHEST` set, as `unpackLootTable` builds it: the origin, and the luck and `THIS_ENTITY` of a player.
+pub(in crate::game) struct LootParamsArg {
+    pub dim: &'static str,
+    pub origin: [f64; 3],
+    pub luck: f32,
+    pub player: Option<PlayerArg>,
+}
 
 /// A routed `MobEffectInstance` argument.
 #[allow(dead_code)] // gated routes construct it
@@ -250,7 +274,7 @@ mod gate {
             }
         }
 
-        pub fn admitted(&self, _recv: &Recv) -> Option<RouteId> {
+        pub fn admitted(&self, _recv: &Recv<'_>) -> Option<RouteId> {
             match self.state.load(Ordering::Relaxed) {
                 0 => {
                     let routes = routes::get()?;
@@ -383,7 +407,36 @@ mod gate {
                 .0
                 .as_ref()
                 .expect("a routed Player argument needs the acting player");
+            out.bool(true);
             out.0.extend_from_slice(fill);
+        }
+    }
+    impl RouteArg for super::NoPlayer {
+        fn put(&self, out: &mut Out) {
+            out.bool(false);
+        }
+    }
+    impl RouteArg for super::FilledPlayerEntity {
+        fn put(&self, out: &mut Out) {
+            // `Routing.entity`'s id for the call's filled player.
+            out.int(-1);
+        }
+    }
+    impl RouteArg for super::ContainerArg {
+        fn put(&self, out: &mut Out) {
+            out.text(self.dim);
+            out.long(self.pos.pack());
+        }
+    }
+    impl RouteArg for super::LootParamsArg {
+        fn put(&self, out: &mut Out) {
+            out.text(self.dim);
+            RouteArg::put(&self.origin, out);
+            out.float(self.luck);
+            match &self.player {
+                Some(player) => RouteArg::put(player, out),
+                None => out.bool(false),
+            }
         }
     }
     impl RouteArg for &horizon_java_host::bridge::Source {
@@ -579,7 +632,7 @@ mod gate {
         pub(in crate::game) fn route_call<R: RouteRet>(
             &mut self,
             id: RouteId,
-            recv: Recv,
+            recv: Recv<'_>,
             args: impl FnOnce(&mut Out),
         ) -> Option<R> {
             self.route_call_out(id, recv, 0, args)
@@ -590,7 +643,7 @@ mod gate {
         pub(in crate::game) fn route_call_out<R: RouteRet>(
             &mut self,
             id: RouteId,
-            recv: Recv,
+            recv: Recv<'_>,
             outputs: usize,
             args: impl FnOnce(&mut Out),
         ) -> Option<(R, Vec<Tag>)> {
@@ -625,6 +678,14 @@ mod gate {
                     out.0.push(1);
                     out.int(dim.key().slot() as i32);
                     out.long(self.world.game_time);
+                }
+                Recv::LootTable(table) => {
+                    out.0.push(6);
+                    out.text(table);
+                }
+                Recv::UsedItem => {
+                    out.0.push(7);
+                    out.0.extend(self.java_use_request()?);
                 }
                 Recv::Client => unreachable!("client routes take client_route"),
             }

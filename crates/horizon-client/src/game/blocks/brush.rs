@@ -37,10 +37,50 @@ fn completion_state(count: i32) -> i32 {
 
 pub(super) type Brushing = HashMap<[i32; 3], BrushState>;
 
+/// `onUseTick`'s `ticksRemaining` for a brush used `ticks` ticks so far.
+#[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+pub(in crate::game) fn ticks_remaining(ticks: u32) -> i32 {
+    USE_DURATION as i32 - ticks as i32
+}
+
+#[cfg(not(feature = "java-mods"))]
+impl Game<'_> {
+    pub(in crate::game) fn brush_use_tick(
+        &mut self,
+        stack: &horizon_client::items::ItemStack,
+        slot: usize,
+        ticks: u32,
+    ) {
+        self.brush_use_tick_body(stack, slot, ticks);
+    }
+}
+
 impl Game<'_> {
     /// `BrushItem.onUseTick` for a brush used `ticks` ticks so far, the
     /// hand of `slot` acting.
     pub(super) fn tick_brush(
+        &mut self,
+        stack: &horizon_client::items::ItemStack,
+        slot: usize,
+        ticks: u32,
+    ) {
+        self.brush_use_tick(stack, slot, ticks);
+        // The tick let go of the use (`releaseUsingItem`).
+        if self.using.is_none() {
+            return;
+        }
+        // The use ends after USE_DURATION; stopUsingItem causes the vibration
+        // (vanilla's tickUsingItem), the held button starts it again.
+        let elapsed = ticks + 1;
+        if elapsed < USE_DURATION {
+            self.using = Some((slot, elapsed));
+        } else {
+            self.stop_using_item(stack);
+        }
+    }
+
+    /// `BrushItem.onUseTick`'s body after any mod's patch.
+    pub(in crate::game) fn brush_use_tick_body(
         &mut self,
         stack: &horizon_client::items::ItemStack,
         slot: usize,
@@ -71,17 +111,9 @@ impl Game<'_> {
                 return;
             }
         }
-        let elapsed = ticks + 1;
         // The last tick before the backswing.
-        if elapsed % 10 == 5 {
+        if (ticks + 1) % 10 == 5 {
             self.brush_stroke(&hit, slot);
-        }
-        // The use ends after USE_DURATION; stopUsingItem causes the vibration
-        // (vanilla's tickUsingItem), the held button starts it again.
-        if elapsed < USE_DURATION {
-            self.using = Some((slot, elapsed));
-        } else {
-            self.stop_using_item(stack);
         }
     }
 

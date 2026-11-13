@@ -1016,7 +1016,11 @@ impl Game<'_> {
             .get(self.world.block(pos.x, pos.y, pos.z))
             .name
             .clone();
-        let tag = horizon_client::save::encode_block_entity(key, entity, &name);
+        let mut tag = horizon_client::save::encode_block_entity(key, entity, &name);
+        // `tryLoadLootTable` reads the table native keeps beside the container.
+        if let horizon_core::nbt::Tag::Compound(map) = &mut tag {
+            self.save_pending_loot(key, map);
+        }
         let Some(bytes) = write_tag(tag) else {
             return false;
         };
@@ -1045,14 +1049,19 @@ impl Game<'_> {
         generation: i64,
         tag: &[u8],
     ) -> i64 {
-        let Some((key, entity)) =
-            read_tag(tag).and_then(|t| horizon_client::save::decode_block_entity(&t))
-        else {
+        let Some(tag) = read_tag(tag) else {
+            log::warn!("Horizon: a Java mod's block entity at {pos:?} didn't decode");
+            return generation;
+        };
+        let Some((key, entity)) = horizon_client::save::decode_block_entity(&tag) else {
             log::warn!("Horizon: a Java mod's block entity at {pos:?} didn't decode");
             return generation;
         };
         if !self.java_generation_current(key, generation) {
             return 0;
+        }
+        if tag.get("LootTable").is_none() {
+            self.loot_taken_in_java(key);
         }
         let (_, held) = self.world.block_entities.insert_from_java(key, entity);
         self.world.modified.insert((key.0 >> 4, key.2 >> 4));

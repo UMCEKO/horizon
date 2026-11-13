@@ -44,6 +44,9 @@ public final class RoutingArgsCheck {
         var read = Crossing.In.of(bytes);
         if (read.readByte() != 0 || read.readInt() != -1 || read.readInt() != 0 || read.available() != 0) throw new AssertionError("status 0, -1, then an empty sound count: " + bytes.length);
         values();
+        // `loot_args_write_as_routing_reads_them`: `NoPlayer` is one false byte, read as a null player
+        var nobody = Crossing.In.of(new byte[] {0});
+        if (Routing.reader(net.minecraft.world.entity.player.Player.class).read(nobody, new Routing.Args("k")) != null || nobody.available() != 0) throw new AssertionError("an absent player is null");
         System.out.println("RoutingArgsCheck ok");
     }
 

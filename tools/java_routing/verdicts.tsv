@@ -28,7 +28,9 @@ net/minecraft/gametest/framework/TestCommand#verifyStructureExists	inert	gametes
 net/minecraft/network/chat/ComponentSerialization#bootstrap	java-boot	trace: java_client_routes.jfr
 net/minecraft/server/ReloadableServerResources#updateComponentsAndStaticRegistryTags	java-boot	trace: java_client_routes.jfr
 net/minecraft/util/filefix/fixes/DimensionStorageFileFix#makeFixer	out-of-scope	upgrading pre-26.3 worlds only
+net/minecraft/world/RandomizableContainer#tryLoadLootTable(Lnet/minecraft/world/level/storage/ValueInput;)Z	java-view	the method makes Java's view at vanilla's moment
 net/minecraft/world/entity/Entity#syncData	java-already	Java runs the whole method already
 net/minecraft/world/item/Item#<init>	java-boot	trace: java_client_routes.jfr
+net/minecraft/world/level/block/entity/BrushableBlockEntity#tryLoadLootTable(Lnet/minecraft/world/level/storage/ValueInput;)Z	java-view	the method makes Java's view at vanilla's moment
 net/minecraft/world/level/block/entity/TestInstanceBlockEntity#getStructureTemplate	inert	gametest or datagen only
 net/minecraft/world/level/block/entity/TestInstanceBlockEntity#placeStructure	inert	gametest or datagen only

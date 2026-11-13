@@ -169,6 +169,10 @@ impl Game<'_> {
         self.container = Some(key);
         self.ender_open = Some(key);
     }
+    /// `ChestBlock.isBlockedChestByBlock`'s body after any mod's patch.
+    pub(in crate::game) fn chest_blocked_by_block_body(&self, key: (i32, i32, i32)) -> bool {
+        self.conductor_above(key)
+    }
     /// The block above `key` is a redstone conductor.
     fn conductor_above(&self, key: (i32, i32, i32)) -> bool {
         let above = self.world.block(key.0, key.1 + 1, key.2);
@@ -178,8 +182,8 @@ impl Game<'_> {
     }
     /// `ChestBlock.isChestBlockedAt`: a redstone conductor above the chest or
     /// a cat sitting on it.
-    fn chest_blocked_at(&self, key: (i32, i32, i32)) -> bool {
-        if self.conductor_above(key) {
+    fn chest_blocked_at(&mut self, key: (i32, i32, i32)) -> bool {
+        if self.chest_blocked_by_block(key) {
             return true;
         }
         // isCatSittingOnChest: a cat whose box meets the block above.
@@ -205,7 +209,7 @@ impl Game<'_> {
     /// `ChestBlock.getMenuProvider` (`combine(.., false)`) and
     /// `EnderChestBlock.useWithoutItem`: a blocked chest, or a double chest
     /// with either half blocked, opens no menu.
-    pub(super) fn chest_menu_blocked(&self, key: (i32, i32, i32), name: &str) -> bool {
+    pub(super) fn chest_menu_blocked(&mut self, key: (i32, i32, i32), name: &str) -> bool {
         match name {
             n if is_chest_block(n) => {
                 self.chest_blocked_at(key)
@@ -601,6 +605,13 @@ impl Game<'_> {
     /// (`horizon_client::menu`); false when the menu has none.
     pub(super) fn container_quick_move(&mut self, slot: usize) -> bool {
         self.click_open_inventory(Some(slot), 0, horizon_client::menu::Input::QuickMove)
+    }
+}
+
+#[cfg(not(feature = "java-mods"))]
+impl Game<'_> {
+    pub(in crate::game) fn chest_blocked_by_block(&mut self, key: (i32, i32, i32)) -> bool {
+        self.chest_blocked_by_block_body(key)
     }
 }
 

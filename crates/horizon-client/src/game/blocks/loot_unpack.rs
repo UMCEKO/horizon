@@ -49,7 +49,12 @@ pub(super) fn unpack_in(
     let biome = world
         .chunks
         .get(&(key.0 >> 4, key.2 >> 4))
-        .map(|c| biomes.get(c.biome(key.0 & 15, key.1, key.2 & 15)).name.clone())
+        .map(|c| {
+            biomes
+                .get(c.biome(key.0 & 15, key.1, key.2 & 15))
+                .name
+                .clone()
+        })
         .unwrap_or_default();
     if let Some(BlockEntity::Chest(slots)) = world.block_entities.get_mut(&key) {
         structure_blocks::roll_container(
@@ -73,29 +78,88 @@ impl Game<'_> {
     /// `RandomizableContainer.unpackLootTable(null)`: a hopper, a dropper, a
     /// command or a break reads the container.
     pub(super) fn unpack_loot_table(&mut self, key: Pos) {
-        if !self.loot_pending(key) {
-            return;
+        // A container with no table skips the call: vanilla's body does nothing then.
+        if self.loot_pending(key) {
+            self.unpack_container_loot(key, false);
         }
-        let loot = self.server_loot.get();
-        let biomes = world_biomes!(self).clone();
-        unpack_in(&mut self.world, &biomes, loot.as_deref(), key, 0.0);
     }
     /// `RandomizableContainer.unpackLootTable(player)` for the player who opens
     /// the container: `player_generates_container_loot` fires first, then the
     /// roll takes the player's luck (`LootParams.withLuck`).
     pub(super) fn unpack_loot_table_for_player(&mut self, key: Pos) {
+        if self.loot_pending(key) {
+            self.unpack_container_loot(key, true);
+        }
+    }
+    /// `unpackLootTable`'s body after any mod's patch: the trigger, `setLootTable(null)`, then `LootTable.fill`.
+    pub(in crate::game) fn unpack_container_loot_body(&mut self, key: Pos, player: bool) {
         let Some(table) = pending_table(&self.world, key).map(|p| p.table.clone()) else {
             return;
         };
-        self.trigger_loot_table(&table);
-        let luck = self
-            .player
-            .as_mut()
-            .and_then(|p| p.attribute("minecraft:luck").ok())
-            .unwrap_or(0.0) as f32;
+        let luck = if player {
+            self.trigger_loot_table(&table);
+            self.player
+                .as_mut()
+                .and_then(|p| p.attribute("minecraft:luck").ok())
+                .unwrap_or(0.0) as f32
+        } else {
+            0.0
+        };
+        let Some(pending) = take_pending(&mut self.world, key) else {
+            return;
+        };
+        // Logs the change, so a Java view of the container drops its table before the fill.
+        let _ = self.world.block_entities.get_mut(&key);
+        self.loot_table_fill(key, &pending.table, pending.seed.unwrap_or(0), luck, player);
+    }
+    /// `LootTable.fill`'s body: the roll of `table` with `seed` (0 for none) into the container's slots.
+    pub(in crate::game) fn loot_table_fill_body(
+        &mut self,
+        key: Pos,
+        table: &str,
+        seed: i64,
+        luck: f32,
+    ) {
         let loot = self.server_loot.get();
         let biomes = world_biomes!(self).clone();
-        unpack_in(&mut self.world, &biomes, loot.as_deref(), key, luck);
+        let biome = self
+            .world
+            .chunks
+            .get(&(key.0 >> 4, key.2 >> 4))
+            .map(|c| {
+                biomes
+                    .get(c.biome(key.0 & 15, key.1, key.2 & 15))
+                    .name
+                    .clone()
+            })
+            .unwrap_or_default();
+        if let Some(BlockEntity::Chest(slots)) = self.world.block_entities.get_mut(&key) {
+            structure_blocks::roll_container(
+                slots,
+                loot.as_deref(),
+                table,
+                Some(seed),
+                key,
+                &biome,
+                luck,
+            );
+        }
+    }
+    /// Java's view of the container at `key` saved without a table (its `setLootTable(null)`): native's pending one goes too.
+    #[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+    pub(in crate::game) fn loot_taken_in_java(&mut self, key: Pos) {
+        take_pending(&mut self.world, key);
+    }
+    /// The pending table at `key` as `trySaveLootTable` writes it into a saved form.
+    #[cfg_attr(not(feature = "java-mods"), allow(dead_code))]
+    pub(in crate::game) fn save_pending_loot(
+        &self,
+        key: Pos,
+        map: &mut horizon_core::nbt::Compound,
+    ) {
+        if let Some(pending) = pending_table(&self.world, key) {
+            pending.save_into(map);
+        }
     }
     /// The menu provider's unpack when a player opens a container:
     /// `ChestBlock.getMenuProvider` unpacks both halves of a double chest.
@@ -111,6 +175,23 @@ impl Game<'_> {
             }
             None => self.unpack_loot_table_for_player(key),
         }
+    }
+}
+
+#[cfg(not(feature = "java-mods"))]
+impl Game<'_> {
+    pub(in crate::game) fn unpack_container_loot(&mut self, key: Pos, player: bool) {
+        self.unpack_container_loot_body(key, player);
+    }
+    pub(in crate::game) fn loot_table_fill(
+        &mut self,
+        key: Pos,
+        table: &str,
+        seed: i64,
+        luck: f32,
+        _player: bool,
+    ) {
+        self.loot_table_fill_body(key, table, seed, luck);
     }
 }
 

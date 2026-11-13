@@ -34,7 +34,10 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.ServerCommonPacketListenerImpl;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.util.ProblemReporter;
+import net.minecraft.world.Container;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.effect.MobEffectInstance;
@@ -57,6 +60,9 @@ import net.minecraft.world.level.storage.TagValueInput;
 import net.minecraft.world.level.storage.TagValueOutput;
 import net.minecraft.world.level.storage.ValueInput;
 import net.minecraft.world.level.storage.ValueOutput;
+import net.minecraft.world.level.storage.loot.LootParams;
+import net.minecraft.world.level.storage.loot.parameters.LootContextParamSets;
+import net.minecraft.world.level.storage.loot.parameters.LootContextParams;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.scores.PlayerTeam;
 
@@ -523,6 +529,8 @@ public final class Routing {
         ServerPlayer filled;
         ServerLevel level;
         final List<TagValueOutput> outputs = new ArrayList<>();
+        /** The block entities the call acts on, written through to Horizon's record after it. */
+        final List<java.util.Map.Entry<ServerLevel, BlockPos>> touched = new ArrayList<>();
 
         Args(String key) {
             this.key = key;
@@ -543,7 +551,10 @@ public final class Routing {
 
     private static ArgReader entity(Class<?> type) {
         return (in, c) -> {
-            var e = Flat.toEntity(in.readInt());
+            int id = in.readInt();
+            // -1: the player the call's receiver filled.
+            var e = id == -1 ? c.filled : Flat.toEntity(id);
+            if (id == -1 && e == null) throw new IllegalStateException("route " + c.key + ": no filled player for its entity argument");
             if (e != null && !type.isInstance(e)) throw new ClassCastException("route " + c.key + ": entity " + e.getId() + " is a " + e.getClass().getName() + ", not a " + type.getName());
             return e;
         };
@@ -562,6 +573,7 @@ public final class Routing {
         if (type == Component.class) return (in, c) -> Flat.toComponent(in.readNBytes(in.readInt()));
         if (type == Player.class || type == ServerPlayer.class) {
             return (in, c) -> {
+                if (!in.readBoolean()) return null;
                 var call = GameBridge.fill(in, false);
                 c.level = call.level();
                 return c.filled = call.player();
@@ -569,6 +581,30 @@ public final class Routing {
         }
         if (type == Vec3.class) return (in, c) -> new Vec3(in.readDouble(), in.readDouble(), in.readDouble());
         if (type == PlayerTeam.class) return (in, c) -> ScoreboardView.team(in.text(), in.readNBytes(in.readInt()));
+        if (type == Container.class) {
+            return (in, c) -> {
+                var level = GameBridge.level(in.text());
+                var at = BlockPos.of(in.readLong());
+                if (!(level.getBlockEntity(at) instanceof Container container)) throw new IllegalStateException("route " + c.key + ": no container at " + at);
+                c.touched.add(java.util.Map.entry(level, at));
+                return container;
+            };
+        }
+        if (type == LootParams.class) {
+            return (in, c) -> {
+                // `RandomizableContainer.unpackLootTable`'s params.
+                var level = GameBridge.level(in.text());
+                var params = new LootParams.Builder(level).withParameter(LootContextParams.ORIGIN, new Vec3(in.readDouble(), in.readDouble(), in.readDouble()));
+                float luck = in.readFloat();
+                if (in.readBoolean()) {
+                    var call = GameBridge.fill(in, false);
+                    c.level = call.level();
+                    c.filled = call.player();
+                    params.withLuck(luck).withParameter(LootContextParams.THIS_ENTITY, c.filled);
+                }
+                return params.create(LootContextParamSets.CHEST);
+            };
+        }
         if (type == BlockState.class) return (in, c) -> Block.stateById(in.readInt());
         if (type.getName().equals("net.minecraft.client.input.KeyEvent")) return (in, c) -> ClientRoutes.keyEvent(in);
         if (Entity.class.isAssignableFrom(type)) return entity(type);
@@ -725,12 +761,23 @@ public final class Routing {
                 var at = BlockPos.of(in.readLong());
                 receiver = level.getBlockEntity(at);
                 if (receiver == null || !plan.owner().isInstance(receiver)) throw new IllegalStateException("route " + key + ": no " + plan.owner().getName() + " at " + at + (receiver == null ? "" : ", found a " + receiver.getClass().getName()));
+                call.touched.add(java.util.Map.entry(level, at));
+            }
+            case 6 -> {
+                var table = ResourceKey.create(Registries.LOOT_TABLE, Identifier.parse(in.text()));
+                receiver = GameBridge.server().reloadableRegistries().getLootTable(table);
+            }
+            case 7 -> {
+                var filled = GameBridge.fill(in, false);
+                call.filled = filled.player();
+                call.level = filled.level();
             }
             default -> {}
         }
         var args = new ArrayList<Object>();
         if (!isStatic) args.add(receiver);
         for (var reader : plan.args()) args.add(reader.read(in, call));
+        if (recv == 7) usedItem(key, plan, isStatic, call.filled, args);
         long started = Profile.ON ? System.nanoTime() : 0;
         Object result;
         try {
@@ -741,12 +788,32 @@ public final class Routing {
             return;
         }
         if (Profile.ON) Profile.event("route:" + key, System.nanoTime() - started);
+        for (var at : call.touched) BlockEntities.changed(at.getKey(), at.getValue());
         out.writeByte(0);
         plan.ret().write(result, out);
         for (var output : call.outputs) GameBridge.writeTag(out, output.buildResult());
         if (call.filled != null) PlayerSync.writeChanges(call.filled, out);
         else out.writeInt(-1);
         GameBridge.writeEffects(out);
+    }
+
+    /** An item route's receiver: the item of its stack argument, which is the filled player's own stack in hand when it matches one, so wear reaches the player. */
+    private static void usedItem(String key, Plan plan, boolean isStatic, ServerPlayer player, List<Object> args) {
+        for (int i = isStatic ? 0 : 1; i < args.size(); i++) {
+            if (!(args.get(i) instanceof ItemStack stack)) continue;
+            for (var hand : InteractionHand.values()) {
+                var held = player.getItemInHand(hand);
+                if (ItemStack.matches(held, stack)) {
+                    args.set(i, held);
+                    stack = held;
+                    break;
+                }
+            }
+            if (!plan.owner().isInstance(stack.getItem())) throw new IllegalStateException("route " + key + ": the stack's " + stack.getItem() + " is no " + plan.owner().getName());
+            if (!isStatic) args.set(0, stack.getItem());
+            return;
+        }
+        throw new IllegalStateException("route " + key + ": an item receiver needs a stack argument");
     }
 
     /** Whether a mod's mixin changes this method and the route is on; W10's seams ask. */
@@ -785,7 +852,7 @@ public final class Routing {
             return;
         }
         if (admission.receivers() == null) {
-            out.writeInt(family.equals("entity") || family.equals("block_entity") ? -2 : -1);
+            out.writeInt(family.equals("entity") ? -2 : -1);
         } else {
             out.writeInt(admission.receivers().size());
             for (String a : admission.receivers()) text(out, a);

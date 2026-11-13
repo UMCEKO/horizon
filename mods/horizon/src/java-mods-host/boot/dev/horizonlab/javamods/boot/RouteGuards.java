@@ -128,7 +128,7 @@ final class RouteGuards {
 
     /** One live route's admission: `admitted` is the family's receiver list already narrowed by `recv`, null for a family without one; `registry` is read only for an item guard. */
     static Admission admission(String family, List<String> admitted, Parsed guards, Supplier<List<Map.Entry<String, Class<?>>>> registry) {
-        boolean listless = admitted == null && !family.equals("entity") && !family.equals("block_entity");
+        boolean listless = admitted == null && !family.equals("entity");
         boolean inert = guards.argNever() || admitted != null && admitted.isEmpty() || listless && modOnly(guards.recv());
         var items = guards.items() == null ? null : items(guards.items(), registry.get());
         boolean anyBlocks = guards.blocks() == null && guards.blockEntities() == null;

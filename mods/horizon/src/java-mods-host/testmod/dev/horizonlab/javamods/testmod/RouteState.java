@@ -15,6 +15,10 @@ public final class RouteState {
     public static boolean initBeforeRun;
     /** The scoreboard handlers that ran, in order, for team `red`. */
     public static final java.util.List<String> teamLog = new java.util.ArrayList<>();
+    /** The players `unpackLootTable` saw for containers with a table, null for none. */
+    public static final java.util.List<String> unpackPlayers = new java.util.ArrayList<>();
+    /** Server-side `BrushItem.onUseTick` calls so far. */
+    public static int brushTicks;
 
     /** The Java client's own inventory runs the same handlers; only the server's is routed. */
     public static boolean server(Inventory inventory) {
