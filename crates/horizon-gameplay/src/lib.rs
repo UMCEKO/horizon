@@ -4,9 +4,11 @@
 extern crate horizon_client_lib as horizon_client;
 pub mod cat_spawner;
 pub mod dedicated;
+pub mod foxes;
 pub mod interaction_shapes;
 pub mod item_areas;
 pub mod lan;
 pub mod mob_index;
+pub mod mob_level;
 pub mod tick_profile;
 pub mod wandering_trader;
