@@ -130,12 +130,38 @@ fn camera_fluid_height(world: &World, facts: &BlockFacts, b: [i32; 3]) -> Option
 /// `Camera.getFluidInCamera`: water at the camera, then lava or powder snow
 /// at the near plane's centre and corners.
 pub fn fog_type(world: &World, facts: &BlockFacts, camera: [f64; 3], near: &NearPlane) -> FogType {
+    fog_type_classed(world, facts, camera, near, &|_| Fluid::Modded)
+}
+/// `fog_type` with a mod fluid's class, by its block name: `Water` or `Lava` when it is in
+/// `#minecraft:water` or `#minecraft:lava`, else `Modded`.
+pub fn fog_type_classed(
+    world: &World,
+    facts: &BlockFacts,
+    camera: [f64; 3],
+    near: &NearPlane,
+    class: &dyn Fn(&str) -> Fluid,
+) -> FogType {
     camera_fog_type(
         camera,
         near,
-        |b| camera_fluid_height(world, facts, b),
+        |b| {
+            let (fluid, height) = camera_fluid_height(world, facts, b)?;
+            let fluid = match fluid {
+                Fluid::Modded => class(&facts.get(world.block(b[0], b[1], b[2])).name),
+                other => other,
+            };
+            Some((fluid, height))
+        },
         |b| &*facts.get(world.block(b[0], b[1], b[2])).name == "minecraft:powder_snow",
     )
+}
+/// The mod fluid the eye is in: its block's name, when the fluid's surface is above the eye
+/// (`Entity.updateFluidOnEyes`).
+pub fn eye_mod_fluid(world: &World, facts: &BlockFacts, eye: [f64; 3]) -> Option<String> {
+    let b = eye.map(|c| c.floor() as i32);
+    let (fluid, height) = camera_fluid_height(world, facts, b)?;
+    (fluid == Fluid::Modded && eye[1] < f64::from(b[1]) + height)
+        .then(|| facts.get(world.block(b[0], b[1], b[2])).name.to_string())
 }
 /// `fog_type` over a block lookup: the fluid and its camera height, and
 /// whether the block is powder snow.
@@ -514,6 +540,23 @@ mod tests {
         assert_eq!(fog(surface + 0.05, 0.0), FogType::Atmospheric);
         // The eye itself is not tested: looking up, the whole plane is above it.
         assert_eq!(fog(surface - 0.01, -90.0), FogType::Atmospheric);
+    }
+    #[test]
+    fn a_mod_fluid_fogs_as_water_only_when_it_is_in_the_water_tag() {
+        // A source cell on y 64 covers the camera at 64.5 (8/9 high is 64.889).
+        let fog = |class: Fluid| {
+            let camera = crate::camera::Camera::default();
+            let near = camera.near_plane(70.0, 1600.0, 900.0);
+            camera_fog_type(
+                [0.5, 64.5, 0.5],
+                &near,
+                |b| (b[1] == 64).then_some((class, 8.0 / 9.0)),
+                |_| false,
+            )
+        };
+        assert_eq!(fog(Fluid::Modded), FogType::Atmospheric);
+        assert_eq!(fog(Fluid::Water), FogType::Water);
+        assert_eq!(fog(Fluid::Lava), FogType::Lava);
     }
     #[test]
     fn the_dragon_fights_world_fog_leaves_out_the_sky() {

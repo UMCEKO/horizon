@@ -8,6 +8,7 @@ use crate::libraries::LibClass;
 
 const CANCELLABLE: &str = "net/neoforged/bus/api/ICancellableEvent";
 const MOD_BUS_EVENT: &str = "net/neoforged/fml/event/IModBusEvent";
+const ACC_INTERFACE: u16 = 0x200;
 
 /// What the hierarchy says about an event class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +23,7 @@ pub struct Hierarchy {
     pub jars: Vec<PathBuf>,
     heads: HashMap<String, (Option<String>, Vec<String>)>,
     memo: RefCell<HashMap<String, Vec<String>>>,
+    mod_interfaces: HashMap<String, bool>,
 }
 
 impl Hierarchy {
@@ -36,12 +38,35 @@ impl Hierarchy {
             jars: Vec::new(),
             heads,
             memo: RefCell::new(HashMap::new()),
+            mod_interfaces: HashMap::new(),
         }
     }
 
     /// Port of mod_replaces.Hierarchy.add.
-    pub fn add(&mut self, name: &str, sup: Option<String>, ifaces: Vec<String>) {
+    pub fn add(
+        &mut self,
+        name: &str,
+        sup: Option<String>,
+        ifaces: Vec<String>,
+        access: Option<u16>,
+    ) {
         self.heads.insert(name.to_owned(), (sup, ifaces));
+        if let Some(access) = access {
+            self.mod_interfaces
+                .insert(name.to_owned(), access & ACC_INTERFACE != 0);
+        }
+    }
+
+    /// Port of mod_replaces.Hierarchy.mod_class.
+    pub fn mod_class(&self, name: &str) -> bool {
+        self.mod_interfaces.get(name) == Some(&false) && !crate::class::is_vanilla(name)
+    }
+
+    /// Every class with its super and interfaces (Python's `heads` items), in no order.
+    pub fn head_entries(&self) -> impl Iterator<Item = (&str, Option<&str>, &[String])> {
+        self.heads
+            .iter()
+            .map(|(n, (sup, ifaces))| (n.as_str(), sup.as_deref(), ifaces.as_slice()))
     }
 
     /// The names of every class the hierarchy knows (Python's `heads` keys), in no order.
@@ -169,8 +194,8 @@ mod tests {
     #[test]
     fn added_classes_extend_the_chain_and_event_facts_follow() {
         let mut h = sample();
-        h.add("Ev", Some("Base".to_owned()), vec![]);
-        h.add("Base", None, vec![CANCELLABLE.to_owned()]);
+        h.add("Ev", Some("Base".to_owned()), vec![], None);
+        h.add("Base", None, vec![CANCELLABLE.to_owned()], None);
         let facts = h.event_facts("Ev");
         assert_eq!(facts.cancellable, Some(true));
         assert_eq!(facts.bus, Some("game"));

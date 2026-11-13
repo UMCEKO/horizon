@@ -86,9 +86,45 @@ pub struct Piece {
     pub depth_write: bool,
     /// Placed relative to the camera, not the world.
     pub anchored: bool,
+    /// Submitted or drawn by a mod's block outline renderer.
+    pub outline: bool,
     pub origin: DVec3,
     pub linear: Mat3,
     pub modulator: [f32; 4],
+}
+
+/// What the Java recording's block outline came to for the window's hit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutlineKind {
+    /// No outline: no block hit, or none extracted.
+    None,
+    /// A listener cancelled `ExtractBlockOutlineRenderStateEvent`.
+    Canceled,
+    /// Vanilla's lines.
+    Vanilla,
+    /// A mod's renderer replaced vanilla's lines.
+    Replaced,
+}
+impl OutlineKind {
+    fn from_byte(b: u8) -> Option<OutlineKind> {
+        Some(match b {
+            0 => OutlineKind::None,
+            1 => OutlineKind::Canceled,
+            2 => OutlineKind::Vanilla,
+            3 => OutlineKind::Replaced,
+            _ => return None,
+        })
+    }
+}
+
+/// The outline answer a recording carries after its pieces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutlineAnswer {
+    pub kind: OutlineKind,
+    /// The block the answer was taken for: position, face (3D data value), state id.
+    pub block: Option<([i32; 3], u8, u32)>,
+    pub render: bool,
+    pub high_contrast: bool,
 }
 
 #[derive(Default)]
@@ -96,6 +132,7 @@ struct Registry {
     generation: i32,
     meshes: HashMap<u64, Arc<Mesh>>,
     pieces: Vec<Piece>,
+    outline: Option<OutlineAnswer>,
 }
 
 static REGISTRY: LazyLock<RwLock<Registry>> = LazyLock::new(|| {
@@ -147,7 +184,13 @@ pub fn clear() {
     let mut r = REGISTRY.write().unwrap();
     r.meshes.clear();
     r.pieces.clear();
+    r.outline = None;
     r.generation = i32::MIN;
+}
+
+/// The last recording's outline answer; none when no mod changes outlines.
+pub fn outline() -> Option<OutlineAnswer> {
+    REGISTRY.read().unwrap().outline
 }
 
 pub fn is_empty() -> bool {
@@ -198,6 +241,41 @@ impl<'a> In<'a> {
         }
         Some(out)
     }
+}
+
+/// `BlockPos.of`: x in the top 26 bits, z in the next 26, y in the low 12.
+fn unpack_block(v: i64) -> [i32; 3] {
+    [
+        (v >> 38) as i32,
+        (v << 52 >> 52) as i32,
+        (v << 26 >> 38) as i32,
+    ]
+}
+
+/// The trailer after the pieces: `0`, or `1` and the answer (its hit's point is read and dropped).
+fn outline_answer(input: &mut In) -> Option<Option<OutlineAnswer>> {
+    if input.byte()? == 0 {
+        return Some(None);
+    }
+    let kind = OutlineKind::from_byte(input.byte()?)?;
+    let hit = if input.byte()? != 0 {
+        let pos = unpack_block(input.long()?);
+        let face = u8::try_from(input.int()?).ok()?;
+        for _ in 0..3 {
+            input.double()?;
+        }
+        Some((pos, face))
+    } else {
+        None
+    };
+    let (render, high_contrast) = (input.byte()? != 0, input.byte()? != 0);
+    let state = input.int()? as u32;
+    Some(Some(OutlineAnswer {
+        kind,
+        block: hit.map(|(pos, face)| (pos, face, state)),
+        render,
+        high_contrast,
+    }))
 }
 
 fn mesh(input: &mut In) -> Option<(u64, Mesh)> {
@@ -271,6 +349,7 @@ pub fn apply(bytes: &[u8]) -> bool {
     let mut dropped = Vec::new();
     let mut fresh = Vec::new();
     let mut pieces = Vec::new();
+    let mut outline = None;
     let ok = (|| {
         for _ in 0..input.count()? {
             dropped.push(input.long()? as u64);
@@ -290,10 +369,15 @@ pub fn apply(bytes: &[u8]) -> bool {
                 no_cull: flags & 1 != 0,
                 depth_write: flags & 2 != 0,
                 anchored: flags & 4 != 0,
+                outline: flags & 8 != 0,
                 origin,
                 linear,
                 modulator: input.floats::<4>()?,
             });
+        }
+        // An older blob ends with its pieces.
+        if !input.0.is_empty() {
+            outline = outline_answer(&mut input)?;
         }
         Some(())
     })();
@@ -306,6 +390,7 @@ pub fn apply(bytes: &[u8]) -> bool {
         return false;
     }
     r.generation = generation;
+    r.outline = outline;
     for id in dropped {
         r.meshes.remove(&id);
     }
@@ -420,14 +505,14 @@ fn visible(frame: &Frame, lo: Vec3, hi: Vec3, to_world: &dyn Fn(Vec3) -> DVec3) 
     false
 }
 
-/// Every recorded piece in view, as camera-relative vertices and lines per pass.
-pub fn draw(frame: &Frame, out: &mut Outputs) {
+/// Every recorded piece in view, as camera-relative vertices and lines per pass; outline pieces only with `outline`.
+pub fn draw(frame: &Frame, out: &mut Outputs, outline: bool) {
     let registry = REGISTRY.read().unwrap();
     if registry.pieces.is_empty() {
         return;
     }
     let mut last_light: Option<([i32; 3], u8)> = None;
-    for piece in &registry.pieces {
+    for piece in registry.pieces.iter().filter(|p| outline || !p.outline) {
         let Some(mesh) = registry.meshes.get(&piece.mesh) else {
             continue;
         };
@@ -705,7 +790,7 @@ mod tests {
         assert!(apply(&blob(1, &[], &[(5, 1)], &pieces)));
         let sprites = sprites();
         let mut out = Outputs::default();
-        draw(&frame(&sprites, DVec3::ZERO), &mut out);
+        draw(&frame(&sprites, DVec3::ZERO), &mut out, false);
         let layers: Vec<u32> = out.entities.iter().step_by(4).map(|v| v.layer).collect();
         assert_eq!(layers, [0, TRANSLUCENT_OVERLAY]);
         assert_eq!(out.after_translucent.len(), 4);
@@ -746,7 +831,7 @@ mod tests {
             visible: &|_| false,
             ..frame(&sprites, DVec3::new(5_000.0, 10.0, -7_000.0))
         };
-        draw(&far, &mut out);
+        draw(&far, &mut out, false);
         for quads in [&out.sky, &out.clouds, &out.weather] {
             assert_eq!(quads.len(), 4);
             assert_eq!(quads[0].pos, [0.0, 100.0, 0.0]);
@@ -776,7 +861,7 @@ mod tests {
         assert!(apply(&bytes.0));
         let sprites = sprites();
         let mut out = Outputs::default();
-        draw(&frame(&sprites, DVec3::ZERO), &mut out);
+        draw(&frame(&sprites, DVec3::ZERO), &mut out, false);
         let normals = |v: &[Vertex]| v.iter().step_by(4).map(|v| v.normal).collect::<Vec<_>>();
         let layers = |v: &[Vertex]| v.iter().step_by(4).map(|v| v.layer).collect::<Vec<_>>();
         let culled = crate::mesher::CULL_BACK;
@@ -802,6 +887,7 @@ mod tests {
         draw(
             &frame(&sprites, DVec3::new(1_000_000.5, 60.0, -2.0)),
             &mut out,
+            false,
         );
         assert_eq!(out.entities[0].pos, [-0.5, 4.0, 0.0]);
         assert_eq!(out.lines[0].start, [1_000_000.0, 64.0, -2.0]);
@@ -810,11 +896,83 @@ mod tests {
         draw(
             &frame(&sprites, DVec3::new(1_000_003.5, 60.0, -2.0)),
             &mut out,
+            false,
         );
         assert_eq!(out.entities[0].pos, [-3.5, 4.0, 0.0]);
         assert_eq!(out.lines[0].start, [1_000_000.0, 64.0, -2.0]);
         // The world's light fills a quad that brought none.
         assert_eq!(out.entities[0].light, (5 * 16) | ((3 * 16) << 8));
+        clear();
+    }
+
+    /// A recording of one mesh with a line, one piece of `flags`, then `trailer`.
+    fn with_trailer(generation: i32, flags: u8, trailer: &[u8]) -> Vec<u8> {
+        let mut out = Out(Vec::new());
+        out.int(generation);
+        out.int(0);
+        out.int(1);
+        out.long(9);
+        out.int(0);
+        out.int(1);
+        for v in [0.0, 0.0, 0.0, 1.0, 0.0, 0.0] {
+            out.float(v);
+        }
+        out.int(-1);
+        out.float(2.0);
+        out.int(1);
+        piece(&mut out, 9, 5, flags, [0.0; 3]);
+        out.0.extend_from_slice(trailer);
+        out.0
+    }
+
+    #[test]
+    fn the_trailer_carries_the_outline_answer() {
+        let _t = TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        assert!(apply(&with_trailer(1, 0, &[0])));
+        assert_eq!(outline(), None);
+        let mut answer = Out(vec![1, 3, 1]);
+        // `BlockPos.asLong` of (1, 2, 3): x << 38 | z << 12 | y.
+        answer.long((1i64 << 38) | (3 << 12) | 2);
+        answer.int(1);
+        for v in [1.5, 2.5, 3.0] {
+            answer.double(v);
+        }
+        answer.0.extend([1, 0]);
+        answer.int(42);
+        assert!(apply(&with_trailer(2, 0, &answer.0)));
+        assert_eq!(
+            outline(),
+            Some(OutlineAnswer {
+                kind: OutlineKind::Replaced,
+                block: Some(([1, 2, 3], 1, 42)),
+                render: true,
+                high_contrast: false,
+            })
+        );
+        // A blob from before the trailer leaves no answer.
+        assert!(apply(&blob(3, &[], &[], &[])));
+        assert_eq!(outline(), None);
+        clear();
+    }
+
+    #[test]
+    fn a_negative_block_unpacks_as_vanilla_packs_it() {
+        let packed = horizon_core::position::BlockPos::new(-7, -64, 30_000_000 - 1).pack();
+        assert_eq!(unpack_block(packed), [-7, -64, 29_999_999]);
+    }
+
+    #[test]
+    fn outline_pieces_are_drawn_only_when_asked() {
+        let _t = TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        clear();
+        assert!(apply(&with_trailer(1, 8, &[0])));
+        let sprites = sprites();
+        let mut out = Outputs::default();
+        draw(&frame(&sprites, DVec3::ZERO), &mut out, false);
+        assert!(out.lines.is_empty());
+        draw(&frame(&sprites, DVec3::ZERO), &mut out, true);
+        assert_eq!(out.lines.len(), 1);
         clear();
     }
 
@@ -841,7 +999,7 @@ mod tests {
         let started = std::time::Instant::now();
         for _ in 0..20 {
             out.clear();
-            draw(&frame(&sprites, DVec3::ZERO), &mut out);
+            draw(&frame(&sprites, DVec3::ZERO), &mut out, false);
         }
         println!("20000 quads: {:?} per frame", started.elapsed() / 20);
         clear();

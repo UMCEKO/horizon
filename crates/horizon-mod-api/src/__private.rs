@@ -289,6 +289,14 @@ pub mod game {
         }
     }
 
+    /// A capability the game answers through a layer of its own, named `owner` in warnings.
+    pub fn layer_capability<T: ?Sized>(handler: Box<T>, owner: &'static str) -> Capability<T> {
+        Capability {
+            handler,
+            owner: Some(owner),
+        }
+    }
+
     pub trait CapabilityChecked {
         fn checked(&self, answer: u32, asked: u32, at: &dyn Debug) -> Option<u32>;
     }

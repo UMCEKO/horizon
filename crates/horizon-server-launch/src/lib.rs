@@ -119,11 +119,20 @@ pub fn engine_command(supervisor: &Path, dir: &Path) -> Result<Command, EngineCo
         .map_err(EngineCommandError::Program)?;
     let resources =
         resources(&config, dir, Some(&program)).map_err(EngineCommandError::Resources)?;
-    command(&program, &resources, dir, config.engine.low_memory).map_err(|source| {
-        EngineCommandError::Io {
-            path: dir.to_owned(),
-            source,
-        }
+    let java_mods = config
+        .engine
+        .java_mods_dir(dir)
+        .map_err(EngineCommandError::Configuration)?;
+    command(
+        &program,
+        &resources,
+        dir,
+        config.engine.low_memory,
+        java_mods.as_deref(),
+    )
+    .map_err(|source| EngineCommandError::Io {
+        path: dir.to_owned(),
+        source,
     })
 }
 
@@ -174,6 +183,7 @@ pub fn command(
     resources: &Path,
     dir: &Path,
     low_memory: bool,
+    java_mods: Option<&Path>,
 ) -> std::io::Result<Command> {
     // The game runs in the server folder, so a folder given relative to ours (`--dir srv`) would put its
     // control endpoint in `srv/srv/.horizon`, which doesn't exist.
@@ -184,7 +194,14 @@ pub fn command(
         .arg("--resources")
         .arg(resources)
         .arg("--control-socket")
-        .arg(control_path(&dir))
+        .arg(control_path(&dir));
+    // Before `--dedicated`: everything after it goes to vanilla's parser.
+    if let Some(java_mods) = java_mods {
+        command
+            .arg("--java-mods")
+            .arg(std::path::absolute(java_mods)?);
+    }
+    command
         .args(["--dedicated", "--nogui"])
         .current_dir(&dir)
         .env("HORIZON_NO_AUDIO", "1")
@@ -323,7 +340,8 @@ mod tests {
     fn low_memory_turns_huge_pages_off_for_the_game() {
         let thp = |low_memory| {
             let dir = std::env::temp_dir();
-            let command = command(Path::new("horizon-client"), &dir, &dir, low_memory).unwrap();
+            let command =
+                command(Path::new("horizon-client"), &dir, &dir, low_memory, None).unwrap();
             command
                 .get_envs()
                 .find(|(k, _)| *k == "MIMALLOC_ALLOW_THP")
@@ -331,6 +349,34 @@ mod tests {
         };
         assert_eq!(thp(true).as_deref(), Some(std::ffi::OsStr::new("0")));
         assert_eq!(thp(false), None);
+    }
+
+    #[test]
+    fn java_mods_come_before_the_vanilla_arguments() {
+        let args = |java_mods: Option<&Path>| -> Vec<std::ffi::OsString> {
+            let c = command(
+                Path::new("game"),
+                Path::new("/srv/mc/res"),
+                Path::new("/srv/mc"),
+                false,
+                java_mods,
+            )
+            .unwrap();
+            c.get_args().map(std::ffi::OsStr::to_owned).collect()
+        };
+        let mut want: Vec<std::ffi::OsString> = ["--resources", "/srv/mc/res", "--control-socket"]
+            .map(Into::into)
+            .into();
+        want.push(control_path(Path::new("/srv/mc")).into_os_string());
+        let plain = [&want[..], &["--dedicated".into(), "--nogui".into()]].concat();
+        assert_eq!(args(None), plain);
+        let with = [
+            &want[..],
+            &["--java-mods".into(), "/srv/mc/java".into()],
+            &["--dedicated".into(), "--nogui".into()],
+        ]
+        .concat();
+        assert_eq!(args(Some(Path::new("/srv/mc/java"))), with);
     }
 
     #[test]

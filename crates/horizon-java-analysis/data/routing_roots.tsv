@@ -1,0 +1,14 @@
+# hot	method key a route within HOT_DEPTH calls of is hot; view	class whose native-owned methods a body closure stops at
+hot	net/minecraft/world/entity/Entity#tick()V
+hot	net/minecraft/world/entity/Entity#baseTick()V
+hot	net/minecraft/world/entity/LivingEntity#aiStep()V
+hot	net/minecraft/world/entity/Entity#move(Lnet/minecraft/world/entity/MoverType;Lnet/minecraft/world/phys/Vec3;)V
+hot	net/minecraft/server/level/ServerLevel#tick(Ljava/util/function/BooleanSupplier;)V
+view	net/minecraft/world/entity/Entity
+view	net/minecraft/world/level/Level
+view	net/minecraft/world/level/block/entity/BlockEntity
+view	net/minecraft/world/entity/player/Inventory
+view	net/minecraft/world/scores/Scoreboard
+view	net/minecraft/server/MinecraftServer
+view	net/minecraft/server/players/PlayerList
+view	net/minecraft/server/level/ServerPlayer

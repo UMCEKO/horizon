@@ -33,7 +33,161 @@ final class ChecksServer {
             var profile = context.getPlayer().getGameProfile();
             return net.neoforged.neoforge.common.util.FakePlayerFactory.get((net.minecraft.server.level.ServerLevel) level, profile).getUUID().equals(profile.id());
         });
+        Checks.check("mod_command_registered", () -> server.getCommands().getDispatcher().getRoot().getChild("horizon_java_test") != null);
+        Checks.check("commands_selection_follows_dist", () -> TestMod.commandSelection == (net.neoforged.fml.loading.FMLEnvironment.getDist().isClient() ? net.minecraft.commands.Commands.CommandSelection.INTEGRATED : net.minecraft.commands.Commands.CommandSelection.DEDICATED));
         Checks.check("craft_facts", () -> craftFacts(server));
+        Checks.check("tool_enchantments", () -> toolEnchantments(level));
+        Checks.check("loot_kinds_isolated", () -> {
+            try {
+                return lootKinds((net.minecraft.server.level.ServerLevel) level);
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        });
+        Checks.check("loot_modify", ChecksServer::lootModify);
+    }
+
+    private static final String STONE = "{\"id\":\"minecraft:stone\",\"count\":1}";
+
+    /** `Loot.function` asked as Rust asks, with a hand-built request: the stack comes back stamped. */
+    private static String lootFunction(net.minecraft.server.level.ServerLevel level, String type, boolean live) throws Exception {
+        var bytes = new java.io.ByteArrayOutputStream();
+        var out = new java.io.DataOutputStream(bytes);
+        text(out, "horizon_java_test:" + type);
+        text(out, "{\"type\":\"horizon_java_test:" + type + "\"}");
+        out.writeBoolean(live);
+        text(out, level.dimension().identifier().toString());
+        out.writeLong(level.getGameTime());
+        out.writeBoolean(false);
+        out.writeBoolean(false);
+        out.writeBoolean(false);
+        text(out, "");
+        text(out, "");
+        out.writeInt(0);
+        out.writeFloat(0);
+        out.writeLong(1234L);
+        text(out, STONE);
+        var loot = Class.forName("dev.horizonlab.javamods.boot.Loot", true, ClassLoader.getSystemClassLoader());
+        var in = Class.forName("dev.horizonlab.javamods.boot.Crossing$In").getMethod("of", byte[].class).invoke(null, (Object) bytes.toByteArray());
+        var outType = Class.forName("dev.horizonlab.javamods.boot.Crossing$Out");
+        var constructor = outType.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        var reply = constructor.newInstance();
+        var function = loot.getDeclaredMethod("function", in.getClass(), outType);
+        function.setAccessible(true);
+        function.invoke(null, in, reply);
+        var toBytes = outType.getDeclaredMethod("toByteArray");
+        toBytes.setAccessible(true);
+        var read = new java.io.DataInputStream(new java.io.ByteArrayInputStream((byte[]) toBytes.invoke(reply)));
+        return text(read);
+    }
+
+    private static boolean lootKinds(net.minecraft.server.level.ServerLevel level) throws Exception {
+        String stamped = lootFunction(level, "stamp", false);
+        var live = Class.forName("dev.horizonlab.javamods.boot.Loot", true, ClassLoader.getSystemClassLoader()).getDeclaredField("LIVE");
+        live.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        var holder = (ThreadLocal<net.minecraft.world.level.storage.loot.LootParams.Builder>) live.get(null);
+        var state = Breakables.DROPPER.get().defaultBlockState();
+        var entity = new Breakables.Entity(BlockPos.ZERO, state);
+        holder.set(new net.minecraft.world.level.storage.loot.LootParams.Builder(level)
+                .withParameter(net.minecraft.world.level.storage.loot.parameters.LootContextParams.BLOCK_STATE, state)
+                .withParameter(net.minecraft.world.level.storage.loot.parameters.LootContextParams.ORIGIN, net.minecraft.world.phys.Vec3.ZERO)
+                .withParameter(net.minecraft.world.level.storage.loot.parameters.LootContextParams.TOOL, net.minecraft.world.item.ItemStack.EMPTY)
+                .withParameter(net.minecraft.world.level.storage.loot.parameters.LootContextParams.BLOCK_ENTITY, entity));
+        String typed;
+        try {
+            typed = lootFunction(level, "stamp_entity", true);
+        } finally {
+            holder.remove();
+        }
+        return stamped.contains("\"stamped\":1") && typed.contains("\"entity\":\"horizon_java_test:breakable\"");
+    }
+
+    private static void text(java.io.DataOutputStream out, String value) throws java.io.IOException {
+        byte[] bytes = value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        out.writeInt(bytes.length);
+        out.write(bytes);
+    }
+
+    /** What the loot roll's tool copy holds: a charm's code answers fortune 3 and silk touch 1, a plain pickaxe nothing. */
+    private static boolean toolEnchantments(net.minecraft.world.level.Level level) {
+        try {
+            var type = Class.forName("dev.horizonlab.javamods.boot.Loot", true, ClassLoader.getSystemClassLoader());
+            var effective = type.getMethod("effective", net.minecraft.world.item.ItemStack.class, net.minecraft.core.RegistryAccess.class);
+            var charm = new net.minecraft.world.item.ItemStack(net.minecraft.core.registries.BuiltInRegistries.ITEM.getValue(net.minecraft.resources.Identifier.parse("horizon_java_test:charm")));
+            var charmed = (net.minecraft.world.item.ItemStack) effective.invoke(null, charm, level.registryAccess());
+            var plain = (net.minecraft.world.item.ItemStack) effective.invoke(null, new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.DIAMOND_PICKAXE), level.registryAccess());
+            var levels = charmed.get(net.minecraft.core.component.DataComponents.ENCHANTMENTS);
+            var fortune = level.registryAccess().lookupOrThrow(net.minecraft.core.registries.Registries.ENCHANTMENT).getOrThrow(net.minecraft.world.item.enchantment.Enchantments.FORTUNE);
+            var silk = level.registryAccess().lookupOrThrow(net.minecraft.core.registries.Registries.ENCHANTMENT).getOrThrow(net.minecraft.world.item.enchantment.Enchantments.SILK_TOUCH);
+            return levels.getLevel(fortune) == 3 && levels.getLevel(silk) == 1 && levels.size() == 2 && plain.get(net.minecraft.core.component.DataComponents.ENCHANTMENTS).isEmpty();
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private static final long MULTIPLIER = 0x5DEECE66DL;
+
+    /** `loot_modify` on hand-built requests: the sand modifier adds a nugget and draws nothing; the gravel one draws vanilla's one float. */
+    private static boolean lootModify() {
+        try {
+            var sand = lootCall("minecraft:blocks/sand", "minecraft:sand", 12345);
+            if (sand.state != 12345 || !sand.items.equals(java.util.List.of("minecraft:sand", "minecraft:gold_nugget"))) return false;
+            for (long seed = 1; seed <= 8; seed++) {
+                long state = seed * 0x9E3779B97F4AL & (1L << 48) - 1;
+                var gravel = lootCall("minecraft:blocks/gravel", "minecraft:gravel", state);
+                var expected = new net.minecraft.world.level.levelgen.LegacyRandomSource(0);
+                expected.setSeed(state ^ MULTIPLIER);
+                boolean flint = expected.nextFloat() < 0.5f;
+                var want = flint ? java.util.List.of("minecraft:gravel", "minecraft:flint") : java.util.List.of("minecraft:gravel");
+                var after = new net.minecraft.world.level.levelgen.LegacyRandomSource(0);
+                after.setSeed(gravel.state ^ MULTIPLIER);
+                if (!gravel.items.equals(want) || after.nextLong() != expected.nextLong()) return false;
+            }
+            return true;
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private record LootReply(long state, java.util.List<String> items) {}
+
+    private static LootReply lootCall(String table, String item, long state) throws Exception {
+        var bytes = new java.io.ByteArrayOutputStream();
+        var out = new java.io.DataOutputStream(bytes);
+        writeText(out, table);
+        writeText(out, "minecraft:overworld");
+        out.writeByte(1);
+        out.writeLong(state);
+        out.writeBoolean(false);
+        out.writeInt(-1);
+        out.writeLong(0);
+        out.writeLong(0);
+        out.writeBoolean(false);
+        out.writeLong(0);
+        out.writeLong(0);
+        out.writeBoolean(false);
+        writeText(out, "");
+        out.writeInt(-1);
+        out.writeInt(0);
+        out.writeBoolean(false);
+        out.writeFloat(0);
+        out.writeInt(1);
+        writeText(out, "{\"id\":\"" + item + "\",\"count\":1}");
+        var type = Class.forName("dev.horizonlab.javamods.boot.LootModifiers", true, ClassLoader.getSystemClassLoader());
+        var in = new java.io.DataInputStream(new java.io.ByteArrayInputStream((byte[]) type.getMethod("call", byte[].class).invoke(null, (Object) bytes.toByteArray())));
+        if (in.readByte() != 1) throw new IllegalStateException("loot_modify answered another random kind");
+        long after = in.readLong();
+        var items = new java.util.ArrayList<String>();
+        for (int n = in.readInt(); n > 0; n--) items.add(com.google.gson.JsonParser.parseString(text(in)).getAsJsonObject().get("id").getAsString());
+        return new LootReply(after, items);
+    }
+
+    private static void writeText(java.io.DataOutputStream out, String value) throws java.io.IOException {
+        byte[] bytes = value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        out.writeInt(bytes.length);
+        out.write(bytes);
     }
 
     private static String text(java.io.DataInputStream in) throws java.io.IOException {

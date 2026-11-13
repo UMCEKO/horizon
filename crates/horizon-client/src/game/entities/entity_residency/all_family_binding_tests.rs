@@ -94,6 +94,18 @@ fn every_ordinary_resident_family_binds_its_actual_owned_slot() {
         let id = game.ominous_spawners[0].id;
         bind(game, id, Kind::Spawner);
         summon!("area_effect_cloud", Cloud, breath_clouds);
+        game.launch_thrown(
+            ItemStack::new("minecraft:splash_potion", 1),
+            horizon_core::geometry::Vec3::new(0.5, 70.0, 0.5),
+            horizon_core::geometry::Vec3::ZERO,
+            None,
+        );
+        let id = game.potions.thrown[0].id;
+        bind(game, id, Kind::Potion);
+        game.next_entity += 1;
+        let id = game.next_entity;
+        game.end.add_remote_eye(id, [0.5, 70.0, 0.5], [0.0; 3]);
+        bind(game, id, Kind::Eye);
         summon!("cushion", Cushion, cushions);
         let fence = [0, 70, 0];
         game.tie_knot(fence);
@@ -110,7 +122,7 @@ fn every_ordinary_resident_family_binds_its_actual_owned_slot() {
         game.lan_assign_ids();
         let id = game.dragon.as_ref().unwrap().id;
         bind(game, id, Kind::Dragon);
-        assert_eq!(maps.len(), 21);
-        assert_eq!(index.lock().unwrap().snapshot(&key).len(), 21);
+        assert_eq!(maps.len(), 23);
+        assert_eq!(index.lock().unwrap().snapshot(&key).len(), 23);
     });
 }

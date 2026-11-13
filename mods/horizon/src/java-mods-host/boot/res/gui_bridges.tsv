@@ -2,3 +2,4 @@
 net/minecraft/client/gui/Font$PreparedTextBuilder#accept(ILnet/minecraft/network/chat/Style;Lnet/minecraft/client/gui/font/glyphs/BakedGlyph;)Z	GLYPHS entry
 net/minecraft/client/gui/Font$PreparedTextBuilder#getShadowColor(Lnet/minecraft/network/chat/Style;I)I	GLYPHS entry
 net/minecraft/client/Minecraft#runTick(Z)V	LoopEdges.pauseSources (client_pause_sources)
+net/minecraft/client/sounds/MusicManager#tick()V	ClientMusic.java: the tick runs in Java while a mod changes it

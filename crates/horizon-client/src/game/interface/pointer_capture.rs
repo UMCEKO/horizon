@@ -28,6 +28,7 @@ impl Game<'_> {
             && self.screen == Screen::Playing
             && (self.player.is_some() || self.studio.flying());
         let active = self.focused || self.agent_pointer;
+        self.java_hook_view_look(look.sensitivity, look.smooth_camera, active && grabbed);
         if active
             && grabbed
             && mod_api::__private::listened(mod_api::HookId::CalculatePlayerTurn)

@@ -90,7 +90,7 @@ public final class RecordingRenderPass implements RenderPass, RenderPass.Uniform
         if (indexed && index == null) return;
         var uses = transform != null ? transform : RecordingTransform.IDENTITY;
         device.draw(new RecordingDevice.RecordedDraw(pipeline, vertices.id(), vertices.version(), vertices.snapshot(), vertex.offset(), indexed ? index.id() : 0, indexed ? index.version() : 0,
-                indexed ? index.snapshot() : null, indexType, first, count, base, texture, textured, uses, WorldFrame.stage));
+                indexed ? index.snapshot() : null, indexType, first, count, base, texture, textured, uses, WorldFrame.stage, WorldFrame.outlining));
     }
 
     @Override

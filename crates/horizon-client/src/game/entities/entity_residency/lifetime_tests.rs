@@ -105,6 +105,19 @@ fn resident_new_family_lifetimes_bind_move_and_retire() {
         game.lan_assign_ids();
         check_list!(game, breath_clouds);
 
+        game.launch_thrown(
+            ItemStack::new("minecraft:splash_potion", 1),
+            horizon_core::geometry::Vec3::new(0.5, 70.0, 0.5),
+            horizon_core::geometry::Vec3::ZERO,
+            None,
+        );
+        check_list!(game, potions.thrown);
+
+        game.next_entity += 1;
+        let id = game.next_entity;
+        game.end.add_remote_eye(id, [0.5, 70.0, 0.5], [0.0; 3]);
+        check_list!(game, end.eyes);
+
         game.summon_with_nbt("minecraft:ender_dragon", [0.5, 70.0, 0.5], "{}")
             .unwrap();
         game.lan_assign_ids();

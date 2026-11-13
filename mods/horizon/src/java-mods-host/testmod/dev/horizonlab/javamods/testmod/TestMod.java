@@ -23,14 +23,22 @@ public final class TestMod {
     public static final java.util.function.Supplier<net.minecraft.core.particles.SimpleParticleType> SPARK = PARTICLE_TYPES.register("spark", () -> new net.minecraft.core.particles.SimpleParticleType(false));
 
     public static final java.util.function.Supplier<net.minecraft.core.particles.SimpleParticleType> BEAM = PARTICLE_TYPES.register("beam", () -> new net.minecraft.core.particles.SimpleParticleType(true));
+    static volatile net.minecraft.commands.Commands.CommandSelection commandSelection;
 
     public TestMod(IEventBus bus) {
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.RegisterCommandsEvent event) -> {
+            commandSelection = event.getCommandSelection();
+            event.getDispatcher().register(net.minecraft.commands.Commands.literal("horizon_java_test").executes(context -> 1));
+        });
         ITEMS.registerItem("wand", Wand::new);
         ITEMS.registerItem("probe", Probe::new);
         ITEMS.registerItem("tonic", Tonic::new);
         ITEMS.registerItem("labelled", Labelled::new);
         ITEMS.registerItem("digger", Digger::new);
         ITEMS.registerItem("miner", Miner::new);
+        for (String view : new String[] {"tilt", "zoom", "slow_mouse", "far_camera"}) ITEMS.registerSimpleItem(view, p -> p.stacksTo(1));
+        ITEMS.registerItem("rocket", Item::new);
+        ITEMS.registerSimpleItem("lens");
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.entity.player.PlayerEvent.HarvestCheck event) -> {
             if (event.getTargetBlock().is(Blocks.STONE) && event.getEntity().getMainHandItem().getItem() instanceof Digger) event.setCanHarvest(true);
         });
@@ -41,6 +49,7 @@ public final class TestMod {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.entity.player.PlayerEvent.BreakSpeed event) -> {
             if (event.getState().is(Blocks.GRAVEL)) event.setNewSpeed(event.getNewSpeed() * 0.5f);
         });
+        ChecksServerEvents.listen();
         // A plain food, so the boot's facts carry a food item.
         ITEMS.registerSimpleItem("snack", p -> p.food(new net.minecraft.world.food.FoodProperties.Builder().nutrition(5).saturationModifier(0.7f).build()).stacksTo(16));
         ITEMS.register(bus);
@@ -55,9 +64,11 @@ public final class TestMod {
         EntityLife.register();
         PlayerView.register();
         WorldStart.register();
+        ChatEvents.register();
         if (net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) {
             ClientKeys.register(bus);
             ClientMotion.register();
+            ClientChecks.register();
             ClientTextures.register(bus);
             Goo.registerClient(bus);
             ClientWorldBox.register();
@@ -66,6 +77,11 @@ public final class TestMod {
             ClientProfiles.register();
             ClientEvents.register();
             ClientGlyphs.register();
+            ClientMusicProbe.register();
+            ClientChat.register();
+            ClientView.register();
+            ClientDebug.register(bus);
+            ClientWindowProbe.register();
         }
     }
 

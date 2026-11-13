@@ -296,6 +296,7 @@ mod tests {
                 }),
                 this_entity: None,
                 killer: None,
+                block_state: None,
             })),
         }
         .try_into_api()

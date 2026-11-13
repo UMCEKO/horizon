@@ -9,7 +9,10 @@ use horizon_platform::server_files::{
     properties::{DIFFICULTIES, GAME_MODES, ServerProperties, SystemEntropy},
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 pub const FILE: &str = "server.toml";
 pub const PROPERTIES: &str = "server.properties";
@@ -48,6 +51,7 @@ path = ""                    # the game program; empty: the one installed beside
 resources = ""               # the prepared game files; empty: resources/ here, else the usual places
 restart_on_crash = true      # start the game again when it crashes
 low_memory = false           # true: no transparent huge pages, ~60 MB less idle for ~1 % more tick time
+java_mods = ""               # a Java mods run folder, relative to this folder (the launcher writes "java"); empty: none
 
 [backups]
 every = "6h"                 # automatic backups while the server runs: 30m, 6h, 1d...; "0" turns them off
@@ -290,6 +294,24 @@ pub struct Engine {
     pub restart_on_crash: bool,
     /// The game without transparent huge pages (docs/hosting.md): less memory, slightly slower ticks.
     pub low_memory: bool,
+    pub java_mods: String,
+}
+
+impl Engine {
+    /// The Java mods run folder to start the game with: None when unset; an error when it can't run.
+    pub fn java_mods_dir(&self, dir: &Path) -> Result<Option<PathBuf>, String> {
+        if self.java_mods.is_empty() {
+            return Ok(None);
+        }
+        let path = dir.join(&self.java_mods);
+        if !path.join("horizon-java.args").is_file() {
+            return Err(format!(
+                "server.toml [engine] java_mods names {}, which has no horizon-java.args: set the server up for Java mods again in the launcher (or with horizon-launcher java-mods server on)",
+                path.display()
+            ));
+        }
+        Ok(Some(path))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -542,6 +564,7 @@ impl Default for Engine {
             resources: String::new(),
             restart_on_crash: true,
             low_memory: false,
+            java_mods: String::new(),
         }
     }
 }
@@ -712,6 +735,7 @@ pub fn render(config: &Config) -> String {
         ("engine", "resources"),
         ("engine", "restart_on_crash"),
         ("engine", "low_memory"),
+        ("engine", "java_mods"),
         ("backups", "every"),
         ("backups", "keep"),
         ("updates", "keep"),
@@ -895,6 +919,35 @@ mod tests {
     fn template_is_the_default() {
         assert_eq!(Config::parse(TEMPLATE).unwrap(), Config::default());
         assert_eq!(render(&Config::default()), TEMPLATE);
+    }
+
+    #[test]
+    fn java_mods_round_trip_and_resolve_to_a_run_folder() {
+        let on = TEMPLATE.replace("java_mods = \"\" ", "java_mods = \"java\"");
+        let config = Config::parse(&on).unwrap();
+        assert_eq!(config.engine.java_mods, "java");
+        let rendered = render(&config);
+        assert!(rendered.contains("java_mods = \"java\""), "{rendered}");
+        assert!(rendered.contains("a Java mods run folder"), "{rendered}");
+        assert!(Config::parse(&TEMPLATE.replace("[engine]\n", "[engine]\nbogus = 1\n")).is_err());
+
+        let root =
+            std::env::temp_dir().join(format!("horizon-java-mods-dir-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("java")).unwrap();
+        assert_eq!(Config::default().engine.java_mods_dir(&root), Ok(None));
+        assert_eq!(
+            config.engine.java_mods_dir(&root),
+            Err(format!(
+                "server.toml [engine] java_mods names {}, which has no horizon-java.args: set the server up for Java mods again in the launcher (or with horizon-launcher java-mods server on)",
+                root.join("java").display()
+            ))
+        );
+        std::fs::write(root.join("java/horizon-java.args"), "").unwrap();
+        assert_eq!(
+            config.engine.java_mods_dir(&root),
+            Ok(Some(root.join("java")))
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// `[transfer]` is off by default, passes nothing to the game then, and is checked when it is read.

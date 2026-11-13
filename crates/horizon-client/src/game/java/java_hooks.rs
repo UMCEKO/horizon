@@ -23,6 +23,14 @@ pub(super) struct JavaItemText {
 }
 
 impl Game<'_> {
+    /// What the Java mods' F3 entries added to the displayer in the Java client's last tick.
+    pub(super) fn java_hook_debug_recorded(&self) -> Vec<horizon_client::debug_overlay::Recorded> {
+        #[cfg(feature = "java-mods")]
+        return super::java_debug::recorded();
+        #[cfg(not(feature = "java-mods"))]
+        Vec::new()
+    }
+
     /// The slot bits of the toasts mods added to the Java client, shown in the window's column.
     pub(super) fn java_hook_toast_slots(&self) -> u32 {
         #[cfg(feature = "java-mods")]
@@ -57,6 +65,55 @@ impl Game<'_> {
         }
     }
 
+    /// The camera `camera_view` aligned: its eye, the entity's view rotation and the camera type's ordinal, for the Java client's view events.
+    pub(super) fn java_hook_view_camera(
+        &self,
+        partial: f32,
+        eye: [f64; 3],
+        rotation: [f32; 2],
+        mode: u8,
+    ) {
+        #[cfg(feature = "java-mods")]
+        super::java_view::record_camera(partial, eye, rotation[0], rotation[1], mode);
+        let _ = (partial, eye, rotation, mode);
+    }
+
+    /// The yaw and pitch the mods' camera angle listeners left for `Camera.alignWithEntity`.
+    pub(super) fn java_hook_view_angles(&self) -> Option<[f32; 2]> {
+        #[cfg(feature = "java-mods")]
+        return super::java_view::angles().map(|[yaw, pitch, _]| [yaw, pitch]);
+        #[cfg(not(feature = "java-mods"))]
+        None
+    }
+
+    /// The roll the mods' camera angle listeners left, as the pose turns the view about its forward axis; the front view turns it the other way.
+    pub(super) fn java_hook_view_roll(&self, mirrored: bool) -> f32 {
+        #[cfg(feature = "java-mods")]
+        return super::java_view::angles().map_or(0.0, |[_, _, roll]| {
+            if mirrored { -roll } else { roll }
+        });
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = mirrored;
+            0.0
+        }
+    }
+
+    /// The first-person hand's field of view, as the mods' listeners leave it.
+    pub(super) fn java_hook_view_hud_fov(&self, fov: f32) -> f32 {
+        #[cfg(feature = "java-mods")]
+        return super::java_view::hud_fov(fov);
+        #[cfg(not(feature = "java-mods"))]
+        fov
+    }
+
+    /// What this frame's mouse turn reads: the options, and whether the pointer is grabbed.
+    pub(super) fn java_hook_view_look(&self, sensitivity: f64, smooth: bool, grabbed: bool) {
+        #[cfg(feature = "java-mods")]
+        super::java_view::record_look(sensitivity, smooth, grabbed);
+        let _ = (sensitivity, smooth, grabbed);
+    }
+
     /// A world's end, failed open or close: the Java server stops.
     pub(super) fn java_hook_world(&mut self, phase: &WorldPhase) {
         #[cfg(feature = "java-mods")]
@@ -68,13 +125,13 @@ impl Game<'_> {
     pub(super) fn java_hook_world_opening(
         &mut self,
         opening: &super::world_loading::WorldOpening,
-    ) -> super::world_loading::JavaWorldgen {
+    ) -> super::world_loading::JavaWorldStart {
         #[cfg(feature = "java-mods")]
         return self.java_world_opening(opening);
         #[cfg(not(feature = "java-mods"))]
         {
             let _ = opening;
-            None
+            Ok(None)
         }
     }
 
@@ -174,6 +231,32 @@ impl Game<'_> {
         None
     }
 
+    /// Mods' writes to the local player in the park's record, applied before the step; where vanilla took `xo/yo/zo`, when the record marked it.
+    pub(super) fn java_hook_motion_writes(&mut self, record: Option<&[u8]>) -> Option<horizon_core::geometry::Vec3> {
+        #[cfg(feature = "java-mods")]
+        return self.java_lockstep_motion_writes(record?);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = record;
+            None
+        }
+    }
+
+    /// What `tick_fov` computed: the Java camera tick's event reads it on the next lockstep tick.
+    pub(super) fn java_hook_fov_base(&self, base: f32, scoping: bool, scale: f32) {
+        #[cfg(feature = "java-mods")]
+        super::java_screens::CLIENT.with_borrow_mut(|c| c.fov_base = Some((base, scoping, scale)));
+        let _ = (base, scoping, scale);
+    }
+
+    /// The modifier the Java camera tick's event left for this tick; none outside lockstep.
+    pub(super) fn java_hook_fov_target(&self) -> Option<f32> {
+        #[cfg(feature = "java-mods")]
+        return super::java_lockstep::take_fov_target();
+        #[cfg(not(feature = "java-mods"))]
+        None
+    }
+
     /// The window's player step ran, with the tick's `Input` bits: the Java tick goes on from `aiStep` with its result.
     pub(super) fn java_hook_player_end(&mut self, moved: bool, keys: u8) {
         #[cfg(feature = "java-mods")]
@@ -182,25 +265,29 @@ impl Game<'_> {
     }
 
     #[cfg(feature = "java-mods")]
-    fn is_java_block_entity(&self, pos: [i32; 3]) -> bool {
+    pub(super) fn is_java_block_entity(&self, pos: [i32; 3]) -> bool {
         matches!(self.world.block_entities.get(&(pos[0], pos[1], pos[2])), Some(horizon_client::containers::BlockEntity::Mod(m)) if !m.id().is_empty())
     }
 
-    /// A hopper at `hopper` facing a block with no container: `Some(moved)` when that block has a mod's item handler.
-    pub(super) fn java_hook_hopper(
+    /// `ITEMS` of a Java mod's block entity at `at`: the handler its code gives for that side, if any.
+    pub(super) fn java_hook_item_part(
         &mut self,
-        hopper: (i32, i32, i32),
-        target: (i32, i32, i32),
-        side: horizon_core::geometry::Direction,
-        insert: bool,
-    ) -> Option<bool> {
+        at: mod_api::BlockSide,
+    ) -> Option<mod_api::Capability<dyn mod_api::ResourceHandler<mod_api::ItemResource>>> {
         #[cfg(feature = "java-mods")]
-        return self.java_hopper(hopper, target, side, insert);
+        return self.java_item_part(at);
         #[cfg(not(feature = "java-mods"))]
         {
-            let _ = (hopper, target, side, insert);
+            let _ = at;
             None
         }
+    }
+
+    /// A transaction a Java handler wrote in closed at `depth` (1: the root): Java's closes the same way.
+    pub(super) fn java_hook_transaction_closed(&mut self, depth: usize, commit: bool) {
+        #[cfg(feature = "java-mods")]
+        self.java_items_closed(depth, commit);
+        let _ = (depth, commit);
     }
 
     /// The progress of a break from Java's `getDestroyProgress`; None leaves it to Horizon.
@@ -210,6 +297,17 @@ impl Game<'_> {
         #[cfg(not(feature = "java-mods"))]
         {
             let _ = pos;
+            None
+        }
+    }
+
+    /// The tool of a loot roll with the enchantment levels Java gives it; None leaves the tool as it is.
+    pub(super) fn java_hook_tool_for_loot(&mut self, tool: Option<&ItemStack>) -> Option<ItemStack> {
+        #[cfg(feature = "java-mods")]
+        return self.java_tool_for_loot(tool?);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = tool;
             None
         }
     }
@@ -376,6 +474,39 @@ impl Game<'_> {
         #[cfg(feature = "java-mods")]
         self.java_use_item(stack, claimed);
         let _ = (stack, claimed);
+    }
+
+    /// Whether a Java mod registered this particle type, which `/particle` then runs in Java.
+    pub(super) fn java_hook_particle_owned(&self, name: &str) -> bool {
+        #[cfg(feature = "java-mods")]
+        return super::java_particles::java_particle_owned(name);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = name;
+            false
+        }
+    }
+
+    /// `/particle` of a Java mod's type: vanilla's codec and sends in Java; the players reached, or the codec's error.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn java_hook_server_particles(
+        &mut self,
+        dim: &str,
+        spec: &str,
+        pos: [f64; 3],
+        delta: [f32; 3],
+        speed: f32,
+        count: i32,
+        force: bool,
+        viewers: &[u128],
+    ) -> Result<i32, String> {
+        #[cfg(feature = "java-mods")]
+        return self.java_server_particles(dim, spec, pos, delta, speed, count, force, viewers);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (dim, spec, pos, delta, speed, count, force, viewers);
+            Err("no Java".into())
+        }
     }
 
     /// `LevelTickEvent` before (`post` false) and after a level's tick.
@@ -556,8 +687,13 @@ pub(super) fn java_frames() -> Option<std::sync::Arc<dyn Fn() -> Vec<Vec<u8>> + 
 
 /// Whether a Java mod modifies the loot of a top-level roll of `table` (NeoForge's `modifyLoot`).
 pub(crate) fn java_hook_loot_wanted(table: &str) -> bool {
-    let _ = table;
-    false
+    #[cfg(feature = "java-mods")]
+    return super::java_loot_modify::loot_wanted(table);
+    #[cfg(not(feature = "java-mods"))]
+    {
+        let _ = table;
+        false
+    }
 }
 
 /// NeoForge's `CommonHooks.modifyLoot` for a roll [`java_hook_loot_wanted`] took.
@@ -568,6 +704,8 @@ pub(crate) fn java_hook_loot_rolled(
     random: &mut Option<horizon_core::random::RandomState>,
     items: &mut Vec<horizon_world::loot::LootStack>,
 ) {
+    #[cfg(feature = "java-mods")]
+    super::java_loot_modify::loot_rolled(table, ctx, tool, random, items);
     let _ = (table, ctx, tool, random, items);
 }
 
@@ -579,6 +717,30 @@ pub(super) fn java_hook_wants_world_opening() -> bool {
     false
 }
 
+/// A loot function of a kind a Java mod owns runs in Java; any other kind is left alone.
+pub(crate) fn java_hook_loot_function(
+    kind: &str,
+    data: &serde_json::Value,
+    ctx: &horizon_world::loot::LootContext<'_>,
+    stack: &mut horizon_world::loot::LootStack,
+) {
+    #[cfg(feature = "java-mods")]
+    super::java_loot::hook_function(kind, data, ctx, stack);
+    let _ = (kind, data, ctx, stack);
+}
+
+/// A loot condition of a kind a Java mod owns is decided in Java; any other kind is left alone.
+pub(crate) fn java_hook_loot_condition(
+    kind: &str,
+    data: &serde_json::Value,
+    ctx: &horizon_world::loot::LootContext<'_>,
+    holds: &mut bool,
+) {
+    #[cfg(feature = "java-mods")]
+    super::java_loot::hook_condition(kind, data, ctx, holds);
+    let _ = (kind, data, ctx, holds);
+}
+
 /// Opening a world waits on the Java mods' start: Err when they failed to start.
 pub(super) fn java_hook_ready() -> Result<(), &'static str> {
     #[cfg(feature = "java-mods")]
@@ -588,8 +750,8 @@ pub(super) fn java_hook_ready() -> Result<(), &'static str> {
 }
 
 /// Decides the Java run folder once, before the listener families are read; later calls change nothing.
+#[cfg(feature = "java-mods")]
 pub(crate) fn java_hook_resolve(java_mods: Option<&Path>) -> std::io::Result<()> {
-    #[cfg(feature = "java-mods")]
     if !horizon_java_host::run_decided() {
         let run = horizon_java_host::resolve_run(
             java_mods,
@@ -608,8 +770,6 @@ pub(crate) fn java_hook_resolve(java_mods: Option<&Path>) -> std::io::Result<()>
         });
         horizon_java_host::set_run(run);
     }
-    #[cfg(not(feature = "java-mods"))]
-    let _ = java_mods;
     Ok(())
 }
 
@@ -675,6 +835,49 @@ pub(super) fn java_note_block_tick(pos: BlockPos, state: BlockStateId, random: b
     #[cfg(feature = "java-mods")]
     super::java_mods::note_block_tick(pos, state, random);
     let _ = (pos, state, random);
+}
+
+/// Whether Java has block events of this level to run.
+pub(super) fn java_has_block_events() -> bool {
+    #[cfg(feature = "java-mods")]
+    return super::java_mods::has_block_events();
+    #[cfg(not(feature = "java-mods"))]
+    false
+}
+
+/// Whether a Java mod's code runs this fluid: the block that holds its source is a Java one.
+pub(super) fn java_owns_fluid(
+    behaviours: &horizon_world::level::Behaviours,
+    fluid: horizon_world::fluid::ModFluid,
+) -> bool {
+    #[cfg(feature = "java-mods")]
+    return super::java_mods::owns_fluid(behaviours, fluid);
+    #[cfg(not(feature = "java-mods"))]
+    {
+        let _ = (behaviours, fluid);
+        false
+    }
+}
+
+/// `LevelAccess::allow_fluid_tick` of a Java mod's fluid: its `FluidState.tick` runs in Java instead.
+pub(super) fn java_note_fluid_tick(pos: BlockPos, state: BlockStateId) {
+    #[cfg(feature = "java-mods")]
+    super::java_mods::note_fluid_tick(pos, state);
+    let _ = (pos, state);
+}
+
+/// What a Java mod's fluid answers in this dimension for `FlowingFluid`'s getters, once Java was asked.
+pub(super) fn java_fluid_rules(
+    dimension: horizon_core::dimension::Dimension,
+    fluid: horizon_world::fluid::ModFluid,
+) -> Option<horizon_world::fluid::ModFluidRules> {
+    #[cfg(feature = "java-mods")]
+    return super::java_mods::fluid_rules(dimension, fluid);
+    #[cfg(not(feature = "java-mods"))]
+    {
+        let _ = (dimension, fluid);
+        None
+    }
 }
 
 /// `LevelAccess::observe_block_changed`: a mod's block, or one with a block entity, changed.

@@ -62,6 +62,8 @@ pub(super) struct Level {
     attachments: HashMap<Holder, KeptAttachments>,
     /// What the root commit does, in order.
     after: Vec<After>,
+    /// Whether a Java transaction follows this one (`java_transaction_depth`).
+    java: bool,
 }
 
 struct KeptAttachments {
@@ -225,6 +227,19 @@ impl Game<'_> {
         }
         self.close_storage_transaction(commit);
     }
+    /// How deep the open transaction `tx` is (1: the root); it and those around it now each close a Java one too.
+    #[cfg(feature = "java-mods")]
+    pub(super) fn java_transaction_depth(&mut self, tx: &Transaction) -> Option<usize> {
+        let named = mod_api::__private::transaction_token(tx);
+        let at = self
+            .transactions
+            .iter()
+            .position(|level| level.token == named)?;
+        for level in &mut self.transactions[..=at] {
+            level.java = true;
+        }
+        Some(at + 1)
+    }
     /// Whether `tx` names an open transaction: a write given any other changes nothing, so none
     /// happens outside the journal.
     pub(in crate::game) fn transaction_holds(&self, tx: &Transaction) -> bool {
@@ -238,6 +253,9 @@ impl Game<'_> {
         let Some(level) = self.transactions.pop() else {
             return;
         };
+        if level.java {
+            self.java_hook_transaction_closed(self.transactions.len() + 1, commit);
+        }
         debug_assert_eq!(
             level.dimension,
             Some(self.dim),

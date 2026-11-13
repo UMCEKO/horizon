@@ -62,6 +62,7 @@ final class Crafting {
         SERIALIZERS.register("named_copy", () -> NamedCopy.SERIALIZER);
         MODIFIERS.register("add_item", () -> AddItem.CODEC);
         FUNCTIONS.register("stamp", () -> Stamp.CODEC);
+        FUNCTIONS.register("stamp_entity", () -> StampEntity.CODEC);
         CONDITIONS.register("always", () -> Always.CODEC);
         SERIALIZERS.register(bus);
         MODIFIERS.register(bus);
@@ -191,6 +192,30 @@ final class Crafting {
         @Override
         protected ItemStack run(ItemStack stack, LootContext context) {
             CustomData.update(DataComponents.CUSTOM_DATA, stack, tag -> tag.putInt("stamped", 1));
+            return stack;
+        }
+    }
+
+    /** Sets `custom_data {entity: <type id>}` from the roll's block entity. */
+    static final class StampEntity extends LootItemConditionalFunction {
+        static final MapCodec<StampEntity> CODEC = RecordCodecBuilder.mapCodec(i -> commonFields(i).apply(i, StampEntity::new));
+
+        StampEntity(Optional<Holder<LootItemCondition>> condition) {
+            super(condition);
+        }
+
+        @Override
+        public MapCodec<StampEntity> codec() {
+            return CODEC;
+        }
+
+        @Override
+        protected ItemStack run(ItemStack stack, LootContext context) {
+            var entity = context.getOptional(net.minecraft.world.level.storage.loot.parameters.LootContextParams.BLOCK_ENTITY);
+            if (entity != null) {
+                String id = BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(entity.getType()).toString();
+                CustomData.update(DataComponents.CUSTOM_DATA, stack, tag -> tag.putString("entity", id));
+            }
             return stack;
         }
     }

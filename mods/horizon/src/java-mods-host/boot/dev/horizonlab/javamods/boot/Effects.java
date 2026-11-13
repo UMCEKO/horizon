@@ -168,6 +168,7 @@ final class Effects {
 
     /** What `BlockBehaviour.getDrops` reads of its loot parameters: the tool, the origin, whether an entity broke it, the explosion's radius. */
     static byte[] lootParams(LootParams.Builder params) {
+        Loot.LIVE.set(params);
         try {
             ItemInstance tool = params.getOptionalParameter(LootContextParams.TOOL);
             ItemStack held = tool instanceof ItemStack stack ? stack : tool instanceof ItemStackTemplate template ? template.create() : ItemStack.EMPTY;
@@ -175,7 +176,7 @@ final class Effects {
             Float radius = params.getOptionalParameter(LootContextParams.EXPLOSION_RADIUS);
             var bytes = new ByteArrayOutputStream();
             var out = new DataOutputStream(bytes);
-            byte[] stack = stack(held);
+            byte[] stack = stack(Loot.needsEffective(held) ? Loot.effective(held, GameBridge.registries()) : held);
             out.writeInt(stack.length);
             out.write(stack);
             out.writeBoolean(origin != null);

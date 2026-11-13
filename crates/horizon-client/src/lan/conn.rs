@@ -28,7 +28,7 @@ use std::{
     net::TcpStream,
     sync::{
         Arc, Mutex, PoisonError,
-        atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         mpsc::{RecvTimeoutError, Sender, channel},
     },
     time::{Duration, Instant},
@@ -274,6 +274,8 @@ pub struct PlayerSender {
     pub undrained: Arc<Undrained>,
     /// The bytes of the bodies sent and not framed yet.
     pub pending: Arc<AtomicUsize>,
+    /// The play packets sent so far, keep-alives aside: the client's count of those it received.
+    sent: Arc<AtomicU64>,
     held: Arc<Mutex<Vec<Vec<u8>>>>,
     to: To,
     /// The connection's bytes on the wire (after compression and encryption), counted by its
@@ -295,6 +297,7 @@ impl PlayerSender {
         Self {
             undrained: Arc::default(),
             pending,
+            sent: Arc::default(),
             held: Arc::default(),
             to: To::Channel(tx),
             wire: None,
@@ -305,6 +308,7 @@ impl PlayerSender {
         Self {
             undrained: Arc::default(),
             pending: Arc::default(),
+            sent: Arc::default(),
             held: Arc::default(),
             to: To::Disabled,
             wire: None,
@@ -337,6 +341,7 @@ impl PlayerSender {
             return;
         }
         self.pending.fetch_add(body.len(), Ordering::Relaxed);
+        self.sent.fetch_add(1, Ordering::Relaxed);
         if HOLDING.get() {
             self.held().push(body);
         } else {
@@ -361,6 +366,7 @@ impl PlayerSender {
         let mut held = self.held();
         for body in bodies {
             self.pending.fetch_add(body.len(), Ordering::Relaxed);
+            self.sent.fetch_add(1, Ordering::Relaxed);
             held.push(body);
         }
     }
@@ -385,10 +391,21 @@ impl PlayerSender {
             To::Pool(outbox, _) => {
                 let body = play::Clientbound::Disconnect(cfg::Disconnect { reason }).encode();
                 self.pending.fetch_add(body.len(), Ordering::Relaxed);
+                self.sent.fetch_add(1, Ordering::Relaxed);
                 outbox.send(vec![body], Some(io_pool::End::Disconnect));
             }
         }
     }
+}
+
+/// The play packets sent so far to each player on a memory connection, by UUID.
+static MEMORY_SENT: std::sync::LazyLock<Mutex<std::collections::HashMap<u128, Arc<AtomicU64>>>> =
+    std::sync::LazyLock::new(Mutex::default);
+
+/// How many play packets the server has sent the player on its memory connection, keep-alives aside.
+pub fn memory_sent(uuid: u128) -> Option<u64> {
+    let sent = MEMORY_SENT.lock().unwrap_or_else(PoisonError::into_inner);
+    sent.get(&uuid).map(|n| n.load(Ordering::Relaxed))
 }
 
 /// Hand every player's held packets to their network threads, waking each
@@ -1520,10 +1537,18 @@ fn play(
     let sender = PlayerSender {
         undrained: undrained.clone(),
         pending,
+        sent: Arc::default(),
         held: Arc::default(),
         to: To::Pool(outbox.clone(), watch.clone()),
         wire: Some(c.reader.counters.clone()),
     };
+    let memory_sent = c.is_memory().then(|| {
+        MEMORY_SENT
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(parts.uuid, sender.sent.clone());
+        sender.sent.clone()
+    });
     let required_pack = shared
         .config
         .resource_pack
@@ -1542,6 +1567,7 @@ fn play(
         watch,
         counted,
         undrained,
+        memory_sent,
     };
     let joined = Joined {
         conn,
@@ -1588,6 +1614,8 @@ struct PlayConn {
     counted: Option<super::Counted>,
     /// Shared with the player's [`PlayerSender`]: what the hub hasn't taken yet.
     undrained: Arc<Undrained>,
+    /// The sender's count of play packets, listed in [`memory_sent`] while this memory connection lasts.
+    memory_sent: Option<Arc<AtomicU64>>,
 }
 impl io_pool::Session for PlayConn {
     /// Forward the player's packet, or say why it ends the connection: a
@@ -1655,6 +1683,15 @@ impl io_pool::Session for PlayConn {
         self.shared.closing.fetch_sub(1, Ordering::AcqRel);
         self.shared.release(self.uuid);
         self.counted = None;
+        if let Some(sent) = self.memory_sent.take() {
+            let mut listed = MEMORY_SENT.lock().unwrap_or_else(PoisonError::into_inner);
+            if listed
+                .get(&self.uuid)
+                .is_some_and(|n| Arc::ptr_eq(n, &sent))
+            {
+                listed.remove(&self.uuid);
+            }
+        }
     }
 }
 

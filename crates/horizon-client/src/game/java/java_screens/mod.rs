@@ -7,7 +7,7 @@ use super::java_hooks_client::{HudLayer, JavaClick, JavaKeyAction, Leaf};
 use super::*;
 
 mod draw;
-mod hud;
+pub(in crate::game) mod hud;
 mod input;
 mod shell;
 
@@ -17,7 +17,8 @@ use self::hud::*;
 /// The Java client's liveness, where `super::java_screens::live::` paths expect it.
 pub(in crate::game) mod live {
     pub(in crate::game) use super::{
-        java_client_running, java_hud_layer_cancelled, java_shape_generation,
+        java_client_joined, java_client_remote, java_client_running, java_hud_layer_cancelled,
+        java_seen, java_shape_generation,
     };
 }
 
@@ -36,6 +37,8 @@ use std::sync::mpsc::TryRecvError;
 #[derive(Default)]
 pub(in crate::game) struct Client {
     joined: bool,
+    /// What the window's last `tick_fov` computed: the base modifier, whether a spyglass scopes, the effect scale.
+    pub(in crate::game) fov_base: Option<(f32, bool, f32)>,
     /// What the Java client's `useItemOn` answered for the last click: 0 none, 1 passed, 2 success, 3 consumed.
     block_use: u8,
     /// Columns holding block entity models wait for the Java client's answer.
@@ -63,6 +66,8 @@ pub(in crate::game) struct Client {
     states: bool,
     /// Input the world took since the last tick, in order, as `events` reads it.
     queue: Vec<u8>,
+    /// The place among the play packets of the last one the window applied.
+    seen: u64,
     queued: i32,
     focused: Option<bool>,
     /// The Java client's playing sounds by its handle.
@@ -77,12 +82,41 @@ pub(in crate::game) struct Client {
     /// The open screen's frame blurs what is behind it (`blurBeforeThisStratum`).
     blurred: bool,
     shell: Shell,
+    music: MusicState,
+    /// A mod listens to `RenderFrameEvent`: each window frame posts it in the Java client.
+    frame_events: bool,
+}
+
+/// What the Java client's music tick last said: whether it runs the music, its track's handle and the Now Playing toasts it asked for.
+#[derive(Default, Debug, PartialEq)]
+struct MusicState {
+    owned: bool,
+    handle: Option<i32>,
+    toasts: Vec<bool>,
+}
+
+/// A status's `music` block.
+fn read_music(reply: &mut In) -> Option<MusicState> {
+    if !reply.bool()? {
+        return Some(MusicState::default());
+    }
+    let handle = Some(reply.int()?).filter(|handle| *handle >= 0);
+    let mut toasts = Vec::new();
+    for _ in 0..reply.int()? {
+        toasts.push(reply.bool()?);
+    }
+    Some(MusicState {
+        owned: true,
+        handle,
+        toasts,
+    })
 }
 
 /// A vanilla screen of the window's that the Java client holds as a shell, so mods' screen events fire on it.
 #[derive(Default)]
 struct Shell {
-    open: bool,
+    /// The open shell's kind (`java_shell_kind`), 0 none.
+    kind: u8,
     /// Two per `Leaf`: the gap after it (what mods drew), then its own content when Java drew it.
     segments: [Vec<u8>; SEGMENTS],
     /// Bit per `Leaf`: Java drew that step, native skips its own.
@@ -128,8 +162,8 @@ enum Input<'a> {
     Hotbar(i32),
     /// A column of the window's arrived (true) or left.
     Chunk(i32, i32, bool),
-    /// A frame of the server's Java side, for the Java client's connection.
-    Wire(&'a [u8]),
+    /// A frame of the server's Java side, for the Java client's connection, and its place among the play packets.
+    Wire(u64, &'a [u8]),
     /// The positions native picked this tick that Java runs `animateTick` at.
     Animate(&'a [[i32; 3]]),
     /// The window's Particles option.
@@ -138,10 +172,28 @@ enum Input<'a> {
     BlockEffect(u8, [i32; 3], i32, u8),
     /// `leftPos`, `topPos`, `imageWidth`, `imageHeight` and the hovered menu slot (-1 none) of the screen native shows.
     ShellLayout([i32; 5]),
+    /// The creative screen's selected tab id, what is hovered (0 none, 1 grid, 2 hotbar, 3 inventory tab, 4 destroy slot), its index, and the hovered grid stack's saved form.
+    ShellCreative(&'a str, i32, i32, &'a [u8]),
     /// Each shown mod toast's `(id, finished, fully visible for)`.
     Toasts(&'a [(i32, bool, i64)]),
+    /// The music the game answers this tick (`getSituationalMusic`), `getMusicVolume`, whether native shows its level loading screen, and the Music Frequency option.
+    Music(Option<&'a horizon_client::music::Music>, f32, bool, u8),
     /// The window's Notification Time option.
     NotificationTime(f64),
+    /// An entity change the window applied from a play packet, and that packet's place among them.
+    Entity(u64, &'a [u8]),
+    /// The place of the last play packet the window applied.
+    Seen(u64),
+    /// The window's camera values the view events read.
+    View(&'a super::java_view::ViewInputs),
+    /// Whether debug info is reduced, and the Java mods' F3 entries native has enabled now.
+    DebugLines(bool, &'a [String]),
+    /// The window's crosshair target for the block outline, told when it changes.
+    Hit(&'a super::java_world_renders::OutlineHit),
+    /// Each sound source's volume by its vanilla name, master first.
+    Volumes(Vec<(&'static str, f32)>),
+    /// `Camera.tickFov`'s inputs: the base modifier, whether the player scopes, the effect scale.
+    FovBase(f32, bool, f32),
 }
 
 impl Input<'_> {
@@ -159,14 +211,23 @@ impl Input<'_> {
             Input::SwapHands => 9,
             Input::Hotbar(_) => 10,
             Input::Chunk(..) => 11,
-            Input::Wire(_) => 12,
+            Input::Wire(..) => 12,
             Input::Camera(..) => 13,
             Input::Animate(_) => 14,
             Input::Particles(_) => 15,
             Input::BlockEffect(..) => 30,
             Input::ShellLayout(_) => 16,
+            Input::ShellCreative(..) => 19,
             Input::Toasts(_) => 26,
             Input::NotificationTime(_) => 27,
+            Input::Music(..) => 40,
+            Input::Entity(..) => 17,
+            Input::Seen(_) => 18,
+            Input::View(_) => 36,
+            Input::DebugLines(..) => 42,
+            Input::Hit(_) => 28,
+            Input::Volumes(_) => 41,
+            Input::FovBase(..) => 35,
         };
         out.0.push(kind);
         match *self {
@@ -203,7 +264,11 @@ impl Input<'_> {
                 out.int(z);
                 out.bool(arrived);
             }
-            Input::Wire(frame) => out.bytes(frame),
+            Input::Wire(seq, frame) | Input::Entity(seq, frame) => {
+                out.long(seq as i64);
+                out.bytes(frame);
+            }
+            Input::Seen(seq) => out.long(seq as i64),
             Input::Camera(at, view, camera_type) => {
                 at.iter().for_each(|v| out.double(*v));
                 view.iter().for_each(|v| out.float(*v));
@@ -221,6 +286,12 @@ impl Input<'_> {
                 out.0.push(face);
             }
             Input::ShellLayout(layout) => layout.iter().for_each(|v| out.int(*v)),
+            Input::ShellCreative(tab, hovered, index, stack) => {
+                out.text(tab);
+                out.int(hovered);
+                out.int(index);
+                out.bytes(stack);
+            }
             Input::Toasts(turns) => {
                 out.int(turns.len() as i32);
                 for (id, finished, fully_for) in turns {
@@ -230,6 +301,37 @@ impl Input<'_> {
                 }
             }
             Input::NotificationTime(time) => out.double(time),
+            Input::Music(music, volume, loading, frequency) => {
+                out.bool(music.is_some());
+                if let Some(music) = music {
+                    out.text(&music.sound);
+                    out.int(music.min_delay);
+                    out.int(music.max_delay);
+                    out.bool(music.replace_current_music);
+                }
+                out.float(volume);
+                out.bool(loading);
+                out.0.push(frequency);
+            }
+            Input::View(inputs) => inputs.write(out),
+            Input::DebugLines(reduced, ids) => {
+                out.bool(reduced);
+                out.int(ids.len() as i32);
+                ids.iter().for_each(|id| out.text(id));
+            }
+            Input::Hit(hit) => super::java_world_renders::write_hit(out, hit),
+            Input::Volumes(ref volumes) => {
+                out.int(volumes.len() as i32);
+                for (name, value) in volumes {
+                    out.text(name);
+                    out.float(*value);
+                }
+            }
+            Input::FovBase(base, scoping, scale) => {
+                out.float(base);
+                out.bool(scoping);
+                out.float(scale);
+            }
         }
     }
 }
@@ -256,18 +358,26 @@ fn button_number(button: MouseButton) -> i32 {
     }
 }
 
+/// The creative screen's tab id, hover kind, hover index and hovered grid stack, as `Input::ShellCreative` carries them.
+type CreativeState = (String, i32, i32, Vec<u8>);
+
 /// What the Java client last heard of the window's own state, so each is sent only when it changes.
 #[derive(Default)]
 struct Sent {
     size: Option<[i32; 3]>,
     native_screen: Option<(bool, bool, u8)>,
     layout: Option<[i32; 5]>,
+    creative: Option<CreativeState>,
     focused: Option<bool>,
     camera: Option<([i32; 3], [f32; 4], u8)>,
     cursor: Option<(f64, f64)>,
     motion: Option<Motion>,
     particles: Option<i32>,
     notification_time: Option<f64>,
+    seen: Option<u64>,
+    hit: Option<super::java_world_renders::OutlineHit>,
+    volumes: Option<Vec<(&'static str, f32)>>,
+    fov_base: Option<(f32, bool, f32)>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -409,6 +519,44 @@ pub(in crate::game) fn java_hud_layer_cancelled(layer: HudLayer) -> bool {
     CLIENT.with_borrow(|c| c.hud.cancelled & (1 << layer as u32) != 0)
 }
 
+/// What the creative screen hovers: 0 none, 1 a grid cell, 2 a hotbar slot, 3 an inventory-tab slot, 4 the destroy slot; its index; the grid cell's stack.
+fn creative_hover(
+    inventory_tab: bool,
+    trash: bool,
+    slot: Option<usize>,
+    cell: impl FnOnce(usize) -> Option<ItemStack>,
+) -> (i32, i32, Option<ItemStack>) {
+    if trash && inventory_tab {
+        return (4, 0, None);
+    }
+    let Some(slot) = slot else {
+        return (0, 0, None);
+    };
+    if inventory_tab {
+        return match Game::menu_slot_index("inventory", slot) {
+            Some(index) => (3, index as i32, None),
+            None => (0, 0, None),
+        };
+    }
+    if (Creative::DISPLAY..Creative::DISPLAY + 45).contains(&slot) {
+        let index = slot - Creative::DISPLAY;
+        return (1, index as i32, cell(index));
+    }
+    if slot < 9 {
+        return (2, slot as i32, None);
+    }
+    (0, 0, None)
+}
+
+/// The native screen a shell kind stands for.
+fn shell_screen(kind: i32) -> Option<Screen> {
+    match kind {
+        1 => Some(Screen::Inventory),
+        2 => Some(Screen::Creative),
+        _ => None,
+    }
+}
+
 /// A shell's segments and the steps Java drew.
 type Recording = ([Vec<u8>; SEGMENTS], u32);
 
@@ -490,6 +638,7 @@ struct FrameJob {
     hud: Option<Vec<u8>>,
     world: Option<Vec<u8>>,
     toasts: Option<Vec<u8>>,
+    view: Option<Vec<u8>>,
 }
 
 /// A frame request's replies, each with what the request took.
@@ -498,6 +647,7 @@ struct FrameDone {
     hud: Option<(Vec<u8>, u128)>,
     world: Option<(Vec<u8>, u128)>,
     toasts: Option<(Vec<u8>, u128)>,
+    view: Option<(Vec<u8>, u128)>,
 }
 
 impl FrameJob {
@@ -512,6 +662,7 @@ impl FrameJob {
             hud: record("client_hud_frame", self.hud),
             world: record("client_world_frame", self.world),
             toasts: record("client_toast_frame", self.toasts),
+            view: record("client_view_frame", self.view),
         }
     }
 }
@@ -671,6 +822,21 @@ impl Worker {
     }
 }
 
+/// Whether the Java client has joined: its chat and commands can run.
+pub(in crate::game) fn java_client_joined() -> bool {
+    CLIENT.with_borrow(|c| c.joined)
+}
+
+/// The window's server is in another process and has a Java side the Java client connected to.
+pub(in crate::game) fn java_client_remote() -> bool {
+    CLIENT.with_borrow(|c| c.remote)
+}
+
+/// The window applied the play packet at `seq`: the Java client's packets sent before it may now apply.
+pub(in crate::game) fn java_seen(seq: u64) {
+    CLIENT.with_borrow_mut(|c| c.seen = c.seen.max(seq));
+}
+
 /// Whether a background client tick is running, during which the window doesn't wait on Java.
 pub(in crate::game) fn java_client_running() -> bool {
     RUNNING.load(std::sync::atomic::Ordering::Acquire) > 0
@@ -694,6 +860,23 @@ impl Game<'_> {
             .map_or([854, 480], |r| [r.config.width, r.config.height]);
         let batch = HudBatch::new(size, self.settings.gui_scale_inputs());
         [size[0] as i32, size[1] as i32, batch.scale as i32]
+    }
+
+    /// The player's volumes as `Options` keeps them: `master`, then every other source in `SOUND_SOURCES` order.
+    fn java_sound_volumes(&self) -> Vec<(&'static str, f32)> {
+        let settings = &self.settings;
+        horizon_client::settings::SOUND_SOURCES
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let value = if i == 0 {
+                    settings.master_volume
+                } else {
+                    settings.volumes[i]
+                };
+                (*name, value)
+            })
+            .collect()
     }
 
     fn java_client_size(&self, out: &mut Out) {
@@ -745,12 +928,30 @@ impl Game<'_> {
         }
         let environment = reply.int()?;
         let lockstep = reply.bool()?;
+        let frame_events = reply.bool()?;
+        CLIENT.with_borrow_mut(|c| c.frame_events = frame_events);
         if lockstep != super::java_lockstep::lockstep_next()
             && std::env::var_os("HORIZON_JAVA_DEBUG").is_some()
         {
             log::info!("Horizon: client tick status lockstep {lockstep}");
         }
         super::java_lockstep::set_lockstep_next(lockstep);
+        let music = read_music(reply)?;
+        CLIENT.with_borrow_mut(|c| {
+            c.music.owned = music.owned;
+            c.music.handle = music.handle;
+            c.music.toasts.extend(music.toasts);
+        });
+        let chat = super::java_chat::read_lines(reply)?;
+        let view = if reply.bool()? {
+            Some(super::java_view::read_view_effects(reply)?)
+        } else {
+            None
+        };
+        super::java_view::java_view_status(view, reply.bool()?);
+        if super::java_debug::java_debug_status(reply).is_none() {
+            log::warn!("Horizon: a status's F3 entry lines ended in pieces");
+        }
         super::java_world_renders::java_world_status(
             world.as_deref(),
             world_animating,
@@ -764,14 +965,17 @@ impl Game<'_> {
             if let Some(hud) = hud {
                 c.hud = read_hud(&hud).unwrap_or_default();
             }
-            if (shell == 1) != c.shell.open && std::env::var_os("HORIZON_JAVA_DEBUG").is_some() {
+            let kind = u8::try_from(shell).unwrap_or(0);
+            if kind != c.shell.kind && std::env::var_os("HORIZON_JAVA_DEBUG").is_some() {
                 let sizes = segments.as_ref().map(|s| s.0.each_ref().map(Vec::len));
-                log::info!(
-                    "Horizon: Java shell 1 {} {sizes:?}",
-                    if shell == 1 { "opened" } else { "closed" }
-                );
+                let (shown, opened) = if kind == 0 {
+                    (c.shell.kind, "closed")
+                } else {
+                    (kind, "opened")
+                };
+                log::info!("Horizon: Java shell {shown} {opened} {sizes:?}");
             }
-            c.shell.open = shell == 1;
+            c.shell.kind = kind;
             c.shell.opening = false;
             c.shell.animating = shell_animating;
             if let Some((segments, routed)) = segments {
@@ -779,25 +983,29 @@ impl Game<'_> {
                 c.shell.routed = routed;
                 c.shell.fresh = true;
             }
-            shell == 0 && matches!(c.sent.native_screen, Some((true, _, 1)))
+            shell == 0 && matches!(c.sent.native_screen, Some((true, _, 1 | 2)))
         });
         if tabs_ready {
             self.java_creative_tabs_built();
         }
+        self.java_chat_lines(chat);
         if open && self.screen != Screen::Java {
             self.screen = Screen::Java;
             self.capture(false);
         } else if !open && self.screen == Screen::Java {
             // A mod's screen over a shell closed back to it: native's screen is the shell's again.
-            if shell == 1 {
-                self.screen = Screen::Inventory;
+            if let Some(screen) = shell_screen(shell) {
+                self.screen = screen;
                 self.capture(false);
             } else {
                 self.screen = Screen::Playing;
                 self.capture(true);
             }
-        } else if refused && self.screen == Screen::Inventory && debug_once() {
-            log::info!("Horizon: no shell opened for the inventory; native's screen stays alone");
+        } else if refused
+            && matches!(self.screen, Screen::Inventory | Screen::Creative)
+            && debug_once()
+        {
+            log::info!("Horizon: no shell opened for the screen; native's screen stays alone");
         }
         Some(())
     }
@@ -896,10 +1104,16 @@ impl Game<'_> {
     }
 
     /// A frame of the server's Java side, which the Java client reads at its next tick.
-    pub(in crate::game) fn java_wire_in(&mut self, frame: &[u8]) {
+    pub(in crate::game) fn java_wire_in(&mut self, frame: &[u8], seq: u64) {
         if CLIENT.with_borrow(|c| c.remote) {
-            self.java_queue(Input::Wire(frame));
+            self.java_queue(Input::Wire(seq, frame));
         }
+        java_seen(seq);
+    }
+
+    /// An entity change the window applied, for the Java client's level at its next tick.
+    pub(in crate::game) fn java_entity_entry(&mut self, seq: u64, entry: &[u8]) {
+        self.java_queue(Input::Entity(seq, entry));
     }
 
     /// Every font's advances, which the Java client measures text with, ready for its start.
@@ -972,6 +1186,7 @@ impl Game<'_> {
         horizon_client::dynamic_models::clear();
         horizon_client::dynamic_renders::clear();
         super::java_world_renders::java_world_left();
+        super::java_view::java_view_left();
         super::java_toasts::java_toasts_left();
         self.particles.set_java(Default::default());
         CLIENT.with_borrow_mut(|c| {
@@ -983,6 +1198,7 @@ impl Game<'_> {
             c.told.clear();
             c.hud = HudRecording::default();
             c.hud_animating = false;
+            c.frame_events = false;
             c.shell = Shell::default();
             c.owed = 0;
             c.animate.clear();
@@ -990,12 +1206,48 @@ impl Game<'_> {
             c.sent = Sent::default();
             c.queue.clear();
             c.queued = 0;
+            c.music = MusicState::default();
+            c.seen = 0;
         });
         for (_, id) in CLIENT.with_borrow_mut(|c| std::mem::take(&mut c.sounds)) {
             super::java_listen_sound::external_stopped(id);
             self.audio.stop_and_release(id);
         }
         super::java_bridges::client_world::java_forget_client_world();
+        super::java_client_entities::java_client_entities_left();
+    }
+
+    /// Whether the Java client's `MusicManager.tick` runs the music.
+    pub(in crate::game) fn java_music_owned(&self) -> bool {
+        CLIENT.with_borrow(|c| c.music.owned)
+    }
+
+    /// The sound engine's instance of the track the Java client's music manager plays.
+    pub(in crate::game) fn java_music_instance(
+        &self,
+    ) -> Option<horizon_client::sound_engine::InstanceId> {
+        CLIENT.with_borrow(|c| c.music.handle.and_then(|h| c.sounds.get(&h).copied()))
+    }
+
+    /// The Now Playing toast requests the Java client's tick made since the last call: true shows, false hides.
+    pub(in crate::game) fn java_music_toasts(&mut self) -> Vec<bool> {
+        CLIENT.with_borrow_mut(|c| std::mem::take(&mut c.music.toasts))
+    }
+
+    /// This tick's answers to the two questions the Java client's music tick asks the game.
+    pub(in crate::game) fn java_music_send(
+        &mut self,
+        music: Option<&horizon_client::music::Music>,
+        volume: f32,
+        loading: bool,
+        frequency: horizon_client::music::MusicFrequency,
+    ) {
+        CLIENT.with_borrow_mut(|c| {
+            let mut events = Out(std::mem::take(&mut c.queue));
+            Input::Music(music, volume, loading, frequency as u8).write(&mut events);
+            c.queue = events.0;
+            c.queued += 1;
+        });
     }
 
     /// The start of the window's tick: the Java client's last tick results are applied, before the window's tick reads what they changed.
@@ -1107,8 +1359,11 @@ impl Game<'_> {
         let kind = if open { self.java_shell_kind() } else { 0 };
         let native_screen = (open, open && self.pause, kind);
         let layout = (kind != 0).then(|| self.java_shell_layout());
+        let creative = (kind == 2).then(|| self.java_creative_state());
         let camera = self.java_world_camera();
         let camera_type = self.camera_type as u8;
+        let (debug_reduced, debug_wanted) = self.java_debug_wanted();
+        let hit = self.java_outline_hit();
         self.java_publish_client_world();
         let (left, arrived) = self.java_client_chunk_changes();
         CLIENT.with_borrow_mut(|c| {
@@ -1127,6 +1382,13 @@ impl Game<'_> {
             {
                 c.sent.layout = Some(layout);
                 Input::ShellLayout(layout).write(&mut events);
+                count += 1;
+            }
+            if let Some((tab, hovered, index, stack)) = creative
+                && c.sent.creative.as_ref() != Some(&(tab.clone(), hovered, index, stack.clone()))
+            {
+                Input::ShellCreative(&tab, hovered, index, &stack).write(&mut events);
+                c.sent.creative = Some((tab, hovered, index, stack));
                 count += 1;
             }
             if c.sent.native_screen != Some(native_screen) {
@@ -1162,8 +1424,17 @@ impl Game<'_> {
                 Input::Camera(at, view, camera_type).write(&mut events);
                 count += 1;
             }
+            if c.sent.hit != Some(hit) {
+                c.sent.hit = Some(hit);
+                Input::Hit(&hit).write(&mut events);
+                count += 1;
+            }
             for group in c.animate.drain(..) {
                 Input::Animate(&group).write(&mut events);
+                count += 1;
+            }
+            if let Some(view) = super::java_view::batch_input() {
+                Input::View(&view).write(&mut events);
                 count += 1;
             }
             let notification_time = f64::from(self.settings.notification_display_time);
@@ -1172,9 +1443,31 @@ impl Game<'_> {
                 Input::NotificationTime(notification_time).write(&mut events);
                 count += 1;
             }
+            if super::java_debug::should_send(&debug_wanted) {
+                Input::DebugLines(debug_reduced, &debug_wanted).write(&mut events);
+                count += 1;
+            }
+            let volumes = self.java_sound_volumes();
+            if c.sent.volumes.as_ref() != Some(&volumes) {
+                c.sent.volumes = Some(volumes.clone());
+                Input::Volumes(volumes).write(&mut events);
+                count += 1;
+            }
+            if let Some((base, scoping, scale)) = c.fov_base
+                && c.sent.fov_base != c.fov_base
+            {
+                c.sent.fov_base = c.fov_base;
+                Input::FovBase(base, scoping, scale).write(&mut events);
+                count += 1;
+            }
             let toasts = super::java_toasts::java_toasts_turns();
             if !toasts.is_empty() {
                 Input::Toasts(&toasts).write(&mut events);
+                count += 1;
+            }
+            if c.sent.seen != Some(c.seen) {
+                c.sent.seen = Some(c.seen);
+                Input::Seen(c.seen).write(&mut events);
                 count += 1;
             }
             out.int(count);
@@ -1231,6 +1524,9 @@ impl Game<'_> {
             if let Some((reply, _)) = frame.toasts {
                 super::java_toasts::java_toasts_frame_apply(&reply);
             }
+            if let Some((reply, _)) = frame.view {
+                super::java_view::java_view_frame_apply(&reply);
+            }
         }
     }
 
@@ -1255,6 +1551,7 @@ impl Game<'_> {
         };
         if !CLIENT.with_borrow_mut(|c| std::mem::replace(&mut c.joined, true)) {
             self.java_apply_mod_keys();
+            self.java_debug_entries_take();
         }
         // A status answers once the Java client's login is done: until then nothing is held for it.
         if !tick.is_empty() && !CLIENT.with_borrow(|c| c.armed) {
@@ -1297,7 +1594,7 @@ fn trimmed_advances(mut advances: Vec<f32>, missing: f32) -> Vec<f32> {
 }
 
 /// `Direction.get3DDataValue` of a face's normal.
-fn face_index(face: [i32; 3]) -> i32 {
+pub(super) fn face_index(face: [i32; 3]) -> i32 {
     match face {
         [0, -1, 0] => 0,
         [0, 1, 0] => 1,
@@ -1310,6 +1607,65 @@ fn face_index(face: [i32; 3]) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_music_input_is_kind_40_with_the_tracks_fields_then_volume_loading_and_frequency() {
+        let music = horizon_client::music::Music::new("minecraft:music.creative", 12000, 24000, true);
+        let mut out = Out::default();
+        super::Input::Music(Some(&music), 0.5, true, 2).write(&mut out);
+        let mut expected = vec![40, 1];
+        expected.extend(24_i32.to_be_bytes());
+        expected.extend(b"minecraft:music.creative");
+        expected.extend(12000_i32.to_be_bytes());
+        expected.extend(24000_i32.to_be_bytes());
+        expected.extend([1]);
+        expected.extend(0.5_f32.to_be_bytes());
+        expected.extend([1, 2]);
+        assert_eq!(out.0, expected);
+        let mut none = Out::default();
+        super::Input::Music(None, 1.0, false, 0).write(&mut none);
+        let mut expected = vec![40, 0];
+        expected.extend(1.0_f32.to_be_bytes());
+        expected.extend([0, 0]);
+        assert_eq!(none.0, expected);
+    }
+
+    #[test]
+    fn the_music_status_block_reads_ownership_handle_and_toast_requests() {
+        let mut out = Out::default();
+        out.bool(true);
+        out.int(7);
+        out.int(2);
+        out.bool(true);
+        out.bool(false);
+        assert_eq!(
+            super::read_music(&mut In(&out.0)),
+            Some(super::MusicState {
+                owned: true,
+                handle: Some(7),
+                toasts: vec![true, false],
+            })
+        );
+        let mut idle = Out::default();
+        idle.bool(true);
+        idle.int(-1);
+        idle.int(0);
+        assert_eq!(super::read_music(&mut In(&idle.0)).unwrap().handle, None);
+        let mut native = Out::default();
+        native.bool(false);
+        assert_eq!(
+            super::read_music(&mut In(&native.0)),
+            Some(super::MusicState::default())
+        );
+        assert_eq!(super::read_music(&mut In(&[1, 0, 0])), None);
+    }
+
+    #[test]
+    fn fov_base_is_kind_35_then_the_float_the_bool_and_the_float() {
+        let mut out = Out::default();
+        super::Input::FovBase(1.0, true, 0.5).write(&mut out);
+        assert_eq!(out.0, [35, 0x3f, 0x80, 0, 0, 1, 0x3f, 0, 0, 0]);
+    }
+
     #[test]
     fn the_font_table_ends_at_the_last_code_point_java_cannot_guess() {
         let mut table = vec![6.0; 0x11_0000];
@@ -1369,12 +1725,44 @@ mod tests {
     }
 
     #[test]
+    fn a_volumes_input_names_each_source_with_its_value() {
+        let mut out = Out::default();
+        Input::Volumes(vec![("master", 0.25), ("music", 1.0)]).write(&mut out);
+        assert_eq!(out.0[0], 41);
+        let mut read = In(&out.0[1..]);
+        assert_eq!(read.int(), Some(2));
+        assert_eq!((read.text(), read.float()), (Some("master"), Some(0.25)));
+        assert_eq!((read.text(), read.float()), (Some("music"), Some(1.0)));
+        assert_eq!(read.int(), None);
+    }
+
+    #[test]
     fn a_camera_input_carries_the_perspective_after_the_seven_numbers() {
         let mut out = Out::default();
         Input::Camera([1.0, 2.0, 3.0], [4.0, 5.0, 6.0, 7.0], 2).write(&mut out);
         assert_eq!(out.0[0], 13);
         assert_eq!(out.0.len(), 1 + 3 * 8 + 4 * 4 + 1);
         assert_eq!(out.0[41], 2);
+    }
+
+    #[test]
+    fn a_hit_input_is_its_kind_then_the_block_and_the_outline_gate() {
+        let hit = super::super::java_world_renders::OutlineHit {
+            block: Some(([1, 64, -2], [0, 1, 0], [1.5, 65.0, -1.5])),
+            render: true,
+            high_contrast: false,
+        };
+        let mut out = Out::default();
+        Input::Hit(&hit).write(&mut out);
+        let mut expected = vec![28u8, 1];
+        // `BlockPos.asLong` of (1, 64, -2): x << 38 | (z & 0x3FFFFFF) << 12 | y.
+        expected.extend(((1i64 << 38) | ((-2i64 & 0x3FF_FFFF) << 12) | 64).to_be_bytes());
+        expected.extend(1i32.to_be_bytes());
+        for v in [1.5f64, 65.0, -1.5] {
+            expected.extend(v.to_be_bytes());
+        }
+        expected.extend([1, 0]);
+        assert_eq!(out.0, expected);
     }
 
     fn segments_of(sizes: &[(usize, u8)]) -> Out {
@@ -1521,6 +1909,69 @@ mod tests {
         let layout: Vec<i32> = (0..5).map(|_| read.int().unwrap()).collect();
         assert_eq!(layout, [76, 83, 176, 166, -1]);
         assert!(read.byte().is_none());
+    }
+
+    #[test]
+    fn the_creative_shell_input_writes_what_events_reads() {
+        let mut out = Out::default();
+        Input::ShellCreative("minecraft:search", 1, 17, &[10, 0, 3]).write(&mut out);
+        let mut read = In(&out.0);
+        assert_eq!(read.byte(), Some(19));
+        assert_eq!(read.text(), Some("minecraft:search"));
+        assert_eq!((read.int(), read.int()), (Some(1), Some(17)));
+        assert_eq!(read.bytes(), Some(&[10u8, 0, 3][..]));
+        assert!(read.byte().is_none());
+    }
+
+    #[test]
+    fn a_status_with_the_creative_shell_reads_kind_two() {
+        let mut out = Out::default();
+        out.bool(false);
+        out.int(2);
+        out.bool(false);
+        out.int(0);
+        out.bool(false);
+        let (_, kind, recording, _) = read_shell_tail(&mut In(&out.0)).unwrap();
+        assert!(kind == 2 && recording.is_none());
+        assert!(matches!(shell_screen(kind), Some(Screen::Creative)));
+        assert!(shell_screen(0).is_none());
+    }
+
+    fn cell(index: usize) -> Option<ItemStack> {
+        Some(ItemStack::new(&format!("minecraft:item_{index}"), 1))
+    }
+
+    #[test]
+    fn a_grid_cell_is_hovered_with_its_stack_on_an_item_tab() {
+        let hover = creative_hover(false, false, Some(Creative::DISPLAY + 13), cell);
+        assert_eq!((hover.0, hover.1), (1, 13));
+        assert_eq!(hover.2.map(|s| s.item), Some("minecraft:item_13".into()));
+    }
+
+    #[test]
+    fn a_hotbar_slot_is_hovered_by_its_hotbar_index_on_an_item_tab() {
+        let hover = creative_hover(false, false, Some(4), cell);
+        assert_eq!((hover.0, hover.1), (2, 4));
+        assert!(hover.2.is_none());
+    }
+
+    #[test]
+    fn the_inventory_tab_names_the_inventory_menus_slots() {
+        // InventoryMenu: 5..9 armor, 9..36 main, 36..45 hotbar, 45 the off hand.
+        let index = |slot| creative_hover(true, false, Some(slot), cell);
+        assert_eq!((index(9).0, index(9).1), (3, 9));
+        assert_eq!(index(2).1, 38);
+        assert_eq!(index(501).1, 6);
+        assert_eq!(index(504).1, 45);
+        assert!(index(504).2.is_none());
+    }
+
+    #[test]
+    fn the_destroy_slot_and_nothing_are_told_apart() {
+        assert_eq!(creative_hover(true, true, Some(3), cell).0, 4);
+        assert_eq!(creative_hover(false, false, None, cell).0, 0);
+        // The trash slot exists on the inventory tab only.
+        assert_eq!(creative_hover(false, true, None, cell).0, 0);
     }
 
     #[test]

@@ -21,6 +21,7 @@ SOURCES = {
                                                   'public static final EntityType COW = register(EntityTypeIds.COW); static EntityType register(Object k) { return null; } }'),
     'net/minecraft/world/entity/Entity.java': ('package net.minecraft.world.entity; import net.minecraft.world.level.Level; public class Entity { public Level level() { return null; } '
                                               'public EntityType getType() { return null; } public double getX() { return 0; } public void setPos(double x, double y, double z) {} '
+                                              'public void setDeltaMovement(double x, double y, double z) {} '
                                               'public void tick() {} public void frobnicate() {} public void wobble() {} public void setAirSupply(int a) {} public static void spawn() {} }'),
     'net/minecraft/world/entity/LivingEntity.java': 'package net.minecraft.world.entity; public class LivingEntity extends Entity { public float getHealth() { return 0; } }',
     'net/minecraft/world/entity/player/Player.java': 'package net.minecraft.world.entity.player; public class Player extends net.minecraft.world.entity.LivingEntity { public void swing() {} }',
@@ -75,6 +76,12 @@ SOURCES = {
           static void touch(Entity en, ItemHolder h) {{ en.setPos(1, 2, 3); en.getX(); en.frobnicate(); Entity.spawn(); }}
           static class ItemHolder {{}}
         }}''',
+    'fixture/Rocket.java': ('package fixture; import net.minecraft.world.entity.Entity; import net.minecraft.world.entity.player.Player; '
+                            'import net.minecraft.world.entity.item.ItemEntity; public class Rocket { '
+                            'static void typed(Player player) { player.setDeltaMovement(0, .5, 0); } '
+                            'static <P extends Player> void generic(P p) { p.setDeltaMovement(0, .5, 0); } '
+                            'static void item(ItemEntity item) { item.setDeltaMovement(0, .5, 0); } '
+                            'static void any(Entity e) { e.setDeltaMovement(0, .5, 0); } }'),
     'fixture/Zom.java': 'package fixture; public class Zom extends net.minecraft.world.entity.Entity { public void tick() {} public void own() { setPos(0, 0, 0); } }',
     'fixture/Reflects.java': ('package fixture; public class Reflects { static Object peek(net.minecraft.world.entity.Entity e) throws Exception { '
                               'e.getX(); return e.getClass().getDeclaredMethod("x").invoke(e); } }'),
@@ -175,7 +182,11 @@ class Groups(Facts):
     def test_calls_give_groups_per_receiver_and_writers_with_their_mods(self):
         self.assertIn('position', self.facts['reads']['net/minecraft/world/entity/Entity'])
         self.assertEqual([(w['key'], w['group'], w['mods']) for w in self.facts['writes'] if w['receiver'] == 'net/minecraft/world/entity/Entity'],
-                         [('net/minecraft/world/entity/Entity#setPos(DDD)V', 'position', ['fix'])])
+                         [('net/minecraft/world/entity/Entity#setDeltaMovement(DDD)V', 'motion', ['fix']), ('net/minecraft/world/entity/Entity#setPos(DDD)V', 'position', ['fix'])])
+
+    def test_a_motion_write_on_a_player_typed_receiver_is_a_player_write_and_one_on_an_entity_or_item_is_not(self):
+        self.assertEqual(self.facts['player_writes'], [{'key': 'net/minecraft/world/entity/Entity#setDeltaMovement(DDD)V',
+                                                        'receiver': 'net/minecraft/world/entity/player/Player', 'mods': ['fix']}])
 
     def test_a_mods_own_method_and_a_static_are_not_entity_state(self):
         self.assertFalse(any('own' in w['key'] or 'spawn' in w['key'] for w in self.facts['writes']))

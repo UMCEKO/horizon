@@ -152,6 +152,13 @@ impl CraftFacts {
         self.item_bits(id) >> method as u32 & 1 != 0
     }
 
+    /// Whether a loot roll's tool must ask Java for its enchantment levels: its item answers them in code, or a mod hears `GetEnchantmentLevelEvent`.
+    pub(in crate::game) fn tool_levels_from_java(&self, id: &str) -> bool {
+        self.heard(Event::GetEnchantmentLevel)
+            || self.item_has(id, ItemMethod::GetEnchantmentLevel)
+            || self.item_has(id, ItemMethod::GetAllEnchantments)
+    }
+
     /// Whether any loot modifier can apply to this table.
     pub(in crate::game) fn modifiers_for(&self, table: &str) -> bool {
         self.modifiers
@@ -165,6 +172,16 @@ impl CraftFacts {
 
     pub(in crate::game) fn owns_condition(&self, id: &str) -> bool {
         self.conditions.contains(id)
+    }
+
+    #[cfg(test)]
+    pub(in crate::game) fn owning(functions: &[&str], conditions: &[&str]) -> Self {
+        let own = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect();
+        Self {
+            functions: own(functions),
+            conditions: own(conditions),
+            ..Self::default()
+        }
     }
 }
 
@@ -213,6 +230,18 @@ mod tests {
         assert!(facts.owns_function("t:stamp") && !facts.owns_function("t:always"));
         assert!(facts.owns_condition("t:always"));
         assert_eq!(facts.modifiers.len(), 1);
+    }
+
+    #[test]
+    fn a_tool_asks_java_for_levels_only_when_code_or_the_event_answers_them() {
+        let mut facts = parse(&buffer(false)).unwrap();
+        facts.events = 0;
+        facts.items.insert(Arc::from("t:plain"), 1);
+        assert!(facts.tool_levels_from_java("t:charm"));
+        assert!(!facts.tool_levels_from_java("t:plain"));
+        assert!(!facts.tool_levels_from_java("t:unknown"));
+        facts.events = 1 << Event::GetEnchantmentLevel as u32;
+        assert!(facts.tool_levels_from_java("t:unknown"));
     }
 
     #[test]

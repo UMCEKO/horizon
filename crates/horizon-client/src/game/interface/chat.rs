@@ -934,6 +934,19 @@ impl Game<'_> {
         self.sync_enchantment_registries();
         // After the export, which keys the registry with vanilla's tags.
         self.ui.registries.sync_damage_type_ids();
+        let mods = crate::game::java_hooks::java_hook_owned_particles();
+        if !mods.is_empty() {
+            let ids = &mut self
+                .ui
+                .registries
+                .by_registry
+                .entry("minecraft:particle_type".into())
+                .or_default()
+                .ids;
+            ids.extend(mods);
+            ids.sort();
+            ids.dedup();
+        }
     }
     /// The block the player is looking at, for coordinate suggestions, and
     /// the entity, for entity arguments (ClientSuggestionProvider).

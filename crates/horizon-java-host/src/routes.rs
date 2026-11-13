@@ -172,6 +172,11 @@ pub fn get() -> Option<&'static Routes> {
     ROUTES.get()
 }
 
+/// Whether a loaded mod's mixin changes the method and its route is on; W10's seams ask.
+pub fn patched(key: &str) -> bool {
+    get().is_some_and(|routes| routes.id(key).is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,5 +325,6 @@ mod tests {
     #[test]
     fn no_boot_means_no_routes() {
         assert!(get().is_none());
+        assert!(!patched("a#m()V"));
     }
 }

@@ -1477,6 +1477,52 @@ fn put_calculated_blending(root: &mut NamedTag, data: &BlendingData) {
     }
     map.insert("blending_data".into(), Tag::compound(fields));
 }
+
+/// The chunk's `structures` compound as its save writes it, over `saved` (the one its saved root kept).
+pub fn structures_tag(chunk: &Chunk, saved: Option<&Tag>) -> Tag {
+    let mut structures = saved.cloned().unwrap_or_else(|| {
+        Tag::compound([
+            ("References", Tag::Compound(Compound::new())),
+            ("starts", Tag::Compound(Compound::new())),
+        ])
+    });
+    if !chunk.structure_refs.is_empty()
+        && let Tag::Compound(s) = &mut structures
+    {
+        let mut refs: std::collections::BTreeMap<&str, Vec<i64>> = Default::default();
+        for (id, (x, z)) in &chunk.structure_refs {
+            refs.entry(id)
+                .or_default()
+                .push(i64::from(*x as u32) | i64::from(*z) << 32);
+        }
+        let refs: Compound = refs
+            .into_iter()
+            .map(|(id, v)| (id.into(), Tag::LongArray(v)))
+            .collect();
+        s.insert("References".into(), Tag::Compound(refs));
+    }
+    let starts: Compound = chunk
+        .structure_starts
+        .iter()
+        .filter_map(|start| match start.save() {
+            Some(tag) => Some((start.name.as_str().into(), tag)),
+            None => {
+                log::warn!(
+                    "Horizon: structure start {} not saved: one of its pieces cannot be",
+                    start.name
+                );
+                None
+            }
+        })
+        .collect();
+    if !starts.is_empty()
+        && let Tag::Compound(s) = &mut structures
+    {
+        s.insert("starts".into(), Tag::Compound(starts));
+    }
+    structures
+}
+
 /// The chunk NBT vanilla's `SerializableChunkData.write` produces for a full
 /// chunk in a level of `shape`.
 pub fn encode_with(
@@ -1694,46 +1740,8 @@ pub fn encode_with(
             }
         }
         map.entry("InhabitedTime".into()).or_insert(Tag::Long(0));
-        map.entry("structures".into()).or_insert_with(|| {
-            Tag::compound([
-                ("References", Tag::Compound(Compound::new())),
-                ("starts", Tag::Compound(Compound::new())),
-            ])
-        });
-        if !chunk.structure_refs.is_empty()
-            && let Some(Tag::Compound(s)) = map.get_mut(&"structures".into())
-        {
-            let mut refs: std::collections::BTreeMap<&str, Vec<i64>> = Default::default();
-            for (id, (x, z)) in &chunk.structure_refs {
-                refs.entry(id)
-                    .or_default()
-                    .push(i64::from(*x as u32) | i64::from(*z) << 32);
-            }
-            let refs: Compound = refs
-                .into_iter()
-                .map(|(id, v)| (id.into(), Tag::LongArray(v)))
-                .collect();
-            s.insert("References".into(), Tag::Compound(refs));
-        }
-        let starts: Compound = chunk
-            .structure_starts
-            .iter()
-            .filter_map(|start| match start.save() {
-                Some(tag) => Some((start.name.as_str().into(), tag)),
-                None => {
-                    log::warn!(
-                        "Horizon: structure start {} not saved: one of its pieces cannot be",
-                        start.name
-                    );
-                    None
-                }
-            })
-            .collect();
-        if !starts.is_empty()
-            && let Some(Tag::Compound(s)) = map.get_mut(&"structures".into())
-        {
-            s.insert("starts".into(), Tag::Compound(starts));
-        }
+        let structures = structures_tag(chunk, map.get(&"structures".into()));
+        map.insert("structures".into(), structures);
         map.entry("PostProcessing".into())
             .or_insert_with(|| Tag::List(vec![Tag::List(Vec::new()); shape.section_count()]));
     }

@@ -342,6 +342,8 @@ def bridges(args):
         send('key w down')
         send('wait 20')
         send('key w up')
+        send('options-set soundCategory_master 0.25')
+        send('wait 5')
         send(f'command tp @s {x + 0.5} {y} {z + 0.5}')
         send(f'command fill {x + 1} {y - 1} {z - 2} {x + 5} {y + 12} {z + 2} air')
         # Each family's checks build in their own stretch, on the same flat ground in any world.
@@ -349,6 +351,10 @@ def bridges(args):
             send(f'command fill {at} {y} {z - 6} {at + 14} {y + 14} {z + 4} air')
             send(f'command fill {at} {y - 1} {z - 6} {at + 14} {y - 1} {z + 4} minecraft:stone')
         send('wait 2')
+        # F3 opens the overlay, which enables the test mod's default-profile entry; its lines record on the next ticks.
+        send('key f3 tap')
+        send('wait 10')
+        send('key f3 tap')
         # The test mod drops this sound in its PlaySoundEvent, which native posts from play_sound.
         send('command playsound minecraft:block.note_block.bell master @s')
         send('wait 5')
@@ -383,6 +389,14 @@ def bridges(args):
         send('command execute in minecraft:the_nether run forceload add 0 0')
         send('wait 40')
         send('command execute in minecraft:the_nether run setblock 0 64 0 minecraft:lodestone')
+        # The test mod's rocket writes the player's motion from `ClientTickEvent.Pre`: its checks need a clear column to rise in.
+        send(f'command fill {x - 1} {y} {z - 1} {x + 1} {y + 19} {z + 1} air')
+        send(f'command fill {x - 1} {y - 1} {z - 1} {x + 1} {y - 1} {z + 1} minecraft:stone')
+        send('give horizon_java_test:rocket')
+        send('select horizon_java_test:rocket')
+        send('wait 20')
+        send('command clear @s horizon_java_test:rocket')
+        send('wait 40')
         send('give horizon_java_test:wand')
         send('wait 20')
         send('select horizon_java_test:wand')
@@ -403,6 +417,24 @@ def bridges(args):
         if 'wand ok' not in send('messages'):
             print('  no chat line', flush=True)
             wrong.append('chat')
+        send('chat horizon server edit')
+        send('chat horizon server cancel')
+        send('wait 5')
+        lines = send('messages 20').splitlines()
+        if not any(line.rstrip().endswith('horizon server edited') for line in lines) or any('horizon server cancel' in line for line in lines):
+            print('  server chat event did not edit and cancel', flush=True)
+            wrong.append('server_chat')
+        # The chat box's client command and ClientChatEvent edits, run by the Java client.
+        for line in ('chat /horizon_java_test_client', 'chat horizon chat edit', 'chat horizon chat cancel'):
+            send(line)
+        send('wait 5')
+        lines = send('messages 20')
+        tail = lines.split('client pong', 1)[-1]
+        for name, ok in (('client_command_feedback', 'client pong' in lines and 'Unknown or incomplete command' not in tail),
+                         ('client_chat_event_edit', 'horizon chat edited' in lines),
+                         ('client_chat_event_cancel', not any('horizon chat cancel' in row for row in lines.splitlines()))):
+            print(f"  {name}: {'ok' if ok else 'WRONG ' + lines[:200]}", flush=True)
+            wrong.extend([] if ok else [name])
         # A real click on a mod's block, then the machine after it has run.
         send(f'command tp @s {machine - 2} {y} {z}')
         send('wait 40')
@@ -510,12 +542,23 @@ def bridges(args):
         ok = 'horizon_java_test:anchor' in send(f'block {x + 2} {y} {z + 3}')
         print(f"  mod_block_refuses_removal: {'ok' if ok else 'WRONG'}", flush=True)
         wrong.extend([] if ok else ['mod_block_refuses_removal'])
+        # A named pig the server summons: the Java client's level finds it by id, then loses it once it is removed.
+        send(f'command summon minecraft:pig {x + 2} {y} {z + 4} {{CustomName:"horizon_pig",NoAI:1b}}')
+        send('wait 10')
+        send('command kill @e[type=minecraft:pig,name=horizon_pig]')
+        send('wait 40')
         send('command gamemode creative')
         # Pausing asks Java which sources keep playing: the test mod's runTick handler drops UI from vanilla's [MUSIC, UI].
         send('key escape tap')
         send('wait 5')
         send('key escape tap')
         send('wait 3')
+        ok = 'Displaying particle' in send('command particle horizon_java_test:spark ~ ~1 ~ 0 0 0 0 3')
+        print(f"  particle_mod_type: {'ok' if ok else 'WRONG'}", flush=True)
+        wrong.extend([] if ok else ['particle_mod_type'])
+        ok = 'Unknown particle' in send('command particle horizon_java_test:nope ~ ~1 ~')
+        print(f"  particle_unknown: {'ok' if ok else 'WRONG'}", flush=True)
+        wrong.extend([] if ok else ['particle_unknown'])
         positions.append((x, y, z, base))
 
     def again(send):
@@ -540,7 +583,7 @@ def bridges(args):
     shutil.copy(Path(args.scratch) / 'ctl.log', Path(args.scratch) / 'first-session.log')
     paused = re.findall(r'^Horizon: pause sources: \[(.*)\]$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks.append(('pause_sources_from_handler', 'ok' if paused == ['music'] else f'FAILED {paused}'))
-    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'player_stack_keeps_identity', 'player_view_sees_native_give', 'play_sound_posted_from_native', 'gui_layer_pre_cancel', 'lockstep_order', 'lockstep_post_sees_this_tick', 'glyph_shadow_from_patch', 'loop_init_then_run') if (name, 'ok') not in checks)
+    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'player_stack_keeps_identity', 'player_view_sees_native_give', 'play_sound_posted_from_native', 'gui_layer_pre_cancel', 'lockstep_order', 'lockstep_post_sees_this_tick', 'glyph_shadow_from_patch', 'loop_init_then_run', 'mod_command_registered', 'commands_selection_follows_dist', 'server_chat_event_player', 'client_commands_registered', 'client_command_runs', 'client_level_sees_the_pig', 'client_level_finds_the_pig_in_its_box', 'client_level_loses_the_removed_pig', 'debug_entry_lines_recorded', 'rocket_moves_in_its_own_tick', 'rocket_lifts_five_blocks', 'pre_write_moves_without_lerp_start','window_resize_fired', 'render_frame_paired', 'master_volume_follows') if (name, 'ok') not in checks)
     session(args, again)
     second = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks += [(name + ' (second session)', result) for name, result in second]
@@ -804,12 +847,12 @@ def boot_one(name, jars, opts, timeout):
     return False, 'no answer, exit ' + str(p.returncode), took
 
 
-def libraries(args):
-    """Boots the most used 26.3 NeoForge library mods one by one, each with its required dependencies; `--top` picks how many."""
+def library_sets(top):
+    """{slug: jars}: the `top` most downloaded 26.3 NeoForge library mods, each with its required dependencies, fetched into LIBRARIES (those with no such jar are left out)."""
     facets = urllib.parse.quote(json.dumps([['categories:library'], ['categories:neoforge'], ['versions:26.3'], ['project_type:mod']]))
     hits = []
-    for offset in range(0, args.top, 100):
-        hits += modrinth(f'search?limit={min(100, args.top - offset)}&offset={offset}&index=downloads&facets={facets}')['hits']
+    for offset in range(0, top, 100):
+        hits += modrinth(f'search?limit={min(100, top - offset)}&offset={offset}&index=downloads&facets={facets}')['hits']
     seen, sets = {}, {}
     for hit in hits:
         try:
@@ -820,6 +863,27 @@ def libraries(args):
         if jars:
             sets[hit['slug']] = jars
     print(f'{len(sets)} of {len(hits)} libraries have a 26.3 NeoForge jar', flush=True)
+    return sets
+
+
+def link_jars(jars, folder):
+    """Links the jars into a folder, made if missing."""
+    folder.mkdir(parents=True, exist_ok=True)
+    for jar in jars:
+        if not (folder / jar.name).exists():
+            (folder / jar.name).symlink_to(jar.resolve())
+
+
+def fetch_top(top, out):
+    """OUT/<slug>/ holds each top library mod's jars, linked."""
+    for slug, jars in library_sets(top).items():
+        link_jars(jars, out / slug)
+        print(slug, len(jars), flush=True)
+
+
+def libraries(args):
+    """Boots the most used 26.3 NeoForge library mods one by one, each with its required dependencies; `--top` picks how many."""
+    sets = library_sets(args.top)
     results = {}
 
     def one(item):
@@ -1302,7 +1366,8 @@ def main():
     l.add_argument('--opts', default='--enable-native-access=ALL-UNNAMED -Xmx2g')
     l.add_argument('--out', default=str(LOCAL / 'libraries.json'))
     f = sub.add_parser('fetch', help='a Modrinth project and its required dependencies, linked into a folder')
-    f.add_argument('project')
+    f.add_argument('project', nargs='?', help='omit with --top')
+    f.add_argument('--top', type=int, help='instead: the most downloaded library mods, one folder of linked jars per mod under --out (what hz_scenario.py matrix reads)')
     f.add_argument('--out', required=True)
     c = sub.add_parser('surface')
     c.add_argument('--jars', required=True)
@@ -1366,7 +1431,11 @@ def main():
         bridges(args)
     elif args.command == 'libraries':
         libraries(args)
+    elif args.command == 'fetch' and args.top:
+        fetch_top(args.top, Path(args.out))
     elif args.command == 'fetch':
+        if not args.project:
+            sys.exit('fetch needs a project or --top N')
         folder = Path(args.out)
         folder.mkdir(parents=True, exist_ok=True)
         for jar in fetch_mod(args.project, {}) or []:

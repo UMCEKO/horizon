@@ -37,6 +37,29 @@ pub fn set_world_looks<'a>(looks: impl IntoIterator<Item = &'a FluidLook>) {
         .collect();
 }
 
+/// The GUI atlas name of a screen overlay's texture id, as the atlas names a pack's textures.
+pub fn screen_overlay_sprite(texture: &str) -> String {
+    texture
+        .strip_prefix("minecraft:")
+        .unwrap_or(texture)
+        .to_owned()
+}
+
+/// The texture files (`assets/<ns>/textures/<path>.png`) of the world fluids' screen overlays.
+pub fn screen_overlay_files() -> Vec<String> {
+    let looks = LOOKS.read().unwrap_or_else(|e| e.into_inner());
+    let mut files: Vec<String> = looks
+        .iter()
+        .filter_map(|look| {
+            let (namespace, path) = look.screen_overlay.as_deref()?.split_once(':')?;
+            Some(format!("assets/{namespace}/textures/{path}.png"))
+        })
+        .collect();
+    files.sort();
+    files.dedup();
+    files
+}
+
 /// Replaces the models recollected before each resource bake, including reloads.
 pub fn register(models: Vec<FluidModel>) {
     *REGISTERED.write().unwrap_or_else(|e| e.into_inner()) = models;
@@ -73,8 +96,10 @@ fn resolve(looks: &[FluidLook], registered: &[FluidModel]) -> Vec<ResolvedFluidM
                 })
                 .cloned()
             };
-            let overlay = sprite(model.and_then(|model| model.overlay.as_ref()));
-            let flowing = sprite(model.and_then(|model| model.flowing.as_ref()));
+            let overlay = sprite(model.and_then(|model| model.overlay.as_ref()))
+                .or_else(|| sprite(look.overlay.as_ref()));
+            let flowing = sprite(model.and_then(|model| model.flowing.as_ref()))
+                .or_else(|| sprite(look.flowing.as_ref()));
             let still = sprite(model.and_then(|model| model.still.as_ref()))
                 .or_else(|| sprite(look.sprite.as_ref()));
             let fixed = look.tint.map(|tint| FluidTint::Fixed(tint & 0xFF_FFFF));
@@ -107,7 +132,10 @@ mod tests {
         FluidLook {
             id: id.into(),
             sprite: sprite.map(Into::into),
+            flowing: None,
+            overlay: None,
             tint,
+            screen_overlay: None,
             world: Some(WorldFluid::default()),
         }
     }
@@ -171,6 +199,25 @@ mod tests {
         assert_eq!(drawn[0].overlay.as_deref(), Some("a:block/oil_overlay"));
         assert_eq!(drawn[0].tint, FluidTint::Fixed(0x11_2233));
         assert_eq!(drawn[1].flowing, "a:block/other", "its model is its own");
+    }
+
+    #[test]
+    fn a_look_names_its_flowing_and_overlay_sprites_and_a_model_overrides_them() {
+        let named = FluidLook {
+            flowing: Some("a:block/oil_flow".into()),
+            overlay: Some("a:block/oil_overlay".into()),
+            ..look("a:oil", Some("a:block/oil"), None)
+        };
+        let drawn = resolve(std::slice::from_ref(&named), &[]);
+        assert_eq!(drawn[0].flowing, "a:block/oil_flow");
+        assert_eq!(drawn[0].overlay.as_deref(), Some("a:block/oil_overlay"));
+        let over = FluidModel {
+            overlay: Some("a:block/other".into()),
+            ..model("a:oil")
+        };
+        let drawn = resolve(&[named], &[over]);
+        assert_eq!(drawn[0].flowing, "a:block/oil_flow");
+        assert_eq!(drawn[0].overlay.as_deref(), Some("a:block/other"));
     }
 
     #[test]

@@ -1,8 +1,13 @@
 use super::*;
 
 /// Whether this frame records the HUD: only while it animates, and not on the frame that took a tick's status or while a tick runs.
-pub(super) fn hud_frame_wanted(animating: bool, recorded: bool, busy: bool) -> bool {
+pub(in crate::game) fn hud_frame_wanted(animating: bool, recorded: bool, busy: bool) -> bool {
     animating && !recorded && !busy
+}
+
+/// Whether a mod listens to `RenderFrameEvent` and the Java client is up to post it.
+fn java_frame_events() -> bool {
+    CLIENT.with_borrow(|c| c.frame_events && c.joined)
 }
 
 /// A frame recording's reply: whether the HUD still animates, and the recording if it differs from the last.
@@ -41,8 +46,27 @@ impl Game<'_> {
         out.0
     }
 
+    /// `RenderFrameEvent.Pre` (phase 0) or `.Post` (1) in the Java client, only while a mod listens; its sounds play as a tick's do.
+    pub(in crate::game) fn java_render_frame(&mut self, phase: u8) {
+        if !java_frame_events() {
+            return;
+        }
+        let Some(host) = horizon_java_host::get() else {
+            return;
+        };
+        let mut out = Out::default();
+        out.0.push(phase);
+        out.float(self.clock.fraction() as f32);
+        if let Some(reply) = host.request("client_render_frame", &out.0)
+            && !reply.is_empty()
+        {
+            self.java_client_sounds(&mut In(&reply));
+        }
+    }
+
     /// A window frame's collection of the Java client's finished work, without waiting for it, and the next frame recording's request while the HUD or the world animates; a frame that took a tick's status, or a tick still running, asks for none, so the window never waits on Java.
     pub(in crate::game) fn java_client_frame(&mut self) {
+        self.java_render_frame(0);
         if CLIENT.with_borrow_mut(|c| std::mem::take(&mut c.shell.opening)) {
             self.java_client_collect(true);
         } else {
@@ -61,12 +85,18 @@ impl Game<'_> {
             hud_frame_wanted(animating, recorded, busy).then(|| self.java_hud_frame_request());
         let world = self.java_world_frame_request(busy);
         let toasts = self.java_toasts_frame_request(busy);
-        if (hud.is_some() || world.is_some() || toasts.is_some())
+        let view = super::java_view::java_view_frame_request(busy);
+        if (hud.is_some() || world.is_some() || toasts.is_some() || view.is_some())
             && horizon_java_host::get().is_some()
         {
             WORKER.with_borrow_mut(|w| {
                 w.get_or_insert_with(Worker::start)
-                    .send_frame(FrameJob { hud, world, toasts });
+                    .send_frame(FrameJob {
+                        hud,
+                        world,
+                        toasts,
+                        view,
+                    });
             });
         }
     }

@@ -87,6 +87,46 @@ public final class Flat {
         }
     }
 
+    /** The inverse of `raw(Component)`. */
+    public static Component toComponent(byte[] bytes) {
+        try {
+            return GameBridge.component(bytes);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** The inverse of `raw(TeleportTransition)`. */
+    public static net.minecraft.world.level.portal.TeleportTransition toTeleportTransition(byte[] bytes) {
+        try {
+            var in = new java.io.DataInputStream(new java.io.ByteArrayInputStream(bytes));
+            var position = new Vec3(in.readDouble(), in.readDouble(), in.readDouble());
+            float yRot = in.readFloat();
+            float xRot = in.readFloat();
+            var motion = new Vec3(in.readDouble(), in.readDouble(), in.readDouble());
+            var dim = new String(in.readNBytes(in.readInt()), java.nio.charset.StandardCharsets.UTF_8);
+            return new net.minecraft.world.level.portal.TeleportTransition(GameBridge.level(dim), position, motion, yRot, xRot, net.minecraft.world.level.portal.TeleportTransition.DO_NOTHING);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** The inverse of `raw(DamageSource)`; whether a creative player caused it follows from the causing entity. */
+    public static net.minecraft.world.damagesource.DamageSource toDamageSource(byte[] bytes, net.minecraft.server.level.ServerLevel level) {
+        try {
+            var in = new java.io.DataInputStream(new java.io.ByteArrayInputStream(bytes));
+            var type = new String(in.readNBytes(in.readInt()), java.nio.charset.StandardCharsets.UTF_8);
+            var causing = toEntity(in.readInt());
+            var direct = toEntity(in.readInt());
+            in.readBoolean();
+            var at = in.readBoolean() ? new Vec3(in.readDouble(), in.readDouble(), in.readDouble()) : null;
+            var key = net.minecraft.resources.ResourceKey.create(net.minecraft.core.registries.Registries.DAMAGE_TYPE, net.minecraft.resources.Identifier.parse(type));
+            return new net.minecraft.world.damagesource.DamageSource(level.registryAccess().lookupOrThrow(net.minecraft.core.registries.Registries.DAMAGE_TYPE).getOrThrow(key), direct, causing, at);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
     public static net.minecraft.world.entity.Entity toEntity(int id) {
         return EntityViews.byId(id);
     }

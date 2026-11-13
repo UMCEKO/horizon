@@ -53,7 +53,7 @@ pub fn dump_guards(install: &Path) -> Result<Json, String> {
                 ) else {
                     continue;
                 };
-                hier.add(&head.name, head.sup.clone(), head.ifaces.clone());
+                hier.add(&head.name, head.sup.clone(), head.ifaces.clone(), None);
                 let marked = contains(&data, b"addListener")
                     || contains(&data, b"addGenericListener")
                     || contains(&data, b"SubscribeEvent");

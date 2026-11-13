@@ -37,7 +37,7 @@ const CLIENT_ROUTES: [&str; 2] = [
     "net/minecraft/client/model/",
 ];
 const EDGE_AT: [&str; 3] = ["HEAD", "RETURN", "TAIL"];
-const CALLBACKS: [&str; 2] = [
+pub const CALLBACKS: [&str; 2] = [
     "org/spongepowered/asm/mixin/injection/callback/CallbackInfo",
     "org/spongepowered/asm/mixin/injection/callback/CallbackInfoReturnable",
 ];
@@ -249,6 +249,21 @@ impl<'a> Archives<'a> {
     fn read(&self, ai: usize, entry: &str) -> Result<Vec<u8>, String> {
         jars::read_entry(&mut self.all.borrow_mut()[ai].zip, entry)
     }
+
+    /// The bytes of `entry` in the first archive of that mod holding it.
+    pub fn mod_entry(&self, mod_id: &str, entry: &str) -> Result<Option<Vec<u8>>, String> {
+        let count = self.all.borrow().len();
+        for ai in 0..count {
+            let holds = {
+                let all = self.all.borrow();
+                all[ai].mod_id == mod_id && all[ai].zip.index_for_name(entry).is_some()
+            };
+            if holds {
+                return self.read(ai, entry).map(Some);
+            }
+        }
+        Ok(None)
+    }
 }
 
 /// Port of mod_entity_facts.handler_method.
@@ -259,28 +274,20 @@ pub fn handler_method(
     handler: &str,
 ) -> Result<Vec<Method>, String> {
     let entry = format!("{}.class", mixin.replace('.', "/"));
-    let count = archives.all.borrow().len();
-    for ai in 0..count {
-        let holds = {
-            let all = archives.all.borrow();
-            all[ai].mod_id == mod_id && all[ai].zip.index_for_name(&entry).is_some()
-        };
-        if holds {
-            let what = Parse {
-                members: true,
-                annotations: true,
-                code: false,
-            };
-            let info = parse_class(&archives.read(ai, &entry)?, what)
-                .map_err(|e| format!("{entry}: {e}"))?;
-            return Ok(info
-                .methods
-                .into_iter()
-                .filter(|m| m.name == handler)
-                .collect());
-        }
-    }
-    Ok(Vec::new())
+    let Some(data) = archives.mod_entry(mod_id, &entry)? else {
+        return Ok(Vec::new());
+    };
+    let what = Parse {
+        members: true,
+        annotations: true,
+        code: false,
+    };
+    let info = parse_class(&data, what).map_err(|e| format!("{entry}: {e}"))?;
+    Ok(info
+        .methods
+        .into_iter()
+        .filter(|m| m.name == handler)
+        .collect())
 }
 
 fn cancellable(method: &Method) -> bool {
@@ -966,9 +973,13 @@ pub fn unclassified_error(facts: &Json) -> Option<String> {
         .then(|| format!("{}\n  {}", super::groups::UNCLASSIFIED, names.join("\n  ")))
 }
 
-/// Writes what the boot reads: `entity-facts.json` (routing.json and routing.tsv come with SPEC-9).
-pub fn write_boot_files(out: &Path, facts: &Json) -> Result<(), String> {
-    std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+/// Writes what the boot reads: `routing.json`, `routing.tsv` and `entity-facts.json`.
+pub fn write_boot_files(
+    out: &Path,
+    facts: &Json,
+    routing: &crate::routing::Report,
+) -> Result<(), String> {
+    crate::routing::write_routing(out, routing)?;
     let path = out.join("entity-facts.json");
     std::fs::write(&path, crate::replaces::python_json(facts)?)
         .map_err(|e| format!("{}: {e}", path.display()))

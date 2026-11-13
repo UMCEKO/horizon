@@ -2895,6 +2895,74 @@ pub fn ominous_item_spawner_from_nbt(tag: &Tag) -> Option<(crate::items::ItemSta
     Some((item, position(tag)?, after))
 }
 
+/// What `ThrowableItemProjectile.addAdditionalSaveData` writes for a thrown
+/// splash or lingering potion or experience bottle, over `Projectile`'s keys.
+pub struct ThrownPotionSave<'a> {
+    pub item: &'a crate::items::ItemStack,
+    pub position: Vec3,
+    pub motion: Vec3,
+    pub owner: Option<[i32; 4]>,
+    pub left_owner: bool,
+    pub has_been_shot: bool,
+}
+/// The entity type a thrown item flies as.
+fn thrown_potion_id(item: &str) -> &'static str {
+    match item {
+        "minecraft:lingering_potion" => "minecraft:lingering_potion",
+        "minecraft:experience_bottle" => "minecraft:experience_bottle",
+        _ => "minecraft:splash_potion",
+    }
+}
+pub fn thrown_potion_to_nbt(t: &ThrownPotionSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
+    let mut tag = Base {
+        id: thrown_potion_id(&t.item.item),
+        uuid,
+        position: t.position,
+        motion: t.motion,
+        rotation: [0.0, 0.0],
+        on_ground: false,
+        fall_distance: 0.0,
+    }
+    .tag(raw);
+    if let Tag::Compound(map) = &mut tag {
+        map.remove(&"LeftOwner".into());
+    }
+    if t.left_owner {
+        put(&mut tag, "LeftOwner", Tag::Byte(1));
+    }
+    put(
+        &mut tag,
+        "HasBeenShot",
+        Tag::Byte(i8::from(t.has_been_shot)),
+    );
+    if let Some(owner) = t.owner {
+        put(&mut tag, "Owner", Tag::IntArray(owner.to_vec()));
+    }
+    put(&mut tag, "Item", item_to_nbt(t.item));
+    tag
+}
+/// `EyeOfEnder.addAdditionalSaveData`: the `Item` it shows; the loaded one stays.
+pub fn eye_of_ender_to_nbt(position: Vec3, motion: Vec3, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
+    let mut tag = Base {
+        id: "minecraft:eye_of_ender",
+        uuid,
+        position,
+        motion,
+        rotation: [0.0, 0.0],
+        on_ground: false,
+        fall_distance: 0.0,
+    }
+    .tag(raw);
+    if tag.get("Item").is_none() {
+        put(
+            &mut tag,
+            "Item",
+            item_to_nbt(&crate::items::ItemStack::new("minecraft:ender_eye", 1)),
+        );
+    }
+    tag
+}
+
 /// `ExperienceOrb`: Health, Age, Value, Count.
 pub fn orb_to_nbt(o: &ExperienceOrb, uuid: [i32; 4]) -> Tag {
     let base = Base {
@@ -4990,6 +5058,53 @@ mod tests {
         assert!(t.left_owner && t.has_been_shot);
         assert_eq!(t.owner, Some([5, 6, 7, 8]));
         assert_eq!((t.yaw, t.pitch), (10.0, 20.0));
+    }
+
+    /// A thrown potion saves what vanilla loads it back from, and a chunk load reads it as the same potion.
+    #[test]
+    fn thrown_potion_round_trip() {
+        let item =
+            ItemStack::new("minecraft:lingering_potion", 1).with_potion("minecraft:swiftness");
+        let at = Vec3::new(1.5, 70.0, -2.5);
+        let tag = thrown_potion_to_nbt(
+            &ThrownPotionSave {
+                item: &item,
+                position: at,
+                motion: Vec3::new(0.0, -0.25, 0.5),
+                owner: Some([9, 8, 7, 6]),
+                left_owner: true,
+                has_been_shot: true,
+            },
+            [1, 2, 3, 4],
+            None,
+        );
+        assert_eq!(kind(&tag).as_deref(), Some("minecraft:lingering_potion"));
+        assert_eq!(uuid(&tag), Some([1, 2, 3, 4]));
+        assert!(flag(&tag, "LeftOwner") && flag(&tag, "HasBeenShot"));
+        let back = throwable_from_nbt(&tag, None).unwrap();
+        assert_eq!(back.position, at);
+        assert_eq!(back.velocity, Vec3::new(0.0, -0.25, 0.5));
+        assert_eq!(back.owner_uuid, Some([9, 8, 7, 6]));
+        assert!(back.left_owner && back.has_been_shot);
+        let ProjectileKind::Potion(stack, lingering) = back.kind else {
+            panic!("a lingering potion loads as a potion");
+        };
+        assert!(lingering);
+        assert_eq!(stack.potion(), Some("minecraft:swiftness"));
+    }
+
+    /// An eye of ender saves its item and position, and keeps the loaded fields.
+    #[test]
+    fn eye_of_ender_round_trip() {
+        let raw = Tag::compound([("CustomName", string("kept"))]);
+        let at = Vec3::new(4.0, 80.0, 4.0);
+        let tag = eye_of_ender_to_nbt(at, Vec3::new(0.1, 0.0, 0.2), [4, 3, 2, 1], Some(&raw));
+        assert_eq!(kind(&tag).as_deref(), Some("minecraft:eye_of_ender"));
+        assert_eq!(position(&tag), Some(at));
+        assert_eq!(loaded_motion(&tag), Vec3::new(0.1, 0.0, 0.2));
+        assert!(tag.get("CustomName").is_some());
+        let item = tag.get("Item").and_then(item_from_nbt).unwrap();
+        assert_eq!(&*item.item, "minecraft:ender_eye");
     }
 
     /// The item, the spawn delay and the fields Horizon doesn't model come

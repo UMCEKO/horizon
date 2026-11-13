@@ -15,7 +15,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import com.mojang.brigadier.StringReader;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.commands.Commands;
+import net.minecraft.commands.arguments.ParticleArgument;
+import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.Holder;
@@ -118,13 +122,16 @@ public final class GameBridge {
         Crossing.free("profile_dump", GameBridge::profileDump);
         Crossing.free("bench_echo_free", input -> input);
         Crossing.free("listener_census", EventPosts::census);
+        Crossing.free("wg_probe", WorldgenLevels::probe);
         Crossing.game("prepare", input -> prepare());
         Crossing.game("worldgen_export", GameBridge::worldgenExport);
         Crossing.game("items", input -> items());
         Crossing.game("states", input -> states());
+        Crossing.game("commands_roots", (in, out) -> commandsRoots(out));
         Crossing.game("refresh", GameBridge::refresh);
         Crossing.game("clear_use", GameBridge::clearUse);
         Crossing.game("block_events", GameBridge::blockEvents);
+        Crossing.game("fluid_rules", GameBridge::fluidRules);
         Crossing.game("block_entity_tick", GameBridge::blockEntityTick);
         Crossing.game("block_entity_tick_run", GameBridge::blockEntityTickRun);
         Crossing.game("block_entity_load", GameBridge::blockEntityLoad);
@@ -140,7 +147,8 @@ public final class GameBridge {
         Crossing.game("tracking", GameBridge::tracking);
         Crossing.game("block_entity_data", GameBridge::blockEntityData);
         Crossing.game("block_entity_set", GameBridge::blockEntitySet);
-        Crossing.game("hopper_transfer", GameBridge::hopperTransfer);
+        Crossing.game("item_handler", ItemHandlers::call);
+        Crossing.game("item_handler_close", ItemHandlers::close);
         Crossing.game("block_ticks", GameBridge::blockTicks);
         Crossing.game("entity_facts", input -> EntityFacts.bin());
         Crossing.game("particle_facts", input -> ParticleFacts.export());
@@ -150,12 +158,17 @@ public final class GameBridge {
         Crossing.game("entity_types", input -> EntityFacts.types(level(OVERWORLD)));
         Crossing.game("level_add", GameBridge::levelAdd);
         Crossing.game("craft_facts", input -> CraftFacts.bin(server()));
+        Loot.register();
+        Crossing.game("loot_modify", LootModifiers::modify);
         Crossing.game("click_block", (in, out) -> use(in, out, 2));
         Crossing.game("event_click_block", (in, out) -> use(in, out, 3));
         Crossing.game("event_use_item", (in, out) -> use(in, out, 4));
         Crossing.game("post_event", EventPosts::server);
+        Crossing.game("server_chat", ServerChat::run);
+        Crossing.game("post_level_event", EventPosts::level);
         Crossing.game("destroy_progress", GameBridge::destroyProgress);
         Crossing.game("correct_tool", GameBridge::correctTool);
+        Crossing.game("tool_enchantments", Loot::toolEnchantments);
         Crossing.game("mine_block", (in, out) -> use(in, out, 12));
         Crossing.game("destroy_block", (in, out) -> use(in, out, 13));
         Crossing.game("player_tick", (in, out) -> use(in, out, 7));
@@ -170,6 +183,7 @@ public final class GameBridge {
         Crossing.game("players_removed", GameBridge::playersRemoved);
         Crossing.game("server_tick", GameBridge::serverTick);
         Crossing.game("level_tick", GameBridge::levelTick);
+        Crossing.game("server_particles", GameBridge::serverParticles);
         Crossing.game("use_item", (in, out) -> use(in, out, 0));
         Crossing.game("use_item_on", (in, out) -> use(in, out, 1));
         Crossing.game("use_tick", (in, out) -> use(in, out, 8));
@@ -224,12 +238,24 @@ public final class GameBridge {
         return new byte[] {1};
     }
 
+    private static void commandsRoots(Crossing.Out out) throws IOException {
+        var roots = ModCommands.roots(server().getCommands().getDispatcher());
+        out.writeInt(roots.size());
+        var line = new StringBuilder();
+        for (var root : roots) {
+            writeText(out, root.getKey());
+            out.writeByte(root.getValue());
+            line.append(' ').append(root.getKey()).append('=').append(root.getValue() == ModCommands.JAVA ? 'J' : 'M');
+        }
+        if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: Java commands: " + roots.size() + " roots:" + line);
+    }
+
     static byte[] prepare() throws Exception {
         if (registries != null) return new byte[] {1};
         var repository = ServerPacksSource.createVanillaTrustedRepository();
         ResourcePackLoader.populatePackRepository(repository, PackType.SERVER_DATA, true);
         var packs = new WorldLoader.PackConfig(repository, WorldDataConfiguration.DEFAULT, false, true);
-        var config = new WorldLoader.InitConfig(packs, Commands.CommandSelection.DEDICATED, LevelBasedPermissionSet.GAMEMASTER);
+        var config = new WorldLoader.InitConfig(packs, net.neoforged.fml.loading.FMLEnvironment.getDist().isClient() ? Commands.CommandSelection.INTEGRATED : Commands.CommandSelection.DEDICATED, LevelBasedPermissionSet.GAMEMASTER);
         record Loaded(CloseableResourceManager manager, ReloadableServerResources resources, LayeredRegistryAccess<RegistryLayer> layers) {}
         Loaded loaded = Util.blockUntilDone(executor -> WorldLoader.load(
                 config,
@@ -306,7 +332,11 @@ public final class GameBridge {
     }
 
     /** The level of a dimension's id. */
-    private static ServerLevel levelNamed(String id) {
+    static ServerLevel level(String id) {
+        return levelNamed(id);
+    }
+
+    static ServerLevel levelNamed(String id) {
         for (var level : allLevels()) if (level.dimension().identifier().toString().equals(id)) return level;
         throw new IllegalStateException("no level named " + id);
     }
@@ -322,6 +352,11 @@ public final class GameBridge {
         var out = new ArrayList<ServerLevel>();
         for (var level : levels) if (level != null) out.add(level);
         return out;
+    }
+
+    /** The level of a dimension's id, at the game time Horizon sent. */
+    static ServerLevel levelAt(String id, long gameTime) {
+        return invalidated(levelNamed(id), gameTime);
     }
 
     /** `level_add`: Horizon names the dimension of a key once, and its `ServerLevel` is made. */
@@ -492,7 +527,7 @@ public final class GameBridge {
         if (Clients.joining(player.getUUID())) safely("the client's login", () -> Menus.login(player));
         if (joined) {
             // `placeNewPlayer` adds the player to its level (`addNewPlayer`) before PlayerLoggedIn.
-            if (!playerJoins(player, level)) System.err.println("Horizon: a Java mod canceled player " + name + " joining " + level.dimension() + "; it joins anyway, as vanilla ignores it");
+            if (!playerJoins(player, level)) System.err.println("Horizon: a Java mod canceled player " + g.name + " joining " + level.dimension() + "; it joins anyway, as vanilla ignores it");
             safely("PlayerLoggedIn", () -> EventHooks.firePlayerLoggedIn(player));
             safely("chunks sent before the player's view", () -> Tracking.joined(player, level));
         }
@@ -572,14 +607,6 @@ public final class GameBridge {
                 var answer = CommonHooks.onItemRightClick(player, hand);
                 if (answer != null) result = answer;
             }
-            case 5 -> {
-                var pos = BlockPos.of(in.readLong());
-                if (CommonHooks.fireBlockBreak(level, type(player), player, pos, level.getBlockState(pos)).isCanceled()) result = InteractionResult.FAIL;
-            }
-            case 6 -> {
-                var target = level.getEntity(in.readInt());
-                if (target != null && !CommonHooks.onPlayerAttackTarget(player, target)) result = InteractionResult.FAIL;
-            }
             default -> {
                 PlayerSync.sendAttributes(player);
                 Menus.serverTick(player);
@@ -597,6 +624,11 @@ public final class GameBridge {
         out.writeBoolean(result != InteractionResult.PASS && result != InteractionResult.TRY_WITH_EMPTY_HAND);
         out.writeBoolean(player.isUsingItem());
         out.writeInt(player.isUsingItem() ? player.getTicksUsingItem() : 0);
+        writeUseTail(player, out);
+    }
+
+    /** The end of every reply that filled a player's view: its experience and changed slots, then the call's effects. */
+    static void writeUseTail(ServerPlayer player, DataOutputStream out) throws IOException {
         PlayerSync.writeChanges(player, out);
         writeEffects(out);
     }
@@ -655,7 +687,7 @@ public final class GameBridge {
         return bytes.toByteArray();
     }
 
-    private static GameType type(ServerPlayer player) {
+    static GameType type(ServerPlayer player) {
         return player.gameMode.getGameModeForPlayer();
     }
 
@@ -693,6 +725,12 @@ public final class GameBridge {
         long seed = in.readLong();
         ServerView.openWorld(server, allLevels(), worldFolder, seed, dimensions);
         safely("ServerAboutToStart", () -> ServerLifecycleHooks.handleServerAboutToStart(server));
+        // After `ServerAboutToStart`: TerraBlender's init changes the level stems' biome sources there.
+        try {
+            WorldgenLevels.open(server, allLevels(), worldFolder);
+        } catch (WorldgenLevels.Failed e) {
+            return new byte[] {2};
+        }
         return new byte[] {1};
     }
 
@@ -743,6 +781,7 @@ public final class GameBridge {
 
     /** A server's levels, players and block entities are its own: the next world's start builds new ones. */
     private static void closeWorld() {
+        Loot.reset();
         levels = new ServerLevel[3];
         PLAYERS.clear();
         JOINED.clear();
@@ -750,6 +789,7 @@ public final class GameBridge {
         SOUNDS.clear();
         nextEntityId = -1;
         ServerView.closeWorld(server);
+        WorldgenLevels.close();
         BlockEntities.reset();
         ChunkViews.reset();
         ChunkEvents.reset();
@@ -781,6 +821,34 @@ public final class GameBridge {
             safely("sending block entities' shapes", () -> Clients.sendShapes(level));
         }
         writeEffects(out);
+    }
+
+    /** `ParticleCommand.sendParticles` for players Horizon chose: the options by vanilla's `ParticleArgument`, each sent through the per-player `sendParticles`. */
+    private static void serverParticles(Crossing.In in, Crossing.Out out) throws Exception {
+        var level = levelNamed(text(in));
+        var spec = text(in);
+        double x = in.readDouble(), y = in.readDouble(), z = in.readDouble();
+        float dx = in.readFloat(), dy = in.readFloat(), dz = in.readFloat();
+        float speed = in.readFloat();
+        int count = in.readInt();
+        boolean force = in.readBoolean();
+        int viewers = in.readInt();
+        var uuids = new UUID[viewers];
+        for (int i = 0; i < viewers; i++) uuids[i] = new UUID(in.readLong(), in.readLong());
+        ParticleOptions options;
+        try {
+            options = ParticleArgument.readParticle(new StringReader(spec), level.registryAccess());
+        } catch (CommandSyntaxException e) {
+            out.writeInt(-1);
+            text(out, e.getMessage());
+            return;
+        }
+        int reached = 0;
+        for (var uuid : uuids) {
+            ServerPlayer player = level.getServer().getPlayerList().getPlayer(uuid);
+            if (player != null && level.sendParticles(player, options, force, false, x, y, z, count, dx, dy, dz, speed)) reached++;
+        }
+        out.writeInt(reached);
     }
 
     /** A player connected from another process with a Java client of its own: its login reaches it over its connection. */
@@ -833,7 +901,7 @@ public final class GameBridge {
     }
 
     /** The level a call acts on, with the time it arrived at. */
-    private static ServerLevel levelOf(Crossing.In in) throws Exception {
+    static ServerLevel levelOf(Crossing.In in) throws Exception {
         return invalidated(level(in.readInt()), in.readLong());
     }
 
@@ -888,6 +956,13 @@ public final class GameBridge {
                     case 2 -> {
                         if (now.is(state.getBlock())) now.tick(level, pos, level.getRandom());
                     }
+                    case 5 -> {
+                        var fluid = now.getFluidState();
+                        if (fluid.is(state.getFluidState().getType())) {
+                            if (DEBUG && fluidTicksShown++ < 20) System.err.println("Horizon: fluid tick " + BuiltInRegistries.FLUID.getKey(fluid.getType()) + " at " + pos.toShortString());
+                            fluid.tick(level, pos, now);
+                        }
+                    }
                     default -> {
                         if (now.is(state.getBlock()) && now.isRandomlyTicking()) now.randomTick(level, pos, level.getRandom());
                     }
@@ -897,6 +972,39 @@ public final class GameBridge {
             }
         }
         writeEffects(out);
+    }
+
+    private static final boolean DEBUG = System.getenv("HORIZON_JAVA_DEBUG") != null;
+    private static int fluidTicksShown;
+    private static java.lang.reflect.Method dropOff, slopeFindDistance, convertsToSource;
+
+    /** `FlowingFluid`'s getters of each named fluid in this level: `bool known, int tickDelay, int dropOff, int slopeFindDistance, bool convertsToSource`. */
+    private static void fluidRules(Crossing.In in, Crossing.Out out) throws Exception {
+        var level = levelOf(in);
+        if (dropOff == null) {
+            var flowing = net.minecraft.world.level.material.FlowingFluid.class;
+            dropOff = flowing.getDeclaredMethod("getDropOff", net.minecraft.world.level.LevelReader.class);
+            slopeFindDistance = flowing.getDeclaredMethod("getSlopeFindDistance", net.minecraft.world.level.LevelReader.class);
+            convertsToSource = flowing.getDeclaredMethod("canConvertToSource", ServerLevel.class);
+            for (var m : new java.lang.reflect.Method[] {dropOff, slopeFindDistance, convertsToSource}) m.setAccessible(true);
+        }
+        for (int n = in.readInt(); n > 0; n--) {
+            var id = Identifier.tryParse(in.text());
+            var fluid = id == null ? null : BuiltInRegistries.FLUID.getValue(id);
+            if (!(fluid instanceof net.minecraft.world.level.material.FlowingFluid flowing)) {
+                out.writeBoolean(false);
+                out.writeInt(0);
+                out.writeInt(0);
+                out.writeInt(0);
+                out.writeBoolean(false);
+                continue;
+            }
+            out.writeBoolean(true);
+            out.writeInt(flowing.getTickDelay(level));
+            out.writeInt((int) dropOff.invoke(flowing, level));
+            out.writeInt((int) slopeFindDistance.invoke(flowing, level));
+            out.writeBoolean((boolean) convertsToSource.invoke(flowing, level));
+        }
     }
 
     private static BlockState stateOrThrow(int id) {
@@ -1128,26 +1236,6 @@ public final class GameBridge {
         var pos = BlockPos.of(in.readLong());
         var tag = readTag(in);
         if (!BlockEntities.setData(level, pos, tag)) BlockEntities.load(level, pos, tag);
-        writeEffects(out);
-    }
-
-    /** NeoForge's hopper past vanilla containers: `VanillaInventoryCodeHooks` with the item handler at the target, if there is one. */
-    private static void hopperTransfer(Crossing.In in, Crossing.Out out) throws Exception {
-        var level = levelOf(in);
-        var hopperPos = BlockPos.of(in.readLong());
-        var target = BlockPos.of(in.readLong());
-        var side = net.minecraft.core.Direction.from3DDataValue(in.readInt());
-        boolean insert = in.readBoolean();
-        var handler = level.getCapability(net.neoforged.neoforge.capabilities.Capabilities.Item.BLOCK, target, side);
-        boolean moved = false;
-        if (handler != null && BlockEntities.get(level, hopperPos) instanceof net.minecraft.world.level.block.entity.HopperBlockEntity hopper) {
-            moved = insert
-                    ? net.neoforged.neoforge.transfer.item.VanillaInventoryCodeHooks.insertHook(hopper, handler)
-                    : net.neoforged.neoforge.transfer.item.VanillaInventoryCodeHooks.extractHook(hopper, handler);
-            if (moved) BlockEntities.changed(level, hopperPos);
-        }
-        out.writeBoolean(handler != null);
-        out.writeBoolean(moved);
         writeEffects(out);
     }
 

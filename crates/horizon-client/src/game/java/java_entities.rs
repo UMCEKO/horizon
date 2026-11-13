@@ -400,6 +400,8 @@ fn viewed_id(t: Target) -> Option<u32> {
         | Target::Trident(_)
         | Target::Spawner(_)
         | Target::Cloud(_)
+        | Target::Potion(_)
+        | Target::Eye(_)
         | Target::DragonPart(_)
         | Target::Hook(_)
         | Target::Knot(_) => None,

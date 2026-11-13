@@ -143,9 +143,11 @@ pub fn spawn(
     resources: &Path,
     dir: &Path,
     low_memory: bool,
+    java_mods: Option<&Path>,
     transfers: Option<&str>,
 ) -> std::io::Result<Child> {
-    let mut command = horizon_server_launch::command(program, resources, dir, low_memory)?;
+    let mut command =
+        horizon_server_launch::command(program, resources, dir, low_memory, java_mods)?;
     if let Some(transfers) = transfers {
         command.arg("--transfers").arg(transfers);
     }
@@ -269,6 +271,19 @@ mod tests {
     }
 
     #[test]
+    fn a_game_without_java_mods_says_so() {
+        let text = start_failure(
+            Path::new("/opt/horizon/horizon-engine"),
+            Some(2),
+            "horizon-client: --java-mods needs a game built with the java-mods feature\n",
+        );
+        assert!(
+            text.contains("--java-mods needs a game built with the java-mods feature"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn a_broken_manifest_is_reported() {
         let root = prepared_folder("manifest");
         std::fs::write(root.join("horizon-resources.json"), "{").unwrap();
@@ -337,6 +352,7 @@ mod tests {
                 &root.join("res"),
                 &server,
                 false,
+                None,
                 None,
             ) {
                 Err(e) if e.raw_os_error() == Some(26) && tries < 50 => {

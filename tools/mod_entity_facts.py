@@ -6,6 +6,7 @@ Called at the end of `mod_replaces.analyse`; `entity-facts.json` (format 2) is w
   events           {event: {listeners: [{mod, class, method, guards}], subjects: "all" | [guards]}}; a guard is {side, require, exclude, types}
   reads            {class: [group]}: the state groups mod code reads or writes through that receiver class
   writes           [{key, receiver, group, mods}]: vanilla entity writers that mod code calls
+  player_writes    [{key, receiver, mods}]: motion and position writers mod code calls on a receiver typed as a player (readers treat a missing key as empty)
   routes           {class: {edge: {key: [{mixin, handler, at, cancellable}]}, body: [key]}}
   overrides        {mod class: [key]}
   caps             {entity type id: [capability field]}; caps_unresolved {mod: calls whose type or capability is not a static field}
@@ -284,6 +285,8 @@ GROUPS = {name: group for group, names in GROUP_NAMES.items() for name in names.
 EXTRA_WRITERS = ('makeStuckInBlock', 'ejectPassengers', 'dropItem', 'dropLeash', 'load', 'lerpMotion', 'markHurt', 'onInsideBubbleColumn', 'onPassengerTurned', 'startConverting',
                  'stopSleeping', 'stopUsingItem', 'syncPacketPositionCodec', 'move', 'shootFromRotation', 'releaseUsingItem', 'makeFakeItem', 'actuallyHurt', 'thunderHit')
 NOT_WRITERS = ('setChanged', 'addAdditionalSaveData', 'removeWhenFarAway', 'hurtServerCheck')
+# Writers of a player's motion that only `player_writes` looks for.
+PLAYER_GROUP = 'addDeltaMovement push setOnGround setSprinting onUpdateAbilities'
 
 
 def carried(group):
@@ -296,7 +299,14 @@ def classify(owner, name):
     group = GROUPS.get(f'{owner.rsplit("/", 1)[-1]}#{name}') or GROUPS.get(name)
     if group is None:
         return None
-    return group, (name.startswith(WRITER_PREFIXES) or name in EXTRA_WRITERS) and name not in NOT_WRITERS
+    return group, is_writer(name)
+
+
+def is_writer(name):
+    return (name.startswith(WRITER_PREFIXES) or name in EXTRA_WRITERS) and name not in NOT_WRITERS
+
+
+PLAYER_WRITERS = frozenset(n for g in ('motion', 'position') for n in GROUP_NAMES[g].split() if '#' not in n and is_writer(n)) | frozenset(PLAYER_GROUP.split())
 
 
 def entity_receiver(hier, owner):
@@ -570,6 +580,7 @@ def analyse(classes, archives, hier, entries, result):
     unresolved = collections.Counter()
     reads = collections.defaultdict(set)
     writers = {}
+    player_writers = collections.defaultdict(set)
     unclassified = collections.defaultdict(set)
     caps = collections.defaultdict(list)
     caps_unresolved = collections.Counter()
@@ -601,6 +612,10 @@ def analyse(classes, archives, hier, entries, result):
             for ev in m['events']:
                 if ev[0] in ('call', 'static') and ev[1] and hier.is_a(ev[1], ENTITY):
                     touches_entity = True
+                if ev[0] == 'call' and ev[2] in PLAYER_WRITERS and ev[1] and hier.is_a(ev[1], PLAYER):
+                    key = entity_key(hier, ev[1], ev[2], ev[3])
+                    if key:
+                        player_writers[(key, ev[1])].add(mod)
                 if ev[0] != 'call' or not entity_receiver(hier, ev[1]):
                     continue
                 _, owner, mname, desc = ev
@@ -654,6 +669,7 @@ def analyse(classes, archives, hier, entries, result):
             'events': dict(sorted(events.items())),
             'reads': {c: sorted(g) for c, g in sorted(reads.items())},
             'writes': [{'key': k, 'receiver': r, 'group': g, 'mods': sorted(m)} for (k, r, g), m in sorted(writers.items())],
+            'player_writes': [{'key': k, 'receiver': r, 'mods': sorted(m)} for (k, r), m in sorted(player_writers.items())],
             'hooks': hooks,
             'hooks_missing': hooks_missing,
             'routes': route_facts(archives, hier, result.get('methods', {})),
