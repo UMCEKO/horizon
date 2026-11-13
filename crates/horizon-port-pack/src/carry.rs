@@ -1792,6 +1792,16 @@ fn fluid_declaration(
             .as_ref()
             .is_some_and(|t| t.can_convert_to_source);
         v["world"] = json!({"source_conversion": converts, "bucket": bucket});
+        if let Some(t) = &fluid.fluid_type {
+            v["world"]["entity"] = json!({
+                "motion_scale": t.motion_scale,
+                "push": t.can_push_entity,
+                "swim": t.can_swim,
+                "drown": t.can_drown,
+                "fall_distance_modifier": t.fall_distance_modifier,
+                "extinguish": t.can_extinguish,
+            });
+        }
     }
     v
 }
@@ -3815,7 +3825,8 @@ mod tests {
             json!({"sprite": "gem:block/blood_still", "flowing": "gem:block/blood_flow",
             "overlay": "gem:block/blood_overlay", "tint": 0xFF80FF00u32,
             "screen_overlay": "gem:misc/under_blood",
-            "world": {"source_conversion": true, "bucket": true}})
+            "world": {"source_conversion": true, "bucket": true, "entity": {"motion_scale": 0.014,
+                "push": true, "swim": true, "drown": true, "fall_distance_modifier": 0.5, "extinguish": false}}})
         );
         assert!(read("fluid", "flowing_blood").is_err());
         assert!(read("block", "blood").is_err() && read("item", "blood_bucket").is_err());

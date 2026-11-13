@@ -1548,7 +1548,9 @@ impl MotionWorld<'_, '_, '_> {
         }
         let flying_y = self.player.flying.then_some(self.player.velocity.y);
         if !self.player.flying
-            && (self.player.fluids.was_touching_water || self.player.is_in_lava())
+            && (self.player.fluids.was_touching_water
+                || self.player.is_in_lava()
+                || self.player.swim_fluid_type().is_some())
         {
             horizon_world::living_fluid::travel_in_fluid(self, input)?;
         } else if self.player.fall_flying {

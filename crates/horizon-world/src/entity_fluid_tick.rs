@@ -8,6 +8,8 @@ pub trait EntityFluidTickWorld:
 {
     fn is_pushed_by_fluid(&mut self) -> Result<bool, WorldError<Self>>;
     fn reset_fall_distance(&mut self) -> Result<(), WorldError<Self>>;
+    /// `fallDistance *= getFallDistanceModifier()` for a mod fluid type it is in.
+    fn scale_fall_distance(&mut self, by: f32) -> Result<(), WorldError<Self>>;
     fn was_touching_water(&self) -> bool;
     fn first_tick(&self) -> bool;
     fn water_splash(&mut self) -> Result<(), WorldError<Self>>;
@@ -38,6 +40,13 @@ pub fn update<W: EntityFluidTickWorld>(
         }
     }
     world.set_was_touching_water(in_water);
+    for contact in interaction.fluid_types() {
+        if contact.height > 0.0 {
+            world
+                .scale_fall_distance(contact.rules.fall_distance_modifier)
+                .map_err(FluidInteractionError::World)?;
+        }
+    }
     if world
         .is_pushed_by_fluid()
         .map_err(FluidInteractionError::World)?
@@ -57,6 +66,9 @@ pub fn update<W: EntityFluidTickWorld>(
                 .apply_current(world, lava, speed)
                 .map_err(FluidInteractionError::World)?;
         }
+        interaction
+            .apply_type_currents(world)
+            .map_err(FluidInteractionError::World)?;
     }
     Ok(changed)
 }

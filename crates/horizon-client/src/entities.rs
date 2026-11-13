@@ -84,7 +84,7 @@ fn slime_at(world: &World, facts: &BlockFacts, position: BlockPos) -> bool {
 mod fluids;
 mod item_fall;
 mod item_no_physics;
-pub use fluids::{fall_reset_hit, fluid_flow, update_entity_fluids, water_clip};
+pub use fluids::{EntityFluids, fall_reset_hit, fluid_flow, update_entity_fluids, water_clip};
 
 #[cfg(test)]
 mod drop_motion_tests {
@@ -688,7 +688,7 @@ impl ItemEntity {
         facts: &BlockFacts,
         collision: &BlockCollisionRegistry<'_>,
         no_physics: bool,
-        heights: (f64, f64),
+        heights: impl Into<EntityFluids>,
         entity_boxes: &[Aabb],
         border: Option<&BorderGeometry>,
         blocks: Option<&horizon_world::movement_properties::BoundMovementProperties>,
@@ -720,7 +720,7 @@ impl ItemEntity {
         collision: &BlockCollisionRegistry<'_>,
         no_physics: bool,
         escape_speed: Option<f32>,
-        (water_height, lava_height): (f64, f64),
+        heights: impl Into<EntityFluids>,
         entity_boxes: &[Aabb],
         border: Option<&BorderGeometry>,
         blocks: Option<&BoundMovementProperties>,
@@ -732,9 +732,14 @@ impl ItemEntity {
         }
         let prior_fall = self.fall_distance;
         let old_velocity = self.velocity;
+        let heights = heights.into();
+        let (water_height, lava_height) = (heights.water, heights.lava);
         // Entity.updateInWaterStateAndDoFluidPushing: touching water resets the fall.
         if water_height > 0.0 {
             self.fall_distance = 0.0;
+        }
+        if let Some(t) = heights.fluid_type {
+            self.fall_distance *= f64::from(t.rules.fall_distance_modifier);
         }
         let in_water = water_height > f64::from(0.1f32);
         if in_water {
@@ -743,6 +748,12 @@ impl ItemEntity {
         } else if lava_height > f64::from(0.1f32) {
             // ItemEntity.setUnderLavaMovement: 0.95F, 5.0E-4F, 0.06F.
             self.set_fluid_movement(0.95_f32);
+        } else if heights
+            .fluid_type
+            .is_some_and(|t| t.height > f64::from(0.1f32))
+        {
+            // FluidType.setItemMovement: water's drag and lift.
+            self.set_fluid_movement(0.99_f32);
         } else {
             self.velocity.y -= self.get_gravity();
         }

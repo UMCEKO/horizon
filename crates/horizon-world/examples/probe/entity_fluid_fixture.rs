@@ -237,6 +237,10 @@ impl EntityFluidTickWorld for World<'_> {
         self.tick.fall = 0.0;
         Ok(())
     }
+    fn scale_fall_distance(&mut self, by: f32) -> io::Result<()> {
+        self.tick.fall *= f64::from(by);
+        Ok(())
+    }
     fn was_touching_water(&self) -> bool {
         self.tick.touch
     }
