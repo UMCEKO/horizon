@@ -131,6 +131,7 @@ JVM exports while it boots, never by asking Java later:
 - After the data packs load, `BootFacts` writes the facts (`mods/horizon/src/facts-shared`, the same writer as the
   oracle's): every block's states, shapes, light and sounds, the mods' items with every default component by its codec,
   their loot tables, data component types and tags.
+- Before the JVM starts, the game reads the mods' jars (mixins, overrides, listeners, entity calls) and writes the routes and entity facts the boot reads (`-Dhorizon.java.analysis`), cached under `.horizon-cache/java-analysis/` by the jars and Horizon's own tables; its knowledge of what Horizon ports comes from the boot jar.
 - The game carries them in-process (`horizon_port_pack::pipeline::carry_boot`) into content mods under
   `.horizon-cache/java-mods/<fingerprint>/`, which go in the resource root before anything else, so a by-hand carry of
   the same mod steps aside. The fingerprint hashes every jar in the run's `mods/`, the JVM's arguments (loader and

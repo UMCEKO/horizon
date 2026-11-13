@@ -80,10 +80,14 @@ fn main() {
     let ops: Vec<String> = std::env::args().skip(1).collect();
     let rss_before = status("VmRSS");
     let t = Instant::now();
-    let (vm, run) = create_vm(run_dir).unwrap_or_else(|e| {
+    let fail = |e: String| -> ! {
         eprintln!("{e}");
         std::process::exit(1)
-    });
+    };
+    let analysis = horizon_java_host::analysis::prepare(run_dir, &Default::default())
+        .unwrap_or_else(|e| fail(e));
+    let (vm, run) =
+        create_vm(run_dir, &analysis.join("entity-facts.json")).unwrap_or_else(|e| fail(e));
     let t_create = ms(t);
     let mut env = vm.attach_current_thread_permanently().unwrap();
     register_natives(&mut env);

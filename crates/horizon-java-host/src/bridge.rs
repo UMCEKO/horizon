@@ -79,6 +79,16 @@ impl Bridge {
 
 pub static TABLE: OnceLock<Vec<Bridge>> = OnceLock::new();
 
+/// The `(class, method, desc)` of every bridge, which the analysis keeps out of the mods' routes.
+pub fn table_keys() -> std::collections::BTreeSet<(String, String, String)> {
+    TABLE
+        .get()
+        .into_iter()
+        .flatten()
+        .map(|b| (b.class.to_owned(), b.method.to_owned(), b.desc.to_owned()))
+        .collect()
+}
+
 /// `Flat.link`, from the static initializer of a class with bridges: gives them their natives.
 pub extern "system" fn n_link(mut env: JNIEnv, _class: JClass, target: JClass) {
     let name = env

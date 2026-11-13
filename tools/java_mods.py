@@ -149,8 +149,8 @@ def assets_index(resources, index_id, root):
     return folder
 
 
-def args_lines(dist, libs, neoforge, client=None, server=None, assets=None, analysis=None, java=None, host=None):
-    """The lines of `horizon-java.args`: `client` is (NeoForge's client profile, its library jars), `server` the text of its `unix_args.txt`, `assets` (folder, index id), `analysis` the install's entity-facts.json, `java` the JDK home and `host` the host jar."""
+def args_lines(dist, libs, neoforge, client=None, server=None, assets=None, java=None, host=None):
+    """The lines of `horizon-java.args`: `client` is (NeoForge's client profile, its library jars), `server` the text of its `unix_args.txt`, `assets` (folder, index id), `java` the JDK home and `host` the host jar."""
     lines = []
     if java is not None:
         lines.append(f'java {java}')
@@ -186,46 +186,21 @@ def args_lines(dist, libs, neoforge, client=None, server=None, assets=None, anal
             i += 1
     lines += [f'prog {a}' for a in game]
     lines.append(f'mod {libs}/net/neoforged/neoforge/{neoforge}/neoforge-{neoforge}-universal.jar')
-    if analysis:
-        lines.append(f'analysis {analysis}')
     if dist == 'client':
         folder, index_id = assets
         lines += ['prog --assetsDir', f'prog {folder}', 'prog --assetIndex', f'prog {index_id}']
     return lines
 
 
-def mods_analysis(name, jars):
-    """The analysis of the mods in `jars` alone (not the host's own jars), so the boot confirms their routes."""
-    try:
-        from . import mod_replaces
-    except ImportError:
-        import mod_replaces
-    folder = JARS / 'runs' / f'{name}-analysis'
-    shutil.rmtree(folder, ignore_errors=True)
-    (folder / 'mods').mkdir(parents=True)
-    (folder / 'libraries').symlink_to((oracle.client()[0] if DIST == 'client' else oracle.install()) / 'libraries')
-    for jar in sorted(Path(jars).glob('*.jar')):
-        (folder / 'mods' / jar.name).symlink_to(jar.resolve())
-    out = folder / 'analysis'
-    out.mkdir()
-    if not mod_replaces.LEDGER_JSON.is_file():
-        sys.exit(mod_replaces.NO_LEDGER)
-    ledger = json.loads(mod_replaces.LEDGER_JSON.read_text())
-    result = mod_replaces.analyse(folder, out, ledger, JARS / 'mod-replaces', verdicts=mod_replaces.read_verdicts())
-    mod_replaces.write_routing(out, result['routing'])
-    (out / 'entity-facts.json').write_text(json.dumps(result['entity_facts'], indent=1) + '\n')
-    return out / 'entity-facts.json'
-
-
-def write_args(run, home, analysis=None):
+def write_args(run, home):
     """What the host starts the JVM with, in absolute paths, as NeoForge's launcher arguments would be."""
     libs = home / 'libraries'
     if DIST == 'client':
         _, neo, _, jars = oracle.client()
         index_id = json.loads((lab.GAME / 'manifest.json').read_text())['assetIndex']['id']
-        lines = args_lines('client', libs, NEOFORGE, client=(neo, jars), assets=(assets_index(lab.RESOURCES, index_id, JARS), index_id), analysis=analysis, java=java_home(), host=HOST_JAR)
+        lines = args_lines('client', libs, NEOFORGE, client=(neo, jars), assets=(assets_index(lab.RESOURCES, index_id, JARS), index_id), java=java_home(), host=HOST_JAR)
     else:
-        lines = args_lines('server', libs, NEOFORGE, server=(libs / 'net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text(), analysis=analysis, java=java_home(), host=HOST_JAR)
+        lines = args_lines('server', libs, NEOFORGE, server=(libs / 'net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text(), java=java_home(), host=HOST_JAR)
     (run / 'horizon-java.args').write_text('\n'.join(lines) + '\n')
 
 
@@ -242,7 +217,7 @@ def instance(name, jars, boot):
     if boot:
         (run / 'mods' / BOOT_JAR.name).symlink_to(BOOT_JAR)
         (run / 'mods' / PLUGIN_JAR.name).symlink_to(PLUGIN_JAR)
-        write_args(run, home, mods_analysis(name, jars))
+        write_args(run, home)
     return run
 
 
@@ -1332,11 +1307,6 @@ def install_pack(args):
     record = {'format': INSTALL_FORMAT, 'neoforge': NEOFORGE, 'java': str(java), 'resources': str(resources),
               'mods': [j.name for j in pack]}
     write_if_changed(install / 'install.json', json.dumps(record, indent=2) + '\n')
-    try:
-        from . import mod_replaces
-    except ImportError:
-        import mod_replaces
-    analysis = mod_replaces.install_analysis(install, cache / 'mod-replaces')
     host = install / 'host' / 'horizon-java-host.jar'
     mod_links = [*sorted(mods.glob('*.jar')), install / 'host' / 'horizon-java-boot.jar', install / 'host' / 'horizon-java-plugin.jar']
     for dedicated in (False, True):
@@ -1346,11 +1316,11 @@ def install_pack(args):
         if not (run / 'libraries').is_symlink():
             (run / 'libraries').symlink_to(Path('..') / 'libraries')
         if dedicated:
-            lines = args_lines('server', libs, NEOFORGE, server=(server_home / 'libraries/net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text(), analysis=analysis, java=java, host=host)
+            lines = args_lines('server', libs, NEOFORGE, server=(server_home / 'libraries/net/neoforged/neoforge' / NEOFORGE / 'unix_args.txt').read_text(), java=java, host=host)
             if args.accept_eula:
                 write_if_changed(run / 'eula.txt', 'eula=true\n')
         else:
-            lines = args_lines('client', libs, NEOFORGE, client=(neo, [libs / j.relative_to(client_home / 'libraries') for j in client_jars]), assets=(assets, index_id), analysis=analysis, java=java, host=host)
+            lines = args_lines('client', libs, NEOFORGE, client=(neo, [libs / j.relative_to(client_home / 'libraries') for j in client_jars]), assets=(assets, index_id), java=java, host=host)
         write_if_changed(run / 'horizon-java.args', '\n'.join(lines) + '\n')
     print(f'{install}: {len(pack)} mods, NeoForge {NEOFORGE}, JDK at {java}')
     if not (install / 'server' / 'eula.txt').exists():

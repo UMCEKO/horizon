@@ -2143,9 +2143,12 @@ name = "horizon-java-host"
 version = "0.0.0"
 dependencies = [
  "horizon-core",
+ "horizon-java-analysis",
  "horizon-world",
  "jni 0.21.1",
  "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]

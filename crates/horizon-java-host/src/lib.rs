@@ -1,5 +1,6 @@
 //! Real NeoForge and real mod jars in a JVM embedded in this process (`docs/java-mods.md`).
 
+pub mod analysis;
 pub mod bridge;
 pub mod bulk;
 pub mod entity_facts;
@@ -81,7 +82,6 @@ impl RunArgs {
                     cp_at = options.len();
                 }
                 Some(("prog", arg)) => prog.push(arg.to_string()),
-                Some(("analysis", path)) => options.push(format!("-Dhorizon.java.analysis={path}")),
                 _ => {}
             }
         }
@@ -135,7 +135,7 @@ fn libjvm(home: &Path) -> PathBuf {
 }
 
 /// Starts the JVM `horizon-java.args` in `run_dir` names, opening that JDK's `libjvm` by path.
-pub fn create_vm(run_dir: &Path) -> Result<(JavaVM, RunArgs), String> {
+pub fn create_vm(run_dir: &Path, analysis: &Path) -> Result<(JavaVM, RunArgs), String> {
     let file = run_dir.join("horizon-java.args");
     let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
     let host = std::env::var("HORIZON_JAVA_HOST_JAR").ok();
@@ -170,6 +170,7 @@ pub fn create_vm(run_dir: &Path) -> Result<(JavaVM, RunArgs), String> {
     for option in &run.options {
         b = b.option(option);
     }
+    b = b.option(format!("-Dhorizon.java.analysis={}", analysis.display()));
     let extra = std::env::var("HORIZON_JAVA_OPTS").unwrap_or_default();
     for o in extra.split_whitespace() {
         b = b.option(o);
@@ -426,7 +427,9 @@ static RUNNING: LazyLock<Boot> = LazyLock::new(|| {
 
 fn boot(run_dir: &Path) -> Result<Host, String> {
     let began = std::time::Instant::now();
-    let (vm, run) = create_vm(run_dir)?;
+    let bridges = bridge::table_keys();
+    let analysis = analysis::prepare(run_dir, &bridges)?;
+    let (vm, run) = create_vm(run_dir, &analysis.join("entity-facts.json"))?;
     let (server_group, entry) = {
         let mut env = vm
             .attach_current_thread_permanently()

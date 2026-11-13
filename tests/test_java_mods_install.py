@@ -32,9 +32,9 @@ class Args(unittest.TestCase):
         self.assertFalse(any('assetsDir' in line for line in lines))
 
 
-    def test_the_analysis_line_names_the_entity_facts_before_the_assets(self):
-        lines = java_mods.args_lines('server', Path('/i/libraries'), '9.9', server=SERVER, analysis=Path('/i/analysis/entity-facts.json'))
-        self.assertEqual(lines[-1], 'analysis /i/analysis/entity-facts.json')
+    def test_no_analysis_line_is_written(self):
+        lines = java_mods.args_lines('server', Path('/i/libraries'), '9.9', server=SERVER)
+        self.assertFalse(any(line.startswith('analysis') for line in lines))
 
     def test_writers_need_a_bridge_unless_java_owned(self):
         with tempfile.TemporaryDirectory() as tmp:
