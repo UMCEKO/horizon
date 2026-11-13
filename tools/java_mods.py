@@ -1465,6 +1465,11 @@ def main():
     except ImportError:
         import mod_replaces
     mod_replaces.add_arguments(rp)
+    rl = sub.add_parser('release', help='the two Linux release folders and archives with Java mods support, built and checked in an Ubuntu 22.04 container (docs/java-mods.md)')
+    rl.add_argument('--out', required=True)
+    rl.add_argument('--keep-target', action='store_true', help='keep the container build folder (about 10 GB)')
+    rl.add_argument('--no-smoke', action='store_true', help='skip the game and server runs')
+    rl.add_argument('--install', default='/home/umceko/hz-poc/play/install-rs', help='a Java mods install whose run folders the smoke runs use')
     n = sub.add_parser('launch', allow_abbrev=False, help='starts the game from an install; other arguments go to the game (--dedicated starts the server)')
     n.add_argument('--install', required=True)
     n.add_argument('--game', help='the horizon-client built with --features java-mods')
@@ -1475,6 +1480,12 @@ def main():
         parser.error(f'unrecognized arguments: {" ".join(extra)}')
     if args.command == 'install':
         return install_pack(args)
+    if args.command == 'release':
+        try:
+            from . import java_mods_release
+        except ImportError:
+            import java_mods_release
+        return java_mods_release.release(args, NEOFORGE)
     if args.command == 'mixins':
         try:
             from . import mod_parity
