@@ -46,6 +46,7 @@ import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.level.Explosion;
 import net.minecraft.world.level.ServerExplosion;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.level.Level;
 import net.neoforged.bus.ListenerList;
 import net.neoforged.bus.api.Event;
 import net.neoforged.bus.api.EventPriority;
@@ -96,6 +97,10 @@ public final class EventPosts {
         PLAYER.put("ItemTossEvent", EventPosts::itemToss);
         PLAYER.put("ArrowLooseEvent", EventPosts::arrowLoose);
         PLAYER.put("BlockEvent.EntityPlaceEvent", EventPosts::place);
+        PLAYER.put("PlayerEvent.Clone", EventPosts::playerClone);
+        PLAYER.put("PlayerEvent.PlayerRespawnEvent", EventPosts::playerRespawn);
+        PLAYER.put("EntityTravelToDimensionEvent", EventPosts::travelToDimension);
+        PLAYER.put("PlayerEvent.PlayerChangedDimensionEvent", EventPosts::changedDimension);
     }
 
     /** The server events Rust posts through `post_level_event`. */
@@ -256,6 +261,7 @@ public final class EventPosts {
         boolean arrivesCanceled = in.readBoolean();
         PlayerPost post = PLAYER.get(name);
         if (post == null) throw new IllegalArgumentException("no server post for " + name);
+        GameBridge.renewNext = name.equals("PlayerEvent.Clone");
         var call = GameBridge.fill(in, false);
         // A view keeps no use between calls, as in `GameBridge.use`.
         Using.clear(call.player());
@@ -635,6 +641,47 @@ public final class EventPosts {
         }
         if (view == null) throw new IllegalStateException("Horizon: no view for entity " + ref);
         return view;
+    }
+
+    /** `PlayerList.respawn`'s `restoreFrom`: the new view and the old one, which NeoForge's own listener copies attachments between. */
+    private static Posted playerClone(GameBridge.Call call) throws IOException {
+        boolean wasDeath = call.in().readBoolean();
+        var original = GameBridge.original;
+        try {
+            if (original != null) {
+                debug("PlayerEvent.Clone wasDeath=" + wasDeath + " same=" + (original == call.player()));
+                EventHooks.onPlayerClone(call.player(), original, wasDeath);
+            }
+        } finally {
+            GameBridge.releaseOriginal();
+        }
+        return Posted.NONE;
+    }
+
+    private static Posted playerRespawn(GameBridge.Call call) throws IOException {
+        boolean endConquered = call.in().readBoolean();
+        debug("PlayerEvent.PlayerRespawnEvent endConquered=" + endConquered);
+        EventHooks.firePlayerRespawnEvent(call.player(), endConquered);
+        return Posted.NONE;
+    }
+
+    private static ResourceKey<Level> dimension(Crossing.In in) {
+        return ResourceKey.create(Registries.DIMENSION, Identifier.parse(GameBridge.text(in)));
+    }
+
+    private static Posted travelToDimension(GameBridge.Call call) {
+        var to = dimension(call.in());
+        boolean canceled = !CommonHooks.onTravelToDimension(call.player(), to);
+        debug("EntityTravelToDimensionEvent to=" + to.identifier() + " canceled=" + canceled);
+        return new Posted(canceled, Posted.NONE.result());
+    }
+
+    private static Posted changedDimension(GameBridge.Call call) {
+        var from = dimension(call.in());
+        var to = dimension(call.in());
+        debug("PlayerEvent.PlayerChangedDimensionEvent " + from.identifier() + " -> " + to.identifier());
+        EventHooks.firePlayerChangedDimensionEvent(call.player(), from, to);
+        return Posted.NONE;
     }
 
     /** `client_post_event`: the event's name, then its fields, posted on the Java client's thread. */

@@ -48,7 +48,7 @@ public final class TestMod {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.entity.player.PlayerEvent.BreakSpeed event) -> {
             if (event.getState().is(Blocks.GRAVEL)) event.setNewSpeed(event.getNewSpeed() * 0.5f);
         });
-        ChecksServerEvents.listen();
+        ChecksServerEvents.listen(bus);
         // A plain food, so the boot's facts carry a food item.
         ITEMS.registerSimpleItem("snack", p -> p.food(new net.minecraft.world.food.FoodProperties.Builder().nutrition(5).saturationModifier(0.7f).build()).stacksTo(16));
         ITEMS.register(bus);

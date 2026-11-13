@@ -770,6 +770,13 @@ impl Game<'_> {
         let _ = window;
     }
 
+    /// `PlayerRespawnEvent` for the guest in place; `end_conquered` is the return from the End credits, which no native hook reports.
+    pub(super) fn java_hook_respawned(&mut self, end_conquered: bool) {
+        #[cfg(feature = "java-mods")]
+        super::java_listen_respawn::post_respawned(self, end_conquered);
+        let _ = end_conquered;
+    }
+
     /// A guest left the server: its Java player logs out.
     pub(super) fn java_hook_player_left(&mut self, uuid: u128) {
         #[cfg(feature = "java-mods")]
