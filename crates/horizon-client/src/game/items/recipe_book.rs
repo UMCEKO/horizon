@@ -138,6 +138,11 @@ impl Game<'_> {
             _ => None,
         }
     }
+    /// Whether the open screen has a recipe book showing.
+    #[cfg_attr(not(feature = "java-mods"), expect(dead_code, reason = "only the Java client reads it"))]
+    pub(super) fn recipe_book_visible(&self) -> bool {
+        self.active_book().is_some_and(|book| self.book_open(book))
+    }
     fn book_open(&self, book: BookType) -> bool {
         self.level.recipe_book.open[book.index()]
     }

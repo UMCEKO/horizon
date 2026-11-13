@@ -47,6 +47,28 @@ public final class Wire {
         return clientbound;
     }
 
+    private static RegistryAccess forwardedAccess;
+    private static ProtocolInfo<ClientGamePacketListener> forwarded;
+
+    /** Native's packets are vanilla's own bytes, so they decode as a vanilla connection's (`OTHER`), where the server's frames are NeoForge's. */
+    private static synchronized ProtocolInfo<ClientGamePacketListener> forwarded(RegistryAccess access) {
+        if (forwarded == null || forwardedAccess != access) {
+            forwarded = GameProtocols.CLIENTBOUND_TEMPLATE.bind(RegistryFriendlyByteBuf.decorator(access, ConnectionType.OTHER));
+            forwardedAccess = access;
+        }
+        return forwarded;
+    }
+
+    /** A play packet as native received it (VarInt id, then its body), decoded with these registries. */
+    static Packet<?> forwarded(RegistryAccess access, byte[] bytes) {
+        ByteBuf buf = Unpooled.wrappedBuffer(bytes);
+        try {
+            return forwarded(access).codec().decode(buf);
+        } finally {
+            buf.release();
+        }
+    }
+
     private static final GameProtocols.Context CLIENT_CONTEXT = new GameProtocols.Context() {
         @Override
         public boolean hasInfiniteMaterials() {
