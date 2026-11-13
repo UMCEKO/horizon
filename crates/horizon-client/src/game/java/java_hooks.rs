@@ -469,6 +469,70 @@ impl Game<'_> {
         let _ = (stack, hit, claimed);
     }
 
+    /// A click with the held item once mods had their say before it: `ItemStack.use`, where a mod's patch of it runs in Java around `Item.use`.
+    pub(in crate::game) fn java_hook_item_stack_use(
+        &mut self,
+        stack: ItemStack,
+        info: horizon_client::items::ItemInfo,
+        block_hit: Option<&super::Hit>,
+        sneaking: bool,
+        hands_full: bool,
+    ) -> super::Result<bool> {
+        #[cfg(feature = "java-mods")]
+        return self.java_item_stack_use(stack, info, block_hit, sneaking, hands_full);
+        #[cfg(not(feature = "java-mods"))]
+        self.use_item_tail(&stack, &info, block_hit, false, sneaking, hands_full)
+    }
+
+    /// `ItemStack.finishUsingItem` of the stack in use, where a mod's patch of it runs in Java around native's completion.
+    pub(in crate::game) fn java_hook_finish_using(
+        &mut self,
+        slot: usize,
+        stack: &ItemStack,
+        info: &horizon_client::items::ItemInfo,
+    ) {
+        #[cfg(feature = "java-mods")]
+        self.java_finish_using(slot, stack, info);
+        #[cfg(not(feature = "java-mods"))]
+        self.complete_using_item_native(slot, stack, info);
+    }
+
+    /// `BucketItem.use`, where a mod's patch of it runs in Java.
+    pub(in crate::game) fn java_hook_bucket_use(
+        &mut self,
+        stack: &ItemStack,
+    ) -> super::Result<horizon_client::first_person::UseResult> {
+        #[cfg(feature = "java-mods")]
+        return self.java_bucket_use(stack);
+        #[cfg(not(feature = "java-mods"))]
+        self.use_bucket_native(stack)
+    }
+
+    /// `BlockTransformer.transformBlock`, where a mod's patch of it runs in Java.
+    pub(in crate::game) fn java_hook_block_transform(
+        &mut self,
+        stack: &ItemStack,
+        hit: &super::Hit,
+    ) -> super::Result<horizon_client::first_person::UseResult> {
+        #[cfg(feature = "java-mods")]
+        return self.java_block_transform(stack, hit);
+        #[cfg(not(feature = "java-mods"))]
+        self.use_block_transformer_result(stack, hit)
+    }
+
+    /// `BlockStateBase.useWithoutItem`, where a mod's patch of it runs in Java.
+    pub(in crate::game) fn java_hook_use_without_item(
+        &mut self,
+        state: BlockStateId,
+        hit: &super::Hit,
+        block_hit: horizon_core::geometry::BlockHit,
+    ) -> super::Result<super::player_use::EmptyHand> {
+        #[cfg(feature = "java-mods")]
+        return self.java_use_without_item(state, hit, block_hit);
+        #[cfg(not(feature = "java-mods"))]
+        self.use_without_item_native(state, hit, block_hit)
+    }
+
     /// A mod item's own `use`, when native left the click unclaimed.
     pub(super) fn java_hook_use_item(&mut self, stack: &ItemStack, claimed: &mut bool) {
         #[cfg(feature = "java-mods")]

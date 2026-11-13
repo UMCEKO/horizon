@@ -44,7 +44,21 @@ public final class RoutingArgsCheck {
         var read = Crossing.In.of(bytes);
         if (read.readByte() != 0 || read.readInt() != -1 || read.readInt() != 0 || read.available() != 0) throw new AssertionError("status 0, -1, then an empty sound count: " + bytes.length);
         values();
+        uses();
         System.out.println("RoutingArgsCheck ok");
+    }
+
+    /** `a_hit_writes_as_eight_doubles` and `a_use_result_encodes_as_the_ints_java_decodes` of Rust's `java_use` tests. */
+    private static void uses() throws Exception {
+        var bytes = java.util.HexFormat.of().parseHex("400a000000000000" + "c04fc00000000000" + "401f000000000000" + "3ff0000000000000" + "3ff0000000000000" + "4008000000000000" + "c050000000000000" + "401c000000000000" + "00000001");
+        var in = Crossing.In.of(bytes);
+        var hit = (net.minecraft.world.phys.BlockHitResult) Routing.reader(net.minecraft.world.phys.BlockHitResult.class).read(in, new Routing.Args("k"));
+        if (hit.getLocation().x != 3.25 || hit.getLocation().y != -63.5 || hit.getLocation().z != 7.75 || hit.getDirection() != net.minecraft.core.Direction.UP || !hit.isInside() || !hit.getBlockPos().equals(new BlockPos(3, -64, 7))) throw new AssertionError("a hit: " + hit);
+        if (Routing.reader(net.minecraft.world.InteractionHand.class).read(in, new Routing.Args("k")) != net.minecraft.world.InteractionHand.OFF_HAND || in.available() != 0) throw new AssertionError("a hand is its ordinal");
+        if (Flat.toInteractionResult(16) != net.minecraft.world.InteractionResult.SUCCESS || Flat.toInteractionResult(0) != net.minecraft.world.InteractionResult.CONSUME
+                || Flat.toInteractionResult(1) != net.minecraft.world.InteractionResult.FAIL || Flat.toInteractionResult(2) != net.minecraft.world.InteractionResult.PASS) throw new AssertionError("a use result is its kind and its swing source");
+        var round = Flat.raw(hit);
+        if (!java.util.Arrays.equals(round, new double[] {3.25, -63.5, 7.75, 1, 1, 3, -64, 7})) throw new AssertionError("a hit goes back as the same eight numbers");
     }
 
     static java.util.Optional<net.minecraft.world.phys.Vec3> optional() {

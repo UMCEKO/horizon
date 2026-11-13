@@ -384,6 +384,33 @@ public final class Flat {
         return new net.minecraft.world.phys.BlockHitResult(new Vec3(hit[0], hit[1], hit[2]), Direction.from3DDataValue((int) hit[3]), pos, hit[4] != 0);
     }
 
+    /** A stack from its saved form; empty bytes are the empty stack. */
+    public static net.minecraft.world.item.ItemStack toItemStack(byte[] bytes) {
+        try {
+            return bytes.length == 0 ? net.minecraft.world.item.ItemStack.EMPTY : GameBridge.decode(bytes);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** `toBlockHitResult`'s array for a hit. */
+    public static double[] raw(net.minecraft.world.phys.BlockHitResult hit) {
+        var at = hit.getLocation();
+        var pos = hit.getBlockPos();
+        return new double[] {at.x, at.y, at.z, hit.getDirection().get3DDataValue(), hit.isInside() ? 1 : 0, pos.getX(), pos.getY(), pos.getZ()};
+    }
+
+    /** An `InteractionResult` from the int `UseResult` encodes: the kind, then the swing source's ordinal times 16. */
+    public static net.minecraft.world.InteractionResult toInteractionResult(int raw) {
+        int swing = raw >> 4;
+        return switch (raw & 15) {
+            case 0 -> swing == 0 ? net.minecraft.world.InteractionResult.CONSUME : swing == 2 ? net.minecraft.world.InteractionResult.SUCCESS_SERVER : net.minecraft.world.InteractionResult.SUCCESS;
+            case 1 -> net.minecraft.world.InteractionResult.FAIL;
+            case 2 -> net.minecraft.world.InteractionResult.PASS;
+            default -> net.minecraft.world.InteractionResult.TRY_WITH_EMPTY_HAND;
+        };
+    }
+
     public static BlockState toBlockState(int id) {
         return Block.BLOCK_STATE_REGISTRY.byId(id);
     }

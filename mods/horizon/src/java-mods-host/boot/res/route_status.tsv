@@ -63,11 +63,9 @@ net/minecraft/client/renderer/fog/FogRenderer#setupFog(Lnet/minecraft/client/Cam
 net/minecraft/client/resources/language/LanguageManager#onResourceManagerReload(Lnet/minecraft/server/packs/resources/ResourceManager;)V	verdict: java-client
 net/minecraft/client/resources/model/BlockStateDefinitions#<clinit>	verdict: java-client
 net/minecraft/client/server/IntegratedServer#initServer()Z	spec: w12-coverage SPEC-20
-net/minecraft/client/sounds/MusicManager#tick()V	owner: W8
 net/minecraft/client/sounds/SoundEngine#refreshCategoryVolume(Lnet/minecraft/sounds/SoundSource;)V	special: sounds
 net/minecraft/client/sounds/SoundEngine#reload()V	special: sounds
-net/minecraft/core/component/BlockTransformer#transformBlock(Lnet/minecraft/world/item/context/UseOnContext;)Lnet/minecraft/world/InteractionResult;	spec: w12-coverage SPEC-13
-net/minecraft/core/component/BlockTransformer#transformBlock(Lnet/minecraft/world/item/context/UseOnContext;Lnet/minecraft/core/Holder;)Lnet/minecraft/world/InteractionResult;	spec: w12-coverage SPEC-13
+net/minecraft/core/component/BlockTransformer#transformBlock(Lnet/minecraft/world/item/context/UseOnContext;Lnet/minecraft/core/Holder;)Lnet/minecraft/world/InteractionResult;	verdict: out-of-scope
 net/minecraft/data/tags/TagsProvider#run	verdict: inert
 net/minecraft/gametest/framework/GameTestServer#initServer	verdict: inert
 net/minecraft/gametest/framework/TestCommand#verifyStructureExists	verdict: inert
@@ -146,14 +144,11 @@ net/minecraft/world/inventory/AbstractContainerMenu#doClick(IILnet/minecraft/wor
 net/minecraft/world/inventory/AbstractContainerMenu#getRedstoneSignalFromContainer(Lnet/minecraft/world/Container;)I	spec: w12-coverage SPEC-17
 net/minecraft/world/inventory/AnvilMenu#createResultInternal()V	spec: w12-coverage SPEC-17
 net/minecraft/world/item/BrushItem#onUseTick(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/entity/LivingEntity;Lnet/minecraft/world/item/ItemStack;I)V	spec: w12-coverage SPEC-19
-net/minecraft/world/item/BucketItem#use(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/InteractionHand;)Lnet/minecraft/world/InteractionResult;	spec: w12-coverage SPEC-13
 net/minecraft/world/item/Item#<init>	verdict: java-boot
 net/minecraft/world/item/ItemStack#addDetailsToTooltip(Lnet/minecraft/world/item/Item$TooltipContext;Lnet/minecraft/world/item/component/TooltipDisplay;Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/item/TooltipFlag;Ljava/util/function/Consumer;)V	owner: W5
 net/minecraft/world/item/ItemStack#addToTooltip(Lnet/minecraft/core/component/DataComponentType;Lnet/minecraft/world/item/Item$TooltipContext;Lnet/minecraft/world/item/component/TooltipDisplay;Ljava/util/function/Consumer;Lnet/minecraft/world/item/TooltipFlag;)V	owner: W5
-net/minecraft/world/item/ItemStack#finishUsingItem(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/entity/LivingEntity;)Lnet/minecraft/world/item/ItemStack;	spec: w12-coverage SPEC-13
 net/minecraft/world/item/ItemStack#getTooltipLines(Lnet/minecraft/world/item/Item$TooltipContext;Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/item/TooltipFlag;)Ljava/util/List;	owner: W5
 net/minecraft/world/item/ItemStack#overrideOtherStackedOnMe(Lnet/minecraft/world/item/ItemStack;Lnet/minecraft/world/inventory/Slot;Lnet/minecraft/world/inventory/ClickAction;Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/entity/SlotAccess;)Z	spec: w12-coverage SPEC-17
-net/minecraft/world/item/ItemStack#use(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/InteractionHand;)Lnet/minecraft/world/InteractionResult;	spec: w12-coverage SPEC-13
 net/minecraft/world/item/component/ItemContainerContents#addToTooltip(Lnet/minecraft/world/item/Item$TooltipContext;Ljava/util/function/Consumer;Lnet/minecraft/world/item/TooltipFlag;Lnet/minecraft/core/component/DataComponentGetter;)V	owner: W5
 net/minecraft/world/item/enchantment/EnchantmentHelper#getItemEnchantmentLevel(Lnet/minecraft/core/Holder;Lnet/minecraft/world/item/ItemInstance;)I	spec: w12-coverage SPEC-14
 net/minecraft/world/item/enchantment/ItemEnchantments#addToTooltip(Lnet/minecraft/world/item/Item$TooltipContext;Ljava/util/function/Consumer;Lnet/minecraft/world/item/TooltipFlag;Lnet/minecraft/core/component/DataComponentGetter;)V	owner: W5
@@ -167,8 +162,7 @@ net/minecraft/world/level/block/entity/HopperBlockEntity#getContainerOrHandlerAt
 net/minecraft/world/level/block/entity/HopperBlockEntity#getEntityContainer(Lnet/minecraft/world/level/Level;DDD)Lnet/minecraft/world/Container;	spec: w12-coverage SPEC-17
 net/minecraft/world/level/block/entity/TestInstanceBlockEntity#getStructureTemplate	verdict: inert
 net/minecraft/world/level/block/entity/TestInstanceBlockEntity#placeStructure	verdict: inert
-net/minecraft/world/level/block/state/BlockBehaviour$BlockStateBase#getDestroyProgress(Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/level/BlockGetter;Lnet/minecraft/core/BlockPos;)F	spec: w12-coverage SPEC-13
-net/minecraft/world/level/block/state/BlockBehaviour$BlockStateBase#useWithoutItem(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/phys/BlockHitResult;)Lnet/minecraft/world/InteractionResult;	spec: w12-coverage SPEC-13
+net/minecraft/world/level/block/state/BlockBehaviour$BlockStateBase#getDestroyProgress(Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/level/BlockGetter;Lnet/minecraft/core/BlockPos;)F	verdict: java-served
 net/minecraft/world/level/levelgen/Beardifier#forStructuresInChunk(Lnet/minecraft/world/level/StructureManager;Lnet/minecraft/world/level/ChunkPos;)Lnet/minecraft/world/level/levelgen/Beardifier;	owner: W10
 net/minecraft/world/level/levelgen/NoiseBasedChunkGenerator#buildTerrain(Lnet/minecraft/world/level/chunk/ChunkAccess;Lnet/minecraft/world/level/levelgen/blending/Blender;Lnet/minecraft/world/level/levelgen/RandomState;Lnet/minecraft/world/level/StructureManager;Lnet/minecraft/world/level/biome/BiomeManager;Lnet/minecraft/server/level/WorldGenRegion;Ljava/util/Set;)Ljava/util/concurrent/CompletableFuture;	owner: W10
 net/minecraft/world/level/levelgen/NoiseBasedChunkGenerator#spawnOriginalMobs(Lnet/minecraft/server/level/WorldGenRegion;)V	owner: W10

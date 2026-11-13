@@ -22,6 +22,7 @@ net/minecraft/client/multiplayer/ClientPacketListener#handleRecipeBookAdd(Lnet/m
 net/minecraft/client/multiplayer/ClientPacketListener#handleRecipeBookRemove(Lnet/minecraft/network/protocol/game/ClientboundRecipeBookRemovePacket;)V	java-client	trace: java_client_routes.jfr
 net/minecraft/client/resources/language/LanguageManager#onResourceManagerReload(Lnet/minecraft/server/packs/resources/ResourceManager;)V	java-client	trace: java_client_routes.jfr
 net/minecraft/client/resources/model/BlockStateDefinitions#<clinit>	java-client	trace: java_client_routes.jfr
+net/minecraft/core/component/BlockTransformer#transformBlock(Lnet/minecraft/world/item/context/UseOnContext;Lnet/minecraft/core/Holder;)Lnet/minecraft/world/InteractionResult;	out-of-scope	26.3's BlockTransformer has only the UseOnContext overload
 net/minecraft/data/tags/TagsProvider#run	inert	gametest or datagen only
 net/minecraft/gametest/framework/GameTestServer#initServer	inert	gametest or datagen only
 net/minecraft/gametest/framework/TestCommand#verifyStructureExists	inert	gametest or datagen only
@@ -32,3 +33,4 @@ net/minecraft/world/entity/Entity#syncData	java-already	Java runs the whole meth
 net/minecraft/world/item/Item#<init>	java-boot	trace: java_client_routes.jfr
 net/minecraft/world/level/block/entity/TestInstanceBlockEntity#getStructureTemplate	inert	gametest or datagen only
 net/minecraft/world/level/block/entity/TestInstanceBlockEntity#placeStructure	inert	gametest or datagen only
+net/minecraft/world/level/block/state/BlockBehaviour$BlockStateBase#getDestroyProgress(Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/level/BlockGetter;Lnet/minecraft/core/BlockPos;)F	java-served	every native call site delegates to Java's method: Game::destroy_progress (hand.rs:444, first, through java_hook_destroy_progress) serves first_person.rs:853 and :894 (hand.rs:973), game.rs:7247, remote/mod.rs:8450, lan_actions/mining.rs:24 and :65, lan_actions/packets.rs:272, command_harness.rs:1203; the window's Java client answers client_destroy_progress

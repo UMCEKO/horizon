@@ -167,11 +167,11 @@ use horizon_core::{
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use horizon_mod_package::selection::{Argument, LaunchArguments};
+#[cfg(feature = "java-mods")]
+pub(crate) use java_hooks::java_hook_resolve;
 pub(crate) use java_hooks::{
     java_hook_loot_condition, java_hook_loot_function, java_hook_loot_rolled, java_hook_loot_wanted,
 };
-#[cfg(feature = "java-mods")]
-pub(crate) use java_hooks::java_hook_resolve;
 pub use native_block_entity_draw::BlockEntityDraw;
 pub use native_claimed_items::{HeldItemSlot, ModEvent};
 pub use native_components::NativeComponentError;
@@ -11051,11 +11051,10 @@ impl Game<'_> {
             stack.damage = (stack.damage + amount).min(max - 1);
         }
     }
-    /// Block tool use: distinguish success, failure and fall-through for hand feedback.
-    fn use_tool(
+    /// `BucketItem.use`'s native body: an empty bucket picks a fluid up, a full one empties it.
+    pub(super) fn use_bucket_native(
         &mut self,
         stack: &ItemStack,
-        allow_block_actions: bool,
     ) -> Result<horizon_client::first_person::UseResult> {
         use horizon_client::first_person::UseResult;
         let item = stack.item.trim_start_matches("minecraft:").to_owned();
@@ -11066,13 +11065,7 @@ impl Game<'_> {
                 f64::from(p[2]) + 0.5,
             ]
         };
-        // BucketItem has no useOn: a guest's UseItemOn leaves it to UseItem.
         let bucket = horizon_client::items::bucket_contents(&stack.item);
-        if matches!(self.guest_use, Some(GuestUse::OnBlock(_)))
-            && (item == "bucket" || bucket.is_some())
-        {
-            return Ok(UseResult::Pass);
-        }
         if item == "bucket" {
             let Some(hit) = self.bucket_hit() else {
                 return Ok(UseResult::Pass);
@@ -11121,13 +11114,9 @@ impl Game<'_> {
             return Ok(UseResult::Success { swing: true });
         }
         // BucketItem.use has its own ray, even when the crosshair hits an entity.
-        if !allow_block_actions && bucket.is_none() {
-            return Ok(UseResult::Pass);
-        }
         let Some(hit) = self.pick() else {
             return Ok(UseResult::Pass);
         };
-        let clicked = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
         if let Some((content, sound, mob)) = bucket {
             if !self.may_build() && !self.can_place_on_in_adventure(hit.pos) {
                 return Ok(UseResult::Fail);
@@ -11211,8 +11200,57 @@ impl Game<'_> {
             }
             return Ok(UseResult::Success { swing: true });
         }
-        if self.use_block_transformer(stack, &hit)? {
-            return Ok(UseResult::Success { swing: true });
+        Ok(UseResult::Pass)
+    }
+    /// `BlockTransformer.transformBlock` as `use_tool` reads it.
+    pub(super) fn use_block_transformer_result(
+        &mut self,
+        stack: &ItemStack,
+        hit: &Hit,
+    ) -> Result<horizon_client::first_person::UseResult> {
+        use horizon_client::first_person::UseResult;
+        Ok(if self.use_block_transformer(stack, hit)? {
+            UseResult::Success { swing: true }
+        } else {
+            UseResult::Pass
+        })
+    }
+    /// Block tool use: distinguish success, failure and fall-through for hand feedback.
+    fn use_tool(
+        &mut self,
+        stack: &ItemStack,
+        allow_block_actions: bool,
+    ) -> Result<horizon_client::first_person::UseResult> {
+        use horizon_client::first_person::UseResult;
+        let item = stack.item.trim_start_matches("minecraft:").to_owned();
+        let at = |p: [i32; 3]| {
+            [
+                f64::from(p[0]) + 0.5,
+                f64::from(p[1]) + 0.5,
+                f64::from(p[2]) + 0.5,
+            ]
+        };
+        // BucketItem has no useOn: a guest's UseItemOn leaves it to UseItem.
+        let bucket = horizon_client::items::bucket_contents(&stack.item);
+        if matches!(self.guest_use, Some(GuestUse::OnBlock(_)))
+            && (item == "bucket" || bucket.is_some())
+        {
+            return Ok(UseResult::Pass);
+        }
+        if item == "bucket" || bucket.is_some() {
+            return self.java_hook_bucket_use(stack);
+        }
+        // Past a bucket, only a block click goes on: the tools below act on the block aimed at.
+        if !allow_block_actions {
+            return Ok(UseResult::Pass);
+        }
+        let Some(hit) = self.pick() else {
+            return Ok(UseResult::Pass);
+        };
+        let clicked = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
+        match self.java_hook_block_transform(stack, &hit)? {
+            UseResult::Pass => {}
+            done => return Ok(done),
         }
         if item == "honeycomb" {
             let registry = self.pack.assets.registry;

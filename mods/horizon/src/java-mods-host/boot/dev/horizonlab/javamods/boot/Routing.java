@@ -25,6 +25,7 @@ import java.util.TreeSet;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.network.chat.Component;
@@ -35,6 +36,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.ServerCommonPacketListenerImpl;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
 import net.minecraft.util.ProblemReporter;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.effect.MobEffectInstance;
@@ -45,6 +47,7 @@ import net.minecraft.world.food.FoodData;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.item.ItemInstance;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelAccessor;
@@ -55,6 +58,7 @@ import net.minecraft.world.level.storage.TagValueInput;
 import net.minecraft.world.level.storage.TagValueOutput;
 import net.minecraft.world.level.storage.ValueInput;
 import net.minecraft.world.level.storage.ValueOutput;
+import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 
 /** The install's routing (`routing.json`) confirmed against the mixins merged at boot, as `routes.bin`; see docs/java-mods-map.md. */
@@ -104,6 +108,28 @@ public final class Routing {
     /** Whether a call's receiver is a server player's inventory, which is all Horizon's native serves; the Java client's own is not. */
     public static boolean serverInventory(Object receiver) {
         return receiver instanceof net.minecraft.world.entity.player.Inventory inventory && inventory.player instanceof net.minecraft.server.level.ServerPlayer;
+    }
+
+    /** Whether `ItemStack.finishUsingItem` on this receiver is the stack a route is running: native's completion is its body. */
+    public static boolean servedStack(Object receiver, Level level, net.minecraft.world.entity.LivingEntity user) {
+        return receiver == SERVING.get() && user instanceof ServerPlayer && receiver instanceof ItemStack stack && vanillaItem(stack.getItem());
+    }
+
+    /** Whether `useWithoutItem` on this receiver is the state a route is running, of a block no mod owns: native's block use is its body. */
+    public static boolean servedBlock(Object receiver, Level level, Player player, BlockHitResult hit) {
+        return receiver == SERVING_BLOCK.get() && player instanceof ServerPlayer && receiver instanceof net.minecraft.world.level.block.state.BlockState state && !BootFacts.ownsBlock(state.getBlock());
+    }
+
+    static boolean vanillaItem(net.minecraft.world.item.Item item) {
+        return !BootFacts.ownsItem(item) && item.getClass().getName().startsWith("net.minecraft.");
+    }
+
+    private static final ThreadLocal<ItemStack> SERVING = new ThreadLocal<>();
+    private static final ThreadLocal<Object> SERVING_BLOCK = new ThreadLocal<>();
+
+    /** The stack whose `ItemStack.use` a route is running now, whose `Item.use` is native's. */
+    static ItemStack serving() {
+        return SERVING.get();
     }
 
     /** The route's id, -1 when the key is unknown or the route is off. */
@@ -484,7 +510,14 @@ public final class Routing {
 
     private static ArgReader entity(Class<?> type) {
         return (in, c) -> {
-            var e = Flat.toEntity(in.readInt());
+            int id = in.readInt();
+            // -1 is the acting player, whose view fills right after.
+            if (id == -1 && type.isAssignableFrom(ServerPlayer.class)) {
+                var call = GameBridge.fill(in, false);
+                c.level = call.level();
+                return c.filled = call.player();
+            }
+            var e = Flat.toEntity(id);
             if (e != null && !type.isInstance(e)) throw new ClassCastException("route " + c.key + ": entity " + e.getId() + " is a " + e.getClass().getName() + ", not a " + type.getName());
             return e;
         };
@@ -509,6 +542,17 @@ public final class Routing {
             };
         }
         if (type == Vec3.class) return (in, c) -> new Vec3(in.readDouble(), in.readDouble(), in.readDouble());
+        if (type == InteractionHand.class) return (in, c) -> in.readInt() == 0 ? InteractionHand.MAIN_HAND : InteractionHand.OFF_HAND;
+        if (type == BlockHitResult.class) return (in, c) -> Flat.toBlockHitResult(readHit(in));
+        if (type == UseOnContext.class) {
+            return (in, c) -> {
+                var call = GameBridge.fill(in, false);
+                c.level = call.level();
+                c.filled = call.player();
+                var hand = in.readInt() == 0 ? InteractionHand.MAIN_HAND : InteractionHand.OFF_HAND;
+                return new UseOnContext(call.player(), hand, Flat.toBlockHitResult(readHit(in)));
+            };
+        }
         if (Entity.class.isAssignableFrom(type)) return entity(type);
         if (type == DamageSource.class) return (in, c) -> Flat.toDamageSource(in.readNBytes(in.readInt()), c.level());
         if (type == MobEffectInstance.class) {
@@ -536,6 +580,13 @@ public final class Routing {
             };
         }
         return null;
+    }
+
+    /** A `BlockHitResult` as `HitArg` writes it: eight doubles, `Flat.toBlockHitResult`'s array. */
+    private static double[] readHit(Crossing.In in) throws IOException {
+        var hit = new double[8];
+        for (int i = 0; i < hit.length; i++) hit[i] = in.readDouble();
+        return hit;
     }
 
     /** The writer for a return type, or null when there is none. */
@@ -641,6 +692,8 @@ public final class Routing {
             return;
         }
         Object receiver = null;
+        InteractionHand heldHand = null;
+        boolean transformer = false;
         var call = new Args(key);
         switch (recv) {
             case 0 -> {
@@ -665,13 +718,34 @@ public final class Routing {
                 receiver = level.getBlockEntity(at);
                 if (receiver == null || !plan.owner().isInstance(receiver)) throw new IllegalStateException("route " + key + ": no " + plan.owner().getName() + " at " + at + (receiver == null ? "" : ", found a " + receiver.getClass().getName()));
             }
+            case 6 -> receiver = Flat.toBlockState(in.readInt());
+            case 7, 8 -> {
+                heldHand = in.readInt() == 0 ? InteractionHand.MAIN_HAND : InteractionHand.OFF_HAND;
+                transformer = recv == 8;
+            }
             default -> {}
         }
         var args = new ArrayList<Object>();
         if (!isStatic) args.add(receiver);
         for (var reader : plan.args()) args.add(reader.read(in, call));
+        // The stack in the player's hand is known once the arguments filled the player.
+        if (heldHand != null) {
+            if (call.filled == null) throw new IllegalStateException("route " + key + ": a held stack needs a Player argument");
+            var held = call.filled.getItemInHand(heldHand);
+            if (transformer) {
+                var holder = held.get(DataComponents.BLOCK_TRANSFORMER);
+                if (holder == null) throw new IllegalStateException("route " + key + ": " + held + " has no block transformer");
+                args.set(0, holder.value());
+            } else {
+                args.set(0, held);
+            }
+        }
         long started = Profile.ON ? System.nanoTime() : 0;
         Object result;
+        var prior = SERVING.get();
+        var priorBlock = SERVING_BLOCK.get();
+        if (heldHand != null && !transformer && args.get(0) instanceof ItemStack stack) SERVING.set(stack);
+        if (recv == 6) SERVING_BLOCK.set(receiver);
         try {
             result = handle.invokeWithArguments(args);
         } catch (Throwable t) {
@@ -681,8 +755,16 @@ public final class Routing {
             var first = t.getStackTrace().length > 0 ? " at " + t.getStackTrace()[0] : "";
             GameBridge.writeText(out, t + first);
             return;
+        } finally {
+            SERVING.set(prior);
+            SERVING_BLOCK.set(priorBlock);
         }
         if (Profile.ON) Profile.event("route:" + key, System.nanoTime() - started);
+        // `ServerPlayerGameMode.useItem` puts a stack a use handed back in the hand.
+        if (heldHand != null && !transformer && result instanceof InteractionResult.Success success && success.heldItemTransformedTo() != null && call.filled != null) {
+            var transformed = success.heldItemTransformedTo();
+            if (transformed != call.filled.getItemInHand(heldHand)) call.filled.setItemInHand(heldHand, transformed);
+        }
         out.writeByte(0);
         plan.ret().write(result, out);
         for (var output : call.outputs) GameBridge.writeTag(out, output.buildResult());

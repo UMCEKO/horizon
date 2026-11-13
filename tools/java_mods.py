@@ -374,6 +374,48 @@ def bridges(args):
             wrong.append('route_body_free_slot')
         send('select 3')
         send('wait 3')
+        # The use paths mods patch (w12-coverage SPEC-13): each click is a real use-item on a cell of the cleared ground.
+        def click(item, at, face='up'):
+            send('command clear @s')
+            send(f'give {item} 1')
+            send('select 1')
+            send(f'look-at-block {at[0]} {at[1]} {at[2]} {face}')
+            send('wait 3')
+            send('use-item')
+            send('wait 5')
+
+        def holds(word):
+            hotbar = json.loads(send('inventory'))
+            return word in json.dumps(hotbar.get('inventory', hotbar)['hotbar'])
+
+        cell = (x + 2, y - 1, z + 2)
+        click('minecraft:stick', cell)
+        if not holds('apple'):
+            wrong.append('stick_use_gives_apple')
+        click('minecraft:ender_pearl', cell)
+        if holds('ender_pearl'):
+            wrong.append('pearl_use_still_native')
+        send(f'command setblock {cell[0]} {cell[1] + 1} {cell[2]} minecraft:water')
+        click('minecraft:bucket', (cell[0], cell[1] + 1, cell[2]))
+        if not holds('water_bucket') or 'water' in send(f'block {cell[0]} {cell[1] + 1} {cell[2]}').replace('stone', ''):
+            wrong.append('bucket_fills')
+        send(f'command setblock {cell[0] + 1} {cell[1] + 1} {cell[2]} minecraft:oak_log')
+        click('minecraft:iron_axe', (cell[0] + 1, cell[1] + 1, cell[2]))
+        if 'stripped_oak_log' not in send(f'block {cell[0] + 1} {cell[1] + 1} {cell[2]}'):
+            wrong.append('axe_strips_once')
+        send(f'command setblock {cell[0] - 1} {cell[1] + 1} {cell[2]} minecraft:crafting_table')
+        send('command tag @s add horizon_block')
+        send('command clear @s')
+        send('select 1')
+        send(f'look-at-block {cell[0] - 1} {cell[1] + 1} {cell[2]} up')
+        send('wait 3')
+        send('use-item')
+        send('wait 5')
+        if 'screen' in send('state') and 'crafting' in send('state'):
+            wrong.append('table_use_cancelled')
+        send('command tag @s remove horizon_block')
+        send('select 3')
+        send('wait 3')
         # A native give between two player ticks: the Java view's next tick sees it.
         send('command give @s minecraft:apple 1')
         send('wait 3')
@@ -583,7 +625,7 @@ def bridges(args):
     shutil.copy(Path(args.scratch) / 'ctl.log', Path(args.scratch) / 'first-session.log')
     paused = re.findall(r'^Horizon: pause sources: \[(.*)\]$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks.append(('pause_sources_from_handler', 'ok' if paused == ['music'] else f'FAILED {paused}'))
-    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'player_stack_keeps_identity', 'player_view_sees_native_give', 'play_sound_posted_from_native', 'gui_layer_pre_cancel', 'lockstep_order', 'lockstep_post_sees_this_tick', 'glyph_shadow_from_patch', 'loop_init_then_run', 'mod_command_registered', 'commands_selection_follows_dist', 'server_chat_event_player', 'client_commands_registered', 'client_command_runs', 'client_level_sees_the_pig', 'client_level_finds_the_pig_in_its_box', 'client_level_loses_the_removed_pig', 'debug_entry_lines_recorded', 'rocket_moves_in_its_own_tick', 'rocket_lifts_five_blocks', 'pre_write_moves_without_lerp_start','window_resize_fired', 'render_frame_paired', 'master_volume_follows') if (name, 'ok') not in checks)
+    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'use_stick_head', 'use_pearl_wrap_counted_once', 'use_bucket_ray_type_recorded', 'use_transform_counted_once', 'use_table_head_cancelled','player_stack_keeps_identity', 'player_view_sees_native_give', 'play_sound_posted_from_native', 'gui_layer_pre_cancel', 'lockstep_order', 'lockstep_post_sees_this_tick', 'glyph_shadow_from_patch', 'loop_init_then_run', 'mod_command_registered', 'commands_selection_follows_dist', 'server_chat_event_player', 'client_commands_registered', 'client_command_runs', 'client_level_sees_the_pig', 'client_level_finds_the_pig_in_its_box', 'client_level_loses_the_removed_pig', 'debug_entry_lines_recorded', 'rocket_moves_in_its_own_tick', 'rocket_lifts_five_blocks', 'pre_write_moves_without_lerp_start','window_resize_fired', 'render_frame_paired', 'master_volume_follows') if (name, 'ok') not in checks)
     session(args, again)
     second = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks += [(name + ' (second session)', result) for name, result in second]
@@ -654,7 +696,7 @@ def java_args(desc):
 
 
 BRIDGES_DIR = oracle.ROOT / 'crates' / 'horizon-client' / 'src' / 'game' / 'java'
-BRIDGE_ENTRY = re.compile(r'"([\w/$]+)"\.(\S+)\s+"(\([^"]*)"(?:\s+if\s+"(@?[\w/$.]+)")?\s*=>\s*fn\s+(\w+)\(\s*\w+\s*((?:,\s*\w+:\s*\w+\s*)*),?\s*\)\s*->\s*([\w()]+)')
+BRIDGE_ENTRY = re.compile(r'"([\w/$]+)"\.(\S+)\s+"(\([^"]*)"(?:\s+if\s+"(@?[\w/$.]+)\+?")?\s*=>\s*fn\s+(\w+)\(\s*\w+\s*((?:,\s*\w+:\s*\w+\s*)*),?\s*\)\s*->\s*([\w()]+)')
 
 
 def unbridged_writers(analysis, extends=None):

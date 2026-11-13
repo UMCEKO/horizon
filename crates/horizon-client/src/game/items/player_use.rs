@@ -1,5 +1,6 @@
 //! A player's right click: `useItemOn` the block aimed at, `useItem`, and the item's use on a mob.
 use super::*;
+use horizon_client::items::ItemInfo;
 
 impl Game<'_> {
     /// The `ItemStack.interactLivingEntity` fallback in `Player.interactOn`,
@@ -242,52 +243,13 @@ impl Game<'_> {
                 let (result, branch) = if let Some(result) = item_result {
                     (result, UseBranch::ItemOn)
                 } else if self.hand == Hand::Main {
-                    let mut empty_answer = None;
-                    if mod_api::__private::has_part_hook(mod_api::HookId::UseWithoutItem)
-                        && api_values::block_state::block_listens(
-                            mod_api::HookId::UseWithoutItem,
-                            state,
-                        )
-                        && let Ok(snapshot) = self.held().try_into_api()
-                    {
-                        let click = self.block_click(hit, self.hand, snapshot.as_ref());
-                        self.native_use_without_item(state, &click, &mut empty_answer);
+                    match self.use_block_without_item(state, hit, block_hit)? {
+                        EmptyHand::Fence => return Ok(true),
+                        EmptyHand::Used(result, vanilla) => {
+                            empty_template_ran = vanilla;
+                            (result, UseBranch::WithoutItem)
+                        }
                     }
-                    if empty_answer.is_none()
-                        && self
-                            .res
-                            .behaviours()
-                            .data(state)
-                            .is(horizon_world::level::classes::Class::Fence)
-                        && self.use_knot(hit.pos, false)
-                    {
-                        self.trigger_default_block_use(hit.pos);
-                        return Ok(true);
-                    }
-                    let answer = empty_answer.or_else(|| {
-                        self.use_jukebox(hit.pos, state, None, UseBranch::WithoutItem)
-                            .or_else(|| {
-                                self.use_decorated_pot(hit.pos, state, None, UseBranch::WithoutItem)
-                            })
-                            .or_else(|| {
-                                self.use_chiseled_bookshelf(
-                                    hit,
-                                    state,
-                                    None,
-                                    UseBranch::WithoutItem,
-                                )
-                            })
-                    });
-                    let result = if let Some(answer) = answer {
-                        native_hooks::block_use_result(answer).unwrap_or(InteractionResult::Pass)
-                    } else {
-                        empty_template_ran = true;
-                        let player = self.use_context();
-                        self.with_level(|b, level, ticks| {
-                            b.use_without_item(level, ticks, state, block_hit, player)
-                        })
-                    };
-                    (result, UseBranch::WithoutItem)
                 } else {
                     (InteractionResult::Pass, UseBranch::ItemOn)
                 };
@@ -462,6 +424,21 @@ impl Game<'_> {
             self.swing_arm();
             return Ok(true);
         }
+        if on_block {
+            return self.use_item_tail(&stack, &info, block_hit, true, sneaking, hands_full);
+        }
+        self.java_hook_item_stack_use(stack, info, block_hit, sneaking, hands_full)
+    }
+    /// The rest of a click with the held item, once mods had their say before it: `Item.use` and `useOn` of what Horizon ports.
+    pub(super) fn use_item_tail(
+        &mut self,
+        stack: &ItemStack,
+        info: &ItemInfo,
+        block_hit: Option<&Hit>,
+        on_block: bool,
+        sneaking: bool,
+        hands_full: bool,
+    ) -> Result<bool> {
         // LeadItem.useOn follows the block and the item's override, including
         // when sneaking bypassed the block's useWithoutItem.
         if block_hit.is_some() && &*stack.item == "minecraft:lead" && self.interact_knot() {
@@ -481,7 +458,7 @@ impl Game<'_> {
             if success {
                 // `ServerPlayerGameMode.useItemOn`: a consuming `useOn`
                 // triggers ITEM_USED_ON_BLOCK with the stack before the use.
-                self.trigger_block("minecraft:item_used_on_block", hit.pos, &stack);
+                self.trigger_block("minecraft:item_used_on_block", hit.pos, stack);
             } else {
                 // DebugStickItem.useOn's FAIL.
                 self.use_failed = true;
@@ -491,14 +468,14 @@ impl Game<'_> {
         // TntBlock.useItemOn is the block's own: a sneak with something in hand skips it, and
         // the flint and steel or fire charge lights a fire on the TNT instead.
         if block_hit.is_some()
-            && (self.use_bone_meal(&stack)?
-                || (!(sneaking && hands_full) && self.ignite_tnt(&stack)?))
+            && (self.use_bone_meal(stack)?
+                || (!(sneaking && hands_full) && self.ignite_tnt(stack)?))
         {
             return Ok(true);
         }
         // ShearsItem.useOn: shears crop a growing plant's head to its top age.
         if let Some(hit) = block_hit
-            && self.shears_crop(hit.pos, &stack)?
+            && self.shears_crop(hit.pos, stack)?
         {
             return Ok(true);
         }
@@ -507,7 +484,7 @@ impl Game<'_> {
         let spawn_egg = stack.item.ends_with("_spawn_egg");
         use horizon_client::first_person::UseResult;
         let swings = self.swings_started;
-        match self.use_tool(&stack, block_hit.is_some())? {
+        match self.use_tool(stack, block_hit.is_some())? {
             UseResult::Success { swing } => {
                 if (UseResult::Success { swing }).should_swing(swings, self.swings_started) {
                     self.swing_arm();
@@ -522,18 +499,18 @@ impl Game<'_> {
         }
         // PotionItem.useOn comes before PotionItem.use's drink.
         if let Some(hit) = block_hit
-            && self.use_water_bottle_on_block(hit.pos, hit.face, &stack)?
+            && self.use_water_bottle_on_block(hit.pos, hit.face, stack)?
         {
             return Ok(true);
         }
         // a mod's item used over time: its Item.use, once a block item's
         // useOn had its turn.
-        if !on_block && (info.block.is_none() || block_hit.is_none()) && self.start_mod_use(&stack)
+        if !on_block && (info.block.is_none() || block_hit.is_none()) && self.start_mod_use(stack)
         {
             return Ok(true);
         }
-        if (!on_block && self.use_potion_item(&stack)?)
-            || ((!on_block || (spawn_egg && block_hit.is_some())) && self.throw_item(&stack)?)
+        if (!on_block && self.use_potion_item(stack)?)
+            || ((!on_block || (spawn_egg && block_hit.is_some())) && self.throw_item(stack)?)
         {
             return Ok(true);
         }
@@ -544,19 +521,19 @@ impl Game<'_> {
         }
         if !on_block
             && (self.raise_shield(self.held_slot())
-                || self.use_fishing_rod(&stack)
-            || self.use_crossbow(&stack)
-            || self.use_trident(&stack)
-            || self.use_spear(&stack)
-            || self.boost_firework(&stack)
-            || self.use_empty_map(&stack)
-                || self.use_book(&stack)
+                || self.use_fishing_rod(stack)
+            || self.use_crossbow(stack)
+            || self.use_trident(stack)
+            || self.use_spear(stack)
+            || self.boost_firework(stack)
+            || self.use_empty_map(stack)
+                || self.use_book(stack)
                 // KnowledgeBookItem.use: the recipes it names become known.
-                || self.use_knowledge_book(&stack)
+                || self.use_knowledge_book(stack)
                 // Block items (heads, carved pumpkins) aimed at a block are
                 // placed first (useItemOn before useItem).
                 || (!(info.block.is_some() && block_hit.is_some())
-                    && self.equip_from_hand(&stack)))
+                    && self.equip_from_hand(stack)))
         {
             return Ok(true);
         }
@@ -581,47 +558,47 @@ impl Game<'_> {
             return Ok(true);
         }
         if !on_block && &*stack.item == "minecraft:goat_horn" {
-            self.use_instrument(&stack);
+            self.use_instrument(stack);
             return Ok(true);
         }
         if !on_block && &*stack.item == "minecraft:bow" {
             // BowItem.use: ArrowNockEvent, then FAIL without ammunition.
-            let found_projectile = self.get_projectile(&stack).is_some();
+            let found_projectile = self.get_projectile(stack).is_some();
             let has_ammo = found_projectile || self.creative;
             let player = horizon_client::lan::playerdata::ints_uuid(self.acting_player_uuid());
             let name = self.acting_player_name().to_owned();
             let (hand, mut cancel) = (self.hand, false);
-            self.native_arrow_nock(player, &name, &stack, hand, has_ammo, &mut cancel);
+            self.native_arrow_nock(player, &name, stack, hand, has_ammo, &mut cancel);
             if has_ammo && !cancel {
                 self.start_using_item();
             }
             return Ok(true);
         }
         // Block foods attempt placement before starting consumption.
-        if !on_block && (info.block.is_none() || block_hit.is_none()) && self.start_eating(&info) {
+        if !on_block && (info.block.is_none() || block_hit.is_none()) && self.start_eating(info) {
             return Ok(true);
         }
         // BoatItem.use also performs its own fluid/block raycast.
-        if !on_block && self.place_boat(&stack) {
+        if !on_block && self.place_boat(stack) {
             return Ok(true);
         }
         // ItemStack.useOn passes in adventure mode unless the item's
         // can_place_on matches the clicked block; Item.use then runs as usual.
         if let Some(hit) = block_hit
             && (self.may_build() || self.can_place_on_in_adventure(hit.pos))
-            && (self.launch_firework(hit, &stack)
-                || self.place_minecart(hit, &stack)
-                || self.place_painting(hit, &stack)
-                || self.place_item_frame(hit, &stack)
-                || self.use_lodestone_compass(hit, &stack)
-                || self.use_map_on_banner(hit, &stack)
-                || self.place_armor_stand(hit, &stack)
-                || self.place_cushion(hit, &stack)
-                || self.place_end_crystal(hit, &stack))
+            && (self.launch_firework(hit, stack)
+                || self.place_minecart(hit, stack)
+                || self.place_painting(hit, stack)
+                || self.place_item_frame(hit, stack)
+                || self.use_lodestone_compass(hit, stack)
+                || self.use_map_on_banner(hit, stack)
+                || self.place_armor_stand(hit, stack)
+                || self.place_cushion(hit, stack)
+                || self.place_end_crystal(hit, stack))
         {
             return Ok(true);
         }
-        if self.use_ender_eye(&stack, block_hit.is_some())? {
+        if self.use_ender_eye(stack, block_hit.is_some())? {
             return Ok(true);
         }
         // PlaceOnWaterBlockItem.use: the lily pad and frogspawn aim at the block
@@ -649,7 +626,7 @@ impl Game<'_> {
         }
         if water_placement && !self.may_build() && !self.can_place_on_in_adventure(hit.pos) {
             // The fluid-ray placement has its own target, selected by Item.use.
-            return Ok(!on_block && self.start_eating(&info));
+            return Ok(!on_block && self.start_eating(info));
         }
         let face = match hit.face {
             [0, 1, 0] => Direction::Up,
@@ -680,7 +657,7 @@ impl Game<'_> {
             self.process_level_events()?;
             // BlockItem.useOn: a consumable that could not be placed is used,
             // which ItemStack.useOn counts as a use of the item.
-            if self.start_eating(&info) {
+            if self.start_eating(info) {
                 self.award_stat("used", &stack.item, 1);
             } else {
                 // BlockItem.place's FAIL.
@@ -689,7 +666,7 @@ impl Game<'_> {
             return Ok(true);
         };
         let target = [pos.x, pos.y, pos.z];
-        let state = self.apply_item_block_state(target, state, &stack)?;
+        let state = self.apply_item_block_state(target, state, stack)?;
         let key = (target[0], target[1], target[2]);
         if !self.world.block_entities.stateful_entity(state.0)
             && let Some(entity) = self.new_block_entity_for_state(state)
@@ -698,7 +675,7 @@ impl Game<'_> {
         }
         if self.world.block_entities.get(&key).is_some() {
             let game_master = self.can_use_game_master_blocks();
-            self.apply_placed_item(target, &stack, game_master);
+            self.apply_placed_item(target, stack, game_master);
             // Block.setPlacedBy.
             match self.world.block_entities.get(&key) {
                 Some(BlockEntity::CommandBlock(_)) => {
@@ -711,7 +688,7 @@ impl Game<'_> {
                 Some(BlockEntity::StructureBlock(_)) => self.structure_block_placed(key),
                 Some(BlockEntity::JigsawBlock(_)) => self.jigsaw_block_placed(key),
                 Some(BlockEntity::TestBlock(_)) => self.test_block_placed(key),
-                Some(BlockEntity::Jukebox(_)) => self.jukebox_placed(target, &stack),
+                Some(BlockEntity::Jukebox(_)) => self.jukebox_placed(target, stack),
                 Some(BlockEntity::Sign(sign)) if !sign.waxed => self.open_sign_editor(key, true),
                 _ => {}
             }
@@ -733,7 +710,7 @@ impl Game<'_> {
         self.process_level_events()?;
         // BlockItem.place: the used statistic and the placed_block trigger.
         self.award_stat("used", &stack.item, 1);
-        self.trigger_block("minecraft:placed_block", target, &stack);
+        self.trigger_block("minecraft:placed_block", target, stack);
         self.check_wither_spawn(target)?;
         self.check_golem_spawn(target)?;
         self.consume_held();
@@ -743,7 +720,90 @@ impl Game<'_> {
         }
         // ItemStack.useOn applies the pre-use stack's component side effects
         // after the successful placement and its hand replacement.
-        self.apply_use_cooldown(&stack);
+        self.apply_use_cooldown(stack);
         Ok(true)
+    }
+}
+
+/// What an empty-hand use of a block came to.
+#[derive(Clone, Copy)]
+pub(super) enum EmptyHand {
+    /// A fence's knot took the click and its trigger fired.
+    Fence,
+    /// The result, and whether vanilla's own body for the block ran (its stats and effects follow).
+    Used(horizon_world::level::InteractionResult, bool),
+}
+
+impl Game<'_> {
+    /// `BlockStateBase.useWithoutItem` of the clicked block, through the mods' patches.
+    fn use_block_without_item(
+        &mut self,
+        state: BlockStateId,
+        hit: &Hit,
+        block_hit: horizon_core::geometry::BlockHit,
+    ) -> Result<EmptyHand> {
+        self.java_hook_use_without_item(state, hit, block_hit)
+    }
+    /// `BlockStateBase.useWithoutItem`'s body: the mods' hook, a fence's knot, the jukebox, pot and bookshelf, then the block's own use.
+    pub(super) fn use_without_item_native(
+        &mut self,
+        state: BlockStateId,
+        hit: &Hit,
+        block_hit: horizon_core::geometry::BlockHit,
+    ) -> Result<EmptyHand> {
+        use horizon_world::level::{InteractionResult, UseBranch};
+        let mut empty_answer = None;
+        if mod_api::__private::has_part_hook(mod_api::HookId::UseWithoutItem)
+            && api_values::block_state::block_listens(mod_api::HookId::UseWithoutItem, state)
+            && let Ok(snapshot) = self.held().try_into_api()
+        {
+            let click = self.block_click(hit, self.hand, snapshot.as_ref());
+            self.native_use_without_item(state, &click, &mut empty_answer);
+        }
+        if empty_answer.is_none()
+            && self
+                .res
+                .behaviours()
+                .data(state)
+                .is(horizon_world::level::classes::Class::Fence)
+            && self.use_knot(hit.pos, false)
+        {
+            self.trigger_default_block_use(hit.pos);
+            return Ok(EmptyHand::Fence);
+        }
+        let answer = empty_answer.or_else(|| {
+            self.use_jukebox(hit.pos, state, None, UseBranch::WithoutItem)
+                .or_else(|| self.use_decorated_pot(hit.pos, state, None, UseBranch::WithoutItem))
+                .or_else(|| {
+                    self.use_chiseled_bookshelf(hit, state, None, UseBranch::WithoutItem)
+                })
+        });
+        Ok(if let Some(answer) = answer {
+            let result = native_hooks::block_use_result(answer).unwrap_or(InteractionResult::Pass);
+            EmptyHand::Used(result, false)
+        } else {
+            let player = self.use_context();
+            let result = self
+                .with_level(|b, level, ticks| b.use_without_item(level, ticks, state, block_hit, player));
+            EmptyHand::Used(result, true)
+        })
+    }
+}
+
+/// The click's hit as the level's block methods take it.
+pub(super) fn geometry_hit(hit: &Hit) -> horizon_core::geometry::BlockHit {
+    let face = match hit.face {
+        [0, 1, 0] => Direction::Up,
+        [0, -1, 0] => Direction::Down,
+        [0, 0, -1] => Direction::North,
+        [0, 0, 1] => Direction::South,
+        [-1, 0, 0] => Direction::West,
+        _ => Direction::East,
+    };
+    horizon_core::geometry::BlockHit {
+        block: BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]),
+        direction: face,
+        location: Vec3::new(hit.point[0], hit.point[1], hit.point[2]),
+        inside: hit.inside,
     }
 }

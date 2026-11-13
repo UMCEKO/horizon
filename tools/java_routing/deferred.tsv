@@ -42,8 +42,6 @@ net/minecraft/client/renderer/fog/FogRenderer#setupFog(Lnet/minecraft/client/Cam
 net/minecraft/client/server/IntegratedServer#initServer()Z	spec: w12-coverage SPEC-20
 net/minecraft/client/sounds/SoundEngine#refreshCategoryVolume(Lnet/minecraft/sounds/SoundSource;)V	special: sounds
 net/minecraft/client/sounds/SoundEngine#reload()V	special: sounds
-net/minecraft/core/component/BlockTransformer#transformBlock(Lnet/minecraft/world/item/context/UseOnContext;)Lnet/minecraft/world/InteractionResult;	spec: w12-coverage SPEC-13
-net/minecraft/core/component/BlockTransformer#transformBlock(Lnet/minecraft/world/item/context/UseOnContext;Lnet/minecraft/core/Holder;)Lnet/minecraft/world/InteractionResult;	spec: w12-coverage SPEC-13
 net/minecraft/server/Eula#readFile()Z	spec: w12-coverage SPEC-20
 net/minecraft/server/MinecraftServer#createLevels()V	spec: w12-coverage SPEC-20
 net/minecraft/server/MinecraftServer#reloadResources(Ljava/util/Collection;)Ljava/util/concurrent/CompletableFuture;	spec: w12-coverage SPEC-20
@@ -118,13 +116,10 @@ net/minecraft/world/inventory/AbstractContainerMenu#doClick(IILnet/minecraft/wor
 net/minecraft/world/inventory/AbstractContainerMenu#getRedstoneSignalFromContainer(Lnet/minecraft/world/Container;)I	spec: w12-coverage SPEC-17
 net/minecraft/world/inventory/AnvilMenu#createResultInternal()V	spec: w12-coverage SPEC-17
 net/minecraft/world/item/BrushItem#onUseTick(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/entity/LivingEntity;Lnet/minecraft/world/item/ItemStack;I)V	spec: w12-coverage SPEC-19
-net/minecraft/world/item/BucketItem#use(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/InteractionHand;)Lnet/minecraft/world/InteractionResult;	spec: w12-coverage SPEC-13
 net/minecraft/world/item/ItemStack#addDetailsToTooltip(Lnet/minecraft/world/item/Item$TooltipContext;Lnet/minecraft/world/item/component/TooltipDisplay;Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/item/TooltipFlag;Ljava/util/function/Consumer;)V	owner: W5
 net/minecraft/world/item/ItemStack#addToTooltip(Lnet/minecraft/core/component/DataComponentType;Lnet/minecraft/world/item/Item$TooltipContext;Lnet/minecraft/world/item/component/TooltipDisplay;Ljava/util/function/Consumer;Lnet/minecraft/world/item/TooltipFlag;)V	owner: W5
-net/minecraft/world/item/ItemStack#finishUsingItem(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/entity/LivingEntity;)Lnet/minecraft/world/item/ItemStack;	spec: w12-coverage SPEC-13
 net/minecraft/world/item/ItemStack#getTooltipLines(Lnet/minecraft/world/item/Item$TooltipContext;Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/item/TooltipFlag;)Ljava/util/List;	owner: W5
 net/minecraft/world/item/ItemStack#overrideOtherStackedOnMe(Lnet/minecraft/world/item/ItemStack;Lnet/minecraft/world/inventory/Slot;Lnet/minecraft/world/inventory/ClickAction;Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/entity/SlotAccess;)Z	spec: w12-coverage SPEC-17
-net/minecraft/world/item/ItemStack#use(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/InteractionHand;)Lnet/minecraft/world/InteractionResult;	spec: w12-coverage SPEC-13
 net/minecraft/world/item/component/ItemContainerContents#addToTooltip(Lnet/minecraft/world/item/Item$TooltipContext;Ljava/util/function/Consumer;Lnet/minecraft/world/item/TooltipFlag;Lnet/minecraft/core/component/DataComponentGetter;)V	owner: W5
 net/minecraft/world/item/enchantment/EnchantmentHelper#getItemEnchantmentLevel(Lnet/minecraft/core/Holder;Lnet/minecraft/world/item/ItemInstance;)I	spec: w12-coverage SPEC-14
 net/minecraft/world/item/enchantment/ItemEnchantments#addToTooltip(Lnet/minecraft/world/item/Item$TooltipContext;Ljava/util/function/Consumer;Lnet/minecraft/world/item/TooltipFlag;Lnet/minecraft/core/component/DataComponentGetter;)V	owner: W5
@@ -136,8 +131,6 @@ net/minecraft/world/level/block/entity/BrushableBlockEntity#tryLoadLootTable(Lne
 net/minecraft/world/level/block/entity/HopperBlockEntity#getBlockContainer(Lnet/minecraft/world/level/Level;Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;)Lnet/minecraft/world/Container;	spec: w12-coverage SPEC-17
 net/minecraft/world/level/block/entity/HopperBlockEntity#getContainerOrHandlerAt(Lnet/minecraft/world/level/Level;Lnet/minecraft/core/BlockPos;Lnet/minecraft/core/Direction;)Lnet/neoforged/neoforge/transfer/item/ContainerOrHandler;	spec: w12-coverage SPEC-17
 net/minecraft/world/level/block/entity/HopperBlockEntity#getEntityContainer(Lnet/minecraft/world/level/Level;DDD)Lnet/minecraft/world/Container;	spec: w12-coverage SPEC-17
-net/minecraft/world/level/block/state/BlockBehaviour$BlockStateBase#getDestroyProgress(Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/level/BlockGetter;Lnet/minecraft/core/BlockPos;)F	spec: w12-coverage SPEC-13
-net/minecraft/world/level/block/state/BlockBehaviour$BlockStateBase#useWithoutItem(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/entity/player/Player;Lnet/minecraft/world/phys/BlockHitResult;)Lnet/minecraft/world/InteractionResult;	spec: w12-coverage SPEC-13
 net/minecraft/world/level/levelgen/Beardifier#forStructuresInChunk(Lnet/minecraft/world/level/StructureManager;Lnet/minecraft/world/level/ChunkPos;)Lnet/minecraft/world/level/levelgen/Beardifier;	owner: W10
 net/minecraft/world/level/levelgen/NoiseBasedChunkGenerator#buildTerrain(Lnet/minecraft/world/level/chunk/ChunkAccess;Lnet/minecraft/world/level/levelgen/blending/Blender;Lnet/minecraft/world/level/levelgen/RandomState;Lnet/minecraft/world/level/StructureManager;Lnet/minecraft/world/level/biome/BiomeManager;Lnet/minecraft/server/level/WorldGenRegion;Ljava/util/Set;)Ljava/util/concurrent/CompletableFuture;	owner: W10
 net/minecraft/world/level/levelgen/NoiseBasedChunkGenerator#spawnOriginalMobs(Lnet/minecraft/server/level/WorldGenRegion;)V	owner: W10

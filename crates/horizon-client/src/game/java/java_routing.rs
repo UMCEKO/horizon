@@ -13,6 +13,12 @@ pub(in crate::game) enum Recv {
     Scoreboard,
     /// The block entity at this position of the current level.
     BlockEntity(horizon_core::position::BlockPos),
+    /// The Java state of this block, for a method of `BlockStateBase`.
+    Block(horizon_world::registry::BlockStateId),
+    /// The acting player's stack in this hand (`InteractionHand` ordinal), for a method of `ItemStack`.
+    Stack(i32),
+    /// The `BlockTransformer` of the acting player's stack in this hand.
+    Transformer(i32),
 }
 
 #[cfg(feature = "java-mods")]
@@ -94,6 +100,61 @@ pub(in crate::game) struct InputArg<'a>(pub &'a horizon_core::nbt::Tag);
 #[allow(dead_code)] // gated routes construct it
 pub(in crate::game) struct OutputArg;
 
+/// A routed `InteractionHand`: its ordinal.
+pub(in crate::game) struct HandArg(pub i32);
+
+/// A routed `LivingEntity` that is the acting player: -1, then the player's fill.
+pub(in crate::game) struct ActingLivingArg(pub PlayerArg);
+
+/// A routed `BlockHitResult`: the hit's x y z, its face's `3DDataValue`, 1 if inside, then the block's x y z (`Flat.toBlockHitResult`).
+pub(in crate::game) struct HitArg(pub [f64; 8]);
+
+impl HitArg {
+    pub(in crate::game) fn of(hit: &crate::game::Hit) -> Self {
+        let face = match hit.face {
+            [0, -1, 0] => 0.0,
+            [0, 1, 0] => 1.0,
+            [0, 0, -1] => 2.0,
+            [0, 0, 1] => 3.0,
+            [-1, 0, 0] => 4.0,
+            _ => 5.0,
+        };
+        let [x, y, z] = hit.point;
+        let [bx, by, bz] = hit.pos.map(f64::from);
+        HitArg([x, y, z, face, f64::from(u8::from(hit.inside)), bx, by, bz])
+    }
+}
+
+impl HitArg {
+    /// The hit the eight numbers of `HitArg` describe.
+    pub(in crate::game) fn read(values: &[f64]) -> Option<crate::game::Hit> {
+        let [x, y, z, face, inside, bx, by, bz] = *values else {
+            return None;
+        };
+        let face = match face as i32 {
+            0 => [0, -1, 0],
+            1 => [0, 1, 0],
+            2 => [0, 0, -1],
+            3 => [0, 0, 1],
+            4 => [-1, 0, 0],
+            _ => [1, 0, 0],
+        };
+        Some(crate::game::Hit {
+            pos: [bx as i32, by as i32, bz as i32],
+            face,
+            point: [x, y, z],
+            inside: inside != 0.0,
+        })
+    }
+}
+
+/// A routed `UseOnContext`: the acting player, the hand, then the hit.
+pub(in crate::game) struct UseOnArg {
+    pub player: PlayerArg,
+    pub hand: i32,
+    pub hit: HitArg,
+}
+
 /// `InteractionResult` as a routed use method answers it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)] // the use paths read it as their specs gate them
@@ -158,6 +219,7 @@ mod gate {
     use crate::game::Game;
     use horizon_core::nbt::Tag;
     use horizon_core::position::BlockPos;
+    use horizon_java_host::bridge::STATES;
     use horizon_java_host::routes::{self, Admitted, Route, RouteId, Routes};
     use horizon_world::registry::BlockStateId;
     use horizon_java_host::wire::{In, Out};
@@ -362,6 +424,31 @@ mod gate {
             out.bytes(&tag.expect("a compound tag encodes as NBT"));
         }
     }
+    impl RouteArg for super::ActingLivingArg {
+        fn put(&self, out: &mut Out) {
+            out.int(-1);
+            self.0.put(out);
+        }
+    }
+    impl RouteArg for super::HandArg {
+        fn put(&self, out: &mut Out) {
+            out.int(self.0);
+        }
+    }
+    impl RouteArg for super::HitArg {
+        fn put(&self, out: &mut Out) {
+            for v in self.0 {
+                out.double(v);
+            }
+        }
+    }
+    impl RouteArg for super::UseOnArg {
+        fn put(&self, out: &mut Out) {
+            self.player.put(out);
+            out.int(self.hand);
+            self.hit.put(out);
+        }
+    }
     impl RouteArg for super::OutputArg {
         fn put(&self, _out: &mut Out) {}
     }
@@ -507,6 +594,23 @@ mod gate {
                     out.text(self.dim.id());
                     out.long(self.world.game_time);
                     out.long(pos.pack());
+                }
+                Recv::Block(state) => {
+                    let java = STATES
+                        .get()
+                        .and_then(|m| m.to_java.get(state.0 as usize).copied())
+                        .filter(|id| *id != horizon_java_host::bridge::UNMAPPED)
+                        .unwrap_or_else(|| panic!("Horizon: route {key}: block state {} has no Java state", state.0));
+                    out.0.push(6);
+                    out.int(java);
+                }
+                Recv::Stack(hand) => {
+                    out.0.push(7);
+                    out.int(hand);
+                }
+                Recv::Transformer(hand) => {
+                    out.0.push(8);
+                    out.int(hand);
                 }
             }
             args(&mut out);

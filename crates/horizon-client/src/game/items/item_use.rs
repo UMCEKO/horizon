@@ -192,6 +192,15 @@ impl Game<'_> {
     /// drunk, a spyglass lowered, anything else given back) with its use
     /// cooldown, then `LivingEntityUseItemEvent.Finish`.
     pub(super) fn complete_using_item(&mut self, slot: usize, stack: &ItemStack, info: &ItemInfo) {
+        self.java_hook_finish_using(slot, stack, info);
+    }
+    /// `ItemStack.finishUsingItem`'s native body, the part of `completeUsingItem` Horizon ports.
+    pub(super) fn complete_using_item_native(
+        &mut self,
+        slot: usize,
+        stack: &ItemStack,
+        info: &ItemInfo,
+    ) {
         // a potion is drunk (no last tick of its own: a mod's tick ran it out).
         if self.finish_drinking(slot, stack) {
             self.use_item_finished(stack);
