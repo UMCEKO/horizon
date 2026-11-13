@@ -3,7 +3,7 @@
 //! The anvil's and grindstone's events (`AnvilUpdateEvent`, `AnvilCraftEvent.Pre/Post`, `GrindstoneEvent.OnPlaceItem/OnTakeItem`), posted on the acting player's view.
 
 use super::Game;
-use super::java_listener::{Family, listens, with_game};
+use super::java_listener::{Family, Subscriptions, crossed, listens, with_game};
 use super::java_mods::{read_tag, write_tag};
 use crate::game::api_values::{TryIntoApi, TryIntoEngine};
 use horizon_core::position::BlockPos;
@@ -11,9 +11,8 @@ use horizon_java_host::wire::{In, Out};
 use mod_api::item::item_stack::ItemStack;
 use mod_api::{
     AnvilCraftPostEvent, AnvilCraftPreEvent, AnvilUpdateEvent, Flow, GrindstonePlaceEvent,
-    GrindstoneTakeEvent, HookId, HostSide, ServerHost,
+    GrindstoneTakeEvent, HookId, HostSide, Listener, ServerHost,
 };
-use std::sync::OnceLock;
 
 const HOOKS: &[HookId] = &[
     HookId::AnvilUpdate,
@@ -22,7 +21,7 @@ const HOOKS: &[HookId] = &[
     HookId::GrindstonePlace,
     HookId::GrindstoneTake,
 ];
-static SUBSCRIBED: OnceLock<Vec<Option<HookId>>> = OnceLock::new();
+static SUBSCRIBED: Subscriptions = Subscriptions::new();
 
 pub(super) fn family() -> Family {
     Family {
@@ -123,6 +122,7 @@ fn post(
     if !listens(hook) {
         return None;
     }
+    crossed(hook);
     with_game(host, |game| {
         let fields = build(game)?;
         let guest = game
@@ -133,9 +133,9 @@ fn post(
             .filter(|_| game.lan_acting_uuid != Some(player));
         match guest {
             Some(conn) => game
-                .as_guest(conn, |game| game.java_post_player_event(event, fields.0))
+                .as_guest(conn, |game| game.java_post_player_event(event, false, fields.0))
                 .flatten(),
-            None => game.java_post_player_event(event, fields.0),
+            None => game.java_post_player_event(event, false, fields.0),
         }
     })
     .flatten()
@@ -155,7 +155,11 @@ fn flow(cancelled: bool) -> Flow {
 
 impl mod_api::Hooks for Stations {
     fn subscribed(&self) -> &'static [Option<HookId>] {
-        super::java_listener::subscribed(HOOKS, &SUBSCRIBED)
+        super::java_listener::subscribed(HOOKS, &SUBSCRIBED, false)
+    }
+
+    fn listeners(&self) -> &'static [Listener] {
+        super::java_listener::listeners(HOOKS, &SUBSCRIBED, false)
     }
 
     fn anvil_update(&self, host: HostSide<'_>, event: &mut AnvilUpdateEvent<'_>) -> Flow {
