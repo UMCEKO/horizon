@@ -10,6 +10,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.lang.reflect.Field;
+import java.util.HashSet;
+import java.util.Set;
+import net.minecraft.advancements.AdvancementHolder;
+import net.minecraft.advancements.AdvancementProgress;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
@@ -17,6 +22,16 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.BonemealSource;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.gamerules.GameRule;
+import net.minecraft.world.level.gamerules.GameRuleMap;
+import net.minecraft.world.level.gamerules.GameRules;
+import net.minecraft.world.level.storage.LevelData;
 import net.neoforged.bus.ListenerList;
 import net.neoforged.bus.api.Event;
 import net.neoforged.bus.api.IEventBus;
@@ -24,6 +39,7 @@ import net.neoforged.neoforge.common.CommonHooks;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.EventHooks;
 import net.neoforged.neoforge.event.level.BlockEvent;
+import net.neoforged.neoforge.event.entity.player.AdvancementEvent.AdvancementProgressEvent.ProgressType;
 
 /** NeoForge events Rust posts where its hook fires (`game/java/java_listener.rs`): which ones a mod listens to, and the post ops. */
 public final class EventPosts {
@@ -50,10 +66,13 @@ public final class EventPosts {
     }
 
     /** The server events Rust posts through `post_event`, each with the acting player's view filled. */
-    private static final Map<String, PlayerPost> PLAYER = Map.of("BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity, "BlockEvent.FarmlandTrampleEvent", EventPosts::playerTrample, "BonemealEvent", EventPosts::playerBonemeal);
+    private static final Map<String, PlayerPost> PLAYER = Map.of(
+        "BreakBlockEvent", EventPosts::breakBlock, "AttackEntityEvent", EventPosts::attackEntity, "BlockEvent.FarmlandTrampleEvent", EventPosts::playerTrample, "BonemealEvent", EventPosts::playerBonemeal,
+        "PlayerSetSpawnEvent", EventPosts::setSpawn, "PlayerWakeUpEvent", EventPosts::wakeUp, "AdvancementEvent.AdvancementEarnEvent", EventPosts::advancementEarn,
+        "AdvancementEvent.AdvancementProgressEvent", EventPosts::advancementProgress);
 
     /** The server events Rust posts through `post_level_event`. */
-    private static final Map<String, LevelPost> LEVEL = Map.of("BlockEvent.FarmlandTrampleEvent", EventPosts::mobTrample, "BonemealEvent", EventPosts::levelBonemeal, "PistonEvent.Pre", EventPosts::pistonPre, "PistonEvent.Post", EventPosts::pistonPost);
+    private static final Map<String, LevelPost> LEVEL = Map.of("BlockEvent.FarmlandTrampleEvent", EventPosts::mobTrample, "BonemealEvent", EventPosts::levelBonemeal, "PistonEvent.Pre", EventPosts::pistonPre, "PistonEvent.Post", EventPosts::pistonPost, "GameRuleChangedEvent", EventPosts::gameRuleChanged);
 
     /** The client events Rust posts through `client_post_event`. */
     private static final Map<String, ClientPost> CLIENT = Map.of("PlaySoundEvent", NativeSounds::ask, "ClientChatReceivedEvent", ChatReceived::ask);
@@ -268,6 +287,104 @@ public final class EventPosts {
         boolean extend = in.readBoolean();
         EventHooks.onPistonMovePost(level, pos, direction, extend);
         if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: server event PistonEvent.Post " + pos + " " + direction + " extend=" + extend);
+        return Posted.NONE;
+    }
+
+    private static void debug(String line) {
+        if (System.getenv("HORIZON_JAVA_DEBUG") != null) System.err.println("Horizon: server event " + line);
+    }
+
+    /** `bool present`, then if present `text dimension`, `long pos`, `float yaw`, `float pitch`, `bool forced`; canceled when a listener vetoes the point. */
+    private static Posted setSpawn(GameBridge.Call call) {
+        var in = call.in();
+        ServerPlayer.RespawnConfig config = null;
+        if (in.readBoolean()) {
+            var dimension = ResourceKey.create(Registries.DIMENSION, Identifier.parse(in.text()));
+            var pos = BlockPos.of(in.readLong());
+            float yaw = in.readFloat();
+            float pitch = in.readFloat();
+            config = new ServerPlayer.RespawnConfig(LevelData.RespawnData.of(dimension, pos, yaw, pitch), in.readBoolean());
+        }
+        boolean canceled = EventHooks.onPlayerSpawnSet(call.player(), config);
+        debug("PlayerSetSpawnEvent present=" + (config != null) + " canceled=" + canceled);
+        return new Posted(canceled, Posted.NONE.result());
+    }
+
+    private static Posted wakeUp(GameBridge.Call call) {
+        boolean immediately = call.in().readBoolean();
+        boolean updateLevel = call.in().readBoolean();
+        EventHooks.onPlayerWakeup(call.player(), immediately, updateLevel);
+        debug("PlayerWakeUpEvent " + immediately + " " + updateLevel);
+        return Posted.NONE;
+    }
+
+    private static final Set<String> UNKNOWN_ADVANCEMENTS = new HashSet<>();
+
+    /** The data packs' own holder for `id`; an id they don't know (a Horizon-only advancement) is logged once and skipped. */
+    private static AdvancementHolder holder(String id) {
+        var holder = GameBridge.server().getAdvancements().get(Identifier.parse(id));
+        if (holder == null && UNKNOWN_ADVANCEMENTS.add(id)) System.err.println("Horizon: advancement " + id + " is not in Java's manager; its events are not posted");
+        return holder;
+    }
+
+    private static Posted advancementEarn(GameBridge.Call call) {
+        var holder = holder(call.in().text());
+        if (holder == null) return Posted.NONE;
+        EventHooks.onAdvancementEarnedEvent(call.player(), holder);
+        debug("AdvancementEvent.AdvancementEarnEvent " + holder.id());
+        return Posted.NONE;
+    }
+
+    /** `text id`, `text criterion`, `byte type` (0 grant, 1 revoke), `int n` x `text` done criteria: native's progress after the change. */
+    private static Posted advancementProgress(GameBridge.Call call) {
+        var in = call.in();
+        var holder = holder(in.text());
+        String criterion = in.text();
+        var type = in.readByte() == 0 ? ProgressType.GRANT : ProgressType.REVOKE;
+        var done = new java.util.ArrayList<String>();
+        for (int i = in.readInt(); i > 0; i--) done.add(in.text());
+        if (holder == null) return Posted.NONE;
+        var progress = new AdvancementProgress();
+        progress.update(holder.value().requirements());
+        done.forEach(progress::grantProgress);
+        EventHooks.onAdvancementProgressedEvent(call.player(), holder, progress, criterion, type);
+        debug("AdvancementEvent.AdvancementProgressEvent " + holder.id() + " " + criterion + " " + type);
+        return Posted.NONE;
+    }
+
+    private static volatile Field ruleValues;
+
+    /** Writes `value` into `rules` without the change callback `GameRules.set` runs. */
+    private static <T> void store(GameRules rules, GameRule<T> rule, T value) throws ReflectiveOperationException {
+        Field field = ruleValues;
+        if (field == null) {
+            for (var candidate : GameRules.class.getDeclaredFields()) if (candidate.getType() == GameRuleMap.class) field = candidate;
+            if (field == null) throw new NoSuchFieldException("GameRules holds no GameRuleMap");
+            field.setAccessible(true);
+            ruleValues = field;
+        }
+        ((GameRuleMap) field.get(rules)).set(rule, value);
+    }
+
+    private static <T> void ruleChanged(MinecraftServer server, GameRule<T> rule, String text) throws ReflectiveOperationException {
+        T value = rule.deserialize(text).getOrThrow(IllegalStateException::new);
+        var global = server.getGlobalGameRules();
+        store(global, rule, value);
+        if (server.getGameRules() != global) store(server.getGameRules(), rule, value);
+        EventHooks.onGameRuleChanged(server, rule, value);
+        debug("GameRuleChangedEvent " + rule.id() + "=" + text);
+    }
+
+    /** `text rule id`, `text value`: the new value is stored in Java's rules first, so `event.getGameRules()` answers it. */
+    private static Posted gameRuleChanged(ServerLevel level, Crossing.In in) throws Exception {
+        String id = in.text();
+        String value = in.text();
+        var rule = BuiltInRegistries.GAME_RULE.getValue(Identifier.parse(id));
+        if (rule == null) {
+            System.err.println("Horizon: game rule " + id + " is not in Java's registry; its change is not posted");
+            return Posted.NONE;
+        }
+        ruleChanged(level.getServer(), rule, value);
         return Posted.NONE;
     }
 
