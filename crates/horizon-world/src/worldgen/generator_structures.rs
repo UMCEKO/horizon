@@ -3,6 +3,7 @@ use super::{
     biome::BiomeId,
     block_feature::FeatureBlockBindings,
     generator::{ChunkWork, GeneratorData, GeneratorError, shard_of},
+    routes::Seam,
     structure::{
         StructureResources,
         jigsaw::PoolPiece,
@@ -266,13 +267,19 @@ impl StructureState {
         let (Some(resources), Some(raw)) = (&data.structures, &data.structure_resources) else {
             return Ok(None);
         };
-        let registry = StructureRegistry::new(
+        let mut registry = StructureRegistry::new(
             &raw.structures,
             &raw.sets,
             raw.pools.clone(),
             &|value| biome_set(data, value),
             super::structure::mod_types::mod_structure_types(),
         )?;
+        // Java starts a routed structure: native keeps its set membership and placement only.
+        for def in &mut registry.structures {
+            if data.routes.routes(&Seam::Start(def.name.clone())) {
+                def.kind = super::structure::start::StructureKind::Unsupported(def.name.clone());
+            }
+        }
         let possible_sets = registry
             .sets
             .iter()
@@ -313,6 +320,16 @@ impl StructureState {
             ring_seed: None,
             fixed_biome: false,
         }))
+    }
+    /// The structures of the sets this level may start.
+    pub(super) fn possible_structures(&self) -> impl Iterator<Item = &str> {
+        let registry = &self.registry;
+        self.possible_sets.iter().flat_map(move |&set| {
+            registry.sets[set]
+                .structures
+                .iter()
+                .map(move |(structure, _)| registry.structures[*structure].name.as_str())
+        })
     }
     /// `FlatLevelGeneratorSettings.structureOverrides`: only the structure sets named
     /// (`minecraft:villages`) may generate.
