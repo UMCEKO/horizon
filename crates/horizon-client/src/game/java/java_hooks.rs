@@ -71,6 +71,28 @@ impl Game<'_> {
         false
     }
 
+    /// Whether Java answers this guest's completion request (`id`, `text` as sent); false leaves it to native.
+    pub(in crate::game) fn java_hook_suggestions(
+        &mut self,
+        conn: u32,
+        id: i32,
+        text: &str,
+    ) -> bool {
+        #[cfg(feature = "java-mods")]
+        return self.java_suggestions(conn, id, text);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (conn, id, text);
+            false
+        }
+    }
+
+    /// Sends the completions Java finished after their request's reply.
+    pub(in crate::game) fn java_hook_suggestions_ready(&mut self) {
+        #[cfg(feature = "java-mods")]
+        self.java_suggestions_ready();
+    }
+
     /// The slot bits of the toasts mods added to the Java client, shown in the window's column.
     pub(super) fn java_hook_toast_slots(&self) -> u32 {
         #[cfg(feature = "java-mods")]
@@ -129,9 +151,12 @@ impl Game<'_> {
     /// The roll the mods' camera angle listeners left, as the pose turns the view about its forward axis; the front view turns it the other way.
     pub(super) fn java_hook_view_roll(&self, mirrored: bool) -> f32 {
         #[cfg(feature = "java-mods")]
-        return super::java_view::angles().map_or(0.0, |[_, _, roll]| {
-            if mirrored { -roll } else { roll }
-        });
+        return super::java_view::angles().map_or(
+            0.0,
+            |[_, _, roll]| {
+                if mirrored { -roll } else { roll }
+            },
+        );
         #[cfg(not(feature = "java-mods"))]
         {
             let _ = mirrored;
@@ -370,7 +395,10 @@ impl Game<'_> {
     }
 
     /// Mods' writes to the local player in the park's record, applied before the step; where vanilla took `xo/yo/zo`, when the record marked it.
-    pub(super) fn java_hook_motion_writes(&mut self, record: Option<&[u8]>) -> Option<horizon_core::geometry::Vec3> {
+    pub(super) fn java_hook_motion_writes(
+        &mut self,
+        record: Option<&[u8]>,
+    ) -> Option<horizon_core::geometry::Vec3> {
         #[cfg(feature = "java-mods")]
         return self.java_lockstep_motion_writes(record?);
         #[cfg(not(feature = "java-mods"))]
@@ -447,7 +475,10 @@ impl Game<'_> {
     }
 
     /// The tool of a loot roll with the enchantment levels Java gives it; None leaves the tool as it is.
-    pub(super) fn java_hook_tool_for_loot(&mut self, tool: Option<&ItemStack>) -> Option<ItemStack> {
+    pub(super) fn java_hook_tool_for_loot(
+        &mut self,
+        tool: Option<&ItemStack>,
+    ) -> Option<ItemStack> {
         #[cfg(feature = "java-mods")]
         return self.java_tool_for_loot(tool?);
         #[cfg(not(feature = "java-mods"))]

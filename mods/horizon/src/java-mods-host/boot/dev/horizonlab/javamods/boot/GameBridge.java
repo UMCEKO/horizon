@@ -132,6 +132,8 @@ public final class GameBridge {
         Crossing.game("commands_for", ModCommands::commandsFor);
         Crossing.game("command", ModCommands::command);
         Crossing.game("console_command", ModCommands::console);
+        Crossing.game("command_suggest", ModCommands::suggest);
+        Crossing.game("command_suggestions_take", ModCommands::take);
         Crossing.game("refresh", GameBridge::refresh);
         Crossing.game("clear_use", GameBridge::clearUse);
         Crossing.game("block_events", GameBridge::blockEvents);

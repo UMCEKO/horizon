@@ -260,11 +260,17 @@ impl Game<'_> {
     }
 
     pub(super) fn guest_suggestions(&mut self, conn: u32, payload: &[u8]) {
-        let Some(host) = self.lan.as_ref() else {
+        if self.lan.is_none() {
             return;
-        };
+        }
         let mut r = horizon_protocol::buf::Reader::new(payload);
         let (Ok(id), Ok(text)) = (r.varint(), r.string(32500)) else {
+            return;
+        };
+        if self.java_hook_suggestions(conn, id, &text) {
+            return;
+        }
+        let Some(host) = self.lan.as_ref() else {
             return;
         };
         let Some(permission) = host.hub.guest(conn).map(|g| g.permission) else {
@@ -338,27 +344,84 @@ impl Game<'_> {
         // ServerCommandSuggestionsProvider.limitSuggestionCount.
         suggestions.truncate(1000);
         let utf16 = |byte: usize| command[..byte.min(command.len())].encode_utf16().count() as i32;
-        let mut w = horizon_protocol::buf::Writer::new();
-        w.varint(id);
-        w.varint(utf16(start) + skip as i32);
-        w.varint(utf16(end) - utf16(start));
-        w.varint(suggestions.len() as i32);
-        for s in &suggestions {
-            w.string(&s.text);
-            w.bool(s.tooltip.is_some());
-            if let Some(tip) = &s.tooltip {
-                w.nbt(&literal(tip));
-            }
-        }
+        let list: Vec<(String, Option<horizon_core::nbt::Tag>)> = suggestions
+            .iter()
+            .map(|s| (s.text.clone(), s.tooltip.as_deref().map(literal)))
+            .collect();
         let Some(host) = self.lan.as_ref() else {
             return;
         };
-        host.hub.send_to(
+        send_suggestions(
+            host,
             conn,
-            &C::Unknown(
-                horizon_protocol::ids::play::clientbound::COMMAND_SUGGESTIONS,
-                w.data,
-            ),
+            id,
+            utf16(start) + skip as i32,
+            utf16(end) - utf16(start),
+            &list,
         );
+    }
+}
+
+/// ClientboundCommandSuggestionsPacket: the id, the replaced range and each completion with its tooltip.
+fn suggestions_payload(
+    id: i32,
+    start: i32,
+    length: i32,
+    list: &[(String, Option<horizon_core::nbt::Tag>)],
+) -> Vec<u8> {
+    let mut w = horizon_protocol::buf::Writer::new();
+    w.varint(id);
+    w.varint(start);
+    w.varint(length);
+    w.varint(list.len() as i32);
+    for (text, tooltip) in list {
+        w.string(text);
+        w.bool(tooltip.is_some());
+        if let Some(tip) = tooltip {
+            w.nbt(tip);
+        }
+    }
+    w.data
+}
+
+pub(in crate::game) fn send_suggestions(
+    host: &LanHost,
+    conn: u32,
+    id: i32,
+    start: i32,
+    length: i32,
+    list: &[(String, Option<horizon_core::nbt::Tag>)],
+) {
+    host.hub.send_to(
+        conn,
+        &C::Unknown(
+            horizon_protocol::ids::play::clientbound::COMMAND_SUGGESTIONS,
+            suggestions_payload(id, start, length, list),
+        ),
+    );
+}
+
+#[cfg(test)]
+mod suggestion_packet_tests {
+    use super::*;
+
+    #[test]
+    fn the_packet_is_vanillas_layout() {
+        let list = vec![
+            ("give".to_owned(), None),
+            ("gamma".to_owned(), Some(literal("g"))),
+        ];
+        let expected = [
+            &[7, 1, 3, 2][..],
+            &[4],
+            b"give",
+            &[0],
+            &[5],
+            b"gamma",
+            &[1, 8, 0, 1],
+            b"g",
+        ]
+        .concat();
+        assert_eq!(suggestions_payload(7, 1, 3, &list), expected);
     }
 }

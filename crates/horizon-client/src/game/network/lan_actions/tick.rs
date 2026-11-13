@@ -52,6 +52,7 @@ impl Game<'_> {
         if host.play.values().any(|p| p.hook.is_some()) {
             self.refresh_hook_targets();
         }
+        self.java_hook_suggestions_ready();
         for conn in conns {
             let Some(host) = self.lan.as_mut() else {
                 return;

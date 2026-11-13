@@ -18,6 +18,17 @@ import net.minecraft.commands.synchronization.SuggestionProviders;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.permissions.PermissionSet;
 import net.neoforged.neoforge.server.command.CommandHelper;
+import com.mojang.brigadier.StringReader;
+import com.mojang.brigadier.suggestion.Suggestion;
+import com.mojang.brigadier.suggestion.Suggestions;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import net.minecraft.nbt.NbtIo;
+import net.minecraft.nbt.NbtOps;
+import net.minecraft.network.chat.ComponentSerialization;
+import net.minecraft.network.chat.ComponentUtils;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -240,5 +251,108 @@ final class ModCommands {
             t.printStackTrace();
             return 0;
         }
+    }
+
+    private static final int MAX_SUGGESTIONS = 1000;
+
+    private record Ready(long high, long low, int id, byte[] suggestions) {}
+
+    /** Answers that finished after their request's reply, drained only by `take`. */
+    private static final ConcurrentLinkedQueue<Ready> READY = new ConcurrentLinkedQueue<>();
+
+    /** Whether the completions at the end of this parse come from a node whose code is Java's. */
+    static boolean javaSuggests(ParseResults<?> parse, int cursor, Predicate<String> vanilla) {
+        for (CommandNode<?> child : parse.getContext().findSuggestionContext(cursor).parent.getChildren()) {
+            if (javaNode(child, vanilla)) return true;
+        }
+        return false;
+    }
+
+    /** `ServerCommandSuggestionsProvider.limitSuggestionCount`, then the wire form: `int start`, `int length`, `int n`, each `text`, `bool hasTooltip`, the tooltip's component as `int length` + network NBT. */
+    private static byte[] encode(Suggestions suggestions) throws IOException {
+        var list = suggestions.getList();
+        if (list.size() > MAX_SUGGESTIONS) list = list.subList(0, MAX_SUGGESTIONS);
+        var bytes = new ByteArrayOutputStream();
+        var out = new DataOutputStream(bytes);
+        out.writeInt(suggestions.getRange().getStart());
+        out.writeInt(suggestions.getRange().getLength());
+        out.writeInt(list.size());
+        for (Suggestion suggestion : list) {
+            GameBridge.writeText(out, suggestion.getText());
+            var tooltip = suggestion.getTooltip();
+            out.writeBoolean(tooltip != null);
+            if (tooltip == null) continue;
+            var tag = ComponentSerialization.CODEC.encodeStart(GameBridge.registries().createSerializationContext(NbtOps.INSTANCE), ComponentUtils.fromMessage(tooltip)).getOrThrow();
+            var tagBytes = new ByteArrayOutputStream();
+            NbtIo.writeAnyTag(tag, new DataOutputStream(tagBytes));
+            out.writeInt(tagBytes.size());
+            tagBytes.writeTo(out);
+        }
+        return bytes.toByteArray();
+    }
+
+    /** `command_suggest`: the use request's header, `int id`, `text command`; replies `byte state` (0 native answers, 1 here, 2 later), then for 1 the suggestions, then effects. */
+    static void suggest(Crossing.In in, Crossing.Out out) throws Exception {
+        var call = GameBridge.fill(in, true);
+        int id = in.readInt();
+        String command = in.text();
+        byte[] now = null;
+        boolean later = false;
+        try {
+            var reader = new StringReader(command);
+            if (reader.canRead() && reader.peek() == '/') reader.skip();
+            int end = command.indexOf(' ', reader.getCursor());
+            var dispatcher = GameBridge.server().getCommands().getDispatcher();
+            var root = dispatcher.getRoot().getChild(command.substring(reader.getCursor(), end < 0 ? command.length() : end));
+            byte kind = root == null ? NATIVE : kind(root, ModCommands::vanilla);
+            if (kind != NATIVE) {
+                var parse = dispatcher.parse(reader, call.player().createCommandSourceStack());
+                if (kind == JAVA || javaSuggests(parse, command.length(), ModCommands::vanilla)) {
+                    var future = dispatcher.getCompletionSuggestions(parse);
+                    if (future.isDone()) {
+                        now = encode(future.join());
+                    } else {
+                        var uuid = call.player().getUUID();
+                        future.whenComplete((suggestions, failure) -> {
+                            try {
+                                if (failure != null) throw new IllegalStateException(failure);
+                                READY.add(new Ready(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits(), id, encode(suggestions)));
+                            } catch (Exception e) {
+                                System.err.println("Horizon: Failed to resolve command suggestions for " + uuid);
+                                e.printStackTrace();
+                                READY.add(new Ready(uuid.getMostSignificantBits(), uuid.getLeastSignificantBits(), id, EMPTY));
+                            }
+                        });
+                        later = true;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Horizon: Failed to resolve command suggestions for " + call.player().getGameProfile().name());
+            e.printStackTrace();
+            now = null;
+            later = false;
+        }
+        out.writeByte(now != null ? 1 : later ? 2 : 0);
+        if (now != null) out.write(now);
+        GameBridge.writeEffects(out);
+    }
+
+    private static final byte[] EMPTY = new byte[12];
+
+    /** `command_suggestions_take`: the answers finished since; `int n` x (`long uuidHigh`, `long uuidLow`, `int id`, suggestions). */
+    static byte[] take(byte[] input) throws IOException {
+        var bytes = new ByteArrayOutputStream();
+        var out = new DataOutputStream(bytes);
+        var ready = new ArrayList<Ready>();
+        for (Ready r; (r = READY.poll()) != null; ) ready.add(r);
+        out.writeInt(ready.size());
+        for (Ready r : ready) {
+            out.writeLong(r.high);
+            out.writeLong(r.low);
+            out.writeInt(r.id);
+            out.write(r.suggestions);
+        }
+        return bytes.toByteArray();
     }
 }

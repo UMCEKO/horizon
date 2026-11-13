@@ -41,3 +41,5 @@ use winit::keyboard::KeyCode;
 
 include!(concat!(env!("OUT_DIR"), "/lan_action_modules.rs"));
 include!("shared.rs");
+#[cfg(feature = "java-mods")]
+pub(in crate::game) use commands::send_suggestions;
