@@ -750,6 +750,26 @@ impl Game<'_> {
         let _ = (gi, conn);
     }
 
+    /// Native opened a menu for the acting guest `conn`: its Java view gets the real vanilla menu while a menu route is on.
+    pub(super) fn java_hook_menu_opened(
+        &mut self,
+        conn: u32,
+        window: i32,
+        menu: &str,
+        pos: Option<[i32; 3]>,
+    ) {
+        #[cfg(feature = "java-mods")]
+        self.java_menu_open(conn, window, menu, pos);
+        let _ = (conn, window, menu, pos);
+    }
+
+    /// Native closed the acting guest's menu `window`.
+    pub(super) fn java_hook_menu_closed(&mut self, window: i32) {
+        #[cfg(feature = "java-mods")]
+        self.java_menu_close(window);
+        let _ = window;
+    }
+
     /// A guest left the server: its Java player logs out.
     pub(super) fn java_hook_player_left(&mut self, uuid: u128) {
         #[cfg(feature = "java-mods")]

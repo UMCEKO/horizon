@@ -62,6 +62,7 @@ public final class TestMod {
         ExportFeature.register(bus);
         EntityLife.register();
         PlayerView.register();
+        MenuView.register();
         WorldStart.register();
         ChatEvents.register();
         if (net.neoforged.fml.loading.FMLEnvironment.getDist().isClient()) {

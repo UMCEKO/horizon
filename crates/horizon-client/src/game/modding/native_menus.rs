@@ -251,6 +251,7 @@ impl Game<'_> {
         let dimension = self.dim.id();
         self.player_hook(conn, move |g| {
             g.native_player_container_open(uuid, &name, dimension, &menu.menu, menu.pos);
+            g.java_hook_menu_opened(conn, menu.window, &menu.menu, menu.pos);
         });
     }
 
@@ -265,6 +266,7 @@ impl Game<'_> {
         };
         let dimension = self.dim.id();
         self.player_hook(conn, move |g| {
+            g.java_hook_menu_closed(menu.window);
             g.native_player_container_close(uuid, &name, dimension, &menu.menu, menu.pos);
         });
     }
