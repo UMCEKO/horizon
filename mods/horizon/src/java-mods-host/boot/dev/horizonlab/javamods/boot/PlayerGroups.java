@@ -6,8 +6,8 @@ import java.util.UUID;
 
 /** A player request's head and the groups Rust sent (`encode_player_groups`), read without touching a view. */
 final class PlayerGroups {
-    static final int POSE = 1, MODE = 2, SELECTED = 4, XP = 8, VITALS = 16, EFFECTS = 32, MOTION = 64, STACKS = 128, FULL = 1 << 30;
-    private static final int KNOWN = POSE | MODE | SELECTED | XP | VITALS | EFFECTS | MOTION | STACKS | FULL;
+    static final int POSE = 1, MODE = 2, SELECTED = 4, XP = 8, VITALS = 16, EFFECTS = 32, MOTION = 64, STACKS = 128, MENU = 256, FULL = 1 << 30;
+    private static final int KNOWN = POSE | MODE | SELECTED | XP | VITALS | EFFECTS | MOTION | STACKS | MENU | FULL;
 
     record Effect(String id, int duration, int amplifier, boolean ambient, boolean visible) {}
 
@@ -21,6 +21,10 @@ final class PlayerGroups {
     final List<Effect> effects = new ArrayList<>();
     int[] slots = new int[0];
     byte[][] tags = new byte[0][];
+    int menuId = -1;
+    byte[] menuCarried = new byte[0];
+    int[] menuSlots = new int[0], dataIds = new int[0], dataValues = new int[0];
+    byte[][] menuTags = new byte[0][];
 
     boolean has(int group) {
         return (mask & group) != 0;
@@ -82,6 +86,24 @@ final class PlayerGroups {
             for (int i = 0; i < n; i++) {
                 g.slots[i] = in.readInt();
                 g.tags[i] = in.readNBytes(in.readInt());
+            }
+        }
+        if (g.has(MENU)) {
+            g.menuId = in.readInt();
+            g.menuCarried = in.readNBytes(in.readInt());
+            int n = in.readInt();
+            g.menuSlots = new int[n];
+            g.menuTags = new byte[n][];
+            for (int i = 0; i < n; i++) {
+                g.menuSlots[i] = in.readInt();
+                g.menuTags[i] = in.readNBytes(in.readInt());
+            }
+            int m = in.readInt();
+            g.dataIds = new int[m];
+            g.dataValues = new int[m];
+            for (int i = 0; i < m; i++) {
+                g.dataIds[i] = in.readInt();
+                g.dataValues[i] = in.readInt();
             }
         }
         return g;

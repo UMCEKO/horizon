@@ -173,6 +173,8 @@ public final class GameBridge {
         Crossing.game("destroy_block", (in, out) -> use(in, out, 13));
         Crossing.game("player_tick", (in, out) -> use(in, out, 7));
         Crossing.game("player_left", GameBridge::playerLeft);
+        Crossing.game("menu_open", MenuViews::open);
+        Crossing.game("menu_close", MenuViews::close);
         Crossing.game("remote_join", GameBridge::remoteJoin);
         Crossing.game("remote_in", GameBridge::remoteIn);
         Crossing.game("remote_config", input -> remoteConfig());
@@ -522,6 +524,7 @@ public final class GameBridge {
             inventory.setItem(g.slots[i], stack);
             synced[g.slots[i]] = stack.copy();
         }
+        MenuViews.filled(player, g);
         PlayerSync.acting(player);
         // `PlayerList.placeNewPlayer`: a connected client gets its login once the player is in place.
         if (Clients.joining(player.getUUID())) safely("the client's login", () -> Menus.login(player));
@@ -786,6 +789,7 @@ public final class GameBridge {
         PLAYERS.clear();
         JOINED.clear();
         PlayerSync.forgetAll();
+        MenuViews.reset();
         SOUNDS.clear();
         nextEntityId = -1;
         ServerView.closeWorld(server);
@@ -892,6 +896,7 @@ public final class GameBridge {
         PlayerSync.forget(left);
         if (player != null) {
             safely("closing the open menu", () -> Menus.close(player));
+            MenuViews.forget(left);
             safely("PlayerLoggedOut", () -> EventHooks.firePlayerLoggedOut(player));
             var in = JOINED.remove(left);
             if (in != null) playerLeaves(player, in, Entity.RemovalReason.UNLOADED_WITH_PLAYER);

@@ -84,6 +84,7 @@ use horizon_client::lan::abilities::PlayerAbilities;
 const GROUPS: usize = 7;
 const XP_GROUP: usize = 3;
 const STACKS: u32 = 1 << GROUPS;
+const MENU: u32 = STACKS << 1;
 /// Every group is present and the view takes them as its whole state.
 const FULL: u32 = 1 << 30;
 
@@ -103,6 +104,7 @@ pub(super) struct PlayerSnapshot {
     effects: Vec<Effect>,
     motion: ([f64; 3], bool),
     stacks: Vec<Option<ItemStack>>,
+    menu: Option<super::java_menus::MenuSnapshot>,
 }
 
 impl PlayerSnapshot {
@@ -156,6 +158,7 @@ pub(super) struct Sent {
     primed: bool,
     groups: [Option<Vec<u8>>; GROUPS],
     stacks: Vec<Option<ItemStack>>,
+    pub(super) menu: Option<super::java_menus::SentMenu>,
 }
 
 impl Sent {
@@ -176,6 +179,11 @@ impl Sent {
 thread_local! {
     /// Per acting player's uuid; the server thread owns the views.
     static SENT: std::cell::RefCell<std::collections::HashMap<[i32; 4], Sent>> = Default::default();
+}
+
+/// Runs `f` on what the view of player `uuid` last heard.
+pub(super) fn with_sent<R>(uuid: [i32; 4], f: impl FnOnce(&mut Sent) -> R) -> R {
+    SENT.with_borrow_mut(|sent| f(sent.entry(uuid).or_default()))
 }
 
 /// Forgets what one player's view (or every view) heard, so its next request is full.
@@ -259,6 +267,16 @@ pub(super) fn encode_player_groups(
                 None => out.int(0),
             }
             sent.stacks[slot] = now.stacks[slot].clone();
+        }
+    }
+    if let Some(menu) = &now.menu {
+        let Some(written) = super::java_menus::encode_menu_group(menu, &mut sent.menu, full, out)
+        else {
+            *sent = Sent::default();
+            return None;
+        };
+        if written {
+            mask |= MENU;
         }
     }
     sent.primed = true;
@@ -703,6 +721,7 @@ impl Game<'_> {
             effects,
             motion: ([velocity.x, velocity.y, velocity.z], on_ground),
             stacks,
+            menu: self.java_menu_snapshot(),
         })
     }
 
@@ -733,7 +752,7 @@ impl Game<'_> {
     }
 
     /// A request that fills the acting player's view; a failed one leaves that view unknown, so the next is full.
-    fn java_player_request(&mut self, op: &str, input: &[u8]) -> Option<Vec<u8>> {
+    pub(super) fn java_player_request(&mut self, op: &str, input: &[u8]) -> Option<Vec<u8>> {
         let reply = self.java_request(op, input);
         if reply.is_none() {
             java_player_view_reset(Some(self.acting_uuid()));
@@ -751,13 +770,13 @@ impl Game<'_> {
     }
 
     /// The end of every reply that filled the acting player's view (`GameBridge.writeUseTail`): its experience, changed slots and the call's effects.
-    fn java_apply_use_tail(&mut self, reply: &mut In<'_>) -> Option<()> {
+    pub(super) fn java_apply_use_tail(&mut self, reply: &mut In<'_>) -> Option<()> {
         let level = reply.int()?;
         self.java_apply_changes(level, reply)?;
         self.java_apply_effects(reply)
     }
 
-    /// The acting player's experience and changed slots from a reply, after its `level`; its view holds them already.
+    /// The acting player's experience, changed slots and open menu's block from a reply, after its `level`; its view holds them already.
     pub(super) fn java_apply_changes(&mut self, level: i32, reply: &mut In<'_>) -> Option<()> {
         self.experience = horizon_client::entities::Experience {
             level,
@@ -767,7 +786,8 @@ impl Game<'_> {
         let xp = (level, self.experience.progress, self.experience.total);
         let uuid = self.acting_uuid();
         SENT.with_borrow_mut(|sent| sent.entry(uuid).or_default().applied_xp(xp));
-        self.java_apply_slots(reply)
+        self.java_apply_slots(reply)?;
+        self.java_apply_menu(reply)
     }
 
     /// `int n, n x (int slot, bytes tag)` into the acting player's slots.
@@ -1193,6 +1213,7 @@ impl Game<'_> {
     pub(super) fn java_players_removed(&mut self) {
         if self.remote.is_none() && JAVA_SERVER.with_borrow(|s| s.started) {
             java_player_view_reset(None);
+            super::java_menus::forget_menu_views(None);
             self.java_level_call("players_removed", |_| {});
         }
     }
@@ -1403,6 +1424,7 @@ impl Game<'_> {
     /// The server's start, after `server_about_to_start` and native's levels, and its end, with NeoForge's real hooks.
     pub(super) fn java_world_phase(&mut self, open: bool) {
         java_player_view_reset(None);
+        super::java_menus::forget_menu_views(None);
         if open {
             for dim in Dim::all() {
                 self.java_register_level(dim);
@@ -1456,7 +1478,9 @@ impl Game<'_> {
         if horizon_java_host::get().is_none() {
             return;
         }
-        java_player_view_reset(Some(horizon_client::lan::playerdata::uuid_ints(uuid)));
+        let ints = horizon_client::lan::playerdata::uuid_ints(uuid);
+        java_player_view_reset(Some(ints));
+        super::java_menus::forget_menu_views(Some(ints));
         let mut out = Out::default();
         out.long((uuid >> 64) as i64);
         out.long(uuid as i64);
@@ -2067,6 +2091,7 @@ mod player_group_tests {
             effects: vec![("minecraft:speed".into(), 100, 1, false, true)],
             motion: ([0.0, -0.0784, 0.0], true),
             stacks,
+            menu: None,
         }
     }
 
