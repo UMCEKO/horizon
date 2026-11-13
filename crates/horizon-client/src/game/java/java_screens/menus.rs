@@ -83,6 +83,71 @@ const SMOKER: &[&str] = &[
     menu!("AbstractContainerMenu"),
 ];
 
+const ANVIL: &[&str] = &[
+    screen!("AnvilScreen"),
+    screen!("ItemCombinerScreen"),
+    screen!("AbstractContainerScreen"),
+    menu!("AnvilMenu"),
+    menu!("ItemCombinerMenu"),
+    menu!("AbstractContainerMenu"),
+];
+const SMITHING: &[&str] = &[
+    screen!("SmithingScreen"),
+    screen!("ItemCombinerScreen"),
+    screen!("AbstractContainerScreen"),
+    menu!("SmithingMenu"),
+    menu!("ItemCombinerMenu"),
+    menu!("AbstractContainerMenu"),
+];
+const GRINDSTONE: &[&str] = &[
+    screen!("GrindstoneScreen"),
+    screen!("AbstractContainerScreen"),
+    menu!("GrindstoneMenu"),
+    menu!("AbstractContainerMenu"),
+];
+const STONECUTTER: &[&str] = &[
+    screen!("StonecutterScreen"),
+    screen!("AbstractContainerScreen"),
+    menu!("StonecutterMenu"),
+    menu!("AbstractContainerMenu"),
+];
+const LOOM: &[&str] = &[
+    screen!("LoomScreen"),
+    screen!("AbstractContainerScreen"),
+    menu!("LoomMenu"),
+    menu!("AbstractContainerMenu"),
+];
+const CARTOGRAPHY: &[&str] = &[
+    screen!("CartographyTableScreen"),
+    screen!("AbstractContainerScreen"),
+    menu!("CartographyTableMenu"),
+    menu!("AbstractContainerMenu"),
+];
+const ENCHANTMENT: &[&str] = &[
+    screen!("EnchantmentScreen"),
+    screen!("AbstractContainerScreen"),
+    menu!("EnchantmentMenu"),
+    menu!("AbstractContainerMenu"),
+];
+const BREWING: &[&str] = &[
+    screen!("BrewingStandScreen"),
+    screen!("AbstractContainerScreen"),
+    menu!("BrewingStandMenu"),
+    menu!("AbstractContainerMenu"),
+];
+const BEACON: &[&str] = &[
+    screen!("BeaconScreen"),
+    screen!("AbstractContainerScreen"),
+    menu!("BeaconMenu"),
+    menu!("AbstractContainerMenu"),
+];
+const MERCHANT: &[&str] = &[
+    screen!("MerchantScreen"),
+    screen!("AbstractContainerScreen"),
+    menu!("MerchantMenu"),
+    menu!("AbstractContainerMenu"),
+];
+
 /// The menu types the Java client can mirror, each with the vanilla classes of its screen and menu (`MenuScreens`), up to the abstract bases.
 const MENU_CLASSES: &[(&str, &[&str])] = &[
     ("minecraft:generic_9x1", CHEST),
@@ -99,6 +164,16 @@ const MENU_CLASSES: &[(&str, &[&str])] = &[
     ("minecraft:furnace", FURNACE),
     ("minecraft:blast_furnace", BLAST_FURNACE),
     ("minecraft:smoker", SMOKER),
+    ("minecraft:anvil", ANVIL),
+    ("minecraft:smithing", SMITHING),
+    ("minecraft:grindstone", GRINDSTONE),
+    ("minecraft:stonecutter", STONECUTTER),
+    ("minecraft:loom", LOOM),
+    ("minecraft:cartography_table", CARTOGRAPHY),
+    ("minecraft:enchantment", ENCHANTMENT),
+    ("minecraft:brewing_stand", BREWING),
+    ("minecraft:beacon", BEACON),
+    ("minecraft:merchant", MERCHANT),
 ];
 
 const CLIENT_LISTENER: &str = "net/minecraft/client/multiplayer/ClientPacketListener";
@@ -115,6 +190,14 @@ const CLIENT_MODE_METHOD: &str = "handleContainerInput";
 /// Whether the Java client can build the vanilla screen of this menu type.
 pub(super) fn mirrorable(menu_type: &str) -> bool {
     MENU_CLASSES.iter().any(|(name, _)| *name == menu_type)
+}
+
+/// The shell kind of the inventory screen: 1 the survival inventory with no server menu, 3 a server menu the Java client can build, else 0.
+pub(super) fn menu_shell_kind(container: i32, menu: &str, plain_inventory: bool, covered: bool) -> u8 {
+    if container == 0 {
+        return u8::from(plain_inventory);
+    }
+    3 * u8::from(mirrorable(menu) && !covered)
 }
 
 /// A route key (`pkg/Class#method(desc)`) as its class and method name.
@@ -199,6 +282,7 @@ impl Game<'_> {
             C::ContainerSetContent(p) => mirrored == Some(p.container),
             C::ContainerSetSlot(p) => mirrored == Some(p.container),
             C::ContainerSetData(p) => mirrored == Some(p.container),
+            C::MerchantOffers(p) => mirrored == Some(p.container),
             C::ContainerClose(p) => {
                 let forward = mirrored == Some(p.container);
                 if forward {
@@ -245,7 +329,7 @@ impl Game<'_> {
 mod tests {
     use super::*;
 
-    const MIRRORED: [&str; 14] = [
+    const MIRRORED: [&str; 24] = [
         "minecraft:generic_9x1",
         "minecraft:generic_9x2",
         "minecraft:generic_9x3",
@@ -260,6 +344,16 @@ mod tests {
         "minecraft:furnace",
         "minecraft:blast_furnace",
         "minecraft:smoker",
+        "minecraft:anvil",
+        "minecraft:smithing",
+        "minecraft:grindstone",
+        "minecraft:stonecutter",
+        "minecraft:loom",
+        "minecraft:cartography_table",
+        "minecraft:enchantment",
+        "minecraft:brewing_stand",
+        "minecraft:beacon",
+        "minecraft:merchant",
     ];
 
     #[test]
@@ -268,14 +362,24 @@ mod tests {
             assert!(mirrorable(name), "{name}");
         }
         assert_eq!(MENU_CLASSES.len(), MIRRORED.len());
-        for name in [
-            "minecraft:anvil",
-            "minecraft:brewing_stand",
-            "horizon:mount_inventory",
-            "inventory",
-        ] {
+        for name in ["minecraft:lectern", "horizon:mount_inventory", "inventory"] {
             assert!(!mirrorable(name), "{name}");
         }
+    }
+
+    #[test]
+    fn a_server_menu_of_a_listed_type_is_kind_3_and_anything_else_is_not() {
+        for name in MIRRORED {
+            assert_eq!(menu_shell_kind(7, name, false, false), 3, "{name}");
+            assert_eq!(menu_shell_kind(7, name, false, true), 0, "{name}");
+        }
+        assert_eq!(menu_shell_kind(7, "minecraft:lectern", false, false), 0);
+        assert_eq!(
+            menu_shell_kind(7, "horizon:mount_inventory", false, false),
+            0
+        );
+        assert_eq!(menu_shell_kind(0, "inventory", true, false), 1);
+        assert_eq!(menu_shell_kind(0, "inventory", false, false), 0);
     }
 
     #[test]
@@ -316,7 +420,7 @@ mod tests {
         for name in MIRRORED {
             assert!(menu_mirrored(true, name, []), "{name}");
         }
-        assert!(!menu_mirrored(true, "minecraft:anvil", []));
+        assert!(!menu_mirrored(true, "minecraft:lectern", []));
     }
 
     #[test]

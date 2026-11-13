@@ -6,18 +6,13 @@ impl Game<'_> {
         if self.screen == Screen::Creative {
             return 2;
         }
-        if self.screen != Screen::Inventory || self.mount_active() || self.station.is_some() {
+        if self.screen != Screen::Inventory || self.mount_active() {
             return 0;
         }
         let (container, menu) = self.remote_menu();
-        if container == 0 {
-            return u8::from(self.container.is_none() && self.craft_size == 2);
-        }
-        3 * u8::from(
-            super::menus::mirrorable(&menu)
-                && self.native_screen_width().is_none()
-                && self.mod_screen.is_none(),
-        )
+        let plain = self.station.is_none() && self.container.is_none() && self.craft_size == 2;
+        let covered = self.native_screen_width().is_some() || self.mod_screen.is_some();
+        super::menus::menu_shell_kind(container, &menu, plain, covered)
     }
 
     /// leftPos, topPos, imageWidth, imageHeight and the hovered menu slot, as native lays the screen out now.
@@ -41,10 +36,11 @@ impl Game<'_> {
         let hovered = self
             .slot_at(&batch, self.cursor.0, self.cursor.1)
             .and_then(|slot| Self::menu_slot_index(&menu, slot));
+        let (shift, width) = self.station_panel();
         [
-            x.floor() as i32,
+            (x + shift).floor() as i32,
             y.floor() as i32,
-            self.native_screen_width().unwrap_or(176.0) as i32,
+            self.native_screen_width().unwrap_or(width) as i32,
             self.screen_height() as i32,
             hovered.map_or(-1, |slot| slot as i32),
         ]

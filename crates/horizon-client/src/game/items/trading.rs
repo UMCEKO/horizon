@@ -4,6 +4,7 @@
 //! level-ups with new offers from the next trade set.
 use super::{
     Game,
+    java_hooks_client::Leaf,
     stations::{INPUT, Kind, RESULT, Station},
 };
 use horizon_client::mobs::{Species, render::VILLAGER_TYPES, villager};
@@ -14,7 +15,7 @@ use horizon_client::{
 };
 
 /// The merchant screen is 100 px wider than the 176-px menus it shares an origin with.
-const SHIFT: f32 = -50.0;
+pub(super) const SHIFT: f32 = -50.0;
 const GREY: u32 = 0xFF40_4040;
 
 pub(super) struct MerchantState {
@@ -657,14 +658,6 @@ impl Game<'_> {
         );
         let offers = m.session.offers.clone();
         let costs: Vec<ItemStack> = offers.iter().map(|o| o.cost_a(self.items())).collect();
-        self.render_transparent_background("merchant", batch);
-        let atlas = &self.gui.atlas;
-        if let Some(mut r) = atlas.sprites.get("gui/container/villager").copied() {
-            let (du, dv) = ((r.u1 - r.u0) / r.w as f32, (r.v1 - r.v0) / r.h as f32);
-            r.u1 = r.u0 + 276.0 * du;
-            r.v1 = r.v0 + 166.0 * dv;
-            batch.rect_uv(ox + SHIFT, oy, 276.0, 166.0, r, u32::MAX);
-        }
         let tr = |k: &str, f: &str| horizon_client::lang::get_or(k, f);
         let name = custom.unwrap_or_else(|| {
             if progress {
@@ -685,33 +678,158 @@ impl Game<'_> {
         } else {
             name
         };
-        let tw = HudBatch::text_width(atlas, &title);
-        batch.text(
-            atlas,
-            &title,
-            ox + SHIFT + (49.0 + 138.0 - (tw / 2.0).floor()),
-            oy + 6.0,
-            GREY,
-            false,
-        );
-        let trades = tr("merchant.trades", "Trades");
-        let tw = HudBatch::text_width(atlas, &trades);
-        batch.text(
-            atlas,
-            &trades,
-            ox + SHIFT + 5.0 - (tw / 2.0).floor() + 48.0,
-            oy + 6.0,
-            GREY,
-            false,
-        );
-        batch.text(
-            atlas,
-            &tr("container.inventory", "Inventory"),
-            ox + SHIFT + 107.0,
-            oy + 72.0,
-            GREY,
-            false,
-        );
+        let rows = || offers.iter().enumerate().skip(scroll).take(7).enumerate();
+        let hovered = |row: usize| {
+            local.0 >= 5.0 + SHIFT
+                && local.0 < 93.0 + SHIFT
+                && local.1 >= 18.0 + 20.0 * row as f32
+                && local.1 < 38.0 + 20.0 * row as f32
+        };
+        let mut tooltip: Option<ItemStack> = None;
+        for (row, (index, offer)) in rows() {
+            if hovered(row) && self.carried.is_none() {
+                let rel = local.0 - (5.0 + SHIFT);
+                tooltip = if rel < 20.0 {
+                    Some(costs[index].clone())
+                } else if rel > 30.0 && rel < 50.0 {
+                    offer.cost_b()
+                } else if rel > 65.0 {
+                    Some(offer.result.clone())
+                } else {
+                    None
+                };
+            }
+        }
+        self.java_shell_frame();
+        self.shell_leaf(batch, Leaf::Start, |_, _| {});
+        self.shell_leaf(batch, Leaf::Background, |this, batch| {
+            this.render_transparent_background("merchant", batch);
+            if let Some(mut r) = this
+                .gui
+                .atlas
+                .sprites
+                .get("gui/container/villager")
+                .copied()
+            {
+                let (du, dv) = ((r.u1 - r.u0) / r.w as f32, (r.v1 - r.v0) / r.h as f32);
+                r.u1 = r.u0 + 276.0 * du;
+                r.v1 = r.v0 + 166.0 * dv;
+                batch.rect_uv(ox + SHIFT, oy, 276.0, 166.0, r, u32::MAX);
+            }
+        });
+        self.shell_leaf(batch, Leaf::Widgets, |this, batch| {
+            for (row, _) in rows() {
+                let sprite = if hovered(row) || focused == Some(row) {
+                    "gui/sprites/widget/button_highlighted"
+                } else {
+                    "gui/sprites/widget/button"
+                };
+                let (bx, by) = (ox + SHIFT + 5.0, oy + 18.0 + 20.0 * row as f32);
+                batch.sprite_scaled(&this.gui.atlas, sprite, bx, by, 88.0, 20.0, u32::MAX);
+            }
+        });
+        self.shell_leaf(batch, Leaf::Labels, |this, batch| {
+            let atlas = &this.gui.atlas;
+            let tw = HudBatch::text_width(atlas, &title);
+            batch.text(
+                atlas,
+                &title,
+                ox + SHIFT + (49.0 + 138.0 - (tw / 2.0).floor()),
+                oy + 6.0,
+                GREY,
+                false,
+            );
+            let trades = tr("merchant.trades", "Trades");
+            let tw = HudBatch::text_width(atlas, &trades);
+            batch.text(
+                atlas,
+                &trades,
+                ox + SHIFT + 5.0 - (tw / 2.0).floor() + 48.0,
+                oy + 6.0,
+                GREY,
+                false,
+            );
+            batch.text(
+                atlas,
+                &tr("container.inventory", "Inventory"),
+                ox + SHIFT + 107.0,
+                oy + 72.0,
+                GREY,
+                false,
+            );
+        });
+        self.shell_leaf(batch, Leaf::HighlightBack, |this, batch| {
+            this.draw_hovered_slot_highlight(batch, false, ox, oy);
+        });
+        let drag = self.drag_view();
+        self.shell_leaf(batch, Leaf::Slots, |this, batch| {
+            for i in (0..36).chain([INPUT, INPUT + 1, RESULT]) {
+                let (sx, sy) = this.slot_position(i);
+                let stack = this.slot_mut(i).clone();
+                this.draw_slot_item(batch, drag.as_ref(), i, &stack, ox + sx, oy + sy);
+            }
+        });
+        self.shell_leaf(batch, Leaf::HighlightFront, |this, batch| {
+            this.draw_hovered_slot_highlight(batch, true, ox, oy);
+        });
+        self.shell_leaf(batch, Leaf::Extra, |this, batch| {
+            this.draw_merchant_extra(
+                batch,
+                (ox, oy),
+                &offers,
+                &costs,
+                (progress, level, xp, scroll, shop, future),
+            );
+        });
+        if let Some(slot) = self.slot_at(batch, self.cursor.0, self.cursor.1)
+            && tooltip.is_none()
+        {
+            tooltip = self.slot_mut(slot).clone();
+        }
+        // An out-of-stock trade: "the villager needs to restock" over the
+        // result (isHovering(186, 35, 22, 21), canRestock).
+        let deprecated = progress
+            && offers.get(shop).is_some_and(MerchantOffer::out_of_stock)
+            && local.0 >= 186.0 + SHIFT - 1.0
+            && local.0 < 186.0 + SHIFT + 22.0 + 1.0
+            && local.1 >= 35.0 - 1.0
+            && local.1 < 35.0 + 21.0 + 1.0;
+        self.shell_leaf(batch, Leaf::Carried, |this, batch| {
+            if this.carried.is_some() {
+                this.draw_carried(batch);
+            }
+        });
+        self.shell_leaf(batch, Leaf::Tooltip, |this, batch| {
+            let (x, y) = this.cursor;
+            if this.carried.is_some() {
+                if let Some(stack) = tooltip.filter(|s| this.tooltip_with_carried(s)) {
+                    this.draw_stack_tooltip(batch, &stack, x, y);
+                }
+            } else if deprecated {
+                let text = horizon_client::lang::get_or(
+                    "merchant.deprecated",
+                    "Villagers restock up to two times per day.",
+                );
+                let lines: Vec<(String, u32)> =
+                    text.split('\n').map(|l| (l.to_owned(), u32::MAX)).collect();
+                this.draw_tooltip_lines(batch, &lines, x, y);
+            } else if let Some(stack) = tooltip {
+                this.draw_stack_tooltip(batch, &stack, x, y);
+            }
+        });
+        self.shell_leaf(batch, Leaf::Deferred, |_, _| {});
+        true
+    }
+    /// `MerchantScreen.extractContents` after `super`: the out-of-stock mark, the experience bar, the scroller and each offer's cost, arrow and result.
+    fn draw_merchant_extra(
+        &mut self,
+        batch: &mut HudBatch,
+        (ox, oy): (f32, f32),
+        offers: &[MerchantOffer],
+        costs: &[ItemStack],
+        (progress, level, xp, scroll, shop, future): (bool, i32, i32, usize, usize, i32),
+    ) {
+        let atlas = &self.gui.atlas;
         if offers.get(shop).is_some_and(MerchantOffer::out_of_stock) {
             batch.sprite(
                 atlas,
@@ -777,20 +895,8 @@ impl Game<'_> {
                 oy + 18.0,
             );
         }
-        // Offer buttons.
-        let mut tooltip: Option<ItemStack> = None;
+        // Offer buttons' contents.
         for (row, (index, offer)) in offers.iter().enumerate().skip(scroll).take(7).enumerate() {
-            let (bx, by) = (ox + SHIFT + 5.0, oy + 18.0 + 20.0 * row as f32);
-            let hover = local.0 >= 5.0 + SHIFT
-                && local.0 < 93.0 + SHIFT
-                && local.1 >= 18.0 + 20.0 * row as f32
-                && local.1 < 38.0 + 20.0 * row as f32;
-            let sprite = if hover || focused == Some(row) {
-                "gui/sprites/widget/button_highlighted"
-            } else {
-                "gui/sprites/widget/button"
-            };
-            batch.sprite_scaled(&self.gui.atlas, sprite, bx, by, 88.0, 20.0, u32::MAX);
             let y = oy + 16.0 + 1.0 + 20.0 * row as f32 + 2.0;
             let base = offer.base_cost_a.stack.clone();
             let cost_a = costs[index].clone();
@@ -849,65 +955,13 @@ impl Game<'_> {
                 y + 3.0,
             );
             self.draw_item(batch, &offer.result, ox + SHIFT + 73.0, y);
-            if hover && self.carried.is_none() {
-                let rel = local.0 - (5.0 + SHIFT);
-                tooltip = if rel < 20.0 {
-                    Some(cost_a)
-                } else if rel > 30.0 && rel < 50.0 {
-                    offer.cost_b()
-                } else if rel > 65.0 {
-                    Some(offer.result.clone())
-                } else {
-                    None
-                };
-            }
         }
-        // Slots, hover highlight, carried stack, tooltip.
-        let slots: Vec<usize> = (0..36).chain([INPUT, INPUT + 1, RESULT]).collect();
-        let drag = self.drag_view();
-        self.draw_hovered_slot_highlight(batch, false, ox, oy);
-        for i in slots {
-            let (sx, sy) = self.slot_position(i);
-            let stack = self.slot_mut(i).clone();
-            self.draw_slot_item(batch, drag.as_ref(), i, &stack, ox + sx, oy + sy);
-        }
-        self.draw_hovered_slot_highlight(batch, true, ox, oy);
-        if let Some(slot) = self.slot_at(batch, self.cursor.0, self.cursor.1)
-            && tooltip.is_none()
-        {
-            tooltip = self.slot_mut(slot).clone();
-        }
-        // An out-of-stock trade: "the villager needs to restock" over the
-        // result (isHovering(186, 35, 22, 21), canRestock).
-        let deprecated = progress
-            && offers.get(shop).is_some_and(MerchantOffer::out_of_stock)
-            && local.0 >= 186.0 + SHIFT - 1.0
-            && local.0 < 186.0 + SHIFT + 22.0 + 1.0
-            && local.1 >= 35.0 - 1.0
-            && local.1 < 35.0 + 21.0 + 1.0;
-        if self.carried.is_some() {
-            self.draw_carried(batch);
-            if let Some(stack) = tooltip.filter(|s| self.tooltip_with_carried(s)) {
-                self.draw_stack_tooltip(batch, &stack, self.cursor.0, self.cursor.1);
-            }
-        } else if deprecated {
-            let text = horizon_client::lang::get_or(
-                "merchant.deprecated",
-                "Villagers restock up to two times per day.",
-            );
-            let lines: Vec<(String, u32)> =
-                text.split('\n').map(|l| (l.to_owned(), u32::MAX)).collect();
-            self.draw_tooltip_lines(batch, &lines, self.cursor.0, self.cursor.1);
-        } else if let Some(stack) = tooltip {
-            self.draw_stack_tooltip(batch, &stack, self.cursor.0, self.cursor.1);
-        }
-        true
     }
 }
 
 /// Whether a press at `local` (GUI origin relative) lands on the offer list's
 /// scroller, which only takes it when there are more than 7 offers.
-fn on_scroller(local: (f32, f32), offers: usize) -> bool {
+pub(super) fn on_scroller(local: (f32, f32), offers: usize) -> bool {
     let x = SHIFT + 94.0;
     offers > 7
         && local.0 > x

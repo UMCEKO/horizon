@@ -30,7 +30,7 @@ impl LoomState {
     fn total_rows(&self) -> usize {
         self.patterns.len().div_ceil(4)
     }
-    fn offscreen_rows(&self) -> i32 {
+    pub(super) fn offscreen_rows(&self) -> i32 {
         self.total_rows() as i32 - 4
     }
     /// `startRow` for a scroller position.

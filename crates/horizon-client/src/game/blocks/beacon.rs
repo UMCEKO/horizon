@@ -5,6 +5,7 @@
 //! power buttons and payment slot, and the rotating, scrolling beam.
 use super::{
     Game,
+    java_hooks_client::Leaf,
     stations::{INPUT, Kind},
 };
 use horizon_client::{
@@ -478,135 +479,155 @@ impl Game<'_> {
                 |t| t.plain(),
             )
         });
-        self.render_transparent_background("beacon", batch);
-        let atlas = &self.gui.atlas;
-        if let Some(mut r) = atlas.sprites.get("gui/container/beacon").copied() {
-            let (du, dv) = ((r.u1 - r.u0) / r.w as f32, (r.v1 - r.v0) / r.h as f32);
-            r.u1 = r.u0 + 230.0 * du;
-            r.v1 = r.v0 + HEIGHT * dv;
-            batch.rect_uv(bx, by, 230.0, HEIGHT, r, u32::MAX);
-        }
-        let label = 0xFFE0_E0E0;
-        for (key, fallback, cx) in [
-            ("block.minecraft.beacon.primary", "Primary Power", 62.0),
-            ("block.minecraft.beacon.secondary", "Secondary Power", 169.0),
-        ] {
-            let text = self.translate_with_fallback(key, fallback);
-            let atlas = &self.gui.atlas;
-            let w = HudBatch::text_width(atlas, &text);
-            batch.text(
-                atlas,
-                &text,
-                bx + cx - (w / 2.0).floor(),
-                by + 10.0,
-                label,
-                false,
-            );
-        }
-        for (i, item) in PAYMENT.iter().rev().enumerate() {
-            let x = [20.0, 41.0, 63.0, 86.0, 108.0][i];
-            self.draw_item(batch, &ItemStack::new(item, 1), bx + x, by + 109.0);
-        }
-        let atlas = &self.gui.atlas;
+        self.java_shell_frame();
+        self.shell_leaf(batch, Leaf::Start, |_, _| {});
+        self.shell_leaf(batch, Leaf::Background, |this, batch| {
+            this.render_transparent_background("beacon", batch);
+            if let Some(mut r) = this.gui.atlas.sprites.get("gui/container/beacon").copied() {
+                let (du, dv) = ((r.u1 - r.u0) / r.w as f32, (r.v1 - r.v0) / r.h as f32);
+                r.u1 = r.u0 + 230.0 * du;
+                r.v1 = r.v0 + HEIGHT * dv;
+                batch.rect_uv(bx, by, 230.0, HEIGHT, r, u32::MAX);
+            }
+            for (i, item) in PAYMENT.iter().rev().enumerate() {
+                let x = [20.0, 41.0, 63.0, 86.0, 108.0][i];
+                this.draw_item(batch, &ItemStack::new(item, 1), bx + x, by + 109.0);
+            }
+        });
         let mut tooltip = None;
-        let button =
-            |batch: &mut HudBatch, x: f32, y: f32, active: bool, selected: bool, icon: &str| {
-                let hover = inside(local, x, y, 22.0, 22.0);
-                let sprite = if !active {
-                    "button_disabled"
-                } else if selected {
-                    "button_selected"
-                } else if hover {
-                    "button_highlighted"
-                } else {
-                    "button"
+        self.shell_leaf(batch, Leaf::Widgets, |this, batch| {
+            let atlas = &this.gui.atlas;
+            let button =
+                |batch: &mut HudBatch, x: f32, y: f32, active: bool, selected: bool, icon: &str| {
+                    let hover = inside(local, x, y, 22.0, 22.0);
+                    let sprite = if !active {
+                        "button_disabled"
+                    } else if selected {
+                        "button_selected"
+                    } else if hover {
+                        "button_highlighted"
+                    } else {
+                        "button"
+                    };
+                    batch.sprite(
+                        atlas,
+                        &format!("gui/sprites/container/beacon/{sprite}"),
+                        bx + x,
+                        by + y,
+                    );
+                    batch.sprite_scaled(
+                        atlas,
+                        icon,
+                        bx + x + 2.0,
+                        by + y + 2.0,
+                        18.0,
+                        18.0,
+                        u32::MAX,
+                    );
+                    hover
                 };
-                batch.sprite(
+            for (e, x, y, primary) in buttons() {
+                let tier = EFFECTS[e].1;
+                let active = if primary {
+                    tier <= levels && tier < 4
+                } else {
+                    levels >= 4
+                };
+                let selected = if primary {
+                    sel[0] == Some(e)
+                } else {
+                    sel[1] == Some(e)
+                };
+                let icon = format!("mob_effect/{}", EFFECTS[e].0);
+                if button(batch, x, y, active, selected, &icon) {
+                    tooltip = Some(format!("effect.minecraft.{}", EFFECTS[e].0));
+                }
+            }
+            if let Some(p) = sel[0] {
+                let (x, y) = upgrade_button();
+                let icon = format!("mob_effect/{}", EFFECTS[p].0);
+                if button(batch, x, y, levels >= 4, sel[1] == Some(p), &icon) {
+                    tooltip = Some(format!("effect.minecraft.{}", EFFECTS[p].0));
+                }
+            }
+            button(
+                batch,
+                164.0,
+                107.0,
+                paid && sel[0].is_some(),
+                false,
+                "gui/sprites/container/beacon/confirm",
+            );
+            button(
+                batch,
+                190.0,
+                107.0,
+                true,
+                false,
+                "gui/sprites/container/beacon/cancel",
+            );
+        });
+        self.shell_leaf(batch, Leaf::Labels, |this, batch| {
+            let label = 0xFFE0_E0E0;
+            for (key, fallback, cx) in [
+                ("block.minecraft.beacon.primary", "Primary Power", 62.0),
+                ("block.minecraft.beacon.secondary", "Secondary Power", 169.0),
+            ] {
+                let text = this.translate_with_fallback(key, fallback);
+                let atlas = &this.gui.atlas;
+                let w = HudBatch::text_width(atlas, &text);
+                batch.text(
                     atlas,
-                    &format!("gui/sprites/container/beacon/{sprite}"),
-                    bx + x,
-                    by + y,
+                    &text,
+                    bx + cx - (w / 2.0).floor(),
+                    by + 10.0,
+                    label,
+                    false,
                 );
-                batch.sprite_scaled(
-                    atlas,
-                    icon,
-                    bx + x + 2.0,
-                    by + y + 2.0,
-                    18.0,
-                    18.0,
-                    u32::MAX,
-                );
-                hover
-            };
-        for (e, x, y, primary) in buttons() {
-            let tier = EFFECTS[e].1;
-            let active = if primary {
-                tier <= levels && tier < 4
-            } else {
-                levels >= 4
-            };
-            let selected = if primary {
-                sel[0] == Some(e)
-            } else {
-                sel[1] == Some(e)
-            };
-            let icon = format!("mob_effect/{}", EFFECTS[e].0);
-            if button(batch, x, y, active, selected, &icon) {
-                tooltip = Some(format!("effect.minecraft.{}", EFFECTS[e].0));
             }
-        }
-        if let Some(p) = sel[0] {
-            let (x, y) = upgrade_button();
-            let icon = format!("mob_effect/{}", EFFECTS[p].0);
-            if button(batch, x, y, levels >= 4, sel[1] == Some(p), &icon) {
-                tooltip = Some(format!("effect.minecraft.{}", EFFECTS[p].0));
+        });
+        self.shell_leaf(batch, Leaf::HighlightBack, |this, batch| {
+            this.draw_hovered_slot_highlight(batch, false, ox, oy);
+        });
+        self.shell_leaf(batch, Leaf::Slots, |this, batch| {
+            for i in (0..36).chain([INPUT]) {
+                let (sx, sy) = this.slot_position(i);
+                if let Some(stack) = this.slot_mut(i).clone() {
+                    this.draw_item(batch, &stack, ox + sx, oy + sy);
+                }
             }
-        }
-        button(
-            batch,
-            164.0,
-            107.0,
-            paid && sel[0].is_some(),
-            false,
-            "gui/sprites/container/beacon/confirm",
-        );
-        button(
-            batch,
-            190.0,
-            107.0,
-            true,
-            false,
-            "gui/sprites/container/beacon/cancel",
-        );
-        let slots: Vec<usize> = (0..36).chain([INPUT]).collect();
-        self.draw_hovered_slot_highlight(batch, false, ox, oy);
-        for i in slots {
-            let (sx, sy) = self.slot_position(i);
-            if let Some(stack) = self.slot_mut(i).clone() {
-                self.draw_item(batch, &stack, ox + sx, oy + sy);
-            }
-        }
-        self.draw_hovered_slot_highlight(batch, true, ox, oy);
+        });
+        self.shell_leaf(batch, Leaf::HighlightFront, |this, batch| {
+            this.draw_hovered_slot_highlight(batch, true, ox, oy);
+        });
         let mut stack_tip = None;
         if let Some(slot) = self.slot_at(batch, self.cursor.0, self.cursor.1) {
             stack_tip = self.slot_mut(slot).clone();
         }
-        if self.carried.is_some() {
-            self.draw_carried(batch);
-            if let Some(stack) = stack_tip.filter(|s| self.tooltip_with_carried(s)) {
-                self.draw_stack_tooltip(batch, &stack, self.cursor.0, self.cursor.1);
+        self.shell_leaf(batch, Leaf::Carried, |this, batch| {
+            if this.carried.is_some() {
+                this.draw_carried(batch);
             }
-        } else if let Some(stack) = stack_tip {
-            self.draw_stack_tooltip(batch, &stack, self.cursor.0, self.cursor.1);
-        } else if let Some(key) = tooltip {
-            let text = self.translate_with_fallback(&key, &key);
-            self.draw_tooltip_lines(
-                batch,
-                &[(horizon_client::text::Text::literal(text), u32::MAX)],
-                self.cursor.0,
-                self.cursor.1,
-            );
-        }
+        });
+        self.shell_leaf(batch, Leaf::Tooltip, |this, batch| {
+            let (x, y) = this.cursor;
+            if this.carried.is_some() {
+                if let Some(stack) = stack_tip.filter(|s| this.tooltip_with_carried(s)) {
+                    this.draw_stack_tooltip(batch, &stack, x, y);
+                }
+            } else if let Some(stack) = stack_tip {
+                this.draw_stack_tooltip(batch, &stack, x, y);
+            } else if let Some(key) = tooltip {
+                let text = this.translate_with_fallback(&key, &key);
+                this.draw_tooltip_lines(
+                    batch,
+                    &[(horizon_client::text::Text::literal(text), u32::MAX)],
+                    x,
+                    y,
+                );
+            }
+        });
+        self.shell_leaf(batch, Leaf::Deferred, |_, _| {});
     }
     /// `BeaconRenderer`: each section's rotating solid beam and its glow.
     pub(super) fn beacon_geometry(

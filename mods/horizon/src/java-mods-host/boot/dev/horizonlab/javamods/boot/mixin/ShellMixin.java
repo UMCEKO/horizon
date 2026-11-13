@@ -4,8 +4,15 @@ import dev.horizonlab.javamods.boot.Shells;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.gui.screens.inventory.AbstractRecipeBookScreen;
+import net.minecraft.client.gui.screens.inventory.AnvilScreen;
+import net.minecraft.client.gui.screens.inventory.BeaconScreen;
 import net.minecraft.client.gui.screens.inventory.CreativeModeInventoryScreen;
+import net.minecraft.client.gui.screens.inventory.EnchantmentScreen;
 import net.minecraft.client.gui.screens.inventory.InventoryScreen;
+import net.minecraft.client.gui.screens.inventory.LoomScreen;
+import net.minecraft.client.gui.screens.inventory.MerchantScreen;
+import net.minecraft.client.gui.screens.inventory.SmithingScreen;
+import net.minecraft.client.gui.screens.inventory.StonecutterScreen;
 import net.minecraft.client.input.CharacterEvent;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
@@ -16,7 +23,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /** A shell's vanilla handler bodies never run: native owns the screen, `Shells` answers who takes an input. */
-@Mixin(value = {AbstractContainerScreen.class, AbstractRecipeBookScreen.class, InventoryScreen.class, CreativeModeInventoryScreen.class}, priority = 100)
+@Mixin(value = {AbstractContainerScreen.class, AbstractRecipeBookScreen.class, InventoryScreen.class, CreativeModeInventoryScreen.class, AnvilScreen.class, SmithingScreen.class,
+        LoomScreen.class, StonecutterScreen.class, EnchantmentScreen.class, BeaconScreen.class, MerchantScreen.class}, priority = 100)
 abstract class ShellMixin {
     @Inject(method = "mouseClicked", at = @At("HEAD"), cancellable = true, require = 0)
     private void horizon$clicked(MouseButtonEvent event, boolean doubleClick, CallbackInfoReturnable<Boolean> info) {

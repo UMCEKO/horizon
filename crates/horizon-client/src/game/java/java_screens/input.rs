@@ -276,7 +276,7 @@ impl Game<'_> {
             && if self.screen == Screen::Creative {
                 self.creative_widget_hit()
             } else {
-                self.recipe_book_hit(self.cursor.0, self.cursor.1)
+                self.recipe_book_hit(self.cursor.0, self.cursor.1) || self.station_widget_hit()
             };
         let mut inputs: Vec<Input> = self.java_cursor().into_iter().collect();
         inputs.push(Input::Button(
@@ -292,7 +292,7 @@ impl Game<'_> {
         let handles = if self.screen == Screen::Creative {
             self.creative_screen.can_scroll(&self.pack.names)
         } else {
-            self.recipe_book_hit(self.cursor.0, self.cursor.1)
+            self.recipe_book_hit(self.cursor.0, self.cursor.1) || self.station_scrolls()
         } || self.bundle_under_cursor();
         let mut inputs: Vec<Input> = self.java_cursor().into_iter().collect();
         inputs.push(Input::Scroll(x, y));
@@ -319,7 +319,7 @@ impl Game<'_> {
             (true, false) => 1,
             (true, true) => 2,
         };
-        let handles = pressed && self.native_inventory_key(code);
+        let handles = pressed && self.native_station_key(code);
         let owner = self.java_shell_input(
             &[Input::Key(
                 name,

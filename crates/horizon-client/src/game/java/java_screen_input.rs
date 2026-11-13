@@ -9,7 +9,12 @@ impl Game<'_> {
         if self.screen == Screen::Creative {
             return self.creative_screen.tab().search && !self.creative_ignore_text;
         }
-        self.recipe_search_focused()
+        self.station_typing() || self.recipe_search_focused()
+    }
+
+    /// Whether native's station screen acts on a key: the anvil's name box takes every key, else as the inventory does.
+    pub(in crate::game) fn native_station_key(&self, code: KeyCode) -> bool {
+        self.station_typing() || self.native_inventory_key(code)
     }
 
     /// Whether native's inventory or creative screen acts on a key (`AbstractContainerScreen.keyPressed`, the recipe book's search box, `CreativeModeInventoryScreen.keyPressed`) or the window does: Escape, the inventory key, a hotbar, swap or drop key over a slot, any key while a search box is focused, and the window's own function keys and modifiers.
