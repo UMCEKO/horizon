@@ -395,6 +395,13 @@ impl Game<'_> {
         None
     }
 
+    /// `MovementInputUpdateEvent` on the keys native read; Java's listeners run before native mods'.
+    pub(super) fn java_hook_movement_input(&mut self, keys: &mut horizon_client::sprint::Keys, strafe: &mut f32, forward: &mut f32) {
+        #[cfg(feature = "java-mods")]
+        self.java_lockstep_movement_input(keys, strafe, forward);
+        let _ = (keys, strafe, forward);
+    }
+
     /// The window's player step ran, with the tick's `Input` bits: the Java tick goes on from `aiStep` with its result.
     pub(super) fn java_hook_player_end(&mut self, moved: bool, keys: u8) {
         #[cfg(feature = "java-mods")]
@@ -1092,4 +1099,35 @@ pub(super) fn java_note_shape_update(
     #[cfg(feature = "java-mods")]
     super::java_mods::note_shape_update(pos, state, direction, neighbour);
     let _ = (pos, state, direction, neighbour);
+}
+
+/// `LivingJumpEvent` for the window's player, after vanilla's jump set the velocity and before native mods hear it.
+pub(crate) fn java_living_jump(entity: u32, kind: &str, player: &mut horizon_client::motion::PlayerMotion) {
+    #[cfg(feature = "java-mods")]
+    if kind == "minecraft:player" {
+        super::java_lockstep::living_jump(player);
+    } else {
+        java_living_jump_server(entity, kind, player);
+    }
+    let _ = (entity, kind, player);
+}
+
+/// The server copy's jump (W9 SPEC-4-6).
+#[cfg(feature = "java-mods")]
+fn java_living_jump_server(_entity: u32, _kind: &str, _player: &mut horizon_client::motion::PlayerMotion) {}
+
+/// `LivingFallEvent` for the window's player before native mods hear it; any other entity is the server's (W9 SPEC-4-6).
+pub(crate) fn java_living_fall(kind: &str, distance: &mut f64, multiplier: &mut f32, cancel: &mut bool) {
+    #[cfg(feature = "java-mods")]
+    if kind == "minecraft:player" {
+        super::java_lockstep::living_fall(false, distance, multiplier, cancel);
+    }
+    let _ = (kind, distance, multiplier, cancel);
+}
+
+/// `PlayerFlyableFallEvent` for the window's player, where `Player.causeFallDamage` returns early for `mayfly`.
+pub(crate) fn java_player_flyable_fall(distance: f64, multiplier: f32) {
+    #[cfg(feature = "java-mods")]
+    super::java_lockstep::living_fall(true, &mut { distance }, &mut { multiplier }, &mut false);
+    let _ = (distance, multiplier);
 }

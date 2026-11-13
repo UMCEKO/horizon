@@ -97,6 +97,7 @@ public final class ClientBridge {
         });
         GameBridge.client = ClientBridge::call;
         Lockstep.ops = ClientBridge::run;
+        LockstepEvents.install();
         for (String name : OPS.keySet()) Crossing.client(name);
         WorldFrame.decide();
         ViewFrame.decide();

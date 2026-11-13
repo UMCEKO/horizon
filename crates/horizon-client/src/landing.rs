@@ -353,6 +353,9 @@ impl MotionWorld<'_, '_, '_> {
                     multiplier,
                 });
             }
+            if !self.player.replaying {
+                crate::native_client_hooks::player_flyable_fall(distance, multiplier);
+            }
             return Ok(false);
         }
         // Record centimeters before delegating to LivingEntity.

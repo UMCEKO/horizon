@@ -26,6 +26,7 @@ import net.neoforged.neoforge.client.event.MovementInputUpdateEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.entity.living.LivingEvent;
 import net.neoforged.neoforge.event.entity.living.LivingFallEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerFlyableFallEvent;
 import net.neoforged.neoforge.event.tick.PlayerTickEvent;
 
 /** The Java client's tick interleaved with the window's: it parks at `handleKeybinds` (K) and at the local player's `aiStep` (M), serving the window's calls there until the window releases it. */
@@ -38,7 +39,8 @@ public final class Lockstep {
     static final byte OP = 5;
 
     static final List<Class<? extends Event>> EVENTS = List.of(MovementInputUpdateEvent.class, ComputeFovModifierEvent.class,
-            PlayerTickEvent.Pre.class, PlayerTickEvent.Post.class, LivingEvent.LivingJumpEvent.class, LivingFallEvent.class);
+            PlayerTickEvent.Pre.class, PlayerTickEvent.Post.class, LivingEvent.LivingJumpEvent.class, LivingFallEvent.class,
+            PlayerFlyableFallEvent.class);
 
     private record Request(byte kind, String op, byte[] in, CompletableFuture<byte[]> reply) {}
 

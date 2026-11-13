@@ -7012,6 +7012,7 @@ impl Game<'_> {
             keys.analog = None;
         }
         let [mut strafe, mut forward] = keys.direction();
+        self.java_hook_movement_input(&mut keys, &mut strafe, &mut forward);
         let original = [strafe, forward];
         self.native_movement_input(&mut forward, &mut strafe, &mut keys.jump, &mut keys.shift);
         if [strafe, forward] != original {

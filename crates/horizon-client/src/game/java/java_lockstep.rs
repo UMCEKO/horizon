@@ -2,7 +2,10 @@
 //! The lockstep client tick: the Java tick parks at `handleKeybinds` (K) and the local player's `aiStep` (M) while the window's tick runs there.
 
 use super::*;
+use super::java_listener::listens;
+use horizon_client::sprint::Keys;
 use horizon_core::geometry::Vec3;
+use mod_api::HookId;
 use horizon_java_host::wire::{In, Out};
 use horizon_protocol::packets::play;
 use std::cell::RefCell;
@@ -37,6 +40,8 @@ struct State {
     picks: Option<Vec<[i32; 3]>>,
     /// The field-of-view modifier the Java camera tick's event left, until `tick_fov` takes it.
     fov_target: Option<f32>,
+    /// Writes an event's listeners made where no `Game` is at hand (yaw, pitch, abilities), applied before the step's fill.
+    pending: MotionWrites,
 }
 
 thread_local! {
@@ -174,6 +179,7 @@ pub(in crate::game) fn start() -> LockstepTick {
         s.stage = Stage::Sent;
         s.picks = None;
         s.fov_target = None;
+        s.pending = MotionWrites::default();
     });
     LockstepTick
 }
@@ -324,7 +330,6 @@ fn apply_motion_writes(m: &mut LocalMotion, writes: &MotionWrites) -> Applied {
 }
 
 /// A lockstep inbox call from the window thread while Java is parked; None outside a lockstep tick.
-#[cfg_attr(not(test), expect(dead_code, reason = "SPEC-3's requests use it"))]
 pub(in crate::game) fn java_lockstep_call(kind: u8, request: &[u8]) -> Option<Vec<u8>> {
     if !in_lockstep() {
         return None;
@@ -336,6 +341,166 @@ pub(in crate::game) fn java_lockstep_call(kind: u8, request: &[u8]) -> Option<Ve
     let reply = host.request("client_lockstep_call", &out.0)?;
     let (served, rest) = reply.split_first()?;
     (*served == 1).then(|| rest.to_vec())
+}
+
+/// The window's player step is parked in Java, so its events can be posted.
+fn player_held() -> bool {
+    stage() == Stage::PlayerHeld
+}
+
+/// `Input`'s bits as the fill and the input packet order them: forward 1, backward 2, left 4, right 8, jump 16, shift 32, sprint 64.
+fn keys_bits(keys: &Keys) -> u8 {
+    u8::from(keys.forward)
+        | u8::from(keys.backward) << 1
+        | u8::from(keys.left) << 2
+        | u8::from(keys.right) << 3
+        | u8::from(keys.jump) << 4
+        | u8::from(keys.shift) << 5
+        | u8::from(keys.sprint) << 6
+}
+
+fn set_keys_bits(keys: &mut Keys, bits: u8) {
+    keys.forward = bits & 1 != 0;
+    keys.backward = bits & 2 != 0;
+    keys.left = bits & 4 != 0;
+    keys.right = bits & 8 != 0;
+    keys.jump = bits & 16 != 0;
+    keys.shift = bits & 32 != 0;
+    keys.sprint = bits & 64 != 0;
+}
+
+/// Request kind 1: `byte keyPresses`, `float left`, `float forward`.
+fn input_request(bits: u8, vector: [f32; 2]) -> Vec<u8> {
+    let mut out = Out::default();
+    out.0.push(bits);
+    out.float(vector[0]);
+    out.float(vector[1]);
+    out.0
+}
+
+/// Reply to kind 1: the bits and move vector the listeners left, then the write log.
+fn read_input_reply(reply: &[u8]) -> Option<(u8, [f32; 2], MotionWrites)> {
+    let mut r = In(reply);
+    let bits = r.byte()?;
+    let vector = [r.float()?, r.float()?];
+    Some((bits, vector, read_motion_writes(&mut r)?))
+}
+
+/// Request kind 2: the velocity vanilla's jump just set.
+fn jump_request(velocity: [f64; 3]) -> Vec<u8> {
+    let mut out = Out::default();
+    velocity.iter().for_each(|v| out.double(*v));
+    out.0
+}
+
+/// Request kind 3: `bool flyable`, `double distance`, `float multiplier`.
+fn fall_request(flyable: bool, distance: f64, multiplier: f32) -> Vec<u8> {
+    let mut out = Out::default();
+    out.bool(flyable);
+    out.double(distance);
+    out.float(multiplier);
+    out.0
+}
+
+/// Reply to kind 3: `bool canceled`, `double distance`, `float multiplier`, then the write log.
+fn read_fall_reply(reply: &[u8]) -> Option<(bool, f64, f32, MotionWrites)> {
+    let mut r = In(reply);
+    let canceled = r.bool()?;
+    let distance = r.double()?;
+    let multiplier = r.float()?;
+    Some((canceled, distance, multiplier, read_motion_writes(&mut r)?))
+}
+
+fn told_broken() {
+    static TOLD: std::sync::Once = std::sync::Once::new();
+    TOLD.call_once(|| eprintln!("Horizon: a lockstep event reply ended in pieces"));
+}
+
+/// Applies a log to the player where its step stands; yaw, pitch and abilities wait for the fill, where `Game` holds them.
+pub(in crate::game) fn apply_motion_writes_to(
+    player: &mut horizon_client::motion::PlayerMotion,
+    writes: &MotionWrites,
+    pending: &mut MotionWrites,
+) {
+    for write in &writes.entries {
+        match *write {
+            MotionWrite::Velocity([x, y, z]) => player.velocity = Vec3::new(x, y, z),
+            MotionWrite::Position([x, y, z]) => player.position = Vec3::new(x, y, z),
+            MotionWrite::Ground(g) => player.ground.on_ground = g,
+            MotionWrite::FallReset => player.fall_distance = 0.0,
+            MotionWrite::Sprint(s) => player.sprinting = s,
+            other => pending.entries.push(other),
+        }
+    }
+}
+
+/// `LivingJumpEvent` for the window's player, with the jump's velocity in place.
+pub(in crate::game) fn living_jump(player: &mut horizon_client::motion::PlayerMotion) {
+    if !player_held() || !listens(HookId::LivingJump) {
+        return;
+    }
+    let v = player.velocity;
+    let Some(reply) = java_lockstep_call(2, &jump_request([v.x, v.y, v.z])) else {
+        return;
+    };
+    let Some(writes) = read_motion_writes(&mut In(&reply)) else {
+        return told_broken();
+    };
+    LOCKSTEP.with_borrow_mut(|s| apply_motion_writes_to(player, &writes, &mut s.pending));
+}
+
+/// `LivingFallEvent` (or `PlayerFlyableFallEvent`) for the window's player: the listeners' cancel, distance and multiplier.
+pub(in crate::game) fn living_fall(
+    flyable: bool,
+    distance: &mut f64,
+    multiplier: &mut f32,
+    cancel: &mut bool,
+) {
+    let hook = if flyable {
+        HookId::PlayerFlyableFall
+    } else {
+        HookId::LivingFall
+    };
+    if !player_held() || !listens(hook) {
+        return;
+    }
+    let Some(reply) = java_lockstep_call(3, &fall_request(flyable, *distance, *multiplier)) else {
+        return;
+    };
+    let Some((canceled, new_distance, new_multiplier, writes)) = read_fall_reply(&reply) else {
+        return told_broken();
+    };
+    *cancel |= canceled;
+    *distance = new_distance;
+    *multiplier = new_multiplier;
+    LOCKSTEP.with_borrow_mut(|s| s.pending.entries.extend(writes.entries));
+}
+
+impl Game<'_> {
+    /// `MovementInputUpdateEvent` on the keys native just read; the listeners' keys and move vector replace native's only where they differ, so native's own direction stays exact.
+    pub(in crate::game) fn java_lockstep_movement_input(
+        &mut self,
+        keys: &mut Keys,
+        strafe: &mut f32,
+        forward: &mut f32,
+    ) {
+        if !player_held() || !listens(HookId::MovementInput) {
+            return;
+        }
+        let sent = [*strafe, *forward];
+        let Some(reply) = java_lockstep_call(1, &input_request(keys_bits(keys), sent)) else {
+            return;
+        };
+        let Some((bits, vector, writes)) = read_input_reply(&reply) else {
+            return told_broken();
+        };
+        set_keys_bits(keys, bits);
+        if vector != sent {
+            [*strafe, *forward] = vector;
+            keys.analog = Some(vector);
+        }
+        self.java_apply_motion_writes(&writes);
+    }
 }
 
 impl Game<'_> {
@@ -386,6 +551,8 @@ impl Game<'_> {
         if stage() != Stage::PlayerHeld {
             return;
         }
+        let pending = LOCKSTEP.with_borrow_mut(|s| std::mem::take(&mut s.pending));
+        self.java_apply_motion_writes(&pending);
         let fill = self.java_lockstep_fill(moved, keys);
         release(Point::M, &fill);
         set_stage(Stage::Done);
@@ -688,5 +855,81 @@ mod tests {
         assert_eq!(stage(), Stage::Idle);
         assert_eq!(keep_picks(vec![[4, 5, 6]]), Some(vec![[4, 5, 6]]));
         assert_eq!(java_lockstep_call(1, &[]), None);
+    }
+
+    #[test]
+    fn input_bits_map_to_keys_in_vanillas_input_order() {
+        let fields: [fn(&Keys) -> bool; 7] = [
+            |k| k.forward,
+            |k| k.backward,
+            |k| k.left,
+            |k| k.right,
+            |k| k.jump,
+            |k| k.shift,
+            |k| k.sprint,
+        ];
+        for (i, field) in fields.iter().enumerate() {
+            let mut keys = Keys::default();
+            set_keys_bits(&mut keys, 1 << i);
+            assert!(field(&keys));
+            assert_eq!(fields.iter().filter(|f| f(&keys)).count(), 1);
+            assert_eq!(keys_bits(&keys), 1 << i);
+        }
+    }
+
+    #[test]
+    fn an_input_reply_reads_bits_vector_and_log() {
+        let mut out = Out::default();
+        out.0.push(0b101_0001);
+        out.float(0.0);
+        out.float(1.0);
+        out.int(1);
+        out.0.push(6);
+        let (bits, vector, writes) = read_input_reply(&out.0).unwrap();
+        assert_eq!((bits, vector), (0b101_0001, [0.0, 1.0]));
+        assert_eq!(writes.entries, vec![MotionWrite::FallReset]);
+        assert!(read_input_reply(&out.0[..5]).is_none());
+        let sent = input_request(0b10, [0.5, -1.0]);
+        let mut r = In(&sent);
+        assert_eq!((r.byte(), r.float(), r.float()), (Some(2), Some(0.5), Some(-1.0)));
+    }
+
+    #[test]
+    fn a_fall_reply_reads_the_listeners_answer() {
+        let mut out = Out::default();
+        out.bool(true);
+        out.double(5.5);
+        out.float(0.5);
+        out.int(0);
+        assert_eq!(
+            read_fall_reply(&out.0).map(|(c, d, m, w)| (c, d, m, w.entries.len())),
+            Some((true, 5.5, 0.5, 0))
+        );
+    }
+
+    #[test]
+    fn jump_writes_reach_the_motion_and_the_rest_waits_for_the_fill() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            eprintln!("skipped: prepared resources unavailable");
+            return;
+        }
+        let assets = horizon_client::assets::Assets::load(&root).unwrap();
+        let resources = horizon_client::motion::MotionResources::load(&root, &assets).unwrap();
+        let mut player = horizon_client::motion::PlayerMotion::new(&resources, Vec3::ZERO).unwrap();
+        let mut pending = MotionWrites::default();
+        let writes = MotionWrites {
+            entries: vec![
+                MotionWrite::Velocity([0.0, 0.92, 0.0]),
+                MotionWrite::Yaw(90.0),
+                MotionWrite::Sprint(true),
+            ],
+        };
+        apply_motion_writes_to(&mut player, &writes, &mut pending);
+        assert_eq!(player.velocity.y, 0.92);
+        assert!(player.sprinting);
+        assert_eq!(pending.entries, vec![MotionWrite::Yaw(90.0)]);
     }
 }

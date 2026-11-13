@@ -193,7 +193,8 @@ impl WakeKind {
     }
 }
 pub(crate) use java_hooks::{
-    java_hook_loot_condition, java_hook_loot_function, java_hook_loot_rolled, java_hook_loot_wanted,
+    java_hook_loot_condition, java_hook_loot_function, java_hook_loot_rolled,
+    java_hook_loot_wanted, java_living_fall, java_living_jump, java_player_flyable_fall,
 };
 pub use native_block_entity_draw::BlockEntityDraw;
 pub use native_claimed_items::{HeldItemSlot, ModEvent};

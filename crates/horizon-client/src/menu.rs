@@ -4946,6 +4946,8 @@ pub(crate) mod tests {
                         std::sync::atomic::Ordering::Relaxed,
                     );
                 },
+                living_jump_motion: |_, _, _| {},
+                player_flyable_fall: |_, _| {},
                 living_jump_power: |context, _, _, power| {
                     *power += context.setting("rules_mod", "stack").map_or(0.0, |_| 1.0);
                 },
