@@ -67,6 +67,7 @@ impl Game<'_> {
     /// A window frame's collection of the Java client's finished work, without waiting for it, and the next frame recording's request while the HUD or the world animates; a frame that took a tick's status, or a tick still running, asks for none, so the window never waits on Java.
     pub(in crate::game) fn java_client_frame(&mut self) {
         self.java_render_frame(0);
+        self.java_outline_frame();
         if CLIENT.with_borrow_mut(|c| std::mem::take(&mut c.shell.opening)) {
             self.java_client_collect(true);
         } else {
@@ -99,6 +100,26 @@ impl Game<'_> {
                     });
             });
         }
+    }
+
+    /// Waits for the Java client's answer to the aimed block: what finished, then one world recording if `answered` still fails.
+    pub(in crate::game) fn java_outline_wait(&mut self, answered: impl Fn() -> bool) {
+        self.java_client_collect(true);
+        if answered() {
+            return;
+        }
+        let Some(request) = self.java_world_frame_request_now() else {
+            return;
+        };
+        WORKER.with_borrow_mut(|w| {
+            w.get_or_insert_with(Worker::start).send_frame(FrameJob {
+                hud: None,
+                world: Some(request),
+                toasts: None,
+                view: None,
+            });
+        });
+        self.java_client_collect(true);
     }
 
     /// What mods drew before the first layer.

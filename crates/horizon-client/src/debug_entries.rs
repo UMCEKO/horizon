@@ -214,14 +214,20 @@ static JAVA: OnceLock<Vec<JavaEntry>> = OnceLock::new();
 pub fn set_java_entries(entries: Vec<JavaEntry>) {
     let mut kept: Vec<JavaEntry> = Vec::new();
     for entry in entries {
-        let own = Identifier::parse_namespaced(&entry.id)
-            .is_some_and(|id| id.namespace() != "minecraft");
-        let twice = registered().iter().any(|r| r.id == entry.id)
-            || kept.iter().any(|k| k.id == entry.id);
+        let own =
+            Identifier::parse_namespaced(&entry.id).is_some_and(|id| id.namespace() != "minecraft");
+        let twice =
+            registered().iter().any(|r| r.id == entry.id) || kept.iter().any(|k| k.id == entry.id);
         if !own {
-            log::warn!("Java debug entry {:?} is not in a mod's namespace", entry.id);
+            log::warn!(
+                "Java debug entry {:?} is not in a mod's namespace",
+                entry.id
+            );
         } else if twice {
-            log::warn!("Java debug entry {} is registered twice; the first is kept", entry.id);
+            log::warn!(
+                "Java debug entry {} is registered twice; the first is kept",
+                entry.id
+            );
         } else {
             kept.push(entry);
         }

@@ -3,10 +3,88 @@
 
 use super::*;
 use horizon_java_host::wire::{In, Out};
+use horizon_client::world_renders::{OutlineAnswer, OutlineKind};
 use std::cell::RefCell;
+
+/// What native draws of the block outline this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct OutlineDraw {
+    /// Vanilla's lines, drawn natively.
+    pub lines: bool,
+    /// The mods' outline pieces of the world recording.
+    pub pieces: bool,
+}
+
+const VANILLA_LINES: OutlineDraw = OutlineDraw {
+    lines: true,
+    pieces: false,
+};
+const NOTHING: OutlineDraw = OutlineDraw {
+    lines: false,
+    pieces: false,
+};
+
+/// The key an answer must match: block, face (3D data value), state, gate, high contrast.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct OutlineKey {
+    pub pos: [i32; 3],
+    pub face: u8,
+    pub state: u32,
+    pub render: bool,
+    pub high_contrast: bool,
+}
+
+fn answers(answer: &OutlineAnswer, key: OutlineKey) -> bool {
+    answer.block == Some((key.pos, key.face, key.state))
+        && answer.render == key.render
+        && answer.high_contrast == key.high_contrast
+}
+
+/// What native draws of the outline for the aimed block, given the Java recording's answer.
+pub(super) fn outline_draw(
+    answer: Option<&OutlineAnswer>,
+    key: Option<OutlineKey>,
+    native_canceled: bool,
+) -> OutlineDraw {
+    let Some(key) = key.filter(|k| k.render && !native_canceled) else {
+        return NOTHING;
+    };
+    let Some(answer) = answer.filter(|a| answers(a, key)) else {
+        return VANILLA_LINES;
+    };
+    match answer.kind {
+        OutlineKind::None => VANILLA_LINES,
+        OutlineKind::Canceled => NOTHING,
+        OutlineKind::Vanilla => OutlineDraw {
+            lines: true,
+            pieces: true,
+        },
+        OutlineKind::Replaced => OutlineDraw {
+            lines: false,
+            pieces: true,
+        },
+    }
+}
+
+/// Whether the frame waits for Java's answer: only for a key not yet waited on.
+fn should_sync(answer_matches: bool, key: Option<OutlineKey>, last_synced: Option<OutlineKey>) -> bool {
+    !answer_matches && key.is_some() && key != last_synced
+}
 
 #[derive(Default)]
 struct World {
+    /// The key the window last waited on Java for.
+    synced: Option<OutlineKey>,
+    /// A mod has changed the outline since the join.
+    outline_seen: bool,
+    /// The last frame's aimed block and point.
+    aimed: Option<(OutlineKey, [f64; 3])>,
+    /// The point moved inside one block face: the next frame recording is asked for.
+    point_moved: bool,
+    /// This frame's decision, before the native mods' cancel.
+    draw: Option<OutlineDraw>,
+    /// Native hid the outline this frame: the HUD is off or a native mod cancelled it.
+    native_off: bool,
     /// The Java client says the world is changing: each frame is recorded with its own timing until two alike.
     animating: bool,
     /// A tick's status was applied this frame: its recording is this frame's.
@@ -117,11 +195,18 @@ impl Game<'_> {
 
     /// While the world animates, this frame's recording request as the level's frame would extract it; none on the frame that took a tick's status or while a tick runs.
     pub(super) fn java_world_frame_request(&mut self, busy: bool) -> Option<Vec<u8>> {
-        let (animating, recorded) =
-            WORLD.with_borrow_mut(|w| (w.animating, std::mem::take(&mut w.recorded)));
+        let (animating, recorded) = WORLD.with_borrow_mut(|w| {
+            let moved = std::mem::take(&mut w.point_moved);
+            (w.animating || moved, std::mem::take(&mut w.recorded))
+        });
         if !world_frame_wanted(animating, recorded, busy) {
             return None;
         }
+        self.java_world_frame_request_now()
+    }
+
+    /// A frame recording request as `java_world_frame_request` builds it, without asking whether one is wanted.
+    pub(super) fn java_world_frame_request_now(&self) -> Option<Vec<u8>> {
         let (at, view) = self.java_world_camera()?;
         let mut out = Out::default();
         for value in self.java_client_window() {
@@ -132,6 +217,59 @@ impl Game<'_> {
         view.iter().for_each(|v| out.float(*v));
         write_hit(&mut out, &self.java_outline_hit());
         Some(out.0)
+    }
+
+    /// The window's outline decision for this frame, made before drawing: waits for Java's answer once per changed aimed block.
+    pub(super) fn java_outline_frame(&mut self) {
+        let hit = self.java_outline_hit();
+        let key = hit.block.map(|(pos, face, _)| OutlineKey {
+            pos,
+            face: super::java_screens::face_index(face) as u8,
+            state: self.world.block(pos[0], pos[1], pos[2]).0,
+            render: hit.render,
+            high_contrast: hit.high_contrast,
+        });
+        let point = hit.block.map(|(_, _, point)| point);
+        let seen = WORLD.with_borrow_mut(|w| {
+            w.outline_seen |= horizon_client::world_renders::outline().is_some();
+            w.outline_seen
+        });
+        if !seen || !self.remote.is_some() || horizon_java_host::get().is_none() {
+            WORLD.with_borrow_mut(|w| w.draw = Some(VANILLA_LINES));
+            return;
+        }
+        let matches = |answer: Option<OutlineAnswer>| {
+            key.is_some_and(|k| answer.is_some_and(|a| answers(&a, k)))
+        };
+        let last = WORLD.with_borrow(|w| w.synced);
+        if should_sync(matches(horizon_client::world_renders::outline()), key, last) {
+            WORLD.with_borrow_mut(|w| w.synced = key);
+            self.java_outline_wait(|| matches(horizon_client::world_renders::outline()));
+        }
+        WORLD.with_borrow_mut(|w| {
+            let same_face = w.aimed.map(|(k, _)| k) == key;
+            w.point_moved |= same_face && w.aimed.map(|(_, p)| p) != point;
+            w.aimed = key.zip(point);
+            w.draw = Some(outline_draw(
+                horizon_client::world_renders::outline().as_ref(),
+                key,
+                false,
+            ));
+        });
+    }
+
+    /// Native's own outline was hidden this frame (the HUD is off, or a native mod cancelled it): no piece is drawn either.
+    pub(super) fn java_outline_native_off(&self, off: bool) {
+        WORLD.with_borrow_mut(|w| w.native_off = off);
+    }
+
+    /// What native draws of the outline this frame.
+    pub(super) fn java_outline_draw(&self) -> OutlineDraw {
+        WORLD.with_borrow(|w| match w.draw {
+            _ if w.native_off => NOTHING,
+            Some(draw) => draw,
+            None => VANILLA_LINES,
+        })
     }
 
     /// The block the crosshair is on, as `Minecraft.hitResult` would hold it, with the outline's gate and option.
@@ -152,6 +290,63 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const KEY: OutlineKey = OutlineKey {
+        pos: [1, 2, 3],
+        face: 1,
+        state: 7,
+        render: true,
+        high_contrast: false,
+    };
+
+    fn answer(kind: OutlineKind, key: OutlineKey) -> OutlineAnswer {
+        OutlineAnswer {
+            kind,
+            block: Some((key.pos, key.face, key.state)),
+            render: key.render,
+            high_contrast: key.high_contrast,
+        }
+    }
+
+    fn draw(kind: OutlineKind, answered: OutlineKey, native: bool) -> (bool, bool) {
+        let d = outline_draw(Some(&answer(kind, answered)), Some(KEY), native);
+        (d.lines, d.pieces)
+    }
+
+    #[test]
+    fn the_outline_draw_follows_the_matching_answer_only() {
+        let replaced = OutlineKind::Replaced;
+        assert_eq!(draw(replaced, KEY, true), (false, false));
+        let no_hit = outline_draw(Some(&answer(replaced, KEY)), None, false);
+        assert_eq!((no_hit.lines, no_hit.pieces), (false, false));
+        let gated = OutlineKey { render: false, ..KEY };
+        let d = outline_draw(Some(&answer(replaced, gated)), Some(gated), false);
+        assert_eq!((d.lines, d.pieces), (false, false));
+        let d = outline_draw(None, Some(KEY), false);
+        assert_eq!((d.lines, d.pieces), (true, false));
+        for stale in [
+            OutlineKey { pos: [1, 2, 4], ..KEY },
+            OutlineKey { face: 2, ..KEY },
+            OutlineKey { state: 8, ..KEY },
+            OutlineKey { high_contrast: true, ..KEY },
+        ] {
+            assert_eq!(draw(replaced, stale, false), (true, false));
+        }
+        assert_eq!(draw(OutlineKind::None, KEY, false), (true, false));
+        assert_eq!(draw(OutlineKind::Canceled, KEY, false), (false, false));
+        assert_eq!(draw(OutlineKind::Vanilla, KEY, false), (true, true));
+        assert_eq!(draw(replaced, KEY, false), (false, true));
+    }
+
+    #[test]
+    fn a_key_is_waited_on_once() {
+        let other = OutlineKey { state: 9, ..KEY };
+        assert!(should_sync(false, Some(KEY), None));
+        assert!(!should_sync(false, Some(KEY), Some(KEY)));
+        assert!(should_sync(false, Some(other), Some(KEY)));
+        assert!(!should_sync(true, Some(other), Some(KEY)));
+        assert!(!should_sync(false, None, None));
+    }
 
     #[test]
     fn java_is_told_the_detached_view_and_the_locator_wins() {

@@ -400,19 +400,26 @@ impl Game<'_> {
         // screen does not hide it: vanilla checks the HUD and the game mode, not the screen.
         let adventure = self.mode == horizon_client::command::args::GameMode::Adventure;
         let can_build = self.may_build() || adventure;
-        let outline = if block_outline_drawn(
+        let drawn = block_outline_drawn(
             self.ui.hide_gui,
             self.entity_targeted(),
             can_build,
             self.shows_panorama(),
-        ) {
+        );
+        let mut native_canceled = !drawn;
+        #[cfg(feature = "java-mods")]
+        let java_lines = self.java_outline_draw().lines;
+        #[cfg(not(feature = "java-mods"))]
+        let java_lines = true;
+        let outline = if drawn {
             self.pick()
                 .filter(|h| self.vanilla_outline_gate(h.pos))
                 .filter(|h| {
                     let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
                     let mut canceled = false;
                     self.native_block_highlight(h.pos, state, alpha as f32, &mut canceled);
-                    !canceled
+                    native_canceled |= canceled;
+                    !canceled && java_lines
                 })
                 .map(|h| {
                     let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
@@ -474,6 +481,10 @@ impl Game<'_> {
         } else {
             Vec::new()
         };
+        #[cfg(feature = "java-mods")]
+        self.java_outline_native_off(native_canceled);
+        #[cfg(not(feature = "java-mods"))]
+        let _ = native_canceled;
         pr.lap("pr_outline");
         let title = self.shows_panorama();
         let (yaw, pitch) = if title {
