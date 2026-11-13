@@ -1,0 +1,198 @@
+{
+  "steps": [
+    {
+      "name": "floor"
+    },
+    {
+      "command": "/gamemode creative"
+    },
+    {
+      "wait": 20
+    },
+    {
+      "command": "/forceload add -8 -8 8 8"
+    },
+    {
+      "wait": 20
+    },
+    {
+      "command": "/fill -8 99 -8 8 99 8 minecraft:stone"
+    },
+    {
+      "command": "/fill -8 100 -8 8 110 8 minecraft:air"
+    },
+    {
+      "wait": 20
+    },
+    {
+      "tp": [
+        0.5,
+        100,
+        0.5
+      ]
+    },
+    {
+      "check": {
+        "near": [
+          0.5,
+          100,
+          0.5
+        ],
+        "radius": 1.5
+      }
+    },
+    {
+      "name": "mekanism:jetpack_flame"
+    },
+    {
+      "command": "/particle mekanism:jetpack_flame 2 101 0 0.2 0.2 0.2 0 10"
+    },
+    {
+      "wait": 2
+    },
+    {
+      "name": "mekanism:jetpack_smoke"
+    },
+    {
+      "command": "/particle mekanism:jetpack_smoke 2 101 0 0.2 0.2 0.2 0 10"
+    },
+    {
+      "wait": 2
+    },
+    {
+      "name": "mekanism:radiation"
+    },
+    {
+      "command": "/particle mekanism:radiation 2 101 0 0.2 0.2 0.2 0 10"
+    },
+    {
+      "wait": 2
+    },
+    {
+      "name": "mekanism:scuba_bubble"
+    },
+    {
+      "command": "/particle mekanism:scuba_bubble 2 101 0 0.2 0.2 0.2 0 10"
+    },
+    {
+      "wait": 2
+    },
+    {
+      "name": "ae2:energy_fx"
+    },
+    {
+      "command": "/particle ae2:energy_fx 2 101 0 0.2 0.2 0.2 0 10"
+    },
+    {
+      "wait": 2
+    },
+    {
+      "name": "ae2:lightning_fx"
+    },
+    {
+      "command": "/particle ae2:lightning_fx 2 101 0 0.2 0.2 0.2 0 10"
+    },
+    {
+      "wait": 2
+    },
+    {
+      "name": "ae2:matter_cannon_fx"
+    },
+    {
+      "command": "/particle ae2:matter_cannon_fx 2 101 0 0.2 0.2 0.2 0 10"
+    },
+    {
+      "wait": 2
+    },
+    {
+      "name": "ae2:vibrant_fx"
+    },
+    {
+      "command": "/particle ae2:vibrant_fx 2 101 0 0.2 0.2 0.2 0 10"
+    },
+    {
+      "wait": 2
+    },
+    {
+      "name": "ae2:crafting"
+    },
+    {
+      "command": "/particle ae2:crafting{item:{id:\"minecraft:diamond\"}} 2 101 0 0 0 0 0 1"
+    },
+    {
+      "wait": 2
+    },
+    {
+      "name": "burst"
+    },
+    {
+      "wait": 10
+    },
+    {
+      "lookat": [
+        2,
+        101,
+        0
+      ]
+    },
+    {
+      "screenshot": "w3-burst"
+    },
+    {
+      "name": "checks"
+    },
+    {
+      "check": {
+        "log": "particle types are mods', ticked in Java",
+        "since": "start"
+      }
+    },
+    {
+      "check": {
+        "log": "Java particles: \\d+ live",
+        "since": "start"
+      }
+    },
+    {
+      "check": {
+        "no_exceptions": true,
+        "since": "start"
+      }
+    },
+    {
+      "check": {
+        "log": "reached native, which can't draw it",
+        "present": false,
+        "since": "start"
+      }
+    },
+    {
+      "check": {
+        "log": "a Java particle's extract failed",
+        "present": false,
+        "since": "start"
+      }
+    },
+    {
+      "check": {
+        "log": "a Java particle's quad has no sprite",
+        "present": false,
+        "since": "start"
+      }
+    },
+    {
+      "check": {
+        "log": "isn't in the atlas",
+        "present": false,
+        "since": "start"
+      }
+    },
+    {
+      "check": {
+        "log": "particle recording didn't read",
+        "present": false,
+        "since": "start"
+      }
+    }
+  ]
+}
