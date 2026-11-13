@@ -100,6 +100,7 @@ public final class ClientBridge {
         for (String name : OPS.keySet()) Crossing.client(name);
         WorldFrame.decide();
         ViewFrame.decide();
+        FrameEvents.decide();
         Shells.install();
         HudLayers.install(net.neoforged.neoforge.common.NeoForge.EVENT_BUS);
         CreativeTabs.install();
@@ -182,6 +183,7 @@ public final class ClientBridge {
         OPS.put("client_world_frame", in -> worldFrame(in));
         OPS.put("client_toast_frame", in -> toastFrame(in));
         OPS.put("client_view_frame", in -> ViewFrame.frame(in, timer(Minecraft.getInstance()).getRealtimeDeltaTicks()));
+        OPS.put("client_render_frame", in -> renderFrame(in));
         OPS.put("client_input", in -> input(in));
         OPS.put("client_scroll", in -> scroll(in));
         OPS.put("client_font", in -> font(in));
@@ -302,6 +304,18 @@ public final class ClientBridge {
         set(Window.class, window, "guiScaledWidth", guiWidth);
         set(Window.class, window, "guiScaledHeight", guiHeight);
         set(Window.class, window, "guiScale", guiScale);
+        int[] now = {windowWidth, windowHeight, guiScale};
+        if (appliedSize != null && java.util.Arrays.equals(appliedSize, now)) return;
+        appliedSize = now;
+        // `Minecraft.<init>` and `framebufferSizeChanged` run this: the resize event, mods' patches, the open screen.
+        Minecraft.getInstance().resizeGui();
+    }
+
+    private static int[] appliedSize;
+
+    /** The scale native chose with vanilla's rule and the player's option: what `Window.calculateScale` answers. */
+    public static int guiScale() {
+        return guiScale;
     }
 
     /** `ClientHandshakePacketListenerImpl.handleLoginFinished`, then configuration as `ClientConfigurationPacketListenerImpl` runs it over a memory connection: the play phase's listener, with registries from what the server sent. */
@@ -550,6 +564,9 @@ public final class ClientBridge {
         }
         if (lockstep) Lockstep.begin();
         byte[] particles;
+        MotionLog.watching = lockstep ? Minecraft.getInstance().player : null;
+        // Writes left from a lockstep tick that never reached its step.
+        if (!lockstep) MotionLog.take();
         byte[] hud;
         byte[] world;
         byte[] view;
@@ -710,6 +727,18 @@ public final class ClientBridge {
         return Toasts.frame(in, minecraft, timer(minecraft).getRealtimeDeltaTicks());
     }
 
+    /** `RenderFrameEvent.Pre` (phase 0) or `.Post` (1) for one window frame: `byte phase`, `float partial`; replies the sounds the listeners made. */
+    private static byte[] renderFrame(DataInputStream in) throws Exception {
+        byte phase = in.readByte();
+        float partial = in.readFloat();
+        Minecraft minecraft = Minecraft.getInstance();
+        if (phase == 0) advance(minecraft, partial);
+        FrameEvents.post(phase, minecraft.getDeltaTracker());
+        var bytes = new ByteArrayOutputStream();
+        ClientSounds.take(new DataOutputStream(bytes));
+        return bytes.toByteArray();
+    }
+
     /** The columns the window has given the Java client, for the sections a world event walks. */
     static it.unimi.dsi.fastutil.longs.LongList columns() {
         return new it.unimi.dsi.fastutil.longs.LongArrayList(CHUNKS);
@@ -754,8 +783,13 @@ public final class ClientBridge {
         if (motion == null || local == null) return;
         float dy = motion.yaw - local.getYRot();
         float dx = motion.pitch - local.getXRot();
-        local.setYRot(motion.yaw);
-        local.setXRot(motion.pitch);
+        MotionLog.filling = true;
+        try {
+            local.setYRot(motion.yaw);
+            local.setXRot(motion.pitch);
+        } finally {
+            MotionLog.filling = false;
+        }
         local.yRotO += dy;
         local.xRotO += dx;
         if (HUD_DEBUG && (motion.yaw != lookYaw || motion.pitch != lookPitch)) {
@@ -775,13 +809,19 @@ public final class ClientBridge {
         Motion motion = moved;
         if (motion == null) return;
         moved = null;
-        local.setPos(motion.x, motion.y, motion.z);
-        local.setDeltaMovement(motion.dx, motion.dy, motion.dz);
-        local.setOnGround(motion.ground);
+        MotionLog.filling = true;
+        try {
+            local.setPos(motion.x, motion.y, motion.z);
+            local.setDeltaMovement(motion.dx, motion.dy, motion.dz);
+            local.setOnGround(motion.ground);
+        } finally {
+            MotionLog.filling = false;
+        }
     }
 
     /** The window's player step at `aiStep`, in a lockstep tick: what it left, set as vanilla's `aiStep` would, then this tick's `animateTick` picks. */
     public static void fill(LocalPlayer local, byte[] payload) {
+        MotionLog.filling = true;
         try {
             var in = new DataInputStream(new ByteArrayInputStream(payload));
             if (in.readBoolean()) {
@@ -816,6 +856,8 @@ public final class ClientBridge {
         } catch (IOException e) {
             System.err.println("Horizon: the window's player step did not read");
             e.printStackTrace();
+        } finally {
+            MotionLog.filling = false;
         }
     }
 
@@ -846,6 +888,19 @@ public final class ClientBridge {
     private static final byte VIEW_INPUTS = 36;
     private static final byte DEBUG_LINES = 42;
     private static final byte HIT = 28;
+    private static final byte VOLUMES = 41;
+    private static final byte FOV_BASE = 35;
+
+    /** The player's sound volumes through each option's own setter, whose listener is vanilla's `refreshCategoryVolume`. */
+    private static void volumes(DataInputStream in, Minecraft minecraft) throws IOException {
+        for (int n = in.readInt(); n > 0; n--) {
+            String name = text(in);
+            float value = in.readFloat();
+            var source = java.util.Arrays.stream(net.minecraft.sounds.SoundSource.values()).filter(s -> s.getName().equals(name)).findFirst()
+                    .orElseThrow(() -> new IllegalStateException("sound source " + name));
+            minecraft.options.getSoundSourceOptionInstance(source).set((double) value);
+        }
+    }
 
     private static double cursorX, cursorY;
     private static BlockPos cameraBlock;
@@ -890,6 +945,7 @@ public final class ClientBridge {
                 case TOASTS -> Toasts.input(in);
                 case MUSIC -> ClientMusic.read(in);
                 case NOTIFICATION_TIME -> minecraft.options.notificationDisplayTime().set(in.readDouble());
+                case VOLUMES -> volumes(in, minecraft);
                 case BLOCK_EFFECT -> BlockEffects.run(in);
                 case VIEW_INPUTS -> ViewFrame.last = ViewFrame.read(in);
                 case DEBUG_LINES -> DebugLines.wanted(in);
@@ -919,6 +975,7 @@ public final class ClientBridge {
                     }
                 }
                 case WIRE -> RemoteClient.inbound(in.readLong(), in.readNBytes(in.readInt()));
+                case FOV_BASE -> FovHook.base(in);
                 case ENTITY -> ClientEntities.FEED.feed(in.readLong(), in.readNBytes(in.readInt()));
                 case SEEN -> ClientEntities.FEED.seen(in.readLong());
                 case CHUNK -> CHUNK_EVENTS.add(new int[] {in.readInt(), in.readInt(), in.readBoolean() ? 1 : 0});
@@ -1153,6 +1210,7 @@ public final class ClientBridge {
         Toasts.writeStatus(out);
         out.writeInt(Environments.bits);
         out.writeBoolean(Lockstep.wanted());
+        out.writeBoolean(FrameEvents.listened);
         ClientMusic.writeStatus(out);
         ChatLines.write(out);
         out.writeBoolean(view != null);
@@ -1286,6 +1344,8 @@ public final class ClientBridge {
         player = null;
         listener = null;
         moved = null;
+        MotionLog.watching = null;
+        MotionLog.take();
         lastScreen = null;
         lastHud = null;
         lastRecorded = null;

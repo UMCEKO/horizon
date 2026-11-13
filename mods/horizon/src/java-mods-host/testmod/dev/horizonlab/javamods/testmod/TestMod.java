@@ -37,6 +37,8 @@ public final class TestMod {
         ITEMS.registerItem("digger", Digger::new);
         ITEMS.registerItem("miner", Miner::new);
         for (String view : new String[] {"tilt", "zoom", "slow_mouse", "far_camera"}) ITEMS.registerSimpleItem(view, p -> p.stacksTo(1));
+        ITEMS.registerItem("rocket", Item::new);
+        ITEMS.registerSimpleItem("lens");
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((net.neoforged.neoforge.event.entity.player.PlayerEvent.HarvestCheck event) -> {
             if (event.getTargetBlock().is(Blocks.STONE) && event.getEntity().getMainHandItem().getItem() instanceof Digger) event.setCanHarvest(true);
         });
@@ -79,6 +81,7 @@ public final class TestMod {
             ClientChat.register();
             ClientView.register();
             ClientDebug.register(bus);
+            ClientWindowProbe.register();
         }
     }
 

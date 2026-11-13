@@ -231,6 +231,32 @@ impl Game<'_> {
         None
     }
 
+    /// Mods' writes to the local player in the park's record, applied before the step; where vanilla took `xo/yo/zo`, when the record marked it.
+    pub(super) fn java_hook_motion_writes(&mut self, record: Option<&[u8]>) -> Option<horizon_core::geometry::Vec3> {
+        #[cfg(feature = "java-mods")]
+        return self.java_lockstep_motion_writes(record?);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = record;
+            None
+        }
+    }
+
+    /// What `tick_fov` computed: the Java camera tick's event reads it on the next lockstep tick.
+    pub(super) fn java_hook_fov_base(&self, base: f32, scoping: bool, scale: f32) {
+        #[cfg(feature = "java-mods")]
+        super::java_screens::CLIENT.with_borrow_mut(|c| c.fov_base = Some((base, scoping, scale)));
+        let _ = (base, scoping, scale);
+    }
+
+    /// The modifier the Java camera tick's event left for this tick; none outside lockstep.
+    pub(super) fn java_hook_fov_target(&self) -> Option<f32> {
+        #[cfg(feature = "java-mods")]
+        return super::java_lockstep::take_fov_target();
+        #[cfg(not(feature = "java-mods"))]
+        None
+    }
+
     /// The window's player step ran, with the tick's `Input` bits: the Java tick goes on from `aiStep` with its result.
     pub(super) fn java_hook_player_end(&mut self, moved: bool, keys: u8) {
         #[cfg(feature = "java-mods")]
@@ -448,6 +474,39 @@ impl Game<'_> {
         #[cfg(feature = "java-mods")]
         self.java_use_item(stack, claimed);
         let _ = (stack, claimed);
+    }
+
+    /// Whether a Java mod registered this particle type, which `/particle` then runs in Java.
+    pub(super) fn java_hook_particle_owned(&self, name: &str) -> bool {
+        #[cfg(feature = "java-mods")]
+        return super::java_particles::java_particle_owned(name);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = name;
+            false
+        }
+    }
+
+    /// `/particle` of a Java mod's type: vanilla's codec and sends in Java; the players reached, or the codec's error.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn java_hook_server_particles(
+        &mut self,
+        dim: &str,
+        spec: &str,
+        pos: [f64; 3],
+        delta: [f32; 3],
+        speed: f32,
+        count: i32,
+        force: bool,
+        viewers: &[u128],
+    ) -> Result<i32, String> {
+        #[cfg(feature = "java-mods")]
+        return self.java_server_particles(dim, spec, pos, delta, speed, count, force, viewers);
+        #[cfg(not(feature = "java-mods"))]
+        {
+            let _ = (dim, spec, pos, delta, speed, count, force, viewers);
+            Err("no Java".into())
+        }
     }
 
     /// `LevelTickEvent` before (`post` false) and after a level's tick.
@@ -776,6 +835,49 @@ pub(super) fn java_note_block_tick(pos: BlockPos, state: BlockStateId, random: b
     #[cfg(feature = "java-mods")]
     super::java_mods::note_block_tick(pos, state, random);
     let _ = (pos, state, random);
+}
+
+/// Whether Java has block events of this level to run.
+pub(super) fn java_has_block_events() -> bool {
+    #[cfg(feature = "java-mods")]
+    return super::java_mods::has_block_events();
+    #[cfg(not(feature = "java-mods"))]
+    false
+}
+
+/// Whether a Java mod's code runs this fluid: the block that holds its source is a Java one.
+pub(super) fn java_owns_fluid(
+    behaviours: &horizon_world::level::Behaviours,
+    fluid: horizon_world::fluid::ModFluid,
+) -> bool {
+    #[cfg(feature = "java-mods")]
+    return super::java_mods::owns_fluid(behaviours, fluid);
+    #[cfg(not(feature = "java-mods"))]
+    {
+        let _ = (behaviours, fluid);
+        false
+    }
+}
+
+/// `LevelAccess::allow_fluid_tick` of a Java mod's fluid: its `FluidState.tick` runs in Java instead.
+pub(super) fn java_note_fluid_tick(pos: BlockPos, state: BlockStateId) {
+    #[cfg(feature = "java-mods")]
+    super::java_mods::note_fluid_tick(pos, state);
+    let _ = (pos, state);
+}
+
+/// What a Java mod's fluid answers in this dimension for `FlowingFluid`'s getters, once Java was asked.
+pub(super) fn java_fluid_rules(
+    dimension: horizon_core::dimension::Dimension,
+    fluid: horizon_world::fluid::ModFluid,
+) -> Option<horizon_world::fluid::ModFluidRules> {
+    #[cfg(feature = "java-mods")]
+    return super::java_mods::fluid_rules(dimension, fluid);
+    #[cfg(not(feature = "java-mods"))]
+    {
+        let _ = (dimension, fluid);
+        None
+    }
 }
 
 /// `LevelAccess::observe_block_changed`: a mod's block, or one with a block entity, changed.

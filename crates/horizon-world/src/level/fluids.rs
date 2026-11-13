@@ -795,6 +795,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     }
     /// `LiquidBlock.onPlace` / `neighborChanged`.
     pub(crate) fn liquid_block_changed(&mut self, pos: BlockPos, state: BlockStateId) {
+        if let Some(fluid) = self.b.fluid(state).kind().mod_fluid()
+            && self.level.fluid_runs_elsewhere(fluid)
+        {
+            return;
+        }
         if self.should_spread_liquid(pos, state) {
             let kind = self.b.fluid(state).kind();
             let delay = self.fluid_tick_delay(kind, pos);

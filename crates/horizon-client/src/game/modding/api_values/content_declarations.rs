@@ -460,6 +460,8 @@ impl TryIntoEngine<()> for (String, mod_api::WorldFluid) {
         Ok(engine::FluidLook {
             id: id.clone(),
             sprite: None,
+            flowing: None,
+            overlay: None,
             tint: None,
             screen_overlay: None,
             world: Some(engine::WorldFluid {
