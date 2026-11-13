@@ -374,10 +374,12 @@ impl Game<'_> {
             },
             facts: self.res.facts(),
         };
+        let angles = self.java_hook_view_angles();
         view.align_with_entity_distance(
             &entity,
             partial,
             kind,
+            angles,
             |distance| {
                 let mut distance = distance * pull;
                 self.native_camera_distance(partial, kind.is_mirrored(), &entity, &mut distance);
@@ -397,6 +399,7 @@ impl Game<'_> {
             },
         );
         self.view = view;
+        self.java_hook_view_camera(partial, view.eye, view.eye_rotation, kind as u8);
         Some((
             glam::DVec3::from_array(view.position),
             view.y_rot,

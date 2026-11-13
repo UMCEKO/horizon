@@ -109,6 +109,7 @@ fn rgba(argb: u32) -> [f32; 4] {
 }
 
 /// What the camera sees this frame.
+#[derive(Clone)]
 pub struct ScreenInputs<'a> {
     pub sprites: &'a HashMap<String, Rect>,
     /// `.png.mcmeta` sampling of the standalone textures among `sprites`.
@@ -117,8 +118,8 @@ pub struct ScreenInputs<'a> {
     pub partial: f32,
     /// Particle sprite of the view-blocking block around the eye.
     pub block_overlay: Option<String>,
-    /// Eye in water: (lightmap brightness at the eye, yaw, pitch).
-    pub water: Option<(f32, f32, f32)>,
+    /// Eye in a fluid: (overlay sprite, lightmap brightness at the eye, yaw, pitch).
+    pub fluid_overlay: Option<(String, f32, f32, f32)>,
     pub on_fire: bool,
     /// How far the fire overlay moves down, in its own heights (PvP & HUD's lower fire; 0 is
     /// vanilla's place).
@@ -246,9 +247,10 @@ impl ScreenEffects {
             ));
         }
         out.extend_from_slice(input.custom[1]);
-        if let Some((brightness, yaw, pitch)) = input.water
-            && let Some(rect) = sprite("misc/underwater")
+        if let Some((name, brightness, yaw, pitch)) = &input.fluid_overlay
+            && let Some(rect) = sprite(name)
         {
+            let (brightness, yaw, pitch) = (*brightness, *yaw, *pitch);
             let (u, v) = (-yaw / 64.0, pitch / 64.0);
             let uv = [[u + 4.0, v + 4.0], [u, v + 4.0], [u, v], [u + 4.0, v]];
             out.push(ScreenQuad {
@@ -258,7 +260,7 @@ impl ScreenEffects {
                     uv,
                     rect,
                     [brightness, brightness, brightness, 0.1],
-                    texture_sampling("misc/underwater"),
+                    texture_sampling(name),
                 )
             });
         }
@@ -409,7 +411,7 @@ mod tests {
             aspect: 1.6,
             partial: 0.0,
             block_overlay: None,
-            water: Some((1.0, 0.0, 0.0)),
+            fluid_overlay: Some(("misc/underwater".to_owned(), 1.0, 0.0, 0.0)),
             on_fire: false,
             fire_lower: 0.0,
             gui_overlays: &[crate::hud_overlays::vignette(320, 240, 1.0, 0.0)],
@@ -426,7 +428,7 @@ mod tests {
             let input = ScreenInputs {
                 block_overlay: None,
                 gui_overlays: &overlays,
-                ..input
+                ..input.clone()
             };
             assert_eq!(e.build(&input).len(), drawn, "{brightness} {warning}");
         }
@@ -465,7 +467,7 @@ mod tests {
             aspect: 1.6,
             partial: 0.0,
             block_overlay: Some("block/stone".to_owned()),
-            water: Some((1.0, 0.0, 0.0)),
+            fluid_overlay: Some(("misc/underwater".to_owned(), 1.0, 0.0, 0.0)),
             on_fire: false,
             fire_lower: 0.0,
             gui_overlays: &[crate::hud_overlays::vignette(320, 240, 1.0, 0.0)],
@@ -534,7 +536,7 @@ mod tests {
             aspect: 2.0,
             partial: 0.0,
             block_overlay: Some("block/stone".to_owned()),
-            water: None,
+            fluid_overlay: None,
             on_fire: true,
             fire_lower: 0.0,
             gui_overlays: &[],
@@ -546,6 +548,48 @@ mod tests {
             .collect();
         // Block's own overlay is grey 0x19, the fire's two quads white.
         assert_eq!(reds, [1, 0x19, 2, 3, 255, 255]);
+    }
+    #[test]
+    fn a_mod_fluids_overlay_is_the_water_quad_with_its_own_sprite() {
+        let rect = |u0| Rect {
+            u0,
+            v0: 0.0,
+            u1: u0 + 0.5,
+            v1: 1.0,
+            w: 16,
+            h: 16,
+        };
+        let sprites: HashMap<_, _> = [
+            ("misc/underwater".to_owned(), rect(0.0)),
+            ("mek:misc/brine".to_owned(), rect(0.5)),
+        ]
+        .into();
+        let flags = HashMap::new();
+        let quads = |name: &str| {
+            ScreenEffects::default().build(&ScreenInputs {
+                sprites: &sprites,
+                flags: &flags,
+                aspect: 1.6,
+                partial: 0.0,
+                block_overlay: None,
+                fluid_overlay: Some((name.to_owned(), 0.5, 128.0, 64.0)),
+                on_fire: false,
+                fire_lower: 0.0,
+                gui_overlays: &[],
+                custom: [&[]; 3],
+            })
+        };
+        let (water, brine) = (quads("misc/underwater"), quads("mek:misc/brine"));
+        assert_eq!((water.len(), brine.len()), (1, 1));
+        let (w, b) = (&water[0].vertices, &brine[0].vertices);
+        assert_eq!(b[0].rect, [0.5, 0.0, 1.0, 1.0]);
+        assert_eq!(b[0].color, [0.5, 0.5, 0.5, 0.1]);
+        // u = -yaw / 64 = -2 and v = pitch / 64 = 1, plus the quad's 4 sprite widths.
+        assert_eq!(b[0].uv, [2.0, 5.0]);
+        assert_eq!(b[0].uv, w[0].uv);
+        assert!((0..4).all(|i| b[i].uv == w[i].uv && b[i].pos == w[i].pos));
+        assert!(brine[0].world_tint);
+        assert!(quads("mek:misc/missing").is_empty());
     }
     #[test]
     fn mcmeta_texture_section() {

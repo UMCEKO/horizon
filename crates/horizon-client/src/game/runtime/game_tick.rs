@@ -30,6 +30,7 @@ impl Game<'_> {
         self.java_creative_tabs_take();
         if self.remote.is_some() {
             let result = self.with_residency_tick(Self::tick_remote);
+            self.java_music_input();
             self.java_client_tick_send();
             return result;
         }

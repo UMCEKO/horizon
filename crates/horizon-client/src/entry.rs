@@ -138,7 +138,6 @@ pub fn main_with(
         .collect();
     let ids: Vec<_> = mods.iter().map(|entry| entry.fields().id).collect();
     // Java's families go first: at equal priority Java mods hear an event before native ones, as the shims they replace did.
-    #[cfg(feature = "java-mods")]
     if let Err(error) = game::java_hook_resolve(options.java_mods.as_deref()) {
         eprintln!("Horizon: {error}");
         std::process::exit(game::exit_code::ERROR);
@@ -205,9 +204,11 @@ pub fn main_with(
             },
             loot_function: |kind, data, ctx, stack| {
                 crate::game::api_values::dispatch_loot_function(kind, data, ctx, stack);
+                crate::game::java_hook_loot_function(kind, data, ctx, stack);
             },
             loot_condition: |kind, data, ctx, holds| {
                 crate::game::api_values::dispatch_loot_condition(kind, data, ctx, holds);
+                crate::game::java_hook_loot_condition(kind, data, ctx, holds);
             },
             loot_wanted: |table| crate::game::java_hook_loot_wanted(table),
             loot_rolled: |table, ctx, tool, random, items| {

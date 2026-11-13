@@ -208,6 +208,8 @@ pub(super) fn killed_id(t: Target) -> Option<u32> {
         | Target::Trident(id)
         | Target::Spawner(id)
         | Target::Cloud(id)
+        | Target::Potion(id)
+        | Target::Eye(id)
         | Target::Cushion(id)
         | Target::Hook(id)
         | Target::Knot(id) => Some(id),

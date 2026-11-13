@@ -518,7 +518,8 @@ fn stepped_move(
 /// comes back from `ChunkDecoder::next`.
 enum Received {
     Event(Event),
-    Chunk(Arc<ChunkFormat>),
+    /// Its format and its place among the play packets.
+    Chunk(Arc<ChunkFormat>, u64),
 }
 
 /// `Minecraft.services().profileKeySignatureValidator()`: the services' profile-key keys, which a
@@ -1719,7 +1720,7 @@ impl Game<'_> {
         self.titles.reset_times();
     }
 
-    pub(super) fn send(&self, packet: S) {
+    pub(in crate::game) fn send(&self, packet: S) {
         if self.remote.is_some() {
             // MultiPlayerGameMode's attack, interact, useItem, useItemOn, releaseUsingItem, dropItem and
             // piercingAttack run ensureHasSentCarriedItem before their packet: a slot the number keys
@@ -2337,10 +2338,10 @@ impl Game<'_> {
         // order inserts its column.
         for event in r.session.poll() {
             events.push_back(match event {
-                Event::Packet(p) if matches!(*p, C::LevelChunkWithLight(_)) => {
+                Event::Packet(p, seq) if matches!(*p, C::LevelChunkWithLight(_)) => {
                     match r.decoder.submit(r.chunk_format.clone(), p) {
-                        None => Received::Chunk(r.chunk_format.clone()),
-                        Some(p) => Received::Event(Event::Packet(p)),
+                        None => Received::Chunk(r.chunk_format.clone(), seq),
+                        Some(p) => Received::Event(Event::Packet(p, seq)),
                     }
                 }
                 event => Received::Event(event),
@@ -2354,15 +2355,16 @@ impl Game<'_> {
         // teleport at 32 chunks) is forgotten at once, before whatever follows it.
         let mut forgotten = horizon_client::fast_hash::FxHashSet::default();
         while let Some(item) = events.pop_front() {
-            if let Received::Event(Event::Packet(packet)) = &item
+            if let Received::Event(Event::Packet(packet, seq)) = &item
                 && let C::ForgetLevelChunk(p) = &**packet
             {
                 self.observe_client_packet(packet);
                 forgotten.insert((p.pos[0], p.pos[1]));
+                self.java_feed(None, *seq);
                 continue;
             }
             self.forget_remote_columns(&mut forgotten, true);
-            let chunk = matches!(item, Received::Chunk(_));
+            let chunk = matches!(item, Received::Chunk(..));
             if chunk && !overdue && chunks >= CHUNK_PACKETS_PER_FRAME {
                 events.push_front(item);
                 break;
@@ -2370,7 +2372,7 @@ impl Game<'_> {
             let started = chunk.then(Instant::now);
             let event = match item {
                 Received::Event(event) => event,
-                Received::Chunk(format) => {
+                Received::Chunk(format, seq) => {
                     // A column still decoding waits for the next frame, with
                     // what came after it, overdue or not.
                     let Some(next) = self.remote.as_ref().map(|r| r.decoder.next()) else {
@@ -2379,7 +2381,7 @@ impl Game<'_> {
                     let (packet, column) = match next {
                         Next::Ready(decoded) => decoded,
                         Next::Decoding => {
-                            events.push_front(Received::Chunk(format));
+                            events.push_front(Received::Chunk(format, seq));
                             break;
                         }
                         Next::Lost => {
@@ -2391,6 +2393,7 @@ impl Game<'_> {
                     if let C::LevelChunkWithLight(p) = *packet {
                         self.remote_chunk(&p, Some((&format, column)));
                     }
+                    self.java_feed(None, seq);
                     chunks += started.map_or(Duration::ZERO, |t| t.elapsed());
                     continue;
                 }
@@ -2439,7 +2442,7 @@ impl Game<'_> {
                         remote.quiet_commands = true;
                     }
                 }
-                Event::Java(frame) => self.java_wire_in(&frame),
+                Event::Java(frame, seq) => self.java_wire_in(&frame, seq),
                 Event::ModNet => {
                     if let Some(remote) = &mut self.remote {
                         remote.mod_net = true;
@@ -2558,7 +2561,11 @@ impl Game<'_> {
                     self.offer_reconnect(retry);
                     return Ok(());
                 }
-                Event::Packet(packet) => self.handle_packet(*packet)?,
+                Event::Packet(packet, seq) => {
+                    let fed = self.java_feeds(&packet).then(|| packet.clone());
+                    self.handle_packet(*packet)?;
+                    self.java_feed(fed.as_deref(), seq);
+                }
             }
             chunks += started.map_or(Duration::ZERO, |t| t.elapsed());
             if self.remote.is_none() {
@@ -2905,7 +2912,7 @@ impl Game<'_> {
             .as_ref()
             .is_none_or(|r| r.dimension.has_skylight);
         self.streaming.sky_light = has_sky;
-        self.streaming.nether_shading = self.dim == Dim::Nether;
+        self.streaming.nether_shading = self.nether_cardinal_light();
         // The seed in SpawnInfo is already the hashed one the client's BiomeManager holds.
         self.streaming.biome_zoom = horizon_core::biome::BiomeZoom::new(spawn.seed);
         let player = self.player.as_ref();
@@ -6913,7 +6920,8 @@ impl Game<'_> {
         self.tick_subtitles();
         self.tick_client_load();
         // `LocalPlayer.aiStep`'s moment; Java parks there or not on its own state, and early returns leave it to the tick's guard.
-        let _java_step = self.java_hook_player_begin();
+        let java_step = self.java_hook_player_begin();
+        let java_old = self.java_hook_motion_writes(java_step.as_deref());
         let entity_collisions = self.player_entity_collisions();
         // Those added before it tick before it: their pushes reach this move.
         let pushed = pushed_after.add_vector(self.remote_pushes(true));
@@ -6954,7 +6962,7 @@ impl Game<'_> {
         if let Some(player) = player {
             self.native_player_tick_pre(mod_api::__private::PlayerTickPreCall { player });
         }
-        let result = self.tick_local_player(entity_collisions, pushed, sprint_window);
+        let result = self.tick_local_player(entity_collisions, pushed, sprint_window, java_old);
         // `EntityEvent.Size` for the pose the tick set.
         self.native_local_player_size();
         if let Some(player) = player {
@@ -6970,6 +6978,7 @@ impl Game<'_> {
         entity_collisions: Vec<horizon_core::geometry::Aabb>,
         pushed: Vec3,
         sprint_window: i32,
+        java_old: Option<Vec3>,
     ) -> Result<()> {
         // Player.tick's ItemCooldowns.tick, after Pre and after
         // handleKeybinds: this path replaces `tick_world`'s for a server's
@@ -7062,7 +7071,8 @@ impl Game<'_> {
         };
         player.fluids.boat = boat;
         if !riding && !self.replay.playing() {
-            self.previous_position = player.position;
+            // Vanilla took `xo` before a `PlayerTickEvent.Pre` write and after a `ClientTickEvent.Pre` one.
+            self.previous_position = java_old.unwrap_or(player.position);
         }
         let before = (
             player.ground.on_ground,
@@ -12362,6 +12372,14 @@ impl ClientMenu {
 }
 
 impl Remote {
+    /// Where the server last put a tracked entity, as this client applied it.
+    #[cfg_attr(
+        not(feature = "java-mods"),
+        expect(dead_code, reason = "only the Java client's feed reads it")
+    )]
+    pub(super) fn tracked_position(&self, id: i32) -> Option<[f64; 3]> {
+        self.entities.get(&id).map(|t| t.position)
+    }
     pub(super) fn set_menu_title(&mut self, title: Option<horizon_client::text::Text>) {
         self.menu_title_snapshot = title.try_into_api().ok().flatten().map(Arc::new);
         self.menu_title = title;

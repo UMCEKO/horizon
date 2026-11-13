@@ -1,0 +1,1 @@
+package fixture; public class FakeShape extends net.minecraft.world.phys.shapes.VoxelShape {}

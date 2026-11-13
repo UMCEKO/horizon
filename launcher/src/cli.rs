@@ -1963,6 +1963,9 @@ fn java_mods(action: JavaModsCmd, as_json: bool) -> Result<i32, String> {
                 .find(|e| e.name == server)
                 .ok_or_else(|| trf("No server named {server}.", &[("server", &server)]))?;
             mods::set_server(&entry.dir, state == "on")?;
+            if state == "on" {
+                mods::prepare_server(&crate::backend::resolve_version(None)?, &entry.dir)?;
+            }
             println!(
                 "{}",
                 trf(

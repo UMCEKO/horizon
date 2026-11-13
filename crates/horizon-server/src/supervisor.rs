@@ -262,11 +262,29 @@ pub fn run(dir: &Path) -> Result<(), String> {
         );
         shared.set_phase(Phase::Starting);
         let transfers = config.transfer.engine_arg();
+        let java_mods = config
+            .engine
+            .java_mods_dir(dir)?
+            .map(|p| std::path::absolute(&p).unwrap_or(p));
+        shared
+            .state
+            .lock()
+            .unwrap()
+            .java_mods
+            .clone_from(&java_mods);
+        if let Some(path) = &java_mods {
+            note(
+                &shared,
+                "INFO",
+                &format!("With the Java mods of {}", path.display()),
+            );
+        }
         let mut child = engine::spawn(
             &program,
             &resources,
             dir,
             config.engine.low_memory,
+            java_mods.as_deref(),
             transfers.as_deref(),
         )
         .map_err(|e| format!("{}: {e}", program.display()))?;

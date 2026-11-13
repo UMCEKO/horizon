@@ -167,7 +167,11 @@ use horizon_core::{
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use horizon_mod_package::selection::{Argument, LaunchArguments};
-pub(crate) use java_hooks::{java_hook_loot_rolled, java_hook_loot_wanted, java_hook_resolve};
+pub(crate) use java_hooks::{
+    java_hook_loot_condition, java_hook_loot_function, java_hook_loot_rolled, java_hook_loot_wanted,
+};
+#[cfg(feature = "java-mods")]
+pub(crate) use java_hooks::java_hook_resolve;
 pub use native_block_entity_draw::BlockEntityDraw;
 pub use native_claimed_items::{HeldItemSlot, ModEvent};
 pub use native_components::NativeComponentError;
@@ -1146,8 +1150,20 @@ impl LevelAccess for GameLevel<'_> {
         let mut cancel = false;
         if self.native_authoritative {
             self.native_fluid_tick(self.dimension, pos, fluid, &mut cancel);
+            if !cancel {
+                let state = self.block_state(pos);
+                if let Some(owned) = self.behaviours.fluid(state).kind().mod_fluid()
+                    && java_hooks::java_owns_fluid(self.behaviours, owned)
+                {
+                    java_hooks::java_note_fluid_tick(pos, state);
+                    cancel = true;
+                }
+            }
         }
         !cancel
+    }
+    fn fluid_runs_elsewhere(&self, fluid: horizon_world::fluid::ModFluid) -> bool {
+        self.native_authoritative && java_hooks::java_owns_fluid(self.behaviours, fluid)
     }
     fn allow_fluid_level_change(
         &self,
@@ -1178,6 +1194,7 @@ impl LevelAccess for GameLevel<'_> {
         if !self.native_authoritative {
             return registered;
         }
+        let registered = java_hooks::java_fluid_rules(self.dimension, fluid).unwrap_or(registered);
         Self::answered_fluid_rules(self.dimension, pos, fluid, registered, |call| {
             self.native_fluid_rules(call)
         })
@@ -4937,6 +4954,7 @@ impl Game<'_> {
             }),
             this_entity: None,
             killer: None,
+            block_state: None,
         }
     }
     /// `Block.getDrops` for a block a player breaks: the block's loot table
@@ -4950,11 +4968,14 @@ impl Game<'_> {
         held: Option<&ItemStack>,
         block_entity: Option<horizon_core::nbt::Tag>,
     ) -> Vec<ItemStack> {
+        let swapped = self.java_hook_tool_for_loot(held);
+        let held = swapped.as_ref().or(held);
         let dynamic = self.pending.dynamic(pos);
         let mut place = self.loot_place_at(pos.map(|v| f64::from(v) + 0.5), block_entity);
         let (_, entity) = self.native_clicker();
         let player = self.native_acting_id();
         place.this_entity = Some((entity, player));
+        place.block_state = Some(state);
         let mut drops = horizon_world::loot::with_native_loot_place(place, || {
             let roll = horizon_client::items::BlockLootRoll {
                 held,
@@ -10109,7 +10130,8 @@ impl Game<'_> {
         }
         self.apply_settings();
         self.streaming.sky_light = dim != Dim::Nether;
-        self.streaming.nether_shading = dim == Dim::Nether;
+        self.streaming.nether_shading = self.dimension_type_of(dim).cardinal_light
+            == horizon_world::dimension_type::CardinalLight::Nether;
         self.load_world_state();
         // The level the world opens in, before any of its chunks.
         self.native_level_opened(dim);
@@ -12882,6 +12904,7 @@ impl Game<'_> {
             Err(_) if self.renderer.as_ref().is_some_and(Renderer::device_lost) => false,
             result => result?,
         };
+        self.java_render_frame(1);
         self.native_render_frame_post(elapsed);
         if rendered {
             // The submit thread may still hold the frame: a listener hears it after the
@@ -15327,12 +15350,17 @@ impl Game<'_> {
                 let more = self.with_level(|b, level, ticks| {
                     loop {
                         let more = b.scheduled_step(level, ticks, fluids);
-                        if !more || !level.events.is_empty() || !level.spill.is_empty() {
+                        if !more
+                            || !level.events.is_empty()
+                            || !level.spill.is_empty()
+                            || java_hooks::java_has_block_events()
+                        {
                             break more;
                         }
                     }
                 });
-                if !self.level_events.is_empty() {
+                // A Java mod's block or fluid tick runs before the next due tick, as vanilla's inline one does.
+                if !self.level_events.is_empty() || java_hooks::java_has_block_events() {
                     self.process_level_events()?;
                 }
                 if !more {

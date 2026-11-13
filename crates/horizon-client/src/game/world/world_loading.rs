@@ -33,13 +33,16 @@ pub(super) struct WorldOpening {
 /// The worker's side of the world start's exchange: it tells the world, then waits for the export.
 pub(super) struct WorldgenAsk {
     opening: std::sync::mpsc::Sender<WorldOpening>,
-    export: std::sync::mpsc::Receiver<JavaWorldgen>,
+    export: std::sync::mpsc::Receiver<JavaWorldStart>,
 }
+
+/// What the server thread answers: the export, or why Java couldn't build the world's generation context.
+pub(super) type JavaWorldStart = std::result::Result<JavaWorldgen, String>;
 
 /// The server thread's side: it fires `ServerAboutToStart` for the world, then answers with the export.
 pub(super) struct WorldgenAnswer {
     opening: std::sync::mpsc::Receiver<WorldOpening>,
-    export: std::sync::mpsc::Sender<JavaWorldgen>,
+    export: std::sync::mpsc::Sender<JavaWorldStart>,
 }
 
 pub(super) fn worldgen_exchange() -> (WorldgenAsk, WorldgenAnswer) {
@@ -55,10 +58,12 @@ pub(super) fn worldgen_exchange() -> (WorldgenAsk, WorldgenAnswer) {
 }
 
 impl WorldgenAsk {
-    /// None when the server thread let go of its side.
-    fn ask(self, opening: WorldOpening) -> JavaWorldgen {
-        self.opening.send(opening).ok()?;
-        self.export.recv().ok().flatten()
+    /// None when the server thread let go of its side; an error when Java couldn't build the world's generation context.
+    fn ask(self, opening: WorldOpening) -> JavaWorldStart {
+        if self.opening.send(opening).is_err() {
+            return Ok(None);
+        }
+        self.export.recv().unwrap_or(Ok(None))
     }
 }
 
@@ -349,8 +354,9 @@ impl WorldRequest {
         );
         Dim::set_extra(shapes.extra.iter().map(|level| level.id));
         // `MinecraftServer.runServer`: `ServerAboutToStart` comes before the levels are created.
-        let java_worldgen = java_worldgen.and_then(|ask| {
-            ask.ask(WorldOpening {
+        let java_worldgen = match java_worldgen {
+            None => None,
+            Some(ask) => ask.ask(WorldOpening {
                 root: save_root.clone(),
                 seed: level.seed,
                 packs: enabled_pack_ids(
@@ -360,7 +366,8 @@ impl WorldRequest {
                     &pack.additional_data,
                 ),
             })
-        });
+            .map_err(|why| format!("Failed to load world \"{folder}\": {why}"))?,
+        };
         // The bounded registry-loader leaf slice: fail world preparation before streaming,
         // rather than letting the flat-generator fallback swallow a selected pack's codec error.
         let (overrides, _) = worldgen_overrides_of(
@@ -1319,7 +1326,11 @@ pub(super) fn make_streaming(
         .leaf_culling_effective(&settings.resource_packs);
     streaming.biome_zoom = BiomeZoom::new(obfuscate_seed(seed));
     streaming.sky_light = dim != Dim::Nether;
-    streaming.nether_shading = dim == Dim::Nether;
+    streaming.nether_shading = horizon_world::dimension_type::DimensionFacts::of_level(
+        horizon_core::LevelKey::parse(dim.id()).unwrap_or(horizon_core::LevelKey::OVERWORLD),
+    )
+    .cardinal_light
+        == horizon_world::dimension_type::CardinalLight::Nether;
     // A server draws nothing: neither the integrated server nor the
     // dedicated one meshes sections.
     streaming.mesh = options.execution_role.is_client();

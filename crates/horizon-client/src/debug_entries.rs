@@ -195,6 +195,87 @@ pub fn registered() -> &'static [DebugEntry] {
     }
 }
 
+/// An F3 entry a Java mod registered (`RegisterDebugEntriesEvent`): its section, whether it shows
+/// while debug info is reduced, and the status each profile gives it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JavaEntry {
+    pub id: String,
+    pub category: Category,
+    pub reduced: bool,
+    pub default: Option<Status>,
+    pub performance: Option<Status>,
+}
+
+/// The Java mods' entries, set once per Java client boot.
+static JAVA: OnceLock<Vec<JavaEntry>> = OnceLock::new();
+
+/// Keeps the entries the Java client's boot registered. One that is not `<namespace>:<path>` in a
+/// namespace other than vanilla's, or that another entry has already, is logged and left out.
+pub fn set_java_entries(entries: Vec<JavaEntry>) {
+    let mut kept: Vec<JavaEntry> = Vec::new();
+    for entry in entries {
+        let own = Identifier::parse_namespaced(&entry.id)
+            .is_some_and(|id| id.namespace() != "minecraft");
+        let twice = registered().iter().any(|r| r.id == entry.id)
+            || kept.iter().any(|k| k.id == entry.id);
+        if !own {
+            log::warn!("Java debug entry {:?} is not in a mod's namespace", entry.id);
+        } else if twice {
+            log::warn!("Java debug entry {} is registered twice; the first is kept", entry.id);
+        } else {
+            kept.push(entry);
+        }
+    }
+    if JAVA.set(kept).is_err() {
+        log::warn!("Java debug entries were set already; these are left out");
+    }
+}
+
+/// The Java mods' entries, in the order they were set.
+pub fn java_entries() -> &'static [JavaEntry] {
+    JAVA.get().map_or(&[], Vec::as_slice)
+}
+
+/// A label's section: the renderer one by its translation key, any other label (a mod's own
+/// category) among the screen text.
+pub fn category_of_label(label_json: &str) -> Category {
+    let translate = serde_json::from_str::<serde_json::Value>(label_json)
+        .ok()
+        .and_then(|label| label.get("translate")?.as_str().map(str::to_owned));
+    match translate.as_deref() {
+        Some("debug.options.category.renderer") => Category::Renderer,
+        _ => Category::Text,
+    }
+}
+
+/// `Identifier`'s natural order: the path, then the namespace.
+fn identifier_order(path: &str) -> (&str, &str) {
+    path.split_once(':')
+        .map_or((path, "minecraft"), |(namespace, path)| (path, namespace))
+}
+
+fn java_as_entry(entry: &'static JavaEntry) -> Entry {
+    Entry {
+        path: entry.id.as_str(),
+        category: entry.category,
+        reduced: entry.reduced,
+    }
+}
+
+/// The statuses Java entries give a profile.
+fn java_defaults(
+    entries: &[JavaEntry],
+    profile: Profile,
+) -> impl Iterator<Item = (String, Status)> + '_ {
+    entries.iter().filter_map(move |e| {
+        let status = match profile {
+            Profile::Default => e.default,
+            Profile::Performance => e.performance,
+        };
+        Some((e.id.clone(), status?))
+    })
+}
+
 fn checked(entries: Vec<DebugEntry>) -> Vec<DebugEntry> {
     let mut kept: Vec<DebugEntry> = Vec::new();
     for entry in entries {
@@ -233,7 +314,10 @@ fn as_entry(entry: &'static DebugEntry) -> Entry {
 
 /// Every entry: vanilla's, then the native mods' (`registered`).
 pub fn all() -> impl Iterator<Item = Entry> {
-    ENTRIES.into_iter().chain(registered().iter().map(as_entry))
+    ENTRIES
+        .into_iter()
+        .chain(registered().iter().map(as_entry))
+        .chain(java_entries().iter().map(java_as_entry))
 }
 
 /// `DebugScreenEntries.getEntry` by path.
@@ -244,8 +328,16 @@ pub fn entry(path: &str) -> Option<Entry> {
 /// `DebugOptionsScreen.OptionList.updateSearch`: the entries whose path
 /// contains `search`, by category then identifier.
 pub fn search(search: &str) -> Vec<Entry> {
-    let mut entries: Vec<Entry> = all().filter(|e| e.path.contains(search)).collect();
-    entries.sort_by(|a, b| a.category.cmp(&b.category).then(a.path.cmp(b.path)));
+    search_in(all(), search)
+}
+
+fn search_in(entries: impl Iterator<Item = Entry>, search: &str) -> Vec<Entry> {
+    let mut entries: Vec<Entry> = entries.filter(|e| e.path.contains(search)).collect();
+    entries.sort_by(|a, b| {
+        a.category
+            .cmp(&b.category)
+            .then(identifier_order(a.path).cmp(&identifier_order(b.path)))
+    });
     entries
 }
 
@@ -400,12 +492,25 @@ impl DebugEntries {
         }
     }
     fn reset_to_profile(&mut self, profile: Profile) {
+        self.reset_with(profile, java_entries());
+    }
+    /// `reset_to_profile` with the Java entries' statuses for the profile besides vanilla's.
+    fn reset_with(&mut self, profile: Profile, java: &[JavaEntry]) {
         self.profile = Some(profile);
         self.statuses = profile
             .statuses()
             .iter()
             .map(|(path, status)| (identifier(path).into_owned(), *status))
+            .chain(java_defaults(java, profile))
             .collect();
+    }
+    /// The Java entries arrived after the profile was read: a profile still in use takes their
+    /// statuses; custom statuses leave them off, as vanilla's file does for an entry it lacks.
+    pub fn java_entries_set(&mut self) {
+        if let Some(profile) = self.profile {
+            self.reset_to_profile(profile);
+            self.invalidate();
+        }
     }
     /// `loadProfile` then `save` (the screen's profile buttons).
     pub fn load_profile(&mut self, profile: Profile) {
@@ -447,12 +552,15 @@ impl DebugEntries {
     /// `isCurrentlyEnabled` (`rebuildCurrentList`): on always, or in the
     /// `overlay` while it is open, and allowed with the debug info `reduced`.
     pub fn enabled(&self, path: &str, overlay: bool, reduced: bool) -> bool {
+        self.enabled_for(entry(path), path, overlay, reduced)
+    }
+    fn enabled_for(&self, entry: Option<Entry>, path: &str, overlay: bool, reduced: bool) -> bool {
         let shown = match self.status(path) {
             Status::AlwaysOn => true,
             Status::InOverlay => overlay,
             Status::Never => false,
         };
-        shown && entry(path).is_some_and(|e| e.reduced || !reduced)
+        shown && entry.is_some_and(|e| e.reduced || !reduced)
     }
     /// `DebugScreenEntryList.rebuildCurrentList`: invalidate even if the enabled set is unchanged.
     pub fn invalidate(&mut self) {
@@ -756,5 +864,76 @@ mod tests {
             group: DebugGroup::Light,
         }];
         assert!(mod_lines(&entries, |_| true, |_, _| {}).is_empty());
+    }
+
+    fn food_stats() -> JavaEntry {
+        JavaEntry {
+            id: "appleskin:food_stats".into(),
+            category: Category::Text,
+            reduced: false,
+            default: Some(Status::InOverlay),
+            performance: None,
+        }
+    }
+
+    fn leaked(entry: JavaEntry) -> &'static JavaEntry {
+        Box::leak(Box::new(entry))
+    }
+
+    #[test]
+    fn identifiers_sort_by_path_before_namespace() {
+        let food = leaked(JavaEntry {
+            id: "zzmod:food_stats".into(),
+            ..food_stats()
+        });
+        let fps = ENTRIES.iter().copied().find(|e| e.path == "fps").unwrap();
+        let version = ENTRIES
+            .iter()
+            .copied()
+            .find(|e| e.path == "game_version")
+            .unwrap();
+        let sorted = search_in([java_as_entry(food), version, fps].into_iter(), "");
+        let paths: Vec<&str> = sorted.iter().map(|e| e.path).collect();
+        // `Identifier.compareTo`: the path decides first, so the namespace does not sort them last.
+        assert_eq!(paths, ["zzmod:food_stats", "fps", "game_version"]);
+    }
+
+    #[test]
+    fn a_java_entry_in_the_default_profile_shows_with_the_overlay_only() {
+        let food = leaked(food_stats());
+        let mut e = DebugEntries::default();
+        e.reset_with(Profile::Default, std::slice::from_ref(food));
+        assert_eq!(e.status("appleskin:food_stats"), Status::InOverlay);
+        let entry = Some(java_as_entry(food));
+        assert!(e.enabled_for(entry, "appleskin:food_stats", true, false));
+        assert!(!e.enabled_for(entry, "appleskin:food_stats", false, false));
+        // It is not in the performance profile.
+        e.reset_with(Profile::Performance, std::slice::from_ref(food));
+        assert_eq!(e.status("appleskin:food_stats"), Status::Never);
+    }
+
+    #[test]
+    fn a_java_entrys_default_status_is_saved_with_the_custom_statuses() {
+        let food = leaked(food_stats());
+        let dir = std::env::temp_dir().join(format!("hz-debug-java-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut e = DebugEntries::load(&dir);
+        e.reset_with(Profile::Default, std::slice::from_ref(food));
+        e.set_status("fps", Status::Never);
+        let text = std::fs::read_to_string(dir.join("debug-profile.json")).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let (profile, custom) = DebugEntries::parse(&text).unwrap();
+        assert_eq!(profile, None);
+        assert_eq!(custom.get("appleskin:food_stats"), Some(&Status::InOverlay));
+        assert_eq!(custom.get("minecraft:fps"), Some(&Status::Never));
+    }
+
+    #[test]
+    fn a_label_is_the_renderer_section_by_its_translation_key() {
+        let renderer = r#"{"translate":"debug.options.category.renderer","bold":true}"#;
+        let text = r#"{"translate":"debug.options.category.text"}"#;
+        assert_eq!(category_of_label(renderer), Category::Renderer);
+        assert_eq!(category_of_label(text), Category::Text);
+        assert_eq!(category_of_label(r#"{"text":"Mine"}"#), Category::Text);
     }
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Dev only: compares the Rust mod analysis (crates/horizon-java-analysis) with the Python it ports, stage by stage.
 
-    python3 tools/java_analysis_compare.py classes|libraries|jars|mixins|knowledge|replaces|entity-guards|entity-facts|all --install DIR [--bin PATH]
+    python3 tools/java_analysis_compare.py classes|libraries|jars|mixins|knowledge|replaces|entity-guards|entity-facts|routing|all --install DIR [--bin PATH]
 
 Writes only into a temp folder. Prints `N <units>, M differences` and the first 20 differences (one line per stage for `all`); exits 1 on any.
 """
@@ -16,11 +16,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import java_knowledge  # noqa: E402
+import java_routing as jr  # noqa: E402
 import lab  # noqa: E402
 import mod_entity_facts as ef  # noqa: E402
 import mod_parity_explain as ex  # noqa: E402
 import mod_parity as mp  # noqa: E402
 import mod_replaces as mr  # noqa: E402
+import mod_routing as mrt  # noqa: E402
 
 SHOWN = 20
 
@@ -216,16 +218,31 @@ def compare_knowledge(install, binary):
 UNCLASSIFIED = 'entity methods without a state group'
 
 
+def tree_inputs(scratch):
+    """The bridges, gated keys, deferrals and verdicts the Python reads from the tree, as the Rust command's --bridges, --gates, --deferred and --verdicts files."""
+    folder = Path(scratch)
+    files = {'bridges': folder / 'bridges.tsv', 'gates': folder / 'gates.txt', 'deferred': folder / 'deferred.tsv', 'verdicts': folder / 'verdicts.tsv'}
+    files['bridges'].write_text(''.join(f'{o}\t{n}\t{d}\n' for o, n, d in sorted(mrt.bridge_table())))
+    files['gates'].write_text(''.join(f'{k}\n' for k in sorted({g['key'] for g in jr.scan_tree()})))
+    files['deferred'].write_text(''.join(f'{k}\t{r}\n' for k, r in jr.read_deferred()))
+    files['verdicts'].write_text(''.join(f'{k}\t{v}\n' for k, v, _ in jr.read_verdicts()))
+    return files
+
+
 def run_both(install, binary, scratch):
     """mod_replaces.run and the Rust `replaces` command, each into its own folder under scratch; both may stop on unclassified entity methods."""
     python_out, rust_out, cache = Path(scratch) / 'python', Path(scratch) / 'rust', Path(scratch) / 'cache'
-    args = argparse.Namespace(install=str(install), out=str(python_out), ledger=str(mr.LEDGER_JSON), cache=str(cache), mixins=None, routes_out=None)
+    args = argparse.Namespace(install=str(install), out=str(python_out), ledger=str(mr.LEDGER_JSON), cache=str(cache), mixins=None,
+                              routes_out=str(Path(scratch) / 'python-routes.tsv'))
     try:
         mr.run(args)
     except SystemExit as e:
         if not str(e.code).startswith(UNCLASSIFIED):
             raise
-    run = subprocess.run([str(binary), 'replaces', '--install', str(install), '--boot-jar', str(knowledge_jar(scratch)), '--out', str(rust_out), '--cache', str(cache)],
+    tree = tree_inputs(scratch)
+    run = subprocess.run([str(binary), 'replaces', '--install', str(install), '--boot-jar', str(knowledge_jar(scratch)), '--out', str(rust_out), '--cache', str(cache),
+                          '--bridges', str(tree['bridges']), '--gates', str(tree['gates']), '--deferred', str(tree['deferred']), '--verdicts', str(tree['verdicts']),
+                          '--routes-out', str(Path(scratch) / 'rust-routes.tsv')],
                          capture_output=True, text=True)
     if run.returncode and UNCLASSIFIED not in run.stderr:
         sys.exit(f'horizon-java-analysis replaces failed ({run.returncode}): {run.stderr[-2000:]}')
@@ -305,6 +322,24 @@ def compare_entity_facts(install, binary):
     return len(python['events']) + len(python['writes']) + len(python['routes']), found
 
 
+def compare_routing(install, binary):
+    """routing.json as parsed JSON; routing.tsv, replaces.md and the --routes-out list as text."""
+    found = []
+    with tempfile.TemporaryDirectory(prefix='java-analysis-compare-') as scratch:
+        python_out, rust_out = run_both(install, binary, scratch)
+        python, rust = (json.loads((out / 'routing.json').read_text()) for out in (python_out, rust_out))
+        found += [(f'routing.json: {p}', x, y) for p, x, y in differences('', python, rust)]
+        texts = [(name, python_out / name, rust_out / name) for name in ('routing.tsv', 'replaces.md')]
+        texts.append(('routes-out', Path(scratch) / 'python-routes.tsv', Path(scratch) / 'rust-routes.tsv'))
+        for name, a, b in texts:
+            a, b = a.read_bytes(), b.read_bytes()
+            if a != b:
+                a, b = a.decode().splitlines(), b.decode().splitlines()
+                line = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
+                found.append((f'{name} bytes, line {line + 1}', (a[line:line + 1] or [''])[0], (b[line:line + 1] or [''])[0]))
+    return len(python['routes']) + len(python['undecided']) + len(python['lambdas']), found
+
+
 STAGES = {
     'classes': (compare_classes, 'classes', 'the class-file reader'),
     'libraries': (compare_libraries, 'library classes', 'library jars, class index, SPI names'),
@@ -314,6 +349,7 @@ STAGES = {
     'replaces': (compare_replaces, 'methods and events', 'replaces.json: changes, listeners, routing, summary'),
     'entity-guards': (compare_entity_guards, 'type ids and guarded listeners', 'entity type ids and listener guards'),
     'entity-facts': (compare_entity_facts, 'events, writers and routed classes', 'entity-facts.json: events, reads, writes, hooks, routes, caps'),
+    'routing': (compare_routing, 'routes, undecided keys and lambdas', 'routing.json, routing.tsv, replaces.md and the reference-pack list'),
 }
 
 

@@ -198,6 +198,8 @@ impl Game<'_> {
                             Kind::Player => "player",
                             Kind::Hook => "hook",
                             Kind::DragonPart => "dragonpart",
+                            Kind::Potion => "potion",
+                            Kind::Eye => "eye",
                         };
                         return Err(AttachmentError::UnsupportedHolder(name));
                     }

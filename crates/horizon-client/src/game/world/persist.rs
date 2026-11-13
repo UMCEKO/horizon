@@ -2004,6 +2004,43 @@ impl Game<'_> {
             let tag = super::potions::potion_cloud_to_nbt(c, uuid, self.persist.raw.get(&c.id));
             out.entry(chunk_of(at)).or_default().push(tag);
         }
+        // `ThrowableItemProjectile.addAdditionalSaveData`: a potion in flight is an entity of its chunk.
+        for t in &self.potions.thrown {
+            if t.id == 0 || !keys.contains(&chunk_of(t.position)) {
+                continue;
+            }
+            let tag = entity_nbt::thrown_potion_to_nbt(
+                &entity_nbt::ThrownPotionSave {
+                    item: &t.stack,
+                    position: t.position,
+                    motion: t.velocity,
+                    owner: t
+                        .thrower
+                        .filter(|_| t.guest.is_none())
+                        .and_then(|who| self.save_who_uuid(who)),
+                    left_owner: t.left_owner,
+                    has_been_shot: t.age > 0,
+                },
+                saved_uuid(&self.persist, t.id),
+                self.persist.raw.get(&t.id),
+            );
+            out.entry(chunk_of(t.position)).or_default().push(tag);
+        }
+        // `EyeOfEnder.addAdditionalSaveData`: its `Item`; it reloads flying on by its motion.
+        for e in self.end.eyes.iter() {
+            let at = Vec3::new(e.position.x, e.position.y, e.position.z);
+            if e.id == 0 || !keys.contains(&chunk_of(at)) {
+                continue;
+            }
+            let motion = Vec3::new(e.velocity.x, e.velocity.y, e.velocity.z);
+            let tag = entity_nbt::eye_of_ender_to_nbt(
+                at,
+                motion,
+                saved_uuid(&self.persist, e.id),
+                self.persist.raw.get(&e.id),
+            );
+            out.entry(chunk_of(at)).or_default().push(tag);
+        }
         for o in &self.others {
             if keys.contains(&chunk_of(o.position)) {
                 let uuid = self
@@ -2108,6 +2145,21 @@ impl Game<'_> {
                 let keep = c.potion.is_none() || !gone(Vec3::new(c.at[0], c.at[1], c.at[2]));
                 if !keep {
                     removed.push(c.id);
+                }
+                keep
+            });
+            // The potions and eyes written above leave with their chunk.
+            self.potions.thrown.retain(|t| {
+                let keep = t.id == 0 || !gone(t.position);
+                if !keep {
+                    removed.push(t.id);
+                }
+                keep
+            });
+            self.end.eyes.retain(|e| {
+                let keep = e.id == 0 || !gone(Vec3::new(e.position.x, e.position.y, e.position.z));
+                if !keep {
+                    removed.push(e.id);
                 }
                 keep
             });

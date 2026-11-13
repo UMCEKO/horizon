@@ -84,6 +84,7 @@ impl Game<'_> {
         self.hook.discard();
         self.bind_current_hook_residency();
         self.hook.replace(hook);
+        self.native_joins_flush(false, 0);
     }
 
     pub(super) fn remove_local_player_body(&mut self) {

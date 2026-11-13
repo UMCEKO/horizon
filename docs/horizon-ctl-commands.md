@@ -94,7 +94,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `click-button LABEL` | `click_button` | Click a button of the open screen or title menu by its label | `label` (text, required): button label |
 | `click-at X Y [right]` | `click_at` | Click at GUI pixel X Y of the window (screen gives button rectangles) | `x` (number, required): GUI x<br>`y` (number, required): GUI y<br>`right` (boolean): right-click |
 | `drag-at [right] X Y X Y...` | `drag_at` | Press at the first GUI point, move through the others, release at the last | `points` (text, required): right, then GUI x y pairs |
-| `scroll-at X Y STEPS` | `scroll_at` | Turn the mouse wheel at GUI pixel X Y (positive scrolls up) | `x` (number, required): GUI x<br>`y` (number, required): GUI y<br>`steps` (number, required): wheel steps |
+| `scroll-at X Y STEPS` | `scroll_at` | Turn the mouse wheel at GUI pixel X Y (positive scrolls up); with no screen open it is the world's wheel: the hotbar, unless a mod's scroll listener cancels it | `x` (number, required): GUI x<br>`y` (number, required): GUI y<br>`steps` (number, required): wheel steps |
 | `type [--field name\|seed] [--replace] TEXT` | `type` | Type into the focused text field (chat box, world name, anvil, sign...) | `--field` (name, seed): create-world field to type into<br>`--replace` (boolean): clear the field first<br>`text` (text, required): text to type |
 | `chat TEXT` | `chat` (network) | Send a chat line (or a /command) as if typed | `text` (text, required): message |
 | `command TEXT` | `command` (network) | Run a command (the leading / is optional) | `command` (text, required): command line |
@@ -143,7 +143,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `sleep SECONDS` | CLI only | Wait (in scripts) | none |
 | `mcp [--paced]` | CLI only | Serve the Model Context Protocol on stdin/stdout, one tool per command | none |
 | `bench SECONDS` | `bench` | Reset frame stats, wait, reply with the summary | `seconds` (number, required): how long to measure |
-| `worldgen biomes\|starts\|chunks [JSON]` | CLI only | What the world's production generator makes: biomes at a grid, structure starts in a square, or hashes of the 3x3 chunks around 0,0 (tools/worldgen_compare.py) | `part` (biomes, starts, chunks, required): which part to dump<br>`request` (text): the request JSON |
+| `worldgen biomes\|starts\|chunks [JSON] \| probe LEVEL X,Z[,Y]...` | CLI only | What the world's production generator makes: biomes at a grid, structure starts in a square, or hashes of the 3x3 chunks around 0,0 (tools/worldgen_compare.py); probe asks the Java mods' generator of a level | `part` (biomes, starts, chunks, probe, required): which part to dump<br>`request` (text): the request JSON, or probe's level and points |
 | `stats [reset] [raw]` | `stats` | Frame-time summary since the last reset | `reset` (boolean): start counting again<br>`raw` (boolean): every frame time too (frame_ms, cpu_ms, gpu_ms) |
 | `gpu-passes [on\|off]` | CLI only | Time Horizon's own render passes on the GPU, shown in F3 and in stats and bench | `mode` (on, off): on or off; without it, only reports |
 | `trace [FILE [SECONDS] \| stop]` | CLI only | Write every thread's timed spans to FILE as a timeline that ui.perfetto.dev opens, for SECONDS or until stop | none |

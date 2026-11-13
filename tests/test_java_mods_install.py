@@ -187,5 +187,37 @@ class PatchedClient(unittest.TestCase):
             self.assertEqual(source.stat().st_ino, dest.stat().st_ino)
 
 
+class Matrix(unittest.TestCase):
+    def folders(self, root, names):
+        for name, jars in names.items():
+            (root / name).mkdir()
+            for jar in jars:
+                (root / name / jar).write_text('')
+
+    def test_entries_are_each_mod_alone_then_all_together_with_shared_jars_once(self):
+        from tools import hz_scenario
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.folders(root, {'b': ['b.jar', 'core.jar'], 'a': ['a.jar', 'core.jar'], 'empty': []})
+            entries = hz_scenario.matrix_entries(root)
+            self.assertEqual([n for n, _ in entries], ['a', 'b', 'all-together'])
+            self.assertEqual([j.name for j in entries[-1][1]], ['a.jar', 'b.jar', 'core.jar'])
+            self.assertEqual([n for n, _ in hz_scenario.matrix_entries(root, ['b'])], ['b'])
+
+    def test_a_dedicated_cell_needs_done_and_both_clients(self):
+        from tools import hz_scenario
+        self.assertEqual(hz_scenario.server_cell(['[x] Done (3.1s)!'], 2, True)['tick'], True)
+        self.assertEqual(hz_scenario.server_cell(['[x] Done (3.1s)!'], 1, True)['join'], False)
+        self.assertEqual(hz_scenario.server_cell(['java.lang.NoClassDefFoundError: X'], 0, False)['boot'], False)
+
+    def test_failures_group_cells_by_the_exception_they_name(self):
+        from tools import hz_scenario
+        red = hz_scenario.cell(why='java.lang.NoClassDefFoundError: ClientLevel')
+        results = {'a': {'single': hz_scenario.cell(True, True, True), 'dedicated': red}, 'b': {'single': hz_scenario.cell(True, False, False, 'java.lang.NoClassDefFoundError: ClientLevel'), 'dedicated': None}}
+        groups = hz_scenario.failures(results)
+        self.assertEqual(list(groups.values()), [[('a', 'dedicated', 'boot'), ('b', 'single', 'join')]])
+        self.assertIn('| a | b:ok j:ok t:ok | b:FAIL j:FAIL t:FAIL |', hz_scenario.render_table(results))
+
+
 if __name__ == '__main__':
     unittest.main()

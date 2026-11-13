@@ -535,7 +535,10 @@ struct CreativeTabFile {
 #[serde(deny_unknown_fields)]
 struct FluidFile {
     sprite: Option<String>,
+    flowing: Option<String>,
+    overlay: Option<String>,
     tint: Option<u32>,
+    screen_overlay: Option<String>,
     world: Option<WorldFluid>,
 }
 
@@ -593,8 +596,14 @@ pub struct FluidLook {
     pub id: String,
     /// An atlas sprite id (`namespace:path`); none draws a flat square of the tint.
     pub sprite: Option<String>,
+    /// The sprite on a surface that flows and on its sides; the sprite when unset.
+    pub flowing: Option<String>,
+    /// The sprite on sides against glass and leaves.
+    pub overlay: Option<String>,
     /// `0xAARRGGBB`.
     pub tint: Option<u32>,
+    /// A GUI texture id (`namespace:path` of `textures/<path>.png`) drawn over the view with the eyes in it.
+    pub screen_overlay: Option<String>,
     /// How it exists in the world; none for a fluid only a tank holds.
     pub world: Option<WorldFluid>,
 }
@@ -1397,18 +1406,32 @@ impl Content {
         for (fluid, name) in fluids {
             let file: FluidFile =
                 serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
-            if file.sprite.as_deref().is_some_and(|s| !namespaced_id(s)) {
-                return Err(format!(
-                    "{name}: sprite is an atlas sprite id (namespace:path)"
-                ));
+            for sprite in [&file.sprite, &file.flowing, &file.overlay] {
+                if sprite.as_deref().is_some_and(|s| !namespaced_id(s)) {
+                    return Err(format!(
+                        "{name}: sprites are atlas sprite ids (namespace:path)"
+                    ));
+                }
             }
             if let Some(world) = &file.world {
                 world.check().map_err(|e| format!("{name}: world: {e}"))?;
             }
+            if file
+                .screen_overlay
+                .as_deref()
+                .is_some_and(|s| !namespaced_id(s))
+            {
+                return Err(format!(
+                    "{name}: screen_overlay is a texture id (namespace:path)"
+                ));
+            }
             let look = FluidLook {
                 id: fluid,
                 sprite: file.sprite,
+                flowing: file.flowing,
+                overlay: file.overlay,
                 tint: file.tint,
+                screen_overlay: file.screen_overlay,
                 world: file.world,
             };
             if self.fluids.iter().any(|known| {
@@ -3450,13 +3473,19 @@ capabilities = ["registries"]
                 FluidLook {
                     id: "ruby:bare".into(),
                     sprite: None,
+                    flowing: None,
+                    overlay: None,
                     tint: None,
+                    screen_overlay: None,
                     world: None,
                 },
                 FluidLook {
                     id: "ruby:steam".into(),
                     sprite: Some("ruby:gui/fluids/steam".into()),
+                    flowing: None,
+                    overlay: None,
                     tint: Some(4291343520),
+                    screen_overlay: None,
                     world: None,
                 },
             ]

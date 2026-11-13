@@ -146,6 +146,11 @@ public final class ClientSounds {
         }
     }
 
+    /** Horizon's handle of a playing instance, -1 when none. */
+    static int handle(SoundInstance instance) {
+        return PLAYING.getOrDefault(instance, -1);
+    }
+
     public static boolean isActive(SoundInstance instance) {
         return PLAYING.containsKey(instance);
     }
