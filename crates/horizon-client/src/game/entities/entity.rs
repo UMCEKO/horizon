@@ -208,11 +208,21 @@ pub(super) trait Entity: EntityRules {
         fluids: &horizon_client::motion::FluidResources,
         context: &horizon_world::native_load_context::LoopContext,
     ) -> (f64, f64) {
+        let found = self.push_by_fluid_types(world, fluids, context);
+        (found.water, found.lava)
+    }
+    /// [`Entity::push_by_fluid`] with the mod fluid type it found as well.
+    fn push_by_fluid_types(
+        &mut self,
+        world: &horizon_client::world::World,
+        fluids: &horizon_client::motion::FluidResources,
+        context: &horizon_world::native_load_context::LoopContext,
+    ) -> horizon_client::entities::EntityFluids {
         if !self.is_pushed_by_fluid() {
-            return (0.0, 0.0);
+            return horizon_client::entities::EntityFluids::default();
         }
         let (bounds, at, eye) = (self.bounds(), self.position(), self.fluid_eye_y());
-        let (water, lava, _) = horizon_client::entities::update_entity_fluids(
+        horizon_client::entities::update_entity_fluids(
             bounds,
             at,
             eye,
@@ -220,8 +230,7 @@ pub(super) trait Entity: EntityRules {
             world,
             fluids,
             context,
-        );
-        (water, lava)
+        )
     }
     /// `BubbleColumnBlock.entityInside` through `applyEffectsFromBlocks`: a
     /// column lifts or drags every kind alike.
@@ -623,10 +632,10 @@ impl Game<'_> {
     ) -> (bool, bool) {
         let no_physics = escape_speed.is_some();
         let heights =
-            item.push_by_fluid(&self.world, &self.res.motion().fluids, &self.loop_context);
+            item.push_by_fluid_types(&self.world, &self.res.motion().fluids, &self.loop_context);
         // Entity.baseTick splashes before moving, except on the first tick.
-        item.water_entry(heights.0 > 0.0, item.ticks == 0, splash);
-        item.lava_fall(heights.1 > 0.0);
+        item.water_entry(heights.water > 0.0, item.ticks == 0, splash);
+        item.lava_fall(heights.lava > 0.0);
         let mut step = item.tick_move_before_block_effects(
             &self.world,
             self.res.facts(),

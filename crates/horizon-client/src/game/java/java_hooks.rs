@@ -271,7 +271,7 @@ impl Game<'_> {
             if !super::java_listener::listens(hook) {
                 return false;
             }
-            let posted = self.java_post_level_event(event, |out| {
+            let posted = self.java_post_level_event(event, false, |out| {
                 out.long(pos.pack());
                 out.0.push(direction as u8);
                 out.bool(extend);
@@ -748,6 +748,33 @@ impl Game<'_> {
             let _ = self.as_guest_at(gi, conn, Self::java_player_tick);
         }
         let _ = (gi, conn);
+    }
+
+    /// Native opened a menu for the acting guest `conn`: its Java view gets the real vanilla menu while a menu route is on.
+    pub(super) fn java_hook_menu_opened(
+        &mut self,
+        conn: u32,
+        window: i32,
+        menu: &str,
+        pos: Option<[i32; 3]>,
+    ) {
+        #[cfg(feature = "java-mods")]
+        self.java_menu_open(conn, window, menu, pos);
+        let _ = (conn, window, menu, pos);
+    }
+
+    /// Native closed the acting guest's menu `window`.
+    pub(super) fn java_hook_menu_closed(&mut self, window: i32) {
+        #[cfg(feature = "java-mods")]
+        self.java_menu_close(window);
+        let _ = window;
+    }
+
+    /// `PlayerRespawnEvent` for the guest in place; `end_conquered` is the return from the End credits, which no native hook reports.
+    pub(super) fn java_hook_respawned(&mut self, end_conquered: bool) {
+        #[cfg(feature = "java-mods")]
+        super::java_listen_respawn::post_respawned(self, end_conquered);
+        let _ = end_conquered;
     }
 
     /// A guest left the server: its Java player logs out.

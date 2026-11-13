@@ -4,14 +4,13 @@
 
 use super::Game;
 use super::java_hooks::TrampleBy;
-use super::java_listener::{Family, listens, with_game};
+use super::java_listener::{Family, Subscriptions, crossed, listens, with_game};
 use super::java_mods::write_tag;
 use horizon_core::{nbt::Tag, position::BlockPos};
-use mod_api::{BonemealEvent, BonemealSource, Flow, HookId, HostSide};
-use std::sync::OnceLock;
+use mod_api::{BonemealEvent, BonemealSource, Flow, HookId, HostSide, Listener};
 
 const HOOKS: &[HookId] = &[HookId::FarmlandTrample, HookId::Bonemeal];
-static SUBSCRIBED: OnceLock<Vec<Option<HookId>>> = OnceLock::new();
+static SUBSCRIBED: Subscriptions = Subscriptions::new();
 
 pub(super) fn family() -> Family {
     Family {
@@ -24,14 +23,19 @@ struct Blocks;
 
 impl mod_api::Hooks for Blocks {
     fn subscribed(&self) -> &'static [Option<HookId>] {
-        super::java_listener::subscribed(HOOKS, &SUBSCRIBED)
+        super::java_listener::subscribed(HOOKS, &SUBSCRIBED, false)
+    }
+
+    fn listeners(&self) -> &'static [Listener] {
+        super::java_listener::listeners(HOOKS, &SUBSCRIBED, false)
     }
 
     fn bonemeal(&self, host: HostSide<'_>, event: &mut BonemealEvent<'_>) -> Flow {
         let HostSide::Server(host) = host else {
             return Flow::Continue;
         };
-        if !listens(HookId::Bonemeal) || event.source != BonemealSource::Interaction {
+        crossed(HookId::Bonemeal);
+        if event.source != BonemealSource::Interaction {
             return Flow::Continue;
         }
         let pos = event.pos.pack();
@@ -50,9 +54,9 @@ impl mod_api::Hooks for Blocks {
             if by_player {
                 let mut fields = horizon_java_host::wire::Out::default();
                 fields.long(pos);
-                game.java_post_player_event("BonemealEvent", fields.0)
+                game.java_post_player_event("BonemealEvent", false, fields.0)
             } else {
-                game.java_post_level_event("BonemealEvent", |out| {
+                game.java_post_level_event("BonemealEvent", false, |out| {
                     out.long(pos);
                     out.bytes(&stack);
                 })
@@ -80,9 +84,9 @@ impl Game<'_> {
                 let mut fields = horizon_java_host::wire::Out::default();
                 fields.long(pos);
                 fields.double(distance);
-                self.java_post_player_event(TRAMPLE, fields.0)
+                self.java_post_player_event(TRAMPLE, false, fields.0)
             }
-            TrampleBy::Mob(mob) => self.java_post_level_event(TRAMPLE, |out| {
+            TrampleBy::Mob(mob) => self.java_post_level_event(TRAMPLE, false, |out| {
                 out.long(pos);
                 out.double(distance);
                 out.int(mob as i32);

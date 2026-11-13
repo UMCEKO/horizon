@@ -5,7 +5,10 @@ import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Map;
 import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ChunkHolder;
+import net.minecraft.server.level.ChunkLevel;
 import net.minecraft.server.level.FullChunkStatus;
+import net.minecraft.server.level.GenerationChunkHolder;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.ChunkPos;
@@ -21,6 +24,10 @@ public final class ChunkViews {
     /** Each side's own, touched only by its thread: the server's levels, then the Java client's. */
     private static final Map<Level, Long2ObjectOpenHashMap<LevelChunk>> SERVER = new IdentityHashMap<>();
     private static final Map<Level, Long2ObjectOpenHashMap<LevelChunk>> CLIENT = new IdentityHashMap<>();
+
+    /** The server's holders, one per chunk whose ticket level made one: what `ChunkTicketLevelUpdatedEvent` carries. */
+    private static final Map<ServerLevel, Long2ObjectOpenHashMap<ChunkHolder>> HOLDERS = new IdentityHashMap<>();
+    private static final Map<ChunkHolder, ServerLevel> HOLDER_LEVELS = new IdentityHashMap<>();
 
     private static Map<Level, Long2ObjectOpenHashMap<LevelChunk>> views(Level level) {
         return level instanceof ServerLevel ? SERVER : CLIENT;
@@ -61,6 +68,8 @@ public final class ChunkViews {
     /** The server's world closed; the client forgets its own levels as they change. */
     static void reset() {
         SERVER.clear();
+        HOLDERS.clear();
+        HOLDER_LEVELS.clear();
     }
 
     static void forget(Level level) {
@@ -71,6 +80,48 @@ public final class ChunkViews {
     static void forget(Level level, int x, int z) {
         var views = views(level).get(level);
         if (views != null) views.remove(ChunkPos.pack(x, z));
+    }
+
+    /** The holder of a chunk at `ticketLevel` (from `oldLevel`), made as the views are, without running a constructor. */
+    static ChunkHolder holder(ServerLevel level, int x, int z, int oldLevel, int ticketLevel) {
+        var holders = HOLDERS.computeIfAbsent(level, l -> new Long2ObjectOpenHashMap<>());
+        long key = ChunkPos.pack(x, z);
+        var holder = holders.get(key);
+        try {
+            if (holder == null) {
+                holder = GameBridge.construct(ChunkHolder.class, Object.class.getDeclaredConstructor());
+                ServerView.set(GenerationChunkHolder.class, holder, "pos", new ChunkPos(x, z));
+                ServerView.set(ChunkHolder.class, holder, "levelHeightAccessor", level);
+                holders.put(key, holder);
+                HOLDER_LEVELS.put(holder, level);
+            }
+            ServerView.set(ChunkHolder.class, holder, "oldTicketLevel", oldLevel);
+            ServerView.set(ChunkHolder.class, holder, "ticketLevel", ticketLevel);
+            ServerView.set(ChunkHolder.class, holder, "queueLevel", ticketLevel);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
+        return holder;
+    }
+
+    /** The holder is gone with its chunk: vanilla drops it once the chunk unloads, after the event heard of it. */
+    static void dropHolder(ServerLevel level, int x, int z) {
+        var holders = HOLDERS.get(level);
+        var holder = holders == null ? null : holders.remove(ChunkPos.pack(x, z));
+        if (holder != null) HOLDER_LEVELS.remove(holder);
+    }
+
+    /** Whether `holder` is one of ours rather than a real one. */
+    public static boolean isHolderView(ChunkHolder holder) {
+        return !HOLDER_LEVELS.isEmpty() && HOLDER_LEVELS.containsKey(holder);
+    }
+
+    /** The chunk a view holder answers for: Horizon's loaded chunk once the holder's level reaches `least`, else none. */
+    public static LevelChunk holderChunk(ChunkHolder holder, FullChunkStatus least) {
+        var level = HOLDER_LEVELS.get(holder);
+        if (level == null || !ChunkLevel.fullStatus(holder.getTicketLevel()).isOrAfter(least)) return null;
+        var pos = holder.getPos();
+        return get(level, pos.x(), pos.z());
     }
 
     private static LevelChunk view(Level level, int x, int z) {

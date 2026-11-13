@@ -2,18 +2,17 @@
 // java-listener-family
 //! `ClientChatReceivedEvent` on `client_chat_received`: Java mods see and cancel what the chat is about to show.
 
-use super::java_listener::{Family, listens, post_client};
+use super::java_listener::{Family, Subscriptions, crossed, post_client};
 use crate::game::api_values::{TryIntoApi, TryIntoEngine};
 use crate::game::remote::{ChatBody, event_chat};
 use horizon_client::text::Text;
 use horizon_core::nbt::{self, Limits, Tag};
 use horizon_java_host::wire::{In, Out};
 use horizon_protocol::packets::play::ChatTypeBound;
-use mod_api::{ClientChatReceivedEvent, ClientHost, Flow, HookId};
-use std::sync::OnceLock;
+use mod_api::{ClientChatReceivedEvent, ClientHost, Flow, HookId, Listener};
 
 const HOOKS: &[HookId] = &[HookId::ClientChatReceived];
-static SUBSCRIBED: OnceLock<Vec<Option<HookId>>> = OnceLock::new();
+static SUBSCRIBED: Subscriptions = Subscriptions::new();
 
 /// The reply's first byte, as `ChatReceived.java` writes it.
 const CANCEL: u8 = 1;
@@ -30,7 +29,11 @@ struct Chat;
 
 impl mod_api::Hooks for Chat {
     fn subscribed(&self) -> &'static [Option<HookId>] {
-        super::java_listener::subscribed(HOOKS, &SUBSCRIBED)
+        super::java_listener::subscribed(HOOKS, &SUBSCRIBED, false)
+    }
+
+    fn listeners(&self) -> &'static [Listener] {
+        super::java_listener::listeners(HOOKS, &SUBSCRIBED, false)
     }
 
     fn client_chat_received(
@@ -38,9 +41,7 @@ impl mod_api::Hooks for Chat {
         _: &mut dyn ClientHost,
         event: &mut ClientChatReceivedEvent<'_>,
     ) -> Flow {
-        if !listens(HookId::ClientChatReceived) {
-            return Flow::Continue;
-        }
+        crossed(HookId::ClientChatReceived);
         let Ok(line) = event.message.try_into_engine(&()) else {
             return Flow::Continue;
         };
@@ -49,6 +50,7 @@ impl mod_api::Hooks for Chat {
         let kind = chat_received_kind(event.system, event.overlay, has_body);
         let name = event.chat_type;
         let answer = post_client(
+            HookId::ClientChatReceived,
             "ClientChatReceivedEvent",
             |out| write_request(out, kind, &line, event.sender, name, chat.as_ref()),
             read_answer,

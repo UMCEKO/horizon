@@ -16,8 +16,8 @@ use horizon_core::{
 use horizon_world::native_load_context::LoopContext;
 use horizon_world::{
     block_landing::LandingEntityKind,
-    entity_fluid::{CurrentAccumulator, CurrentTarget},
-    fluid::{FluidKind, FluidState},
+    entity_fluid::{CurrentAccumulator, CurrentTarget, FluidTypeContact},
+    fluid::{FluidKind, FluidState, ModFluid, ModFluidEntityRules},
     fluid_flow::FluidFlowWorld,
     movement_restitution::{RestitutionInput, RestitutionWorld, restitute_movement},
     registry::BlockStateId,
@@ -74,7 +74,11 @@ pub struct Fluids {
     pub in_water: bool,
     pub in_lava: bool,
     pub eye_in_water: bool,
+    /// The first mod fluid type with entity rules the box is in.
+    pub fluid_type: Option<FluidTypeContact>,
 }
+/// Each mod fluid type's current over the box, in the order the scan met them.
+type TypeCurrents = Vec<(ModFluid, ModFluidEntityRules, CurrentAccumulator)>;
 /// `FluidFlowWorld` over the mob's scene: the neighbours a flow vector reads.
 struct FlowScene<'a, 'w>(&'a MobWorld<'w>);
 impl FluidFlowWorld for FlowScene<'_, '_> {
@@ -195,8 +199,27 @@ impl MobWorld<'_> {
                                 out.lava = out.lava.max(depth);
                                 out.in_lava = true;
                             }
-                            // A mod's fluid is in neither tag: no entity swims in it.
-                            Fluid::None | Fluid::Modded => {}
+                            Fluid::Modded => {
+                                let kind =
+                                    self.fluid_tables.fluid(self.world.block(x, y, z)).kind();
+                                if let Some((fluid, rules)) = kind.mod_entity_rules() {
+                                    match &mut out.fluid_type {
+                                        Some(t) if t.fluid == fluid => {
+                                            t.height = t.height.max(depth)
+                                        }
+                                        Some(_) => {}
+                                        None => {
+                                            out.fluid_type = Some(FluidTypeContact {
+                                                fluid,
+                                                rules,
+                                                height: depth,
+                                                eyes_inside: false,
+                                            })
+                                        }
+                                    }
+                                }
+                            }
+                            Fluid::None => {}
                         }
                     }
                 }
@@ -207,7 +230,16 @@ impl MobWorld<'_> {
         // for the camera.
         for y in lo.y.floor() as i32..=(hi.y.ceil() as i32 - 1) {
             let (fluid, h) = self.fluid_height(ex, y, ez);
-            if fluid != Fluid::Water || f64::from(y) + h < lo.y || eye_y < f64::from(y) {
+            let typed = fluid == Fluid::Modded
+                && out.fluid_type.is_some_and(|t| {
+                    self.fluid_tables
+                        .fluid(self.world.block(ex, y, ez))
+                        .kind()
+                        .mod_fluid()
+                        == Some(t.fluid)
+                });
+            if !(fluid == Fluid::Water || typed) || f64::from(y) + h < lo.y || eye_y < f64::from(y)
+            {
                 continue;
             }
             let state = self.world.block(ex, y, ez);
@@ -223,7 +255,10 @@ impl MobWorld<'_> {
                 h
             };
             if eye_y <= f64::from(y) + camera {
-                out.eye_in_water = true;
+                match out.fluid_type.as_mut().filter(|_| typed) {
+                    Some(t) => t.eyes_inside = true,
+                    None => out.eye_in_water = true,
+                }
             }
         }
         out
@@ -231,22 +266,41 @@ impl MobWorld<'_> {
     /// Entity.updateFluidHeightAndDoFluidPushing's currents over the deflated
     /// box: the flow of every water and lava block it touches, summed (a thin
     /// fluid layer scales its flow down), as (water, lava).
-    fn fluid_currents(&self, bounds: Aabb) -> (CurrentAccumulator, CurrentAccumulator) {
+    fn fluid_currents(
+        &self,
+        bounds: Aabb,
+    ) -> (CurrentAccumulator, CurrentAccumulator, TypeCurrents) {
         let base_y = bounds.min_position().y;
         let b = bounds.deflate(Vec3::new(0.001, 0.001, 0.001));
         let (lo, hi) = (b.min_position(), b.max_position());
         let mut scene = FlowScene(self);
         let (mut water, mut lava) = (CurrentAccumulator::default(), CurrentAccumulator::default());
+        let mut types: TypeCurrents = Vec::new();
         for x in lo.x.floor() as i32..=(hi.x.ceil() as i32 - 1) {
             for y in lo.y.floor() as i32..=(hi.y.ceil() as i32 - 1) {
                 for z in lo.z.floor() as i32..=(hi.z.ceil() as i32 - 1) {
                     let p = BlockPos::new(x, y, z);
                     let state = self.fluid_tables.fluid(self.world.block(x, y, z));
                     let current = match state.kind() {
-                        // A mod's fluid is in neither tag, so it pushes no entity.
-                        FluidKind::Empty | FluidKind::Mod(_) | FluidKind::ModFlowing(_) => continue,
+                        FluidKind::Empty => continue,
                         FluidKind::Water | FluidKind::FlowingWater => &mut water,
                         FluidKind::Lava | FluidKind::FlowingLava => &mut lava,
+                        kind @ (FluidKind::Mod(_) | FluidKind::ModFlowing(_)) => {
+                            let Some((fluid, rules)) = kind
+                                .mod_entity_rules()
+                                .filter(|(_, rules)| rules.can_push_entity)
+                            else {
+                                continue;
+                            };
+                            let at = match types.iter().position(|t| t.0 == fluid) {
+                                Some(at) => at,
+                                None => {
+                                    types.push((fluid, rules, CurrentAccumulator::default()));
+                                    types.len() - 1
+                                }
+                            };
+                            &mut types[at].2
+                        }
                     };
                     let surface = f64::from(y) + self.fluid_height(x, y, z).1;
                     if surface < lo.y {
@@ -263,7 +317,7 @@ impl MobWorld<'_> {
                 }
             }
         }
-        (water, lava)
+        (water, lava, types)
     }
     /// `BlockState.getCollisionShape(level, pos)` (the empty collision
     /// context) as boxes in the world.
@@ -636,9 +690,22 @@ impl Mob {
     pub fn is_in_liquid(&self) -> bool {
         self.fluids.in_water || self.fluids.in_lava
     }
+    /// Out of water and lava, in a mod fluid type it can swim in: it travels and jumps as in water.
+    pub fn swim_fluid_type(&self) -> Option<FluidTypeContact> {
+        if self.is_in_liquid() {
+            return None;
+        }
+        self.fluids
+            .fluid_type
+            .filter(|t| t.rules.can_swim && t.height > 0.0)
+    }
     /// `FloatGoal.canUse` and the brains' `Swim`: water deeper than the jump threshold, or lava.
     pub fn floats(&self) -> bool {
-        self.fluids.water > self.fluid_jump_threshold() || self.fluids.in_lava
+        self.fluids.water > self.fluid_jump_threshold()
+            || self.fluids.in_lava
+            || self
+                .swim_fluid_type()
+                .is_some_and(|t| t.height > self.fluid_jump_threshold())
     }
     /// `Entity.isPushedByFluid`: water animals, turtles, axolotls, frogs and
     /// nautiluses keep their own course.
@@ -983,8 +1050,10 @@ impl Mob {
         let was_touching_water = self.fluids.in_water;
         self.fluids = w.fluids(self.bounds(), self.eye_y());
         // EntityFluidInteraction.applyCurrentTo: the flow pushes the mob.
-        if (self.fluids.in_water || self.fluids.in_lava) && self.pushed_by_fluid() {
-            let (water, lava) = w.fluid_currents(self.bounds());
+        if (self.fluids.in_water || self.fluids.in_lava || self.fluids.fluid_type.is_some())
+            && self.pushed_by_fluid()
+        {
+            let (water, lava, types) = w.fluid_currents(self.bounds());
             let lava_scale = if w.dimension_type.fast_lava {
                 0.007
             } else {
@@ -997,6 +1066,12 @@ impl Mob {
             if lava.height > 0.0 {
                 let _ = lava.apply_to(&mut pushed, lava_scale);
             }
+            for (_, rules, current) in &types {
+                let _ = current.apply_to(&mut pushed, rules.motion_scale);
+            }
+        }
+        if let Some(t) = self.fluids.fluid_type {
+            self.fall_distance *= f64::from(t.rules.fall_distance_modifier);
         }
         if self.fluids.in_water {
             self.fall_distance = 0.0;
@@ -1507,7 +1582,10 @@ impl Mob {
             self.position.z.floor() as i32,
         );
         let stands_on_fluid = self.kind.flags.lava_walker && w.fluid(x, y, z) == Fluid::Lava;
-        if self.is_in_liquid() && self.affected_by_fluids() && !stands_on_fluid {
+        if (self.is_in_liquid() || self.swim_fluid_type().is_some())
+            && self.affected_by_fluids()
+            && !stands_on_fluid
+        {
             self.travel_in_fluid(w, level, input, events);
         } else if self.extra.fall_flying {
             self.travel_fall_flying(w, level, input, events);
@@ -1729,7 +1807,7 @@ impl Mob {
         let falling = self.velocity.y <= 0.0;
         let old_y = self.position.y;
         let gravity = self.effective_gravity();
-        if self.fluids.in_water {
+        if self.fluids.in_water || self.swim_fluid_type().is_some() {
             let mut slow = if self.extra.sprinting {
                 0.9
             } else {
@@ -1817,7 +1895,9 @@ impl Mob {
     /// The jump part of LivingEntity.aiStep.
     pub fn handle_jumping(&mut self, w: &MobWorld) {
         if self.ai.jumping && self.affected_by_fluids() {
-            let (fluid_height, in_water_with_height) = if self.fluids.in_lava {
+            let (fluid_height, in_water_with_height) = if let Some(t) = self.swim_fluid_type() {
+                (t.height, true)
+            } else if self.fluids.in_lava {
                 (self.fluids.lava, false)
             } else {
                 (

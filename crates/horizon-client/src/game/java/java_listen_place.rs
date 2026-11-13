@@ -54,7 +54,7 @@ impl Game<'_> {
         }
         self.java_bind_states();
         let fields = fields(face, snapshots);
-        self.java_post_player_event("BlockEvent.EntityPlaceEvent", fields.0)
+        self.java_post_player_event("BlockEvent.EntityPlaceEvent", false, fields.0)
             .is_some_and(|(canceled, _)| canceled)
     }
 }

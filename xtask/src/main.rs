@@ -10,6 +10,8 @@
 //! (`cargo build --release -p horizon-client --no-default-features`, without sound or controllers)
 //! as horizon-engine, with horizon-prepare and horizon-server from beside it and the same sources.
 //!
+//! Both take `--java-mods DIR`: the three Java host jars of a Java mods build are copied to `java-mods/`.
+//!
 //! `tokens`: writes `crates/horizon-theme/tokens.css`, the design tokens of `crates/horizon-theme` as CSS
 //! custom properties (a horizon-theme test fails when the file is out of date).
 //!
@@ -23,7 +25,14 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-const USAGE: &str = "usage: cargo run -p xtask -- package BINARY OUTDIR | package-server ENGINE OUTDIR | mod-api [notes] | tokens | icons";
+const USAGE: &str = "usage: cargo run -p xtask -- package BINARY OUTDIR [--java-mods DIR] | package-server ENGINE OUTDIR [--java-mods DIR] | mod-api [notes] | tokens | icons";
+
+/// The host jars a Java mods build carries in `java-mods/`.
+const JAVA_HOST_JARS: [&str; 3] = [
+    "horizon-java-host.jar",
+    "horizon-java-boot.jar",
+    "horizon-java-plugin.jar",
+];
 
 /// What the release folder takes from the repository at HEAD, as `git archive` writes it.
 const ARCHIVED: [&str; 5] = [
@@ -46,10 +55,10 @@ const SERVER_TOOLS: [&str; 2] = ["horizon-prepare", "horizon-server"];
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.as_slice() {
-        [task, binary, out] if task == "package" => package(Path::new(binary), Path::new(out)),
-        [task, engine, out] if task == "package-server" => {
-            package_server(Path::new(engine), Path::new(out))
-        }
+        [task, binary, out, rest @ ..] if task == "package" => java_mods_option(rest)
+            .and_then(|jars| package(Path::new(binary), Path::new(out), jars.as_deref())),
+        [task, engine, out, rest @ ..] if task == "package-server" => java_mods_option(rest)
+            .and_then(|jars| package_server(Path::new(engine), Path::new(out), jars.as_deref())),
         [task] if task == "mod-api" => mod_api::run(),
         [task, notes] if task == "mod-api" && notes == "notes" => mod_api::notes(),
         [task] if task == "tokens" => tokens(),
@@ -238,20 +247,54 @@ fn icons() -> Result<(), String> {
     Ok(())
 }
 
-fn package(binary: &Path, out: &Path) -> Result<(), String> {
+/// The folder after `--java-mods`, or none when the option is absent.
+fn java_mods_option(rest: &[String]) -> Result<Option<PathBuf>, String> {
+    match rest {
+        [] => Ok(None),
+        [flag, dir] if flag == "--java-mods" => Ok(Some(PathBuf::from(dir))),
+        _ => Err(USAGE.to_string()),
+    }
+}
+
+/// Copies the host jars from `jars` into `out/java-mods/`; a missing jar is an error naming it.
+fn add_java_mods(jars: &Path, out: &Path) -> Result<(), String> {
+    for jar in JAVA_HOST_JARS {
+        if !jars.join(jar).is_file() {
+            return Err(format!(
+                "{} is missing; run tools/java_mods.py build",
+                jars.join(jar).display()
+            ));
+        }
+    }
+    let to = out.join("java-mods");
+    fs::create_dir_all(&to).map_err(|e| format!("{}: {e}", to.display()))?;
+    for jar in JAVA_HOST_JARS {
+        copy(&jars.join(jar), &to.join(jar))?;
+    }
+    Ok(())
+}
+
+fn package(binary: &Path, out: &Path, java_mods: Option<&Path>) -> Result<(), String> {
     let repo = new_folder(out)?;
     copy_into(binary, out)?;
     copy_beside(binary, &TOOLS, out)?;
     copy_exporters(&repo.join("exporters"), &out.join("exporters"))?;
+    if let Some(jars) = java_mods {
+        add_java_mods(jars, out)?;
+    }
     let play = repo.join("packaging/PLAY.txt");
     copy(&play, &out.join("PLAY.txt"))
 }
 
-fn package_server(engine: &Path, out: &Path) -> Result<(), String> {
+fn package_server(engine: &Path, out: &Path, java_mods: Option<&Path>) -> Result<(), String> {
     let repo = new_folder(out)?;
     copy_exporters(&repo.join("exporters"), &out.join("exporters"))?;
     copy(engine, &out.join(program_name(engine, "horizon-engine")))?;
-    copy_beside(engine, &SERVER_TOOLS, out)
+    copy_beside(engine, &SERVER_TOOLS, out)?;
+    match java_mods {
+        Some(jars) => add_java_mods(jars, out),
+        None => Ok(()),
+    }
 }
 
 /// Release builds supply only our compiled classes and their integrity manifest.
@@ -543,6 +586,48 @@ mod tests {
             assert_eq!(mode("tools") & 0o100, 0o100);
         }
         fs::remove_dir_all(&out).unwrap();
+    }
+
+    #[test]
+    fn java_mods_option_copies_the_three_host_jars() {
+        let base = std::env::temp_dir().join(format!("xtask-jars-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (jars, out) = (base.join("jars"), base.join("out"));
+        fs::create_dir_all(&jars).unwrap();
+        fs::create_dir_all(&out).unwrap();
+        for jar in &JAVA_HOST_JARS[..2] {
+            fs::write(jars.join(jar), jar.as_bytes()).unwrap();
+        }
+        let missing = add_java_mods(&jars, &out).unwrap_err();
+        assert!(missing.contains("horizon-java-plugin.jar"));
+        assert!(!out.join("java-mods").exists());
+        fs::write(jars.join("horizon-java-plugin.jar"), b"plugin").unwrap();
+        add_java_mods(&jars, &out).unwrap();
+        let mut names: Vec<String> = fs::read_dir(out.join("java-mods"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "horizon-java-boot.jar",
+                "horizon-java-host.jar",
+                "horizon-java-plugin.jar"
+            ]
+        );
+        assert_eq!(
+            fs::read(out.join("java-mods/horizon-java-plugin.jar")).unwrap(),
+            b"plugin"
+        );
+        assert_eq!(java_mods_option(&[]).unwrap(), None);
+        let args = ["--java-mods".to_string(), "/jars".to_string()];
+        assert_eq!(
+            java_mods_option(&args).unwrap(),
+            Some(PathBuf::from("/jars"))
+        );
+        assert!(java_mods_option(&["--x".to_string()]).is_err());
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

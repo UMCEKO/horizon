@@ -82,6 +82,7 @@ public final class Boot {
         Host.serverGroup = net.neoforged.fml.util.thread.SidedThreadGroups.SERVER;
         Host.entry = Boot::op;
         GameBridge.register();
+        CompiledEvents.freeze();
         Host.dispatcher = Crossing.DISPATCHER;
     }
 

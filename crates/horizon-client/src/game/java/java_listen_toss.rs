@@ -45,7 +45,7 @@ impl Game<'_> {
         at.into_iter().chain(motion).for_each(|v| fields.double(v));
         fields.int(delay);
         fields.bool(named);
-        let (canceled, result) = self.java_post_player_event("ItemTossEvent", fields.0)?;
+        let (canceled, result) = self.java_post_player_event("ItemTossEvent", false, fields.0)?;
         if canceled {
             return Some(None);
         }
@@ -69,7 +69,7 @@ impl Game<'_> {
         fields.int(charge);
         fields.bool(has_ammo);
         fields.bool(crossbow);
-        self.java_post_player_event("ArrowLooseEvent", fields.0)
+        self.java_post_player_event("ArrowLooseEvent", false, fields.0)
             .and_then(|(_, result)| Some(i32::from_be_bytes(result.get(..4)?.try_into().ok()?)))
             .unwrap_or(charge)
     }

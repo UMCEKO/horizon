@@ -2,12 +2,11 @@
 // java-listener-family
 //! `ViewportEvent.ComputeFov`, `ComputeFogColor`, `RenderFog`, `CalculateDetachedCameraDistanceEvent` and `CalculatePlayerTurnEvent`: native's values go to the Java client with the tick, and the answer of its last firing applies.
 
-use super::java_listener::Family;
+use super::java_listener::{Family, Subscriptions};
 use super::java_view;
 use mod_api::{
-    CalculatePlayerTurnEvent, CameraDistanceEvent, ClientHost, ComputeFovEvent, HookId,
+    CalculatePlayerTurnEvent, CameraDistanceEvent, ClientHost, ComputeFovEvent, HookId, Listener,
 };
-use std::sync::OnceLock;
 
 const HOOKS: &[HookId] = &[
     HookId::ComputeFov,
@@ -17,7 +16,7 @@ const HOOKS: &[HookId] = &[
     HookId::ComputeFogColor,
     HookId::RenderFog,
 ];
-static SUBSCRIBED: OnceLock<Vec<Option<HookId>>> = OnceLock::new();
+static SUBSCRIBED: Subscriptions = Subscriptions::new();
 
 pub(super) fn family() -> Family {
     Family {
@@ -35,7 +34,11 @@ fn answered(asked: f32, answer: Option<f32>) -> f32 {
 
 impl mod_api::Hooks for View {
     fn subscribed(&self) -> &'static [Option<HookId>] {
-        super::java_listener::subscribed(HOOKS, &SUBSCRIBED)
+        super::java_listener::subscribed(HOOKS, &SUBSCRIBED, false)
+    }
+
+    fn listeners(&self) -> &'static [Listener] {
+        super::java_listener::listeners(HOOKS, &SUBSCRIBED, false)
     }
 
     fn compute_fov(&self, _: &dyn ClientHost, event: &mut ComputeFovEvent) {

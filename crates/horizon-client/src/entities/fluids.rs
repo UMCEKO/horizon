@@ -12,13 +12,32 @@ use horizon_world::native_load_context::LoopContext;
 use horizon_world::{
     entity_fluid::{
         CurrentTarget, EntityFluidInteraction, FluidInteractionWorld, FluidMembership,
-        FluidSections, FluidTagId,
+        FluidSections, FluidTagId, FluidTypeContact,
     },
     fluid::{FluidHeightWorld, FluidKind, FluidState},
     fluid_flow::FluidFlowWorld,
     registry::BlockStateId,
 };
 type Error = std::convert::Infallible;
+/// What one fluid step found around an entity.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EntityFluids {
+    pub water: f64,
+    pub lava: f64,
+    /// `updateFluidOnEyes`'s answer for water.
+    pub eye_in_water: bool,
+    /// The first mod fluid type with entity rules the box is in.
+    pub fluid_type: Option<FluidTypeContact>,
+}
+impl From<(f64, f64)> for EntityFluids {
+    fn from((water, lava): (f64, f64)) -> Self {
+        Self {
+            water,
+            lava,
+            ..Self::default()
+        }
+    }
+}
 struct EntityFluidWorld<'a> {
     bounds: Aabb,
     position: Vec3,
@@ -98,7 +117,7 @@ pub fn update_entity_fluids(
     world: &World,
     fluids: &FluidResources,
     context: &LoopContext,
-) -> (f64, f64, bool) {
+) -> EntityFluids {
     let mut interaction = EntityFluidInteraction::new([WATER, LAVA]);
     let mut scene = EntityFluidWorld {
         bounds,
@@ -110,7 +129,7 @@ pub fn update_entity_fluids(
         context,
     };
     if interaction.update(&mut scene, false, 4096).is_err() {
-        return (0.0, 0.0, false);
+        return EntityFluids::default();
     }
     let water_height = interaction.fluid_height(&scene, WATER);
     let lava_height = interaction.fluid_height(&scene, LAVA);
@@ -127,7 +146,16 @@ pub fn update_entity_fluids(
             0.0023333333333333335
         },
     );
-    (water_height, lava_height, eye_in_water)
+    let _ = interaction.apply_type_currents(&mut scene);
+    EntityFluids {
+        water: water_height,
+        lava: lava_height,
+        eye_in_water,
+        fluid_type: interaction
+            .fluid_types()
+            .into_iter()
+            .find(|c| c.height > 0.0),
+    }
 }
 impl ItemEntity {
     /// `Entity.getEyeY` of an item (eye height 0.2125), where
@@ -144,9 +172,9 @@ impl ItemEntity {
         context: &LoopContext,
     ) -> (f64, f64) {
         let (bounds, at, eye) = (self.bounds(), self.position, self.fluid_eye_y());
-        let (water, lava, _) =
+        let found =
             update_entity_fluids(bounds, at, eye, &mut self.velocity, world, fluids, context);
-        (water, lava)
+        (found.water, found.lava)
     }
 }
 impl ExperienceOrb {
@@ -167,7 +195,7 @@ impl ExperienceOrb {
             fluids,
             context,
         )
-        .2
+        .eye_in_water
     }
 }
 impl ArmorStand {
@@ -194,7 +222,8 @@ impl ArmorStand {
             return false;
         }
         let (bounds, at, eye) = (self.bounds(), self.position, self.fluid_eye_y());
-        update_entity_fluids(bounds, at, eye, &mut self.velocity, world, fluids, context).0 > 0.0
+        update_entity_fluids(bounds, at, eye, &mut self.velocity, world, fluids, context).water
+            > 0.0
     }
 }
 impl FluidMembership for EntityFluidWorld<'_> {

@@ -243,7 +243,7 @@ public final class PlayerSync {
         stacksWritten(bytes.toByteArray());
     }
 
-    /** The reply's block for the player a call filled: experience, then the slots Java changed against what native holds. */
+    /** The reply's block for the player a call filled: experience, the slots Java changed against what native holds, then its open menu's block. */
     static void writeChanges(ServerPlayer player, DataOutputStream out) throws IOException {
         out.writeInt(player.experienceLevel);
         out.writeFloat(player.experienceProgress);
@@ -255,6 +255,7 @@ public final class PlayerSync {
             if (!ItemStack.matches(synced[slot], inventory.getItem(slot))) changed.add(slot);
         }
         writeSlots(player, out, changed);
+        MenuViews.writeChanges(player, out);
     }
 
     private static void writeSlots(ServerPlayer player, DataOutputStream out, List<Integer> slots) throws IOException {

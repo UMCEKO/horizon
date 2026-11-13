@@ -88,9 +88,10 @@ def build(java_only=False):
             sources += [str(SOURCES / 'parity' / 'scan' / 'dev' / 'horizonlab' / 'javamods' / 'parity' / 'MixinScanner.java')]
         subprocess.run(['javac', '--release', '25', '-proc:none', '-nowarn', '-cp', f'{cp}:{extra}', '-d', str(classes), *sources], check=True)
         jar_args = ['jar', 'cf', str(jar), '-C', str(classes), '.']
-        if name == 'plugin':
-            manifest = JARS / 'plugin.manifest'
-            manifest.write_text('FMLModType: LIBRARY\n')
+        if name in ('plugin', 'host'):
+            manifest = JARS / f'{name}.manifest'
+            # The host jar is also the JVM's `-javaagent` (`BusAgent`): Rust starts every JVM with it.
+            manifest.write_text('FMLModType: LIBRARY\n' if name == 'plugin' else 'Premain-Class: dev.horizonlab.javamods.host.BusAgent\n')
             jar_args = ['jar', 'cfm', str(jar), str(manifest), '-C', str(classes), '.']
         if (SOURCES / name / 'res').exists():
             jar_args += ['-C', str(SOURCES / name / 'res'), '.']
@@ -119,7 +120,7 @@ def unit():
     for source in sources:
         if source.stem.endswith('Check'):
             name = '.'.join(source.relative_to(SOURCES / 'unit').with_suffix('').parts)
-            failed += subprocess.run(['java', '-cp', f'{cp}:{built}:{classes}', name]).returncode != 0
+            failed += subprocess.run(['java', f'-javaagent:{HOST_JAR}', '-cp', f'{cp}:{built}:{classes}', name]).returncode != 0
     sys.exit(1 if failed else 0)
 
 
@@ -609,6 +610,30 @@ def bridges(args):
         ok = 'Unknown particle' in send('command particle horizon_java_test:nope ~ ~1 ~')
         print(f"  particle_unknown: {'ok' if ok else 'WRONG'}", flush=True)
         wrong.extend([] if ok else ['particle_unknown'])
+        # Vanilla menus native opens: with the test mod's doClick route on, the player's Java view holds the real anvil and chest menus.
+        send(f'command fill {x - 3} {y} {z - 1} {x - 2} {y + 2} {z + 3} air')
+        send(f'command fill {x - 3} {y - 1} {z - 1} {x - 2} {y - 1} {z + 3} minecraft:stone')
+        send(f'command setblock {x - 2} {y} {z} minecraft:anvil')
+        send(f'command setblock {x - 2} {y} {z + 2} minecraft:chest')
+        send('command clear @s')
+        send('give minecraft:iron_sword')
+        send('wait 5')
+        send('select minecraft:iron_sword')
+        send(f'look-at-block {x - 2} {y} {z} east')
+        send('wait 3')
+        send('use-item')
+        send('wait 5')
+        # The anvil's hotbar starts at menu slot 30: a shift-click moves the sword into input slot 0.
+        print(send('click-slot 30 shift')[:160], flush=True)
+        send('wait 5')
+        send('close')
+        send('wait 3')
+        send(f'look-at-block {x - 2} {y} {z + 2} east')
+        send('wait 3')
+        send('use-item')
+        send('wait 5')
+        send('close')
+        send('wait 5')
         positions.append((x, y, z, base))
 
     def again(send):
@@ -633,7 +658,7 @@ def bridges(args):
     shutil.copy(Path(args.scratch) / 'ctl.log', Path(args.scratch) / 'first-session.log')
     paused = re.findall(r'^Horizon: pause sources: \[(.*)\]$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks.append(('pause_sources_from_handler', 'ok' if paused == ['music'] else f'FAILED {paused}'))
-    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'team_join_routed', 'team_leave_routed', 'team_view_matches', 'team_join_inner_sees_member', 'team_leave_inner_sees_member_gone', 'player_stack_keeps_identity', 'player_view_sees_native_give', 'play_sound_posted_from_native', 'gui_layer_pre_cancel', 'chat_received_overlay', 'chat_received_player', 'lockstep_order', 'lockstep_post_sees_this_tick', 'glyph_shadow_from_patch', 'loop_init_then_run', 'mod_command_registered', 'commands_selection_follows_dist', 'server_chat_event_player', 'client_commands_registered', 'client_command_runs', 'client_level_sees_the_pig', 'client_level_finds_the_pig_in_its_box', 'client_level_loses_the_removed_pig', 'debug_entry_lines_recorded', 'rocket_moves_in_its_own_tick', 'rocket_lifts_five_blocks', 'pre_write_moves_without_lerp_start', 'spring_jump_apex', 'input_event_walks', 'input_event_seen_every_tick', 'fall_canceled_client','window_resize_fired', 'render_frame_paired', 'master_volume_follows', 'door_is_multi_place', 'mod_command_runs_in_java', 'command_event_for_native', 'command_event_once', 'client_join_once', 'client_leave_once', 'client_tick_post_per_tick') if (name, 'ok') not in checks)
+    wrong.extend(name for name in ('key_quiet_under_a_native_screen', 'key_fires_without_a_screen', 'key_held_through_a_native_screen_is_down', 'mod_key_follows_the_rebind', 'client_profile_resolver', 'route_tail_sees_body', 'route_head_cancel', 'route_return_equals_tail', 'route_body_free_slot_java', 'team_join_routed', 'team_leave_routed', 'team_view_matches', 'team_join_inner_sees_member', 'team_leave_inner_sees_member_gone', 'player_stack_keeps_identity', 'player_view_sees_native_give', 'play_sound_posted_from_native', 'gui_layer_pre_cancel', 'chat_received_overlay', 'chat_received_player', 'lockstep_order', 'lockstep_post_sees_this_tick', 'glyph_shadow_from_patch', 'loop_init_then_run', 'mod_command_registered', 'commands_selection_follows_dist', 'server_chat_event_player', 'client_commands_registered', 'client_command_runs', 'client_level_sees_the_pig', 'client_level_finds_the_pig_in_its_box', 'client_level_loses_the_removed_pig', 'debug_entry_lines_recorded', 'rocket_moves_in_its_own_tick', 'rocket_lifts_five_blocks', 'pre_write_moves_without_lerp_start', 'spring_jump_apex', 'input_event_walks', 'input_event_seen_every_tick', 'fall_canceled_client','window_resize_fired', 'render_frame_paired', 'master_volume_follows', 'door_is_multi_place', 'mod_command_runs_in_java', 'command_event_for_native', 'command_event_once', 'client_join_once', 'client_leave_once', 'client_tick_post_per_tick', 'anvil_view_matches', 'chest_view_is_the_block_entity', 'menu_view_closed') if (name, 'ok') not in checks)
     session(args, again)
     second = re.findall(r'CHECK (.+?) (ok|FAILED|THREW.*)$', (Path(args.scratch) / 'ctl.log').read_text(errors='replace'), re.M)
     checks += [(name + ' (second session)', result) for name, result in second]
@@ -1440,6 +1465,11 @@ def main():
     except ImportError:
         import mod_replaces
     mod_replaces.add_arguments(rp)
+    rl = sub.add_parser('release', help='the two Linux release folders and archives with Java mods support, built and checked in an Ubuntu 22.04 container (docs/java-mods.md)')
+    rl.add_argument('--out', required=True)
+    rl.add_argument('--keep-target', action='store_true', help='keep the container build folder (about 10 GB)')
+    rl.add_argument('--no-smoke', action='store_true', help='skip the game and server runs')
+    rl.add_argument('--install', default='/home/umceko/hz-poc/play/install-rs', help='a Java mods install whose run folders the smoke runs use')
     n = sub.add_parser('launch', allow_abbrev=False, help='starts the game from an install; other arguments go to the game (--dedicated starts the server)')
     n.add_argument('--install', required=True)
     n.add_argument('--game', help='the horizon-client built with --features java-mods')
@@ -1450,6 +1480,12 @@ def main():
         parser.error(f'unrecognized arguments: {" ".join(extra)}')
     if args.command == 'install':
         return install_pack(args)
+    if args.command == 'release':
+        try:
+            from . import java_mods_release
+        except ImportError:
+            import java_mods_release
+        return java_mods_release.release(args, NEOFORGE)
     if args.command == 'mixins':
         try:
             from . import mod_parity

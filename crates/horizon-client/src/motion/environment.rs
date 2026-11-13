@@ -68,7 +68,9 @@ impl MotionWorld<'_, '_, '_> {
             .registry
             .state(self.block(eye))
             .is_some_and(|state| state.name == "minecraft:bubble_column");
-        let submerged = self.player.is_eye_in_fluid(WATER) && !bubble_column;
+        let submerged = (self.player.is_eye_in_fluid(WATER)
+            || self.player.is_eye_in_drowning_fluid_type())
+            && !bubble_column;
         let drowns = submerged
             && !self.player.status.water_breathing
             && !self.player.status.breath_of_the_nautilus
@@ -245,6 +247,9 @@ impl LivingFluidWorld for MotionWorld<'_, '_, '_> {
     fn in_water(&mut self) -> Result<bool> {
         Ok(self.player.fluids.was_touching_water)
     }
+    fn swims_in_fluid_type(&mut self) -> Result<bool> {
+        Ok(self.player.swim_fluid_type().is_some())
+    }
     fn sprinting(&mut self) -> Result<bool> {
         Ok(self.player.sprinting)
     }
@@ -293,8 +298,16 @@ impl MotionWorld<'_, '_, '_> {
             return Ok(());
         }
         let in_lava = self.player.is_in_lava();
-        let height = self.player.fluid_height(if in_lava { LAVA } else { WATER });
-        let in_water = self.player.fluids.was_touching_water && height > 0.0;
+        let (height, in_water) = match self.player.swim_fluid_type() {
+            Some(contact) => (contact.height, true),
+            None => {
+                let height = self.player.fluid_height(if in_lava { LAVA } else { WATER });
+                (
+                    height,
+                    self.player.fluids.was_touching_water && height > 0.0,
+                )
+            }
+        };
         let threshold = self.player.fluid_jump_threshold();
         let on_ground = self.player.ground.on_ground;
         if in_water && !(on_ground && height <= threshold) {
